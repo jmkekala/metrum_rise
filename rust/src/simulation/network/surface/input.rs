@@ -1055,22 +1055,16 @@ fn push_bend_corner_curb_miter_cap(
     to_layer: &BendCornerLayer,
     source_band_index: usize,
 ) {
-    let Some(from_inner_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(from_inner_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(to_inner_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(from_outer_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(from_outer_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(to_outer_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(inner_miter_xz) = line_intersection_xz(
@@ -1130,22 +1124,16 @@ fn push_bend_corner_curb_counterpart_miter_cap(
     to_layer: &BendCornerLayer,
     source_band_index: usize,
 ) {
-    let Some(from_inner_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(from_inner_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(to_inner_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(from_outer_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(from_outer_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(to_outer_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(inner_miter_xz) = line_intersection_xz(
@@ -1205,22 +1193,16 @@ fn push_bend_corner_chord_band(
     to_layer: &BendCornerLayer,
     source_band_index: usize,
 ) {
-    let Some(inner_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(outer_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(outer_start_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(outer_end_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
@@ -1263,22 +1245,16 @@ fn push_bend_corner_curved_outer_band(
     source_band_index: usize,
     miter_prefix_owned_by_cap: bool,
 ) {
-    let Some(inner_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(outer_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(outer_start_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(outer_end_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(inner_miter_xz) = line_intersection_xz(
@@ -1372,22 +1348,16 @@ fn push_bend_corner_sidewalk_curved_outer_band(
     source_band_index: usize,
     miter_prefix_owned_by_cap: bool,
 ) {
-    let Some(inner_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(outer_start_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(outer_start_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(outer_end_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(inner_miter_xz) = line_intersection_xz(
@@ -1674,22 +1644,16 @@ fn push_bend_corner_curve_strips(
     source_band_index: usize,
     miter_prefix_owned_by_cap: bool,
 ) {
-    let Some(from_inner_world) =
-        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
-    else {
+    let Some(from_inner_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
-    else {
+    let Some(to_inner_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return;
     };
-    let Some(from_outer_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(from_outer_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(to_outer_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(inner_control_xz) = line_intersection_xz(
@@ -1788,13 +1752,10 @@ fn push_bend_corner_miter_cap(
     to_layer: &BendCornerLayer,
     source_band_index: usize,
 ) {
-    let Some(from_outer_world) =
-        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
-    else {
+    let Some(from_outer_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
         return;
     };
-    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
-    else {
+    let Some(to_outer_world) = endpoint_layer_outer_world(to_mouth, to_layer) else {
         return;
     };
     let Some(miter_xz) = line_intersection_xz(
@@ -1922,6 +1883,29 @@ fn endpoint_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Opt
         .boundary_rails
         .get(boundary_index)
         .map(|rail| rail.endpoint_world)
+}
+
+fn endpoint_layer_inner_world(mouth: &NodeInputMouth, layer: &BendCornerLayer) -> Option<RoadVec3> {
+    endpoint_layer_boundary_world(mouth, layer, layer.inner_boundary_index)
+}
+
+fn endpoint_layer_outer_world(mouth: &NodeInputMouth, layer: &BendCornerLayer) -> Option<RoadVec3> {
+    endpoint_layer_boundary_world(mouth, layer, layer.outer_boundary_index)
+}
+
+fn endpoint_layer_boundary_world(
+    mouth: &NodeInputMouth,
+    layer: &BendCornerLayer,
+    boundary_index: usize,
+) -> Option<RoadVec3> {
+    let interval = mouth.band_intervals.get(layer.band_index)?;
+    if boundary_index == layer.band_index {
+        Some(interval.endpoint_start_world)
+    } else if boundary_index == layer.band_index + 1 {
+        Some(interval.endpoint_end_world)
+    } else {
+        endpoint_boundary_world(mouth, boundary_index)
+    }
 }
 
 fn line_intersection_xz(
@@ -2118,8 +2102,20 @@ fn push_terminal_curb_end_bands(
         end_bands,
         center_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index, outward, 0.0),
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
+        offset_endpoint_boundary_point_with_height(
+            &mouth.endpoint_profile,
+            left_band_index,
+            outward,
+            0.0,
+            curb_height_m,
+        ),
+        offset_endpoint_boundary_point_with_height(
+            &mouth.endpoint_profile,
+            left_band_index + 1,
+            outward,
+            0.0,
+            curb_height_m,
+        ),
         offset_endpoint_boundary_point(
             &mouth.endpoint_profile,
             left_band_index,
@@ -2144,15 +2140,27 @@ fn push_terminal_curb_end_bands(
         right_band_index,
         0.0,
         outer_offset_m,
-        None,
+        Some((curb_height_m, curb_height_m)),
         Some((curb_height_m, curb_height_m)),
     );
     push_terminal_end_band(
         end_bands,
         center_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index + 1, outward, 0.0),
+        offset_endpoint_boundary_point_with_height(
+            &mouth.endpoint_profile,
+            right_band_index,
+            outward,
+            0.0,
+            curb_height_m,
+        ),
+        offset_endpoint_boundary_point_with_height(
+            &mouth.endpoint_profile,
+            right_band_index + 1,
+            outward,
+            0.0,
+            curb_height_m,
+        ),
         offset_endpoint_boundary_point_with_height(
             &mouth.endpoint_profile,
             right_band_index,

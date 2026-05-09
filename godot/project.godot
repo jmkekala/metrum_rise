@@ -19,6 +19,7 @@ window/stretch/mode="disabled"
 
 [rendering]
 
-environment/defaults/default_clear_color=Color(0.75, 0.08, 0.45, 1)
+environment/defaults/default_clear_color=Color(0.53, 0.74, 0.92, 1)
+environment/defaults/default_environment="res://default_environment.tres"
 renderer/rendering_method="forward_plus"
 textures/vram_compression/import_etc2_astc=true

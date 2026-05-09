@@ -333,6 +333,108 @@ fn point_inside_visual_polygons(polygons: &[RoadSurfaceVisualPolygon], point: Ve
     })
 }
 
+fn overlay_contours_from_polygons(
+    polygons: &[RoadSurfaceVisualPolygon],
+) -> Vec<super::NodeOverlayContour> {
+    polygons
+        .iter()
+        .filter_map(|polygon| {
+            let contour = overlay_contour_from_world_points(&polygon.points_world);
+            (contour.len() >= 3).then_some(contour)
+        })
+        .collect()
+}
+
+fn overlay_contour_from_world_points(points: &[Vector3]) -> super::NodeOverlayContour {
+    let mut contour = Vec::with_capacity(points.len());
+    for point in points {
+        let overlay_point = super::backend::road_vec2_to_overlay_point(
+            super::backend::godot_vec3_xz_to_road(*point),
+        );
+        if contour.last().is_none_or(|last| *last != overlay_point) {
+            contour.push(overlay_point);
+        }
+    }
+    if contour.len() >= 2 && contour.first() == contour.last() {
+        contour.pop();
+    }
+    contour
+}
+
+fn overlay_contours_from_top_polygons<'a>(
+    polygons: impl IntoIterator<Item = &'a RoadSurfaceVisualPolygon>,
+) -> Vec<super::NodeOverlayContour> {
+    let mut contours = Vec::new();
+    for polygon in polygons {
+        if polygon.triangles_world.is_empty() {
+            let contour = overlay_contour_from_world_points(&polygon.points_world);
+            if contour.len() >= 3 {
+                contours.push(contour);
+            }
+            continue;
+        }
+        for triangle in &polygon.triangles_world {
+            let contour = overlay_contour_from_world_points(triangle);
+            if contour.len() >= 3 {
+                contours.push(contour);
+            }
+        }
+    }
+    contours
+}
+
+fn overlay_area_m2(shapes: &super::NodeOverlayShapes) -> f32 {
+    shapes
+        .iter()
+        .map(RoadSurfaceSystem::overlay_shape_area_m2)
+        .sum()
+}
+
+fn node_top_coverage_areas_m2(piece: &RoadSurfaceVisualNodePiece) -> (f32, f32, f32) {
+    let footprint_contours = overlay_contours_from_polygons(&piece.outer_boundary_loops);
+    let footprint_shapes = RoadSurfaceSystem::overlay_union_contours(&footprint_contours)
+        .expect("node footprint overlay union should succeed");
+    let top_contours = overlay_contours_from_top_polygons(
+        piece
+            .road_surface_polygons
+            .iter()
+            .chain(piece.curb_surface_polygons.iter())
+            .chain(piece.sidewalk_surface_polygons.iter()),
+    );
+    let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
+        .expect("node top overlay union should succeed");
+    let missing_shapes = RoadSurfaceSystem::overlay_binary_shapes(
+        &footprint_shapes,
+        &top_shapes,
+        OverlayRule::Difference,
+    )
+    .expect("node footprint/top difference should succeed");
+    let extra_shapes = RoadSurfaceSystem::overlay_binary_shapes(
+        &top_shapes,
+        &footprint_shapes,
+        OverlayRule::Difference,
+    )
+    .expect("node top/footprint difference should succeed");
+    let budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&footprint_shapes)
+        .max(RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(
+            &top_shapes,
+        ));
+    (
+        overlay_area_m2(&missing_shapes),
+        overlay_area_m2(&extra_shapes),
+        budget_m2,
+    )
+}
+
+fn assert_node_top_covers_footprint(piece: &RoadSurfaceVisualNodePiece) {
+    let (missing_area_m2, extra_area_m2, budget_m2) = node_top_coverage_areas_m2(piece);
+    assert!(
+        missing_area_m2 <= budget_m2 && extra_area_m2 <= budget_m2,
+        "node top surfaces must exactly cover the canonical footprint; kind={:?} missing_area={missing_area_m2:.6} extra_area={extra_area_m2:.6} budget={budget_m2:.6}",
+        piece.kind
+    );
+}
+
 fn assert_material_triangles_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
     for non_road_region in piece
         .owned_regions
@@ -998,6 +1100,7 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     assert!(!terminal_piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(terminal_piece);
     assert_outer_boundary_vertices_match_visible_top(terminal_piece);
+    assert_node_top_covers_footprint(terminal_piece);
     assert!(
         terminal_piece
             .road_surface_polygons
@@ -1333,6 +1436,47 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
 }
 
 #[test]
+fn logged_oblique_terminal_top_surfaces_cover_footprint() {
+    let terrain = flat_terrain(256, 256);
+    let points = road_points_from_json(
+        "[[56.267,0.0,-24.078],[57.235,0.0,-24.012],[58.162,0.0,-23.950],\
+        [59.047,0.0,-23.890],[59.889,0.0,-23.833],[60.687,0.0,-23.779],\
+        [61.440,0.0,-23.728],[62.147,0.0,-23.680],[62.808,0.0,-23.635],\
+        [63.421,0.0,-23.594],[63.985,0.0,-23.556],[64.501,0.0,-23.521],\
+        [65.379,0.0,-23.462],[66.049,0.0,-23.416],[66.762,0.0,-23.368]]",
+    );
+    let start_point = points[0];
+    let end_point = *points.last().unwrap();
+
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(start_point, NodeType::Junction);
+    let end = graph.add_node(end_point, NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    for node_id in [start, end] {
+        let terminal_piece = surface
+            .compiled_visual_node_pieces()
+            .get(&node_id)
+            .expect("logged oblique road endpoint should compile a terminal piece");
+        assert_eq!(
+            terminal_piece.kind,
+            RoadSurfaceVisualNodePieceKind::Terminal
+        );
+        assert_node_top_covers_footprint(terminal_piece);
+    }
+}
+
+#[test]
 fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
@@ -1446,6 +1590,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     assert!(!span_piece.outer_boundary_loops.is_empty());
     assert!(!span_piece.road_surface_polygons.is_empty());
     assert!(!span_piece.curb_surface_polygons.is_empty());
+    assert!(!span_piece.curb_vertical_face_polygons.is_empty());
     assert!(!span_piece.sidewalk_surface_polygons.is_empty());
     assert!(
         span_piece
@@ -1458,6 +1603,22 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             .curb_surface_polygons
             .iter()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+    );
+    assert!(
+        span_piece.curb_surface_polygons.iter().all(|polygon| {
+            polygon.triangles_world.iter().all(|triangle| {
+                let min_y = triangle[0].y.min(triangle[1].y).min(triangle[2].y);
+                let max_y = triangle[0].y.max(triangle[1].y).max(triangle[2].y);
+                max_y - min_y <= 0.001
+            })
+        }),
+        "curb top surface must be flat; vertical drop belongs to explicit curb faces"
+    );
+    assert!(
+        span_piece
+            .curb_vertical_face_polygons
+            .iter()
+            .all(|polygon| !RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );
     assert!(
         span_piece

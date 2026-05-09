@@ -81,6 +81,9 @@ pub(super) fn emit_compiled_surface_mesh(
         for polygon in &piece.curb_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
         }
+        for polygon in &piece.curb_vertical_face_polygons {
+            emit_vertical_surface_polygon(mesh, polygon, curb_color());
+        }
         for polygon in &piece.sidewalk_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
         }
@@ -110,6 +113,9 @@ pub(super) fn emit_compiled_surface_mesh(
         };
         for polygon in &piece.curb_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
+        }
+        for polygon in &piece.curb_vertical_face_polygons {
+            emit_vertical_surface_polygon(mesh, polygon, curb_color());
         }
         for polygon in &piece.sidewalk_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
@@ -436,6 +442,53 @@ fn emit_surface_polygon(
     }
 }
 
+fn emit_vertical_surface_polygon(
+    mesh: &mut NetworkMeshData,
+    polygon: &RoadSurfaceVisualPolygon,
+    color: Color,
+) {
+    let [upper_start, lower_start, lower_end, upper_end] = polygon.points_world.as_slice() else {
+        return;
+    };
+
+    let lower_render_z_bias_m = render_z_bias_for_layer(MeshLayer::Road);
+    let upper_render_z_bias_m = render_z_bias_for_layer(MeshLayer::Curb);
+    let vertices = [
+        apply_render_z_bias(*upper_start, upper_render_z_bias_m),
+        apply_render_z_bias(*lower_start, lower_render_z_bias_m),
+        apply_render_z_bias(*lower_end, lower_render_z_bias_m),
+        apply_render_z_bias(*upper_end, upper_render_z_bias_m),
+    ];
+    let uvs = [
+        Vector2::ZERO,
+        Vector2::new(1.0, 0.0),
+        Vector2::new(1.0, 1.0),
+        Vector2::new(0.0, 1.0),
+    ];
+
+    for (triangle, triangle_uvs) in [
+        (
+            [vertices[0], vertices[1], vertices[2]],
+            [uvs[0], uvs[1], uvs[2]],
+        ),
+        (
+            [vertices[0], vertices[2], vertices[3]],
+            [uvs[0], uvs[2], uvs[3]],
+        ),
+    ] {
+        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+            continue;
+        }
+        super::push_triangle_preserving_winding(
+            mesh,
+            MeshLayer::CurbVertical,
+            triangle,
+            triangle_uvs,
+            color,
+        );
+    }
+}
+
 fn apply_render_z_bias(point: Vector3, render_z_bias_m: f32) -> Vector3 {
     Vector3::new(point.x, point.y + render_z_bias_m, point.z)
 }
@@ -444,6 +497,7 @@ fn render_z_bias_for_layer(layer: MeshLayer) -> f32 {
     match layer {
         MeshLayer::Earthwork => EARTHWORK_RENDER_Z_BIAS_M,
         MeshLayer::Curb => SIDEWALK_RENDER_Z_BIAS_M,
+        MeshLayer::CurbVertical => 0.0,
         MeshLayer::Sidewalk => SIDEWALK_RENDER_Z_BIAS_M,
         MeshLayer::Road => ROAD_RENDER_SURFACE_Z_BIAS_M,
         MeshLayer::Marking | MeshLayer::Concrete => 0.0,

@@ -158,6 +158,8 @@ pub struct RoadSurfaceVisualNodePiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit curb / shoulder-owned polygons for the node piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit vertical curb faces at asphalt / curb material contacts.
+    pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     owned_regions: Vec<NodeOwnedRegion>,
@@ -178,6 +180,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit curb / shoulder-owned polygons for the span piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit vertical curb faces at asphalt / curb material contacts.
+    pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the span piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     edge_class: EdgeClass,
@@ -332,6 +336,7 @@ struct NodeSurfaceRegionResult {
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     owned_regions: Vec<NodeOwnedRegion>,
 }

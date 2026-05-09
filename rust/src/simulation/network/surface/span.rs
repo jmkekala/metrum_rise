@@ -28,8 +28,12 @@ impl RoadSurfaceSystem {
         let sections = self.compiled_sections.get(&edge_idx)?;
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
-        let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
-            self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
+        let (
+            mut road_surface_polygons,
+            mut curb_surface_polygons,
+            mut curb_vertical_face_polygons,
+            mut sidewalk_surface_polygons,
+        ) = self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
 
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
@@ -40,6 +44,7 @@ impl RoadSurfaceSystem {
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
+        Self::sort_visual_polygons(&mut curb_vertical_face_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         let outer_boundary_loops = Self::build_span_outer_boundary_loops(sections, &visible_ranges);
         if outer_boundary_loops.is_empty() {
@@ -52,6 +57,7 @@ impl RoadSurfaceSystem {
         let (
             mut clearance_road_surface_polygons,
             mut clearance_curb_surface_polygons,
+            _clearance_curb_vertical_face_polygons,
             mut clearance_sidewalk_surface_polygons,
         ) = self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
         Self::sort_visual_polygons(&mut clearance_road_surface_polygons);
@@ -76,6 +82,7 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
+            curb_vertical_face_polygons,
             sidewalk_surface_polygons,
             edge_class: edge.class,
             start_mouth_profile,
@@ -97,9 +104,11 @@ impl RoadSurfaceSystem {
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
     ) {
         let mut road_surface_polygons = Vec::new();
         let mut curb_surface_polygons = Vec::new();
+        let mut curb_vertical_face_polygons = Vec::new();
         let mut sidewalk_surface_polygons = Vec::new();
 
         for &(start_index, end_index) in ranges {
@@ -110,7 +119,9 @@ impl RoadSurfaceSystem {
                 if pair[0].bands.len() != pair[1].bands.len() {
                     continue;
                 }
-                for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
+                for (band_index, (band_a, band_b)) in
+                    pair[0].bands.iter().zip(&pair[1].bands).enumerate()
+                {
                     let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
                     let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
                     if width_a <= BAND_WIDTH_MATCH_EPSILON_M
@@ -153,6 +164,11 @@ impl RoadSurfaceSystem {
                             RoadSurfaceBandKind::CurbOrShoulder,
                         ) => {
                             curb_surface_polygons.push(polygon);
+                            if let Some(face) =
+                                Self::curb_vertical_face_polygon_for_section_pair(pair, band_index)
+                            {
+                                curb_vertical_face_polygons.push(face);
+                            }
                         }
                         _ => {
                             sidewalk_surface_polygons.push(polygon);
@@ -165,8 +181,47 @@ impl RoadSurfaceSystem {
         (
             road_surface_polygons,
             curb_surface_polygons,
+            curb_vertical_face_polygons,
             sidewalk_surface_polygons,
         )
+    }
+
+    fn curb_vertical_face_polygon_for_section_pair(
+        pair: &[RoadSurfaceSection],
+        band_index: usize,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        if pair.len() != 2 {
+            return None;
+        }
+        let (lateral_a, asphalt_lateral_a, lower_height_a, raised_height_a) =
+            curb_asphalt_boundary(&pair[0], band_index)?;
+        let (lateral_b, asphalt_lateral_b, lower_height_b, raised_height_b) =
+            curb_asphalt_boundary(&pair[1], band_index)?;
+        if (raised_height_a - lower_height_a).abs() <= BAND_WIDTH_MATCH_EPSILON_M
+            && (raised_height_b - lower_height_b).abs() <= BAND_WIDTH_MATCH_EPSILON_M
+        {
+            return None;
+        }
+
+        let mut points = [
+            Self::section_boundary_world_point_static(&pair[0], lateral_a, raised_height_a),
+            Self::section_boundary_world_point_static(&pair[0], lateral_a, lower_height_a),
+            Self::section_boundary_world_point_static(&pair[1], lateral_b, lower_height_b),
+            Self::section_boundary_world_point_static(&pair[1], lateral_b, raised_height_b),
+        ];
+        let asphalt_direction_a = pair[0].lateral_xz * (asphalt_lateral_a - lateral_a);
+        let asphalt_direction_b = pair[1].lateral_xz * (asphalt_lateral_b - lateral_b);
+        let asphalt_direction = Vector3::new(
+            asphalt_direction_a.x + asphalt_direction_b.x,
+            0.0,
+            asphalt_direction_a.y + asphalt_direction_b.y,
+        );
+        let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+        if face_normal.dot(asphalt_direction) > 0.0 {
+            points = [points[3], points[2], points[1], points[0]];
+        }
+
+        Self::make_vertical_quad_polygon(points)
     }
 
     fn build_span_outer_boundary_loops(
@@ -411,4 +466,44 @@ fn matching_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Opt
     loop_points.iter().copied().find(|candidate| {
         (*candidate - point).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
     })
+}
+
+fn curb_asphalt_boundary(
+    section: &RoadSurfaceSection,
+    band_index: usize,
+) -> Option<(f32, f32, f32, f32)> {
+    let band = section.bands.get(band_index)?;
+    if band.kind != RoadSurfaceBandKind::CurbOrShoulder {
+        return None;
+    }
+
+    if let Some(previous) = band_index
+        .checked_sub(1)
+        .and_then(|index| section.bands.get(index))
+        && previous.kind == RoadSurfaceBandKind::Carriageway
+        && (previous.lateral_end_m - band.lateral_start_m).abs() <= BAND_WIDTH_MATCH_EPSILON_M
+    {
+        let asphalt_lateral_m = (previous.lateral_start_m + previous.lateral_end_m) * 0.5;
+        return Some((
+            band.lateral_start_m,
+            asphalt_lateral_m,
+            previous.height_end_m,
+            band.height_start_m,
+        ));
+    }
+
+    if let Some(next) = section.bands.get(band_index + 1)
+        && next.kind == RoadSurfaceBandKind::Carriageway
+        && (band.lateral_end_m - next.lateral_start_m).abs() <= BAND_WIDTH_MATCH_EPSILON_M
+    {
+        let asphalt_lateral_m = (next.lateral_start_m + next.lateral_end_m) * 0.5;
+        return Some((
+            band.lateral_end_m,
+            asphalt_lateral_m,
+            next.height_start_m,
+            band.height_end_m,
+        ));
+    }
+
+    None
 }

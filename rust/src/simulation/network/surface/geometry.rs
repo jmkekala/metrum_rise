@@ -108,6 +108,29 @@ impl RoadSurfaceSystem {
         })
     }
 
+    pub(super) fn make_vertical_quad_polygon(
+        points_world: [Vector3; 4],
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        let front = [
+            [points_world[0], points_world[1], points_world[2]],
+            [points_world[0], points_world[2], points_world[3]],
+        ];
+        if front.iter().all(|triangle| {
+            (triangle[1] - triangle[0])
+                .cross(triangle[2] - triangle[0])
+                .length()
+                <= SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2
+        }) {
+            return None;
+        }
+
+        let triangles_world = vec![front[0], front[1]];
+        Some(RoadSurfaceVisualPolygon {
+            points_world: points_world.into_iter().collect(),
+            triangles_world,
+        })
+    }
+
     fn triangulate_fan_polygon_xz(points_world: &[Vector3]) -> Option<Vec<[Vector3; 3]>> {
         if points_world.len() < 3 {
             return None;

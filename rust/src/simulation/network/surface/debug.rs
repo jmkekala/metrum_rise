@@ -452,6 +452,13 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"curb_topology\": ");
         Self::append_polygon_collection_debug_literal(dump, terrain, &piece.curb_surface_polygons);
         dump.push_str(",\n");
+        dump.push_str("      \"curb_vertical_face_topology\": ");
+        Self::append_polygon_collection_debug_literal(
+            dump,
+            terrain,
+            &piece.curb_vertical_face_polygons,
+        );
+        dump.push_str(",\n");
         dump.push_str("      \"sidewalk_topology\": ");
         Self::append_polygon_collection_debug_literal(
             dump,

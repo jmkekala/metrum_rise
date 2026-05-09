@@ -965,8 +965,35 @@ fn clean_canonical_owned_region_shapes(
             });
         }
     }
+    canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
+    for region in &mut cleaned_regions {
+        region.seam_constraints =
+            seam_constraints_for_shape(&region.shape, region.owner, rail_constraints);
+    }
     *regions = cleaned_regions;
     Ok(())
+}
+
+fn canonicalize_owned_region_rings_with_rail_constraints(
+    regions: &mut [NodeBooleanOwnedRegion],
+    rail_constraints: &[NodeRailConstraint],
+) {
+    let mut constraint_points = rail_constraints
+        .iter()
+        .flat_map(|constraint| constraint.points_xz.iter().copied())
+        .map(road_point_key)
+        .collect::<Vec<_>>();
+    constraint_points.sort_unstable();
+    constraint_points.dedup();
+    if constraint_points.is_empty() {
+        return;
+    }
+
+    for region in regions {
+        for contour in &mut region.shape {
+            *contour = noded_owned_region_contour(contour, &constraint_points);
+        }
+    }
 }
 
 fn split_self_touching_owned_shape(shape: NodeOverlayShape) -> Vec<NodeOverlayShape> {
@@ -1270,7 +1297,6 @@ fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool 
         constraint.kind,
         NodeRailConstraintKind::SpanHandoff { .. }
             | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::AsphaltCurbContact
             | NodeRailConstraintKind::CurbSidewalkContact
     )
 }

@@ -20,6 +20,7 @@ pub(super) const MARKING_WIDTH: f32 = 0.16;
 pub(super) enum MeshLayer {
     Earthwork,
     Curb,
+    CurbVertical,
     Sidewalk,
     Road,
     Marking,
@@ -112,6 +113,16 @@ pub(super) fn push_triangle(
         uvs.swap(1, 2);
     }
 
+    push_triangle_preserving_winding(mesh, layer, vertices, uvs, color);
+}
+
+pub(super) fn push_triangle_preserving_winding(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+) {
     let mut normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
     if normal.length_squared() <= 1e-8 {
         normal = Vector3::UP;
@@ -134,6 +145,12 @@ pub(super) fn push_triangle(
             &mut mesh.curb_normals,
             &mut mesh.curb_uvs,
             &mut mesh.curb_colors,
+        ),
+        MeshLayer::CurbVertical => (
+            &mut mesh.curb_vertical_vertices,
+            &mut mesh.curb_vertical_normals,
+            &mut mesh.curb_vertical_uvs,
+            &mut mesh.curb_vertical_colors,
         ),
         MeshLayer::Sidewalk => (
             &mut mesh.sidewalk_vertices,

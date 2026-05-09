@@ -1,4 +1,4 @@
-[gd_scene load_steps=4 format=3 uid="uid://c8n6j7m8x4y2"]
+[gd_scene load_steps=5 format=3 uid="uid://c8n6j7m8x4y2"]
 
 [ext_resource type="Script" path="res://scripts/core/main_scene.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/renderers/terrain.gd" id="1_terrain"]
@@ -13,11 +13,13 @@
 [ext_resource type="Script" path="res://scripts/core/input_manager.gd" id="9_input"]
 [ext_resource type="Script" path="res://scripts/ui/main_ui.gd" id="10_ui"]
 [ext_resource type="Script" path="res://scripts/renderers/network_renderer.gd" id="11_netrender"]
+[ext_resource type="Environment" path="res://default_environment.tres" id="13_env"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("13_env")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75, -0.433013, 0, 0, 0)

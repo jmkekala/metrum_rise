@@ -17,6 +17,7 @@ mod tests {
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use crate::simulation::terrain::TerrainSystem;
     use godot::prelude::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum VisibleSurface {
@@ -25,6 +26,60 @@ mod tests {
         Curb,
         Sidewalk,
         CurbOrSidewalk,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct RenderVertexKey {
+        x_bits: u32,
+        y_bits: u32,
+        z_bits: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct RenderEdgeKey {
+        start: RenderVertexKey,
+        end: RenderVertexKey,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CurbFaceRegion {
+        LeftSpan,
+        RightSpan,
+        StartTerminalCap,
+        EndTerminalCap,
+    }
+
+    impl RenderVertexKey {
+        fn from_point(point: Vector3) -> Self {
+            Self {
+                x_bits: canonical_f32_bits(point.x),
+                y_bits: canonical_f32_bits(point.y),
+                z_bits: canonical_f32_bits(point.z),
+            }
+        }
+    }
+
+    impl RenderEdgeKey {
+        fn new(start: Vector3, end: Vector3) -> Self {
+            let start = RenderVertexKey::from_point(start);
+            let end = RenderVertexKey::from_point(end);
+            if end < start {
+                Self {
+                    start: end,
+                    end: start,
+                }
+            } else {
+                Self { start, end }
+            }
+        }
+    }
+
+    fn canonical_f32_bits(value: f32) -> u32 {
+        if value == 0.0 {
+            0.0_f32.to_bits()
+        } else {
+            value.to_bits()
+        }
     }
 
     fn create_test_edge(n1: u32, n2: u32, p1: Vector3, p2: Vector3, width: f32) -> Edge {
@@ -119,6 +174,11 @@ mod tests {
 
         validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
         validate_triangles(&mesh_data.curb_vertices, max_dist, "curb");
+        validate_triangles(
+            &mesh_data.curb_vertical_vertices,
+            max_dist,
+            "curb_vertical",
+        );
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
@@ -126,13 +186,17 @@ mod tests {
     }
 
     fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {
-        match surface {
+        let triangles = match surface {
             VisibleSurface::Road => triangles_from_vertices(&mesh_data.road_vertices),
             VisibleSurface::Curb => triangles_from_vertices(&mesh_data.curb_vertices),
             VisibleSurface::Sidewalk => triangles_from_vertices(&mesh_data.sidewalk_vertices),
             VisibleSurface::CurbOrSidewalk => Vec::new(),
             VisibleSurface::None => Vec::new(),
-        }
+        };
+        triangles
+            .into_iter()
+            .filter(|triangle| triangle_projected_double_area(*triangle).abs() >= 0.001)
+            .collect()
     }
 
     fn triangles_from_vertices(vertices: &[Vector3]) -> Vec<[Vector3; 3]> {
@@ -140,6 +204,130 @@ mod tests {
             .chunks_exact(3)
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect()
+    }
+
+    fn triangle_projected_double_area(triangle: [Vector3; 3]) -> f32 {
+        let [a, b, c] = triangle;
+        (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
+    }
+
+    fn triangle_y_delta(triangle: [Vector3; 3]) -> f32 {
+        let [a, b, c] = triangle;
+        let min_y = a.y.min(b.y).min(c.y);
+        let max_y = a.y.max(b.y).max(c.y);
+        max_y - min_y
+    }
+
+    fn triangle_edges(triangle: [Vector3; 3]) -> [[Vector3; 2]; 3] {
+        [
+            [triangle[0], triangle[1]],
+            [triangle[1], triangle[2]],
+            [triangle[2], triangle[0]],
+        ]
+    }
+
+    fn top_surface_boundary_edges(vertices: &[Vector3]) -> BTreeSet<RenderEdgeKey> {
+        let mut edge_counts = BTreeMap::new();
+        for triangle in triangles_from_vertices(vertices) {
+            if triangle_projected_double_area(triangle).abs() < 0.001 {
+                continue;
+            }
+            for [start, end] in triangle_edges(triangle) {
+                *edge_counts
+                    .entry(RenderEdgeKey::new(start, end))
+                    .or_insert(0usize) += 1;
+            }
+        }
+
+        edge_counts
+            .into_iter()
+            .filter_map(|(edge, count)| (count == 1).then_some(edge))
+            .collect()
+    }
+
+    fn top_surface_boundary_segments(vertices: &[Vector3]) -> Vec<[Vector3; 2]> {
+        let mut edge_counts = BTreeMap::new();
+        let mut edge_segments = BTreeMap::new();
+        for triangle in triangles_from_vertices(vertices) {
+            if triangle_projected_double_area(triangle).abs() < 0.001 {
+                continue;
+            }
+            for [start, end] in triangle_edges(triangle) {
+                let edge = RenderEdgeKey::new(start, end);
+                *edge_counts.entry(edge).or_insert(0usize) += 1;
+                edge_segments.entry(edge).or_insert([start, end]);
+            }
+        }
+
+        edge_counts
+            .into_iter()
+            .filter_map(|(edge, count)| (count == 1).then(|| edge_segments[&edge]))
+            .collect()
+    }
+
+    fn nearby_boundary_edges_debug(target: [Vector3; 2], segments: &[[Vector3; 2]]) -> String {
+        let target_midpoint = (target[0] + target[1]) / 2.0;
+        let mut nearby = segments
+            .iter()
+            .copied()
+            .map(|segment| {
+                let midpoint = (segment[0] + segment[1]) / 2.0;
+                (
+                    (midpoint - target_midpoint).length_squared(),
+                    segment[0],
+                    segment[1],
+                )
+            })
+            .collect::<Vec<_>>();
+        nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
+        nearby
+            .into_iter()
+            .take(4)
+            .map(|(_, start, end)| format!("[{start:?}, {end:?}]"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn vertical_curb_face_horizontal_edges(vertices: &[Vector3]) -> Vec<[Vector3; 2]> {
+        let mut edges = Vec::new();
+        for triangle in triangles_from_vertices(vertices) {
+            if triangle_projected_double_area(triangle).abs() >= 0.001
+                || triangle_y_delta(triangle) < 0.05
+            {
+                continue;
+            }
+            for [start, end] in triangle_edges(triangle) {
+                let xz_length = Vector2::new(end.x - start.x, end.z - start.z).length();
+                if xz_length >= 0.001 && (end.y - start.y).abs() <= 0.001 {
+                    edges.push([start, end]);
+                }
+            }
+        }
+        edges
+    }
+
+    fn curb_face_region(edge: [Vector3; 2]) -> Option<CurbFaceRegion> {
+        let midpoint = (edge[0] + edge[1]) / 2.0;
+        if midpoint.x.abs() < 12.0 && (midpoint.z + 5.0).abs() <= 0.2 {
+            Some(CurbFaceRegion::LeftSpan)
+        } else if midpoint.x.abs() < 12.0 && (midpoint.z - 5.0).abs() <= 0.2 {
+            Some(CurbFaceRegion::RightSpan)
+        } else if (midpoint.x + 20.0).abs() <= 0.2 && midpoint.z.abs() <= 4.9 {
+            Some(CurbFaceRegion::StartTerminalCap)
+        } else if (midpoint.x - 20.0).abs() <= 0.2 && midpoint.z.abs() <= 4.9 {
+            Some(CurbFaceRegion::EndTerminalCap)
+        } else {
+            None
+        }
+    }
+
+    fn triangle_normal(triangle: [Vector3; 3]) -> Vector3 {
+        let [a, b, c] = triangle;
+        (b - a).cross(c - a)
+    }
+
+    fn godot_cull_back_visible_direction(triangle: [Vector3; 3]) -> Vector3 {
+        -triangle_normal(triangle)
     }
 
     fn triangle_contains_point_xz(triangle: [Vector3; 3], point: Vector2) -> bool {
@@ -607,6 +795,155 @@ mod tests {
         assert!(
             (sidewalk_clearance - 0.12).abs() <= 0.001,
             "expected compiled sidewalk surface to use solved raised height, got clearance={sidewalk_clearance:.4}"
+        );
+    }
+
+    #[test]
+    fn test_curb_mesh_has_flat_top_and_explicit_vertical_face() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-20.0, 0.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 60.0);
+
+        let mut flat_top_triangles = 0usize;
+        let mut vertical_face_triangles = 0usize;
+        let mut asphalt_facing_left_curb_triangles = 0usize;
+        let mut asphalt_facing_right_curb_triangles = 0usize;
+        let mut asphalt_facing_start_cap_triangles = 0usize;
+        let mut asphalt_facing_end_cap_triangles = 0usize;
+        for triangle in triangles_from_vertices(&mesh_data.curb_vertices) {
+            let projected_area = triangle_projected_double_area(triangle).abs();
+            let y_delta = triangle_y_delta(triangle);
+            assert!(
+                projected_area >= 0.001,
+                "curb top bucket must not contain vertical faces; triangle={triangle:?}"
+            );
+            assert!(
+                y_delta <= 0.001,
+                "curb top triangles must be flat; triangle={triangle:?}"
+            );
+            flat_top_triangles += 1;
+        }
+
+        for triangle in triangles_from_vertices(&mesh_data.curb_vertical_vertices) {
+            let projected_area = triangle_projected_double_area(triangle).abs();
+            let y_delta = triangle_y_delta(triangle);
+            assert!(
+                projected_area < 0.001 && y_delta >= 0.05,
+                "curb vertical bucket must contain only vertical faces; triangle={triangle:?}"
+            );
+            let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            let visible_direction = godot_cull_back_visible_direction(triangle);
+            if centroid.x.abs() < 12.0 && (centroid.z + 5.0).abs() <= 0.2 {
+                assert!(
+                    visible_direction.z > 0.0,
+                    "left curb face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                asphalt_facing_left_curb_triangles += 1;
+            } else if centroid.x.abs() < 12.0 && (centroid.z - 5.0).abs() <= 0.2 {
+                assert!(
+                    visible_direction.z < 0.0,
+                    "right curb face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                asphalt_facing_right_curb_triangles += 1;
+            } else if (centroid.x + 20.0).abs() <= 0.2 && centroid.z.abs() <= 4.9 {
+                assert!(
+                    visible_direction.x > 0.0,
+                    "start terminal curb cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                asphalt_facing_start_cap_triangles += 1;
+            } else if (centroid.x - 20.0).abs() <= 0.2 && centroid.z.abs() <= 4.9 {
+                assert!(
+                    visible_direction.x < 0.0,
+                    "end terminal curb cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                asphalt_facing_end_cap_triangles += 1;
+            }
+            vertical_face_triangles += 1;
+        }
+
+        let road_boundary_edges = top_surface_boundary_edges(&mesh_data.road_vertices);
+        let curb_top_boundary_edges = top_surface_boundary_edges(&mesh_data.curb_vertices);
+        let road_boundary_segments = top_surface_boundary_segments(&mesh_data.road_vertices);
+        let curb_top_boundary_segments = top_surface_boundary_segments(&mesh_data.curb_vertices);
+        let mut left_span_lower_edges = 0usize;
+        let mut left_span_upper_edges = 0usize;
+        let mut right_span_lower_edges = 0usize;
+        let mut right_span_upper_edges = 0usize;
+        let mut start_cap_lower_edges = 0usize;
+        let mut start_cap_upper_edges = 0usize;
+        let mut end_cap_lower_edges = 0usize;
+        let mut end_cap_upper_edges = 0usize;
+
+        for edge in vertical_curb_face_horizontal_edges(&mesh_data.curb_vertical_vertices) {
+            let edge_key = RenderEdgeKey::new(edge[0], edge[1]);
+            let matches_road = road_boundary_edges.contains(&edge_key);
+            let matches_curb_top = curb_top_boundary_edges.contains(&edge_key);
+            assert!(
+                matches_road ^ matches_curb_top,
+                "vertical curb face horizontal edge must exactly match one adjacent rendered top boundary edge; edge={edge:?} matches_road={matches_road} matches_curb_top={matches_curb_top} nearby_road=[{}] nearby_curb_top=[{}]",
+                nearby_boundary_edges_debug(edge, &road_boundary_segments),
+                nearby_boundary_edges_debug(edge, &curb_top_boundary_segments)
+            );
+
+            let Some(region) = curb_face_region(edge) else {
+                continue;
+            };
+            match (region, matches_road) {
+                (CurbFaceRegion::LeftSpan, true) => left_span_lower_edges += 1,
+                (CurbFaceRegion::LeftSpan, false) => left_span_upper_edges += 1,
+                (CurbFaceRegion::RightSpan, true) => right_span_lower_edges += 1,
+                (CurbFaceRegion::RightSpan, false) => right_span_upper_edges += 1,
+                (CurbFaceRegion::StartTerminalCap, true) => start_cap_lower_edges += 1,
+                (CurbFaceRegion::StartTerminalCap, false) => start_cap_upper_edges += 1,
+                (CurbFaceRegion::EndTerminalCap, true) => end_cap_lower_edges += 1,
+                (CurbFaceRegion::EndTerminalCap, false) => end_cap_upper_edges += 1,
+            }
+        }
+
+        assert!(
+            flat_top_triangles > 0,
+            "curb mesh should include flat curb top triangles"
+        );
+        assert!(
+            vertical_face_triangles > 0,
+            "curb mesh should include explicit vertical curb face triangles"
+        );
+        assert!(
+            asphalt_facing_left_curb_triangles > 0 && asphalt_facing_right_curb_triangles > 0,
+            "span curb faces should be one-sided and front-facing from the asphalt side; left={asphalt_facing_left_curb_triangles} right={asphalt_facing_right_curb_triangles} vertical={vertical_face_triangles}"
+        );
+        assert!(
+            asphalt_facing_start_cap_triangles > 0 && asphalt_facing_end_cap_triangles > 0,
+            "terminal curb caps should be one-sided and front-facing from the asphalt side; start={asphalt_facing_start_cap_triangles} end={asphalt_facing_end_cap_triangles} vertical={vertical_face_triangles}"
+        );
+        assert!(
+            left_span_lower_edges > 0
+                && left_span_upper_edges > 0
+                && right_span_lower_edges > 0
+                && right_span_upper_edges > 0,
+            "span curb face edges must close exactly against rendered asphalt and curb top boundaries; left_lower={left_span_lower_edges} left_upper={left_span_upper_edges} right_lower={right_span_lower_edges} right_upper={right_span_upper_edges}"
+        );
+        assert!(
+            start_cap_lower_edges > 0
+                && start_cap_upper_edges > 0
+                && end_cap_lower_edges > 0
+                && end_cap_upper_edges > 0,
+            "terminal curb cap face edges must close exactly against rendered asphalt and curb top boundaries; start_lower={start_cap_lower_edges} start_upper={start_cap_upper_edges} end_lower={end_cap_lower_edges} end_upper={end_cap_upper_edges}"
         );
     }
 

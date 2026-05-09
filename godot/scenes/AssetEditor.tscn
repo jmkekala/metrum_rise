@@ -1,11 +1,13 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/editors/asset_editor.gd" id="1_editor"]
+[ext_resource type="Environment" path="res://default_environment.tres" id="2_env"]
 
 [node name="AssetEditor" type="Node3D"]
 script = ExtResource("1_editor")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("2_env")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 50, 50)

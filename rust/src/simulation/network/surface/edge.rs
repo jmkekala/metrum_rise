@@ -348,7 +348,7 @@ impl RoadSurfaceSystem {
             lateral_start_m: -(half_carriageway + curb_width),
             lateral_end_m: -half_carriageway,
             height_start_m: sidewalk_height,
-            height_end_m: carriageway_height,
+            height_end_m: sidewalk_height,
         });
         bands.push(RoadSurfaceBand {
             kind: RoadSurfaceBandKind::Carriageway,
@@ -368,7 +368,7 @@ impl RoadSurfaceSystem {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: half_carriageway,
             lateral_end_m: half_carriageway + curb_width,
-            height_start_m: carriageway_height,
+            height_start_m: sidewalk_height,
             height_end_m: sidewalk_height,
         });
 

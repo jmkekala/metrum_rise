@@ -1,14 +1,16 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/editors/world_editor.gd" id="1_world_editor"]
 [ext_resource type="Script" path="res://scripts/renderers/terrain.gd" id="2_terrain"]
 [ext_resource type="Script" path="res://scripts/renderers/water.gd" id="3_water"]
 [ext_resource type="Script" path="res://scripts/editors/world_editor_camera_input.gd" id="4_camera_input"]
+[ext_resource type="Environment" path="res://default_environment.tres" id="5_env"]
 
 [node name="WorldEditor" type="Node3D"]
 script = ExtResource("1_world_editor")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("5_env")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75, -0.433013, 0, 0, 0)

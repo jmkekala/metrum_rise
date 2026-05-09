@@ -192,6 +192,14 @@ impl NodeArrangementKey {
         }
     }
 
+    pub(crate) fn x_key(self) -> i64 {
+        self.x_key
+    }
+
+    pub(crate) fn z_key(self) -> i64 {
+        self.z_key
+    }
+
     pub(crate) fn x_mm(self) -> i64 {
         ((self.x_key as f64 / NODE_ARRANGEMENT_KEY_SCALE) * NODE_ARRANGEMENT_MM_SCALE).round()
             as i64
@@ -848,6 +856,12 @@ impl NodeArrangementVertexId {
     }
 }
 
+impl NodeArrangementEdgeId {
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl NodeArrangementVertex {
     pub(crate) fn point_xz(&self) -> RoadVec2 {
         self.point_xz
@@ -879,6 +893,10 @@ impl NodeOwnedRegion {
         &self.holes
     }
 
+    pub(crate) fn boundary_edges(&self) -> &[NodeArrangementEdgeId] {
+        &self.boundary_edges
+    }
+
     pub(crate) fn area_m2(&self) -> f32 {
         self.area_m2
     }
@@ -903,6 +921,16 @@ impl NodeArrangementEdge {
 
     pub(crate) fn seam_source(&self) -> NodeSeamSource {
         self.seam_source
+    }
+
+    pub(crate) fn is_explicit_vertical_step(&self) -> bool {
+        self.is_material_transition
+            && !self.constrains_shared_height
+            && !self.source_constraint_indices.is_empty()
+            && matches!(self.seam_source, NodeSeamSource::AsphaltCurbContact { .. })
+            && self.opposite_owner.is_some_and(|opposite_owner| {
+                owners_form_asphalt_curb_pair(self.owner, opposite_owner)
+            })
     }
 }
 
@@ -1136,6 +1164,19 @@ fn owners_share_non_curb_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> 
 fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
     a.iter()
         .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
+}
+
+fn owners_form_asphalt_curb_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
+    matches!(
+        (a.kind, b.kind),
+        (
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::CurbOrShoulder
+        ) | (
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Carriageway
+        )
+    )
 }
 
 fn owner_sets_match_edge(

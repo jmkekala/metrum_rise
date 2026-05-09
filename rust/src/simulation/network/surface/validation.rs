@@ -198,6 +198,7 @@ struct HeightedTriangleEdge {
     region_index: usize,
     start_height_mm: i64,
     end_height_mm: i64,
+    explicit_vertical_step: bool,
 }
 
 impl RoadSurfaceSystem {
@@ -236,6 +237,7 @@ fn validate_cross_region_triangle_edge_heights(
                 if left.region_index == right.region_index
                     || (left.start_height_mm == right.start_height_mm
                         && left.end_height_mm == right.end_height_mm)
+                    || cross_region_edges_form_explicit_vertical_step(solution, left, right)
                 {
                     continue;
                 }
@@ -258,30 +260,108 @@ fn heighted_triangle_edge_for_indices(
     let start_height_mm = quantize_m(start.y);
     let end_height_mm = quantize_m(end.y);
     if start_key <= end_key {
+        let edge_key = NodeValidationEdgeKey {
+            start: start_key,
+            end: end_key,
+        };
         (
-            NodeValidationEdgeKey {
-                start: start_key,
-                end: end_key,
-            },
+            edge_key,
             HeightedTriangleEdge {
                 region_index,
                 start_height_mm,
                 end_height_mm,
+                explicit_vertical_step: edge_lies_on_explicit_vertical_step(region, edge_key),
             },
         )
     } else {
+        let edge_key = NodeValidationEdgeKey {
+            start: end_key,
+            end: start_key,
+        };
         (
-            NodeValidationEdgeKey {
-                start: end_key,
-                end: start_key,
-            },
+            edge_key,
             HeightedTriangleEdge {
                 region_index,
                 start_height_mm: end_height_mm,
                 end_height_mm: start_height_mm,
+                explicit_vertical_step: edge_lies_on_explicit_vertical_step(region, edge_key),
             },
         )
     }
+}
+
+fn cross_region_edges_form_explicit_vertical_step(
+    solution: &NodeTriangulationSolution,
+    left: HeightedTriangleEdge,
+    right: HeightedTriangleEdge,
+) -> bool {
+    left.explicit_vertical_step
+        && right.explicit_vertical_step
+        && solution
+            .regions
+            .get(left.region_index)
+            .zip(solution.regions.get(right.region_index))
+            .is_some_and(|(left_region, right_region)| {
+                matches!(
+                    (left_region.kind, right_region.kind),
+                    (
+                        RoadSurfaceBandKind::Carriageway,
+                        RoadSurfaceBandKind::CurbOrShoulder
+                    ) | (
+                        RoadSurfaceBandKind::CurbOrShoulder,
+                        RoadSurfaceBandKind::Carriageway
+                    )
+                )
+            })
+}
+
+fn edge_lies_on_explicit_vertical_step(
+    region: &NodeTriangulatedRegion,
+    edge: NodeValidationEdgeKey,
+) -> bool {
+    region
+        .explicit_vertical_step_constraints
+        .iter()
+        .any(|constraint| {
+            if constraint[0] >= region.vertices.len() || constraint[1] >= region.vertices.len() {
+                return false;
+            }
+            let start = point_key_from_world(region.vertices[constraint[0]].point_world);
+            let end = point_key_from_world(region.vertices[constraint[1]].point_world);
+            point_lies_on_validation_segment(edge.start, start, end)
+                && point_lies_on_validation_segment(edge.end, start, end)
+        })
+}
+
+fn point_lies_on_validation_segment(
+    point: NodeValidationPointKey,
+    start: NodeValidationPointKey,
+    end: NodeValidationPointKey,
+) -> bool {
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let inside_x = if start.x_key == end.x_key {
+        point.x_key == start.x_key
+    } else {
+        point.x_key > start.x_key.min(end.x_key) && point.x_key < start.x_key.max(end.x_key)
+    };
+    let inside_z = if start.z_key == end.z_key {
+        point.z_key == start.z_key
+    } else {
+        point.z_key > start.z_key.min(end.z_key) && point.z_key < start.z_key.max(end.z_key)
+    };
+    inside_x && inside_z
 }
 
 fn push_triangle_edge_height_conflict(
@@ -1759,6 +1839,7 @@ mod tests {
                 })
                 .collect(),
             boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
+            explicit_vertical_step_constraints: Vec::new(),
             triangles: vec![NodeTriangulatedTriangle {
                 vertices: [0, 1, 2],
             }],

@@ -1319,12 +1319,12 @@ mod tests {
     }
 
     #[test]
-    fn generic_contour_seams_reject_shared_height_disagreement() {
+    fn asphalt_curb_seams_allow_explicit_vertical_height_step() {
         let seam = manual_seam_constraint(
             3,
             NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
-            true,
             false,
+            true,
         );
         let regions = vec![
             manual_heighted_region_with_seams(
@@ -1343,10 +1343,8 @@ mod tests {
             ),
         ];
 
-        assert!(matches!(
-            validate_explicit_material_seam_heights(&regions),
-            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
-        ));
+        validate_explicit_material_seam_heights(&regions)
+            .expect("asphalt / curb contact is a vertical material step, not shared-height repair");
     }
 
     #[test]

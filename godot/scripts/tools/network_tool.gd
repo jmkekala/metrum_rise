@@ -49,7 +49,7 @@ func _setup_visuals():
 	blueprint_mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
 	blueprint_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
 	blueprint_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	blueprint_mat.no_depth_test = true
+	blueprint_mat.no_depth_test = false
 	blueprint_mat.render_priority = 5
 	blueprint_mesh.material_override = blueprint_mat
 	
@@ -274,6 +274,14 @@ func update_main_mesh():
 		_road_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"))
 		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
 		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
+
+	if _curb_mat == null:
+		_curb_mat = StandardMaterial3D.new()
+		_curb_mat.vertex_color_use_as_albedo = true
+		_curb_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_curb_mat.roughness = 1.0
+		_curb_mat.metallic = 0.0
+		_curb_mat.cull_mode = BaseMaterial3D.CULL_BACK
 	
 	if _marking_mat == null:
 		_marking_mat = StandardMaterial3D.new()
@@ -298,13 +306,6 @@ func update_main_mesh():
 		_earthwork_mat.metallic = 0.0
 		_earthwork_mat.cull_mode = BaseMaterial3D.CULL_BACK
 
-	if _curb_mat == null:
-		_curb_mat = StandardMaterial3D.new()
-		_curb_mat.vertex_color_use_as_albedo = true
-		_curb_mat.roughness = 1.0
-		_curb_mat.metallic = 0.0
-		_curb_mat.cull_mode = BaseMaterial3D.CULL_BACK
-
 	var arr_mesh = ArrayMesh.new()
 	var surface_map = [] # To keep track of which material goes to which surface
 	
@@ -327,6 +328,17 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_NORMAL] = data.curb_normals
 		arrays[Mesh.ARRAY_COLOR] = data.curb_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.curb_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_curb_mat)
+
+	# Explicit vertical curb faces between asphalt and raised curb / sidewalk
+	if data.has("curb_vertical_vertices") and data.curb_vertical_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.curb_vertical_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.curb_vertical_normals
+		arrays[Mesh.ARRAY_COLOR] = data.curb_vertical_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.curb_vertical_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_curb_mat)
 
