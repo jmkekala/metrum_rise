@@ -2,6 +2,7 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
+    NodeExplicitVerticalStepSegment,
 };
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 use super::height::NodeHeightFieldError;
@@ -198,7 +199,6 @@ struct HeightedTriangleEdge {
     region_index: usize,
     start_height_mm: i64,
     end_height_mm: i64,
-    explicit_vertical_step: bool,
 }
 
 impl RoadSurfaceSystem {
@@ -237,7 +237,9 @@ fn validate_cross_region_triangle_edge_heights(
                 if left.region_index == right.region_index
                     || (left.start_height_mm == right.start_height_mm
                         && left.end_height_mm == right.end_height_mm)
-                    || cross_region_edges_form_explicit_vertical_step(solution, left, right)
+                    || cross_region_edges_form_explicit_vertical_step(
+                        solution, edge_key, left, right,
+                    )
                 {
                     continue;
                 }
@@ -270,7 +272,6 @@ fn heighted_triangle_edge_for_indices(
                 region_index,
                 start_height_mm,
                 end_height_mm,
-                explicit_vertical_step: edge_lies_on_explicit_vertical_step(region, edge_key),
             },
         )
     } else {
@@ -284,7 +285,6 @@ fn heighted_triangle_edge_for_indices(
                 region_index,
                 start_height_mm: end_height_mm,
                 end_height_mm: start_height_mm,
-                explicit_vertical_step: edge_lies_on_explicit_vertical_step(region, edge_key),
             },
         )
     }
@@ -292,45 +292,55 @@ fn heighted_triangle_edge_for_indices(
 
 fn cross_region_edges_form_explicit_vertical_step(
     solution: &NodeTriangulationSolution,
+    edge: NodeValidationEdgeKey,
     left: HeightedTriangleEdge,
     right: HeightedTriangleEdge,
 ) -> bool {
-    left.explicit_vertical_step
-        && right.explicit_vertical_step
-        && solution
-            .regions
-            .get(left.region_index)
-            .zip(solution.regions.get(right.region_index))
-            .is_some_and(|(left_region, right_region)| {
-                matches!(
-                    (left_region.kind, right_region.kind),
-                    (
-                        RoadSurfaceBandKind::Carriageway,
-                        RoadSurfaceBandKind::CurbOrShoulder
-                    ) | (
-                        RoadSurfaceBandKind::CurbOrShoulder,
-                        RoadSurfaceBandKind::Carriageway
-                    )
+    solution
+        .regions
+        .get(left.region_index)
+        .zip(solution.regions.get(right.region_index))
+        .is_some_and(|(left_region, right_region)| {
+            matches!(
+                (left_region.kind, right_region.kind),
+                (
+                    RoadSurfaceBandKind::Carriageway,
+                    RoadSurfaceBandKind::CurbOrShoulder
+                ) | (
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    RoadSurfaceBandKind::Carriageway
                 )
-            })
+            ) && solution
+                .explicit_vertical_step_segments
+                .iter()
+                .copied()
+                .any(|segment| {
+                    explicit_vertical_step_owners_match_regions(
+                        segment,
+                        left_region.owner,
+                        right_region.owner,
+                    ) && edge_lies_on_explicit_vertical_step(segment, edge)
+                })
+        })
 }
 
 fn edge_lies_on_explicit_vertical_step(
-    region: &NodeTriangulatedRegion,
+    segment: NodeExplicitVerticalStepSegment,
     edge: NodeValidationEdgeKey,
 ) -> bool {
-    region
-        .explicit_vertical_step_constraints
-        .iter()
-        .any(|constraint| {
-            if constraint[0] >= region.vertices.len() || constraint[1] >= region.vertices.len() {
-                return false;
-            }
-            let start = point_key_from_world(region.vertices[constraint[0]].point_world);
-            let end = point_key_from_world(region.vertices[constraint[1]].point_world);
-            point_lies_on_validation_segment(edge.start, start, end)
-                && point_lies_on_validation_segment(edge.end, start, end)
-        })
+    let start = NodeValidationPointKey::from_arrangement_key(segment.start());
+    let end = NodeValidationPointKey::from_arrangement_key(segment.end());
+    point_lies_on_validation_segment(edge.start, start, end)
+        && point_lies_on_validation_segment(edge.end, start, end)
+}
+
+fn explicit_vertical_step_owners_match_regions(
+    segment: NodeExplicitVerticalStepSegment,
+    left_owner: super::arrangement::NodeBandOwner,
+    right_owner: super::arrangement::NodeBandOwner,
+) -> bool {
+    (segment.owner() == left_owner && segment.opposite_owner() == right_owner)
+        || (segment.owner() == right_owner && segment.opposite_owner() == left_owner)
 }
 
 fn point_lies_on_validation_segment(
@@ -1753,6 +1763,13 @@ fn validation_point_key_to_mm(value: i64) -> i64 {
 }
 
 impl NodeValidationPointKey {
+    fn from_arrangement_key(key: NodeArrangementKey) -> Self {
+        Self {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+        }
+    }
+
     fn x_mm(self) -> i64 {
         validation_point_key_to_mm(self.x_key)
     }
@@ -1785,7 +1802,7 @@ mod tests {
     use super::*;
     use crate::simulation::network::surface::arrangement::{
         NodeArrangement, NodeArrangementDiagnostic, NodeArrangementKey, NodeBandHeightFieldId,
-        NodeBandOwner,
+        NodeBandOwner, NodeExplicitVerticalStepSegment,
     };
     use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
     use crate::simulation::network::surface::height::NodeHeightSolution;
@@ -1871,14 +1888,15 @@ mod tests {
             .expect("test arrangement should triangulate")
     }
 
-    fn manual_region(
+    fn manual_region_with_kind(
+        kind: RoadSurfaceBandKind,
         owner_index: usize,
         height_field_id: NodeBandHeightFieldId,
         vertices: Vec<RoadVec3>,
     ) -> NodeTriangulatedRegion {
         NodeTriangulatedRegion {
-            kind: RoadSurfaceBandKind::CurbOrShoulder,
-            owner: NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, owner_index),
+            kind,
+            owner: NodeBandOwner::new(kind, owner_index),
             height_field_id,
             vertices: vertices
                 .into_iter()
@@ -1888,12 +1906,24 @@ mod tests {
                 })
                 .collect(),
             boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
-            explicit_vertical_step_constraints: Vec::new(),
             triangles: vec![NodeTriangulatedTriangle {
                 vertices: [0, 1, 2],
             }],
             area_m2: 0.5,
         }
+    }
+
+    fn manual_region(
+        owner_index: usize,
+        height_field_id: NodeBandHeightFieldId,
+        vertices: Vec<RoadVec3>,
+    ) -> NodeTriangulatedRegion {
+        manual_region_with_kind(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            owner_index,
+            height_field_id,
+            vertices,
+        )
     }
 
     fn key_point(x: f64, z: f64) -> NodeValidationPointKey {
@@ -1948,6 +1978,7 @@ mod tests {
                     ],
                 ),
             ],
+            explicit_vertical_step_segments: Vec::new(),
         };
 
         let error = NodeValidationReport::from_triangulation_solution(&solution)
@@ -1971,6 +2002,51 @@ mod tests {
                     }
                 )
         }));
+    }
+
+    #[test]
+    fn accepts_cross_region_cdt_edge_height_conflict_on_canonical_asphalt_curb_step() {
+        let carriageway_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let carriageway_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+        let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+        let step_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            carriageway_owner,
+            curb_owner,
+        )
+        .expect("non-degenerate test step segment");
+        let solution = NodeTriangulationSolution {
+            node_id: 100,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Terminal,
+            regions: vec![
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::Carriageway,
+                    0,
+                    carriageway_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.0, 0.0),
+                        RoadVec3::new(1.0, 0.0, 0.0),
+                        RoadVec3::new(0.0, 0.0, -1.0),
+                    ],
+                ),
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    1,
+                    curb_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 1.0),
+                    ],
+                ),
+            ],
+            explicit_vertical_step_segments: vec![step_segment],
+        };
+
+        NodeValidationReport::from_triangulation_solution(&solution)
+            .expect("canonical asphalt-curb vertical step should allow the curb height delta");
     }
 
     #[test]

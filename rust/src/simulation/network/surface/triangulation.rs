@@ -2,7 +2,7 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
-    NodeBandOwner, NodeOwnedRegion,
+    NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
@@ -22,6 +22,7 @@ pub(crate) struct NodeTriangulationSolution {
     pub(crate) node_id: u32,
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) regions: Vec<NodeTriangulatedRegion>,
+    pub(crate) explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,7 +32,6 @@ pub(crate) struct NodeTriangulatedRegion {
     pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) vertices: Vec<NodeTriangulatedVertex>,
     pub(crate) boundary_constraints: Vec<[usize; 2]>,
-    pub(crate) explicit_vertical_step_constraints: Vec<[usize; 2]>,
     pub(crate) triangles: Vec<NodeTriangulatedTriangle>,
     pub(crate) area_m2: f32,
 }
@@ -137,6 +137,7 @@ impl NodeTriangulationSolution {
             node_id: arrangement.node_id(),
             piece_kind: arrangement.piece_kind(),
             regions,
+            explicit_vertical_step_segments: arrangement.explicit_vertical_step_segments(),
         })
     }
 }
@@ -179,9 +180,6 @@ fn triangulate_arrangement_region(
             &mut constraints,
         )?;
     }
-    let explicit_vertical_step_constraints =
-        explicit_vertical_step_constraints_for_region(arrangement, region, &vertex_lookup);
-
     let spade_vertices = vertices
         .iter()
         .map(|vertex| Point2::new(vertex.point_world.x, vertex.point_world.z))
@@ -236,52 +234,9 @@ fn triangulate_arrangement_region(
         height_field_id: region.height_field_id(),
         vertices,
         boundary_constraints: constraints.into_iter().collect(),
-        explicit_vertical_step_constraints,
         triangles,
         area_m2: region.area_m2(),
     })
-}
-
-fn explicit_vertical_step_constraints_for_region(
-    arrangement: &NodeArrangement,
-    region: &NodeOwnedRegion,
-    vertex_lookup: &BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
-) -> Vec<[usize; 2]> {
-    let mut constraints = BTreeSet::new();
-    for edge_id in region.boundary_edges() {
-        let Some(edge) = arrangement.edges().get(edge_id.index()) else {
-            continue;
-        };
-        if !edge.is_explicit_vertical_step() {
-            continue;
-        }
-        let Some(start) = arrangement.vertices().get(edge.start().index()) else {
-            continue;
-        };
-        let Some(end) = arrangement.vertices().get(edge.end().index()) else {
-            continue;
-        };
-        let Some(start_index) = local_index_for_arrangement_vertex(start, vertex_lookup) else {
-            continue;
-        };
-        let Some(end_index) = local_index_for_arrangement_vertex(end, vertex_lookup) else {
-            continue;
-        };
-        if start_index != end_index {
-            constraints.insert(normalized_constraint(start_index, end_index));
-        }
-    }
-    constraints.into_iter().collect()
-}
-
-fn local_index_for_arrangement_vertex(
-    vertex: &NodeArrangementVertex,
-    vertex_lookup: &BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
-) -> Option<usize> {
-    let point_key = NodeTriangulationPointKey::from_arrangement_vertex(vertex);
-    let height_key = NodeTriangulationHeightKey::from_arrangement_vertex(vertex);
-    let (index, existing_height_key) = vertex_lookup.get(&point_key).copied()?;
-    (existing_height_key == height_key).then_some(index)
 }
 
 fn push_arrangement_constraint_loop(

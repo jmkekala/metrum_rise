@@ -29,6 +29,14 @@ pub(crate) struct NodeArrangementKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct NodeExplicitVerticalStepSegment {
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct NodeArrangementHeightKey(i64);
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -211,6 +219,47 @@ impl NodeArrangementKey {
     }
 }
 
+impl NodeExplicitVerticalStepSegment {
+    pub(crate) fn new(
+        a: NodeArrangementKey,
+        b: NodeArrangementKey,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+    ) -> Option<Self> {
+        if a == b {
+            return None;
+        }
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let (owner, opposite_owner) = if owner <= opposite_owner {
+            (owner, opposite_owner)
+        } else {
+            (opposite_owner, owner)
+        };
+        Some(Self {
+            start,
+            end,
+            owner,
+            opposite_owner,
+        })
+    }
+
+    pub(crate) fn start(self) -> NodeArrangementKey {
+        self.start
+    }
+
+    pub(crate) fn end(self) -> NodeArrangementKey {
+        self.end
+    }
+
+    pub(crate) fn owner(self) -> NodeBandOwner {
+        self.owner
+    }
+
+    pub(crate) fn opposite_owner(self) -> NodeBandOwner {
+        self.opposite_owner
+    }
+}
+
 impl NodeBandOwner {
     pub(crate) fn new(kind: RoadSurfaceBandKind, owner_index: usize) -> Self {
         Self { kind, owner_index }
@@ -283,6 +332,30 @@ impl NodeArrangement {
 
     pub(crate) fn faces(&self) -> &[NodeArrangementFace] {
         &self.faces
+    }
+
+    pub(crate) fn explicit_vertical_step_segments(&self) -> Vec<NodeExplicitVerticalStepSegment> {
+        let mut segments = BTreeSet::new();
+        for edge in &self.edges {
+            if !edge.is_explicit_vertical_step() {
+                continue;
+            }
+            let Some(opposite_owner) = edge.opposite_owner else {
+                continue;
+            };
+            let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+                continue;
+            };
+            let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+                continue;
+            };
+            if let Some(segment) =
+                NodeExplicitVerticalStepSegment::new(start, end, edge.owner, opposite_owner)
+            {
+                segments.insert(segment);
+            }
+        }
+        segments.into_iter().collect()
     }
 
     pub(crate) fn diagnostics(&self) -> &[NodeArrangementDiagnostic] {
