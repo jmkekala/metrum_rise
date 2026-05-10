@@ -1004,10 +1004,6 @@ impl NodeArrangementVertex {
     pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
         self.height_field_id
     }
-
-    pub(crate) fn owners(&self) -> &[NodeBandOwner] {
-        &self.owners
-    }
 }
 
 impl NodeOwnedRegion {

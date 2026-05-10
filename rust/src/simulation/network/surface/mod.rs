@@ -288,6 +288,9 @@ struct IncidentMouthProfile {
 struct OrderedIncidentPieceMouth {
     profile: IncidentMouthProfile,
     endpoint_profile: IncidentMouthProfile,
+    boundary_paths_world: Vec<Vec<Vector3>>,
+    band_start_paths_world: Vec<Vec<Vector3>>,
+    band_end_paths_world: Vec<Vec<Vector3>>,
     direction_angle_ccw: f32,
     direction_xz: Vector2,
     edge_idx: usize,

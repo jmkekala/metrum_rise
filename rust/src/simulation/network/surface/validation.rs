@@ -2010,6 +2010,9 @@ mod tests {
         let mouth = OrderedIncidentPieceMouth {
             profile: profile(10.0, 4.0),
             endpoint_profile: profile(0.0, 2.0),
+            boundary_paths_world: Vec::new(),
+            band_start_paths_world: Vec::new(),
+            band_end_paths_world: Vec::new(),
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,

@@ -6,9 +6,9 @@ use super::arrangement::{
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
-    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
-    SurfaceCdt,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour,
+    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
@@ -323,7 +323,6 @@ fn triangle_is_inside_owner(
     owner_shape: &NodeOverlayShape,
 ) -> Result<bool, NodeTriangulationError> {
     let triangle_shape = vec![positive_triangle_contour(triangle, vertices)];
-    let area_budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&triangle_shape);
     let triangle_shapes = vec![triangle_shape];
     let owner_shapes = vec![owner_shape.clone()];
     let residual = overlay_difference(
@@ -333,7 +332,7 @@ fn triangle_is_inside_owner(
         &owner_shapes,
         "triangle_minus_owner",
     )?;
-    Ok(overlay_area_m2(&residual) <= area_budget_m2)
+    Ok(overlay_area_m2(&residual) <= NODE_OVERLAY_NUMERIC_AREA_EPS_M2)
 }
 
 fn reject_triangle_coverage_mismatch(
@@ -592,6 +591,9 @@ mod tests {
         let mouth = OrderedIncidentPieceMouth {
             profile: profile(10.0, 4.0),
             endpoint_profile: profile(0.0, 2.0),
+            boundary_paths_world: Vec::new(),
+            band_start_paths_world: Vec::new(),
+            band_end_paths_world: Vec::new(),
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,

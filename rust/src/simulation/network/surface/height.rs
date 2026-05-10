@@ -1271,6 +1271,9 @@ mod tests {
         let mouth = OrderedIncidentPieceMouth {
             profile: profile(10.0, 4.0),
             endpoint_profile: profile(0.0, 2.0),
+            boundary_paths_world: Vec::new(),
+            band_start_paths_world: Vec::new(),
+            band_end_paths_world: Vec::new(),
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -1595,6 +1598,8 @@ mod tests {
             mouth_end_world: RoadVec3::new(10.0, mouth_height, 2.0),
             endpoint_start_world: RoadVec3::new(0.0, endpoint_height, 0.0),
             endpoint_end_world: RoadVec3::new(0.0, endpoint_height, 2.0),
+            start_path_world: Vec::new(),
+            end_path_world: Vec::new(),
         }
     }
 

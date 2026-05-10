@@ -7,8 +7,7 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{
-        NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
-        NodeExplicitVerticalStepSegment, NodeSeamSource,
+        NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner, NodeSeamSource,
     },
     input::NodeInputExtractionError,
     terrain_clip_edge_kind_for_band,
@@ -55,6 +54,15 @@ struct ArrangementTerrainClipSourceSegment {
     end: Vector3,
     owner: NodeBandOwner,
     kind: RoadSurfaceTerrainClipEdgeKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ArrangementFaceBoundaryInterval {
+    owner: NodeBandOwner,
+    start: ArrangementSegmentParameter,
+    end: ArrangementSegmentParameter,
+    edge_start: ArrangementBoundaryPointKey,
+    edge_end: ArrangementBoundaryPointKey,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -420,55 +428,88 @@ impl RoadSurfaceSystem {
         let mut faces = Vec::new();
         for segment in arrangement.explicit_vertical_step_segments() {
             let segment_key = (segment.start(), segment.end());
-            let Some((lower_owner, raised_owner)) =
-                arrangement_explicit_step_owners_for_segment(arrangement, segment_key)
-                    .or_else(|| explicit_step_lower_and_raised_owners(segment))
-            else {
-                continue;
-            };
-            let Some((lower_start, raised_start, lower_end, raised_end)) =
-                arrangement_vertical_step_points_for_segment(
-                    arrangement,
-                    segment,
-                    lower_owner,
-                    raised_owner,
-                )
-            else {
-                continue;
-            };
-            let key = normalized_arrangement_segment_key(lower_start, lower_end);
-            if !emitted.insert(key) {
-                continue;
-            }
-            let mut points = [raised_start, lower_start, lower_end, raised_end];
-            if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
+            let lower_intervals = arrangement_kind_face_boundary_intervals_for_segment(
                 arrangement,
-                lower_owner,
-                key,
-                points,
-            ) {
-                if visible_dot <= 0.0 {
-                    points = [points[3], points[2], points[1], points[0]];
+                RoadSurfaceBandKind::Carriageway,
+                segment_key,
+            );
+            let raised_intervals = arrangement_kind_face_boundary_intervals_for_segment(
+                arrangement,
+                RoadSurfaceBandKind::CurbOrShoulder,
+                segment_key,
+            );
+            for (lower_interval, raised_interval, start_t, end_t) in
+                arrangement_shared_face_boundary_intervals(&lower_intervals, &raised_intervals)
+            {
+                let Some(lower_start) = arrangement_face_boundary_interval_point_at(
+                    segment_key,
+                    lower_interval,
+                    start_t,
+                ) else {
+                    continue;
+                };
+                let Some(lower_end) =
+                    arrangement_face_boundary_interval_point_at(segment_key, lower_interval, end_t)
+                else {
+                    continue;
+                };
+                let Some(raised_start) = arrangement_face_boundary_interval_point_at(
+                    segment_key,
+                    raised_interval,
+                    start_t,
+                ) else {
+                    continue;
+                };
+                let Some(raised_end) = arrangement_face_boundary_interval_point_at(
+                    segment_key,
+                    raised_interval,
+                    end_t,
+                ) else {
+                    continue;
+                };
+                if lower_start.distance_squared_to(lower_end) <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+                {
+                    continue;
                 }
-            } else {
-                let asphalt_direction = arrangement_carriageway_direction_for_segment(
+                if (raised_start.y - lower_start.y <= SAMPLE_EPSILON_M)
+                    && (raised_end.y - lower_end.y <= SAMPLE_EPSILON_M)
+                {
+                    continue;
+                }
+                let key = normalized_arrangement_segment_key(lower_start, lower_end);
+                if !emitted.insert(key) {
+                    continue;
+                }
+                let mut points = [raised_start, lower_start, lower_end, raised_end];
+                if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
                     arrangement,
-                    lower_owner,
+                    lower_interval.owner,
                     key,
-                    lower_start,
-                    lower_end,
-                )
-                .unwrap_or_else(|| {
-                    let edge_direction = lower_end - lower_start;
-                    Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
-                });
-                let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-                if face_normal.dot(asphalt_direction) > 0.0 {
-                    points = [points[3], points[2], points[1], points[0]];
+                    points,
+                ) {
+                    if visible_dot <= 0.0 {
+                        points = [points[3], points[2], points[1], points[0]];
+                    }
+                } else {
+                    let asphalt_direction = arrangement_carriageway_direction_for_segment(
+                        arrangement,
+                        lower_interval.owner,
+                        key,
+                        lower_start,
+                        lower_end,
+                    )
+                    .unwrap_or_else(|| {
+                        let edge_direction = lower_end - lower_start;
+                        Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
+                    });
+                    let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+                    if face_normal.dot(asphalt_direction) > 0.0 {
+                        points = [points[3], points[2], points[1], points[0]];
+                    }
                 }
-            }
-            if let Some(face) = Self::make_vertical_quad_polygon(points) {
-                faces.push(face);
+                if let Some(face) = Self::make_vertical_quad_polygon(points) {
+                    faces.push(face);
+                }
             }
         }
         faces
@@ -877,9 +918,14 @@ impl RoadSurfaceSystem {
         for &incident in incidents {
             let profile = self.build_incident_mouth_profile(incident)?;
             let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
+            let (boundary_paths_world, band_start_paths_world, band_end_paths_world) =
+                self.build_incident_mouth_paths(incident, &profile, &endpoint_profile);
             mouths.push(OrderedIncidentPieceMouth {
                 profile,
                 endpoint_profile,
+                boundary_paths_world,
+                band_start_paths_world,
+                band_end_paths_world,
                 direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
                 direction_xz: incident.direction_xz,
                 edge_idx: incident.edge_idx,
@@ -893,6 +939,80 @@ impl RoadSurfaceSystem {
                 .then(a.side.cmp(&b.side))
         });
         Some(mouths)
+    }
+
+    fn build_incident_mouth_paths(
+        &self,
+        incident: IncidentSurfaceEdge,
+        profile: &IncidentMouthProfile,
+        endpoint_profile: &IncidentMouthProfile,
+    ) -> (Vec<Vec<Vector3>>, Vec<Vec<Vector3>>, Vec<Vec<Vector3>>) {
+        let Some(sections) = self.compiled_sections.get(&incident.edge_idx) else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
+        let Some(mouth_index) = sections.iter().enumerate().find_map(|(index, section)| {
+            let candidate = Self::build_mouth_profile_from_section(section, incident.side)?;
+            incident_mouth_profiles_match(&candidate, profile).then_some(index)
+        }) else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
+
+        let section_indices: Vec<usize> = match incident.side {
+            IncidentEdgeSide::Start => (0..=mouth_index).rev().collect(),
+            IncidentEdgeSide::End => (mouth_index..sections.len()).collect(),
+        };
+        let mut profile_path = Vec::with_capacity(section_indices.len());
+        for section_index in section_indices {
+            let Some(path_profile) =
+                Self::build_mouth_profile_from_section(&sections[section_index], incident.side)
+            else {
+                return (Vec::new(), Vec::new(), Vec::new());
+            };
+            if !incident_mouth_profiles_have_same_shape(profile, &path_profile) {
+                return (Vec::new(), Vec::new(), Vec::new());
+            }
+            profile_path.push(path_profile);
+        }
+
+        let Some(last_profile) = profile_path.last() else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
+        if !incident_mouth_profiles_match(last_profile, endpoint_profile) {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+
+        let boundary_paths_world = (0..profile.boundary_points_world.len())
+            .map(|boundary_index| {
+                incident_world_path(
+                    profile_path
+                        .iter()
+                        .map(|path_profile| path_profile.boundary_points_world[boundary_index]),
+                )
+            })
+            .collect();
+        let band_start_paths_world = (0..profile.bands.len())
+            .map(|band_index| {
+                incident_world_path(
+                    profile_path
+                        .iter()
+                        .map(|path_profile| path_profile.bands[band_index].start_point_world),
+                )
+            })
+            .collect();
+        let band_end_paths_world = (0..profile.bands.len())
+            .map(|band_index| {
+                incident_world_path(
+                    profile_path
+                        .iter()
+                        .map(|path_profile| path_profile.bands[band_index].end_point_world),
+                )
+            })
+            .collect();
+        (
+            boundary_paths_world,
+            band_start_paths_world,
+            band_end_paths_world,
+        )
     }
 
     fn build_incident_mouth_profile(
@@ -1224,94 +1344,159 @@ fn curb_vertical_face_lower_edge_key(
     ))
 }
 
-fn arrangement_vertical_step_points_for_segment(
-    arrangement: &NodeArrangement,
-    segment: NodeExplicitVerticalStepSegment,
-    lower_owner: NodeBandOwner,
-    raised_owner: NodeBandOwner,
-) -> Option<(Vector3, Vector3, Vector3, Vector3)> {
-    let lower_start =
-        arrangement_step_point_at_key(arrangement, segment.start(), lower_owner, false)?;
-    let raised_start =
-        arrangement_step_point_at_key(arrangement, segment.start(), raised_owner, true)?;
-    let lower_end = arrangement_step_point_at_key(arrangement, segment.end(), lower_owner, false)?;
-    let raised_end = arrangement_step_point_at_key(arrangement, segment.end(), raised_owner, true)?;
-    ((raised_start.y - lower_start.y > SAMPLE_EPSILON_M)
-        || (raised_end.y - lower_end.y > SAMPLE_EPSILON_M))
-        .then_some((lower_start, raised_start, lower_end, raised_end))
+fn incident_mouth_profiles_match(
+    left: &IncidentMouthProfile,
+    right: &IncidentMouthProfile,
+) -> bool {
+    incident_mouth_profiles_have_same_shape(left, right)
+        && left
+            .boundary_points_world
+            .iter()
+            .zip(&right.boundary_points_world)
+            .all(|(left, right)| {
+                ArrangementBoundaryPointKey::from_world(*left)
+                    == ArrangementBoundaryPointKey::from_world(*right)
+            })
+        && left.bands.iter().zip(&right.bands).all(|(left, right)| {
+            ArrangementBoundaryPointKey::from_world(left.start_point_world)
+                == ArrangementBoundaryPointKey::from_world(right.start_point_world)
+                && ArrangementBoundaryPointKey::from_world(left.end_point_world)
+                    == ArrangementBoundaryPointKey::from_world(right.end_point_world)
+        })
 }
 
-fn arrangement_explicit_step_owners_for_segment(
-    arrangement: &NodeArrangement,
-    segment_key: (NodeArrangementKey, NodeArrangementKey),
-) -> Option<(NodeBandOwner, NodeBandOwner)> {
-    let lower_owner = arrangement_face_owner_for_segment_kind(
-        arrangement,
-        segment_key,
-        RoadSurfaceBandKind::Carriageway,
-    )?;
-    let raised_owner = arrangement_face_owner_for_segment_kind(
-        arrangement,
-        segment_key,
-        RoadSurfaceBandKind::CurbOrShoulder,
-    )?;
-    Some((lower_owner, raised_owner))
+fn incident_mouth_profiles_have_same_shape(
+    left: &IncidentMouthProfile,
+    right: &IncidentMouthProfile,
+) -> bool {
+    left.boundary_points_world.len() == right.boundary_points_world.len()
+        && left.bands.len() == right.bands.len()
+        && left
+            .bands
+            .iter()
+            .zip(&right.bands)
+            .all(|(left, right)| left.kind == right.kind)
 }
 
-fn arrangement_face_owner_for_segment_kind(
+fn incident_world_path(points: impl IntoIterator<Item = Vector3>) -> Vec<Vector3> {
+    points.into_iter().collect()
+}
+
+fn arrangement_kind_face_boundary_intervals_for_segment(
     arrangement: &NodeArrangement,
-    segment_key: (NodeArrangementKey, NodeArrangementKey),
     kind: RoadSurfaceBandKind,
-) -> Option<NodeBandOwner> {
-    arrangement
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+) -> Vec<ArrangementFaceBoundaryInterval> {
+    let mut intervals = Vec::new();
+    for face in arrangement
         .faces()
         .iter()
         .filter(|face| face.owner().kind() == kind)
-        .filter(|face| arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key))
-        .map(|face| face.owner())
-        .min()
-}
-
-fn explicit_step_lower_and_raised_owners(
-    segment: NodeExplicitVerticalStepSegment,
-) -> Option<(NodeBandOwner, NodeBandOwner)> {
-    match (segment.owner().kind(), segment.opposite_owner().kind()) {
-        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::CurbOrShoulder) => {
-            Some((segment.owner(), segment.opposite_owner()))
-        }
-        (RoadSurfaceBandKind::CurbOrShoulder, RoadSurfaceBandKind::Carriageway) => {
-            Some((segment.opposite_owner(), segment.owner()))
-        }
-        _ => None,
-    }
-}
-
-fn arrangement_step_point_at_key(
-    arrangement: &NodeArrangement,
-    key: NodeArrangementKey,
-    owner: NodeBandOwner,
-    prefer_raised: bool,
-) -> Option<Vector3> {
-    let mut selected = None;
-    for vertex in arrangement.vertices().iter().filter(|vertex| {
-        NodeArrangementKey::from_point(vertex.point_xz()) == key && vertex.owners().contains(&owner)
-    }) {
-        let point = Vector3::new(
-            vertex.point_xz().x as f32,
-            vertex.height_m() as f32,
-            vertex.point_xz().y as f32,
-        );
-        if selected.is_none_or(|candidate: Vector3| {
-            if prefer_raised {
-                point.y > candidate.y
-            } else {
-                point.y < candidate.y
+    {
+        let Some(triangle) = RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face)
+        else {
+            continue;
+        };
+        for index in 0..triangle.len() {
+            let edge_start = ArrangementBoundaryPointKey::from_world(triangle[index]);
+            let edge_end =
+                ArrangementBoundaryPointKey::from_world(triangle[(index + 1) % triangle.len()]);
+            if let Some((start, end)) =
+                arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
+            {
+                intervals.push(ArrangementFaceBoundaryInterval {
+                    owner: face.owner(),
+                    start,
+                    end,
+                    edge_start,
+                    edge_end,
+                });
             }
-        }) {
-            selected = Some(point);
         }
     }
-    selected
+    intervals.sort();
+    intervals.dedup();
+    intervals
+}
+
+fn arrangement_shared_face_boundary_intervals(
+    lower_intervals: &[ArrangementFaceBoundaryInterval],
+    raised_intervals: &[ArrangementFaceBoundaryInterval],
+) -> Vec<(
+    ArrangementFaceBoundaryInterval,
+    ArrangementFaceBoundaryInterval,
+    ArrangementSegmentParameter,
+    ArrangementSegmentParameter,
+)> {
+    let mut shared = Vec::new();
+    for lower in lower_intervals {
+        for raised in raised_intervals {
+            let start = lower.start.max(raised.start);
+            let end = lower.end.min(raised.end);
+            if end > start {
+                shared.push((*lower, *raised, start, end));
+            }
+        }
+    }
+    shared.sort_by(|a, b| a.2.cmp(&b.2).then(a.3.cmp(&b.3)));
+    shared
+}
+
+fn arrangement_face_boundary_overlap_interval(
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+    edge_start: ArrangementBoundaryPointKey,
+    edge_end: ArrangementBoundaryPointKey,
+) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
+    let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
+    let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
+    let edge_start_t = boundary_segment_parameter_xz(edge_start, segment_start, segment_end)?;
+    let edge_end_t = boundary_segment_parameter_xz(edge_end, segment_start, segment_end)?;
+    let start = edge_start_t
+        .min(edge_end_t)
+        .max(ArrangementSegmentParameter::zero());
+    let end = edge_start_t
+        .max(edge_end_t)
+        .min(ArrangementSegmentParameter::one());
+    (end > start).then_some((start, end))
+}
+
+fn arrangement_face_boundary_interval_point_at(
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+    interval: ArrangementFaceBoundaryInterval,
+    parameter: ArrangementSegmentParameter,
+) -> Option<Vector3> {
+    let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
+    let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
+    let segment_point = interpolated_segment_point_key(segment_start, segment_end, parameter);
+    let edge_t =
+        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)?;
+    let y_mm = interpolated_segment_height_mm(interval.edge_start, interval.edge_end, edge_t);
+    Some(arrangement_boundary_point_to_world(
+        ArrangementBoundaryPointKey {
+            x_key: segment_point.x_key,
+            z_key: segment_point.z_key,
+            y_mm,
+        },
+    ))
+}
+
+fn arrangement_key_boundary_point(
+    key: NodeArrangementKey,
+    y_mm: i64,
+) -> ArrangementBoundaryPointKey {
+    ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm,
+    }
+}
+
+fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Vector3 {
+    Vector3::new(
+        (point.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+        point.y_mm as f32 / 1000.0,
+        (point.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+    )
 }
 
 fn arrangement_carriageway_direction_for_segment(

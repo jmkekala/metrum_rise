@@ -65,6 +65,7 @@ pub(crate) struct NodeInputBoundaryRail {
     pub(crate) role: NodeInputBoundaryRailRole,
     pub(crate) mouth_world: RoadVec3,
     pub(crate) endpoint_world: RoadVec3,
+    pub(crate) path_world: Vec<RoadVec3>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +76,8 @@ pub(crate) struct NodeInputBandInterval {
     pub(crate) mouth_end_world: RoadVec3,
     pub(crate) endpoint_start_world: RoadVec3,
     pub(crate) endpoint_end_world: RoadVec3,
+    pub(crate) start_path_world: Vec<RoadVec3>,
+    pub(crate) end_path_world: Vec<RoadVec3>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -168,6 +171,7 @@ impl NodeArrangementInput {
                 mouth,
             )?);
         }
+        restrict_bend_outer_paths_to_outer_corner(piece_kind, &mut input_mouths);
         add_node_corner_join_bands(piece_kind, &mut input_mouths);
 
         Ok(Self {
@@ -205,6 +209,9 @@ impl NodeInputMouth {
             profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
         let mut boundary_rails = boundary_rails(mouth);
         let mut band_intervals = band_intervals(mouth);
+        if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
+            replace_profile_paths_with_chords(&mut boundary_rails, &mut band_intervals);
+        }
         quantize_profile_rails_xz(&mut mouth_rails);
         quantize_profile_rails_xz(&mut endpoint_rails);
         quantize_boundary_rails_xz(&mut boundary_rails);
@@ -366,14 +373,24 @@ fn boundary_rails(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInputBoundaryRai
         .iter()
         .zip(&mouth.endpoint_profile.boundary_points_world)
         .enumerate()
-        .map(
-            |(boundary_index, (mouth_point, endpoint_point))| NodeInputBoundaryRail {
+        .map(|(boundary_index, (mouth_point, endpoint_point))| {
+            let mouth_world = godot_vec3_to_road(*mouth_point);
+            let endpoint_world = godot_vec3_to_road(*endpoint_point);
+            NodeInputBoundaryRail {
                 boundary_index,
                 role: boundary_rail_role(boundary_index, &mouth.profile.bands),
-                mouth_world: godot_vec3_to_road(*mouth_point),
-                endpoint_world: godot_vec3_to_road(*endpoint_point),
-            },
-        )
+                mouth_world,
+                endpoint_world,
+                path_world: input_path_or_endpoints(
+                    mouth
+                        .boundary_paths_world
+                        .get(boundary_index)
+                        .map(Vec::as_slice),
+                    mouth_world,
+                    endpoint_world,
+                ),
+            }
+        })
         .collect()
 }
 
@@ -384,29 +401,71 @@ fn band_intervals(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInputBandInterva
         .iter()
         .zip(&mouth.endpoint_profile.bands)
         .enumerate()
-        .map(
-            |(band_index, (mouth_band, endpoint_band))| NodeInputBandInterval {
+        .map(|(band_index, (mouth_band, endpoint_band))| {
+            let mouth_start_world = band_endpoint_with_boundary_xz(
+                mouth_band.start_point_world,
+                mouth.profile.boundary_points_world[band_index],
+            );
+            let mouth_end_world = band_endpoint_with_boundary_xz(
+                mouth_band.end_point_world,
+                mouth.profile.boundary_points_world[band_index + 1],
+            );
+            let endpoint_start_world = band_endpoint_with_boundary_xz(
+                endpoint_band.start_point_world,
+                mouth.endpoint_profile.boundary_points_world[band_index],
+            );
+            let endpoint_end_world = band_endpoint_with_boundary_xz(
+                endpoint_band.end_point_world,
+                mouth.endpoint_profile.boundary_points_world[band_index + 1],
+            );
+            NodeInputBandInterval {
                 band_index,
                 band_kind: mouth_band.kind,
-                mouth_start_world: band_endpoint_with_boundary_xz(
-                    mouth_band.start_point_world,
-                    mouth.profile.boundary_points_world[band_index],
+                mouth_start_world,
+                mouth_end_world,
+                endpoint_start_world,
+                endpoint_end_world,
+                start_path_world: input_path_or_endpoints(
+                    mouth
+                        .band_start_paths_world
+                        .get(band_index)
+                        .map(Vec::as_slice),
+                    mouth_start_world,
+                    endpoint_start_world,
                 ),
-                mouth_end_world: band_endpoint_with_boundary_xz(
-                    mouth_band.end_point_world,
-                    mouth.profile.boundary_points_world[band_index + 1],
+                end_path_world: input_path_or_endpoints(
+                    mouth
+                        .band_end_paths_world
+                        .get(band_index)
+                        .map(Vec::as_slice),
+                    mouth_end_world,
+                    endpoint_end_world,
                 ),
-                endpoint_start_world: band_endpoint_with_boundary_xz(
-                    endpoint_band.start_point_world,
-                    mouth.endpoint_profile.boundary_points_world[band_index],
-                ),
-                endpoint_end_world: band_endpoint_with_boundary_xz(
-                    endpoint_band.end_point_world,
-                    mouth.endpoint_profile.boundary_points_world[band_index + 1],
-                ),
-            },
-        )
+            }
+        })
         .collect()
+}
+
+fn input_path_or_endpoints(
+    path_world: Option<&[Vector3]>,
+    mouth_world: RoadVec3,
+    endpoint_world: RoadVec3,
+) -> Vec<RoadVec3> {
+    if let Some(path_world) = path_world.filter(|path| path.len() >= 2) {
+        let mut points = path_world
+            .iter()
+            .map(|point| godot_vec3_to_road(*point))
+            .collect::<Vec<_>>();
+        if let Some(first) = points.first_mut() {
+            *first = mouth_world;
+        }
+        if let Some(last) = points.last_mut() {
+            *last = endpoint_world;
+        }
+        points
+    } else {
+        vec![mouth_world, endpoint_world]
+    }
 }
 
 fn band_endpoint_with_boundary_xz(
@@ -446,6 +505,75 @@ fn add_node_corner_join_bands(
         RoadSurfaceVisualNodePieceKind::Bend => add_bend_corner_join_bands(mouths),
         RoadSurfaceVisualNodePieceKind::JunctionN => add_junction_corner_join_bands(mouths),
         RoadSurfaceVisualNodePieceKind::Terminal => {}
+    }
+}
+
+fn restrict_bend_outer_paths_to_outer_corner(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    mouths: &mut [NodeInputMouth],
+) {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend || mouths.len() != 2 {
+        return;
+    }
+
+    let mouth_0 = mouths[0].clone();
+    let mouth_1 = mouths[1].clone();
+    let mut use_start_path = [false; 2];
+    let mut use_end_path = [false; 2];
+    if bend_corner_uses_sampled_outer_path(&mouth_0, &mouth_1) {
+        use_end_path[0] = true;
+        use_start_path[1] = true;
+    }
+    if bend_corner_uses_sampled_outer_path(&mouth_1, &mouth_0) {
+        use_end_path[1] = true;
+        use_start_path[0] = true;
+    }
+
+    for (index, mouth) in mouths.iter_mut().enumerate() {
+        if !use_start_path[index] {
+            replace_start_outer_path_with_chord(mouth);
+        }
+        if !use_end_path[index] {
+            replace_end_outer_path_with_chord(mouth);
+        }
+    }
+}
+
+fn bend_corner_uses_sampled_outer_path(
+    from_mouth: &NodeInputMouth,
+    to_mouth: &NodeInputMouth,
+) -> bool {
+    !bend_corner_uses_full_sidewalk_curve(from_mouth, to_mouth)
+}
+
+fn replace_start_outer_path_with_chord(mouth: &mut NodeInputMouth) {
+    if let Some(rail) = mouth.boundary_rails.first_mut() {
+        rail.path_world = vec![rail.mouth_world, rail.endpoint_world];
+    }
+    if let Some(interval) = mouth.band_intervals.first_mut() {
+        interval.start_path_world = vec![interval.mouth_start_world, interval.endpoint_start_world];
+    }
+}
+
+fn replace_end_outer_path_with_chord(mouth: &mut NodeInputMouth) {
+    if let Some(rail) = mouth.boundary_rails.last_mut() {
+        rail.path_world = vec![rail.mouth_world, rail.endpoint_world];
+    }
+    if let Some(interval) = mouth.band_intervals.last_mut() {
+        interval.end_path_world = vec![interval.mouth_end_world, interval.endpoint_end_world];
+    }
+}
+
+fn replace_profile_paths_with_chords(
+    boundary_rails: &mut [NodeInputBoundaryRail],
+    band_intervals: &mut [NodeInputBandInterval],
+) {
+    for rail in boundary_rails {
+        rail.path_world = vec![rail.mouth_world, rail.endpoint_world];
+    }
+    for interval in band_intervals {
+        interval.start_path_world = vec![interval.mouth_start_world, interval.endpoint_start_world];
+        interval.end_path_world = vec![interval.mouth_end_world, interval.endpoint_end_world];
     }
 }
 
@@ -536,6 +664,9 @@ fn quantize_boundary_rails_xz(rails: &mut [NodeInputBoundaryRail]) {
     for rail in rails {
         rail.mouth_world = quantize_road_vec3_xz(rail.mouth_world);
         rail.endpoint_world = quantize_road_vec3_xz(rail.endpoint_world);
+        for point in &mut rail.path_world {
+            *point = quantize_road_vec3_xz(*point);
+        }
     }
 }
 
@@ -545,6 +676,12 @@ fn quantize_band_intervals_xz(intervals: &mut [NodeInputBandInterval]) {
         interval.mouth_end_world = quantize_road_vec3_xz(interval.mouth_end_world);
         interval.endpoint_start_world = quantize_road_vec3_xz(interval.endpoint_start_world);
         interval.endpoint_end_world = quantize_road_vec3_xz(interval.endpoint_end_world);
+        for point in &mut interval.start_path_world {
+            *point = quantize_road_vec3_xz(*point);
+        }
+        for point in &mut interval.end_path_world {
+            *point = quantize_road_vec3_xz(*point);
+        }
     }
 }
 
@@ -2601,6 +2738,9 @@ mod tests {
         OrderedIncidentPieceMouth {
             profile: test_profile(10.0, Vector2::RIGHT),
             endpoint_profile: test_profile(0.0, Vector2::RIGHT),
+            boundary_paths_world: Vec::new(),
+            band_start_paths_world: Vec::new(),
+            band_end_paths_world: Vec::new(),
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -2661,6 +2801,9 @@ mod tests {
         OrderedIncidentPieceMouth {
             profile: two_carriageway_profile(10.0, Vector2::RIGHT),
             endpoint_profile: two_carriageway_profile(0.0, Vector2::RIGHT),
+            boundary_paths_world: Vec::new(),
+            band_start_paths_world: Vec::new(),
+            band_end_paths_world: Vec::new(),
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 8,
