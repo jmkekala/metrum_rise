@@ -88,6 +88,7 @@ pub(crate) enum NodeHeightFieldError {
     VertexOutsideHeightField {
         mouth_order_index: usize,
         band_index: usize,
+        source_kind: RoadSurfaceBandKind,
         point_x_mm: i64,
         point_z_mm: i64,
         axis: &'static str,
@@ -269,7 +270,7 @@ impl NodeBandHeightField {
         let mut candidates = Vec::new();
         let mut outside_error = None;
         for patch in &self.patches {
-            match patch.evaluate_surface_height(self.id, point_xz)? {
+            match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => candidates.push(height_m),
                 NodeHeightPatchEvaluation::Outside(error) => {
                     if outside_error.is_none() {
@@ -284,6 +285,7 @@ impl NodeBandHeightField {
                 NodeHeightFieldError::VertexOutsideHeightField {
                     mouth_order_index: self.id.mouth_order_index(),
                     band_index: self.id.band_index(),
+                    source_kind: self.kind,
                     point_x_mm: key.x_mm(),
                     point_z_mm: key.z_mm(),
                     axis: "patch",
@@ -305,6 +307,7 @@ impl NodeBandHeightField {
             return Err(NodeHeightFieldError::VertexOutsideHeightField {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
+                source_kind: self.kind,
                 point_x_mm: key.x_mm(),
                 point_z_mm: key.z_mm(),
                 axis: "patch",
@@ -413,11 +416,12 @@ impl NodeBandHeightPatch {
     fn evaluate_surface_height(
         &self,
         id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
         point_xz: RoadVec2,
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
         let mut triangle_outside_error = None;
         if let Some(triangles) = &self.triangles {
-            match self.evaluate_triangle_surface_height(id, point_xz, triangles)? {
+            match self.evaluate_triangle_surface_height(id, source_kind, point_xz, triangles)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => {
                     return Ok(NodeHeightPatchEvaluation::Inside(height_m));
                 }
@@ -434,7 +438,13 @@ impl NodeBandHeightPatch {
         if self.triangles.is_some() && !self.allow_parametric_fallback {
             return Ok(NodeHeightPatchEvaluation::Outside(
                 triangle_outside_error.unwrap_or_else(|| {
-                    self.outside_field_error(id, point_xz, "terminal_contour", f64::NAN)
+                    self.outside_field_error(
+                        id,
+                        source_kind,
+                        point_xz,
+                        "terminal_contour",
+                        f64::NAN,
+                    )
                 }),
             ));
         }
@@ -455,7 +465,7 @@ impl NodeBandHeightPatch {
         let raw_t = (point_xz - endpoint_center).dot(longitudinal_axis) / longitudinal_len2;
         let Some(t) = canonical_unit_parameter(raw_t, longitudinal_len_m) else {
             return Ok(NodeHeightPatchEvaluation::Outside(
-                self.outside_field_error(id, point_xz, "longitudinal", raw_t),
+                self.outside_field_error(id, source_kind, point_xz, "longitudinal", raw_t),
             ));
         };
 
@@ -475,7 +485,7 @@ impl NodeBandHeightPatch {
         let raw_u = (point_xz - start_xz).dot(lateral_axis) / lateral_len2;
         let Some(u) = canonical_unit_parameter(raw_u, lateral_len_m) else {
             return Ok(NodeHeightPatchEvaluation::Outside(
-                self.outside_field_error(id, point_xz, "lateral", raw_u),
+                self.outside_field_error(id, source_kind, point_xz, "lateral", raw_u),
             ));
         };
         let start_height = self.start_height_profile.clamped_sample(t).ok_or(
@@ -503,6 +513,7 @@ impl NodeBandHeightPatch {
     fn evaluate_triangle_surface_height(
         &self,
         id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
         point_xz: RoadVec2,
         triangles: &[NodeBandHeightTriangle],
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
@@ -514,7 +525,7 @@ impl NodeBandHeightPatch {
         }
         if candidates.is_empty() {
             return Ok(NodeHeightPatchEvaluation::Outside(
-                self.outside_field_error(id, point_xz, "triangle", f64::NAN),
+                self.outside_field_error(id, source_kind, point_xz, "triangle", f64::NAN),
             ));
         }
         let first_height_m = candidates[0];
@@ -539,6 +550,7 @@ impl NodeBandHeightPatch {
     fn outside_field_error(
         &self,
         id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
         point_xz: RoadVec2,
         axis: &'static str,
         raw_parameter: f64,
@@ -547,6 +559,7 @@ impl NodeBandHeightPatch {
         NodeHeightFieldError::VertexOutsideHeightField {
             mouth_order_index: id.mouth_order_index(),
             band_index: id.band_index(),
+            source_kind,
             point_x_mm: key.x_mm(),
             point_z_mm: key.z_mm(),
             axis,
@@ -1356,6 +1369,7 @@ mod tests {
         let height = match patch
             .evaluate_surface_height(
                 NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder),
+                RoadSurfaceBandKind::CurbOrShoulder,
                 RoadVec2::new(0.0, 0.0),
             )
             .expect("center vertex should be evaluable")

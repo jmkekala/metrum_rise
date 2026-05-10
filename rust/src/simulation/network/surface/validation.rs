@@ -993,6 +993,7 @@ impl NodeGeometryDiagnostic {
             NodeHeightFieldError::VertexOutsideHeightField {
                 mouth_order_index,
                 band_index,
+                source_kind,
                 point_x_mm,
                 point_z_mm,
                 axis,
@@ -1002,7 +1003,7 @@ impl NodeGeometryDiagnostic {
                 mouth_order_index: Some(*mouth_order_index),
                 band_index: Some(*band_index),
                 kind: None,
-                source_kind: None,
+                source_kind: Some(*source_kind),
                 point_x_mm: Some(*point_x_mm),
                 point_z_mm: Some(*point_z_mm),
                 axis: Some(*axis),

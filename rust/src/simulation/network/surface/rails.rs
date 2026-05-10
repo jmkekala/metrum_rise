@@ -357,12 +357,11 @@ fn push_terminal_end_band_contours(
         terminal_owner_by_kind_and_source(mouth, mouth_owners, end_bands, owners);
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
         for (end_band, owner) in end_bands.iter().zip(owners) {
-            push_single_terminal_end_band_contour(
+            push_terminal_end_band_boundary_constraints(
                 mouth,
                 end_band,
                 *owner,
                 &owner_by_kind_and_source,
-                contours,
                 constraints,
             )?;
         }
@@ -405,90 +404,6 @@ fn push_terminal_end_band_contours(
     }
 
     Ok(())
-}
-
-fn push_single_terminal_end_band_contour(
-    mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
-    owner: NodeBandOwner,
-    owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
-    contours: &mut Vec<NodeGeneratedContour>,
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    let points = end_band
-        .contour_world
-        .iter()
-        .copied()
-        .map(xz)
-        .collect::<Vec<_>>();
-    if terminal_end_band_contributes_footprint(end_band) {
-        let footprint = cleaned_closed_contour(
-            NodeGeneratedContourKind::FullRoadbed,
-            mouth.order_index,
-            None,
-            points.clone(),
-        )?;
-        let footprint_points_xz = polyline_to_road_points(&footprint);
-        contours.push(NodeGeneratedContour {
-            kind: NodeGeneratedContourKind::FullRoadbed,
-            source_mouth_order_index: mouth.order_index,
-            source_band_index: None,
-            owner: None,
-            claim_priority: NodeGeneratedContourClaimPriority::Footprint,
-            points_xz: footprint_points_xz.clone(),
-            backend_polyline: footprint,
-        });
-        push_constraint(
-            constraints,
-            NodeRailConstraintKind::FullRoadbedContour,
-            mouth.order_index,
-            None,
-            None,
-            None,
-            None,
-            footprint_points_xz,
-        )?;
-    }
-
-    let kind = NodeGeneratedContourKind::Band {
-        kind: end_band.band_kind,
-    };
-    let contour = cleaned_closed_contour(
-        kind,
-        mouth.order_index,
-        Some(end_band.source_band_index),
-        points,
-    )?;
-    let points_xz = polyline_to_road_points(&contour);
-    contours.push(NodeGeneratedContour {
-        kind,
-        source_mouth_order_index: mouth.order_index,
-        source_band_index: Some(end_band.source_band_index),
-        owner: Some(owner),
-        claim_priority: NodeGeneratedContourClaimPriority::JoinOrCap,
-        points_xz: points_xz.clone(),
-        backend_polyline: contour,
-    });
-    push_constraint(
-        constraints,
-        NodeRailConstraintKind::BandContour {
-            kind: end_band.band_kind,
-        },
-        mouth.order_index,
-        Some(end_band.source_band_index),
-        None,
-        Some(owner),
-        None,
-        points_xz,
-    )?;
-
-    push_terminal_end_band_boundary_constraints(
-        mouth,
-        end_band,
-        owner,
-        owner_by_kind_and_source,
-        constraints,
-    )
 }
 
 fn terminal_owner_by_kind_and_source(
