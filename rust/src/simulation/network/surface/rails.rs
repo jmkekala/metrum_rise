@@ -70,6 +70,7 @@ pub(crate) struct NodeGeneratedContour {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeGeneratedContourClaimPriority {
     JoinOrCap,
+    SideJoin,
     MouthBand,
     Footprint,
 }
@@ -356,6 +357,7 @@ fn push_terminal_end_band_contours(
     let owner_by_kind_and_source =
         terminal_owner_by_kind_and_source(mouth, mouth_owners, end_bands, owners);
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
+        push_node_side_join_candidate_contours(mouth, end_bands, owners, contours, constraints)?;
         for (end_band, owner) in end_bands.iter().zip(owners) {
             push_terminal_end_band_boundary_constraints(
                 mouth,
@@ -385,10 +387,11 @@ fn push_terminal_end_band_contours(
     }
 
     for (key, group) in groups {
-        push_terminal_end_band_group_contours(
+        push_grouped_end_band_candidate_contours(
             mouth,
             key,
             &group.contour_world,
+            NodeGeneratedContourClaimPriority::JoinOrCap,
             contours,
             constraints,
         )?;
@@ -401,6 +404,46 @@ fn push_terminal_end_band_contours(
                 constraints,
             )?;
         }
+    }
+
+    Ok(())
+}
+
+fn push_node_side_join_candidate_contours(
+    mouth: &NodeInputMouth,
+    end_bands: &[NodeInputTerminalEndBand],
+    owners: &[NodeBandOwner],
+    contours: &mut Vec<NodeGeneratedContour>,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
+    let mut groups = BTreeMap::<TerminalEndBandGroupKey, TerminalEndBandGroup>::new();
+    for (end_band, owner) in end_bands.iter().zip(owners) {
+        if !node_side_join_end_band_contributes_domain(end_band) {
+            continue;
+        }
+        groups
+            .entry(TerminalEndBandGroupKey {
+                kind: end_band.band_kind,
+                source_band_index: end_band.source_band_index,
+                owner: *owner,
+                contributes_footprint: node_side_join_end_band_contributes_footprint(end_band),
+            })
+            .or_insert_with(|| TerminalEndBandGroup {
+                contour_world: Vec::new(),
+                end_bands: Vec::new(),
+            })
+            .push(end_band);
+    }
+
+    for (key, group) in groups {
+        push_grouped_end_band_candidate_contours(
+            mouth,
+            key,
+            &group.contour_world,
+            NodeGeneratedContourClaimPriority::SideJoin,
+            contours,
+            constraints,
+        )?;
     }
 
     Ok(())
@@ -448,10 +491,11 @@ impl<'a> TerminalEndBandGroup<'a> {
     }
 }
 
-fn push_terminal_end_band_group_contours(
+fn push_grouped_end_band_candidate_contours(
     mouth: &NodeInputMouth,
     key: TerminalEndBandGroupKey,
     contour_world: &[NodeOverlayContour],
+    claim_priority: NodeGeneratedContourClaimPriority,
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
@@ -508,7 +552,7 @@ fn push_terminal_end_band_group_contours(
                 source_mouth_order_index: mouth.order_index,
                 source_band_index: Some(key.source_band_index),
                 owner: Some(key.owner),
-                claim_priority: NodeGeneratedContourClaimPriority::JoinOrCap,
+                claim_priority,
                 points_xz: points_xz.clone(),
                 backend_polyline: band_contour,
             });
@@ -675,6 +719,22 @@ fn terminal_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) 
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
             | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+    )
+}
+
+fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBand) -> bool {
+    matches!(
+        end_band.boundary_mode,
+        NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
+            | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+    )
+}
+
+fn node_side_join_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
+    matches!(
+        end_band.boundary_mode,
+        NodeInputTerminalEndBandBoundaryMode::MaterialBand
     )
 }
 
@@ -3432,6 +3492,28 @@ mod tests {
         .expect("test terminal mouth should produce canonical input")
     }
 
+    fn nonterminal_input_with_side_join_candidate() -> NodeArrangementInput {
+        let mut input = input_with_endpoint_x(0.0);
+        input.mouths[0]
+            .terminal_end_bands
+            .push(NodeInputTerminalEndBand {
+                source_band_index: 3,
+                band_kind: RoadSurfaceBandKind::Sidewalk,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+                inner_start_world: RoadVec3::new(0.0, 4.4, 4.0),
+                inner_end_world: RoadVec3::new(2.0, 4.4, 4.0),
+                outer_start_world: RoadVec3::new(0.0, 4.4, 6.0),
+                outer_end_world: RoadVec3::new(2.0, 4.4, 6.0),
+                contour_world: vec![
+                    RoadVec3::new(0.0, 4.4, 4.0),
+                    RoadVec3::new(2.0, 4.4, 4.0),
+                    RoadVec3::new(2.0, 4.4, 6.0),
+                    RoadVec3::new(0.0, 4.4, 6.0),
+                ],
+            });
+        input
+    }
+
     #[test]
     fn generates_backend_contours_and_constraints_from_solved_mouth_input() {
         let contours =
@@ -3470,6 +3552,36 @@ mod tests {
             NodeRailConstraintKind::FullRoadbedContour
         );
         assert_eq!(contours.constraints[0].constraint_index, 0);
+    }
+
+    #[test]
+    fn nonterminal_side_join_end_bands_emit_canonical_ownership_candidates() {
+        let contours =
+            NodeRailContourSet::from_input(&nonterminal_input_with_side_join_candidate())
+                .expect("valid contours");
+
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind == NodeGeneratedContourKind::FullRoadbed
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
+                && contour.source_mouth_order_index == 0
+        }));
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind
+                == NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::Sidewalk,
+                }
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+                && contour.source_mouth_order_index == 0
+                && contour.source_band_index == Some(3)
+        }));
+        assert!(contours.constraints.iter().any(|constraint| {
+            matches!(
+                constraint.kind,
+                NodeRailConstraintKind::FootprintSeam {
+                    adjacent_kind: RoadSurfaceBandKind::Sidewalk
+                }
+            ) && constraint.source_band_index == Some(3)
+        }));
     }
 
     #[test]

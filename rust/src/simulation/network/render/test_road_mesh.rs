@@ -1383,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t_junction_rejects_without_legal_join_ownership() {
+    fn test_t_junction_compiles_with_legal_join_ownership() {
         let vertical = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
         let horizontal = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
         let (_graph, mesh_data, _terrain) =
@@ -1399,8 +1399,8 @@ mod tests {
         );
 
         assert!(
-            center_road <= 0.05,
-            "T junction must reject until legal join ownership is generated before heighting; center_road={center_road:.3}"
+            center_road >= 0.90,
+            "T junction should render legal join ownership at the center; center_road={center_road:.3}"
         );
     }
 
@@ -1598,8 +1598,8 @@ mod tests {
         );
 
         assert!(
-            junction_core <= 0.05,
-            "mixed-width T junction must reject until legal join ownership is generated before heighting; junction_core={junction_core:.3}"
+            junction_core >= 0.90,
+            "mixed-width T junction should render legal join ownership at the core; junction_core={junction_core:.3}"
         );
         assert!(bubble_zone <= 0.15);
     }

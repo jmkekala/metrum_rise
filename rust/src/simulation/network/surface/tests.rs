@@ -909,6 +909,31 @@ fn assert_compiled_bend_piece(
     piece
 }
 
+fn assert_compiled_junction_piece(
+    surface: &RoadSurfaceSystem,
+    junction: u32,
+) -> &RoadSurfaceVisualNodePiece {
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&junction)
+        .expect("junction should compile through canonical owned regions");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.curb_surface_polygons.is_empty());
+    assert!(!piece.curb_vertical_face_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_top_surface_triangles_face_up(piece);
+    assert_curb_vertical_faces_visible_from_carriageway(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert_node_top_covers_footprint(piece);
+    piece
+}
+
 fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNodePiece) {
     let top_polygons = piece
         .road_surface_polygons
@@ -3033,7 +3058,7 @@ fn visual_node_rejection_is_deterministic_for_multi_arm_nodes() {
 }
 
 #[test]
-fn oblique_t_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn oblique_t_junction_compiles_with_canonical_side_join_ownership() {
     let mut graph = RegionGraph::new();
     let left = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
     let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -3075,14 +3100,11 @@ fn oblique_t_junction_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "60-degree T junction must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
-fn editor_sized_60_degree_t_junction_width_7_rejects_cdt_height_edge_conflict() {
+fn editor_sized_60_degree_t_junction_width_7_compiles_side_join_ownership() {
     let mut graph = RegionGraph::new();
     let left = graph.add_node(Vector3::new(-87.843, 0.0, -11.753), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-50.197, 0.0, -11.753), NodeType::Junction);
@@ -3130,10 +3152,7 @@ fn editor_sized_60_degree_t_junction_width_7_rejects_cdt_height_edge_conflict() 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "editor-sized 60-degree T junction must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 
     let raw_clip_sources = surface
         .compiled_visual_span_pieces()
@@ -3190,7 +3209,7 @@ fn editor_sized_60_degree_t_junction_width_7_rejects_cdt_height_edge_conflict() 
 }
 
 #[test]
-fn logged_flat_three_way_oblique_junction_rejects_implicit_height_repair() {
+fn logged_flat_three_way_oblique_junction_compiles_side_join_ownership() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-60.311, 0.0, -3.324), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-12.773, 0.0, -3.324), NodeType::Junction);
@@ -3238,14 +3257,11 @@ fn logged_flat_three_way_oblique_junction_rejects_implicit_height_repair() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "flat oblique 3-way must not emit a JunctionN while its curb/sidewalk seam still depends on implicit same-XZ height repair"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
-fn logged_current_flat_three_way_oblique_junction_rejects_cross_owner_cdt_height_edge() {
+fn logged_current_flat_three_way_oblique_junction_compiles_side_join_ownership() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.716, 0.0, -14.881), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-25.618, 0.0, -14.881), NodeType::Junction);
@@ -3293,10 +3309,7 @@ fn logged_current_flat_three_way_oblique_junction_rejects_cross_owner_cdt_height
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "current flat oblique 3-way must reject the remaining implicit cross-owner CDT height edge"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
@@ -4344,10 +4357,7 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "JunctionN must reject until explicit legal curb/sidewalk join ownership is generated before heighting"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
