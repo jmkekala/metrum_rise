@@ -865,9 +865,26 @@ impl RoadSurfaceSystem {
                         .iter()
                         .any(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
                 });
+            let visible_dot = Self::debug_polygon_winding_normal(
+                &piece.curb_vertical_face_polygons[face_index].points_world,
+            )
+            .map(|normal| -normal)
+            .and_then(|direction| {
+                Self::debug_visible_dot_to_lower_carriageway_owner(
+                    piece,
+                    (span_edges.lower_start + span_edges.lower_end) * 0.5,
+                    direction,
+                    lower_key
+                        .and_then(|key| top_edges_by_key.get(&key))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                )
+            });
+            let visible_from_lower_carriageway_owner = visible_dot.is_some_and(|dot| dot > 0.0);
             let face_problem = !lower_matches_carriageway
                 || !upper_matches_curb
-                || face_expected_matches[face_index].is_empty();
+                || face_expected_matches[face_index].is_empty()
+                || !visible_from_lower_carriageway_owner;
             if face_problem {
                 problem_count += 1;
             }

@@ -390,7 +390,15 @@ fn overlay_area_m2(shapes: &super::NodeOverlayShapes) -> f32 {
         .sum()
 }
 
-fn node_top_coverage_areas_m2(piece: &RoadSurfaceVisualNodePiece) -> (f32, f32, f32) {
+fn node_top_coverage_details_m2(
+    piece: &RoadSurfaceVisualNodePiece,
+) -> (
+    f32,
+    f32,
+    f32,
+    super::NodeOverlayShapes,
+    super::NodeOverlayShapes,
+) {
     let footprint_contours = overlay_contours_from_polygons(&piece.outer_boundary_loops);
     let footprint_shapes = RoadSurfaceSystem::overlay_union_contours(&footprint_contours)
         .expect("node footprint overlay union should succeed");
@@ -423,14 +431,17 @@ fn node_top_coverage_areas_m2(piece: &RoadSurfaceVisualNodePiece) -> (f32, f32, 
         overlay_area_m2(&missing_shapes),
         overlay_area_m2(&extra_shapes),
         budget_m2,
+        missing_shapes,
+        extra_shapes,
     )
 }
 
 fn assert_node_top_covers_footprint(piece: &RoadSurfaceVisualNodePiece) {
-    let (missing_area_m2, extra_area_m2, budget_m2) = node_top_coverage_areas_m2(piece);
+    let (missing_area_m2, extra_area_m2, budget_m2, missing_shapes, extra_shapes) =
+        node_top_coverage_details_m2(piece);
     assert!(
         missing_area_m2 <= budget_m2 && extra_area_m2 <= budget_m2,
-        "node top surfaces must exactly cover the canonical footprint; kind={:?} missing_area={missing_area_m2:.6} extra_area={extra_area_m2:.6} budget={budget_m2:.6}",
+        "node top surfaces must exactly cover the canonical footprint; kind={:?} missing_area={missing_area_m2:.6} extra_area={extra_area_m2:.6} budget={budget_m2:.6} missing_shapes={missing_shapes:?} extra_shapes={extra_shapes:?}",
         piece.kind
     );
 }
@@ -674,6 +685,141 @@ fn assert_top_mesh_centroids_inside_outer_boundary(piece: &RoadSurfaceVisualNode
     }
 }
 
+fn assert_top_surface_triangles_face_up(piece: &RoadSurfaceVisualNodePiece) {
+    for triangle in piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.curb_surface_polygons.iter())
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+    {
+        let double_area_xz = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
+            - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        assert!(
+            double_area_xz >= -0.001,
+            "node top-surface triangles must remain front-facing from above; kind={:?} triangle={triangle:?} double_area_xz={double_area_xz:.6}",
+            piece.kind
+        );
+    }
+}
+
+fn assert_curb_vertical_faces_visible_from_carriageway(piece: &RoadSurfaceVisualNodePiece) {
+    for face in &piece.curb_vertical_face_polygons {
+        let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
+            continue;
+        };
+        let Some(visible_direction) = vertical_face_visible_direction_for_test(face) else {
+            continue;
+        };
+        let visible_direction =
+            Vector3::new(visible_direction.x, 0.0, visible_direction.z).normalized();
+        let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
+        let mut best_dot: Option<f32> = None;
+
+        for road_polygon in &piece.road_surface_polygons {
+            if !polygon_boundary_overlaps_edge_at_height_for_test(road_polygon, lower_edge) {
+                continue;
+            }
+            let Some(centroid) = polygon_centroid_for_test(road_polygon) else {
+                continue;
+            };
+            let owner_direction =
+                Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+            if owner_direction.length_squared() <= 1e-8 {
+                continue;
+            }
+            let dot = visible_direction.dot(owner_direction.normalized());
+            best_dot = Some(best_dot.map_or(dot, |current| current.max(dot)));
+        }
+
+        if let Some(dot) = best_dot {
+            assert!(
+                dot > 0.0,
+                "curb vertical face must be visible from the lower carriageway owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
+                piece.kind,
+                face.points_world
+            );
+        }
+    }
+}
+
+fn vertical_face_visible_direction_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
+    let [upper_start, lower_start, lower_end, _upper_end] = polygon.points_world.as_slice() else {
+        return None;
+    };
+    let normal = (*lower_start - *upper_start).cross(*lower_end - *upper_start);
+    (normal.length_squared() > 1e-8).then_some(-normal.normalized())
+}
+
+fn polygon_boundary_overlaps_edge_at_height_for_test(
+    polygon: &RoadSurfaceVisualPolygon,
+    edge: [Vector3; 2],
+) -> bool {
+    let points = &polygon.points_world;
+    if points.len() < 2 {
+        return false;
+    }
+    let expected_y = (edge[0].y + edge[1].y) * 0.5;
+    let edge_start = test_xz_key(edge[0]);
+    let edge_end = test_xz_key(edge[1]);
+    (0..points.len()).any(|index| {
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        (start.y - expected_y).abs() <= SAMPLE_EPSILON_M
+            && (end.y - expected_y).abs() <= SAMPLE_EPSILON_M
+            && test_xz_segments_overlap_with_length(
+                test_xz_key(start),
+                test_xz_key(end),
+                edge_start,
+                edge_end,
+            )
+    })
+}
+
+fn test_xz_segments_overlap_with_length(
+    a_start: (i64, i64),
+    a_end: (i64, i64),
+    b_start: (i64, i64),
+    b_end: (i64, i64),
+) -> bool {
+    if a_start == a_end || b_start == b_end {
+        return false;
+    }
+    let a_dx = i128::from(a_end.0 - a_start.0);
+    let a_dz = i128::from(a_end.1 - a_start.1);
+    let b_dx = i128::from(b_end.0 - b_start.0);
+    let b_dz = i128::from(b_end.1 - b_start.1);
+    if a_dx * b_dz - a_dz * b_dx != 0 {
+        return false;
+    }
+    if !test_xz_key_lies_on_segment(a_start, b_start, b_end)
+        && !test_xz_key_lies_on_segment(a_end, b_start, b_end)
+        && !test_xz_key_lies_on_segment(b_start, a_start, a_end)
+        && !test_xz_key_lies_on_segment(b_end, a_start, a_end)
+    {
+        return false;
+    }
+    let use_x = (a_end.0 - a_start.0).abs() >= (a_end.1 - a_start.1).abs();
+    let coordinate = |key: (i64, i64)| {
+        if use_x { key.0 } else { key.1 }
+    };
+    let a0 = coordinate(a_start);
+    let a1 = coordinate(a_end);
+    let b0 = coordinate(b_start);
+    let b1 = coordinate(b_end);
+    a0.min(a1).max(b0.min(b1)) < a0.max(a1).min(b0.max(b1))
+}
+
+fn polygon_centroid_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
+    let mut sum = Vector3::ZERO;
+    let mut count = 0usize;
+    for point in &polygon.points_world {
+        sum += Vector3::new(point.x, 0.0, point.z);
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f32)
+}
+
 fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece) {
     assert!(
         !piece.owned_regions.is_empty(),
@@ -736,6 +882,31 @@ fn assert_node_piece_has_curb_and_sidewalk_owners(piece: &RoadSurfaceVisualNodeP
             .any(|region| region.kind == RoadSurfaceBandKind::Sidewalk),
         "node non-road hardcut must expose explicit sidewalk owners"
     );
+}
+
+fn assert_compiled_bend_piece(
+    surface: &RoadSurfaceSystem,
+    bend: u32,
+) -> &RoadSurfaceVisualNodePiece {
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("bend should compile through canonical owned regions");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.curb_surface_polygons.is_empty());
+    assert!(!piece.curb_vertical_face_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_top_surface_triangles_face_up(piece);
+    assert_curb_vertical_faces_visible_from_carriageway(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert_node_top_covers_footprint(piece);
+    piece
 }
 
 fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNodePiece) {
@@ -1410,7 +1581,7 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
 }
 
 #[test]
-fn flat_logged_curve_bend_rejects_missing_explicit_point_contact_curb_ownership() {
+fn flat_logged_curve_bend_compiles_with_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-17.539, 0.0, 12.635), NodeType::Junction);
@@ -1454,14 +1625,11 @@ fn flat_logged_curve_bend_rejects_missing_explicit_point_contact_curb_ownership(
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "logged curve bend must reject until rails emit explicit point-contact curb ownership before heighting"
-    );
+    assert_compiled_bend_piece(&surface, bend);
 }
 
 #[test]
-fn logged_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
+fn logged_sixty_degree_bend_compiles_with_explicit_curb_sidewalk_endpoint_authority() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-131.350, 0.0, -31.215), NodeType::Junction);
@@ -1497,14 +1665,11 @@ fn logged_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint_auth
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "sixty-degree bend must reject until rails emit explicit curb/sidewalk endpoint authority before heighting"
-    );
+    assert_compiled_bend_piece(&surface, bend);
 }
 
 #[test]
-fn logged_flat_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
+fn logged_flat_sixty_degree_bend_compiles_with_explicit_curb_sidewalk_endpoint_authority() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-104.032, 0.0, -0.181), NodeType::Junction);
@@ -1540,14 +1705,51 @@ fn logged_flat_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "flat logged bend must reject until rails emit explicit curb/sidewalk endpoint authority for every same-key material contact"
-    );
+    assert_compiled_bend_piece(&surface, bend);
 }
 
 #[test]
-fn logged_inside_bend_rejects_missing_explicit_point_contact_curb_ownership() {
+fn logged_oblique_curve_bend_top_surfaces_cover_footprint() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-137.811, 0.0, -32.495), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-62.948, 0.0, -30.476), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(-0.213, 0.0, 15.063), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-137.811, 0.0, -32.495),
+            Vector3::new(-62.948, 0.0, -30.476),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-62.948, 0.0, -30.476),
+            Vector3::new(-0.213, 0.0, 15.063),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_compiled_bend_piece(&surface, bend);
+}
+
+#[test]
+fn logged_inside_bend_compiles_with_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.047, 0.0, -9.463), NodeType::Junction);
@@ -1582,10 +1784,7 @@ fn logged_inside_bend_rejects_missing_explicit_point_contact_curb_ownership() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "inside bend must reject until rails emit explicit point-contact curb ownership before heighting"
-    );
+    assert_compiled_bend_piece(&surface, bend);
 }
 
 #[test]

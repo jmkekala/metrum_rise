@@ -132,11 +132,12 @@ Live behavior:
   sampled as the maximum incident top height. This keeps `cdt_invalid_constraints=0` from being
   dependent on whether the roadbed union exported one loop or several touching loops.
 - known debt: the post-overlay boundary snapping, seam welding, shared grade sampler, source-vector
-  height plumbing, and hand-written terminal / bend helper path have been removed. The remaining
-  blocker is that the current rail / contour generation still does not create enough canonical
-  curb / sidewalk join ownership for oblique and sharp `Terminal`, `Bend`, and `JunctionN` cases,
-  so boolean ownership and height-field validation now reject real band residuals instead of
-  silently patching them.
+  height plumbing, and hand-written terminal / bend helper path have been removed. Logged
+  `Terminal` and 2-arm `Bend` regressions now compile through canonical curb / sidewalk join
+  ownership, including top-surface footprint coverage and upward-facing top triangles. The
+  remaining blocker is broader rail / contour generation for `JunctionN` and not-yet-validated
+  arbitrary-node cases; boolean ownership and height-field validation must keep rejecting real band
+  residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -150,12 +151,13 @@ Live behavior:
 
 Remaining ROAD-01 gap:
 
-- elevated and flat `Bend` / `JunctionN` pieces now use the canonical runtime path, but the rail
-  generation stage is still too mouth-local. The remaining work is a library-backed canonical node
-  arrangement that creates explicit corner / join ownership before boolean splitting so oblique
-  junctions do not produce real curb / sidewalk residuals. Hand-built miter caps, miter guards, or
-  adjacent-mouth connector patches are not the Bend / JunctionN ownership strategy; they are the
-  failure mode this rework is replacing.
+- elevated and flat `Bend` / `JunctionN` pieces now use the canonical runtime path, and logged
+  2-arm bend cases now preserve closed top-surface coverage through explicit curb / sidewalk join
+  ownership. The rail generation stage is still too mouth-local for broader `JunctionN` coverage.
+  The remaining work is a library-backed canonical node arrangement that creates explicit corner /
+  join ownership before boolean splitting so oblique junctions do not produce real curb / sidewalk
+  residuals. Hand-built miter caps, miter guards, or adjacent-mouth connector patches are not the
+  Bend / JunctionN ownership strategy; they are the failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 
@@ -1531,10 +1533,10 @@ The terrain CDT hardcut is the accepted baseline. Its required properties are:
   panic the simulation thread or re-enable an older terrain path.
 
 The current node-piece path has removed the retired post-overlay repair helpers and now routes
-runtime node output through the canonical backend stages. Its remaining debt is rail / contour
-generation: oblique and sharp nodes still need explicit library-backed corner / join ownership
-before boolean splitting. Future changes must extend that canonical arrangement contract rather
-than reintroduce transitional repair helpers.
+runtime node output through the canonical backend stages. Logged `Terminal` and 2-arm `Bend`
+ownership regressions now compile with closed top-surface coverage, but the remaining rail /
+contour debt still applies to broader `JunctionN` and arbitrary-node cases. Future changes must
+extend that canonical arrangement contract rather than reintroduce transitional repair helpers.
 
 Acceptance for changes in this area requires `cargo check`, the relevant road-surface contract
 tests, and Godot headless load to pass.

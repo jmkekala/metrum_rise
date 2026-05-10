@@ -7,8 +7,8 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{
-        NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
-        NodeSeamSource,
+        NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
+        NodeExplicitVerticalStepSegment, NodeSeamSource,
     },
     input::NodeInputExtractionError,
     terrain_clip_edge_kind_for_band,
@@ -419,12 +419,20 @@ impl RoadSurfaceSystem {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for segment in arrangement.explicit_vertical_step_segments() {
-            let Some((lower_owner, _raised_owner)) = explicit_step_lower_and_raised_owners(segment)
+            let segment_key = (segment.start(), segment.end());
+            let Some((lower_owner, raised_owner)) =
+                arrangement_explicit_step_owners_for_segment(arrangement, segment_key)
+                    .or_else(|| explicit_step_lower_and_raised_owners(segment))
             else {
                 continue;
             };
             let Some((lower_start, raised_start, lower_end, raised_end)) =
-                arrangement_vertical_step_points_for_segment(arrangement, segment)
+                arrangement_vertical_step_points_for_segment(
+                    arrangement,
+                    segment,
+                    lower_owner,
+                    raised_owner,
+                )
             else {
                 continue;
             };
@@ -432,21 +440,32 @@ impl RoadSurfaceSystem {
             if !emitted.insert(key) {
                 continue;
             }
-            let asphalt_direction = arrangement_carriageway_direction_for_segment(
+            let mut points = [raised_start, lower_start, lower_end, raised_end];
+            if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
                 arrangement,
                 lower_owner,
                 key,
-                lower_start,
-                lower_end,
-            )
-            .unwrap_or_else(|| {
-                let edge_direction = lower_end - lower_start;
-                Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
-            });
-            let mut points = [raised_start, lower_start, lower_end, raised_end];
-            let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-            if face_normal.dot(asphalt_direction) > 0.0 {
-                points = [points[3], points[2], points[1], points[0]];
+                points,
+            ) {
+                if visible_dot <= 0.0 {
+                    points = [points[3], points[2], points[1], points[0]];
+                }
+            } else {
+                let asphalt_direction = arrangement_carriageway_direction_for_segment(
+                    arrangement,
+                    lower_owner,
+                    key,
+                    lower_start,
+                    lower_end,
+                )
+                .unwrap_or_else(|| {
+                    let edge_direction = lower_end - lower_start;
+                    Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
+                });
+                let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+                if face_normal.dot(asphalt_direction) > 0.0 {
+                    points = [points[3], points[2], points[1], points[0]];
+                }
             }
             if let Some(face) = Self::make_vertical_quad_polygon(points) {
                 faces.push(face);
@@ -717,6 +736,21 @@ impl RoadSurfaceSystem {
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
     ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
+        let triangle = Self::arrangement_face_visual_triangle(arrangement, face)?;
+        Some(
+            [RoadSurfaceVisualPolygon {
+                points_world: triangle.to_vec(),
+                triangles_world: vec![triangle],
+            }]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    fn arrangement_face_visual_triangle(
+        arrangement: &NodeArrangement,
+        face: &super::arrangement::NodeArrangementFace,
+    ) -> Option<[Vector3; 3]> {
         let vertices = face.vertices();
         let mut triangle = [
             Self::arrangement_vertex_world(arrangement, vertices[0])?,
@@ -738,14 +772,7 @@ impl RoadSurfaceSystem {
         if Self::signed_polygon_area_xz(&triangle) < 0.0 {
             triangle.swap(1, 2);
         }
-        Some(
-            [RoadSurfaceVisualPolygon {
-                points_world: triangle.to_vec(),
-                triangles_world: vec![triangle],
-            }]
-            .into_iter()
-            .collect(),
-        )
+        Some(triangle)
     }
 
     fn arrangement_vertex_world(
@@ -1197,8 +1224,9 @@ fn curb_vertical_face_lower_edge_key(
 fn arrangement_vertical_step_points_for_segment(
     arrangement: &NodeArrangement,
     segment: NodeExplicitVerticalStepSegment,
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
 ) -> Option<(Vector3, Vector3, Vector3, Vector3)> {
-    let (lower_owner, raised_owner) = explicit_step_lower_and_raised_owners(segment)?;
     let lower_start =
         arrangement_step_point_at_key(arrangement, segment.start(), lower_owner, false)?;
     let raised_start =
@@ -1208,6 +1236,37 @@ fn arrangement_vertical_step_points_for_segment(
     ((raised_start.y - lower_start.y > SAMPLE_EPSILON_M)
         || (raised_end.y - lower_end.y > SAMPLE_EPSILON_M))
         .then_some((lower_start, raised_start, lower_end, raised_end))
+}
+
+fn arrangement_explicit_step_owners_for_segment(
+    arrangement: &NodeArrangement,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    let lower_owner = arrangement_face_owner_for_segment_kind(
+        arrangement,
+        segment_key,
+        RoadSurfaceBandKind::Carriageway,
+    )?;
+    let raised_owner = arrangement_face_owner_for_segment_kind(
+        arrangement,
+        segment_key,
+        RoadSurfaceBandKind::CurbOrShoulder,
+    )?;
+    Some((lower_owner, raised_owner))
+}
+
+fn arrangement_face_owner_for_segment_kind(
+    arrangement: &NodeArrangement,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+    kind: RoadSurfaceBandKind,
+) -> Option<NodeBandOwner> {
+    arrangement
+        .faces()
+        .iter()
+        .filter(|face| face.owner().kind() == kind)
+        .filter(|face| arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key))
+        .map(|face| face.owner())
+        .min()
 }
 
 fn explicit_step_lower_and_raised_owners(
@@ -1271,6 +1330,28 @@ fn arrangement_owner_direction_for_segment(
 ) -> Option<Vector3> {
     let midpoint = (start + end) * 0.5;
     let mut best = None;
+    for face in arrangement.faces() {
+        if face.owner() != owner
+            || !arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key)
+        {
+            continue;
+        }
+        let Some(centroid) = arrangement_face_centroid(arrangement, face) else {
+            continue;
+        };
+        let direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+        let distance_squared = direction.length_squared();
+        if distance_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            continue;
+        }
+        if best.is_none_or(|(best_distance_squared, _)| distance_squared < best_distance_squared) {
+            best = Some((distance_squared, direction));
+        }
+    }
+    if let Some((_, direction)) = best {
+        return Some(direction);
+    }
+
     for region in arrangement.regions() {
         if region.owner() != owner
             || !arrangement_region_boundary_overlaps_segment(arrangement, region, segment_key)
@@ -1285,11 +1366,82 @@ fn arrangement_owner_direction_for_segment(
         if distance_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
             continue;
         }
-        if best.is_none_or(|(best_distance_squared, _)| distance_squared > best_distance_squared) {
+        if best.is_none_or(|(best_distance_squared, _)| distance_squared < best_distance_squared) {
             best = Some((distance_squared, direction));
         }
     }
     best.map(|(_, direction)| direction)
+}
+
+fn arrangement_vertical_face_visible_dot_to_owner(
+    arrangement: &NodeArrangement,
+    owner: NodeBandOwner,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+    points: [Vector3; 4],
+) -> Option<f32> {
+    let [upper_start, lower_start, lower_end, _upper_end] = points;
+    let normal = (lower_start - upper_start).cross(lower_end - upper_start);
+    if normal.length_squared() <= 1e-8 {
+        return None;
+    }
+    let visible_direction = Vector3::new(-normal.x, 0.0, -normal.z);
+    if visible_direction.length_squared() <= 1e-8 {
+        return None;
+    }
+    let visible_direction = visible_direction.normalized();
+    let midpoint = (lower_start + lower_end) * 0.5;
+    let mut best_dot: Option<f32> = None;
+    for face in arrangement.faces() {
+        if face.owner() != owner
+            || !arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key)
+        {
+            continue;
+        }
+        let Some(centroid) = arrangement_face_centroid(arrangement, face) else {
+            continue;
+        };
+        let owner_direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+        if owner_direction.length_squared() <= 1e-8 {
+            continue;
+        }
+        let dot = visible_direction.dot(owner_direction.normalized());
+        best_dot = Some(best_dot.map_or(dot, |current| current.max(dot)));
+    }
+    best_dot
+}
+
+fn arrangement_face_boundary_overlaps_segment(
+    arrangement: &NodeArrangement,
+    face: &NodeArrangementFace,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+) -> bool {
+    let Some(triangle) = RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face)
+    else {
+        return false;
+    };
+    for index in 0..triangle.len() {
+        let start =
+            NodeArrangementKey::from_point(super::backend::godot_vec3_xz_to_road(triangle[index]));
+        let end = NodeArrangementKey::from_point(super::backend::godot_vec3_xz_to_road(
+            triangle[(index + 1) % triangle.len()],
+        ));
+        if arrangement_segments_overlap_with_length(start, end, segment_key.0, segment_key.1) {
+            return true;
+        }
+    }
+    false
+}
+
+fn arrangement_face_centroid(
+    arrangement: &NodeArrangement,
+    face: &NodeArrangementFace,
+) -> Option<Vector3> {
+    let triangle = RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face)?;
+    let mut sum = Vector3::ZERO;
+    for point in triangle {
+        sum += Vector3::new(point.x, 0.0, point.z);
+    }
+    Some(sum / triangle.len() as f32)
 }
 
 fn arrangement_region_boundary_overlaps_segment(

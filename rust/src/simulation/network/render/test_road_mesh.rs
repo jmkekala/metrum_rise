@@ -1307,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn test_obtuse_bend_rejects_without_legal_join_ownership() {
+    fn test_obtuse_bend_generates_legal_join_ownership() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let mut graph = RegionGraph::new();
@@ -1343,11 +1343,11 @@ mod tests {
             0.25,
             VisibleSurface::Road,
         );
-        assert!(throat_is_road <= 0.05);
+        assert!(throat_is_road >= 0.95, "throat_is_road={throat_is_road:.3}");
     }
 
     #[test]
-    fn test_triangle_network_rejects_invalid_bend_corner_without_legal_join_ownership() {
+    fn test_triangle_network_generates_valid_bend_corner_join_ownership_where_available() {
         let ab = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
         let bc = [Vector3::new(24.0, 0.0, 0.0), Vector3::new(12.0, 0.0, 20.0)];
         let ca = [Vector3::new(12.0, 0.0, 20.0), Vector3::new(0.0, 0.0, 0.0)];
@@ -1377,8 +1377,8 @@ mod tests {
             VisibleSurface::Road,
         );
 
-        assert!(corner_a_road <= 0.05, "corner_a_road={corner_a_road:.3}");
-        assert!(corner_b_road <= 0.05, "corner_b_road={corner_b_road:.3}");
+        assert!(corner_a_road >= 0.95, "corner_a_road={corner_a_road:.3}");
+        assert!(corner_b_road >= 0.95, "corner_b_road={corner_b_road:.3}");
         assert!(corner_c_road <= 0.05, "corner_c_road={corner_c_road:.3}");
     }
 

@@ -243,17 +243,26 @@ impl NodeBandHeightField {
         mouth_order_index: usize,
         end_band: &NodeInputTerminalEndBand,
     ) -> Result<(), NodeHeightFieldError> {
-        let extension = Self::from_terminal_end_band(mouth_order_index, end_band);
-        if extension.kind != self.kind {
+        if end_band.band_kind != self.kind {
             return Err(NodeHeightFieldError::SourceBandKindMismatch {
-                mouth_order_index: extension.id.mouth_order_index(),
-                band_index: extension.id.band_index(),
+                mouth_order_index,
+                band_index: end_band.source_band_index,
                 region_kind: self.kind,
-                source_kind: extension.kind,
+                source_kind: end_band.band_kind,
             });
         }
+        let extension = Self::from_terminal_end_band_with_base(mouth_order_index, end_band, self)?;
         self.patches.extend(extension.patches);
         Ok(())
+    }
+
+    fn from_terminal_end_band_with_base(
+        mouth_order_index: usize,
+        end_band: &NodeInputTerminalEndBand,
+        base: &Self,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let end_band = reheight_terminal_end_band_from_base(end_band, base)?;
+        Ok(Self::from_terminal_end_band(mouth_order_index, &end_band))
     }
 
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
@@ -318,6 +327,33 @@ impl NodeBandHeightField {
             }
         }
         Ok(first_height_m)
+    }
+}
+
+fn reheight_terminal_end_band_from_base(
+    end_band: &NodeInputTerminalEndBand,
+    base: &NodeBandHeightField,
+) -> Result<NodeInputTerminalEndBand, NodeHeightFieldError> {
+    let mut end_band = end_band.clone();
+    end_band.inner_start_world = reheight_point_from_base(end_band.inner_start_world, base)?;
+    end_band.inner_end_world = reheight_point_from_base(end_band.inner_end_world, base)?;
+    end_band.outer_start_world = reheight_point_from_base(end_band.outer_start_world, base)?;
+    end_band.outer_end_world = reheight_point_from_base(end_band.outer_end_world, base)?;
+    for point in &mut end_band.contour_world {
+        *point = reheight_point_from_base(*point, base)?;
+    }
+    Ok(end_band)
+}
+
+fn reheight_point_from_base(
+    point: RoadVec3,
+    base: &NodeBandHeightField,
+) -> Result<RoadVec3, NodeHeightFieldError> {
+    let point_xz = quantize_road_vec2_to_overlay_grid(xz(point));
+    match base.evaluate_height(point_xz) {
+        Ok(height_m) => Ok(RoadVec3::new(point.x, height_m, point.z)),
+        Err(NodeHeightFieldError::VertexOutsideHeightField { .. }) => Ok(point),
+        Err(error) => Err(error),
     }
 }
 
