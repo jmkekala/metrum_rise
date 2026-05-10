@@ -726,8 +726,11 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
             | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
             | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
+            | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
     )
 }
 
@@ -735,6 +738,8 @@ fn node_side_join_end_band_contributes_footprint(end_band: &NodeInputTerminalEnd
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
+            | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
     )
 }
 
@@ -3514,6 +3519,27 @@ mod tests {
         input
     }
 
+    fn nonterminal_input_with_same_owner_side_join_cap() -> NodeArrangementInput {
+        let mut input = input_with_endpoint_x(0.0);
+        input.mouths[0]
+            .terminal_end_bands
+            .push(NodeInputTerminalEndBand {
+                source_band_index: 3,
+                band_kind: RoadSurfaceBandKind::Sidewalk,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap,
+                inner_start_world: RoadVec3::new(0.0, 4.4, 4.0),
+                inner_end_world: RoadVec3::new(2.0, 4.4, 4.0),
+                outer_start_world: RoadVec3::new(0.9, 4.4, 6.0),
+                outer_end_world: RoadVec3::new(1.1, 4.4, 6.0),
+                contour_world: vec![
+                    RoadVec3::new(0.0, 4.4, 4.0),
+                    RoadVec3::new(2.0, 4.4, 4.0),
+                    RoadVec3::new(1.0, 4.4, 6.0),
+                ],
+            });
+        input
+    }
+
     #[test]
     fn generates_backend_contours_and_constraints_from_solved_mouth_input() {
         let contours =
@@ -3581,6 +3607,40 @@ mod tests {
                     adjacent_kind: RoadSurfaceBandKind::Sidewalk
                 }
             ) && constraint.source_band_index == Some(3)
+        }));
+    }
+
+    #[test]
+    fn nonterminal_same_owner_caps_emit_canonical_side_join_fill() {
+        let contours =
+            NodeRailContourSet::from_input(&nonterminal_input_with_same_owner_side_join_cap())
+                .expect("valid contours");
+        let cap_tip = road_point_key(RoadVec2::new(1.0, 6.0));
+
+        assert!(
+            NodeGeneratedContourClaimPriority::SideJoin
+                < NodeGeneratedContourClaimPriority::MouthBand,
+            "side-join candidates must remain whole so their protected footprint seam survives ownership cleanup"
+        );
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind == NodeGeneratedContourKind::FullRoadbed
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
+                && contour
+                    .points_xz
+                    .iter()
+                    .any(|point| road_point_key(*point) == cap_tip)
+        }));
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind
+                == NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::Sidewalk,
+                }
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+                && contour.source_band_index == Some(3)
+                && contour
+                    .points_xz
+                    .iter()
+                    .any(|point| road_point_key(*point) == cap_tip)
         }));
     }
 

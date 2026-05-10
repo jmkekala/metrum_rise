@@ -295,10 +295,23 @@ impl RoadSurfaceSystem {
         sorted_edge_ids.sort_unstable();
         sorted_edge_ids.dedup();
 
+        let debug_node_ids = self.debug_node_ids_for_edges(graph, &sorted_edge_ids);
+
         let mut dump = String::new();
         let _ = writeln!(dump, "ROAD_GEOMETRY_DUMP_BEGIN");
         let _ = writeln!(dump, "{{");
         let _ = writeln!(dump, "  \"edge_ids\": {:?},", sorted_edge_ids);
+        let _ = writeln!(dump, "  \"node_compile_status\": [");
+        let mut first_status = true;
+        for &node_id in &debug_node_ids {
+            if !first_status {
+                let _ = writeln!(dump, ",");
+            }
+            first_status = false;
+            self.append_node_compile_status_debug_dump(&mut dump, graph, terrain, node_id);
+        }
+        let _ = writeln!(dump);
+        let _ = writeln!(dump, "  ],");
         let _ = writeln!(dump, "  \"edges\": [");
 
         let mut first_edge = true;
@@ -323,7 +336,7 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump, "  \"nodes\": [");
 
         let mut first_node = true;
-        for node_id in self.debug_node_ids_for_edges(graph, &sorted_edge_ids) {
+        for node_id in debug_node_ids {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
@@ -358,6 +371,36 @@ impl RoadSurfaceSystem {
         node_ids.sort_unstable();
         node_ids.dedup();
         node_ids
+    }
+
+    fn append_node_compile_status_debug_dump(
+        &self,
+        dump: &mut String,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+    ) {
+        let valid = graph.get_valid_node(node_id);
+        let incidents = self.sorted_incident_surface_edges(graph, valid);
+        let kind = self.classify_visual_node_kind(&incidents);
+        let compiled_piece = self.compiled_visual_node_pieces.get(&node_id);
+        let compiled = compiled_piece.is_some();
+        let uses_visible_earthwork =
+            compiled && self.node_piece_uses_visible_earthwork(graph, node_id, terrain);
+
+        let _ = writeln!(dump, "    {{");
+        let _ = writeln!(dump, "      \"node_id\": {node_id},");
+        let _ = writeln!(dump, "      \"kind\": \"{:?}\",", kind);
+        dump.push_str("      \"incident_edges\": ");
+        Self::append_usize_list_literal(dump, &self.debug_incident_edges_for_node(graph, node_id));
+        dump.push_str(",\n");
+        let _ = writeln!(dump, "      \"compiled\": {compiled},");
+        let _ = writeln!(
+            dump,
+            "      \"uses_visible_earthwork\": {}",
+            uses_visible_earthwork
+        );
+        let _ = write!(dump, "    }}");
     }
 
     fn append_edge_geometry_debug_dump(

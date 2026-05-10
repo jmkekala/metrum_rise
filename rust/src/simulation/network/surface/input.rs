@@ -1872,7 +1872,7 @@ fn push_bend_corner_miter_cap(
         inner_end_world: to_outer_world,
         outer_start_world,
         outer_end_world,
-        contour_world: bend_corner_curve_cap_contour(from_outer_world, to_outer_world, miter_world),
+        contour_world: bend_corner_miter_cap_contour(from_outer_world, to_outer_world, miter_world),
     });
 }
 
@@ -1932,24 +1932,12 @@ fn nondegenerate_height_edge(
     )
 }
 
-fn bend_corner_curve_cap_contour(
+fn bend_corner_miter_cap_contour(
     from_outer_world: RoadVec3,
     to_outer_world: RoadVec3,
     control_world: RoadVec3,
 ) -> Vec<RoadVec3> {
-    let mut contour = Vec::with_capacity(BEND_CORNER_CURVE_SEGMENTS + 1);
-    contour.push(from_outer_world);
-    contour.push(to_outer_world);
-    for step in 1..BEND_CORNER_CURVE_SEGMENTS {
-        let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
-        contour.push(quadratic_bezier_world(
-            to_outer_world,
-            control_world,
-            from_outer_world,
-            t,
-        ));
-    }
-    contour
+    vec![from_outer_world, to_outer_world, control_world]
 }
 
 fn bend_corner_curve_points(

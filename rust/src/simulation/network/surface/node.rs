@@ -981,7 +981,10 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn classify_visual_node_kind(&self, incidents: &[IncidentSurfaceEdge]) -> CompiledNodeKind {
+    pub(super) fn classify_visual_node_kind(
+        &self,
+        incidents: &[IncidentSurfaceEdge],
+    ) -> CompiledNodeKind {
         match incidents.len() {
             0 | 1 => CompiledNodeKind::Terminal,
             2 => {
@@ -1094,7 +1097,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn sorted_incident_surface_edges(
+    pub(super) fn sorted_incident_surface_edges(
         &self,
         graph: &RegionGraph,
         node_id: u32,

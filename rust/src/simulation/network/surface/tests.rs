@@ -5471,6 +5471,8 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"visual_center_y_m\""));
     assert!(dump.contains("\"left_outer_margin\""));
     assert!(dump.contains("\"right_outer_margin\""));
+    assert!(dump.contains("\"node_compile_status\""));
+    assert!(dump.contains("\"compiled\": true"));
     assert!(dump.contains("\"nodes\""));
     assert!(dump.contains("\"road_topology\""));
     assert!(dump.contains("\"sidewalk_topology\""));
