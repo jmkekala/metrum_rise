@@ -1749,6 +1749,59 @@ fn logged_oblique_curve_bend_top_surfaces_cover_footprint() {
 }
 
 #[test]
+fn logged_bend_with_fragmented_asphalt_curb_step_compiles() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-107.559, 0.0, -28.209), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-54.287, 0.0, -22.547), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(-16.205, 0.0, 23.182), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-107.559, 0.0, -28.209),
+            Vector3::new(-97.788, 0.0, -27.170),
+            Vector3::new(-82.795, 0.0, -25.577),
+            Vector3::new(-69.410, 0.0, -24.155),
+            Vector3::new(-58.119, 0.0, -22.954),
+            Vector3::new(-54.287, 0.0, -22.547),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-54.287, 0.0, -22.547),
+            Vector3::new(-53.860, 0.0, -22.034),
+            Vector3::new(-52.240, 0.0, -20.089),
+            Vector3::new(-49.618, 0.0, -16.940),
+            Vector3::new(-45.836, 0.0, -12.398),
+            Vector3::new(-40.968, 0.0, -6.553),
+            Vector3::new(-35.693, 0.0, -0.218),
+            Vector3::new(-30.386, 0.0, 6.154),
+            Vector3::new(-25.038, 0.0, 12.576),
+            Vector3::new(-20.875, 0.0, 17.575),
+            Vector3::new(-16.205, 0.0, 23.182),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_compiled_bend_piece(&surface, bend);
+}
+
+#[test]
 fn logged_inside_bend_compiles_with_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();

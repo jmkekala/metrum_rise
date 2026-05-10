@@ -201,6 +201,7 @@ impl NodeBooleanOwnership {
             &mut owned_regions,
             &footprint_shapes,
             &rails.constraints,
+            rails.piece_kind,
         );
         let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
             rails.node_id,
@@ -953,6 +954,7 @@ fn materialize_noded_region_seam_constraints(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
+    piece_kind: RoadSurfaceVisualNodePieceKind,
 ) {
     let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
     let mut additions = vec![Vec::new(); regions.len()];
@@ -976,7 +978,12 @@ fn materialize_noded_region_seam_constraints(
                     )
                 })
                 .filter(|constraint| {
-                    owned_edge_lies_on_rail_constraint(edge_key.start, edge_key.end, constraint)
+                    owned_edge_lies_on_rail_constraint(
+                        edge_key.start,
+                        edge_key.end,
+                        constraint,
+                        piece_kind,
+                    )
                 })
             {
                 push_region_seam_constraint(
@@ -1420,6 +1427,7 @@ fn owned_edge_lies_on_rail_constraint(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     constraint: &NodeRailConstraint,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> bool {
     if start == end || constraint.points_xz.len() < 2 {
         return false;
@@ -1429,7 +1437,8 @@ fn owned_edge_lies_on_rail_constraint(
         let constraint_end = road_point_key(segment[1]);
         point_key_lies_on_segment(start, constraint_start, constraint_end)
             && point_key_lies_on_segment(end, constraint_start, constraint_end)
-    })
+    }) || (piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+        && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint))
 }
 
 fn owned_source_constraints_for_edge<'a>(
@@ -1663,6 +1672,37 @@ fn edge_lies_on_constraint_polyline(
     edge_end: NodeOwnershipPointKey,
     constraint: &NodeRailConstraint,
 ) -> bool {
+    edge_lies_on_constraint_polyline_with_collinearity(
+        edge_start,
+        edge_end,
+        constraint,
+        point_key_collinear_with_edge,
+    )
+}
+
+fn edge_lies_on_constraint_polyline_on_overlay_grid(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    edge_lies_on_constraint_polyline_with_collinearity(
+        edge_start,
+        edge_end,
+        constraint,
+        point_key_collinear_with_edge_on_overlay_grid,
+    )
+}
+
+fn edge_lies_on_constraint_polyline_with_collinearity(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+    point_collinear_with_edge: fn(
+        NodeOwnershipPointKey,
+        NodeOwnershipPointKey,
+        NodeOwnershipPointKey,
+    ) -> bool,
+) -> bool {
     if edge_start == edge_end || constraint.points_xz.len() < 2 {
         return false;
     }
@@ -1675,8 +1715,8 @@ fn edge_lies_on_constraint_polyline(
         let start = road_point_key(segment[0]);
         let end = road_point_key(segment[1]);
         if start == end
-            || !point_key_collinear_with_edge(start, edge_start, edge_end)
-            || !point_key_collinear_with_edge(end, edge_start, edge_end)
+            || !point_collinear_with_edge(start, edge_start, edge_end)
+            || !point_collinear_with_edge(end, edge_start, edge_end)
         {
             continue;
         }
@@ -1790,6 +1830,19 @@ fn point_key_collinear_with_edge(
     let px = i128::from(point.0 - edge_start.0);
     let pz = i128::from(point.1 - edge_start.1);
     px * dz - pz * dx == 0
+}
+
+fn point_key_collinear_with_edge_on_overlay_grid(
+    point: NodeOwnershipPointKey,
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+) -> bool {
+    let dx = i128::from(edge_end.0 - edge_start.0);
+    let dz = i128::from(edge_end.1 - edge_start.1);
+    let px = i128::from(point.0 - edge_start.0);
+    let pz = i128::from(point.1 - edge_start.1);
+    let cross = px * dz - pz * dx;
+    cross == 0 || cross.abs() <= overlay_grid_collinearity_error_bound(dx, dz)
 }
 
 fn point_lies_on_point_constraint(
@@ -2262,6 +2315,7 @@ mod tests {
             &mut regions,
             &footprint_shapes,
             &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
         );
 
         for region in &regions {
@@ -2302,6 +2356,64 @@ mod tests {
         );
 
         assert!(arrangement.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn materializes_owner_explicit_step_for_final_edge_on_constraint_path() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(2.0, 1.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [2.0, 1.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [3.0, -1.0], [2.0, 1.0]],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 34,
+            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![
+                start,
+                RoadVec2::new(0.000001, 0.0),
+                RoadVec2::new(0.000002, 0.0),
+                end,
+            ],
+        }];
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &Vec::new(),
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(start)
+                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                        && constraint.owner == Some(carriageway)
+                        && constraint.opposite_owner == Some(curb)
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::AsphaltCurbContact { .. }
+                        )
+                }),
+                "final shared asphalt-curb edge must carry the owner-explicit step seam"
+            );
+        }
     }
 
     #[test]
