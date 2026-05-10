@@ -122,7 +122,9 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            earthwork_outer_boundary_loops.push(outer_loop);
+            if let Some(outer_loop) = outer_loop {
+                earthwork_outer_boundary_loops.push(outer_loop);
+            }
             earthwork_surface_polygons.extend(side_polygons);
             render_earthwork_faces.extend(render_faces);
         }
@@ -142,7 +144,7 @@ impl RoadSurfaceSystem {
         boundary_points: &[Vector3],
         terrain: &TerrainSystem,
     ) -> Option<(
-        RoadSurfaceVisualPolygon,
+        Option<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceEarthworkRenderFace>,
     )> {
@@ -158,7 +160,7 @@ impl RoadSurfaceSystem {
                 self.earthwork_transition_point(*point, outward, terrain)
             })
             .collect();
-        let outer_loop = Self::make_visual_polygon(outer_points.clone())?;
+        let outer_loop = Self::make_visual_polygon(outer_points.clone());
         let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
         for index in 0..boundary_points.len() {
@@ -182,6 +184,9 @@ impl RoadSurfaceSystem {
             side_polygons.push(polygon);
         }
 
+        if outer_loop.is_none() && side_polygons.is_empty() {
+            return None;
+        }
         Some((outer_loop, side_polygons, render_faces))
     }
 

@@ -384,8 +384,8 @@ impl NodeArrangement {
         &self,
         segments: &mut BTreeSet<NodeExplicitVerticalStepSegment>,
     ) {
-        let mut edge_owners =
-            BTreeMap::<(NodeArrangementKey, NodeArrangementKey), BTreeSet<NodeBandOwner>>::new();
+        let mut carriageway_edges = Vec::new();
+        let mut curb_edges = Vec::new();
         for face in &self.faces {
             let vertices = face.vertices();
             for index in 0..vertices.len() {
@@ -406,36 +406,35 @@ impl NodeArrangement {
                 if start == end {
                     continue;
                 }
-                let key = if start <= end {
-                    (start, end)
-                } else {
-                    (end, start)
-                };
-                edge_owners.entry(key).or_default().insert(face.owner());
+                match face.owner().kind {
+                    RoadSurfaceBandKind::Carriageway => {
+                        carriageway_edges.push((face.owner(), start, end));
+                    }
+                    RoadSurfaceBandKind::CurbOrShoulder => {
+                        curb_edges.push((face.owner(), start, end));
+                    }
+                    _ => {}
+                }
             }
         }
 
-        for ((start, end), owners) in edge_owners {
-            let carriageway_owners = owners
-                .iter()
-                .copied()
-                .filter(|owner| owner.kind == RoadSurfaceBandKind::Carriageway)
-                .collect::<Vec<_>>();
-            let curb_owners = owners
-                .iter()
-                .copied()
-                .filter(|owner| owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
-                .collect::<Vec<_>>();
-            for carriageway_owner in &carriageway_owners {
-                for curb_owner in &curb_owners {
-                    if let Some(segment) = NodeExplicitVerticalStepSegment::new(
-                        start,
-                        end,
-                        *carriageway_owner,
-                        *curb_owner,
-                    ) {
-                        segments.insert(segment);
-                    }
+        for (carriageway_owner, carriageway_start, carriageway_end) in &carriageway_edges {
+            for (curb_owner, curb_start, curb_end) in &curb_edges {
+                let Some((start, end)) = arrangement_key_segment_overlap(
+                    *carriageway_start,
+                    *carriageway_end,
+                    *curb_start,
+                    *curb_end,
+                ) else {
+                    continue;
+                };
+                if let Some(segment) = NodeExplicitVerticalStepSegment::new(
+                    start,
+                    end,
+                    *carriageway_owner,
+                    *curb_owner,
+                ) {
+                    segments.insert(segment);
                 }
             }
         }
@@ -1394,6 +1393,94 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
 }
 
+fn arrangement_key_segment_overlap(
+    a_start: NodeArrangementKey,
+    a_end: NodeArrangementKey,
+    b_start: NodeArrangementKey,
+    b_end: NodeArrangementKey,
+) -> Option<(NodeArrangementKey, NodeArrangementKey)> {
+    if a_start == a_end || b_start == b_end {
+        return None;
+    }
+    if !arrangement_keys_are_collinear(a_start, a_end, b_start)
+        || !arrangement_keys_are_collinear(a_start, a_end, b_end)
+    {
+        return None;
+    }
+
+    let use_x = (a_end.x_key - a_start.x_key).abs() >= (a_end.z_key - a_start.z_key).abs();
+    let coordinate = |key: NodeArrangementKey| {
+        if use_x { key.x_key } else { key.z_key }
+    };
+    let a0 = coordinate(a_start);
+    let a1 = coordinate(a_end);
+    let b0 = coordinate(b_start);
+    let b1 = coordinate(b_end);
+    let overlap_start = a0.min(a1).max(b0.min(b1));
+    let overlap_end = a0.max(a1).min(b0.max(b1));
+    if overlap_end <= overlap_start {
+        return None;
+    }
+
+    let start = arrangement_key_segment_overlap_endpoint(
+        overlap_start,
+        use_x,
+        a_start,
+        a_end,
+        b_start,
+        b_end,
+    )?;
+    let end = arrangement_key_segment_overlap_endpoint(
+        overlap_end,
+        use_x,
+        a_start,
+        a_end,
+        b_start,
+        b_end,
+    )?;
+    (start != end).then_some((start, end))
+}
+
+fn arrangement_key_segment_overlap_endpoint(
+    coordinate: i64,
+    use_x: bool,
+    a_start: NodeArrangementKey,
+    a_end: NodeArrangementKey,
+    b_start: NodeArrangementKey,
+    b_end: NodeArrangementKey,
+) -> Option<NodeArrangementKey> {
+    [a_start, a_end, b_start, b_end].into_iter().find(|key| {
+        let candidate_coordinate = if use_x { key.x_key } else { key.z_key };
+        candidate_coordinate == coordinate
+            && arrangement_key_lies_on_segment(*key, a_start, a_end)
+            && arrangement_key_lies_on_segment(*key, b_start, b_end)
+    })
+}
+
+fn arrangement_key_lies_on_segment(
+    point: NodeArrangementKey,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+) -> bool {
+    arrangement_keys_are_collinear(start, end, point)
+        && point.x_key >= start.x_key.min(end.x_key)
+        && point.x_key <= start.x_key.max(end.x_key)
+        && point.z_key >= start.z_key.min(end.z_key)
+        && point.z_key <= start.z_key.max(end.z_key)
+}
+
+fn arrangement_keys_are_collinear(
+    a: NodeArrangementKey,
+    b: NodeArrangementKey,
+    c: NodeArrangementKey,
+) -> bool {
+    let ab_x = i128::from(b.x_key - a.x_key);
+    let ab_z = i128::from(b.z_key - a.z_key);
+    let ac_x = i128::from(c.x_key - a.x_key);
+    let ac_z = i128::from(c.z_key - a.z_key);
+    ab_x * ac_z - ab_z * ac_x == 0
+}
+
 fn owners_form_asphalt_curb_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
     matches!(
         (a.kind, b.kind),
@@ -1896,6 +1983,97 @@ mod tests {
 
         assert!(segments.contains(&expected));
         assert!(!segments.contains(&wrong));
+    }
+
+    #[test]
+    fn face_explicit_vertical_step_segments_use_partial_collinear_overlap() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+        let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::Bend);
+        let carriageway_height = height_field_id(RoadSurfaceBandKind::Carriageway, 2);
+        let curb_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1);
+
+        let carriageway_region = arrangement.push_region(
+            carriageway,
+            carriageway_height,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+        let curb_region = arrangement.push_region(
+            curb,
+            curb_height,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+
+        let carriageway_start = arrangement
+            .insert_vertex(
+                RoadVec2::new(0.0, 0.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let carriageway_end = arrangement
+            .insert_vertex(
+                RoadVec2::new(4.0, 0.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let carriageway_apex = arrangement
+            .insert_vertex(
+                RoadVec2::new(0.0, 1.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        arrangement.push_face(
+            carriageway_region,
+            carriageway,
+            [carriageway_start, carriageway_end, carriageway_apex],
+        );
+
+        let curb_start = arrangement
+            .insert_vertex(RoadVec2::new(1.0, 0.0), 0.12, [curb], curb_height, [])
+            .expect("test vertex is legal");
+        let curb_end = arrangement
+            .insert_vertex(RoadVec2::new(3.0, 0.0), 0.12, [curb], curb_height, [])
+            .expect("test vertex is legal");
+        let curb_apex = arrangement
+            .insert_vertex(RoadVec2::new(1.0, -1.0), 0.12, [curb], curb_height, [])
+            .expect("test vertex is legal");
+        arrangement.push_face(curb_region, curb, [curb_start, curb_end, curb_apex]);
+
+        let segments = arrangement.explicit_vertical_step_segments();
+        let expected = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(3.0, 0.0)),
+            carriageway,
+            curb,
+        )
+        .expect("test segment is non-degenerate");
+        let stale_full_edge = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(4.0, 0.0)),
+            carriageway,
+            curb,
+        )
+        .expect("test segment is non-degenerate");
+
+        assert!(segments.contains(&expected));
+        assert!(!segments.contains(&stale_full_edge));
     }
 
     #[test]

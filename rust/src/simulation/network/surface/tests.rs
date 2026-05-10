@@ -962,6 +962,10 @@ fn assert_compiled_bend_piece(
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
     assert_material_triangles_do_not_overlap(piece);
     assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(
+        !piece.render_earthwork_faces.is_empty(),
+        "bend piece must emit terrain skirt faces from its canonical outer boundary"
+    );
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.curb_surface_polygons.is_empty());
     assert!(!piece.curb_vertical_face_polygons.is_empty());
@@ -988,6 +992,10 @@ fn assert_compiled_junction_piece(
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
     assert_material_triangles_do_not_overlap(piece);
     assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(
+        !piece.render_earthwork_faces.is_empty(),
+        "junction piece must emit terrain skirt faces from its canonical outer boundary"
+    );
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.curb_surface_polygons.is_empty());
     assert!(!piece.curb_vertical_face_polygons.is_empty());
