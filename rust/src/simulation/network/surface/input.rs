@@ -171,7 +171,6 @@ impl NodeArrangementInput {
                 mouth,
             )?);
         }
-        restrict_bend_outer_paths_to_outer_corner(piece_kind, &mut input_mouths);
         add_node_corner_join_bands(piece_kind, &mut input_mouths);
 
         Ok(Self {
@@ -505,62 +504,6 @@ fn add_node_corner_join_bands(
         RoadSurfaceVisualNodePieceKind::Bend => add_bend_corner_join_bands(mouths),
         RoadSurfaceVisualNodePieceKind::JunctionN => add_junction_corner_join_bands(mouths),
         RoadSurfaceVisualNodePieceKind::Terminal => {}
-    }
-}
-
-fn restrict_bend_outer_paths_to_outer_corner(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    mouths: &mut [NodeInputMouth],
-) {
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend || mouths.len() != 2 {
-        return;
-    }
-
-    let mouth_0 = mouths[0].clone();
-    let mouth_1 = mouths[1].clone();
-    let mut use_start_path = [false; 2];
-    let mut use_end_path = [false; 2];
-    if bend_corner_uses_sampled_outer_path(&mouth_0, &mouth_1) {
-        use_end_path[0] = true;
-        use_start_path[1] = true;
-    }
-    if bend_corner_uses_sampled_outer_path(&mouth_1, &mouth_0) {
-        use_end_path[1] = true;
-        use_start_path[0] = true;
-    }
-
-    for (index, mouth) in mouths.iter_mut().enumerate() {
-        if !use_start_path[index] {
-            replace_start_outer_path_with_chord(mouth);
-        }
-        if !use_end_path[index] {
-            replace_end_outer_path_with_chord(mouth);
-        }
-    }
-}
-
-fn bend_corner_uses_sampled_outer_path(
-    from_mouth: &NodeInputMouth,
-    to_mouth: &NodeInputMouth,
-) -> bool {
-    !bend_corner_uses_full_sidewalk_curve(from_mouth, to_mouth)
-}
-
-fn replace_start_outer_path_with_chord(mouth: &mut NodeInputMouth) {
-    if let Some(rail) = mouth.boundary_rails.first_mut() {
-        rail.path_world = vec![rail.mouth_world, rail.endpoint_world];
-    }
-    if let Some(interval) = mouth.band_intervals.first_mut() {
-        interval.start_path_world = vec![interval.mouth_start_world, interval.endpoint_start_world];
-    }
-}
-
-fn replace_end_outer_path_with_chord(mouth: &mut NodeInputMouth) {
-    if let Some(rail) = mouth.boundary_rails.last_mut() {
-        rail.path_world = vec![rail.mouth_world, rail.endpoint_world];
-    }
-    if let Some(interval) = mouth.band_intervals.last_mut() {
-        interval.end_path_world = vec![interval.mouth_end_world, interval.endpoint_end_world];
     }
 }
 

@@ -376,7 +376,69 @@ impl NodeArrangement {
                 segments.insert(segment);
             }
         }
+        self.append_face_explicit_vertical_step_segments(&mut segments);
         segments.into_iter().collect()
+    }
+
+    fn append_face_explicit_vertical_step_segments(
+        &self,
+        segments: &mut BTreeSet<NodeExplicitVerticalStepSegment>,
+    ) {
+        let mut edge_owners =
+            BTreeMap::<(NodeArrangementKey, NodeArrangementKey), BTreeSet<NodeBandOwner>>::new();
+        for face in &self.faces {
+            let vertices = face.vertices();
+            for index in 0..vertices.len() {
+                let Some(start) = self
+                    .vertices
+                    .get(vertices[index].0)
+                    .map(|vertex| vertex.key)
+                else {
+                    continue;
+                };
+                let Some(end) = self
+                    .vertices
+                    .get(vertices[(index + 1) % vertices.len()].0)
+                    .map(|vertex| vertex.key)
+                else {
+                    continue;
+                };
+                if start == end {
+                    continue;
+                }
+                let key = if start <= end {
+                    (start, end)
+                } else {
+                    (end, start)
+                };
+                edge_owners.entry(key).or_default().insert(face.owner());
+            }
+        }
+
+        for ((start, end), owners) in edge_owners {
+            let carriageway_owners = owners
+                .iter()
+                .copied()
+                .filter(|owner| owner.kind == RoadSurfaceBandKind::Carriageway)
+                .collect::<Vec<_>>();
+            let curb_owners = owners
+                .iter()
+                .copied()
+                .filter(|owner| owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
+                .collect::<Vec<_>>();
+            for carriageway_owner in &carriageway_owners {
+                for curb_owner in &curb_owners {
+                    if let Some(segment) = NodeExplicitVerticalStepSegment::new(
+                        start,
+                        end,
+                        *carriageway_owner,
+                        *curb_owner,
+                    ) {
+                        segments.insert(segment);
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn diagnostics(&self) -> &[NodeArrangementDiagnostic] {

@@ -728,10 +728,14 @@ fn push_terminal_end_band_boundary_constraints(
             if end_band.boundary_mode
                 == NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
             {
-                for points in [inner_path.clone(), outer_path.clone()]
-                    .into_iter()
-                    .flatten()
-                {
+                push_terminal_curb_asphalt_contact_constraints(
+                    mouth,
+                    end_band,
+                    owner,
+                    owner_by_kind_and_source,
+                    constraints,
+                )?;
+                if let Some(points) = outer_path.clone() {
                     push_terminal_end_band_path_constraint(
                         constraints,
                         NodeRailConstraintKind::CurbSidewalkContact,
