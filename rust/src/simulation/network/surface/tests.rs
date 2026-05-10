@@ -2710,6 +2710,66 @@ fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
 }
 
 #[test]
+fn terrain_clip_union_preserves_boundary_only_connector_by_interpolation() {
+    let raw_boundary_y = -99.0;
+    let p0 = Vector3::new(0.0, 10.0, 0.0);
+    let p1 = Vector3::new(0.5, 10.5, 0.0);
+    let d0 = Vector3::new(0.50002, raw_boundary_y, 0.00008);
+    let d1 = Vector3::new(0.49998, raw_boundary_y, 0.00016);
+    let d2 = Vector3::new(0.50001, raw_boundary_y, 0.00024);
+    let p2 = Vector3::new(0.5, 10.7, 0.00032);
+    let p3 = Vector3::new(1.0, 11.0, 0.0);
+    let p4 = Vector3::new(1.0, 11.0, 0.1);
+    let p5 = Vector3::new(0.0, 10.0, 0.1);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p1),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p4),
+            terrain_clip_source_edge_for_test(p4, p5),
+            terrain_clip_source_edge_for_test(p5, p0),
+        ],
+        points_world: vec![
+            Vector3::new(p0.x, raw_boundary_y, p0.z),
+            Vector3::new(p1.x, raw_boundary_y, p1.z),
+            d0,
+            d1,
+            d2,
+            Vector3::new(p2.x, raw_boundary_y, p2.z),
+            Vector3::new(p3.x, raw_boundary_y, p3.z),
+            Vector3::new(p4.x, raw_boundary_y, p4.z),
+            Vector3::new(p5.x, raw_boundary_y, p5.z),
+        ],
+    }];
+
+    let clip_polygons = RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources);
+
+    assert_eq!(
+        clip_polygons.len(),
+        1,
+        "unioned terrain clip cutter must survive a sub-budget boundary-only connector"
+    );
+    assert!(
+        RoadSurfaceSystem::polygon_has_area_xz(&clip_polygons[0].points_world),
+        "preserved terrain clip cutter must remain a valid road footprint polygon"
+    );
+    assert!(
+        clip_polygons[0]
+            .points_world
+            .iter()
+            .all(|point| (point.y - raw_boundary_y).abs() > SAMPLE_EPSILON_M),
+        "boundary-only connector heights must come from solved source contour interpolation"
+    );
+    assert!(
+        clip_polygons[0]
+            .points_world
+            .iter()
+            .any(|point| point.y > p1.y && point.y < p2.y),
+        "sub-budget connector must carry interpolated seam heights between adjacent solved footprint vertices"
+    );
+}
+
+#[test]
 fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
     let terrain = flat_terrain(257, 257);
     let mut graph = RegionGraph::new();
