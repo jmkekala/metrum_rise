@@ -726,7 +726,9 @@ impl TestRenderEdgeKey {
     }
 }
 
-fn assert_top_asphalt_curb_boundaries_have_vertical_faces(piece: &RoadSurfaceVisualNodePiece) {
+fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
     let top_edges = test_owned_top_boundary_edges(piece);
     let face_lower_keys = piece
         .curb_vertical_face_polygons
@@ -744,24 +746,20 @@ fn assert_top_asphalt_curb_boundaries_have_vertical_faces(piece: &RoadSurfaceVis
             .iter()
             .filter(|edge| edge.kind == RoadSurfaceBandKind::Carriageway)
         {
-            for curb_edge in edges
+            for raised_edge in edges
                 .iter()
-                .filter(|edge| edge.kind == RoadSurfaceBandKind::CurbOrShoulder)
+                .filter(|edge| edge.kind != RoadSurfaceBandKind::Carriageway)
             {
-                if road_edge.key == curb_edge.key {
+                if road_edge.key == raised_edge.key || road_edge.avg_y_m >= raised_edge.avg_y_m {
                     continue;
                 }
-                let lower = if road_edge.avg_y_m <= curb_edge.avg_y_m {
-                    road_edge
-                } else {
-                    curb_edge
-                };
                 assert!(
-                    face_lower_keys.contains(&lower.xz_key),
-                    "surviving asphalt-curb top boundary must emit an explicit vertical face; kind={:?} lower={:?}->{:?}",
+                    face_lower_keys.contains(&road_edge.xz_key),
+                    "surviving asphalt-to-raised-non-road top boundary must emit an explicit vertical face; kind={:?} lower={:?}->{:?} raised_kind={:?}",
                     piece.kind,
-                    lower.start,
-                    lower.end
+                    road_edge.start,
+                    road_edge.end,
+                    raised_edge.kind
                 );
             }
         }
@@ -976,11 +974,14 @@ fn assert_curb_vertical_faces_have_top_support(piece: &RoadSurfaceVisualNodePiec
             "curb vertical face lower edge must be backed by carriageway top; lower_edge={lower_edge:?} face={:?}",
             face.points_world
         );
+        let upper_supported_by_raised_non_road = piece
+            .curb_surface_polygons
+            .iter()
+            .chain(piece.sidewalk_surface_polygons.iter())
+            .any(|polygon| polygon_boundary_overlaps_edge_at_height_for_test(polygon, upper_edge));
         assert!(
-            piece.curb_surface_polygons.iter().any(|polygon| {
-                polygon_boundary_overlaps_edge_at_height_for_test(polygon, upper_edge)
-            }),
-            "curb vertical face upper edge must be backed by curb top; upper_edge={upper_edge:?} face={:?}",
+            upper_supported_by_raised_non_road,
+            "curb vertical face upper edge must be backed by a raised non-road top; upper_edge={upper_edge:?} face={:?}",
             face.points_world
         );
     }
@@ -1173,7 +1174,7 @@ fn assert_compiled_bend_piece(
     assert_top_surface_triangles_face_up(piece);
     assert_curb_vertical_faces_have_top_support(piece);
     assert_curb_vertical_faces_visible_from_carriageway(piece);
-    assert_top_asphalt_curb_boundaries_have_vertical_faces(piece);
+    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
@@ -1205,7 +1206,7 @@ fn assert_compiled_junction_piece(
     assert_top_surface_triangles_face_up(piece);
     assert_curb_vertical_faces_have_top_support(piece);
     assert_curb_vertical_faces_visible_from_carriageway(piece);
-    assert_top_asphalt_curb_boundaries_have_vertical_faces(piece);
+    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
@@ -2335,7 +2336,7 @@ fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
         .expect("bend should compile through canonical owned regions");
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_top_covers_footprint(bend_piece);
-    assert_top_asphalt_curb_boundaries_have_vertical_faces(bend_piece);
+    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(bend_piece);
     assert_earthwork_faces_stay_outside_top_footprint(bend_piece);
 }
 

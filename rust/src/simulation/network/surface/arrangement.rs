@@ -385,7 +385,7 @@ impl NodeArrangement {
         segments: &mut BTreeSet<NodeExplicitVerticalStepSegment>,
     ) {
         let mut carriageway_edges = Vec::new();
-        let mut curb_edges = Vec::new();
+        let mut raised_edges = Vec::new();
         for face in &self.faces {
             let vertices = face.vertices();
             for index in 0..vertices.len() {
@@ -410,8 +410,8 @@ impl NodeArrangement {
                     RoadSurfaceBandKind::Carriageway => {
                         carriageway_edges.push((face.owner(), start, end));
                     }
-                    RoadSurfaceBandKind::CurbOrShoulder => {
-                        curb_edges.push((face.owner(), start, end));
+                    kind if owner_kind_is_raised_non_road(kind) => {
+                        raised_edges.push((face.owner(), start, end));
                     }
                     _ => {}
                 }
@@ -419,12 +419,12 @@ impl NodeArrangement {
         }
 
         for (carriageway_owner, carriageway_start, carriageway_end) in &carriageway_edges {
-            for (curb_owner, curb_start, curb_end) in &curb_edges {
+            for (raised_owner, raised_start, raised_end) in &raised_edges {
                 let Some((start, end)) = arrangement_key_segment_overlap(
                     *carriageway_start,
                     *carriageway_end,
-                    *curb_start,
-                    *curb_end,
+                    *raised_start,
+                    *raised_end,
                 ) else {
                     continue;
                 };
@@ -432,7 +432,7 @@ impl NodeArrangement {
                     start,
                     end,
                     *carriageway_owner,
-                    *curb_owner,
+                    *raised_owner,
                 ) {
                     segments.insert(segment);
                 }
@@ -1114,9 +1114,8 @@ impl NodeArrangementEdge {
         self.is_material_transition
             && !self.constrains_shared_height
             && !self.source_constraint_indices.is_empty()
-            && matches!(self.seam_source, NodeSeamSource::AsphaltCurbContact { .. })
             && self.opposite_owner.is_some_and(|opposite_owner| {
-                owners_form_asphalt_curb_pair(self.owner, opposite_owner)
+                owners_form_carriageway_raised_non_road_step_pair(self.owner, opposite_owner)
             })
     }
 }
@@ -1270,18 +1269,12 @@ fn seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, boo
 fn explicit_vertical_step_segment_from_constraint(
     constraint: &NodeRegionSeamConstraint,
 ) -> Option<NodeExplicitVerticalStepSegment> {
-    if !constraint.is_material_transition
-        || constraint.constrains_shared_height
-        || !matches!(
-            constraint.seam_source,
-            NodeSeamSource::AsphaltCurbContact { .. }
-        )
-    {
+    if !constraint.is_material_transition || constraint.constrains_shared_height {
         return None;
     }
     let owner = constraint.owner?;
     let opposite_owner = constraint.opposite_owner?;
-    if !owners_form_asphalt_curb_pair(owner, opposite_owner) {
+    if !owners_form_carriageway_raised_non_road_step_pair(owner, opposite_owner) {
         return None;
     }
     NodeExplicitVerticalStepSegment::new(
@@ -1477,17 +1470,16 @@ fn arrangement_keys_are_collinear(
     ab_x * ac_z - ab_z * ac_x == 0
 }
 
-fn owners_form_asphalt_curb_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
-    matches!(
-        (a.kind, b.kind),
-        (
-            RoadSurfaceBandKind::Carriageway,
-            RoadSurfaceBandKind::CurbOrShoulder
-        ) | (
-            RoadSurfaceBandKind::CurbOrShoulder,
-            RoadSurfaceBandKind::Carriageway
-        )
-    )
+pub(crate) fn owners_form_carriageway_raised_non_road_step_pair(
+    a: NodeBandOwner,
+    b: NodeBandOwner,
+) -> bool {
+    (a.kind == RoadSurfaceBandKind::Carriageway && owner_kind_is_raised_non_road(b.kind))
+        || (b.kind == RoadSurfaceBandKind::Carriageway && owner_kind_is_raised_non_road(a.kind))
+}
+
+fn owner_kind_is_raised_non_road(kind: RoadSurfaceBandKind) -> bool {
+    kind != RoadSurfaceBandKind::Carriageway
 }
 
 fn owner_sets_match_edge(
@@ -2070,6 +2062,111 @@ mod tests {
 
         assert!(segments.contains(&expected));
         assert!(!segments.contains(&stale_full_edge));
+    }
+
+    #[test]
+    fn face_explicit_vertical_step_segments_include_direct_sidewalk_contacts() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::Bend);
+        let carriageway_height = height_field_id(RoadSurfaceBandKind::Carriageway, 2);
+        let sidewalk_height = height_field_id(RoadSurfaceBandKind::Sidewalk, 1);
+
+        let carriageway_region = arrangement.push_region(
+            carriageway,
+            carriageway_height,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+        let sidewalk_region = arrangement.push_region(
+            sidewalk,
+            sidewalk_height,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+
+        let carriageway_start = arrangement
+            .insert_vertex(
+                RoadVec2::new(0.0, 0.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let carriageway_end = arrangement
+            .insert_vertex(
+                RoadVec2::new(4.0, 0.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let carriageway_apex = arrangement
+            .insert_vertex(
+                RoadVec2::new(0.0, 1.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        arrangement.push_face(
+            carriageway_region,
+            carriageway,
+            [carriageway_start, carriageway_end, carriageway_apex],
+        );
+
+        let sidewalk_start = arrangement
+            .insert_vertex(
+                RoadVec2::new(1.0, 0.0),
+                0.12,
+                [sidewalk],
+                sidewalk_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let sidewalk_end = arrangement
+            .insert_vertex(
+                RoadVec2::new(3.0, 0.0),
+                0.12,
+                [sidewalk],
+                sidewalk_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        let sidewalk_apex = arrangement
+            .insert_vertex(
+                RoadVec2::new(1.0, -1.0),
+                0.12,
+                [sidewalk],
+                sidewalk_height,
+                [],
+            )
+            .expect("test vertex is legal");
+        arrangement.push_face(
+            sidewalk_region,
+            sidewalk,
+            [sidewalk_start, sidewalk_end, sidewalk_apex],
+        );
+
+        let segments = arrangement.explicit_vertical_step_segments();
+        let expected = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(3.0, 0.0)),
+            carriageway,
+            sidewalk,
+        )
+        .expect("test segment is non-degenerate");
+
+        assert!(segments.contains(&expected));
     }
 
     #[test]

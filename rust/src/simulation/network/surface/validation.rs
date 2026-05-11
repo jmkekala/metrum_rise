@@ -2,7 +2,7 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
-    NodeExplicitVerticalStepSegment,
+    NodeExplicitVerticalStepSegment, owners_form_carriageway_raised_non_road_step_pair,
 };
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 use super::height::NodeHeightFieldError;
@@ -340,26 +340,18 @@ fn cross_region_edges_form_explicit_vertical_step(
         .get(left.region_index)
         .zip(solution.regions.get(right.region_index))
         .is_some_and(|(left_region, right_region)| {
-            matches!(
-                (left_region.kind, right_region.kind),
-                (
-                    RoadSurfaceBandKind::Carriageway,
-                    RoadSurfaceBandKind::CurbOrShoulder
-                ) | (
-                    RoadSurfaceBandKind::CurbOrShoulder,
-                    RoadSurfaceBandKind::Carriageway
-                )
-            ) && solution
-                .explicit_vertical_step_segments
-                .iter()
-                .copied()
-                .any(|segment| {
-                    explicit_vertical_step_owners_match_regions(
-                        segment,
-                        left_region.owner,
-                        right_region.owner,
-                    ) && edge_lies_on_explicit_vertical_step(segment, edge)
-                })
+            owners_form_carriageway_raised_non_road_step_pair(left_region.owner, right_region.owner)
+                && solution
+                    .explicit_vertical_step_segments
+                    .iter()
+                    .copied()
+                    .any(|segment| {
+                        explicit_vertical_step_owners_match_regions(
+                            segment,
+                            left_region.owner,
+                            right_region.owner,
+                        ) && edge_lies_on_explicit_vertical_step(segment, edge)
+                    })
         })
 }
 
@@ -2196,6 +2188,51 @@ mod tests {
 
         NodeValidationReport::from_triangulation_solution(&solution)
             .expect("canonical asphalt-curb vertical step should allow the curb height delta");
+    }
+
+    #[test]
+    fn accepts_cross_region_cdt_edge_height_conflict_on_canonical_asphalt_sidewalk_step() {
+        let carriageway_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let carriageway_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+        let sidewalk_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::Sidewalk);
+        let step_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            carriageway_owner,
+            sidewalk_owner,
+        )
+        .expect("non-degenerate test step segment");
+        let solution = NodeTriangulationSolution {
+            node_id: 101,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+            regions: vec![
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::Carriageway,
+                    0,
+                    carriageway_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.0, 0.0),
+                        RoadVec3::new(1.0, 0.0, 0.0),
+                        RoadVec3::new(0.0, 0.0, -1.0),
+                    ],
+                ),
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::Sidewalk,
+                    1,
+                    sidewalk_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 1.0),
+                    ],
+                ),
+            ],
+            explicit_vertical_step_segments: vec![step_segment],
+        };
+
+        NodeValidationReport::from_triangulation_solution(&solution)
+            .expect("canonical asphalt-sidewalk vertical step should allow the height delta");
     }
 
     #[test]

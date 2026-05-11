@@ -4,7 +4,9 @@ use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
+    backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -97,6 +99,14 @@ struct DebugExpectedVerticalStep {
     upper: DebugTopBoundaryEdge,
 }
 
+struct DebugCanonicalVerticalStep {
+    segment: NodeExplicitVerticalStepSegment,
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_top_matches: Vec<DebugTopBoundaryEdge>,
+    raised_top_matches: Vec<DebugTopBoundaryEdge>,
+}
+
 #[derive(Default)]
 struct DebugMatchStats {
     total: usize,
@@ -165,6 +175,19 @@ impl DebugRenderXzEdgeKey {
                 end: start,
             }
         }
+    }
+
+    fn from_arrangement_segment(start: NodeArrangementKey, end: NodeArrangementKey) -> Self {
+        Self::normalized(
+            DebugRenderXzVertexKey {
+                x_key: start.x_key(),
+                z_key: start.z_key(),
+            },
+            DebugRenderXzVertexKey {
+                x_key: end.x_key(),
+                z_key: end.z_key(),
+            },
+        )
     }
 }
 
@@ -853,6 +876,7 @@ impl RoadSurfaceSystem {
             top_edges_by_key.entry(edge.key).or_default().push(*edge);
         }
         let expected_steps = Self::debug_expected_asphalt_curb_steps(&top_edges);
+        let canonical_steps = Self::debug_canonical_raised_non_road_steps(piece, &top_edges);
 
         let face_span_edges: Vec<Option<DebugVerticalFaceSpanEdges>> = piece
             .curb_vertical_face_polygons
@@ -861,6 +885,7 @@ impl RoadSurfaceSystem {
             .collect();
         let mut face_expected_matches = vec![Vec::new(); face_span_edges.len()];
         let mut expected_face_matches = vec![Vec::new(); expected_steps.len()];
+        let mut canonical_face_matches = vec![Vec::new(); canonical_steps.len()];
 
         for (face_index, span_edges) in face_span_edges.iter().enumerate() {
             let Some(span_edges) = span_edges else {
@@ -882,6 +907,11 @@ impl RoadSurfaceSystem {
                     expected_face_matches[step_index].push(face_index);
                 }
             }
+            for (step_index, step) in canonical_steps.iter().enumerate() {
+                if Self::debug_canonical_step_matches_face(step, lower_key, upper_key) {
+                    canonical_face_matches[step_index].push(face_index);
+                }
+            }
         }
 
         let mut problem_count = 0usize;
@@ -901,12 +931,12 @@ impl RoadSurfaceSystem {
                         .iter()
                         .any(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
                 });
-            let upper_matches_curb = upper_key
+            let upper_matches_raised_non_road = upper_key
                 .and_then(|key| top_edges_by_key.get(&key))
                 .is_some_and(|edges| {
                     edges
                         .iter()
-                        .any(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
+                        .any(|edge| edge.owner.kind != RoadSurfaceBandKind::Carriageway)
                 });
             let visible_dot = Self::debug_polygon_winding_normal(
                 &piece.curb_vertical_face_polygons[face_index].points_world,
@@ -925,8 +955,9 @@ impl RoadSurfaceSystem {
             });
             let visible_from_lower_carriageway_owner = visible_dot.is_some_and(|dot| dot > 0.0);
             let face_problem = !lower_matches_carriageway
-                || !upper_matches_curb
-                || face_expected_matches[face_index].is_empty()
+                || !upper_matches_raised_non_road
+                || (face_expected_matches[face_index].is_empty()
+                    && canonical_face_matches[face_index].is_empty())
                 || !visible_from_lower_carriageway_owner;
             if face_problem {
                 problem_count += 1;
@@ -936,14 +967,37 @@ impl RoadSurfaceSystem {
             .iter()
             .filter(|matches| matches.is_empty())
             .count();
+        let canonical_problem_count = canonical_steps
+            .iter()
+            .zip(&canonical_face_matches)
+            .filter(|(step, matches)| {
+                matches.is_empty()
+                    || !Self::debug_canonical_step_visible_from_lower_owner(
+                        piece,
+                        step,
+                        matches,
+                        &face_span_edges,
+                        &top_edges_by_key,
+                    )
+                    .unwrap_or(false)
+            })
+            .count();
+        problem_count += canonical_problem_count;
+        let direct_carriageway_sidewalk_step_count = canonical_steps
+            .iter()
+            .filter(|step| step.raised_owner.kind() == RoadSurfaceBandKind::Sidewalk)
+            .count();
 
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_asphalt_curb_step_count\":{},\"problem_count\":{}",
+            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_asphalt_curb_step_count\":{},\"canonical_raised_non_road_step_count\":{},\"direct_carriageway_sidewalk_step_count\":{},\"canonical_raised_non_road_problem_count\":{},\"problem_count\":{}",
             piece.curb_vertical_face_polygons.len(),
             top_edges.len(),
             expected_steps.len(),
+            canonical_steps.len(),
+            direct_carriageway_sidewalk_step_count,
+            canonical_problem_count,
             problem_count
         );
         dump.push_str(",\"faces\":[");
@@ -959,6 +1013,7 @@ impl RoadSurfaceSystem {
                 face_span_edges[face_index],
                 &top_edges_by_key,
                 &face_expected_matches[face_index],
+                &canonical_face_matches[face_index],
             );
         }
         dump.push_str("],\"expected_asphalt_curb_steps\":[");
@@ -973,6 +1028,21 @@ impl RoadSurfaceSystem {
                 &expected_face_matches[step_index],
             );
         }
+        dump.push_str("],\"canonical_raised_non_road_steps\":[");
+        for (step_index, step) in canonical_steps.iter().enumerate() {
+            if step_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_canonical_vertical_step_literal(
+                dump,
+                piece,
+                step_index,
+                step,
+                &canonical_face_matches[step_index],
+                &face_span_edges,
+                &top_edges_by_key,
+            );
+        }
         dump.push_str("]}");
     }
 
@@ -984,6 +1054,7 @@ impl RoadSurfaceSystem {
         span_edges: Option<DebugVerticalFaceSpanEdges>,
         top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
         expected_step_matches: &[usize],
+        canonical_step_matches: &[usize],
     ) {
         let normal = Self::debug_polygon_winding_normal(&polygon.points_world);
         let visible_direction = normal.map(|normal| -normal);
@@ -1043,6 +1114,8 @@ impl RoadSurfaceSystem {
         );
         dump.push_str(",\"matching_expected_step_indices\":");
         Self::append_usize_list_literal(dump, expected_step_matches);
+        dump.push_str(",\"matching_canonical_step_indices\":");
+        Self::append_usize_list_literal(dump, canonical_step_matches);
 
         let lower_midpoint = (span_edges.lower_start + span_edges.lower_end) * 0.5;
         let visible_dot = visible_direction.and_then(|direction| {
@@ -1067,17 +1140,26 @@ impl RoadSurfaceSystem {
                 .iter()
                 .any(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
         });
+        let upper_matches_raised_non_road = upper_matches.is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|edge| edge.owner.kind != RoadSurfaceBandKind::Carriageway)
+        });
         let upper_matches_curb = upper_matches.is_some_and(|edges| {
             edges
                 .iter()
                 .any(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
         });
-        let face_problem =
-            !lower_matches_carriageway || !upper_matches_curb || expected_step_matches.is_empty();
+        let face_problem = !lower_matches_carriageway
+            || !upper_matches_raised_non_road
+            || (expected_step_matches.is_empty() && canonical_step_matches.is_empty());
         let _ = write!(
             dump,
-            ",\"lower_matches_carriageway\":{},\"upper_matches_curb\":{},\"problem\":{}",
-            lower_matches_carriageway, upper_matches_curb, face_problem
+            ",\"lower_matches_carriageway\":{},\"upper_matches_curb\":{},\"upper_matches_raised_non_road\":{},\"problem\":{}",
+            lower_matches_carriageway,
+            upper_matches_curb,
+            upper_matches_raised_non_road,
+            face_problem
         );
         dump.push('}');
     }
@@ -1097,6 +1179,241 @@ impl RoadSurfaceSystem {
         Self::append_usize_list_literal(dump, face_matches);
         let _ = write!(dump, ",\"problem\":{}", face_matches.is_empty());
         dump.push('}');
+    }
+
+    fn append_canonical_vertical_step_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+        step_index: usize,
+        step: &DebugCanonicalVerticalStep,
+        face_matches: &[usize],
+        face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
+        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+    ) {
+        let visible_dot = Self::debug_canonical_step_visible_dot_from_lower_owner(
+            piece,
+            step,
+            face_matches,
+            face_span_edges,
+            top_edges_by_key,
+        );
+        let visible_from_lower_owner = visible_dot.map(|dot| dot > 0.0);
+        let problem = face_matches.is_empty() || visible_from_lower_owner != Some(true);
+
+        dump.push('{');
+        let _ = write!(dump, "\"step\":{},\"owner_pair\":{{\"owner\":", step_index);
+        Self::append_node_band_owner_literal(dump, step.segment.owner());
+        dump.push_str(",\"opposite_owner\":");
+        Self::append_node_band_owner_literal(dump, step.segment.opposite_owner());
+        dump.push_str("},\"lower_owner\":");
+        Self::append_node_band_owner_literal(dump, step.lower_owner);
+        dump.push_str(",\"raised_owner\":");
+        Self::append_node_band_owner_literal(dump, step.raised_owner);
+        dump.push_str(",\"canonical_edge_key\":");
+        Self::append_node_arrangement_segment_key_literal(
+            dump,
+            step.segment.start(),
+            step.segment.end(),
+        );
+        dump.push_str(",\"height_delta_m\":");
+        Self::append_optional_f32_precise_literal(
+            dump,
+            Self::debug_canonical_step_height_delta(step),
+        );
+        dump.push_str(",\"lower_top_matches\":");
+        Self::append_debug_top_boundary_edge_list_literal(dump, &step.lower_top_matches);
+        dump.push_str(",\"raised_top_matches\":");
+        Self::append_debug_top_boundary_edge_list_literal(dump, &step.raised_top_matches);
+        dump.push_str(",\"matching_face_indices\":");
+        Self::append_usize_list_literal(dump, face_matches);
+        dump.push_str(",\"visible_dot_lower_owner\":");
+        Self::append_optional_f32_precise_literal(dump, visible_dot);
+        dump.push_str(",\"visible_from_lower_owner\":");
+        if let Some(visible) = visible_from_lower_owner {
+            let _ = write!(dump, "{visible}");
+        } else {
+            dump.push_str("null");
+        }
+        let _ = write!(dump, ",\"problem\":{problem}");
+        dump.push('}');
+    }
+
+    fn debug_canonical_raised_non_road_steps(
+        piece: &RoadSurfaceVisualNodePiece,
+        top_edges: &[DebugTopBoundaryEdge],
+    ) -> Vec<DebugCanonicalVerticalStep> {
+        let mut steps = Vec::new();
+        for segment in piece.explicit_vertical_step_segments.iter().copied() {
+            let Some((lower_owner, raised_owner)) =
+                Self::debug_canonical_step_lower_and_raised_owners(segment)
+            else {
+                continue;
+            };
+            let xz_key =
+                DebugRenderXzEdgeKey::from_arrangement_segment(segment.start(), segment.end());
+            let lower_top_matches = top_edges
+                .iter()
+                .copied()
+                .filter(|edge| {
+                    edge.xz_key == xz_key
+                        && Self::debug_boundary_owner_matches_band(edge.owner, lower_owner)
+                })
+                .collect();
+            let raised_top_matches = top_edges
+                .iter()
+                .copied()
+                .filter(|edge| {
+                    edge.xz_key == xz_key
+                        && Self::debug_boundary_owner_matches_band(edge.owner, raised_owner)
+                })
+                .collect();
+            steps.push(DebugCanonicalVerticalStep {
+                segment,
+                lower_owner,
+                raised_owner,
+                lower_top_matches,
+                raised_top_matches,
+            });
+        }
+        steps.sort_by(|a, b| {
+            a.segment
+                .start()
+                .cmp(&b.segment.start())
+                .then(a.segment.end().cmp(&b.segment.end()))
+                .then(a.lower_owner.cmp(&b.lower_owner))
+                .then(a.raised_owner.cmp(&b.raised_owner))
+        });
+        steps
+    }
+
+    fn debug_canonical_step_matches_face(
+        step: &DebugCanonicalVerticalStep,
+        lower_key: DebugRenderEdgeKey,
+        upper_key: DebugRenderEdgeKey,
+    ) -> bool {
+        step.lower_top_matches
+            .iter()
+            .any(|edge| edge.key == lower_key)
+            && step
+                .raised_top_matches
+                .iter()
+                .any(|edge| edge.key == upper_key)
+    }
+
+    fn debug_canonical_step_visible_from_lower_owner(
+        piece: &RoadSurfaceVisualNodePiece,
+        step: &DebugCanonicalVerticalStep,
+        face_matches: &[usize],
+        face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
+        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+    ) -> Option<bool> {
+        Self::debug_canonical_step_visible_dot_from_lower_owner(
+            piece,
+            step,
+            face_matches,
+            face_span_edges,
+            top_edges_by_key,
+        )
+        .map(|dot| dot > 0.0)
+    }
+
+    fn debug_canonical_step_visible_dot_from_lower_owner(
+        piece: &RoadSurfaceVisualNodePiece,
+        step: &DebugCanonicalVerticalStep,
+        face_matches: &[usize],
+        face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
+        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+    ) -> Option<f32> {
+        let mut best: Option<f32> = None;
+        for &face_index in face_matches {
+            let Some(span_edges) = face_span_edges.get(face_index).copied().flatten() else {
+                continue;
+            };
+            let Some(visible_direction) = piece
+                .curb_vertical_face_polygons
+                .get(face_index)
+                .and_then(|polygon| Self::debug_polygon_winding_normal(&polygon.points_world))
+                .map(|normal| -normal)
+            else {
+                continue;
+            };
+            let lower_key =
+                DebugRenderEdgeKey::normalized(span_edges.lower_start, span_edges.lower_end);
+            let lower_matches = lower_key
+                .and_then(|key| top_edges_by_key.get(&key))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let Some(dot) = Self::debug_visible_dot_to_lower_owner(
+                piece,
+                (span_edges.lower_start + span_edges.lower_end) * 0.5,
+                visible_direction,
+                lower_matches,
+                step.lower_owner,
+            ) else {
+                continue;
+            };
+            best = Some(best.map_or(dot, |current| current.max(dot)));
+        }
+        best
+    }
+
+    fn debug_canonical_step_height_delta(step: &DebugCanonicalVerticalStep) -> Option<f32> {
+        let lower = step.lower_top_matches.first()?;
+        let raised = step.raised_top_matches.first()?;
+        Some(raised.avg_y_m - lower.avg_y_m)
+    }
+
+    fn debug_canonical_step_lower_and_raised_owners(
+        segment: NodeExplicitVerticalStepSegment,
+    ) -> Option<(NodeBandOwner, NodeBandOwner)> {
+        let owner = segment.owner();
+        let opposite_owner = segment.opposite_owner();
+        if owner.kind() == RoadSurfaceBandKind::Carriageway
+            && opposite_owner.kind() != RoadSurfaceBandKind::Carriageway
+        {
+            return Some((owner, opposite_owner));
+        }
+        if opposite_owner.kind() == RoadSurfaceBandKind::Carriageway
+            && owner.kind() != RoadSurfaceBandKind::Carriageway
+        {
+            return Some((opposite_owner, owner));
+        }
+        None
+    }
+
+    fn debug_boundary_owner_matches_band(
+        owner: DebugBoundaryOwner,
+        band_owner: NodeBandOwner,
+    ) -> bool {
+        owner.kind == band_owner.kind() && owner.owner_index == band_owner.owner_index()
+    }
+
+    fn append_node_band_owner_literal(dump: &mut String, owner: NodeBandOwner) {
+        let _ = write!(
+            dump,
+            "{{\"kind\":\"{:?}\",\"owner_index\":{}}}",
+            owner.kind(),
+            owner.owner_index()
+        );
+    }
+
+    fn append_node_arrangement_segment_key_literal(
+        dump: &mut String,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"start\":{{\"x_key\":{},\"z_key\":{},\"x_mm\":{},\"z_mm\":{}}},\"end\":{{\"x_key\":{},\"z_key\":{},\"x_mm\":{},\"z_mm\":{}}}}}",
+            start.x_key(),
+            start.z_key(),
+            start.x_mm(),
+            start.z_mm(),
+            end.x_key(),
+            end.z_key(),
+            end.x_mm(),
+            end.z_mm()
+        );
     }
 
     fn append_debug_top_boundary_edge_list_literal(
@@ -1306,6 +1623,41 @@ impl RoadSurfaceSystem {
         for edge in lower_matches
             .iter()
             .filter(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
+        {
+            let Some(centroid) = Self::debug_owned_region_centroid(piece, edge.owner.region_index)
+            else {
+                continue;
+            };
+            let owner_direction = Vector3::new(
+                centroid.x - face_midpoint.x,
+                0.0,
+                centroid.z - face_midpoint.z,
+            );
+            if owner_direction.length_squared() <= 1e-8 {
+                continue;
+            }
+            let dot = visible_xz.dot(owner_direction.normalized());
+            best = Some(best.map_or(dot, |current| current.max(dot)));
+        }
+        best
+    }
+
+    fn debug_visible_dot_to_lower_owner(
+        piece: &RoadSurfaceVisualNodePiece,
+        face_midpoint: Vector3,
+        visible_direction: Vector3,
+        lower_matches: &[DebugTopBoundaryEdge],
+        lower_owner: NodeBandOwner,
+    ) -> Option<f32> {
+        let visible_xz = Vector3::new(visible_direction.x, 0.0, visible_direction.z);
+        if visible_xz.length_squared() <= 1e-8 {
+            return None;
+        }
+        let visible_xz = visible_xz.normalized();
+        let mut best: Option<f32> = None;
+        for edge in lower_matches
+            .iter()
+            .filter(|edge| Self::debug_boundary_owner_matches_band(edge.owner, lower_owner))
         {
             let Some(centroid) = Self::debug_owned_region_centroid(piece, edge.owner.region_index)
             else {
@@ -2234,6 +2586,7 @@ mod tests {
             curb_surface_polygons: Vec::new(),
             curb_vertical_face_polygons: Vec::new(),
             sidewalk_surface_polygons: Vec::new(),
+            explicit_vertical_step_segments: Vec::new(),
             owned_regions: Vec::new(),
             earthwork_surface_polygons: Vec::new(),
             earthwork_outer_boundary_loops: Vec::new(),
@@ -2357,5 +2710,49 @@ mod tests {
         assert!(dump.contains("\"lower_matches_carriageway\":true"));
         assert!(dump.contains("\"upper_matches_curb\":true"));
         assert!(dump.contains("\"visible_from_lower_carriageway_owner\":true"));
+    }
+
+    #[test]
+    fn curb_vertical_face_debug_reports_direct_asphalt_sidewalk_steps() {
+        let mut piece = empty_node_piece();
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 7,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(-1.0, 0.0, 0.0),
+            ]),
+        });
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 11,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 1.0),
+                Vector3::new(-1.0, 0.12, 1.0),
+            ]),
+        });
+        piece.explicit_vertical_step_segments.push(
+            NodeExplicitVerticalStepSegment::new(
+                NodeArrangementKey::from_point(backend::RoadVec2::new(-1.0, 0.0)),
+                NodeArrangementKey::from_point(backend::RoadVec2::new(1.0, 0.0)),
+                NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
+                NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 11),
+            )
+            .expect("direct asphalt-sidewalk step should be non-degenerate"),
+        );
+
+        let mut dump = String::new();
+        RoadSurfaceSystem::append_curb_vertical_face_details_debug_literal(&mut dump, &piece);
+
+        assert!(dump.contains("\"canonical_raised_non_road_step_count\":1"));
+        assert!(dump.contains("\"direct_carriageway_sidewalk_step_count\":1"));
+        assert!(dump.contains("\"canonical_raised_non_road_problem_count\":1"));
+        assert!(dump.contains("\"raised_owner\":{\"kind\":\"Sidewalk\",\"owner_index\":11}"));
+        assert!(dump.contains("\"matching_face_indices\":[]"));
+        assert!(dump.contains("\"problem\":true"));
     }
 }

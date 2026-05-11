@@ -6,7 +6,10 @@ use super::{
     RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    arrangement::{NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner},
+    arrangement::{
+        NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
+        NodeExplicitVerticalStepSegment,
+    },
     input::NodeInputExtractionError,
     validation::NodeValidationReport,
 };
@@ -213,6 +216,7 @@ impl RoadSurfaceSystem {
             node_regions.curb_surface_polygons,
             node_regions.curb_vertical_face_polygons,
             node_regions.sidewalk_surface_polygons,
+            node_regions.explicit_vertical_step_segments,
             node_regions.owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -337,6 +341,7 @@ impl RoadSurfaceSystem {
                 });
             }
         }
+        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut curb_vertical_face_polygons =
             Self::curb_vertical_face_polygons_from_arrangement(arrangement);
         dedup_curb_vertical_face_polygons(&mut curb_vertical_face_polygons);
@@ -391,6 +396,7 @@ impl RoadSurfaceSystem {
             curb_surface_polygons,
             curb_vertical_face_polygons,
             sidewalk_surface_polygons,
+            explicit_vertical_step_segments,
             owned_regions,
         })
     }
@@ -552,15 +558,20 @@ impl RoadSurfaceSystem {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for segment in arrangement.explicit_vertical_step_segments() {
+            let Some((lower_owner, raised_owner)) =
+                canonical_vertical_step_lower_and_raised_owners(segment)
+            else {
+                continue;
+            };
             let segment_key = (segment.start(), segment.end());
-            let lower_intervals = arrangement_kind_face_boundary_intervals_for_segment(
+            let lower_intervals = arrangement_owner_face_boundary_intervals_for_segment(
                 arrangement,
-                RoadSurfaceBandKind::Carriageway,
+                lower_owner,
                 segment_key,
             );
-            let raised_intervals = arrangement_kind_face_boundary_intervals_for_segment(
+            let raised_intervals = arrangement_owner_face_boundary_intervals_for_segment(
                 arrangement,
-                RoadSurfaceBandKind::CurbOrShoulder,
+                raised_owner,
                 segment_key,
             );
             for (lower_interval, raised_interval, start_t, end_t) in
@@ -601,25 +612,26 @@ impl RoadSurfaceSystem {
                 {
                     continue;
                 }
-                let key = normalized_arrangement_segment_key(lower_start, lower_end);
-                if !emitted.insert(key) {
+                let dedup_key =
+                    vertical_face_dedup_key(lower_start, lower_end, raised_start, raised_end);
+                if !emitted.insert(dedup_key) {
                     continue;
                 }
                 let mut points = [raised_start, lower_start, lower_end, raised_end];
                 if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
                     arrangement,
-                    lower_interval.owner,
-                    key,
+                    lower_owner,
+                    segment_key,
                     points,
                 ) {
                     if visible_dot <= 0.0 {
                         points = [points[3], points[2], points[1], points[0]];
                     }
                 } else {
-                    let asphalt_direction = arrangement_carriageway_direction_for_segment(
+                    let lower_owner_direction = arrangement_owner_direction_for_segment(
                         arrangement,
-                        lower_interval.owner,
-                        key,
+                        lower_owner,
+                        segment_key,
                         lower_start,
                         lower_end,
                     )
@@ -628,7 +640,7 @@ impl RoadSurfaceSystem {
                         Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
                     });
                     let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-                    if face_normal.dot(asphalt_direction) > 0.0 {
+                    if face_normal.dot(lower_owner_direction) > 0.0 {
                         points = [points[3], points[2], points[1], points[0]];
                     }
                 }
@@ -1032,6 +1044,7 @@ impl RoadSurfaceSystem {
         mut curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -1064,6 +1077,7 @@ impl RoadSurfaceSystem {
             curb_surface_polygons,
             curb_vertical_face_polygons,
             sidewalk_surface_polygons,
+            explicit_vertical_step_segments,
             owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -1258,12 +1272,12 @@ impl RoadSurfaceSystem {
     }
 }
 
-fn normalized_arrangement_segment_key(
+fn normalized_arrangement_boundary_segment_key(
     start: Vector3,
     end: Vector3,
-) -> (NodeArrangementKey, NodeArrangementKey) {
-    let start = ArrangementBoundaryPointKey::from_world(start).xz_key();
-    let end = ArrangementBoundaryPointKey::from_world(end).xz_key();
+) -> (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey) {
+    let start = ArrangementBoundaryPointKey::from_world(start);
+    let end = ArrangementBoundaryPointKey::from_world(end);
     if start <= end {
         (start, end)
     } else {
@@ -1271,39 +1285,77 @@ fn normalized_arrangement_segment_key(
     }
 }
 
+fn vertical_face_dedup_key(
+    lower_start: Vector3,
+    lower_end: Vector3,
+    upper_start: Vector3,
+    upper_end: Vector3,
+) -> (
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+) {
+    (
+        normalized_arrangement_boundary_segment_key(lower_start, lower_end),
+        normalized_arrangement_boundary_segment_key(upper_start, upper_end),
+    )
+}
+
+fn canonical_vertical_step_lower_and_raised_owners(
+    segment: NodeExplicitVerticalStepSegment,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    let owner = segment.owner();
+    let opposite_owner = segment.opposite_owner();
+    if owner.kind() == RoadSurfaceBandKind::Carriageway
+        && opposite_owner.kind() != RoadSurfaceBandKind::Carriageway
+    {
+        return Some((owner, opposite_owner));
+    }
+    if opposite_owner.kind() == RoadSurfaceBandKind::Carriageway
+        && owner.kind() != RoadSurfaceBandKind::Carriageway
+    {
+        return Some((opposite_owner, owner));
+    }
+    None
+}
+
 fn dedup_curb_vertical_face_polygons(polygons: &mut Vec<RoadSurfaceVisualPolygon>) {
     let mut emitted = BTreeSet::new();
     polygons.retain(|polygon| {
-        let Some(key) = curb_vertical_face_lower_edge_key(polygon) else {
+        let Some(key) = curb_vertical_face_span_key(polygon) else {
             return true;
         };
         emitted.insert(key)
     });
 }
 
-fn curb_vertical_face_lower_edge_key(
+fn curb_vertical_face_span_key(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<(NodeArrangementKey, NodeArrangementKey)> {
+) -> Option<(
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+)> {
     if polygon.points_world.len() != 4 {
         return None;
     }
-    let lower_y = polygon
-        .points_world
-        .iter()
-        .map(|point| point.y)
-        .fold(f32::INFINITY, f32::min);
-    let lower_points = polygon
-        .points_world
-        .iter()
-        .copied()
-        .filter(|point| (point.y - lower_y).abs() <= SAMPLE_EPSILON_M)
-        .collect::<Vec<_>>();
-    if lower_points.len() != 2 {
+    let mut span_edges = Vec::new();
+    for index in 0..polygon.points_world.len() {
+        let start = polygon.points_world[index];
+        let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+        if ArrangementBoundaryPointKey::from_world(start).xz_key()
+            != ArrangementBoundaryPointKey::from_world(end).xz_key()
+        {
+            span_edges.push((start, end, (start.y + end.y) * 0.5));
+        }
+    }
+    if span_edges.len() != 2 {
         return None;
     }
-    Some(normalized_arrangement_segment_key(
-        lower_points[0],
-        lower_points[1],
+    span_edges.sort_by(|a, b| a.2.total_cmp(&b.2));
+    Some(vertical_face_dedup_key(
+        span_edges[0].0,
+        span_edges[0].1,
+        span_edges[1].0,
+        span_edges[1].1,
     ))
 }
 
@@ -1379,16 +1431,16 @@ fn incident_profile_center_key(profile: &IncidentMouthProfile) -> Option<NodeArr
     ))
 }
 
-fn arrangement_kind_face_boundary_intervals_for_segment(
+fn arrangement_owner_face_boundary_intervals_for_segment(
     arrangement: &NodeArrangement,
-    kind: RoadSurfaceBandKind,
+    owner: NodeBandOwner,
     segment_key: (NodeArrangementKey, NodeArrangementKey),
 ) -> Vec<ArrangementFaceBoundaryInterval> {
     let mut intervals = Vec::new();
     for face in arrangement
         .faces()
         .iter()
-        .filter(|face| face.owner().kind() == kind)
+        .filter(|face| face.owner() == owner)
         .filter(|face| {
             RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face).is_some()
         })
@@ -1513,16 +1565,6 @@ fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Ve
         point.y_mm as f32 / 1000.0,
         (point.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
     )
-}
-
-fn arrangement_carriageway_direction_for_segment(
-    arrangement: &NodeArrangement,
-    owner: NodeBandOwner,
-    segment_key: (NodeArrangementKey, NodeArrangementKey),
-    start: Vector3,
-    end: Vector3,
-) -> Option<Vector3> {
-    arrangement_owner_direction_for_segment(arrangement, owner, segment_key, start, end)
 }
 
 fn arrangement_owner_direction_for_segment(

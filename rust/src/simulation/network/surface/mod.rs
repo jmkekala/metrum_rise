@@ -158,10 +158,11 @@ pub struct RoadSurfaceVisualNodePiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit curb / shoulder-owned polygons for the node piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit vertical curb faces at asphalt / curb material contacts.
+    /// Explicit vertical faces at raised non-road material contacts.
     pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     owned_regions: Vec<NodeOwnedRegion>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -343,6 +344,7 @@ struct NodeSurfaceRegionResult {
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     owned_regions: Vec<NodeOwnedRegion>,
 }
 
