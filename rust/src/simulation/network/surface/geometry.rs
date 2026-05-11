@@ -55,7 +55,20 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn make_boundary_loop_polygon(
+        points_world: Vec<Vector3>,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        Self::make_boundary_loop_polygon_with_winding(points_world, false)
+    }
+
+    pub(super) fn make_boundary_loop_polygon_preserving_winding(
+        points_world: Vec<Vector3>,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        Self::make_boundary_loop_polygon_with_winding(points_world, true)
+    }
+
+    fn make_boundary_loop_polygon_with_winding(
         mut points_world: Vec<Vector3>,
+        preserve_winding: bool,
     ) -> Option<RoadSurfaceVisualPolygon> {
         points_world = Self::canonicalize_loop_points(points_world);
         if points_world.len() < 3 {
@@ -68,7 +81,7 @@ impl RoadSurfaceSystem {
         if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
             return None;
         }
-        if signed_area < 0.0 {
+        if !preserve_winding && signed_area < 0.0 {
             points_world.reverse();
         }
         let (start_index, _) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {

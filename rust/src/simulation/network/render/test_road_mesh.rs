@@ -1379,7 +1379,7 @@ mod tests {
 
         assert!(corner_a_road >= 0.95, "corner_a_road={corner_a_road:.3}");
         assert!(corner_b_road >= 0.95, "corner_b_road={corner_b_road:.3}");
-        assert!(corner_c_road <= 0.05, "corner_c_road={corner_c_road:.3}");
+        assert!(corner_c_road >= 0.95, "corner_c_road={corner_c_road:.3}");
     }
 
     #[test]

@@ -685,9 +685,7 @@ impl<'a> TerminalEndBandGroup<'a> {
             .iter()
             .map(|point| [point.x, point.z])
             .collect::<Vec<_>>();
-        if end_band.band_kind != RoadSurfaceBandKind::Carriageway
-            && end_band.boundary_mode
-                != NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+        if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
             && RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0
         {
             contour.reverse();

@@ -681,7 +681,7 @@ impl RoadSurfaceSystem {
             if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
                 continue;
             }
-            let Some(polygon) = Self::make_boundary_loop_polygon(points) else {
+            let Some(polygon) = Self::make_boundary_loop_polygon_preserving_winding(points) else {
                 return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
             };
             polygons.push(polygon);

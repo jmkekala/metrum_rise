@@ -194,6 +194,16 @@ impl RoadSurfaceSystem {
                 terrain,
                 top_surface_shapes,
             );
+            // Handoff and internal seam edges can be part of a closed footprint loop. They are not
+            // terrain tie-ins, so a skirt whose plan area enters solved top ownership is rejected.
+            if let Some(top_surface_shapes) = top_surface_shapes
+                && Self::earthwork_candidate_intrudes_top(
+                    [current, next, outer_next, outer_current],
+                    top_surface_shapes,
+                )
+            {
+                continue;
+            }
             let Some(polygon) =
                 Self::make_visual_polygon(vec![current, next, outer_next, outer_current])
             else {
@@ -249,23 +259,47 @@ impl RoadSurfaceSystem {
         }
     }
 
+    fn earthwork_candidate_intrudes_top(
+        points: [Vector3; 4],
+        top_surface_shapes: &NodeOverlayShapes,
+    ) -> bool {
+        let Some((overlap_area_m2, budget_m2)) =
+            Self::earthwork_candidate_top_overlap_metrics_m2(points, top_surface_shapes)
+        else {
+            return true;
+        };
+        overlap_area_m2 > budget_m2
+    }
+
     fn earthwork_candidate_top_overlap_area_m2(
         points: [Vector3; 4],
         top_surface_shapes: &NodeOverlayShapes,
     ) -> f32 {
-        let Some(candidate_shapes) =
-            Self::overlay_union_contours(&[Self::earthwork_overlay_contour_from_points(&points)])
-        else {
-            return f32::INFINITY;
-        };
-        let Some(overlap) = Self::overlay_binary_shapes(
+        Self::earthwork_candidate_top_overlap_metrics_m2(points, top_surface_shapes)
+            .map(|(overlap_area_m2, _)| overlap_area_m2)
+            .unwrap_or(f32::INFINITY)
+    }
+
+    fn earthwork_candidate_top_overlap_metrics_m2(
+        mut points: [Vector3; 4],
+        top_surface_shapes: &NodeOverlayShapes,
+    ) -> Option<(f32, f32)> {
+        if Self::signed_polygon_area_xz(&points) < 0.0 {
+            points.reverse();
+        }
+        let candidate_shapes =
+            Self::overlay_union_contours(&[Self::earthwork_overlay_contour_from_points(&points)])?;
+        let overlap = Self::overlay_binary_shapes(
             &candidate_shapes,
             top_surface_shapes,
             OverlayRule::Intersect,
-        ) else {
-            return f32::INFINITY;
-        };
-        overlap.iter().map(Self::overlay_shape_area_m2).sum()
+        )?;
+        let overlap_area_m2 = overlap.iter().map(Self::overlay_shape_area_m2).sum();
+        let budget_m2 = Self::overlay_numeric_area_budget_for_shapes(&candidate_shapes)
+            .max(Self::overlay_numeric_area_budget_for_shapes(
+                top_surface_shapes,
+            ));
+        Some((overlap_area_m2, budget_m2))
     }
 
     fn earthwork_overlay_contour_from_points(points: &[Vector3]) -> NodeOverlayContour {
