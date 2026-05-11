@@ -943,15 +943,20 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
 }
 
 fn node_side_join_end_band_contributes_footprint(
-    _piece_kind: RoadSurfaceVisualNodePieceKind,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
     end_band: &NodeInputTerminalEndBand,
 ) -> bool {
-    matches!(
-        end_band.boundary_mode,
+    match end_band.boundary_mode {
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
-            | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-    )
+        | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
+        | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap => true,
+        NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
+        | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint => {
+            piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+                && end_band.band_kind == RoadSurfaceBandKind::CurbOrShoulder
+        }
+        NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand => false,
+    }
 }
 
 fn terminal_end_band_material_opposite_owner(
@@ -3792,6 +3797,29 @@ mod tests {
         input
     }
 
+    fn bend_input_with_curb_guard_within_footprint() -> NodeArrangementInput {
+        let mut input = input_with_endpoint_x(0.0);
+        input.piece_kind = RoadSurfaceVisualNodePieceKind::Bend;
+        input.mouths[0]
+            .terminal_end_bands
+            .push(NodeInputTerminalEndBand {
+                source_band_index: 1,
+                band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint,
+                inner_start_world: RoadVec3::new(0.0, 4.2, -2.0),
+                inner_end_world: RoadVec3::new(2.0, 4.2, -2.0),
+                outer_start_world: RoadVec3::new(0.0, 4.2, -5.0),
+                outer_end_world: RoadVec3::new(2.0, 4.2, -5.0),
+                contour_world: vec![
+                    RoadVec3::new(0.0, 4.2, -5.0),
+                    RoadVec3::new(2.0, 4.2, -5.0),
+                    RoadVec3::new(2.0, 4.2, -2.0),
+                    RoadVec3::new(0.0, 4.2, -2.0),
+                ],
+            });
+        input
+    }
+
     #[test]
     fn generates_backend_contours_and_constraints_from_solved_mouth_input() {
         let contours =
@@ -3859,6 +3887,35 @@ mod tests {
                     adjacent_kind: RoadSurfaceBandKind::Sidewalk
                 }
             ) && constraint.source_band_index == Some(3)
+        }));
+    }
+
+    #[test]
+    fn bend_curb_guard_end_bands_contribute_canonical_footprint() {
+        let contours =
+            NodeRailContourSet::from_input(&bend_input_with_curb_guard_within_footprint())
+                .expect("valid contours");
+        let guard_outer_key = road_point_key(RoadVec2::new(0.0, -5.0));
+
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind == NodeGeneratedContourKind::FullRoadbed
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
+                && contour
+                    .points_xz
+                    .iter()
+                    .any(|point| road_point_key(*point) == guard_outer_key)
+        }));
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind
+                == NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::CurbOrShoulder,
+                }
+                && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+                && contour.source_band_index == Some(1)
+                && contour
+                    .points_xz
+                    .iter()
+                    .any(|point| road_point_key(*point) == guard_outer_key)
         }));
     }
 

@@ -885,6 +885,7 @@ impl RoadSurfaceSystem {
             .collect();
         let mut face_expected_matches = vec![Vec::new(); face_span_edges.len()];
         let mut expected_face_matches = vec![Vec::new(); expected_steps.len()];
+        let mut face_canonical_matches = vec![Vec::new(); face_span_edges.len()];
         let mut canonical_face_matches = vec![Vec::new(); canonical_steps.len()];
 
         for (face_index, span_edges) in face_span_edges.iter().enumerate() {
@@ -909,6 +910,7 @@ impl RoadSurfaceSystem {
             }
             for (step_index, step) in canonical_steps.iter().enumerate() {
                 if Self::debug_canonical_step_matches_face(step, lower_key, upper_key) {
+                    face_canonical_matches[face_index].push(step_index);
                     canonical_face_matches[step_index].push(face_index);
                 }
             }
@@ -957,7 +959,7 @@ impl RoadSurfaceSystem {
             let face_problem = !lower_matches_carriageway
                 || !upper_matches_raised_non_road
                 || (face_expected_matches[face_index].is_empty()
-                    && canonical_face_matches[face_index].is_empty())
+                    && face_canonical_matches[face_index].is_empty())
                 || !visible_from_lower_carriageway_owner;
             if face_problem {
                 problem_count += 1;
@@ -1013,7 +1015,7 @@ impl RoadSurfaceSystem {
                 face_span_edges[face_index],
                 &top_edges_by_key,
                 &face_expected_matches[face_index],
-                &canonical_face_matches[face_index],
+                &face_canonical_matches[face_index],
             );
         }
         dump.push_str("],\"expected_asphalt_curb_steps\":[");
