@@ -20,6 +20,7 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn test_edge(
     start_node: u32,
@@ -459,6 +460,45 @@ fn assert_node_top_covers_footprint(piece: &RoadSurfaceVisualNodePiece) {
     );
 }
 
+fn assert_earthwork_faces_stay_outside_top_footprint(piece: &RoadSurfaceVisualNodePiece) {
+    let top_contours = overlay_contours_from_top_polygons(
+        piece
+            .road_surface_polygons
+            .iter()
+            .chain(piece.curb_surface_polygons.iter())
+            .chain(piece.sidewalk_surface_polygons.iter()),
+    );
+    let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
+        .expect("node top overlay union should succeed");
+    for face in &piece.render_earthwork_faces {
+        let face_contour = overlay_contour_from_world_points(&face.polygon.points_world);
+        if face_contour.len() < 3 {
+            continue;
+        }
+        let face_shapes = RoadSurfaceSystem::overlay_union_contours(&[face_contour])
+            .expect("earthwork face overlay union should succeed");
+        let overlap = RoadSurfaceSystem::overlay_binary_shapes(
+            &face_shapes,
+            &top_shapes,
+            OverlayRule::Intersect,
+        )
+        .expect("earthwork/top overlap check should succeed");
+        let overlap_area_m2 = overlay_area_m2(&overlap);
+        let budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&face_shapes)
+            .max(RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(
+                &top_shapes,
+            ));
+        assert!(
+            overlap_area_m2 <= budget_m2,
+            "earthwork face must not intrude into road-owned top footprint; kind={:?} inner={:?}->{:?} face={:?} overlap_area={overlap_area_m2:.6} budget={budget_m2:.6}",
+            piece.kind,
+            face.inner_start,
+            face.inner_end,
+            face.polygon.points_world
+        );
+    }
+}
+
 fn assert_material_triangles_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
     for non_road_region in piece
         .owned_regions
@@ -600,6 +640,165 @@ fn assert_vertical_curb_face_lower_edge_covers(
         covered_length + 0.001 >= expected_length,
         "vertical curb face lower edge must cover expected segment; label={label} start={start:?} end={end:?} covered={covered_length:.4} expected={expected_length:.4}"
     );
+}
+
+#[derive(Clone, Copy)]
+struct TestTopBoundaryEdge {
+    kind: RoadSurfaceBandKind,
+    start: Vector3,
+    end: Vector3,
+    key: TestRenderEdgeKey,
+    xz_key: TestRenderXzEdgeKey,
+    avg_y_m: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TestRenderVertexKey {
+    x_key: i64,
+    y_mm: i64,
+    z_key: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TestRenderEdgeKey {
+    start: TestRenderVertexKey,
+    end: TestRenderVertexKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TestRenderXzVertexKey {
+    x_key: i64,
+    z_key: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TestRenderXzEdgeKey {
+    start: TestRenderXzVertexKey,
+    end: TestRenderXzVertexKey,
+}
+
+impl TestRenderVertexKey {
+    fn from_point(point: Vector3) -> Self {
+        let (x_key, z_key) = test_xz_key(point);
+        Self {
+            x_key,
+            y_mm: (point.y * 1000.0).round() as i64,
+            z_key,
+        }
+    }
+
+    fn xz(self) -> TestRenderXzVertexKey {
+        TestRenderXzVertexKey {
+            x_key: self.x_key,
+            z_key: self.z_key,
+        }
+    }
+}
+
+impl TestRenderEdgeKey {
+    fn normalized(start: Vector3, end: Vector3) -> Option<Self> {
+        let start = TestRenderVertexKey::from_point(start);
+        let end = TestRenderVertexKey::from_point(end);
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
+    }
+
+    fn xz(self) -> TestRenderXzEdgeKey {
+        let start = self.start.xz();
+        let end = self.end.xz();
+        if start <= end {
+            TestRenderXzEdgeKey { start, end }
+        } else {
+            TestRenderXzEdgeKey {
+                start: end,
+                end: start,
+            }
+        }
+    }
+}
+
+fn assert_top_asphalt_curb_boundaries_have_vertical_faces(piece: &RoadSurfaceVisualNodePiece) {
+    let top_edges = test_owned_top_boundary_edges(piece);
+    let face_lower_keys = piece
+        .curb_vertical_face_polygons
+        .iter()
+        .filter_map(vertical_face_lower_edge_for_test)
+        .filter_map(|edge| TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz()))
+        .collect::<BTreeSet<_>>();
+    let mut edges_by_xz = BTreeMap::<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>::new();
+    for edge in top_edges {
+        edges_by_xz.entry(edge.xz_key).or_default().push(edge);
+    }
+
+    for edges in edges_by_xz.values() {
+        for road_edge in edges
+            .iter()
+            .filter(|edge| edge.kind == RoadSurfaceBandKind::Carriageway)
+        {
+            for curb_edge in edges
+                .iter()
+                .filter(|edge| edge.kind == RoadSurfaceBandKind::CurbOrShoulder)
+            {
+                if road_edge.key == curb_edge.key {
+                    continue;
+                }
+                let lower = if road_edge.avg_y_m <= curb_edge.avg_y_m {
+                    road_edge
+                } else {
+                    curb_edge
+                };
+                assert!(
+                    face_lower_keys.contains(&lower.xz_key),
+                    "surviving asphalt-curb top boundary must emit an explicit vertical face; kind={:?} lower={:?}->{:?}",
+                    piece.kind,
+                    lower.start,
+                    lower.end
+                );
+            }
+        }
+    }
+}
+
+fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<TestTopBoundaryEdge> {
+    let mut boundary_edges = Vec::new();
+    for region in &piece.owned_regions {
+        let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, Vector3, Vector3)>::new();
+        for triangle in &region.polygon.triangles_world {
+            for edge_index in 0..3 {
+                if let Some(key) = TestRenderEdgeKey::normalized(
+                    triangle[edge_index],
+                    triangle[(edge_index + 1) % 3],
+                ) {
+                    edge_counts
+                        .entry(key)
+                        .and_modify(|entry| entry.0 += 1)
+                        .or_insert((1, triangle[edge_index], triangle[(edge_index + 1) % 3]));
+                }
+            }
+        }
+        for (key, (count, start, end)) in edge_counts {
+            if count == 1 {
+                boundary_edges.push(TestTopBoundaryEdge {
+                    kind: region.kind,
+                    start,
+                    end,
+                    key,
+                    xz_key: key.xz(),
+                    avg_y_m: (start.y + end.y) * 0.5,
+                });
+            }
+        }
+    }
+    boundary_edges
 }
 
 fn vertical_face_lower_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
@@ -974,8 +1173,10 @@ fn assert_compiled_bend_piece(
     assert_top_surface_triangles_face_up(piece);
     assert_curb_vertical_faces_have_top_support(piece);
     assert_curb_vertical_faces_visible_from_carriageway(piece);
+    assert_top_asphalt_curb_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
+    assert_earthwork_faces_stay_outside_top_footprint(piece);
     piece
 }
 
@@ -1004,8 +1205,10 @@ fn assert_compiled_junction_piece(
     assert_top_surface_triangles_face_up(piece);
     assert_curb_vertical_faces_have_top_support(piece);
     assert_curb_vertical_faces_visible_from_carriageway(piece);
+    assert_top_asphalt_curb_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
+    assert_earthwork_faces_stay_outside_top_footprint(piece);
     piece
 }
 
@@ -1040,6 +1243,35 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
         .flat_map(|polygon| polygon.points_world.iter())
     {
         let overlay_match_tolerance_m = SAMPLE_EPSILON_M * 2.0;
+        let mut sampled_visible_top = false;
+        let mut sampled_matching_height = false;
+        for polygon in &top_polygons {
+            for &triangle in &polygon.triangles_world {
+                let Some((wa, wb, wc)) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
+                    triangle,
+                    Vector2::new(boundary_point.x, boundary_point.z),
+                ) else {
+                    continue;
+                };
+                sampled_visible_top = true;
+                let height = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+                if (height - boundary_point.y).abs() <= overlay_match_tolerance_m {
+                    sampled_matching_height = true;
+                    break;
+                }
+            }
+            if sampled_matching_height {
+                break;
+            }
+        }
+        if sampled_visible_top {
+            assert!(
+                sampled_matching_height,
+                "node outer boundary must use a visible top-surface height at covered boundary points; boundary={boundary_point:?}"
+            );
+            continue;
+        }
+
         let Some(closest) = top_vertices.iter().min_by(|a, b| {
             let da = Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
             let db = Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
@@ -1936,7 +2168,11 @@ fn logged_outer_bend_skips_one_sided_curb_step_slivers() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let bend_piece = assert_compiled_bend_piece(&surface, bend);
+    let bend_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("bend should compile through canonical owned regions");
+    assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert!(
         visual_polygon_boundary_contains_xz(
             &bend_piece.outer_boundary_loops,
@@ -1945,6 +2181,51 @@ fn logged_outer_bend_skips_one_sided_curb_step_slivers() {
         "outer bend terrain cutter must preserve sampled outer span rail points; outer_loops={:?}",
         bend_piece.outer_boundary_loops
     );
+}
+
+#[test]
+fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-191.431, 0.0, -105.786), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-118.080, 0.0, -99.065), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(-70.293, 0.0, -45.373), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        road_points_from_json(
+            "[[-191.431,0.0,-105.786],[-190.608,0.0,-105.711],[-189.899,0.0,-105.646],[-189.315,0.0,-105.592],[-188.646,0.0,-105.531],[-187.894,0.0,-105.462],[-187.063,0.0,-105.386],[-186.156,0.0,-105.303],[-185.429,0.0,-105.236],[-184.922,0.0,-105.190],[-184.398,0.0,-105.142],[-183.858,0.0,-105.092],[-183.301,0.0,-105.041],[-182.729,0.0,-104.989],[-182.141,0.0,-104.935],[-181.539,0.0,-104.880],[-180.922,0.0,-104.823],[-180.291,0.0,-104.766],[-179.646,0.0,-104.706],[-178.988,0.0,-104.646],[-178.318,0.0,-104.585],[-177.635,0.0,-104.522],[-176.940,0.0,-104.458],[-176.233,0.0,-104.394],[-175.515,0.0,-104.328],[-174.787,0.0,-104.261],[-174.048,0.0,-104.194],[-173.300,0.0,-104.125],[-172.542,0.0,-104.055],[-171.775,0.0,-103.985],[-170.999,0.0,-103.914],[-170.215,0.0,-103.842],[-169.424,0.0,-103.770],[-168.625,0.0,-103.697],[-167.819,0.0,-103.623],[-167.007,0.0,-103.548],[-166.188,0.0,-103.473],[-165.364,0.0,-103.398],[-164.535,0.0,-103.322],[-163.701,0.0,-103.245],[-162.862,0.0,-103.169],[-162.019,0.0,-103.091],[-161.173,0.0,-103.014],[-160.324,0.0,-102.936],[-159.472,0.0,-102.858],[-158.618,0.0,-102.780],[-157.761,0.0,-102.701],[-156.904,0.0,-102.623],[-156.045,0.0,-102.544],[-155.186,0.0,-102.465],[-154.326,0.0,-102.386],[-153.467,0.0,-102.308],[-152.608,0.0,-102.229],[-151.750,0.0,-102.150],[-150.894,0.0,-102.072],[-150.040,0.0,-101.994],[-149.188,0.0,-101.916],[-148.339,0.0,-101.838],[-147.492,0.0,-101.760],[-146.650,0.0,-101.683],[-145.811,0.0,-101.606],[-144.977,0.0,-101.530],[-144.148,0.0,-101.454],[-143.324,0.0,-101.378],[-142.505,0.0,-101.303],[-141.693,0.0,-101.229],[-140.887,0.0,-101.155],[-140.088,0.0,-101.082],[-139.297,0.0,-101.009],[-138.513,0.0,-100.937],[-137.737,0.0,-100.866],[-136.970,0.0,-100.796],[-136.212,0.0,-100.727],[-135.464,0.0,-100.658],[-134.725,0.0,-100.590],[-133.996,0.0,-100.524],[-133.279,0.0,-100.458],[-132.572,0.0,-100.393],[-131.877,0.0,-100.329],[-131.194,0.0,-100.267],[-130.523,0.0,-100.205],[-129.865,0.0,-100.145],[-129.221,0.0,-100.086],[-128.590,0.0,-100.028],[-127.973,0.0,-99.972],[-127.370,0.0,-99.917],[-126.783,0.0,-99.863],[-126.210,0.0,-99.810],[-125.654,0.0,-99.759],[-125.114,0.0,-99.710],[-124.590,0.0,-99.662],[-124.083,0.0,-99.615],[-123.356,0.0,-99.549],[-122.449,0.0,-99.466],[-121.618,0.0,-99.389],[-120.866,0.0,-99.321],[-120.197,0.0,-99.259],[-119.612,0.0,-99.206],[-118.904,0.0,-99.141],[-118.080,0.0,-99.065]]",
+        ),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        road_points_from_json(
+            "[[-118.080,0.0,-99.065],[-117.544,0.0,-98.462],[-117.082,0.0,-97.944],[-116.702,0.0,-97.516],[-116.265,0.0,-97.026],[-115.775,0.0,-96.476],[-115.234,0.0,-95.867],[-114.644,0.0,-95.204],[-114.006,0.0,-94.487],[-113.670,0.0,-94.110],[-113.324,0.0,-93.721],[-112.966,0.0,-93.319],[-112.599,0.0,-92.906],[-112.221,0.0,-92.482],[-111.833,0.0,-92.046],[-111.436,0.0,-91.600],[-111.029,0.0,-91.143],[-110.614,0.0,-90.676],[-110.189,0.0,-90.199],[-109.756,0.0,-89.713],[-109.315,0.0,-89.217],[-108.866,0.0,-88.713],[-108.410,0.0,-88.200],[-107.946,0.0,-87.678],[-107.475,0.0,-87.149],[-106.997,0.0,-86.612],[-106.512,0.0,-86.068],[-106.022,0.0,-85.516],[-105.525,0.0,-84.958],[-105.022,0.0,-84.394],[-104.514,0.0,-83.823],[-104.001,0.0,-83.246],[-103.483,0.0,-82.664],[-102.960,0.0,-82.077],[-102.433,0.0,-81.484],[-101.902,0.0,-80.887],[-101.367,0.0,-80.286],[-100.828,0.0,-79.681],[-100.286,0.0,-79.072],[-99.741,0.0,-78.460],[-99.193,0.0,-77.845],[-98.643,0.0,-77.226],[-98.091,0.0,-76.606],[-97.537,0.0,-75.983],[-96.981,0.0,-75.359],[-96.424,0.0,-74.733],[-95.865,0.0,-74.105],[-95.306,0.0,-73.477],[-94.746,0.0,-72.848],[-94.187,0.0,-72.219],[-93.627,0.0,-71.590],[-93.067,0.0,-70.961],[-92.508,0.0,-70.333],[-91.949,0.0,-69.705],[-91.392,0.0,-69.079],[-90.836,0.0,-68.455],[-90.282,0.0,-67.832],[-89.730,0.0,-67.211],[-89.180,0.0,-66.593],[-88.632,0.0,-65.978],[-88.087,0.0,-65.366],[-87.545,0.0,-64.757],[-87.006,0.0,-64.152],[-86.471,0.0,-63.551],[-85.940,0.0,-62.954],[-85.413,0.0,-62.361],[-84.890,0.0,-61.774],[-84.372,0.0,-61.192],[-83.859,0.0,-60.615],[-83.351,0.0,-60.044],[-82.848,0.0,-59.480],[-82.352,0.0,-58.922],[-81.861,0.0,-58.370],[-81.376,0.0,-57.826],[-80.898,0.0,-57.289],[-80.427,0.0,-56.759],[-79.963,0.0,-56.238],[-79.507,0.0,-55.725],[-79.058,0.0,-55.221],[-78.617,0.0,-54.725],[-78.184,0.0,-54.239],[-77.759,0.0,-53.762],[-77.344,0.0,-53.295],[-76.937,0.0,-52.838],[-76.540,0.0,-52.392],[-76.152,0.0,-51.956],[-75.775,0.0,-51.532],[-75.407,0.0,-51.119],[-75.049,0.0,-50.717],[-74.703,0.0,-50.328],[-74.367,0.0,-49.950],[-73.729,0.0,-49.234],[-73.139,0.0,-48.571],[-72.598,0.0,-47.962],[-72.108,0.0,-47.412],[-71.671,0.0,-46.922],[-71.291,0.0,-46.494],[-70.829,0.0,-45.976],[-70.293,0.0,-45.373]]",
+        ),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("bend should compile through canonical owned regions");
+    assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_top_covers_footprint(bend_piece);
+    assert_top_asphalt_curb_boundaries_have_vertical_faces(bend_piece);
+    assert_earthwork_faces_stay_outside_top_footprint(bend_piece);
 }
 
 #[test]

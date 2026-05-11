@@ -383,7 +383,7 @@ impl RoadSurfaceSystem {
         (min_x, min_z, points)
     }
 
-    fn overlay_contour_area(contour: &NodeOverlayContour) -> f32 {
+    pub(super) fn overlay_contour_area(contour: &NodeOverlayContour) -> f32 {
         if contour.len() < 3 {
             return 0.0;
         }

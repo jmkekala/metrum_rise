@@ -1,15 +1,17 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{
-    ChunkCacheKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceEarthworkFaceKind,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
+use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::HashMap;
 
 // Vertical roadbed offset applied when terrain earthworks need pavement clearance.
@@ -112,13 +114,30 @@ impl RoadSurfaceSystem {
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceEarthworkRenderFace>,
     ) {
+        let point_loops = boundary_loops
+            .iter()
+            .map(|loop_polygon| loop_polygon.points_world.clone())
+            .collect::<Vec<_>>();
+        self.build_closed_earthwork_geometry_from_boundary_point_loops(&point_loops, terrain, None)
+    }
+
+    pub(super) fn build_closed_earthwork_geometry_from_boundary_point_loops(
+        &self,
+        boundary_point_loops: &[Vec<Vector3>],
+        terrain: &TerrainSystem,
+        top_surface_shapes: Option<&NodeOverlayShapes>,
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceEarthworkRenderFace>,
+    ) {
         let mut earthwork_surface_polygons = Vec::new();
         let mut earthwork_outer_boundary_loops = Vec::new();
         let mut render_earthwork_faces = Vec::new();
 
-        for boundary_loop in boundary_loops {
-            let Some((outer_loop, side_polygons, render_faces)) =
-                self.build_closed_earthwork_loop_geometry(&boundary_loop.points_world, terrain)
+        for boundary_points in boundary_point_loops {
+            let Some((outer_loop, side_polygons, render_faces)) = self
+                .build_closed_earthwork_loop_geometry(boundary_points, terrain, top_surface_shapes)
             else {
                 continue;
             };
@@ -143,6 +162,7 @@ impl RoadSurfaceSystem {
         &self,
         boundary_points: &[Vector3],
         terrain: &TerrainSystem,
+        top_surface_shapes: Option<&NodeOverlayShapes>,
     ) -> Option<(
         Option<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
@@ -152,7 +172,7 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let outer_points: Vec<Vector3> = boundary_points
+        let vertex_outer_points: Vec<Vector3> = boundary_points
             .iter()
             .enumerate()
             .map(|(index, point)| {
@@ -160,14 +180,20 @@ impl RoadSurfaceSystem {
                 self.earthwork_transition_point(*point, outward, terrain)
             })
             .collect();
-        let outer_loop = Self::make_visual_polygon(outer_points.clone());
+        let outer_loop = Self::make_visual_polygon(vertex_outer_points);
         let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
+        let winding_ccw = Self::signed_polygon_area_xz(boundary_points) > 0.0;
         for index in 0..boundary_points.len() {
             let current = boundary_points[index];
             let next = boundary_points[(index + 1) % boundary_points.len()];
-            let outer_current = outer_points[index];
-            let outer_next = outer_points[(index + 1) % outer_points.len()];
+            let (outer_current, outer_next) = self.earthwork_edge_transition_points(
+                current,
+                next,
+                winding_ccw,
+                terrain,
+                top_surface_shapes,
+            );
             let Some(polygon) =
                 Self::make_visual_polygon(vec![current, next, outer_next, outer_current])
             else {
@@ -188,6 +214,90 @@ impl RoadSurfaceSystem {
             return None;
         }
         Some((outer_loop, side_polygons, render_faces))
+    }
+
+    fn earthwork_edge_transition_points(
+        &self,
+        current: Vector3,
+        next: Vector3,
+        winding_ccw: bool,
+        terrain: &TerrainSystem,
+        top_surface_shapes: Option<&NodeOverlayShapes>,
+    ) -> (Vector3, Vector3) {
+        let edge = Vector2::new(next.x - current.x, next.z - current.z);
+        let outward = Self::edge_outward_normal_xz(edge, winding_ccw);
+        let outer_current = self.earthwork_transition_point(current, outward, terrain);
+        let outer_next = self.earthwork_transition_point(next, outward, terrain);
+        let Some(top_surface_shapes) = top_surface_shapes else {
+            return (outer_current, outer_next);
+        };
+
+        let opposite_outer_current = self.earthwork_transition_point(current, -outward, terrain);
+        let opposite_outer_next = self.earthwork_transition_point(next, -outward, terrain);
+        let nominal_overlap = Self::earthwork_candidate_top_overlap_area_m2(
+            [current, next, outer_next, outer_current],
+            top_surface_shapes,
+        );
+        let opposite_overlap = Self::earthwork_candidate_top_overlap_area_m2(
+            [current, next, opposite_outer_next, opposite_outer_current],
+            top_surface_shapes,
+        );
+        if opposite_overlap < nominal_overlap {
+            (opposite_outer_current, opposite_outer_next)
+        } else {
+            (outer_current, outer_next)
+        }
+    }
+
+    fn earthwork_candidate_top_overlap_area_m2(
+        points: [Vector3; 4],
+        top_surface_shapes: &NodeOverlayShapes,
+    ) -> f32 {
+        let Some(candidate_shapes) =
+            Self::overlay_union_contours(&[Self::earthwork_overlay_contour_from_points(&points)])
+        else {
+            return f32::INFINITY;
+        };
+        let Some(overlap) = Self::overlay_binary_shapes(
+            &candidate_shapes,
+            top_surface_shapes,
+            OverlayRule::Intersect,
+        ) else {
+            return f32::INFINITY;
+        };
+        overlap.iter().map(Self::overlay_shape_area_m2).sum()
+    }
+
+    fn earthwork_overlay_contour_from_points(points: &[Vector3]) -> NodeOverlayContour {
+        let mut contour = Vec::with_capacity(points.len());
+        for point in points {
+            let point = backend::road_vec2_to_overlay_point(backend::godot_vec3_xz_to_road(*point));
+            if contour.last().is_none_or(|last| *last != point) {
+                contour.push(point);
+            }
+        }
+        if contour.len() >= 2 && contour.first() == contour.last() {
+            contour.pop();
+        }
+        contour
+    }
+
+    pub(super) fn top_surface_overlay_shapes<'a>(
+        polygons: impl IntoIterator<Item = &'a RoadSurfaceVisualPolygon>,
+    ) -> Option<NodeOverlayShapes> {
+        let mut contours = Vec::new();
+        for polygon in polygons {
+            if polygon.triangles_world.is_empty() {
+                contours.push(Self::earthwork_overlay_contour_from_points(
+                    &polygon.points_world,
+                ));
+                continue;
+            }
+            for triangle in &polygon.triangles_world {
+                contours.push(Self::earthwork_overlay_contour_from_points(triangle));
+            }
+        }
+        Self::overlay_union_contours(&contours)
     }
 
     fn closed_loop_vertex_outward_xz(boundary_points: &[Vector3], index: usize) -> Vector2 {

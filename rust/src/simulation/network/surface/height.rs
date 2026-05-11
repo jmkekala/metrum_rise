@@ -12,10 +12,15 @@ use super::input::{
     NodeInputTerminalEndBandBoundaryMode,
 };
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
+use super::rails::{
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+    NodeRailContourSet,
+};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
+use spade::{Point2, Triangulation};
 use splines::{Interpolation, Key, Spline};
 use std::collections::BTreeMap;
 
@@ -180,19 +185,29 @@ enum NodeHeightPatchEvaluation {
 impl RoadSurfaceSystem {
     pub(super) fn build_node_height_solution_from_ownership(
         input: &NodeArrangementInput,
+        rails: &NodeRailContourSet,
         ownership: &NodeBooleanOwnership,
     ) -> Result<NodeHeightSolution, NodeHeightFieldError> {
-        NodeHeightSolution::from_ownership_and_input(input, ownership)
+        NodeHeightSolution::from_ownership_input_and_rails(input, Some(rails), ownership)
     }
 }
 
 impl NodeHeightSolution {
+    #[cfg(test)]
     pub(crate) fn from_ownership_and_input(
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
+        Self::from_ownership_input_and_rails(input, None, ownership)
+    }
+
+    fn from_ownership_input_and_rails(
+        input: &NodeArrangementInput,
+        rails: Option<&NodeRailContourSet>,
+        ownership: &NodeBooleanOwnership,
+    ) -> Result<Self, NodeHeightFieldError> {
         validate_input_ownership_pair(input, ownership)?;
-        let fields = height_fields_by_source(input)?;
+        let fields = height_fields_by_source(input, rails)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
 
         for region in &ownership.owned_regions {
@@ -254,6 +269,15 @@ impl NodeBandHeightField {
         }
         let extension = Self::from_terminal_end_band_with_base(mouth_order_index, end_band, self)?;
         self.patches.extend(extension.patches);
+        Ok(())
+    }
+
+    fn extend_with_generated_contour(
+        &mut self,
+        contour: &NodeGeneratedContour,
+    ) -> Result<(), NodeHeightFieldError> {
+        let patch = NodeBandHeightPatch::from_generated_contour(contour, self)?;
+        self.patches.push(patch);
         Ok(())
     }
 
@@ -410,6 +434,34 @@ impl NodeBandHeightPatch {
             contour_edges: Some(terminal_end_band_height_edges(end_band)),
             allow_parametric_fallback: end_band.boundary_mode
                 == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
+        }
+    }
+
+    fn from_generated_contour(
+        contour: &NodeGeneratedContour,
+        base: &NodeBandHeightField,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let mut points = Vec::with_capacity(contour.points_xz.len());
+        for point_xz in &contour.points_xz {
+            let point_xz = quantize_road_vec2_to_overlay_grid(*point_xz);
+            let height_m = base.evaluate_height(point_xz)?;
+            points.push(RoadVec3::new(point_xz.x, height_m, point_xz.y));
+        }
+        Ok(Self::from_heighted_contour(&points))
+    }
+
+    fn from_heighted_contour(points: &[RoadVec3]) -> Self {
+        let (edge_start, edge_end) = nondegenerate_contour_height_edge(points);
+        Self {
+            endpoint_start_xz: quantize_road_vec2_to_overlay_grid(xz(edge_start)),
+            endpoint_end_xz: quantize_road_vec2_to_overlay_grid(xz(edge_end)),
+            mouth_start_xz: quantize_road_vec2_to_overlay_grid(xz(edge_start)),
+            mouth_end_xz: quantize_road_vec2_to_overlay_grid(xz(edge_end)),
+            start_height_profile: linear_height_profile(edge_start.y, edge_start.y),
+            end_height_profile: linear_height_profile(edge_end.y, edge_end.y),
+            triangles: Some(height_triangles_from_contour(points)),
+            contour_edges: Some(height_edges_from_vertices(points)),
+            allow_parametric_fallback: false,
         }
     }
 
@@ -612,6 +664,7 @@ fn validate_input_ownership_pair(
 
 fn height_fields_by_source(
     input: &NodeArrangementInput,
+    rails: Option<&NodeRailContourSet>,
 ) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
     let mut fields = BTreeMap::new();
     for mouth in &input.mouths {
@@ -641,7 +694,41 @@ fn height_fields_by_source(
             }
         }
     }
+    if let Some(rails) = rails {
+        extend_height_fields_with_generated_contours(rails, &mut fields)?;
+    }
     Ok(fields)
+}
+
+fn extend_height_fields_with_generated_contours(
+    rails: &NodeRailContourSet,
+    fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+) -> Result<(), NodeHeightFieldError> {
+    for contour in &rails.contours {
+        let NodeGeneratedContourKind::Band { kind } = contour.kind else {
+            continue;
+        };
+        let Some(band_index) = contour.source_band_index else {
+            continue;
+        };
+        let key = NodeSourceBandKey {
+            mouth_order_index: contour.source_mouth_order_index,
+            band_index,
+        };
+        let Some(field) = fields.get_mut(&key) else {
+            continue;
+        };
+        if field.kind != kind {
+            return Err(NodeHeightFieldError::SourceBandKindMismatch {
+                mouth_order_index: key.mouth_order_index,
+                band_index: key.band_index,
+                region_kind: kind,
+                source_kind: field.kind,
+            });
+        }
+        field.extend_with_generated_contour(contour)?;
+    }
+    Ok(())
 }
 
 fn heighted_region(
@@ -673,7 +760,19 @@ fn heighted_region(
             source_kind: field.kind,
         });
     }
-    let shape = heighted_shape(&region.shape, field)?;
+    let shape = match heighted_shape(&region.shape, field) {
+        Ok(shape) => shape,
+        Err(error)
+            if matches!(
+                region.claim_priority,
+                NodeGeneratedContourClaimPriority::SideJoin
+                    | NodeGeneratedContourClaimPriority::JoinOrCap
+            ) =>
+        {
+            heighted_shape_with_canonical_contour_insertions(&region.shape, field, error)?
+        }
+        Err(error) => return Err(error),
+    };
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -699,6 +798,22 @@ fn heighted_shape(
     Ok(heighted)
 }
 
+fn heighted_shape_with_canonical_contour_insertions(
+    shape: &NodeOverlayShape,
+    field: &NodeBandHeightField,
+    original_error: NodeHeightFieldError,
+) -> Result<NodeHeightedShape, NodeHeightFieldError> {
+    let mut heighted = Vec::with_capacity(shape.len());
+    for contour in shape {
+        let contour =
+            heighted_contour_with_canonical_insertions(contour, field, original_error.clone())?;
+        if contour.len() >= 3 {
+            heighted.push(contour);
+        }
+    }
+    Ok(heighted)
+}
+
 fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
@@ -708,6 +823,133 @@ fn heighted_contour(
         .copied()
         .map(|point| heighted_vertex(point, field))
         .collect()
+}
+
+fn heighted_contour_with_canonical_insertions(
+    contour: &NodeOverlayContour,
+    field: &NodeBandHeightField,
+    original_error: NodeHeightFieldError,
+) -> Result<NodeHeightedContour, NodeHeightFieldError> {
+    let mut vertices = Vec::with_capacity(contour.len());
+    let mut solved_indices = Vec::new();
+    let mut first_outside_error = None;
+
+    for (index, point) in contour.iter().copied().enumerate() {
+        let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+        match field.evaluate_height(point_xz) {
+            Ok(height_m) => {
+                vertices.push((point_xz, Some(quantize_source_height_m(height_m))));
+                solved_indices.push(index);
+            }
+            Err(error @ NodeHeightFieldError::VertexOutsideHeightField { .. }) => {
+                first_outside_error.get_or_insert(error);
+                vertices.push((point_xz, None));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    if first_outside_error.is_none() {
+        return Ok(vertices
+            .into_iter()
+            .map(|(point_xz, height_m)| NodeHeightedVertex {
+                point_xz,
+                height_m: height_m.expect("directly solved contour vertex has a height"),
+                height_field_id: field.id,
+            })
+            .collect());
+    }
+    if solved_indices.len() < 2 {
+        return Err(first_outside_error.unwrap_or(original_error));
+    }
+
+    fill_canonical_contour_height_insertions(
+        &mut vertices,
+        first_outside_error
+            .clone()
+            .unwrap_or(original_error.clone()),
+    )?;
+
+    vertices
+        .into_iter()
+        .map(|(point_xz, height_m)| {
+            let height_m = height_m.ok_or_else(|| {
+                first_outside_error
+                    .clone()
+                    .unwrap_or(original_error.clone())
+            })?;
+            Ok(NodeHeightedVertex {
+                point_xz,
+                height_m,
+                height_field_id: field.id,
+            })
+        })
+        .collect()
+}
+
+fn fill_canonical_contour_height_insertions(
+    vertices: &mut [(RoadVec2, Option<f64>)],
+    outside_error: NodeHeightFieldError,
+) -> Result<(), NodeHeightFieldError> {
+    let Some(first_solved_index) = vertices.iter().position(|(_, height_m)| height_m.is_some())
+    else {
+        return Err(outside_error);
+    };
+    if vertices
+        .iter()
+        .filter(|(_, height_m)| height_m.is_some())
+        .count()
+        < 2
+    {
+        return Err(outside_error);
+    }
+
+    let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
+    ordered_indices.extend(first_solved_index..vertices.len());
+    ordered_indices.extend(0..=first_solved_index);
+
+    let mut start_pos = 0;
+    while start_pos + 1 < ordered_indices.len() {
+        let start_index = ordered_indices[start_pos];
+        let Some(start_height_m) = vertices[start_index].1 else {
+            return Err(outside_error);
+        };
+
+        let Some(end_pos) = (start_pos + 1..ordered_indices.len())
+            .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
+        else {
+            return Err(outside_error);
+        };
+        if end_pos == start_pos + 1 {
+            start_pos = end_pos;
+            continue;
+        }
+
+        let end_index = ordered_indices[end_pos];
+        let Some(end_height_m) = vertices[end_index].1 else {
+            return Err(outside_error);
+        };
+        let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
+        cumulative_lengths.push(0.0);
+        let mut total_length_m = 0.0;
+        for pair_pos in start_pos..end_pos {
+            let a = vertices[ordered_indices[pair_pos]].0;
+            let b = vertices[ordered_indices[pair_pos + 1]].0;
+            total_length_m += (b - a).length();
+            cumulative_lengths.push(total_length_m);
+        }
+        if total_length_m <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2.sqrt() {
+            return Err(outside_error);
+        }
+        for run_offset in 1..cumulative_lengths.len() - 1 {
+            let index = ordered_indices[start_pos + run_offset];
+            let t = cumulative_lengths[run_offset] / total_length_m;
+            let height_m = start_height_m + (end_height_m - start_height_m) * t;
+            vertices[index].1 = Some(quantize_source_height_m(height_m));
+        }
+        start_pos = end_pos;
+    }
+    Ok(())
 }
 
 fn heighted_vertex(
@@ -862,6 +1104,11 @@ fn quantize_source_height_m(value_m: f64) -> f64 {
 }
 
 fn interval_height_triangles(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightTriangle> {
+    if let Some(triangles) =
+        path_band_height_triangles(&interval.start_path_world, &interval.end_path_world)
+    {
+        return triangles;
+    }
     height_triangles_from_vertices(&[
         interval.mouth_start_world,
         interval.mouth_end_world,
@@ -871,12 +1118,52 @@ fn interval_height_triangles(interval: &NodeInputBandInterval) -> Vec<NodeBandHe
 }
 
 fn interval_height_edges(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightEdge> {
+    if let Some(edges) =
+        path_band_height_edges(&interval.start_path_world, &interval.end_path_world)
+    {
+        return edges;
+    }
     height_edges_from_vertices(&[
         interval.mouth_start_world,
         interval.mouth_end_world,
         interval.endpoint_end_world,
         interval.endpoint_start_world,
     ])
+}
+
+fn path_band_height_triangles(
+    start_path_world: &[RoadVec3],
+    end_path_world: &[RoadVec3],
+) -> Option<Vec<NodeBandHeightTriangle>> {
+    if start_path_world.len() != end_path_world.len() || start_path_world.len() < 2 {
+        return None;
+    }
+
+    let mut triangles = Vec::with_capacity((start_path_world.len() - 1) * 2);
+    for index in 0..start_path_world.len() - 1 {
+        let start_current = start_path_world[index];
+        let start_next = start_path_world[index + 1];
+        let end_next = end_path_world[index + 1];
+        let end_current = end_path_world[index];
+        push_height_triangle(&mut triangles, start_current, start_next, end_next);
+        push_height_triangle(&mut triangles, start_current, end_next, end_current);
+    }
+    (!triangles.is_empty()).then_some(triangles)
+}
+
+fn path_band_height_edges(
+    start_path_world: &[RoadVec3],
+    end_path_world: &[RoadVec3],
+) -> Option<Vec<NodeBandHeightEdge>> {
+    if start_path_world.len() != end_path_world.len() || start_path_world.len() < 2 {
+        return None;
+    }
+
+    let mut contour = Vec::with_capacity(start_path_world.len() + end_path_world.len());
+    contour.extend_from_slice(start_path_world);
+    contour.extend(end_path_world.iter().rev().copied());
+    let edges = height_edges_from_vertices(&contour);
+    (!edges.is_empty()).then_some(edges)
 }
 
 fn terminal_end_band_height_triangles(
@@ -888,7 +1175,7 @@ fn terminal_end_band_height_triangles(
         return triangles;
     }
 
-    let mut triangles = height_triangles_from_vertices(&end_band.contour_world);
+    let mut triangles = height_triangles_from_contour(&end_band.contour_world);
     if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
         && end_band.contour_world.len() >= 3
     {
@@ -970,6 +1257,65 @@ fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<No
 }
 
 fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
+    let vertices = canonical_height_vertices(points);
+    fan_height_triangles_from_vertices(&vertices)
+}
+
+fn height_triangles_from_contour(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
+    constrained_height_triangles_from_vertices(points)
+        .unwrap_or_else(|| height_triangles_from_vertices(points))
+}
+
+fn constrained_height_triangles_from_vertices(
+    points: &[RoadVec3],
+) -> Option<Vec<NodeBandHeightTriangle>> {
+    let vertices = canonical_height_vertices(points);
+    if vertices.len() < 3 {
+        return None;
+    }
+    if vertices.len() == 3 {
+        let triangles = fan_height_triangles_from_vertices(&vertices);
+        return (!triangles.is_empty()).then_some(triangles);
+    }
+
+    let spade_vertices = vertices
+        .iter()
+        .map(|(point_xz, _)| Point2::new(point_xz.x, point_xz.y))
+        .collect::<Vec<_>>();
+    let constraints = (0..vertices.len())
+        .map(|index| [index, (index + 1) % vertices.len()])
+        .collect::<Vec<_>>();
+    let mut invalid_constraints = 0usize;
+    let cdt = SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraints, |_| {
+        invalid_constraints += 1;
+    })
+    .ok()?;
+    if invalid_constraints > 0 {
+        return None;
+    }
+
+    let mut triangles = Vec::new();
+    for face in cdt.inner_faces() {
+        let [a, b, c] = face.vertices();
+        let indices = [a.fix().index(), b.fix().index(), c.fix().index()];
+        let centroid =
+            (vertices[indices[0]].0 + vertices[indices[1]].0 + vertices[indices[2]].0) / 3.0;
+        if !height_polygon_contains_point_xz(&vertices, centroid) {
+            continue;
+        }
+        push_height_triangle_from_vertices(
+            &mut triangles,
+            vertices[indices[0]],
+            vertices[indices[1]],
+            vertices[indices[2]],
+        );
+    }
+    triangles.sort_by(|a, b| height_triangle_sort_key(a).cmp(&height_triangle_sort_key(b)));
+    triangles.dedup_by_key(|triangle| height_triangle_sort_key(triangle));
+    (!triangles.is_empty()).then_some(triangles)
+}
+
+fn canonical_height_vertices(points: &[RoadVec3]) -> Vec<(RoadVec2, f64)> {
     let mut vertices = Vec::with_capacity(points.len());
     for point in points {
         let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
@@ -988,7 +1334,10 @@ fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTria
     {
         vertices.pop();
     }
+    vertices
+}
 
+fn fan_height_triangles_from_vertices(vertices: &[(RoadVec2, f64)]) -> Vec<NodeBandHeightTriangle> {
     let mut triangles = Vec::new();
     if vertices.len() < 3 {
         return triangles;
@@ -1015,6 +1364,72 @@ fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTria
         });
     }
     triangles
+}
+
+fn push_height_triangle_from_vertices(
+    triangles: &mut Vec<NodeBandHeightTriangle>,
+    a: (RoadVec2, f64),
+    b: (RoadVec2, f64),
+    c: (RoadVec2, f64),
+) {
+    if height_triangle_area2(
+        height_source_point_key(a.0),
+        height_source_point_key(b.0),
+        height_source_point_key(c.0),
+    ) == 0
+    {
+        return;
+    }
+    triangles.push(NodeBandHeightTriangle {
+        a_xz: a.0,
+        b_xz: b.0,
+        c_xz: c.0,
+        a_height_m: a.1,
+        b_height_m: b.1,
+        c_height_m: c.1,
+    });
+}
+
+fn height_triangle_sort_key(triangle: &NodeBandHeightTriangle) -> [NodeHeightSourcePointKey; 3] {
+    let mut keys = [
+        height_source_point_key(triangle.a_xz),
+        height_source_point_key(triangle.b_xz),
+        height_source_point_key(triangle.c_xz),
+    ];
+    keys.sort();
+    keys
+}
+
+fn height_polygon_contains_point_xz(vertices: &[(RoadVec2, f64)], point: RoadVec2) -> bool {
+    if vertices.len() < 3 {
+        return false;
+    }
+    let point_key = height_source_point_key(point);
+    for index in 0..vertices.len() {
+        let start = vertices[index].0;
+        let end = vertices[(index + 1) % vertices.len()].0;
+        if height_source_point_key_lies_on_segment(
+            point_key,
+            height_source_point_key(start),
+            height_source_point_key(end),
+        ) {
+            return true;
+        }
+    }
+
+    let mut inside = false;
+    for index in 0..vertices.len() {
+        let start = vertices[index].0;
+        let end = vertices[(index + 1) % vertices.len()].0;
+        if (start.y > point.y) != (end.y > point.y) {
+            let edge_x_at_point_z =
+                (end.x - start.x) * (point.y - start.y) / (end.y - start.y) + start.x;
+            if point.x < edge_x_at_point_z {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 fn height_edges_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightEdge> {
@@ -1173,6 +1588,23 @@ fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f6
         })
 }
 
+fn nondegenerate_contour_height_edge(points: &[RoadVec3]) -> (RoadVec3, RoadVec3) {
+    let first = points.first().copied().unwrap_or(RoadVec3::ZERO);
+    for point in points.iter().copied().skip(1) {
+        if xz(point).distance_squared(xz(first)) > HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
+            return (first, point);
+        }
+    }
+    (
+        first,
+        RoadVec3::new(
+            first.x + HEIGHT_FIELD_MIN_AXIS_LEN2_M2.sqrt(),
+            first.y,
+            first.z,
+        ),
+    )
+}
+
 fn xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
 }
@@ -1274,6 +1706,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
+            uses_sampled_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -1581,6 +2014,7 @@ mod tests {
                     manual_interval(1, RoadSurfaceBandKind::Sidewalk, 5.0, 7.0),
                 ],
                 terminal_end_bands: Vec::new(),
+                uses_sampled_band_domain_paths: false,
             }],
         }
     }

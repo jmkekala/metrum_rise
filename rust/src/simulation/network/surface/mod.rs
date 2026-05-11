@@ -291,6 +291,7 @@ struct OrderedIncidentPieceMouth {
     boundary_paths_world: Vec<Vec<Vector3>>,
     band_start_paths_world: Vec<Vec<Vector3>>,
     band_end_paths_world: Vec<Vec<Vector3>>,
+    uses_sampled_band_domain_paths: bool,
     direction_angle_ccw: f32,
     direction_xz: Vector2,
     edge_idx: usize,
@@ -336,6 +337,7 @@ fn terrain_clip_edge_kind_for_band(kind: RoadSurfaceBandKind) -> RoadSurfaceTerr
 #[derive(Clone, Debug, PartialEq)]
 struct NodeSurfaceRegionResult {
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    earthwork_boundary_point_loops: Vec<Vec<Vector3>>,
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,

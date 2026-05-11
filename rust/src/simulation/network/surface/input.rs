@@ -48,6 +48,7 @@ pub(crate) struct NodeInputMouth {
     pub(crate) boundary_rails: Vec<NodeInputBoundaryRail>,
     pub(crate) band_intervals: Vec<NodeInputBandInterval>,
     pub(crate) terminal_end_bands: Vec<NodeInputTerminalEndBand>,
+    pub(crate) uses_sampled_band_domain_paths: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -233,6 +234,7 @@ impl NodeInputMouth {
             boundary_rails,
             band_intervals,
             terminal_end_bands,
+            uses_sampled_band_domain_paths: mouth.uses_sampled_band_domain_paths,
         })
     }
 }
@@ -2684,6 +2686,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
+            uses_sampled_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -2747,6 +2750,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
+            uses_sampled_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 8,

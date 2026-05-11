@@ -299,6 +299,28 @@ fn push_band_contour(
         kind: interval.band_kind,
     };
     let last_band_index = mouth.band_intervals.len().saturating_sub(1);
+    if mouth.uses_sampled_band_domain_paths
+        && interval
+            .start_path_world
+            .len()
+            .min(interval.end_path_world.len())
+            > 2
+    {
+        return push_path_band_contour(
+            kind,
+            mouth.order_index,
+            Some(interval.band_index),
+            Some(owner),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            NodeRailConstraintKind::BandContour {
+                kind: interval.band_kind,
+            },
+            &interval.start_path_world,
+            &interval.end_path_world,
+            contours,
+            constraints,
+        );
+    }
     if interval.band_index == 0 && interval.start_path_world.len() > 2 {
         let inner_path = subdivided_world_chord(
             interval.mouth_end_world,
@@ -451,6 +473,35 @@ fn push_generated_contour(
     )
 }
 
+fn push_path_band_contour(
+    kind: NodeGeneratedContourKind,
+    mouth_order_index: usize,
+    band_index: Option<usize>,
+    owner: Option<NodeBandOwner>,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    constraint_kind: NodeRailConstraintKind,
+    start_path_world: &[RoadVec3],
+    end_path_world: &[RoadVec3],
+    contours: &mut Vec<NodeGeneratedContour>,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
+    let mut points = Vec::with_capacity(start_path_world.len() + end_path_world.len());
+    append_world_path_xz(&mut points, start_path_world.iter());
+    append_world_path_xz(&mut points, end_path_world.iter().rev());
+    remove_closing_road_path_duplicate(&mut points);
+    push_generated_contour(
+        kind,
+        mouth_order_index,
+        band_index,
+        owner,
+        claim_priority,
+        constraint_kind,
+        points,
+        contours,
+        constraints,
+    )
+}
+
 fn path_strip_contours_xz(
     start_path_world: &[RoadVec3],
     end_path_world: &[RoadVec3],
@@ -496,7 +547,14 @@ fn push_terminal_end_band_contours(
     let owner_by_kind_and_source =
         terminal_owner_by_kind_and_source(mouth, mouth_owners, end_bands, owners);
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-        push_node_side_join_candidate_contours(mouth, end_bands, owners, contours, constraints)?;
+        push_node_side_join_candidate_contours(
+            piece_kind,
+            mouth,
+            end_bands,
+            owners,
+            contours,
+            constraints,
+        )?;
         for (end_band, owner) in end_bands.iter().zip(owners) {
             push_terminal_end_band_boundary_constraints(
                 mouth,
@@ -549,6 +607,7 @@ fn push_terminal_end_band_contours(
 }
 
 fn push_node_side_join_candidate_contours(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
     end_bands: &[NodeInputTerminalEndBand],
     owners: &[NodeBandOwner],
@@ -565,7 +624,9 @@ fn push_node_side_join_candidate_contours(
                 kind: end_band.band_kind,
                 source_band_index: end_band.source_band_index,
                 owner: *owner,
-                contributes_footprint: node_side_join_end_band_contributes_footprint(end_band),
+                contributes_footprint: node_side_join_end_band_contributes_footprint(
+                    piece_kind, end_band,
+                ),
             })
             .or_insert_with(|| TerminalEndBandGroup {
                 contour_world: Vec::new(),
@@ -619,13 +680,19 @@ struct TerminalEndBandGroup<'a> {
 
 impl<'a> TerminalEndBandGroup<'a> {
     fn push(&mut self, end_band: &'a NodeInputTerminalEndBand) {
-        self.contour_world.push(
-            end_band
-                .contour_world
-                .iter()
-                .map(|point| [point.x, point.z])
-                .collect(),
-        );
+        let mut contour = end_band
+            .contour_world
+            .iter()
+            .map(|point| [point.x, point.z])
+            .collect::<Vec<_>>();
+        if end_band.band_kind != RoadSurfaceBandKind::Carriageway
+            && end_band.boundary_mode
+                != NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+            && RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0
+        {
+            contour.reverse();
+        }
+        self.contour_world.push(contour);
         self.end_bands.push(end_band);
     }
 }
@@ -877,7 +944,10 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
     )
 }
 
-fn node_side_join_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
+fn node_side_join_end_band_contributes_footprint(
+    _piece_kind: RoadSurfaceVisualNodePieceKind,
+    end_band: &NodeInputTerminalEndBand,
+) -> bool {
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
@@ -3646,6 +3716,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
+            uses_sampled_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -3666,6 +3737,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
+            uses_sampled_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,

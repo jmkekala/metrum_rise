@@ -1054,12 +1054,20 @@ impl NodeArrangementEdgeId {
 }
 
 impl NodeArrangementVertex {
+    pub(crate) fn key(&self) -> NodeArrangementKey {
+        self.key
+    }
+
     pub(crate) fn point_xz(&self) -> RoadVec2 {
         self.point_xz
     }
 
     pub(crate) fn height_m(&self) -> f64 {
         self.height_m
+    }
+
+    pub(crate) fn height_mm(&self) -> i64 {
+        self.height_key.0
     }
 
     pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
@@ -1100,18 +1108,6 @@ impl NodeArrangementEdge {
 
     pub(crate) fn end(&self) -> NodeArrangementVertexId {
         self.end
-    }
-
-    pub(crate) fn owner(&self) -> NodeBandOwner {
-        self.owner
-    }
-
-    pub(crate) fn is_exposed_boundary(&self) -> bool {
-        self.exposed_boundary
-    }
-
-    pub(crate) fn seam_source(&self) -> NodeSeamSource {
-        self.seam_source
     }
 
     pub(crate) fn is_explicit_vertical_step(&self) -> bool {

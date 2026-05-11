@@ -6,11 +6,8 @@ use super::{
     RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    arrangement::{
-        NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner, NodeSeamSource,
-    },
+    arrangement::{NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner},
     input::NodeInputExtractionError,
-    terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -20,41 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-
-#[derive(Clone, Copy)]
-struct ArrangementBoundarySegment {
-    start_key: ArrangementBoundaryPointKey,
-    end_key: ArrangementBoundaryPointKey,
-    start: Vector3,
-    end: Vector3,
-    owner: NodeBandOwner,
-    seam_source: NodeSeamSource,
-}
-
-#[derive(Clone, Copy)]
-struct ArrangementCanonicalBoundaryEdge {
-    start: Vector3,
-    end: Vector3,
-    start_key: NodeArrangementKey,
-    end_key: NodeArrangementKey,
-    owner: NodeBandOwner,
-    seam_source: NodeSeamSource,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct OuterBoundaryHeightEntry {
-    point: ArrangementBoundaryPointKey,
-    owner: NodeBandOwner,
-    seam_source: NodeSeamSource,
-}
-
-#[derive(Clone, Copy)]
-struct ArrangementTerrainClipSourceSegment {
-    start: Vector3,
-    end: Vector3,
-    owner: NodeBandOwner,
-    kind: RoadSurfaceTerrainClipEdgeKind,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ArrangementFaceBoundaryInterval {
@@ -143,18 +105,7 @@ impl PartialOrd for ArrangementSegmentParameter {
 #[derive(Debug)]
 enum NodeBoundaryExportError {
     EmptyOuterBoundary,
-    MissingOuterBoundaryOwner {
-        owner: NodeBandOwner,
-        start: NodeArrangementKey,
-        end: NodeArrangementKey,
-    },
-    ContradictoryOuterBoundaryHeight {
-        owner: NodeBandOwner,
-        point: NodeArrangementKey,
-        existing_height_mm: i64,
-        incoming_height_mm: i64,
-    },
-    AmbiguousOuterBoundaryOwner,
+    MissingFootprintBoundaryHeight { point: NodeArrangementKey },
     DegenerateOuterBoundaryLoop,
 }
 
@@ -239,10 +190,18 @@ impl RoadSurfaceSystem {
         mouths: &[OrderedIncidentPieceMouth],
     ) -> Option<RoadSurfaceVisualNodePiece> {
         let node_regions = self.compile_canonical_node_surface_regions(node_id, kind, mouths)?;
+        let top_surface_shapes = Self::top_surface_overlay_shapes(
+            node_regions
+                .road_surface_polygons
+                .iter()
+                .chain(node_regions.curb_surface_polygons.iter())
+                .chain(node_regions.sidewalk_surface_polygons.iter()),
+        );
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
-            self.build_closed_earthwork_geometry_from_boundary_loops(
-                &node_regions.outer_boundary_loops,
+            self.build_closed_earthwork_geometry_from_boundary_point_loops(
+                &node_regions.earthwork_boundary_point_loops,
                 terrain,
+                top_surface_shapes.as_ref(),
             );
 
         self.assemble_explicit_node_piece(
@@ -298,15 +257,16 @@ impl RoadSurfaceSystem {
             self.log_node_validation_report(&report);
             return None;
         }
-        let heights = match Self::build_node_height_solution_from_ownership(&input, &ownership) {
-            Ok(heights) => heights,
-            Err(error) => {
-                self.log_node_validation_report(&NodeValidationReport::from_height_field_error(
-                    node_id, kind, &error,
-                ));
-                return None;
-            }
-        };
+        let heights =
+            match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
+                Ok(heights) => heights,
+                Err(error) => {
+                    self.log_node_validation_report(
+                        &NodeValidationReport::from_height_field_error(node_id, kind, &error),
+                    );
+                    return None;
+                }
+            };
         let mut arrangement = match NodeArrangement::from_height_solution(&heights) {
             Ok(arrangement) => arrangement,
             Err(error) => {
@@ -347,7 +307,8 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        match Self::node_surface_regions_from_arrangement(&arrangement) {
+        match Self::node_surface_regions_from_arrangement(&arrangement, &ownership.footprint_shapes)
+        {
             Ok(regions) => Some(regions),
             Err(error) => {
                 self.log_node_boundary_export_error(&arrangement, &error);
@@ -358,12 +319,8 @@ impl RoadSurfaceSystem {
 
     fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
+        footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
-        let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
-        let canonical_loops =
-            Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
-        validate_outer_boundary_loop_height_consistency(arrangement, &canonical_loops)?;
-
         let mut owned_regions = Vec::new();
 
         for face in arrangement.faces() {
@@ -397,10 +354,17 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
+        let footprint_boundary_point_loops =
+            Self::footprint_boundary_point_loops_from_shapes(arrangement, footprint_shapes)?;
+        let mut earthwork_boundary_point_loops =
+            Self::earthwork_boundary_point_loops_from_footprint_loops(
+                &footprint_boundary_point_loops,
+            );
+        Self::orient_earthwork_boundary_point_loops_by_nesting(&mut earthwork_boundary_point_loops);
         let mut outer_boundary_loops =
-            Self::outer_boundary_polygons_from_segment_loops(&canonical_loops)?;
+            Self::outer_boundary_polygons_from_point_loops(&footprint_boundary_point_loops)?;
         let mut terrain_clip_boundary_loops =
-            Self::terrain_clip_boundary_loops_from_segment_loops(&canonical_loops);
+            Self::terrain_clip_boundary_loops_from_point_loops(&footprint_boundary_point_loops);
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
@@ -412,6 +376,7 @@ impl RoadSurfaceSystem {
 
         Ok(super::NodeSurfaceRegionResult {
             outer_boundary_loops,
+            earthwork_boundary_point_loops,
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
@@ -419,6 +384,151 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons,
             owned_regions,
         })
+    }
+
+    fn footprint_boundary_point_loops_from_shapes(
+        arrangement: &NodeArrangement,
+        footprint_shapes: &super::NodeOverlayShapes,
+    ) -> Result<Vec<Vec<Vector3>>, NodeBoundaryExportError> {
+        let mut loops = Vec::new();
+        for shape in footprint_shapes {
+            for contour in shape {
+                let mut keyed_points = Vec::with_capacity(contour.len());
+                for point in contour {
+                    let point = super::backend::RoadVec2::new(point[0], point[1]);
+                    let key = NodeArrangementKey::from_point(point);
+                    keyed_points.push((
+                        key,
+                        Self::arrangement_footprint_boundary_height_mm(arrangement, key),
+                    ));
+                }
+                fill_missing_footprint_boundary_heights(&mut keyed_points)?;
+                let points = keyed_points
+                    .into_iter()
+                    .map(|(key, height_mm)| {
+                        arrangement_boundary_point_to_world(arrangement_key_boundary_point(
+                            key,
+                            height_mm.expect("footprint boundary height was solved"),
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                let points = Self::canonicalize_loop_points(points);
+                if points.len() < 3 {
+                    continue;
+                }
+                if Self::signed_polygon_area_xz(&points).abs()
+                    <= boundary_points_numeric_area_budget_m2(&points)
+                {
+                    continue;
+                }
+                loops.push(points);
+            }
+        }
+        (!loops.is_empty())
+            .then_some(loops)
+            .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
+    }
+
+    fn earthwork_boundary_point_loops_from_footprint_loops(
+        footprint_loops: &[Vec<Vector3>],
+    ) -> Vec<Vec<Vector3>> {
+        let mut loops = Vec::new();
+        for footprint_loop in footprint_loops {
+            for points in same_winding_boundary_point_loops_from_loop(footprint_loop) {
+                loops.push(points);
+            }
+        }
+        loops
+    }
+
+    fn arrangement_footprint_boundary_height_mm(
+        arrangement: &NodeArrangement,
+        key: NodeArrangementKey,
+    ) -> Option<i64> {
+        let mut heights_mm = Self::arrangement_visible_top_heights_at_key(arrangement, key);
+        if heights_mm.is_empty() {
+            heights_mm.extend(Self::arrangement_boundary_edge_heights_at_key(
+                arrangement,
+                key,
+            ));
+        }
+        if heights_mm.is_empty() {
+            heights_mm.extend(
+                arrangement
+                    .vertices()
+                    .iter()
+                    .filter(|vertex| vertex.key() == key)
+                    .map(|vertex| vertex.height_mm()),
+            );
+        }
+        heights_mm.into_iter().max()
+    }
+
+    fn arrangement_visible_top_heights_at_key(
+        arrangement: &NodeArrangement,
+        key: NodeArrangementKey,
+    ) -> Vec<i64> {
+        let point = Vector2::new(
+            (key.x_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+            (key.z_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+        );
+        let mut heights = Vec::new();
+        for face in arrangement.faces() {
+            let Some(triangle) = Self::arrangement_face_visual_triangle(arrangement, face) else {
+                continue;
+            };
+            let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point) else {
+                continue;
+            };
+            let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+            heights.push((height_m * 1000.0).round() as i64);
+        }
+        heights.sort_unstable();
+        heights.dedup();
+        heights
+    }
+
+    fn arrangement_boundary_edge_heights_at_key(
+        arrangement: &NodeArrangement,
+        key: NodeArrangementKey,
+    ) -> Vec<i64> {
+        let mut heights = Vec::new();
+        for face in arrangement
+            .faces()
+            .iter()
+            .filter(|face| Self::arrangement_face_visual_triangle(arrangement, face).is_some())
+        {
+            let vertices = face.vertices();
+            for index in 0..vertices.len() {
+                let Some(start) = arrangement.vertices().get(vertices[index].index()) else {
+                    continue;
+                };
+                let Some(end) = arrangement
+                    .vertices()
+                    .get(vertices[(index + 1) % vertices.len()].index())
+                else {
+                    continue;
+                };
+                if !arrangement_key_lies_on_segment(key, start.key(), end.key()) {
+                    continue;
+                }
+                let Some(parameter) = boundary_segment_parameter_xz(
+                    arrangement_key_boundary_point(key, 0),
+                    arrangement_key_boundary_point(start.key(), start.height_mm()),
+                    arrangement_key_boundary_point(end.key(), end.height_mm()),
+                ) else {
+                    continue;
+                };
+                heights.push(interpolated_segment_height_mm(
+                    arrangement_key_boundary_point(start.key(), start.height_mm()),
+                    arrangement_key_boundary_point(end.key(), end.height_mm()),
+                    parameter,
+                ));
+            }
+        }
+        heights.sort_unstable();
+        heights.dedup();
+        heights
     }
 
     fn curb_vertical_face_polygons_from_arrangement(
@@ -543,146 +653,12 @@ impl RoadSurfaceSystem {
         )
     }
 
-    fn arrangement_outer_boundary_segments(
-        arrangement: &NodeArrangement,
-    ) -> Result<Vec<ArrangementBoundarySegment>, NodeBoundaryExportError> {
-        let canonical_edges = Self::arrangement_canonical_boundary_edges(arrangement)?;
-        let canonical_segments = canonical_edges
-            .iter()
-            .map(|edge| ArrangementBoundarySegment {
-                start_key: ArrangementBoundaryPointKey::from_world(edge.start),
-                end_key: ArrangementBoundaryPointKey::from_world(edge.end),
-                start: edge.start,
-                end: edge.end,
-                owner: edge.owner,
-                seam_source: edge.seam_source,
-            })
-            .collect::<Vec<_>>();
-
-        if canonical_segments.is_empty() {
-            return Err(NodeBoundaryExportError::EmptyOuterBoundary);
-        }
-        Ok(canonical_segments)
-    }
-
-    fn arrangement_canonical_boundary_edges(
-        arrangement: &NodeArrangement,
-    ) -> Result<Vec<ArrangementCanonicalBoundaryEdge>, NodeBoundaryExportError> {
-        let mut edges = Vec::new();
-        for edge in arrangement
-            .edges()
-            .iter()
-            .filter(|edge| edge.is_exposed_boundary())
-        {
-            let Some(start) = Self::arrangement_vertex_world(arrangement, edge.start()) else {
-                return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
-            };
-            let Some(end) = Self::arrangement_vertex_world(arrangement, edge.end()) else {
-                return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
-            };
-            let start_point_key = ArrangementBoundaryPointKey::from_world(start);
-            let end_point_key = ArrangementBoundaryPointKey::from_world(end);
-            let start_key = start_point_key.xz_key();
-            let end_key = end_point_key.xz_key();
-            if start_key == end_key {
-                continue;
-            }
-            edges.push(ArrangementCanonicalBoundaryEdge {
-                start,
-                end,
-                start_key,
-                end_key,
-                owner: edge.owner(),
-                seam_source: edge.seam_source(),
-            });
-        }
-        if edges.is_empty() {
-            return Err(NodeBoundaryExportError::EmptyOuterBoundary);
-        }
-        edges.sort_by(|a, b| {
-            a.start_key
-                .cmp(&b.start_key)
-                .then(a.end_key.cmp(&b.end_key))
-                .then(a.owner.kind().cmp(&b.owner.kind()))
-                .then(a.owner.owner_index().cmp(&b.owner.owner_index()))
-        });
-        Ok(edges)
-    }
-
-    fn outer_boundary_segment_loops_from_arrangement_segments(
-        segments: &[ArrangementBoundarySegment],
-    ) -> Result<Vec<Vec<ArrangementBoundarySegment>>, NodeBoundaryExportError> {
-        let mut unused = (0..segments.len()).collect::<BTreeSet<_>>();
-        let mut loops = Vec::new();
-        while let Some(first_index) = unused.iter().next().copied() {
-            let first = segments[first_index];
-            let first_key = first.start_key;
-            let mut current_index = first_index;
-            let mut current = first;
-            let mut loop_segments = Vec::new();
-
-            loop {
-                if !unused.remove(&current_index) {
-                    return Err(NodeBoundaryExportError::AmbiguousOuterBoundaryOwner);
-                }
-                loop_segments.push(current);
-
-                if arrangement_boundary_point_same_xz(current.end_key, first_key) {
-                    break;
-                }
-
-                let next_candidates = unused
-                    .iter()
-                    .copied()
-                    .filter(|index| {
-                        arrangement_boundary_point_same_xz(
-                            segments[*index].start_key,
-                            current.end_key,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                if next_candidates.is_empty() {
-                    return Err(NodeBoundaryExportError::MissingOuterBoundaryOwner {
-                        owner: current.owner,
-                        start: current.end_key.xz_key(),
-                        end: first_key.xz_key(),
-                    });
-                }
-                current_index = Self::select_next_arrangement_boundary_segment(
-                    segments,
-                    current,
-                    &next_candidates,
-                )
-                .ok_or_else(|| NodeBoundaryExportError::AmbiguousOuterBoundaryOwner)?;
-                current = segments[current_index];
-            }
-
-            for simple_loop in split_boundary_segment_loop_at_repeated_xz(loop_segments) {
-                let points =
-                    Self::canonicalize_loop_points(boundary_points_from_segment_loop(&simple_loop));
-                if points.len() < 3 {
-                    continue;
-                }
-                let area_m2 = Self::signed_polygon_area_xz(&points).abs();
-                if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
-                    continue;
-                }
-                loops.push(simple_loop);
-            }
-        }
-
-        (!loops.is_empty())
-            .then_some(loops)
-            .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
-    }
-
-    fn outer_boundary_polygons_from_segment_loops(
-        canonical_loops: &[Vec<ArrangementBoundarySegment>],
+    fn outer_boundary_polygons_from_point_loops(
+        point_loops: &[Vec<Vector3>],
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
         let mut polygons = Vec::new();
-        for canonical_loop in canonical_loops {
-            let points =
-                Self::canonicalize_loop_points(boundary_points_from_segment_loop(canonical_loop));
+        for point_loop in point_loops {
+            let points = Self::canonicalize_loop_points(point_loop.clone());
             if points.len() < 3 {
                 continue;
             }
@@ -691,12 +667,6 @@ impl RoadSurfaceSystem {
                 continue;
             }
             let Some(polygon) = Self::make_boundary_loop_polygon(points) else {
-                crate::debug_log!(
-                    "road",
-                    "node_outer_boundary_degenerate_loop segments={} area={:.6}",
-                    canonical_loop.len(),
-                    area_m2
-                );
                 return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
             };
             polygons.push(polygon);
@@ -706,71 +676,67 @@ impl RoadSurfaceSystem {
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
     }
 
-    fn terrain_clip_boundary_loops_from_segment_loops(
-        canonical_loops: &[Vec<ArrangementBoundarySegment>],
-    ) -> Vec<RoadSurfaceTerrainClipLoop> {
-        let mut loops = Vec::new();
-        for canonical_loop in canonical_loops {
-            let (mut points, mut source_edges) =
-                terrain_clip_boundary_points_and_source_edges_from_segments(canonical_loop);
-            if points.len() < 3 {
-                continue;
-            }
-            let signed_area = Self::signed_polygon_area_xz(&points);
-            if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
-                continue;
-            }
-            if signed_area < 0.0 {
-                // Terrain overlay uses positive-fill contours; arrangement traversal direction
-                // must not decide whether an owner seam reaches the terrain CDT.
+    fn orient_earthwork_boundary_point_loops_by_nesting(loops: &mut [Vec<Vector3>]) {
+        let samples = loops
+            .iter()
+            .map(|points| {
+                points.iter().fold(Vector2::ZERO, |sum, point| {
+                    sum + Vector2::new(point.x, point.z)
+                }) / points.len().max(1) as f32
+            })
+            .collect::<Vec<_>>();
+        let should_be_ccw = loops
+            .iter()
+            .enumerate()
+            .map(|(loop_index, _)| {
+                let depth = loops
+                    .iter()
+                    .enumerate()
+                    .filter(|(candidate_index, candidate)| {
+                        *candidate_index != loop_index
+                            && RoadSurfaceSystem::polygon_contains_point_xz(
+                                candidate,
+                                samples[loop_index],
+                            )
+                    })
+                    .count();
+                depth % 2 == 0
+            })
+            .collect::<Vec<_>>();
+        for (points, should_be_ccw) in loops.iter_mut().zip(should_be_ccw) {
+            let is_ccw = Self::signed_polygon_area_xz(points) > 0.0;
+            if is_ccw != should_be_ccw {
                 points.reverse();
-                source_edges.reverse();
-                for edge in &mut source_edges {
-                    std::mem::swap(&mut edge.start, &mut edge.end);
-                }
             }
-            loops.push(RoadSurfaceTerrainClipLoop {
-                points_world: points,
-                source_edges,
-            });
         }
-        loops
     }
 
-    fn select_next_arrangement_boundary_segment(
-        segments: &[ArrangementBoundarySegment],
-        current: ArrangementBoundarySegment,
-        candidates: &[usize],
-    ) -> Option<usize> {
-        let incoming = Vector2::new(
-            current.end.x - current.start.x,
-            current.end.z - current.start.z,
-        );
-        if incoming.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
-            return candidates.iter().copied().min_by(|a, b| {
-                let segment_a = segments[*a];
-                let segment_b = segments[*b];
-                arrangement_boundary_continuity_key(current, segment_a, *a)
-                    .cmp(&arrangement_boundary_continuity_key(current, segment_b, *b))
-            });
+    fn terrain_clip_boundary_loops_from_point_loops(
+        point_loops: &[Vec<Vector3>],
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
+        let mut loops = Vec::new();
+        for point_loop in point_loops {
+            for points in same_winding_boundary_point_loops_from_loop(point_loop) {
+                if points.len() < 3 {
+                    continue;
+                }
+                if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+                    continue;
+                }
+                let source_edges = (0..points.len())
+                    .map(|index| RoadSurfaceTerrainClipSourceEdge {
+                        start: points[index],
+                        end: points[(index + 1) % points.len()],
+                        kind: RoadSurfaceTerrainClipEdgeKind::FootprintBoundary,
+                    })
+                    .collect();
+                loops.push(RoadSurfaceTerrainClipLoop {
+                    points_world: points,
+                    source_edges,
+                });
+            }
         }
-        candidates.iter().copied().min_by(|a, b| {
-            let segment_a = segments[*a];
-            let segment_b = segments[*b];
-            let turn_a = arrangement_boundary_turn_abs(incoming, segment_a);
-            let turn_b = arrangement_boundary_turn_abs(incoming, segment_b);
-            turn_a
-                .total_cmp(&turn_b)
-                .then(segment_a.end_key.cmp(&segment_b.end_key))
-                .then(segment_a.owner.kind().cmp(&segment_b.owner.kind()))
-                .then(
-                    segment_a
-                        .owner
-                        .owner_index()
-                        .cmp(&segment_b.owner.owner_index()),
-                )
-                .then(a.cmp(b))
-        })
+        loops
     }
 
     fn visual_polygons_from_arrangement_face(
@@ -861,42 +827,21 @@ impl RoadSurfaceSystem {
             return;
         }
         let report = match error {
-            NodeBoundaryExportError::MissingOuterBoundaryOwner { owner, start, end } => {
+            NodeBoundaryExportError::MissingFootprintBoundaryHeight { point } => {
                 NodeValidationReport::from_missing_outer_boundary_owner(
                     arrangement.node_id(),
                     arrangement.piece_kind(),
-                    owner.kind(),
-                    owner.owner_index(),
-                    *start,
-                    *end,
+                    RoadSurfaceBandKind::Sidewalk,
+                    0,
+                    *point,
+                    *point,
                 )
             }
-            NodeBoundaryExportError::ContradictoryOuterBoundaryHeight {
-                owner,
-                point,
-                existing_height_mm,
-                incoming_height_mm,
-            } => NodeValidationReport::from_outer_boundary_height_conflict(
-                arrangement.node_id(),
-                arrangement.piece_kind(),
-                owner.kind(),
-                owner.owner_index(),
-                *point,
-                *existing_height_mm,
-                *incoming_height_mm,
-            ),
             NodeBoundaryExportError::EmptyOuterBoundary => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
                     arrangement.piece_kind(),
                     "empty_outer_boundary",
-                )
-            }
-            NodeBoundaryExportError::AmbiguousOuterBoundaryOwner => {
-                NodeValidationReport::from_boundary_export_error(
-                    arrangement.node_id(),
-                    arrangement.piece_kind(),
-                    "ambiguous_outer_boundary_owner",
                 )
             }
             NodeBoundaryExportError::DegenerateOuterBoundaryLoop => {
@@ -918,14 +863,19 @@ impl RoadSurfaceSystem {
         for &incident in incidents {
             let profile = self.build_incident_mouth_profile(incident)?;
             let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
-            let (boundary_paths_world, band_start_paths_world, band_end_paths_world) =
-                self.build_incident_mouth_paths(incident, &profile, &endpoint_profile);
+            let (
+                boundary_paths_world,
+                band_start_paths_world,
+                band_end_paths_world,
+                uses_sampled_band_domain_paths,
+            ) = self.build_incident_mouth_paths(incident, &profile, &endpoint_profile);
             mouths.push(OrderedIncidentPieceMouth {
                 profile,
                 endpoint_profile,
                 boundary_paths_world,
                 band_start_paths_world,
                 band_end_paths_world,
+                uses_sampled_band_domain_paths,
                 direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
                 direction_xz: incident.direction_xz,
                 edge_idx: incident.edge_idx,
@@ -946,15 +896,20 @@ impl RoadSurfaceSystem {
         incident: IncidentSurfaceEdge,
         profile: &IncidentMouthProfile,
         endpoint_profile: &IncidentMouthProfile,
-    ) -> (Vec<Vec<Vector3>>, Vec<Vec<Vector3>>, Vec<Vec<Vector3>>) {
+    ) -> (
+        Vec<Vec<Vector3>>,
+        Vec<Vec<Vector3>>,
+        Vec<Vec<Vector3>>,
+        bool,
+    ) {
         let Some(sections) = self.compiled_sections.get(&incident.edge_idx) else {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new(), false);
         };
         let Some(mouth_index) = sections.iter().enumerate().find_map(|(index, section)| {
             let candidate = Self::build_mouth_profile_from_section(section, incident.side)?;
             incident_mouth_profiles_match(&candidate, profile).then_some(index)
         }) else {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new(), false);
         };
 
         let section_indices: Vec<usize> = match incident.side {
@@ -966,21 +921,23 @@ impl RoadSurfaceSystem {
             let Some(path_profile) =
                 Self::build_mouth_profile_from_section(&sections[section_index], incident.side)
             else {
-                return (Vec::new(), Vec::new(), Vec::new());
+                return (Vec::new(), Vec::new(), Vec::new(), false);
             };
             if !incident_mouth_profiles_have_same_shape(profile, &path_profile) {
-                return (Vec::new(), Vec::new(), Vec::new());
+                return (Vec::new(), Vec::new(), Vec::new(), false);
             }
             profile_path.push(path_profile);
         }
 
         let Some(last_profile) = profile_path.last() else {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new(), false);
         };
         if !incident_mouth_profiles_match(last_profile, endpoint_profile) {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new(), false);
         }
 
+        let uses_sampled_band_domain_paths =
+            incident_profile_path_has_non_collinear_center(&profile_path);
         let boundary_paths_world = (0..profile.boundary_points_world.len())
             .map(|boundary_index| {
                 incident_world_path(
@@ -1012,6 +969,7 @@ impl RoadSurfaceSystem {
             boundary_paths_world,
             band_start_paths_world,
             band_end_paths_world,
+            uses_sampled_band_domain_paths,
         )
     }
 
@@ -1288,13 +1246,6 @@ impl RoadSurfaceSystem {
     }
 }
 
-fn arrangement_boundary_point_same_xz(
-    a: ArrangementBoundaryPointKey,
-    b: ArrangementBoundaryPointKey,
-) -> bool {
-    a.x_key == b.x_key && a.z_key == b.z_key
-}
-
 fn normalized_arrangement_segment_key(
     start: Vector3,
     end: Vector3,
@@ -1382,6 +1333,40 @@ fn incident_world_path(points: impl IntoIterator<Item = Vector3>) -> Vec<Vector3
     points.into_iter().collect()
 }
 
+fn incident_profile_path_has_non_collinear_center(path: &[IncidentMouthProfile]) -> bool {
+    if path.len() <= 2 {
+        return false;
+    }
+    let Some(start) = path.first().and_then(incident_profile_center_key) else {
+        return false;
+    };
+    let Some(end) = path.last().and_then(incident_profile_center_key) else {
+        return false;
+    };
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.x_key() - start.x_key());
+    let dz = i128::from(end.z_key() - start.z_key());
+    path[1..path.len() - 1].iter().any(|profile| {
+        let Some(key) = incident_profile_center_key(profile) else {
+            return false;
+        };
+        let px = i128::from(key.x_key() - start.x_key());
+        let pz = i128::from(key.z_key() - start.z_key());
+        px * dz - pz * dx != 0
+    })
+}
+
+fn incident_profile_center_key(profile: &IncidentMouthProfile) -> Option<NodeArrangementKey> {
+    let first = profile.boundary_points_world.first()?;
+    let last = profile.boundary_points_world.last()?;
+    let center = (*first + *last) * 0.5;
+    Some(NodeArrangementKey::from_point(
+        super::backend::godot_vec3_xz_to_road(center),
+    ))
+}
+
 fn arrangement_kind_face_boundary_intervals_for_segment(
     arrangement: &NodeArrangement,
     kind: RoadSurfaceBandKind,
@@ -1392,15 +1377,23 @@ fn arrangement_kind_face_boundary_intervals_for_segment(
         .faces()
         .iter()
         .filter(|face| face.owner().kind() == kind)
+        .filter(|face| {
+            RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face).is_some()
+        })
     {
-        let Some(triangle) = RoadSurfaceSystem::arrangement_face_visual_triangle(arrangement, face)
-        else {
-            continue;
-        };
-        for index in 0..triangle.len() {
-            let edge_start = ArrangementBoundaryPointKey::from_world(triangle[index]);
-            let edge_end =
-                ArrangementBoundaryPointKey::from_world(triangle[(index + 1) % triangle.len()]);
+        let vertices = face.vertices();
+        for index in 0..vertices.len() {
+            let Some(edge_start) =
+                arrangement_vertex_boundary_point_key(arrangement, vertices[index])
+            else {
+                continue;
+            };
+            let Some(edge_end) = arrangement_vertex_boundary_point_key(
+                arrangement,
+                vertices[(index + 1) % vertices.len()],
+            ) else {
+                continue;
+            };
             if let Some((start, end)) =
                 arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
             {
@@ -1417,6 +1410,17 @@ fn arrangement_kind_face_boundary_intervals_for_segment(
     intervals.sort();
     intervals.dedup();
     intervals
+}
+
+fn arrangement_vertex_boundary_point_key(
+    arrangement: &NodeArrangement,
+    vertex_id: super::arrangement::NodeArrangementVertexId,
+) -> Option<ArrangementBoundaryPointKey> {
+    let vertex = arrangement.vertices().get(vertex_id.index())?;
+    Some(arrangement_key_boundary_point(
+        vertex.key(),
+        vertex.height_mm(),
+    ))
 }
 
 fn arrangement_shared_face_boundary_intervals(
@@ -1714,97 +1718,6 @@ fn arrangement_region_centroid(
     (count > 0).then_some(sum / count as f32)
 }
 
-fn validate_outer_boundary_loop_height_consistency(
-    arrangement: &NodeArrangement,
-    loops: &[Vec<ArrangementBoundarySegment>],
-) -> Result<(), NodeBoundaryExportError> {
-    let mut entries_by_xz = BTreeMap::<NodeArrangementKey, Vec<OuterBoundaryHeightEntry>>::new();
-    for loop_segments in loops {
-        for segment in loop_segments {
-            push_outer_boundary_height_entry(&mut entries_by_xz, segment.start_key, *segment);
-            push_outer_boundary_height_entry(&mut entries_by_xz, segment.end_key, *segment);
-        }
-    }
-    for (key, entries) in entries_by_xz {
-        if let Some((existing, incoming)) = outer_boundary_height_conflict(&entries) {
-            if outer_boundary_entries_allow_vertical_step(arrangement, key, &entries) {
-                continue;
-            }
-            return Err(NodeBoundaryExportError::ContradictoryOuterBoundaryHeight {
-                owner: existing.owner,
-                point: key,
-                existing_height_mm: existing.point.y_mm,
-                incoming_height_mm: incoming.point.y_mm,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn push_outer_boundary_height_entry(
-    entries_by_xz: &mut BTreeMap<NodeArrangementKey, Vec<OuterBoundaryHeightEntry>>,
-    point: ArrangementBoundaryPointKey,
-    segment: ArrangementBoundarySegment,
-) {
-    entries_by_xz
-        .entry(point.xz_key())
-        .or_default()
-        .push(OuterBoundaryHeightEntry {
-            point,
-            owner: segment.owner,
-            seam_source: segment.seam_source,
-        });
-}
-
-fn outer_boundary_height_conflict(
-    entries: &[OuterBoundaryHeightEntry],
-) -> Option<(OuterBoundaryHeightEntry, OuterBoundaryHeightEntry)> {
-    let first = entries.first().copied()?;
-    entries
-        .iter()
-        .copied()
-        .find(|entry| entry.point.y_mm != first.point.y_mm)
-        .map(|incoming| (first, incoming))
-}
-
-fn outer_boundary_entries_allow_vertical_step(
-    arrangement: &NodeArrangement,
-    key: NodeArrangementKey,
-    entries: &[OuterBoundaryHeightEntry],
-) -> bool {
-    let has_carriageway = entries
-        .iter()
-        .any(|entry| entry.owner.kind() == RoadSurfaceBandKind::Carriageway);
-    let entries_have_explicit_curb_contact = entries.iter().any(|entry| {
-        entry.owner.kind() == RoadSurfaceBandKind::CurbOrShoulder
-            && matches!(entry.seam_source, NodeSeamSource::AsphaltCurbContact { .. })
-    });
-    if !has_carriageway
-        || (!entries_have_explicit_curb_contact
-            && !arrangement_has_explicit_asphalt_curb_step_at_key(arrangement, key))
-    {
-        return false;
-    }
-    entries.iter().all(|entry| {
-        matches!(
-            entry.owner.kind(),
-            RoadSurfaceBandKind::Carriageway
-                | RoadSurfaceBandKind::CurbOrShoulder
-                | RoadSurfaceBandKind::Sidewalk
-        )
-    })
-}
-
-fn arrangement_has_explicit_asphalt_curb_step_at_key(
-    arrangement: &NodeArrangement,
-    key: NodeArrangementKey,
-) -> bool {
-    arrangement
-        .explicit_vertical_step_segments()
-        .iter()
-        .any(|segment| arrangement_key_lies_on_segment(key, segment.start(), segment.end()))
-}
-
 fn arrangement_key_lies_on_segment(
     point: NodeArrangementKey,
     start: NodeArrangementKey,
@@ -1836,6 +1749,180 @@ fn arrangement_key_lies_on_segment(
             && point.z_key() < start.z_key().max(end.z_key())
     };
     inside_x && inside_z
+}
+
+fn fill_missing_footprint_boundary_heights(
+    vertices: &mut [(NodeArrangementKey, Option<i64>)],
+) -> Result<(), NodeBoundaryExportError> {
+    let Some(first_missing_key) = vertices
+        .iter()
+        .find_map(|(key, height_mm)| height_mm.is_none().then_some(*key))
+    else {
+        return Ok(());
+    };
+    let Some(first_solved_index) = vertices
+        .iter()
+        .position(|(_, height_mm)| height_mm.is_some())
+    else {
+        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+            point: first_missing_key,
+        });
+    };
+    if vertices
+        .iter()
+        .filter(|(_, height_mm)| height_mm.is_some())
+        .count()
+        < 2
+    {
+        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+            point: first_missing_key,
+        });
+    }
+
+    let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
+    ordered_indices.extend(first_solved_index..vertices.len());
+    ordered_indices.extend(0..=first_solved_index);
+
+    let mut start_pos = 0;
+    while start_pos + 1 < ordered_indices.len() {
+        let start_index = ordered_indices[start_pos];
+        let Some(start_height_mm) = vertices[start_index].1 else {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                point: vertices[start_index].0,
+            });
+        };
+        let Some(end_pos) = (start_pos + 1..ordered_indices.len())
+            .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
+        else {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                point: first_missing_key,
+            });
+        };
+        if end_pos == start_pos + 1 {
+            start_pos = end_pos;
+            continue;
+        }
+
+        let end_index = ordered_indices[end_pos];
+        let Some(end_height_mm) = vertices[end_index].1 else {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                point: vertices[end_index].0,
+            });
+        };
+
+        let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
+        cumulative_lengths.push(0.0);
+        let mut total_length_m = 0.0;
+        for pair_pos in start_pos..end_pos {
+            total_length_m += arrangement_key_distance_m(
+                vertices[ordered_indices[pair_pos]].0,
+                vertices[ordered_indices[pair_pos + 1]].0,
+            );
+            cumulative_lengths.push(total_length_m);
+        }
+        if total_length_m <= f64::EPSILON {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                point: first_missing_key,
+            });
+        }
+
+        for run_offset in 1..cumulative_lengths.len() - 1 {
+            let index = ordered_indices[start_pos + run_offset];
+            let t = cumulative_lengths[run_offset] / total_length_m;
+            vertices[index].1 = Some(
+                (start_height_mm as f64 + (end_height_mm - start_height_mm) as f64 * t).round()
+                    as i64,
+            );
+        }
+        start_pos = end_pos;
+    }
+    Ok(())
+}
+
+fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vector3>> {
+    let points = RoadSurfaceSystem::canonicalize_loop_points(points);
+    if points.len() < 3 {
+        return Vec::new();
+    }
+
+    let mut loops = Vec::new();
+    let mut stack = vec![points[0]];
+    let mut seen = BTreeMap::<NodeArrangementKey, usize>::new();
+    seen.insert(
+        ArrangementBoundaryPointKey::from_world(points[0]).xz_key(),
+        0,
+    );
+
+    for index in 1..=points.len() {
+        let current = points[index % points.len()];
+        let current_key = ArrangementBoundaryPointKey::from_world(current).xz_key();
+        if let Some(start_index) = seen.get(&current_key).copied() {
+            let mut cycle = stack[start_index..].to_vec();
+            cycle.push(current);
+            let cycle = RoadSurfaceSystem::canonicalize_loop_points(cycle);
+            if cycle.len() >= 3 {
+                loops.push(cycle);
+            }
+            stack.truncate(start_index + 1);
+            if let Some(last) = stack.last_mut() {
+                *last = current;
+            }
+            seen.clear();
+            for (stack_index, point) in stack.iter().enumerate() {
+                seen.insert(
+                    ArrangementBoundaryPointKey::from_world(*point).xz_key(),
+                    stack_index,
+                );
+            }
+        } else {
+            stack.push(current);
+            seen.insert(current_key, stack.len() - 1);
+        }
+    }
+
+    if loops.is_empty() {
+        vec![points]
+    } else {
+        loops
+    }
+}
+
+fn same_winding_boundary_point_loops_from_loop(points: &[Vector3]) -> Vec<Vec<Vector3>> {
+    if !boundary_point_loop_has_repeated_xz(points) {
+        return vec![points.to_vec()];
+    }
+
+    let source_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(points);
+    split_boundary_point_loop_at_repeated_xz(points.to_vec())
+        .into_iter()
+        .filter_map(|points| {
+            let points = RoadSurfaceSystem::canonicalize_loop_points(points);
+            if points.len() < 3 {
+                return None;
+            }
+            let split_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(&points);
+            if split_area_m2.abs() <= boundary_points_numeric_area_budget_m2(&points) {
+                return None;
+            }
+            (source_area_m2.signum() == split_area_m2.signum()).then_some(points)
+        })
+        .collect()
+}
+
+fn boundary_point_loop_has_repeated_xz(points: &[Vector3]) -> bool {
+    let mut seen = BTreeSet::new();
+    for point in RoadSurfaceSystem::canonicalize_loop_points(points.to_vec()) {
+        if !seen.insert(ArrangementBoundaryPointKey::from_world(point).xz_key()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn arrangement_key_distance_m(start: NodeArrangementKey, end: NodeArrangementKey) -> f64 {
+    let dx = (end.x_key() - start.x_key()) as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
+    let dz = (end.z_key() - start.z_key()) as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
+    dx.hypot(dz)
 }
 
 fn boundary_segment_parameter_xz(
@@ -1908,217 +1995,6 @@ fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
     rounded as i64
 }
 
-fn terrain_clip_source_segment_from_boundary(
-    segment: ArrangementBoundarySegment,
-) -> ArrangementTerrainClipSourceSegment {
-    ArrangementTerrainClipSourceSegment {
-        start: segment.start,
-        end: segment.end,
-        owner: segment.owner,
-        kind: terrain_clip_edge_kind_for_band(segment.owner.kind()),
-    }
-}
-
-fn terrain_clip_boundary_points_and_source_edges_from_segments(
-    segments: &[ArrangementBoundarySegment],
-) -> (Vec<Vector3>, Vec<RoadSurfaceTerrainClipSourceEdge>) {
-    let source_segments = segments
-        .iter()
-        .map(|segment| terrain_clip_source_segment_from_boundary(*segment))
-        .collect::<Vec<_>>();
-
-    let filtered = source_segments
-        .iter()
-        .copied()
-        .filter(|segment| {
-            // Lower material contacts are not terrain seams when an explicit non-carriageway
-            // arrangement edge already covers the same interval at the solved top height.
-            !arrangement_source_is_lower_material_contact(*segment)
-                || !arrangement_source_is_covered_by_outer_top(*segment, &source_segments)
-        })
-        .collect::<Vec<_>>();
-    let points = filtered.iter().map(|segment| segment.start).collect();
-    let source_edges = filtered
-        .iter()
-        .map(|segment| RoadSurfaceTerrainClipSourceEdge {
-            start: segment.start,
-            end: segment.end,
-            kind: segment.kind,
-        })
-        .collect();
-    (points, source_edges)
-}
-
-fn arrangement_source_is_lower_material_contact(
-    segment: ArrangementTerrainClipSourceSegment,
-) -> bool {
-    segment.owner.kind() == RoadSurfaceBandKind::Carriageway
-}
-
-fn arrangement_source_is_covered_by_outer_top(
-    segment: ArrangementTerrainClipSourceSegment,
-    source_segments: &[ArrangementTerrainClipSourceSegment],
-) -> bool {
-    let mut intervals = source_segments
-        .iter()
-        .copied()
-        .filter(|candidate| arrangement_source_can_cover_lower(*candidate, segment))
-        .filter_map(|candidate| arrangement_source_overlap_interval(segment, candidate))
-        .collect::<Vec<_>>();
-    if intervals.is_empty() {
-        return false;
-    }
-
-    intervals.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    let mut covered_end = ArrangementSegmentParameter::zero();
-    for (start, end) in intervals {
-        if start > covered_end {
-            return false;
-        }
-        covered_end = covered_end.max(end);
-        if covered_end >= ArrangementSegmentParameter::one() {
-            return true;
-        }
-    }
-    false
-}
-
-fn arrangement_source_overlap_interval(
-    segment: ArrangementTerrainClipSourceSegment,
-    candidate: ArrangementTerrainClipSourceSegment,
-) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
-    let candidate_start_t =
-        boundary_line_parameter_xz(candidate.start, segment.start, segment.end)?;
-    let candidate_end_t = boundary_line_parameter_xz(candidate.end, segment.start, segment.end)?;
-    let start = candidate_start_t
-        .min(candidate_end_t)
-        .max(ArrangementSegmentParameter::zero());
-    let end = candidate_start_t
-        .max(candidate_end_t)
-        .min(ArrangementSegmentParameter::one());
-    if end <= start {
-        return None;
-    }
-    if !candidate_covers_lower_heights(segment, candidate, start)
-        || !candidate_covers_lower_heights(segment, candidate, end)
-    {
-        return None;
-    }
-    Some((start, end))
-}
-
-fn boundary_line_parameter_xz(
-    point: Vector3,
-    start: Vector3,
-    end: Vector3,
-) -> Option<ArrangementSegmentParameter> {
-    boundary_segment_parameter_xz(
-        ArrangementBoundaryPointKey::from_world(point),
-        ArrangementBoundaryPointKey::from_world(start),
-        ArrangementBoundaryPointKey::from_world(end),
-    )
-}
-
-fn arrangement_source_can_cover_lower(
-    candidate: ArrangementTerrainClipSourceSegment,
-    lower: ArrangementTerrainClipSourceSegment,
-) -> bool {
-    if candidate.owner.kind() == RoadSurfaceBandKind::Carriageway {
-        return false;
-    }
-    !arrangement_sources_same_xz(candidate, lower)
-}
-
-fn arrangement_sources_same_xz(
-    a: ArrangementTerrainClipSourceSegment,
-    b: ArrangementTerrainClipSourceSegment,
-) -> bool {
-    let a_start = ArrangementBoundaryPointKey::from_world(a.start);
-    let a_end = ArrangementBoundaryPointKey::from_world(a.end);
-    let b_start = ArrangementBoundaryPointKey::from_world(b.start);
-    let b_end = ArrangementBoundaryPointKey::from_world(b.end);
-    let same_direction = arrangement_boundary_point_same_xz(a_start, b_start)
-        && arrangement_boundary_point_same_xz(a_end, b_end);
-    let opposite_direction = arrangement_boundary_point_same_xz(a_start, b_end)
-        && arrangement_boundary_point_same_xz(a_end, b_start);
-    same_direction || opposite_direction
-}
-
-fn candidate_covers_lower_heights(
-    lower: ArrangementTerrainClipSourceSegment,
-    candidate: ArrangementTerrainClipSourceSegment,
-    lower_t: ArrangementSegmentParameter,
-) -> bool {
-    let lower_start = ArrangementBoundaryPointKey::from_world(lower.start);
-    let lower_end = ArrangementBoundaryPointKey::from_world(lower.end);
-    let candidate_start = ArrangementBoundaryPointKey::from_world(candidate.start);
-    let candidate_end = ArrangementBoundaryPointKey::from_world(candidate.end);
-    let point = interpolated_segment_point_key(lower_start, lower_end, lower_t);
-    let Some(candidate_t) = boundary_segment_parameter_xz(point, candidate_start, candidate_end)
-    else {
-        return false;
-    };
-    let lower_y_mm = interpolated_segment_height_mm(lower_start, lower_end, lower_t);
-    let candidate_y_mm =
-        interpolated_segment_height_mm(candidate_start, candidate_end, candidate_t);
-    candidate_y_mm >= lower_y_mm
-}
-
-fn split_boundary_segment_loop_at_repeated_xz(
-    segments: Vec<ArrangementBoundarySegment>,
-) -> Vec<Vec<ArrangementBoundarySegment>> {
-    let mut loops = Vec::new();
-    let mut stack = Vec::<ArrangementBoundarySegment>::new();
-    let mut seen = BTreeMap::<NodeArrangementKey, usize>::new();
-    if let Some(first) = segments.first() {
-        seen.insert(first.start_key.xz_key(), 0);
-    }
-
-    for segment in segments {
-        stack.push(segment);
-        let end_key = segment.end_key.xz_key();
-        if let Some(start_index) = seen.get(&end_key).copied() {
-            let cycle = stack[start_index..].to_vec();
-            if cycle.len() >= 3 {
-                loops.push(cycle);
-            }
-            stack.truncate(start_index);
-            seen.clear();
-            if let Some(first) = stack.first() {
-                seen.insert(first.start_key.xz_key(), 0);
-                for (index, segment) in stack.iter().enumerate() {
-                    seen.insert(segment.end_key.xz_key(), index + 1);
-                }
-            } else {
-                seen.insert(end_key, 0);
-            }
-        } else {
-            seen.insert(end_key, stack.len());
-        }
-    }
-
-    if stack.len() >= 3 {
-        loops.push(stack);
-    }
-    loops
-}
-
-fn boundary_points_from_segment_loop(segments: &[ArrangementBoundarySegment]) -> Vec<Vector3> {
-    let mut points = Vec::new();
-    for &segment in segments {
-        if points.is_empty() {
-            points.push(segment.start);
-        } else if points
-            .last()
-            .is_some_and(|last| ArrangementBoundaryPointKey::from_world(*last) != segment.start_key)
-        {
-            points.push(segment.start);
-        }
-        points.push(segment.end);
-    }
-    points
-}
-
 fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
     if points.len() < 2 {
         return NODE_OVERLAY_MIN_AREA_M2;
@@ -2130,39 +2006,4 @@ fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
         .map(|(start, end)| Vector2::new(start.x - end.x, start.z - end.z).length())
         .sum::<f32>();
     RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
-}
-
-fn arrangement_boundary_turn_abs(incoming: Vector2, candidate: ArrangementBoundarySegment) -> f32 {
-    let outgoing = Vector2::new(
-        candidate.end.x - candidate.start.x,
-        candidate.end.z - candidate.start.z,
-    );
-    if outgoing.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
-        return f32::INFINITY;
-    }
-    let cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
-    let dot = incoming.dot(outgoing);
-    cross.atan2(dot).abs()
-}
-
-fn arrangement_boundary_continuity_key(
-    current: ArrangementBoundarySegment,
-    candidate: ArrangementBoundarySegment,
-    candidate_index: usize,
-) -> (
-    bool,
-    bool,
-    ArrangementBoundaryPointKey,
-    RoadSurfaceBandKind,
-    usize,
-    usize,
-) {
-    (
-        candidate.owner != current.owner,
-        candidate.seam_source != current.seam_source,
-        candidate.end_key,
-        candidate.owner.kind(),
-        candidate.owner.owner_index(),
-        candidate_index,
-    )
 }
