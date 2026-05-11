@@ -144,6 +144,12 @@ pub(crate) struct RoadSurfaceEarthworkRenderFace {
     pub(crate) polygon: RoadSurfaceVisualPolygon,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RoadSurfaceVerticalFaceSource {
+    explicit_vertical_step_index: usize,
+    segment: arrangement::NodeExplicitVerticalStepSegment,
+}
+
 /// Explicit visual node piece compiled from the solved roadbed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoadSurfaceVisualNodePiece {
@@ -160,6 +166,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit vertical faces at raised non-road material contacts.
     pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    curb_vertical_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
@@ -342,7 +349,7 @@ struct NodeSurfaceRegionResult {
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    curb_vertical_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     owned_regions: Vec<NodeOwnedRegion>,
@@ -686,33 +693,38 @@ impl RoadSurfaceSystem {
     }
 
     fn sort_visual_polygons(polygons: &mut [RoadSurfaceVisualPolygon]) {
-        polygons.sort_by(|a, b| {
-            match (a.points_world.first(), b.points_world.first()) {
-                (Some(point_a), Some(point_b)) => point_a
-                    .x
-                    .total_cmp(&point_b.x)
-                    .then(point_a.z.total_cmp(&point_b.z))
-                    .then(point_a.y.total_cmp(&point_b.y)),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-            .then(a.points_world.len().cmp(&b.points_world.len()))
-            .then_with(|| {
-                a.points_world
-                    .iter()
-                    .zip(&b.points_world)
-                    .find_map(|(point_a, point_b)| {
-                        let ordering = point_a
-                            .x
-                            .total_cmp(&point_b.x)
-                            .then(point_a.z.total_cmp(&point_b.z))
-                            .then(point_a.y.total_cmp(&point_b.y));
-                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
-                    })
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        });
+        polygons.sort_by(Self::visual_polygon_ordering);
+    }
+
+    fn visual_polygon_ordering(
+        a: &RoadSurfaceVisualPolygon,
+        b: &RoadSurfaceVisualPolygon,
+    ) -> std::cmp::Ordering {
+        match (a.points_world.first(), b.points_world.first()) {
+            (Some(point_a), Some(point_b)) => point_a
+                .x
+                .total_cmp(&point_b.x)
+                .then(point_a.z.total_cmp(&point_b.z))
+                .then(point_a.y.total_cmp(&point_b.y)),
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then(a.points_world.len().cmp(&b.points_world.len()))
+        .then_with(|| {
+            a.points_world
+                .iter()
+                .zip(&b.points_world)
+                .find_map(|(point_a, point_b)| {
+                    let ordering = point_a
+                        .x
+                        .total_cmp(&point_b.x)
+                        .then(point_a.z.total_cmp(&point_b.z))
+                        .then(point_a.y.total_cmp(&point_b.y));
+                    (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                })
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     fn sort_terrain_clip_loops(loops: &mut [RoadSurfaceTerrainClipLoop]) {

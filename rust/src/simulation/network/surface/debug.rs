@@ -3,8 +3,8 @@
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVerticalFaceSource,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
 };
@@ -887,6 +887,33 @@ impl RoadSurfaceSystem {
         let mut expected_face_matches = vec![Vec::new(); expected_steps.len()];
         let mut face_canonical_matches = vec![Vec::new(); face_span_edges.len()];
         let mut canonical_face_matches = vec![Vec::new(); canonical_steps.len()];
+        let mut canonical_indices_by_segment =
+            BTreeMap::<NodeExplicitVerticalStepSegment, Vec<usize>>::new();
+        for (step_index, step) in canonical_steps.iter().enumerate() {
+            canonical_indices_by_segment
+                .entry(step.segment)
+                .or_default()
+                .push(step_index);
+        }
+        for (face_index, source) in piece.curb_vertical_face_sources.iter().copied().enumerate() {
+            if face_index >= face_canonical_matches.len() {
+                continue;
+            }
+            if canonical_steps
+                .get(source.explicit_vertical_step_index)
+                .is_some_and(|step| step.segment == source.segment)
+            {
+                face_canonical_matches[face_index].push(source.explicit_vertical_step_index);
+                canonical_face_matches[source.explicit_vertical_step_index].push(face_index);
+                continue;
+            }
+            if let Some(step_indices) = canonical_indices_by_segment.get(&source.segment) {
+                for &step_index in step_indices {
+                    face_canonical_matches[face_index].push(step_index);
+                    canonical_face_matches[step_index].push(face_index);
+                }
+            }
+        }
 
         for (face_index, span_edges) in face_span_edges.iter().enumerate() {
             let Some(span_edges) = span_edges else {
@@ -906,12 +933,6 @@ impl RoadSurfaceSystem {
                 if step.lower.key == lower_key && step.upper.key == upper_key {
                     face_expected_matches[face_index].push(step_index);
                     expected_face_matches[step_index].push(face_index);
-                }
-            }
-            for (step_index, step) in canonical_steps.iter().enumerate() {
-                if Self::debug_canonical_step_matches_face(step, lower_key, upper_key) {
-                    face_canonical_matches[face_index].push(step_index);
-                    canonical_face_matches[step_index].push(face_index);
                 }
             }
         }
@@ -1012,6 +1033,7 @@ impl RoadSurfaceSystem {
                 piece,
                 face_index,
                 polygon,
+                piece.curb_vertical_face_sources.get(face_index).copied(),
                 face_span_edges[face_index],
                 &top_edges_by_key,
                 &face_expected_matches[face_index],
@@ -1053,6 +1075,7 @@ impl RoadSurfaceSystem {
         piece: &RoadSurfaceVisualNodePiece,
         face_index: usize,
         polygon: &RoadSurfaceVisualPolygon,
+        source: Option<RoadSurfaceVerticalFaceSource>,
         span_edges: Option<DebugVerticalFaceSpanEdges>,
         top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
         expected_step_matches: &[usize],
@@ -1075,6 +1098,12 @@ impl RoadSurfaceSystem {
         Self::append_optional_vector3_precise_literal(dump, normal);
         dump.push_str(",\"godot_cull_back_visible_direction\":");
         Self::append_optional_vector3_precise_literal(dump, visible_direction);
+        dump.push_str(",\"source_explicit_vertical_step_index\":");
+        if let Some(source) = source {
+            let _ = write!(dump, "{}", source.explicit_vertical_step_index);
+        } else {
+            dump.push_str("null");
+        }
 
         let Some(span_edges) = span_edges else {
             dump.push_str(",\"status\":\"non_vertical_quad_span\"}");
@@ -1286,20 +1315,6 @@ impl RoadSurfaceSystem {
                 .then(a.raised_owner.cmp(&b.raised_owner))
         });
         steps
-    }
-
-    fn debug_canonical_step_matches_face(
-        step: &DebugCanonicalVerticalStep,
-        lower_key: DebugRenderEdgeKey,
-        upper_key: DebugRenderEdgeKey,
-    ) -> bool {
-        step.lower_top_matches
-            .iter()
-            .any(|edge| edge.key == lower_key)
-            && step
-                .raised_top_matches
-                .iter()
-                .any(|edge| edge.key == upper_key)
     }
 
     fn debug_canonical_step_visible_from_lower_owner(
@@ -2587,6 +2602,7 @@ mod tests {
             road_surface_polygons: Vec::new(),
             curb_surface_polygons: Vec::new(),
             curb_vertical_face_polygons: Vec::new(),
+            curb_vertical_face_sources: Vec::new(),
             sidewalk_surface_polygons: Vec::new(),
             explicit_vertical_step_segments: Vec::new(),
             owned_regions: Vec::new(),
@@ -2756,5 +2772,63 @@ mod tests {
         assert!(dump.contains("\"raised_owner\":{\"kind\":\"Sidewalk\",\"owner_index\":11}"));
         assert!(dump.contains("\"matching_face_indices\":[]"));
         assert!(dump.contains("\"problem\":true"));
+    }
+
+    #[test]
+    fn curb_vertical_face_debug_matches_canonical_step_by_source_identity() {
+        let mut piece = empty_node_piece();
+        let canonical_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(backend::RoadVec2::new(-1.0, 0.0)),
+            NodeArrangementKey::from_point(backend::RoadVec2::new(1.0, 0.0)),
+            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
+            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 11),
+        )
+        .expect("test step should be non-degenerate");
+        piece
+            .explicit_vertical_step_segments
+            .push(canonical_segment);
+
+        let rendered_end_x = 1.000002;
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 7,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.0, -1.0),
+                Vector3::new(rendered_end_x, 0.0, -1.0),
+                Vector3::new(rendered_end_x, 0.0, 0.0),
+                Vector3::new(-1.0, 0.0, 0.0),
+            ]),
+        });
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner_index: 11,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.12, 0.0),
+                Vector3::new(rendered_end_x, 0.12, 0.0),
+                Vector3::new(rendered_end_x, 0.12, 1.0),
+                Vector3::new(-1.0, 0.12, 1.0),
+            ]),
+        });
+        piece.curb_vertical_face_polygons.push(polygon(vec![
+            Vector3::new(-1.0, 0.12, 0.0),
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(rendered_end_x, 0.0, 0.0),
+            Vector3::new(rendered_end_x, 0.12, 0.0),
+        ]));
+        piece
+            .curb_vertical_face_sources
+            .push(RoadSurfaceVerticalFaceSource {
+                explicit_vertical_step_index: 0,
+                segment: canonical_segment,
+            });
+
+        let mut dump = String::new();
+        RoadSurfaceSystem::append_curb_vertical_face_details_debug_literal(&mut dump, &piece);
+
+        assert!(dump.contains("\"canonical_raised_non_road_step_count\":1"));
+        assert!(dump.contains("\"canonical_raised_non_road_problem_count\":0"));
+        assert!(dump.contains("\"source_explicit_vertical_step_index\":0"));
+        assert!(dump.contains("\"matching_canonical_step_indices\":[0]"));
+        assert!(dump.contains("\"matching_face_indices\":[0]"));
     }
 }

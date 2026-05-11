@@ -713,7 +713,7 @@ fn seam_constraints_for_shape(
                 .iter()
                 .filter(|constraint| constraint_applies_to_owner(constraint, owner))
             {
-                if edge_lies_on_constraint(start, end, constraint) {
+                if shape_edge_carries_full_seam_constraint(start, end, constraint) {
                     push_region_seam_constraint(
                         &mut seams,
                         constraint,
@@ -892,6 +892,8 @@ fn materialize_noded_region_seam_constraints(
                         edge_key.start,
                         edge_key.end,
                         constraint,
+                        edge_ref.owner,
+                        opposite_owner,
                         piece_kind,
                     )
                 })
@@ -1337,18 +1339,31 @@ fn owned_edge_lies_on_rail_constraint(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> bool {
     if start == end || constraint.points_xz.len() < 2 {
         return false;
     }
-    constraint.points_xz.windows(2).any(|segment| {
-        let constraint_start = road_point_key(segment[0]);
-        let constraint_end = road_point_key(segment[1]);
-        point_key_lies_on_segment(start, constraint_start, constraint_end)
-            && point_key_lies_on_segment(end, constraint_start, constraint_end)
-    }) || (piece_kind == RoadSurfaceVisualNodePieceKind::Bend
-        && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint))
+    if edge_lies_on_single_constraint_segment(start, end, constraint) {
+        return true;
+    }
+    if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner) {
+        return false;
+    }
+    piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+        && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+}
+
+fn materialized_edge_requires_exact_constraint_span(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(constraint.kind, NodeRailConstraintKind::AsphaltCurbContact)
+        && ((is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
+            || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind())))
 }
 
 fn owned_source_constraints_for_edge<'a>(
@@ -1575,6 +1590,38 @@ fn edge_lies_on_constraint(
             && point_key_lies_on_segment(edge_end, start, end)
     }) || edge_lies_on_constraint_polyline(edge_start, edge_end, constraint)
         || edge_endpoints_lie_on_constraint_path(edge_start, edge_end, constraint)
+}
+
+fn shape_edge_carries_full_seam_constraint(
+    edge_start: NodeOverlayPoint,
+    edge_end: NodeOverlayPoint,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if !shape_edge_requires_exact_constraint_span(constraint) {
+        return edge_lies_on_constraint(edge_start, edge_end, constraint);
+    }
+    edge_lies_on_single_constraint_segment(
+        overlay_point_key(edge_start),
+        overlay_point_key(edge_end),
+        constraint,
+    )
+}
+
+fn shape_edge_requires_exact_constraint_span(constraint: &NodeRailConstraint) -> bool {
+    matches!(constraint.kind, NodeRailConstraintKind::AsphaltCurbContact)
+}
+
+fn edge_lies_on_single_constraint_segment(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    constraint.points_xz.windows(2).any(|segment| {
+        let start = road_point_key(segment[0]);
+        let end = road_point_key(segment[1]);
+        point_key_lies_on_segment(edge_start, start, end)
+            && point_key_lies_on_segment(edge_end, start, end)
+    })
 }
 
 fn edge_lies_on_constraint_polyline(
@@ -2269,7 +2316,7 @@ mod tests {
     }
 
     #[test]
-    fn materializes_owner_explicit_step_for_final_edge_on_constraint_path() {
+    fn materializes_owner_explicit_step_for_final_edge_on_exact_constraint_span() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let start = RoadVec2::new(0.0, 0.0);
@@ -2294,12 +2341,7 @@ mod tests {
             source_boundary_index: Some(1),
             owner: Some(carriageway),
             opposite_owner: Some(curb),
-            points_xz: vec![
-                start,
-                RoadVec2::new(0.000001, 0.0),
-                RoadVec2::new(0.000002, 0.0),
-                end,
-            ],
+            points_xz: vec![start, end],
         }];
 
         materialize_noded_region_seam_constraints(
@@ -2324,6 +2366,103 @@ mod tests {
                 "final shared asphalt-curb edge must carry the owner-explicit step seam"
             );
         }
+    }
+
+    #[test]
+    fn does_not_materialize_asphalt_curb_step_from_bend_polyline_coverage() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(2.0, 2.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 35,
+            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![start, RoadVec2::new(1.0, 1.0), end],
+        }];
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &Vec::new(),
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        for region in &regions {
+            assert!(
+                !region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(start)
+                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                        && constraint.owner == Some(carriageway)
+                        && constraint.opposite_owner == Some(curb)
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::AsphaltCurbContact { .. }
+                        )
+                }),
+                "asphalt-curb vertical steps must come from an exact rail span, not Bend polyline coverage"
+            );
+        }
+    }
+
+    #[test]
+    fn asphalt_curb_shape_seams_use_exact_constraint_spans() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let middle = RoadVec2::new(1.0, 1.0);
+        let end = RoadVec2::new(2.0, 2.0);
+        let shape = vec![vec![[0.0, 0.0], [2.0, 2.0], [0.0, 2.0]]];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 36,
+            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![start, middle, end],
+        }];
+
+        let seams = seam_constraints_for_shape(&shape, carriageway, &rail_constraints, false);
+
+        assert!(
+            !seams.iter().any(|constraint| {
+                road_point_key(constraint.start_xz) == road_point_key(start)
+                    && road_point_key(constraint.end_xz) == road_point_key(end)
+            }),
+            "asphalt-curb seams must not carry a full edge just because a rail polyline covers it"
+        );
+        assert!(
+            seams.iter().any(|constraint| {
+                road_point_key(constraint.start_xz) == road_point_key(start)
+                    && road_point_key(constraint.end_xz) == road_point_key(middle)
+            }),
+            "first exact rail span should be preserved"
+        );
+        assert!(
+            seams.iter().any(|constraint| {
+                road_point_key(constraint.start_xz) == road_point_key(middle)
+                    && road_point_key(constraint.end_xz) == road_point_key(end)
+            }),
+            "second exact rail span should be preserved"
+        );
     }
 
     #[test]

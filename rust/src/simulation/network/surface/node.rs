@@ -4,8 +4,9 @@ use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
     RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M,
     arrangement::{
         NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
         NodeExplicitVerticalStepSegment,
@@ -214,7 +215,7 @@ impl RoadSurfaceSystem {
             node_regions.terrain_clip_boundary_loops,
             node_regions.road_surface_polygons,
             node_regions.curb_surface_polygons,
-            node_regions.curb_vertical_face_polygons,
+            node_regions.curb_vertical_faces,
             node_regions.sidewalk_surface_polygons,
             node_regions.explicit_vertical_step_segments,
             node_regions.owned_regions,
@@ -342,9 +343,11 @@ impl RoadSurfaceSystem {
             }
         }
         let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
-        let mut curb_vertical_face_polygons =
-            Self::curb_vertical_face_polygons_from_arrangement(arrangement);
-        dedup_curb_vertical_face_polygons(&mut curb_vertical_face_polygons);
+        let mut curb_vertical_faces = Self::curb_vertical_face_polygons_from_arrangement(
+            arrangement,
+            &explicit_vertical_step_segments,
+        );
+        dedup_curb_vertical_faces(&mut curb_vertical_faces);
 
         if owned_regions.is_empty() {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
@@ -382,11 +385,11 @@ impl RoadSurfaceSystem {
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_visual_polygons(&mut curb_vertical_face_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_node_owned_regions(&mut owned_regions);
+        Self::sort_curb_vertical_faces(&mut curb_vertical_faces);
 
         Ok(super::NodeSurfaceRegionResult {
             outer_boundary_loops,
@@ -394,7 +397,7 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
-            curb_vertical_face_polygons,
+            curb_vertical_faces,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             owned_regions,
@@ -554,10 +557,11 @@ impl RoadSurfaceSystem {
 
     fn curb_vertical_face_polygons_from_arrangement(
         arrangement: &NodeArrangement,
-    ) -> Vec<RoadSurfaceVisualPolygon> {
+        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+    ) -> Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)> {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
-        for segment in arrangement.explicit_vertical_step_segments() {
+        for (step_index, segment) in explicit_vertical_step_segments.iter().copied().enumerate() {
             let Some((lower_owner, raised_owner)) =
                 canonical_vertical_step_lower_and_raised_owners(segment)
             else {
@@ -645,7 +649,13 @@ impl RoadSurfaceSystem {
                     }
                 }
                 if let Some(face) = Self::make_vertical_quad_polygon(points) {
-                    faces.push(face);
+                    faces.push((
+                        face,
+                        RoadSurfaceVerticalFaceSource {
+                            explicit_vertical_step_index: step_index,
+                            segment,
+                        },
+                    ));
                 }
             }
         }
@@ -1042,7 +1052,7 @@ impl RoadSurfaceSystem {
         mut terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
         mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-        mut curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut curb_vertical_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
         mut owned_regions: Vec<NodeOwnedRegion>,
@@ -1058,7 +1068,7 @@ impl RoadSurfaceSystem {
         }
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_visual_polygons(&mut curb_vertical_face_polygons);
+        Self::sort_curb_vertical_faces(&mut curb_vertical_faces);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_node_owned_regions(&mut owned_regions);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
@@ -1068,6 +1078,8 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
+        let (curb_vertical_face_polygons, curb_vertical_face_sources) =
+            curb_vertical_faces.into_iter().unzip();
         Some(RoadSurfaceVisualNodePiece {
             node_id,
             kind,
@@ -1076,6 +1088,7 @@ impl RoadSurfaceSystem {
             road_surface_polygons,
             curb_surface_polygons,
             curb_vertical_face_polygons,
+            curb_vertical_face_sources,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             owned_regions,
@@ -1318,14 +1331,34 @@ fn canonical_vertical_step_lower_and_raised_owners(
     None
 }
 
-fn dedup_curb_vertical_face_polygons(polygons: &mut Vec<RoadSurfaceVisualPolygon>) {
+fn dedup_curb_vertical_faces(
+    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+) {
     let mut emitted = BTreeSet::new();
-    polygons.retain(|polygon| {
+    faces.retain(|(polygon, _)| {
         let Some(key) = curb_vertical_face_span_key(polygon) else {
             return true;
         };
         emitted.insert(key)
     });
+}
+
+impl RoadSurfaceSystem {
+    fn sort_curb_vertical_faces(
+        faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)],
+    ) {
+        faces.sort_by(
+            |(left_polygon, left_source), (right_polygon, right_source)| {
+                Self::visual_polygon_ordering(left_polygon, right_polygon)
+                    .then(
+                        left_source
+                            .explicit_vertical_step_index
+                            .cmp(&right_source.explicit_vertical_step_index),
+                    )
+                    .then(left_source.segment.cmp(&right_source.segment))
+            },
+        );
+    }
 }
 
 fn curb_vertical_face_span_key(
