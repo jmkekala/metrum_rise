@@ -1219,20 +1219,7 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
         .chain(piece.curb_surface_polygons.iter())
         .chain(piece.sidewalk_surface_polygons.iter())
         .collect::<Vec<_>>();
-    let top_vertices = piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
-        .flat_map(|polygon| {
-            polygon.points_world.iter().chain(
-                polygon
-                    .triangles_world
-                    .iter()
-                    .flat_map(|triangle| triangle.iter()),
-            )
-        })
-        .collect::<Vec<_>>();
+    let top_vertices = visible_top_vertices(piece);
     assert!(
         !top_vertices.is_empty(),
         "node piece must emit visible top vertices before boundary matching can be checked"
@@ -1317,6 +1304,95 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
             );
         }
     }
+}
+
+fn assert_outer_boundary_vertices_use_visible_top_boundary_support(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
+    let top_polygons = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.curb_surface_polygons.iter())
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .collect::<Vec<_>>();
+    for boundary_point in piece
+        .outer_boundary_loops
+        .iter()
+        .flat_map(|polygon| polygon.points_world.iter())
+    {
+        let Some(closest) = top_polygons
+            .iter()
+            .flat_map(|polygon| {
+                polygon
+                    .points_world
+                    .windows(2)
+                    .map(|segment| {
+                        closest_point_on_segment_xz(*boundary_point, segment[0], segment[1])
+                    })
+                    .chain((!polygon.points_world.is_empty()).then(|| {
+                        let last = *polygon.points_world.last().unwrap();
+                        closest_point_on_segment_xz(*boundary_point, last, polygon.points_world[0])
+                    }))
+                    .chain(polygon.triangles_world.iter().flat_map(|triangle| {
+                        (0..3).map(|index| {
+                            closest_point_on_segment_xz(
+                                *boundary_point,
+                                triangle[index],
+                                triangle[(index + 1) % 3],
+                            )
+                        })
+                    }))
+            })
+            .min_by(|a, b| {
+                let da =
+                    Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
+                let db =
+                    Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
+                da.total_cmp(&db).then(
+                    (a.y - boundary_point.y)
+                        .abs()
+                        .total_cmp(&(b.y - boundary_point.y).abs()),
+                )
+            })
+        else {
+            panic!("node piece emitted no top boundary support");
+        };
+        let xz_error =
+            Vector2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
+        let y_error = (closest.y - boundary_point.y).abs();
+        assert!(
+            xz_error <= SAMPLE_EPSILON_M * 2.0 && y_error <= SAMPLE_EPSILON_M * 2.0,
+            "node outer boundary vertices must lie on canonical visible top boundary support; boundary={boundary_point:?} closest={closest:?} xz_error={xz_error:.4} y_error={y_error:.4}"
+        );
+    }
+}
+
+fn closest_point_on_segment_xz(point: Vector3, start: Vector3, end: Vector3) -> Vector3 {
+    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let len_squared = segment.length_squared();
+    if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+        return start;
+    }
+    let to_point = Vector2::new(point.x - start.x, point.z - start.z);
+    let t = (to_point.dot(segment) / len_squared).clamp(0.0, 1.0);
+    start.lerp(end, t)
+}
+
+fn visible_top_vertices(piece: &RoadSurfaceVisualNodePiece) -> Vec<Vector3> {
+    piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.curb_surface_polygons.iter())
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| {
+            polygon.points_world.iter().copied().chain(
+                polygon
+                    .triangles_world
+                    .iter()
+                    .flat_map(|triangle| triangle.iter().copied()),
+            )
+        })
+        .collect()
 }
 
 fn assert_material_top_supports_point(
@@ -2181,6 +2257,41 @@ fn logged_outer_bend_skips_one_sided_curb_step_slivers() {
         "outer bend terrain cutter must preserve sampled outer span rail points; outer_loops={:?}",
         bend_piece.outer_boundary_loops
     );
+}
+
+#[test]
+fn logged_curved_terminal_exports_outer_boundary_from_visible_top_support() {
+    let terrain = flat_terrain(384, 384);
+    let points = road_points_from_json(
+        "[[-26.262,0.000,-35.164],[-25.870,0.000,-34.826],[-25.195,0.000,-34.246],[-24.743,0.000,-33.856],[-24.217,0.000,-33.404],[-23.622,0.000,-32.890],[-22.958,0.000,-32.319],[-22.230,0.000,-31.692],[-21.843,0.000,-31.359],[-21.440,0.000,-31.012],[-21.023,0.000,-30.653],[-20.591,0.000,-30.281],[-20.145,0.000,-29.897],[-19.686,0.000,-29.501],[-19.213,0.000,-29.094],[-18.727,0.000,-28.676],[-18.229,0.000,-28.246],[-17.718,0.000,-27.806],[-17.195,0.000,-27.356],[-16.661,0.000,-26.896],[-16.115,0.000,-26.426],[-15.558,0.000,-25.947],[-14.991,0.000,-25.458],[-14.414,0.000,-24.961],[-13.827,0.000,-24.456],[-13.230,0.000,-23.942],[-12.624,0.000,-23.420],[-12.010,0.000,-22.891],[-11.387,0.000,-22.354],[-10.756,0.000,-21.811],[-10.117,0.000,-21.261],[-9.471,0.000,-20.704],[-8.818,0.000,-20.142],[-8.158,0.000,-19.574],[-7.491,0.000,-19.000],[-6.819,0.000,-18.421],[-6.141,0.000,-17.837],[-5.458,0.000,-17.249],[-4.770,0.000,-16.656],[-4.077,0.000,-16.060],[-3.381,0.000,-15.460],[-2.680,0.000,-14.856],[-1.976,0.000,-14.250],[-1.268,0.000,-13.641],[-0.558,0.000,-13.029],[0.155,0.000,-12.416],[0.869,0.000,-11.800],[1.586,0.000,-11.183],[2.304,0.000,-10.565],[3.023,0.000,-9.946],[3.743,0.000,-9.326],[4.463,0.000,-8.706],[5.183,0.000,-8.086],[5.902,0.000,-7.466],[6.621,0.000,-6.847],[7.339,0.000,-6.228],[8.056,0.000,-5.611],[8.771,0.000,-4.996],[9.483,0.000,-4.382],[10.193,0.000,-3.771],[10.901,0.000,-3.161],[11.605,0.000,-2.555],[12.306,0.000,-1.952],[13.003,0.000,-1.351],[13.695,0.000,-0.755],[14.383,0.000,-0.162],[15.066,0.000,0.426],[15.744,0.000,1.010],[16.416,0.000,1.588],[17.083,0.000,2.162],[17.743,0.000,2.730],[18.396,0.000,3.293],[19.042,0.000,3.849],[19.681,0.000,4.400],[20.312,0.000,4.943],[20.935,0.000,5.480],[21.550,0.000,6.009],[22.155,0.000,6.530],[22.752,0.000,7.044],[23.339,0.000,7.550],[23.916,0.000,8.047],[24.483,0.000,8.535],[25.040,0.000,9.015],[25.586,0.000,9.485],[26.120,0.000,9.945],[26.643,0.000,10.395],[27.154,0.000,10.835],[27.652,0.000,11.264],[28.138,0.000,11.683],[28.611,0.000,12.090],[29.070,0.000,12.485],[29.516,0.000,12.869],[29.948,0.000,13.241],[30.365,0.000,13.601],[30.768,0.000,13.947],[31.155,0.000,14.281],[31.883,0.000,14.908],[32.547,0.000,15.479],[33.143,0.000,15.992],[33.668,0.000,16.445],[34.121,0.000,16.834],[34.795,0.000,17.415],[35.187,0.000,17.753]]",
+    );
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let terminal_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("logged curved terminal should compile");
+    assert_eq!(
+        terminal_piece.kind,
+        RoadSurfaceVisualNodePieceKind::Terminal
+    );
+    assert_outer_boundary_vertices_match_visible_top(terminal_piece);
+    assert_outer_boundary_vertices_use_visible_top_boundary_support(terminal_piece);
 }
 
 #[test]

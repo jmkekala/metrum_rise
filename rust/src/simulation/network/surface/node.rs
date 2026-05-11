@@ -105,7 +105,7 @@ impl PartialOrd for ArrangementSegmentParameter {
 #[derive(Debug)]
 enum NodeBoundaryExportError {
     EmptyOuterBoundary,
-    MissingFootprintBoundaryHeight { point: NodeArrangementKey },
+    MissingFootprintBoundaryHeight,
     DegenerateOuterBoundaryLoop,
 }
 
@@ -354,8 +354,17 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
-        let footprint_boundary_point_loops =
-            Self::footprint_boundary_point_loops_from_shapes(arrangement, footprint_shapes)?;
+        let top_polygons = road_surface_polygons
+            .iter()
+            .chain(curb_surface_polygons.iter())
+            .chain(sidewalk_surface_polygons.iter())
+            .collect::<Vec<_>>();
+        let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
+            arrangement,
+            &top_polygons,
+            footprint_shapes,
+            arrangement.piece_kind() == RoadSurfaceVisualNodePieceKind::Terminal,
+        )?;
         let mut earthwork_boundary_point_loops =
             Self::earthwork_boundary_point_loops_from_footprint_loops(
                 &footprint_boundary_point_loops,
@@ -388,22 +397,25 @@ impl RoadSurfaceSystem {
 
     fn footprint_boundary_point_loops_from_shapes(
         arrangement: &NodeArrangement,
+        top_polygons: &[&RoadSurfaceVisualPolygon],
         footprint_shapes: &super::NodeOverlayShapes,
+        clean_unsupported_numeric_vertices: bool,
     ) -> Result<Vec<Vec<Vector3>>, NodeBoundaryExportError> {
         let mut loops = Vec::new();
         for shape in footprint_shapes {
             for contour in shape {
                 let mut keyed_points = Vec::with_capacity(contour.len());
                 for point in contour {
-                    let point = super::backend::RoadVec2::new(point[0], point[1]);
-                    let key = NodeArrangementKey::from_point(point);
+                    let key = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+                        point[0], point[1],
+                    ));
                     keyed_points.push((
                         key,
                         Self::arrangement_footprint_boundary_height_mm(arrangement, key),
                     ));
                 }
                 fill_missing_footprint_boundary_heights(&mut keyed_points)?;
-                let points = keyed_points
+                let mut points = keyed_points
                     .into_iter()
                     .map(|(key, height_mm)| {
                         arrangement_boundary_point_to_world(arrangement_key_boundary_point(
@@ -412,6 +424,9 @@ impl RoadSurfaceSystem {
                         ))
                     })
                     .collect::<Vec<_>>();
+                if clean_unsupported_numeric_vertices {
+                    remove_unsupported_numeric_boundary_vertices(&mut points, top_polygons);
+                }
                 let points = Self::canonicalize_loop_points(points);
                 if points.len() < 3 {
                     continue;
@@ -427,18 +442,6 @@ impl RoadSurfaceSystem {
         (!loops.is_empty())
             .then_some(loops)
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
-    }
-
-    fn earthwork_boundary_point_loops_from_footprint_loops(
-        footprint_loops: &[Vec<Vector3>],
-    ) -> Vec<Vec<Vector3>> {
-        let mut loops = Vec::new();
-        for footprint_loop in footprint_loops {
-            for points in same_winding_boundary_point_loops_from_loop(footprint_loop) {
-                loops.push(points);
-            }
-        }
-        loops
     }
 
     fn arrangement_footprint_boundary_height_mm(
@@ -529,6 +532,18 @@ impl RoadSurfaceSystem {
         heights.sort_unstable();
         heights.dedup();
         heights
+    }
+
+    fn earthwork_boundary_point_loops_from_footprint_loops(
+        footprint_loops: &[Vec<Vector3>],
+    ) -> Vec<Vec<Vector3>> {
+        let mut loops = Vec::new();
+        for footprint_loop in footprint_loops {
+            for points in same_winding_boundary_point_loops_from_loop(footprint_loop) {
+                loops.push(points);
+            }
+        }
+        loops
     }
 
     fn curb_vertical_face_polygons_from_arrangement(
@@ -827,14 +842,11 @@ impl RoadSurfaceSystem {
             return;
         }
         let report = match error {
-            NodeBoundaryExportError::MissingFootprintBoundaryHeight { point } => {
-                NodeValidationReport::from_missing_outer_boundary_owner(
+            NodeBoundaryExportError::MissingFootprintBoundaryHeight => {
+                NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
                     arrangement.piece_kind(),
-                    RoadSurfaceBandKind::Sidewalk,
-                    0,
-                    *point,
-                    *point,
+                    "missing_footprint_boundary_height",
                 )
             }
             NodeBoundaryExportError::EmptyOuterBoundary => {
@@ -1751,10 +1763,97 @@ fn arrangement_key_lies_on_segment(
     inside_x && inside_z
 }
 
+fn visible_top_boundary_height_mm_at_key(
+    top_polygons: &[&RoadSurfaceVisualPolygon],
+    key: NodeArrangementKey,
+) -> Option<i64> {
+    let mut heights = Vec::new();
+    for polygon in top_polygons {
+        append_boundary_loop_heights_at_key(&mut heights, &polygon.points_world, key);
+        for triangle in &polygon.triangles_world {
+            append_boundary_loop_heights_at_key(&mut heights, triangle, key);
+        }
+    }
+    heights.sort_unstable();
+    heights.dedup();
+    heights.into_iter().max()
+}
+
+fn append_boundary_loop_heights_at_key(
+    heights: &mut Vec<i64>,
+    points: &[Vector3],
+    key: NodeArrangementKey,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let point = arrangement_key_boundary_point(key, 0);
+    for index in 0..points.len() {
+        let start = ArrangementBoundaryPointKey::from_world(points[index]);
+        let end = ArrangementBoundaryPointKey::from_world(points[(index + 1) % points.len()]);
+        if !arrangement_key_lies_on_segment(key, start.xz_key(), end.xz_key()) {
+            continue;
+        }
+        let Some(parameter) = boundary_segment_parameter_xz(point, start, end) else {
+            continue;
+        };
+        heights.push(interpolated_segment_height_mm(start, end, parameter));
+    }
+}
+
+fn remove_unsupported_numeric_boundary_vertices(
+    points: &mut Vec<Vector3>,
+    top_polygons: &[&RoadSurfaceVisualPolygon],
+) {
+    loop {
+        if points.len() < 4 {
+            return;
+        }
+        let mut removed = false;
+        for index in 0..points.len() {
+            let previous = if index == 0 {
+                points.len() - 1
+            } else {
+                index - 1
+            };
+            let next = if index + 1 == points.len() {
+                0
+            } else {
+                index + 1
+            };
+            let current_key = ArrangementBoundaryPointKey::from_world(points[index]).xz_key();
+            if visible_top_boundary_height_mm_at_key(top_polygons, current_key).is_some() {
+                continue;
+            }
+            let local_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(&[
+                points[previous],
+                points[index],
+                points[next],
+            ])
+            .abs();
+            if local_area_m2
+                > boundary_points_numeric_area_budget_m2(&[
+                    points[previous],
+                    points[index],
+                    points[next],
+                ])
+            {
+                continue;
+            }
+            points.remove(index);
+            removed = true;
+            break;
+        }
+        if !removed {
+            return;
+        }
+    }
+}
+
 fn fill_missing_footprint_boundary_heights(
     vertices: &mut [(NodeArrangementKey, Option<i64>)],
 ) -> Result<(), NodeBoundaryExportError> {
-    let Some(first_missing_key) = vertices
+    let Some(_first_missing_key) = vertices
         .iter()
         .find_map(|(key, height_mm)| height_mm.is_none().then_some(*key))
     else {
@@ -1764,9 +1863,7 @@ fn fill_missing_footprint_boundary_heights(
         .iter()
         .position(|(_, height_mm)| height_mm.is_some())
     else {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-            point: first_missing_key,
-        });
+        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
     };
     if vertices
         .iter()
@@ -1774,9 +1871,7 @@ fn fill_missing_footprint_boundary_heights(
         .count()
         < 2
     {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-            point: first_missing_key,
-        });
+        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
     }
 
     let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
@@ -1787,16 +1882,12 @@ fn fill_missing_footprint_boundary_heights(
     while start_pos + 1 < ordered_indices.len() {
         let start_index = ordered_indices[start_pos];
         let Some(start_height_mm) = vertices[start_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                point: vertices[start_index].0,
-            });
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
         };
         let Some(end_pos) = (start_pos + 1..ordered_indices.len())
             .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
         else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                point: first_missing_key,
-            });
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
         };
         if end_pos == start_pos + 1 {
             start_pos = end_pos;
@@ -1805,9 +1896,7 @@ fn fill_missing_footprint_boundary_heights(
 
         let end_index = ordered_indices[end_pos];
         let Some(end_height_mm) = vertices[end_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                point: vertices[end_index].0,
-            });
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
         };
 
         let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
@@ -1821,9 +1910,7 @@ fn fill_missing_footprint_boundary_heights(
             cumulative_lengths.push(total_length_m);
         }
         if total_length_m <= f64::EPSILON {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                point: first_missing_key,
-            });
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
         }
 
         for run_offset in 1..cumulative_lengths.len() - 1 {
