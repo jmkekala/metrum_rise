@@ -339,7 +339,7 @@ impl NodeArrangement {
     pub(crate) fn explicit_vertical_step_segments(&self) -> Vec<NodeExplicitVerticalStepSegment> {
         let mut segments = BTreeSet::new();
         for edge in &self.edges {
-            if !edge.is_explicit_vertical_step() {
+            if !self.edge_is_explicit_vertical_step(edge) {
                 continue;
             }
             let Some(opposite_owner) = edge.opposite_owner else {
@@ -903,6 +903,7 @@ impl NodeArrangement {
         self.edges.iter().any(|edge| {
             edge.is_material_transition
                 && !edge.source_constraint_indices.is_empty()
+                && self.edge_has_applicable_material_source_constraint(edge)
                 && (self.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
                     || !self.edge_has_owner_pair_source_constraint(edge))
                 && self.edge_touches_key(edge, key)
@@ -923,6 +924,9 @@ impl NodeArrangement {
     }
 
     fn edge_has_owner_pair_source_constraint(&self, edge: &NodeArrangementEdge) -> bool {
+        let Some(opposite_owner) = edge.opposite_owner else {
+            return false;
+        };
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return false;
         };
@@ -931,13 +935,48 @@ impl NodeArrangement {
         };
         self.regions.iter().any(|region| {
             region.seam_constraints.iter().any(|constraint| {
-                (constraint.owner.is_some() || constraint.opposite_owner.is_some())
+                seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
                     && edge
                         .source_constraint_indices
                         .contains(&constraint.constraint_index)
                     && seam_constraint_covers_edge(constraint, start, end)
             })
         })
+    }
+
+    fn edge_has_applicable_material_source_constraint(&self, edge: &NodeArrangementEdge) -> bool {
+        let Some(opposite_owner) = edge.opposite_owner else {
+            return false;
+        };
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        self.regions.iter().any(|region| {
+            region.seam_constraints.iter().any(|constraint| {
+                constraint.is_material_transition
+                    && edge
+                        .source_constraint_indices
+                        .contains(&constraint.constraint_index)
+                    && seam_constraint_covers_edge(constraint, start, end)
+                    && seam_constraint_can_source_edge_owner_pair(
+                        constraint,
+                        edge.owner,
+                        Some(opposite_owner),
+                    )
+            })
+        })
+    }
+
+    fn edge_is_explicit_vertical_step(&self, edge: &NodeArrangementEdge) -> bool {
+        edge.is_material_transition
+            && !edge.constrains_shared_height
+            && self.edge_has_owner_pair_source_constraint(edge)
+            && edge.opposite_owner.is_some_and(|opposite_owner| {
+                owners_form_carriageway_raised_non_road_step_pair(edge.owner, opposite_owner)
+            })
     }
 }
 
@@ -948,6 +987,15 @@ fn seam_constraint_touches_key(
     let start = NodeArrangementKey::from_point(constraint.start_xz);
     let end = NodeArrangementKey::from_point(constraint.end_xz);
     point_key_lies_on_segment(key, start, end)
+}
+
+fn seam_constraint_matches_owner_pair(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    (constraint.owner == Some(owner) && constraint.opposite_owner == Some(opposite_owner))
+        || (constraint.owner == Some(opposite_owner) && constraint.opposite_owner == Some(owner))
 }
 
 fn seam_constraint_covers_edge(
@@ -993,6 +1041,10 @@ impl NodeArrangementVertex {
     pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
         self.height_field_id
     }
+
+    pub(crate) fn owners(&self) -> &[NodeBandOwner] {
+        &self.owners
+    }
 }
 
 impl NodeOwnedRegion {
@@ -1028,15 +1080,6 @@ impl NodeArrangementEdge {
 
     pub(crate) fn end(&self) -> NodeArrangementVertexId {
         self.end
-    }
-
-    pub(crate) fn is_explicit_vertical_step(&self) -> bool {
-        self.is_material_transition
-            && !self.constrains_shared_height
-            && !self.source_constraint_indices.is_empty()
-            && self.opposite_owner.is_some_and(|opposite_owner| {
-                owners_form_carriageway_raised_non_road_step_pair(self.owner, opposite_owner)
-            })
     }
 }
 
@@ -1164,6 +1207,22 @@ fn source_constraints_for_edge<'a>(
     });
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+fn seam_constraint_can_source_edge_owner_pair(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: Option<NodeBandOwner>,
+) -> bool {
+    match (constraint.owner, constraint.opposite_owner) {
+        (Some(_), Some(_)) => opposite_owner.is_some_and(|opposite_owner| {
+            seam_constraint_matches_owner_pair(constraint, owner, opposite_owner)
+        }),
+        (Some(constraint_owner), None) | (None, Some(constraint_owner)) => {
+            constraint_owner == owner || opposite_owner == Some(constraint_owner)
+        }
+        (None, None) => true,
+    }
 }
 
 fn source_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstraint]) -> bool {
@@ -1913,6 +1972,43 @@ mod tests {
         .expect("test segment is non-degenerate");
 
         assert!(segments.contains(&expected));
+    }
+
+    #[test]
+    fn explicit_vertical_step_segments_require_explicit_owner_pair_source() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+        let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let seam = NodeRegionSeamConstraint {
+            constraint_index: 93,
+            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 1 },
+            owner: Some(curb),
+            opposite_owner: None,
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
+        let heights = two_region_height_solution_with_material_heights(
+            carriageway,
+            curb,
+            0.0,
+            0.12,
+            vec![seam.clone()],
+            vec![seam],
+        );
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("role-only material seam should produce a canonical arrangement");
+
+        let segments = arrangement.explicit_vertical_step_segments();
+        let expected = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            NodeArrangementKey::from_point(RoadVec2::new(1.0, 1.0)),
+            carriageway,
+            curb,
+        )
+        .expect("test segment is non-degenerate");
+
+        assert!(!segments.contains(&expected));
     }
 
     #[test]

@@ -645,6 +645,7 @@ fn assert_vertical_curb_face_lower_edge_covers(
 #[derive(Clone, Copy)]
 struct TestTopBoundaryEdge {
     kind: RoadSurfaceBandKind,
+    owner_index: usize,
     start: Vector3,
     end: Vector3,
     key: TestRenderEdgeKey,
@@ -695,6 +696,15 @@ impl TestRenderVertexKey {
     }
 }
 
+impl TestRenderXzVertexKey {
+    fn from_arrangement_key(key: super::arrangement::NodeArrangementKey) -> Self {
+        Self {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+        }
+    }
+}
+
 impl TestRenderEdgeKey {
     fn normalized(start: Vector3, end: Vector3) -> Option<Self> {
         let start = TestRenderVertexKey::from_point(start);
@@ -726,6 +736,27 @@ impl TestRenderEdgeKey {
     }
 }
 
+impl TestRenderXzEdgeKey {
+    fn normalized_from_arrangement_keys(
+        start: super::arrangement::NodeArrangementKey,
+        end: super::arrangement::NodeArrangementKey,
+    ) -> Option<Self> {
+        let start = TestRenderXzVertexKey::from_arrangement_key(start);
+        let end = TestRenderXzVertexKey::from_arrangement_key(end);
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
+    }
+}
+
 fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
@@ -753,17 +784,120 @@ fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
                 if road_edge.key == raised_edge.key || road_edge.avg_y_m >= raised_edge.avg_y_m {
                     continue;
                 }
+                let matching_canonical_steps =
+                    explicit_vertical_step_descriptions_for_xz_key(piece, road_edge.xz_key);
                 assert!(
                     face_lower_keys.contains(&road_edge.xz_key),
-                    "surviving asphalt-to-raised-non-road top boundary must emit an explicit vertical face; kind={:?} lower={:?}->{:?} raised_kind={:?}",
+                    "surviving asphalt-to-raised-non-road top boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] matching_canonical_steps={:?}",
                     piece.kind,
+                    road_edge.xz_key,
+                    road_edge.kind,
+                    road_edge.owner_index,
                     road_edge.start,
                     road_edge.end,
-                    raised_edge.kind
+                    raised_edge.kind,
+                    raised_edge.owner_index,
+                    matching_canonical_steps
                 );
             }
         }
     }
+}
+
+fn explicit_vertical_step_descriptions_for_xz_key(
+    piece: &RoadSurfaceVisualNodePiece,
+    xz_key: TestRenderXzEdgeKey,
+) -> Vec<String> {
+    piece
+        .explicit_vertical_step_segments
+        .iter()
+        .enumerate()
+        .filter_map(|(step_index, segment)| {
+            (TestRenderXzEdgeKey::normalized_from_arrangement_keys(segment.start(), segment.end())?
+                == xz_key)
+                .then(|| {
+                    format!(
+                        "#{step_index} {:?}<->{:?}",
+                        segment.owner(),
+                        segment.opposite_owner()
+                    )
+                })
+        })
+        .collect()
+}
+
+fn assert_canonical_explicit_vertical_steps_have_faces(piece: &RoadSurfaceVisualNodePiece) {
+    let top_edges = test_owned_top_boundary_edges(piece);
+    let mut top_edges_by_xz = BTreeMap::<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>::new();
+    for edge in top_edges {
+        top_edges_by_xz.entry(edge.xz_key).or_default().push(edge);
+    }
+    let face_source_segments = piece
+        .curb_vertical_face_sources
+        .iter()
+        .map(|source| source.segment)
+        .collect::<BTreeSet<_>>();
+
+    for (step_index, segment) in piece.explicit_vertical_step_segments.iter().enumerate() {
+        let owner = segment.owner();
+        let opposite_owner = segment.opposite_owner();
+        let owner_pair_requires_face = (owner.kind() == RoadSurfaceBandKind::Carriageway
+            && opposite_owner.kind() != RoadSurfaceBandKind::Carriageway)
+            || (opposite_owner.kind() == RoadSurfaceBandKind::Carriageway
+                && owner.kind() != RoadSurfaceBandKind::Carriageway);
+        if !owner_pair_requires_face {
+            continue;
+        }
+        if explicit_vertical_step_segment_len_squared_m2(*segment)
+            <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        {
+            continue;
+        }
+        if !explicit_vertical_step_has_visible_top_support(*segment, &top_edges_by_xz) {
+            continue;
+        }
+
+        assert!(
+            face_source_segments.contains(segment),
+            "canonical explicit vertical step must be consumed by a rendered vertical face; kind={:?} step_index={} segment={:?}",
+            piece.kind,
+            step_index,
+            segment
+        );
+    }
+}
+
+fn explicit_vertical_step_has_visible_top_support(
+    segment: super::arrangement::NodeExplicitVerticalStepSegment,
+    top_edges_by_xz: &BTreeMap<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>,
+) -> bool {
+    let Some(xz_key) =
+        TestRenderXzEdgeKey::normalized_from_arrangement_keys(segment.start(), segment.end())
+    else {
+        return false;
+    };
+    let Some(edges) = top_edges_by_xz.get(&xz_key) else {
+        return false;
+    };
+    edges
+        .iter()
+        .filter(|edge| edge.kind == RoadSurfaceBandKind::Carriageway)
+        .any(|road_edge| {
+            edges
+                .iter()
+                .filter(|edge| edge.kind != RoadSurfaceBandKind::Carriageway)
+                .any(|raised_edge| road_edge.avg_y_m < raised_edge.avg_y_m)
+        })
+}
+
+fn explicit_vertical_step_segment_len_squared_m2(
+    segment: super::arrangement::NodeExplicitVerticalStepSegment,
+) -> f32 {
+    let dx = (segment.end().x_key() - segment.start().x_key()) as f64
+        / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
+    let dz = (segment.end().z_key() - segment.start().z_key()) as f64
+        / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
+    (dx * dx + dz * dz) as f32
 }
 
 fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<TestTopBoundaryEdge> {
@@ -787,6 +921,7 @@ fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<Test
             if count == 1 {
                 boundary_edges.push(TestTopBoundaryEdge {
                     kind: region.kind,
+                    owner_index: region.owner_index,
                     start,
                     end,
                     key,
@@ -2337,6 +2472,7 @@ fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_top_covers_footprint(bend_piece);
     assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(bend_piece);
+    assert_canonical_explicit_vertical_steps_have_faces(bend_piece);
     assert_earthwork_faces_stay_outside_top_footprint(bend_piece);
 }
 

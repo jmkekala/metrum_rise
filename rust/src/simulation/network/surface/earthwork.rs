@@ -295,10 +295,9 @@ impl RoadSurfaceSystem {
             OverlayRule::Intersect,
         )?;
         let overlap_area_m2 = overlap.iter().map(Self::overlay_shape_area_m2).sum();
-        let budget_m2 = Self::overlay_numeric_area_budget_for_shapes(&candidate_shapes)
-            .max(Self::overlay_numeric_area_budget_for_shapes(
-                top_surface_shapes,
-            ));
+        let budget_m2 = Self::overlay_numeric_area_budget_for_shapes(&candidate_shapes).max(
+            Self::overlay_numeric_area_budget_for_shapes(top_surface_shapes),
+        );
         Some((overlap_area_m2, budget_m2))
     }
 

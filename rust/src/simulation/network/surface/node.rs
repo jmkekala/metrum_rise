@@ -607,59 +607,141 @@ impl RoadSurfaceSystem {
                 ) else {
                     continue;
                 };
-                if lower_start.distance_squared_to(lower_end) <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
-                {
-                    continue;
-                }
-                if (raised_start.y - lower_start.y <= SAMPLE_EPSILON_M)
-                    && (raised_end.y - lower_end.y <= SAMPLE_EPSILON_M)
-                {
-                    continue;
-                }
-                let dedup_key =
-                    vertical_face_dedup_key(lower_start, lower_end, raised_start, raised_end);
-                if !emitted.insert(dedup_key) {
-                    continue;
-                }
-                let mut points = [raised_start, lower_start, lower_end, raised_end];
-                if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
+                let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_polygon(
                     arrangement,
                     lower_owner,
                     segment_key,
-                    points,
-                ) {
-                    if visible_dot <= 0.0 {
-                        points = [points[3], points[2], points[1], points[0]];
-                    }
-                } else {
-                    let lower_owner_direction = arrangement_owner_direction_for_segment(
-                        arrangement,
-                        lower_owner,
-                        segment_key,
-                        lower_start,
-                        lower_end,
-                    )
-                    .unwrap_or_else(|| {
-                        let edge_direction = lower_end - lower_start;
-                        Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
-                    });
-                    let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-                    if face_normal.dot(lower_owner_direction) > 0.0 {
-                        points = [points[3], points[2], points[1], points[0]];
-                    }
+                    lower_start,
+                    lower_end,
+                    raised_start,
+                    raised_end,
+                ) else {
+                    continue;
+                };
+                if !emitted.insert(dedup_key) {
+                    continue;
                 }
-                if let Some(face) = Self::make_vertical_quad_polygon(points) {
-                    faces.push((
-                        face,
-                        RoadSurfaceVerticalFaceSource {
-                            explicit_vertical_step_index: step_index,
-                            segment,
-                        },
-                    ));
-                }
+                faces.push((
+                    face,
+                    RoadSurfaceVerticalFaceSource {
+                        explicit_vertical_step_index: step_index,
+                        segment,
+                    },
+                ));
             }
+            let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_from_segment(
+                arrangement,
+                lower_owner,
+                raised_owner,
+                segment_key,
+            ) else {
+                continue;
+            };
+            if !emitted.insert(dedup_key) {
+                continue;
+            }
+            faces.push((
+                face,
+                RoadSurfaceVerticalFaceSource {
+                    explicit_vertical_step_index: step_index,
+                    segment,
+                },
+            ));
         }
         faces
+    }
+
+    fn arrangement_vertical_step_face_from_segment(
+        arrangement: &NodeArrangement,
+        lower_owner: NodeBandOwner,
+        raised_owner: NodeBandOwner,
+        segment_key: (NodeArrangementKey, NodeArrangementKey),
+    ) -> Option<(
+        (
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+        ),
+        RoadSurfaceVisualPolygon,
+    )> {
+        if !arrangement_owner_has_visible_face_boundary_for_segment(
+            arrangement,
+            lower_owner,
+            segment_key,
+        ) || !arrangement_owner_has_visible_face_boundary_for_segment(
+            arrangement,
+            raised_owner,
+            segment_key,
+        ) {
+            return None;
+        }
+        let lower_start =
+            arrangement_owner_boundary_point_at_key(arrangement, lower_owner, segment_key.0)?;
+        let lower_end =
+            arrangement_owner_boundary_point_at_key(arrangement, lower_owner, segment_key.1)?;
+        let raised_start =
+            arrangement_owner_boundary_point_at_key(arrangement, raised_owner, segment_key.0)?;
+        let raised_end =
+            arrangement_owner_boundary_point_at_key(arrangement, raised_owner, segment_key.1)?;
+        Self::arrangement_vertical_step_face_polygon(
+            arrangement,
+            lower_owner,
+            segment_key,
+            lower_start,
+            lower_end,
+            raised_start,
+            raised_end,
+        )
+    }
+
+    fn arrangement_vertical_step_face_polygon(
+        arrangement: &NodeArrangement,
+        lower_owner: NodeBandOwner,
+        segment_key: (NodeArrangementKey, NodeArrangementKey),
+        lower_start: Vector3,
+        lower_end: Vector3,
+        raised_start: Vector3,
+        raised_end: Vector3,
+    ) -> Option<(
+        (
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+        ),
+        RoadSurfaceVisualPolygon,
+    )> {
+        if (raised_start.y - lower_start.y <= SAMPLE_EPSILON_M)
+            && (raised_end.y - lower_end.y <= SAMPLE_EPSILON_M)
+        {
+            return None;
+        }
+        let dedup_key = vertical_face_dedup_key(lower_start, lower_end, raised_start, raised_end);
+        let mut points = [raised_start, lower_start, lower_end, raised_end];
+        if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
+            arrangement,
+            lower_owner,
+            segment_key,
+            points,
+        ) {
+            if visible_dot <= 0.0 {
+                points = [points[3], points[2], points[1], points[0]];
+            }
+        } else {
+            let lower_owner_direction = arrangement_owner_direction_for_segment(
+                arrangement,
+                lower_owner,
+                segment_key,
+                lower_start,
+                lower_end,
+            )
+            .unwrap_or_else(|| {
+                let edge_direction = lower_end - lower_start;
+                Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
+            });
+            let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+            if face_normal.dot(lower_owner_direction) > 0.0 {
+                points = [points[3], points[2], points[1], points[0]];
+            }
+        }
+        Self::make_vertical_quad_polygon(points).map(|face| (dedup_key, face))
     }
 
     fn visible_top_polygons_from_owned_regions(
@@ -801,11 +883,7 @@ impl RoadSurfaceSystem {
             Self::arrangement_vertex_world(arrangement, vertices[1])?,
             Self::arrangement_vertex_world(arrangement, vertices[2])?,
         ];
-        let has_area = if face.owner().kind() == RoadSurfaceBandKind::Carriageway {
-            Self::triangle_has_area_xz(triangle)
-        } else {
-            Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2
-        };
+        let has_area = Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2;
         let area_3d_m2 = (triangle[1] - triangle[0])
             .cross(triangle[2] - triangle[0])
             .length()
@@ -1592,6 +1670,23 @@ fn arrangement_key_boundary_point(
     }
 }
 
+fn arrangement_owner_boundary_point_at_key(
+    arrangement: &NodeArrangement,
+    owner: NodeBandOwner,
+    key: NodeArrangementKey,
+) -> Option<Vector3> {
+    arrangement
+        .vertices()
+        .iter()
+        .find(|vertex| vertex.key() == key && vertex.owners().contains(&owner))
+        .map(|vertex| {
+            arrangement_boundary_point_to_world(arrangement_key_boundary_point(
+                vertex.key(),
+                vertex.height_mm(),
+            ))
+        })
+}
+
 fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Vector3 {
     Vector3::new(
         (point.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
@@ -1709,6 +1804,17 @@ fn arrangement_face_boundary_overlaps_segment(
         }
     }
     false
+}
+
+fn arrangement_owner_has_visible_face_boundary_for_segment(
+    arrangement: &NodeArrangement,
+    owner: NodeBandOwner,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+) -> bool {
+    arrangement.faces().iter().any(|face| {
+        face.owner() == owner
+            && arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key)
+    })
 }
 
 fn arrangement_face_centroid(

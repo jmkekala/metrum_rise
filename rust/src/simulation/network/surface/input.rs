@@ -1123,7 +1123,12 @@ fn clip_bend_curb_guard_points(
                     boundary: Some(boundary),
                 });
             }
-            clipped.push(current);
+            clipped.push(bend_curb_guard_point_with_boundary_if_on_clip(
+                current,
+                boundary_xz,
+                boundary_direction_xz,
+                boundary,
+            ));
         } else if previous_inside
             && let Some(intersection) = line_intersection_xz(
                 previous.xz,
@@ -1144,6 +1149,21 @@ fn clip_bend_curb_guard_points(
     clipped
 }
 
+fn bend_curb_guard_point_with_boundary_if_on_clip(
+    point: BendCurbGuardPoint,
+    boundary_xz: RoadVec2,
+    boundary_direction_xz: RoadVec2,
+    boundary: BendCurbGuardBoundary,
+) -> BendCurbGuardPoint {
+    if !bend_curb_guard_point_on_boundary(point.xz, boundary_xz, boundary_direction_xz) {
+        return point;
+    }
+    BendCurbGuardPoint {
+        xz: point.xz,
+        boundary: point.boundary.or(Some(boundary)),
+    }
+}
+
 fn bend_curb_guard_point_inside(
     point: RoadVec2,
     boundary_xz: RoadVec2,
@@ -1151,6 +1171,14 @@ fn bend_curb_guard_point_inside(
     inside_sign: f64,
 ) -> bool {
     cross_xz(boundary_direction_xz, point - boundary_xz) * inside_sign >= 0.0
+}
+
+fn bend_curb_guard_point_on_boundary(
+    point: RoadVec2,
+    boundary_xz: RoadVec2,
+    boundary_direction_xz: RoadVec2,
+) -> bool {
+    cross_xz(boundary_direction_xz, point - boundary_xz) == 0.0
 }
 
 fn remove_repeated_bend_curb_guard_points(points: &mut Vec<BendCurbGuardPoint>) {
@@ -1176,29 +1204,66 @@ fn rotate_bend_curb_guard_contour_to_lower_edge(
     {
         return None;
     }
-    let lower_edge_index = points.iter().enumerate().find_map(|(index, point)| {
-        let next_index = (index + 1) % points.len();
-        let next = points[next_index];
-        if matches!(point.boundary, Some(BendCurbGuardBoundary::Lower))
-            && matches!(next.boundary, Some(BendCurbGuardBoundary::Lower))
-            && quantized_xz_key(point.xz) != quantized_xz_key(next.xz)
-        {
-            Some(index)
-        } else {
-            None
-        }
-    })?;
+    let (lower_run_start, lower_run_len) = bend_curb_guard_lower_boundary_run(&points)?;
+    let lower_run_end = (lower_run_start + lower_run_len - 1) % points.len();
+    if quantized_xz_key(points[lower_run_start].xz) == quantized_xz_key(points[lower_run_end].xz) {
+        return None;
+    }
 
     let mut contour_world = Vec::with_capacity(points.len());
-    for offset in 0..points.len() {
-        let point = points[(lower_edge_index + offset) % points.len()];
+    contour_world.push(bend_curb_guard_world_point(
+        points[lower_run_start],
+        raised_world,
+    ));
+    contour_world.push(bend_curb_guard_world_point(
+        points[lower_run_end],
+        raised_world,
+    ));
+
+    let mut index = (lower_run_end + 1) % points.len();
+    while index != lower_run_start {
+        let point = points[index];
         contour_world.push(bend_curb_guard_world_point(point, raised_world));
+        index = (index + 1) % points.len();
     }
     if contour_world.len() >= 3 {
         Some(contour_world)
     } else {
         None
     }
+}
+
+fn bend_curb_guard_lower_boundary_run(points: &[BendCurbGuardPoint]) -> Option<(usize, usize)> {
+    let mut best = None;
+    for start in 0..points.len() {
+        if !matches!(points[start].boundary, Some(BendCurbGuardBoundary::Lower)) {
+            continue;
+        }
+        let previous = if start == 0 {
+            points.len() - 1
+        } else {
+            start - 1
+        };
+        if matches!(
+            points[previous].boundary,
+            Some(BendCurbGuardBoundary::Lower)
+        ) {
+            continue;
+        }
+        let mut len = 1;
+        while len < points.len()
+            && matches!(
+                points[(start + len) % points.len()].boundary,
+                Some(BendCurbGuardBoundary::Lower)
+            )
+        {
+            len += 1;
+        }
+        if len >= 2 && best.is_none_or(|(_, best_len)| len > best_len) {
+            best = Some((start, len));
+        }
+    }
+    best
 }
 
 fn bend_curb_guard_world_point(point: BendCurbGuardPoint, raised_world: RoadVec3) -> RoadVec3 {
@@ -2821,6 +2886,43 @@ mod tests {
             center_is_raised,
             "terminal curb cap inner edge must stay raised over the carriageway center split"
         );
+    }
+
+    #[test]
+    fn bend_curb_guard_rotation_keeps_wrapped_lower_boundary_as_single_inner_edge() {
+        let contour = rotate_bend_curb_guard_contour_to_lower_edge(
+            vec![
+                BendCurbGuardPoint {
+                    xz: RoadVec2::new(1.0, 0.0),
+                    boundary: Some(BendCurbGuardBoundary::Lower),
+                },
+                BendCurbGuardPoint {
+                    xz: RoadVec2::new(2.0, 0.0),
+                    boundary: Some(BendCurbGuardBoundary::Lower),
+                },
+                BendCurbGuardPoint {
+                    xz: RoadVec2::new(2.0, 1.0),
+                    boundary: Some(BendCurbGuardBoundary::Raised),
+                },
+                BendCurbGuardPoint {
+                    xz: RoadVec2::new(0.0, 1.0),
+                    boundary: Some(BendCurbGuardBoundary::Raised),
+                },
+                BendCurbGuardPoint {
+                    xz: RoadVec2::new(0.0, 0.0),
+                    boundary: Some(BendCurbGuardBoundary::Lower),
+                },
+            ],
+            RoadVec3::new(0.0, 0.12, 0.0),
+        )
+        .expect("wrapped lower run should produce a guard contour");
+
+        assert_eq!(quantized_xz_key(xz_from_road_vec3(contour[0])), (0, 0));
+        assert_eq!(
+            quantized_xz_key(xz_from_road_vec3(contour[1])),
+            (2_000_000, 0)
+        );
+        assert_eq!(contour.len(), 4);
     }
 
     #[test]

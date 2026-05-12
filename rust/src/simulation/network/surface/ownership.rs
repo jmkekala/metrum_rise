@@ -772,6 +772,28 @@ fn push_region_seam_constraint(
     });
 }
 
+fn push_materialized_region_seam_constraint(
+    seams: &mut Vec<NodeRegionSeamConstraint>,
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
+) {
+    let (constraint_owner, constraint_opposite_owner) =
+        materialized_constraint_owner_pair(constraint, owner, opposite_owner);
+    seams.push(NodeRegionSeamConstraint {
+        constraint_index: constraint.constraint_index,
+        seam_source: seam_source_from_constraint(constraint, owner),
+        owner: constraint_owner,
+        opposite_owner: constraint_opposite_owner,
+        constrains_shared_height: constraint_constrains_shared_height(constraint),
+        is_material_transition: constraint_is_material_transition(constraint),
+        start_xz,
+        end_xz,
+    });
+}
+
 fn constraint_overlaps_shape_edge(
     edge_start: NodeOverlayPoint,
     edge_end: NodeOverlayPoint,
@@ -879,9 +901,8 @@ fn materialize_noded_region_seam_constraints(
             };
             for constraint in rail_constraints
                 .iter()
-                .filter(|constraint| constraint_applies_to_owner(constraint, edge_ref.owner))
                 .filter(|constraint| {
-                    rail_constraint_owner_pair_matches_edge(
+                    rail_constraint_can_materialize_for_owned_edge(
                         constraint,
                         edge_ref.owner,
                         opposite_owner,
@@ -898,10 +919,11 @@ fn materialize_noded_region_seam_constraints(
                     )
                 })
             {
-                push_region_seam_constraint(
+                push_materialized_region_seam_constraint(
                     &mut additions[edge_ref.region_index],
                     constraint,
                     region.owner,
+                    opposite_owner,
                     road_point_from_key(edge_key.start),
                     road_point_from_key(edge_key.end),
                 );
@@ -919,9 +941,91 @@ fn canonicalize_owned_region_rings(
     footprint_shapes: &NodeOverlayShapes,
 ) {
     let global_points = owned_region_global_points(regions, footprint_shapes);
-    for region in regions {
+    let canonical_point_by_overlay_key = canonical_overlay_neighbor_point_by_key(&global_points);
+    for region in regions.iter_mut() {
+        for contour in &mut region.shape {
+            snap_owned_region_contour_to_overlay_neighbor_points(
+                contour,
+                &canonical_point_by_overlay_key,
+            );
+        }
+    }
+
+    let global_points = owned_region_global_points(regions, footprint_shapes);
+    for region in regions.iter_mut() {
         for contour in &mut region.shape {
             *contour = noded_owned_region_contour(contour, &global_points);
+        }
+    }
+}
+
+fn canonical_overlay_neighbor_point_by_key(
+    points: &[NodeOwnershipPointKey],
+) -> BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey> {
+    let mut point_counts = BTreeMap::<NodeOwnershipPointKey, usize>::new();
+    for point in points.iter().copied() {
+        *point_counts.entry(point).or_default() += 1;
+    }
+    point_counts
+        .keys()
+        .copied()
+        .filter_map(|point| {
+            let candidates = overlay_neighbor_points(point)
+                .into_iter()
+                .filter_map(|candidate| {
+                    point_counts
+                        .get(&candidate)
+                        .copied()
+                        .map(|count| (candidate, count))
+                })
+                .collect::<Vec<_>>();
+            if candidates.len() > 2 {
+                return Some((point, point));
+            }
+            candidates
+                .into_iter()
+                .max_by(|(left_point, left_count), (right_point, right_count)| {
+                    left_count
+                        .cmp(right_count)
+                        .then_with(|| right_point.cmp(left_point))
+                })
+                .map(|(canonical, _)| (point, canonical))
+        })
+        .collect()
+}
+
+fn snap_owned_region_contour_to_overlay_neighbor_points(
+    contour: &mut NodeOverlayContour,
+    canonical_point_by_overlay_key: &BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey>,
+) {
+    if contour.len() < 2 {
+        return;
+    }
+    let original_keys = contour
+        .iter()
+        .copied()
+        .map(overlay_point_key)
+        .collect::<Vec<_>>();
+    for (index, point) in contour.iter_mut().enumerate() {
+        let key = original_keys[index];
+        let Some(canonical_key) = canonical_point_by_overlay_key.get(&key).copied() else {
+            continue;
+        };
+        let previous_key = original_keys[(index + original_keys.len() - 1) % original_keys.len()];
+        let next_key = original_keys[(index + 1) % original_keys.len()];
+        let previous_canonical_key = canonical_point_by_overlay_key
+            .get(&previous_key)
+            .copied()
+            .unwrap_or(previous_key);
+        let next_canonical_key = canonical_point_by_overlay_key
+            .get(&next_key)
+            .copied()
+            .unwrap_or(next_key);
+        if canonical_key == previous_canonical_key || canonical_key == next_canonical_key {
+            continue;
+        }
+        if canonical_key != key {
+            *point = overlay_point_from_key(canonical_key);
         }
     }
 }
@@ -971,6 +1075,13 @@ fn clean_canonical_owned_region_shapes(
         allow_grid_bounded_constraint_overlap,
     )?;
     canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
+    if !allow_grid_bounded_constraint_overlap {
+        split_final_canonical_owned_region_self_touches(
+            &mut cleaned_regions,
+            rail_constraints,
+            allow_grid_bounded_constraint_overlap,
+        );
+    }
     for region in &mut cleaned_regions {
         region.seam_constraints = seam_constraints_for_shape(
             &region.shape,
@@ -981,6 +1092,42 @@ fn clean_canonical_owned_region_shapes(
     }
     *regions = cleaned_regions;
     Ok(())
+}
+
+fn split_final_canonical_owned_region_self_touches(
+    regions: &mut Vec<NodeBooleanOwnedRegion>,
+    rail_constraints: &[NodeRailConstraint],
+    allow_grid_bounded_constraint_overlap: bool,
+) {
+    let mut split_regions = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        let NodeBooleanOwnedRegion {
+            kind,
+            owner,
+            claim_priority,
+            source_mouth_order_index,
+            source_band_index,
+            shape,
+            ..
+        } = region;
+        for shape in split_self_touching_owned_shape(shape, allow_grid_bounded_constraint_overlap) {
+            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
+            if owned_shape_is_discardable_numeric_dust(&shape, area_m2, owner, rail_constraints) {
+                continue;
+            }
+            split_regions.push(NodeBooleanOwnedRegion {
+                kind,
+                owner,
+                claim_priority,
+                source_mouth_order_index,
+                source_band_index,
+                shape,
+                area_m2,
+                seam_constraints: Vec::new(),
+            });
+        }
+    }
+    *regions = split_regions;
 }
 
 fn clean_owned_region_shapes_once(
@@ -1041,12 +1188,15 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
     }
     let canonical_point_by_projected_key =
         canonical_rail_point_by_projected_key(&constraint_points);
+    let canonical_point_by_overlay_neighbor_key =
+        canonical_rail_point_by_overlay_neighbor_key(&constraint_points);
 
     for region in regions {
         for contour in &mut region.shape {
             snap_owned_region_contour_to_rail_constraint_points(
                 contour,
                 &canonical_point_by_projected_key,
+                &canonical_point_by_overlay_neighbor_key,
             );
             *contour = noded_owned_region_contour(contour, &constraint_points);
         }
@@ -1055,8 +1205,9 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
 
 fn canonical_rail_point_by_projected_key(
     constraint_points: &[NodeOwnershipPointKey],
-) -> BTreeMap<NodeOwnershipPointKey, Option<NodeOwnershipPointKey>> {
-    let mut canonical_by_projected_key = BTreeMap::new();
+) -> BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey> {
+    let mut canonical_by_projected_key =
+        BTreeMap::<NodeOwnershipPointKey, Option<NodeOwnershipPointKey>>::new();
     for point in constraint_points.iter().copied() {
         canonical_by_projected_key
             .entry(project_ownership_key(point))
@@ -1068,27 +1219,132 @@ fn canonical_rail_point_by_projected_key(
             .or_insert(Some(point));
     }
     canonical_by_projected_key
+        .into_iter()
+        .filter_map(|(projected, canonical)| canonical.map(|canonical| (projected, canonical)))
+        .collect()
+}
+
+fn canonical_rail_point_by_overlay_neighbor_key(
+    constraint_points: &[NodeOwnershipPointKey],
+) -> BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey> {
+    let mut point_counts = BTreeMap::<NodeOwnershipPointKey, usize>::new();
+    for point in constraint_points.iter().copied() {
+        *point_counts.entry(point).or_default() += 1;
+    }
+    let canonical_constraint_point_by_key = point_counts
+        .keys()
+        .copied()
+        .filter_map(|point| {
+            overlay_neighbor_points(point)
+                .into_iter()
+                .filter_map(|candidate| {
+                    point_counts
+                        .get(&candidate)
+                        .copied()
+                        .map(|count| (candidate, count))
+                })
+                .max_by(|(left_point, left_count), (right_point, right_count)| {
+                    left_count
+                        .cmp(right_count)
+                        .then_with(|| right_point.cmp(left_point))
+                })
+                .map(|(canonical, _)| (point, canonical))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut candidates_by_neighbor =
+        BTreeMap::<NodeOwnershipPointKey, BTreeSet<NodeOwnershipPointKey>>::new();
+    for point in point_counts.keys().copied() {
+        let canonical = canonical_constraint_point_by_key
+            .get(&point)
+            .copied()
+            .unwrap_or(point);
+        for neighbor in overlay_neighbor_points(point) {
+            candidates_by_neighbor
+                .entry(neighbor)
+                .or_default()
+                .insert(canonical);
+        }
+    }
+
+    candidates_by_neighbor
+        .into_iter()
+        .filter_map(|(neighbor, candidates)| {
+            if candidates.len() == 1 {
+                return candidates
+                    .into_iter()
+                    .next()
+                    .map(|canonical| (neighbor, canonical));
+            }
+            if candidates.contains(&neighbor) {
+                Some((neighbor, neighbor))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn overlay_neighbor_points(point: NodeOwnershipPointKey) -> Vec<NodeOwnershipPointKey> {
+    let (x, z) = point;
+    let mut points = Vec::with_capacity(25);
+    for dx in -2..=2 {
+        for dz in -2..=2 {
+            points.push((x + dx, z + dz));
+        }
+    }
+    points
 }
 
 fn snap_owned_region_contour_to_rail_constraint_points(
     contour: &mut NodeOverlayContour,
-    canonical_point_by_projected_key: &BTreeMap<
+    canonical_point_by_projected_key: &BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey>,
+    canonical_point_by_overlay_neighbor_key: &BTreeMap<
         NodeOwnershipPointKey,
-        Option<NodeOwnershipPointKey>,
+        NodeOwnershipPointKey,
     >,
 ) {
-    for point in contour {
-        let key = overlay_point_key(*point);
-        let Some(canonical_key) = canonical_point_by_projected_key
-            .get(&project_ownership_key(key))
-            .and_then(|canonical_key| *canonical_key)
-        else {
+    if contour.len() < 2 {
+        return;
+    }
+    let original_keys = contour
+        .iter()
+        .copied()
+        .map(overlay_point_key)
+        .collect::<Vec<_>>();
+    for (index, point) in contour.iter_mut().enumerate() {
+        let key = original_keys[index];
+        let Some(canonical_key) = canonical_rail_key_for_owned_key(
+            key,
+            canonical_point_by_projected_key,
+            canonical_point_by_overlay_neighbor_key,
+        ) else {
             continue;
         };
         if canonical_key != key {
             *point = overlay_point_from_key(canonical_key);
         }
     }
+    dedup_consecutive_overlay_points(contour);
+    if contour.len() >= 2
+        && overlay_point_key(contour[0]) == overlay_point_key(*contour.last().expect("len checked"))
+    {
+        contour.pop();
+    }
+}
+
+fn canonical_rail_key_for_owned_key(
+    key: NodeOwnershipPointKey,
+    canonical_point_by_projected_key: &BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey>,
+    canonical_point_by_overlay_neighbor_key: &BTreeMap<
+        NodeOwnershipPointKey,
+        NodeOwnershipPointKey,
+    >,
+) -> Option<NodeOwnershipPointKey> {
+    canonical_point_by_projected_key
+        .get(&project_ownership_key(key))
+        .copied()
+        .or_else(|| canonical_point_by_overlay_neighbor_key.get(&key).copied())
 }
 
 fn split_self_touching_owned_shape(
@@ -1335,6 +1591,54 @@ fn rail_constraint_owner_pair_matches_edge(
     )
 }
 
+fn rail_constraint_can_materialize_for_owned_edge(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+        || rail_constraint_role_matches_owned_edge(constraint, owner, opposite_owner)
+}
+
+fn rail_constraint_role_matches_owned_edge(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    if constraint.owner.zip(constraint.opposite_owner).is_some() {
+        return false;
+    }
+    let Some(role_owner) = constraint.owner.or(constraint.opposite_owner) else {
+        return false;
+    };
+    if role_owner != owner && role_owner != opposite_owner {
+        return false;
+    }
+    match constraint.kind {
+        NodeRailConstraintKind::AsphaltCurbContact => {
+            (is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
+                || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind()))
+        }
+        NodeRailConstraintKind::CurbSidewalkContact => {
+            (is_curb_or_shoulder(owner.kind()) && is_sidewalk(opposite_owner.kind()))
+                || (is_curb_or_shoulder(opposite_owner.kind()) && is_sidewalk(owner.kind()))
+        }
+        _ => false,
+    }
+}
+
+fn materialized_constraint_owner_pair(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> (Option<NodeBandOwner>, Option<NodeBandOwner>) {
+    if rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner) {
+        (constraint.owner, constraint.opposite_owner)
+    } else {
+        (Some(owner), Some(opposite_owner))
+    }
+}
+
 fn owned_edge_lies_on_rail_constraint(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
@@ -1349,11 +1653,17 @@ fn owned_edge_lies_on_rail_constraint(
     if edge_lies_on_single_constraint_segment(start, end, constraint) {
         return true;
     }
-    if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner) {
+    if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner)
+        && (!rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+            || (constraint.source_boundary_index.is_some()
+                && piece_kind != RoadSurfaceVisualNodePieceKind::Terminal))
+    {
         return false;
     }
-    piece_kind == RoadSurfaceVisualNodePieceKind::Bend
-        && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+    matches!(
+        piece_kind,
+        RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::Terminal
+    ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
 }
 
 fn materialized_edge_requires_exact_constraint_span(
@@ -2364,6 +2674,61 @@ mod tests {
                         )
                 }),
                 "final shared asphalt-curb edge must carry the owner-explicit step seam"
+            );
+        }
+    }
+
+    #[test]
+    fn materializes_role_only_asphalt_curb_contact_as_exact_owned_edge_pair() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(2.0, 1.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [2.0, 1.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [3.0, -1.0], [2.0, 1.0]],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 35,
+            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(curb),
+            opposite_owner: None,
+            points_xz: vec![start, end],
+        }];
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &Vec::new(),
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(start)
+                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                        && ((constraint.owner == Some(carriageway)
+                            && constraint.opposite_owner == Some(curb))
+                            || (constraint.owner == Some(curb)
+                                && constraint.opposite_owner == Some(carriageway)))
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::AsphaltCurbContact { .. }
+                        )
+                }),
+                "role-only asphalt-curb contact must instantiate the actual owned edge pair"
             );
         }
     }
