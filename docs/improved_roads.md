@@ -714,9 +714,11 @@ Implementation ownership:
 - keep `overlay.rs` or its replacement responsible for wrapping `i_overlay` boolean ownership,
   owner-preserving clipping, and canonical ordering; it must not be the place that invents missing
   heights after ownership is already damaged
-- keep height evaluation in an explicit grade-surface layer. Spline or ruled-surface backends may
-  evaluate known vertices, but they must not create vertices, choose material ownership, or repair
-  contradictory seams
+- keep height evaluation in an explicit height-carrier layer. Carrier triangles and contour edges
+  may evaluate known canonical vertices, but they must not create vertices, choose material
+  ownership, repair contradictory seams, or fall back to parametric band sampling
+- noded split vertices on an explicit carrier contour may inherit height from that carrier contour;
+  arbitrary vertices outside the carrier must still fail loudly
 - keep `Terminal` on explicit side-band / end-band topology, but record the same owned-region
   metadata so terminal, bend, and junction seam checks share one contract
 
@@ -1213,17 +1215,14 @@ But the geometry contract changes:
   widened-strip renderer
 - `UV.y` must not be treated as a hidden "road edge" contract outside the compiler that owns it
 
-### 2A. Render Z-Bias Is Not Physical Sidewalk Height
-
-Road render layers may apply tiny render-only Z-bias values to avoid coplanar flicker.
+### 2A. Render Z-Bias Is Not Road Geometry
 
 Required rule:
 
-- `ROAD_TOP_SURFACE_RENDER_Z_BIAS_M` and layer-specific render Z-bias constants are draw-order
-  offsets only
-- road-owned top surfaces should normally use `0.0 m` render Z-bias because terrain under the
-  footprint is topologically clipped and adjacent road / sidewalk / terrain edges must stay
-  watertight in render space
+- road-owned top surfaces and vertical road faces must be emitted at their solved physical
+  coordinates with no render-only Z-bias
+- terrain under the footprint is topologically clipped, so adjacent road / sidewalk / terrain edges
+  must stay watertight in render space instead of being separated by draw-order offsets
 - decals such as lane markings and crosswalk stripes may use `ROAD_DECAL_RENDER_Z_BIAS_M` because
   they intentionally sit on top of already-owned road surfaces
 - render Z-bias must not be used to make sidewalks physically higher than asphalt
@@ -1231,7 +1230,7 @@ Required rule:
   - curb step height
   - solved section / node-piece heights
 - `Span`, `Bend`, `Terminal`, and `JunctionN` sidewalk triangles must therefore get their real
-  height from the same profile-height reconstruction path before any render Z-bias is applied
+  height from the same profile-height reconstruction path before rendering
 - if a node-piece sidewalk appears lower than a span sidewalk, the fix belongs in node-piece height
   reconstruction after `i_overlay`, not in a larger sidewalk render Z-bias
 
@@ -1588,11 +1587,14 @@ Implementation phases:
    - preserve owner metadata through every clipping operation
 
 6. Height fields:
-   - use `splines` for longitudinal grade profiles where an edge or rail height profile is a spline
-     / piecewise curve
+   - build explicit height carriers from authorized source rails, endpoint profiles, generated
+     contours, and terminal end-band contours
    - assign every accepted owned region, arrangement vertex, arrangement edge, and triangulated
      vertex to exactly one `NodeBandHeightFieldId`
    - evaluate heights only at already-known canonical arrangement vertices
+   - treat source-rail and end-band contour split vertices as explicit carrier points when the
+     owned boundary was canonicalized to that carrier
+   - reject vertices outside their explicit carrier; do not fall back to parametric band sampling
    - reject same-XZ height conflicts instead of welding, averaging, nearest sampling, owner-priority
      selection, or min/max selection
 

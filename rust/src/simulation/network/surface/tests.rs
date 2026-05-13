@@ -4714,7 +4714,7 @@ fn logged_flat_oblique_t_junction_rejects_missing_explicit_curb_sidewalk_endpoin
 }
 
 #[test]
-fn logged_flat_oblique_four_way_rejects_cross_owner_cdt_height_edge() {
+fn logged_flat_oblique_four_way_compiles_with_explicit_height_carriers() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-168.693, 0.0, 22.598), NodeType::Junction);
     let east = graph.add_node(Vector3::new(-9.454, 0.0, 18.003), NodeType::Junction);
@@ -4775,14 +4775,11 @@ fn logged_flat_oblique_four_way_rejects_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "logged flat oblique four-way must reject remaining implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
-fn arbitrary_six_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn arbitrary_six_way_junction_compiles_with_explicit_height_carriers() {
     let mut graph = RegionGraph::new();
     let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     for angle_degrees in [0.0_f32, 23.0, 61.0, 137.0, 211.0, 304.0] {
@@ -4805,14 +4802,11 @@ fn arbitrary_six_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "arbitrary six-way node must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
-fn arbitrary_five_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn arbitrary_five_way_junction_compiles_with_explicit_height_carriers() {
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(2.668, 0.0, 10.799);
     let center = graph.add_node(center_pos, NodeType::Junction);
@@ -4841,10 +4835,7 @@ fn arbitrary_five_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "arbitrary five-way node must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
@@ -4917,7 +4908,7 @@ fn dirty_node_recompile_refreshes_incident_span_sections_for_new_junction() {
 }
 
 #[test]
-fn dirty_recompile_rejects_expanded_arbitrary_node_piece_with_cdt_height_conflict() {
+fn dirty_recompile_expanded_arbitrary_node_piece_compiles_with_explicit_height_carriers() {
     let terrain = flat_terrain(192, 192);
     let mut graph = RegionGraph::new();
     let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -4964,10 +4955,7 @@ fn dirty_recompile_rejects_expanded_arbitrary_node_piece_with_cdt_height_conflic
     surface.mark_edge_dirty(&graph, new_edge);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "expanded arbitrary junction must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]

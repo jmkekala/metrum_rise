@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_slope_standard_road_uses_bounded_compiled_cross_section_heights() {
+    fn test_cross_slope_standard_road_renders_laterally_flat_compiled_profile() {
         let renderer = RoadRenderer;
         let terrain = cross_slope_terrain(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -646,7 +646,7 @@ mod tests {
             10.0,
         ));
 
-        graph.rebuild_adjacency_list();
+        graph.sync_to_terrain(&terrain);
         let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
@@ -670,16 +670,12 @@ mod tests {
 
         assert!(left_y.is_finite() && right_y.is_finite());
         assert!(
-            right_y - left_y >= 0.29,
-            "expected bounded cross-slope road surface to still span height across width, got left_y={left_y:.3} right_y={right_y:.3}"
+            (right_y - left_y).abs() <= 0.001,
+            "grounded-road carriageway must render the solved laterally-flat profile, got left_y={left_y:.3} right_y={right_y:.3}"
         );
         assert!(
-            right_y - left_y <= 0.5,
-            "expected grounded-road cross-slope to stay within the bounded design profile, got left_y={left_y:.3} right_y={right_y:.3}"
-        );
-        assert!(
-            max_normal_x >= 0.02,
-            "expected compiled bounded cross-slope normals to tilt with the surface, got max_normal_x={max_normal_x:.3}"
+            max_normal_x <= 0.001,
+            "grounded-road carriageway normals must not tilt with raw terrain cross-slope, got max_normal_x={max_normal_x:.3}"
         );
     }
 
@@ -700,7 +696,7 @@ mod tests {
             10.0,
         ));
 
-        graph.rebuild_adjacency_list();
+        graph.sync_to_terrain(&terrain);
         let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
@@ -785,8 +781,8 @@ mod tests {
 
         assert!(road_clearance.abs() <= 0.001);
         assert!(
-            curb_clearance.abs() <= 0.001,
-            "expected compiled curb surface to use solved physical height, got clearance={curb_clearance:.4}"
+            (curb_clearance - 0.12).abs() <= 0.001,
+            "expected compiled curb surface to use solved raised height, got clearance={curb_clearance:.4}"
         );
         assert!(
             (sidewalk_clearance - 0.12).abs() <= 0.001,
@@ -1141,7 +1137,10 @@ mod tests {
             VisibleSurface::Sidewalk,
         );
 
-        assert!(road_core >= 0.85);
+        assert!(
+            road_core >= 0.85,
+            "dense baked road must keep the split-node core road-owned; road_core={road_core:.3}"
+        );
         assert!(sidewalk_throat >= 0.15);
     }
 
@@ -1215,15 +1214,6 @@ mod tests {
         let walkway = [Vector3::new(0.0, 0.0, -12.0), Vector3::new(0.0, 0.0, -0.2)];
         let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 1, 1), (&walkway, 0, 0)]);
         validate_mesh(&mesh_data, 90.0);
-        let road_core = visible_coverage_ratio(
-            &mesh_data,
-            Vector2::new(-0.8, -1.0),
-            Vector2::new(0.8, 1.0),
-            0.1,
-            VisibleSurface::Road,
-        );
-        assert!(road_core >= 0.85);
-
         let foot_edge = graph
             .edges
             .iter()
@@ -1232,6 +1222,25 @@ mod tests {
         let split_node = foot_edge.end_node;
         let split_pos = graph.nodes[split_node as usize].pos;
         assert!(split_pos.distance_to(Vector3::ZERO) <= 0.01);
+
+        let road_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-0.8, -1.0),
+            Vector2::new(0.8, 1.0),
+            0.1,
+            VisibleSurface::Road,
+        );
+        let curb_sidewalk_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-0.8, -1.0),
+            Vector2::new(0.8, 1.0),
+            0.1,
+            VisibleSurface::CurbOrSidewalk,
+        );
+        assert!(
+            road_core >= 0.85,
+            "dense baked road must keep the split-node core road-owned; road_core={road_core:.3} curb_sidewalk_core={curb_sidewalk_core:.3} split_pos={split_pos:?}"
+        );
 
         let connected_road_edges: Vec<_> = graph
             .edges
@@ -1830,9 +1839,6 @@ mod tests {
         let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
 
         validate_mesh(&mesh_data, 40.0);
-
-        println!("Marking vertices: {}", mesh_data.marking_vertices.len());
-        // ...
 
         // A 2-way junction should have:
         // - Dash markings on the 2 road arms

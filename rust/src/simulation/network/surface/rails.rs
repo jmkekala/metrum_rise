@@ -54,6 +54,8 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) contours: Vec<NodeGeneratedContour>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
+    pub(crate) height_carrier_points_by_source:
+        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +66,7 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) owner: Option<NodeBandOwner>,
     pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
     pub(crate) points_xz: Vec<RoadVec2>,
+    pub(crate) height_points_world: Option<Vec<RoadVec3>>,
     pub(crate) backend_polyline: RoadPolyline,
 }
 
@@ -236,13 +239,31 @@ impl NodeRailContourSet {
         let owners_by_mouth = owners_by_mouth(input);
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
+        let mut height_carrier_points_by_source =
+            BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>::new();
 
         for (mouth, mouth_owners) in input.mouths.iter().zip(&owners_by_mouth) {
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
+                push_band_height_carrier_points(
+                    &mut height_carrier_points_by_source,
+                    mouth.order_index,
+                    interval.band_index,
+                    interval.band_kind,
+                    interval_height_carrier_points(interval),
+                );
                 let owner = mouth_owners.band_owners[band_index];
                 push_band_contour(mouth, interval, owner, &mut contours, &mut constraints)?;
+            }
+            for end_band in &mouth.terminal_end_bands {
+                push_band_height_carrier_points(
+                    &mut height_carrier_points_by_source,
+                    mouth.order_index,
+                    end_band.source_band_index,
+                    end_band.band_kind,
+                    end_band.contour_world.iter().copied(),
+                );
             }
 
             push_terminal_end_band_contours(
@@ -285,6 +306,7 @@ impl NodeRailContourSet {
             piece_kind: input.piece_kind,
             contours,
             constraints,
+            height_carrier_points_by_source,
         })
     }
 }
@@ -316,6 +338,7 @@ fn push_full_roadbed_contour(
         NodeGeneratedContourClaimPriority::Footprint,
         NodeRailConstraintKind::FullRoadbedContour,
         points,
+        None,
         contours,
         constraints,
     )
@@ -396,20 +419,21 @@ fn push_band_contour(
             constraints,
         );
     }
-    let mut points = Vec::new();
-    push_road_path_point(&mut points, xz(interval.mouth_start_world));
-    push_road_path_point(&mut points, xz(interval.mouth_end_world));
+    let mut points_world = Vec::new();
+    push_world_path_point(&mut points_world, interval.mouth_start_world);
+    push_world_path_point(&mut points_world, interval.mouth_end_world);
     if interval.band_index == last_band_index {
-        append_world_path_xz(&mut points, interval.end_path_world.iter().skip(1));
+        append_world_path_points(&mut points_world, interval.end_path_world.iter().skip(1));
     } else {
-        push_road_path_point(&mut points, xz(interval.endpoint_end_world));
+        push_world_path_point(&mut points_world, interval.endpoint_end_world);
     }
     if interval.band_index == 0 {
-        append_world_path_xz(&mut points, interval.start_path_world.iter().rev());
+        append_world_path_points(&mut points_world, interval.start_path_world.iter().rev());
     } else {
-        push_road_path_point(&mut points, xz(interval.endpoint_start_world));
+        push_world_path_point(&mut points_world, interval.endpoint_start_world);
     }
-    remove_closing_road_path_duplicate(&mut points);
+    remove_closing_world_path_duplicate(&mut points_world);
+    let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
     push_generated_contour(
         kind,
         mouth.order_index,
@@ -420,9 +444,39 @@ fn push_band_contour(
             kind: interval.band_kind,
         },
         points,
+        Some(points_world),
         contours,
         constraints,
     )
+}
+
+fn interval_height_carrier_points(
+    interval: &NodeInputBandInterval,
+) -> impl Iterator<Item = RoadVec3> + '_ {
+    [
+        interval.endpoint_start_world,
+        interval.endpoint_end_world,
+        interval.mouth_end_world,
+        interval.mouth_start_world,
+    ]
+    .into_iter()
+    .chain(interval.start_path_world.iter().copied())
+    .chain(interval.end_path_world.iter().copied())
+}
+
+fn push_band_height_carrier_points(
+    points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>,
+    mouth_order_index: usize,
+    source_band_index: usize,
+    kind: RoadSurfaceBandKind,
+    points_world: impl IntoIterator<Item = RoadVec3>,
+) {
+    let points = points_by_source
+        .entry((kind, mouth_order_index, source_band_index))
+        .or_default();
+    for point in points_world {
+        push_road_path_point(points, xz(point));
+    }
 }
 
 fn push_path_strip_contours(
@@ -439,7 +493,8 @@ fn push_path_strip_contours(
 ) -> Result<(), NodeRailGenerationError> {
     let mut first_error = None;
     let mut pushed = false;
-    for points in path_strip_contours_xz(start_path_world, end_path_world) {
+    for points_world in path_strip_contours_world(start_path_world, end_path_world) {
+        let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
         match push_generated_contour(
             kind,
             mouth_order_index,
@@ -448,6 +503,7 @@ fn push_path_strip_contours(
             claim_priority,
             constraint_kind,
             points,
+            Some(points_world),
             contours,
             constraints,
         ) {
@@ -480,11 +536,15 @@ fn push_generated_contour(
     claim_priority: NodeGeneratedContourClaimPriority,
     constraint_kind: NodeRailConstraintKind,
     points: Vec<RoadVec2>,
+    height_points_world: Option<Vec<RoadVec3>>,
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
     let contour = cleaned_closed_contour(kind, mouth_order_index, band_index, points)?;
     let points_xz = polyline_to_road_points(&contour);
+    let height_points_world = height_points_world
+        .as_deref()
+        .and_then(|points_world| align_height_points_to_contour(&points_xz, points_world));
     contours.push(NodeGeneratedContour {
         kind,
         source_mouth_order_index: mouth_order_index,
@@ -492,6 +552,7 @@ fn push_generated_contour(
         owner,
         claim_priority,
         points_xz: points_xz.clone(),
+        height_points_world,
         backend_polyline: contour,
     });
     push_constraint(
@@ -518,10 +579,11 @@ fn push_path_band_contour(
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    let mut points = Vec::with_capacity(start_path_world.len() + end_path_world.len());
-    append_world_path_xz(&mut points, start_path_world.iter());
-    append_world_path_xz(&mut points, end_path_world.iter().rev());
-    remove_closing_road_path_duplicate(&mut points);
+    let mut points_world = Vec::with_capacity(start_path_world.len() + end_path_world.len());
+    append_world_path_points(&mut points_world, start_path_world.iter());
+    append_world_path_points(&mut points_world, end_path_world.iter().rev());
+    remove_closing_world_path_duplicate(&mut points_world);
+    let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
     push_generated_contour(
         kind,
         mouth_order_index,
@@ -530,15 +592,16 @@ fn push_path_band_contour(
         claim_priority,
         constraint_kind,
         points,
+        Some(points_world),
         contours,
         constraints,
     )
 }
 
-fn path_strip_contours_xz(
+fn path_strip_contours_world(
     start_path_world: &[RoadVec3],
     end_path_world: &[RoadVec3],
-) -> Vec<Vec<RoadVec2>> {
+) -> Vec<Vec<RoadVec3>> {
     let point_count = start_path_world.len().min(end_path_world.len());
     if point_count < 2 {
         return Vec::new();
@@ -546,11 +609,11 @@ fn path_strip_contours_xz(
     let mut strips = Vec::with_capacity(point_count - 1);
     for index in 0..point_count - 1 {
         let mut points = Vec::with_capacity(4);
-        push_road_path_point(&mut points, xz(start_path_world[index]));
-        push_road_path_point(&mut points, xz(end_path_world[index]));
-        push_road_path_point(&mut points, xz(end_path_world[index + 1]));
-        push_road_path_point(&mut points, xz(start_path_world[index + 1]));
-        remove_closing_road_path_duplicate(&mut points);
+        push_world_path_point(&mut points, start_path_world[index]);
+        push_world_path_point(&mut points, end_path_world[index]);
+        push_world_path_point(&mut points, end_path_world[index + 1]);
+        push_world_path_point(&mut points, start_path_world[index + 1]);
+        remove_closing_world_path_duplicate(&mut points);
         strips.push(points);
     }
     strips
@@ -622,6 +685,7 @@ fn push_terminal_end_band_contours(
             mouth,
             key,
             &group.contour_world,
+            &group.end_bands,
             NodeGeneratedContourClaimPriority::JoinOrCap,
             contours,
             constraints,
@@ -675,6 +739,7 @@ fn push_node_side_join_candidate_contours(
             mouth,
             key,
             &group.contour_world,
+            &group.end_bands,
             NodeGeneratedContourClaimPriority::SideJoin,
             contours,
             constraints,
@@ -734,6 +799,7 @@ fn push_grouped_end_band_candidate_contours(
     mouth: &NodeInputMouth,
     key: TerminalEndBandGroupKey,
     contour_world: &[NodeOverlayContour],
+    end_bands: &[&NodeInputTerminalEndBand],
     claim_priority: NodeGeneratedContourClaimPriority,
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
@@ -764,6 +830,7 @@ fn push_grouped_end_band_candidate_contours(
                     owner: None,
                     claim_priority: NodeGeneratedContourClaimPriority::Footprint,
                     points_xz: footprint_points_xz.clone(),
+                    height_points_world: None,
                     backend_polyline: footprint,
                 });
                 push_constraint(
@@ -786,6 +853,12 @@ fn push_grouped_end_band_candidate_contours(
                 points,
             )?;
             let points_xz = polyline_to_road_points(&band_contour);
+            let source_height_points_world = end_bands
+                .iter()
+                .flat_map(|end_band| end_band.contour_world.iter().copied())
+                .collect::<Vec<_>>();
+            let height_points_world =
+                align_height_points_to_contour(&points_xz, &source_height_points_world);
             contours.push(NodeGeneratedContour {
                 kind,
                 source_mouth_order_index: mouth.order_index,
@@ -793,6 +866,7 @@ fn push_grouped_end_band_candidate_contours(
                 owner: Some(key.owner),
                 claim_priority,
                 points_xz: points_xz.clone(),
+                height_points_world,
                 backend_polyline: band_contour,
             });
             push_constraint(
@@ -1446,10 +1520,28 @@ fn append_world_path_xz<'a>(
     }
 }
 
+fn append_world_path_points<'a>(
+    points: &mut Vec<RoadVec3>,
+    path_world: impl IntoIterator<Item = &'a RoadVec3>,
+) {
+    for point in path_world {
+        push_world_path_point(points, *point);
+    }
+}
+
 fn push_road_path_point(points: &mut Vec<RoadVec2>, point: RoadVec2) {
     if points
         .last()
         .is_none_or(|last| road_point_key(*last) != road_point_key(point))
+    {
+        points.push(point);
+    }
+}
+
+fn push_world_path_point(points: &mut Vec<RoadVec3>, point: RoadVec3) {
+    if points
+        .last()
+        .is_none_or(|last| road_point_key(xz(*last)) != road_point_key(xz(point)))
     {
         points.push(point);
     }
@@ -1461,6 +1553,40 @@ fn remove_closing_road_path_duplicate(points: &mut Vec<RoadVec2>) {
     {
         points.pop();
     }
+}
+
+fn remove_closing_world_path_duplicate(points: &mut Vec<RoadVec3>) {
+    if points.len() > 1
+        && road_point_key(xz(points[0])) == road_point_key(xz(*points.last().expect("len checked")))
+    {
+        points.pop();
+    }
+}
+
+fn align_height_points_to_contour(
+    contour_points_xz: &[RoadVec2],
+    source_points_world: &[RoadVec3],
+) -> Option<Vec<RoadVec3>> {
+    let mut height_by_key = BTreeMap::<NodeRailPointKey, f64>::new();
+    for point in source_points_world {
+        let key = road_point_key(xz(*point));
+        if let Some(existing_height_m) = height_by_key.get(&key)
+            && (*existing_height_m - point.y).abs() > f64::EPSILON
+        {
+            return None;
+        }
+        height_by_key.insert(key, point.y);
+    }
+    contour_points_xz
+        .iter()
+        .copied()
+        .map(|point_xz| {
+            height_by_key
+                .get(&road_point_key(point_xz))
+                .copied()
+                .map(|height_m| RoadVec3::new(point_xz.x, height_m, point_xz.y))
+        })
+        .collect()
 }
 
 fn push_boundary_constraint(
@@ -4732,6 +4858,7 @@ mod tests {
                 RoadVec2::new(2.0, 1.0),
                 RoadVec2::new(0.0, 1.0),
             ],
+            None,
             &mut contours,
             &mut constraints,
         )
@@ -4753,6 +4880,7 @@ mod tests {
                 RoadVec2::new(2.0, 2.0),
                 RoadVec2::new(0.0, 2.0),
             ],
+            None,
             &mut contours,
             &mut constraints,
         )
@@ -4814,6 +4942,7 @@ mod tests {
                 RoadVec2::new(4.0, 1.0),
                 RoadVec2::new(0.0, 1.0),
             ],
+            None,
             &mut contours,
             &mut constraints,
         )
@@ -4835,6 +4964,7 @@ mod tests {
                 RoadVec2::new(4.0, 1.5),
                 RoadVec2::new(3.0, 1.5),
             ],
+            None,
             &mut contours,
             &mut constraints,
         )
@@ -4896,6 +5026,7 @@ mod tests {
                 RoadVec2::new(4.0, 1.0),
                 RoadVec2::new(0.0, 1.0),
             ],
+            None,
             &mut contours,
             &mut constraints,
         )
@@ -4926,6 +5057,7 @@ mod tests {
                     kind: RoadSurfaceBandKind::CurbOrShoulder,
                 },
                 points,
+                None,
                 &mut contours,
                 &mut constraints,
             )

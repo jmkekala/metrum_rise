@@ -64,7 +64,7 @@ pub(crate) enum NodeGeometryStage {
 pub(crate) enum NodeGeometryBackend {
     CavalierContours,
     IOverlay,
-    Splines,
+    HeightCarrier,
     CanonicalKeys,
     Parry2d,
     Spade,
@@ -912,21 +912,6 @@ impl NodeGeometryDiagnostic {
                 axis: None,
                 raw_parameter: None,
             },
-            NodeHeightFieldError::DegenerateHeightField {
-                mouth_order_index,
-                band_index,
-                axis,
-            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
-                reason: "degenerate_height_field",
-                mouth_order_index: Some(*mouth_order_index),
-                band_index: Some(*band_index),
-                kind: None,
-                source_kind: None,
-                point_x_mm: None,
-                point_z_mm: None,
-                axis: Some(*axis),
-                raw_parameter: None,
-            },
             NodeHeightFieldError::VertexOutsideHeightField {
                 mouth_order_index,
                 band_index,
@@ -945,22 +930,6 @@ impl NodeGeometryDiagnostic {
                 point_z_mm: Some(*point_z_mm),
                 axis: Some(*axis),
                 raw_parameter: Some(*raw_parameter),
-            },
-            NodeHeightFieldError::HeightSampleFailed {
-                mouth_order_index,
-                band_index,
-                axis,
-                parameter,
-            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
-                reason: "height_sample_failed",
-                mouth_order_index: Some(*mouth_order_index),
-                band_index: Some(*band_index),
-                kind: None,
-                source_kind: None,
-                point_x_mm: None,
-                point_z_mm: None,
-                axis: Some(*axis),
-                raw_parameter: Some(*parameter),
             },
             NodeHeightFieldError::SourceHeightFieldConflict {
                 point_x_mm,
@@ -986,7 +955,7 @@ impl NodeGeometryDiagnostic {
             node_id,
             piece_kind,
             stage: NodeGeometryStage::HeightEvaluation,
-            backend: NodeGeometryBackend::Splines,
+            backend: NodeGeometryBackend::HeightCarrier,
             kind,
         }
     }
@@ -1251,7 +1220,7 @@ impl NodeGeometryBackend {
         match self {
             Self::CavalierContours => "cavalier_contours",
             Self::IOverlay => "i_overlay",
-            Self::Splines => "splines",
+            Self::HeightCarrier => "height_carrier",
             Self::CanonicalKeys => "canonical_keys",
             Self::Parry2d => "parry2d",
             Self::Spade => "spade",

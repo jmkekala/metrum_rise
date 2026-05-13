@@ -1,4 +1,4 @@
-//! Spline-backed height evaluation for canonical node-owned regions.
+//! Explicit height-carrier evaluation for canonical node-owned regions.
 
 use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, seam_source_priority,
@@ -21,15 +21,11 @@ use super::{
     RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
 use spade::{Point2, Triangulation};
-use splines::{Interpolation, Key, Spline};
 use std::collections::BTreeMap;
 
 const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
-const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
-const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
@@ -85,11 +81,6 @@ pub(crate) enum NodeHeightFieldError {
         region_kind: RoadSurfaceBandKind,
         source_kind: RoadSurfaceBandKind,
     },
-    DegenerateHeightField {
-        mouth_order_index: usize,
-        band_index: usize,
-        axis: &'static str,
-    },
     VertexOutsideHeightField {
         mouth_order_index: usize,
         band_index: usize,
@@ -98,12 +89,6 @@ pub(crate) enum NodeHeightFieldError {
         point_z_mm: i64,
         axis: &'static str,
         raw_parameter: f64,
-    },
-    HeightSampleFailed {
-        mouth_order_index: usize,
-        band_index: usize,
-        axis: &'static str,
-        parameter: f64,
     },
     SourceHeightFieldConflict {
         mouth_order_index: usize,
@@ -150,15 +135,8 @@ struct NodeBandHeightField {
 }
 
 struct NodeBandHeightPatch {
-    endpoint_start_xz: RoadVec2,
-    endpoint_end_xz: RoadVec2,
-    mouth_start_xz: RoadVec2,
-    mouth_end_xz: RoadVec2,
-    start_height_profile: Spline<f64, f64>,
-    end_height_profile: Spline<f64, f64>,
     triangles: Option<Vec<NodeBandHeightTriangle>>,
     contour_edges: Option<Vec<NodeBandHeightEdge>>,
-    allow_parametric_fallback: bool,
 }
 
 struct NodeBandHeightTriangle {
@@ -386,54 +364,16 @@ fn reheight_point_from_base(
 
 impl NodeBandHeightPatch {
     fn from_interval(interval: &NodeInputBandInterval) -> Self {
-        let endpoint_start_xz =
-            quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_start_world));
-        let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_end_world));
-        let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_start_world));
-        let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_end_world));
-
         Self {
-            endpoint_start_xz,
-            endpoint_end_xz,
-            mouth_start_xz,
-            mouth_end_xz,
-            start_height_profile: linear_height_profile(
-                interval.endpoint_start_world.y,
-                interval.mouth_start_world.y,
-            ),
-            end_height_profile: linear_height_profile(
-                interval.endpoint_end_world.y,
-                interval.mouth_end_world.y,
-            ),
             triangles: Some(interval_height_triangles(interval)),
             contour_edges: Some(interval_height_edges(interval)),
-            allow_parametric_fallback: true,
         }
     }
 
     fn from_terminal_end_band(end_band: &NodeInputTerminalEndBand) -> Self {
-        let endpoint_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world));
-        let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world));
-        let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world));
-        let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world));
-
         Self {
-            endpoint_start_xz,
-            endpoint_end_xz,
-            mouth_start_xz,
-            mouth_end_xz,
-            start_height_profile: linear_height_profile(
-                end_band.inner_start_world.y,
-                end_band.outer_start_world.y,
-            ),
-            end_height_profile: linear_height_profile(
-                end_band.inner_end_world.y,
-                end_band.outer_end_world.y,
-            ),
             triangles: Some(terminal_end_band_height_triangles(end_band)),
             contour_edges: Some(terminal_end_band_height_edges(end_band)),
-            allow_parametric_fallback: end_band.boundary_mode
-                == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
         }
     }
 
@@ -441,6 +381,9 @@ impl NodeBandHeightPatch {
         contour: &NodeGeneratedContour,
         base: &NodeBandHeightField,
     ) -> Result<Self, NodeHeightFieldError> {
+        if let Some(points_world) = &contour.height_points_world {
+            return Ok(Self::from_heighted_contour(points_world));
+        }
         let mut points = Vec::with_capacity(contour.points_xz.len());
         for point_xz in &contour.points_xz {
             let point_xz = quantize_road_vec2_to_overlay_grid(*point_xz);
@@ -451,17 +394,9 @@ impl NodeBandHeightPatch {
     }
 
     fn from_heighted_contour(points: &[RoadVec3]) -> Self {
-        let (edge_start, edge_end) = nondegenerate_contour_height_edge(points);
         Self {
-            endpoint_start_xz: quantize_road_vec2_to_overlay_grid(xz(edge_start)),
-            endpoint_end_xz: quantize_road_vec2_to_overlay_grid(xz(edge_end)),
-            mouth_start_xz: quantize_road_vec2_to_overlay_grid(xz(edge_start)),
-            mouth_end_xz: quantize_road_vec2_to_overlay_grid(xz(edge_end)),
-            start_height_profile: linear_height_profile(edge_start.y, edge_start.y),
-            end_height_profile: linear_height_profile(edge_end.y, edge_end.y),
             triangles: Some(height_triangles_from_contour(points)),
             contour_edges: Some(height_edges_from_vertices(points)),
-            allow_parametric_fallback: false,
         }
     }
 
@@ -487,78 +422,10 @@ impl NodeBandHeightPatch {
         {
             return Ok(NodeHeightPatchEvaluation::Inside(height_m));
         }
-        if self.triangles.is_some() && !self.allow_parametric_fallback {
-            return Ok(NodeHeightPatchEvaluation::Outside(
-                triangle_outside_error.unwrap_or_else(|| {
-                    self.outside_field_error(
-                        id,
-                        source_kind,
-                        point_xz,
-                        "terminal_contour",
-                        f64::NAN,
-                    )
-                }),
-            ));
-        }
-
-        let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
-        let mouth_center = midpoint(self.mouth_start_xz, self.mouth_end_xz);
-        let longitudinal_axis = mouth_center - endpoint_center;
-        let longitudinal_len2 = longitudinal_axis.length_squared();
-        if longitudinal_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return Err(NodeHeightFieldError::DegenerateHeightField {
-                mouth_order_index: id.mouth_order_index(),
-                band_index: id.band_index(),
-                axis: "longitudinal",
-            });
-        }
-        let longitudinal_len_m = longitudinal_len2.sqrt();
-
-        let raw_t = (point_xz - endpoint_center).dot(longitudinal_axis) / longitudinal_len2;
-        let Some(t) = canonical_unit_parameter(raw_t, longitudinal_len_m) else {
-            return Ok(NodeHeightPatchEvaluation::Outside(
-                self.outside_field_error(id, source_kind, point_xz, "longitudinal", raw_t),
-            ));
-        };
-
-        let start_xz = interpolate(self.endpoint_start_xz, self.mouth_start_xz, t);
-        let end_xz = interpolate(self.endpoint_end_xz, self.mouth_end_xz, t);
-        let lateral_axis = end_xz - start_xz;
-        let lateral_len2 = lateral_axis.length_squared();
-        if lateral_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return Err(NodeHeightFieldError::DegenerateHeightField {
-                mouth_order_index: id.mouth_order_index(),
-                band_index: id.band_index(),
-                axis: "lateral",
-            });
-        }
-        let lateral_len_m = lateral_len2.sqrt();
-
-        let raw_u = (point_xz - start_xz).dot(lateral_axis) / lateral_len2;
-        let Some(u) = canonical_unit_parameter(raw_u, lateral_len_m) else {
-            return Ok(NodeHeightPatchEvaluation::Outside(
-                self.outside_field_error(id, source_kind, point_xz, "lateral", raw_u),
-            ));
-        };
-        let start_height = self.start_height_profile.clamped_sample(t).ok_or(
-            NodeHeightFieldError::HeightSampleFailed {
-                mouth_order_index: id.mouth_order_index(),
-                band_index: id.band_index(),
-                axis: "start",
-                parameter: t,
-            },
-        )?;
-        let end_height = self.end_height_profile.clamped_sample(t).ok_or(
-            NodeHeightFieldError::HeightSampleFailed {
-                mouth_order_index: id.mouth_order_index(),
-                band_index: id.band_index(),
-                axis: "end",
-                parameter: t,
-            },
-        )?;
-
-        Ok(NodeHeightPatchEvaluation::Inside(
-            start_height + (end_height - start_height) * u,
+        Ok(NodeHeightPatchEvaluation::Outside(
+            triangle_outside_error.unwrap_or_else(|| {
+                self.outside_field_error(id, source_kind, point_xz, "height_carrier", f64::NAN)
+            }),
         ))
     }
 
@@ -765,7 +632,8 @@ fn heighted_region(
         Err(error)
             if matches!(
                 region.claim_priority,
-                NodeGeneratedContourClaimPriority::SideJoin
+                NodeGeneratedContourClaimPriority::MouthBand
+                    | NodeGeneratedContourClaimPriority::SideJoin
                     | NodeGeneratedContourClaimPriority::JoinOrCap
             ) =>
         {
@@ -1082,21 +950,6 @@ fn validate_shared_source_height_agreement(
         }
     }
     Ok(())
-}
-
-fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<f64, f64> {
-    Spline::from_vec(vec![
-        Key::new(
-            0.0,
-            quantize_source_height_m(endpoint_height_m),
-            Interpolation::Linear,
-        ),
-        Key::new(
-            1.0,
-            quantize_source_height_m(mouth_height_m),
-            Interpolation::Linear,
-        ),
-    ])
 }
 
 fn quantize_source_height_m(value_m: f64) -> f64 {
@@ -1562,59 +1415,8 @@ fn height_point_key_lies_on_segment(
         && point.1 <= start.1.max(end.1)
 }
 
-fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f64> {
-    if !raw_parameter.is_finite() {
-        return None;
-    }
-
-    let parameter =
-        (raw_parameter * HEIGHT_PARAMETER_KEY_SCALE).round() / HEIGHT_PARAMETER_KEY_SCALE;
-    let boundary_eps = if axis_length_m > f64::EPSILON {
-        HEIGHT_PARAMETER_BOUNDARY_EPS.max(HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M / axis_length_m)
-    } else {
-        HEIGHT_PARAMETER_BOUNDARY_EPS
-    };
-    (-boundary_eps..=1.0 + boundary_eps)
-        .contains(&parameter)
-        .then(|| {
-            let parameter = parameter.clamp(0.0, 1.0);
-            if parameter <= HEIGHT_PARAMETER_BOUNDARY_EPS {
-                0.0
-            } else if 1.0 - parameter <= HEIGHT_PARAMETER_BOUNDARY_EPS {
-                1.0
-            } else {
-                parameter
-            }
-        })
-}
-
-fn nondegenerate_contour_height_edge(points: &[RoadVec3]) -> (RoadVec3, RoadVec3) {
-    let first = points.first().copied().unwrap_or(RoadVec3::ZERO);
-    for point in points.iter().copied().skip(1) {
-        if xz(point).distance_squared(xz(first)) > HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return (first, point);
-        }
-    }
-    (
-        first,
-        RoadVec3::new(
-            first.x + HEIGHT_FIELD_MIN_AXIS_LEN2_M2.sqrt(),
-            first.y,
-            first.z,
-        ),
-    )
-}
-
 fn xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
-}
-
-fn midpoint(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
-    (start + end) * 0.5
-}
-
-fn interpolate(start: RoadVec2, end: RoadVec2, t: f64) -> RoadVec2 {
-    start + (end - start) * t
 }
 
 fn quantize_m(value: f64) -> i64 {

@@ -128,6 +128,14 @@ struct OwnedDomainGroup<'a> {
     domains: Vec<&'a NodeGeneratedContour>,
 }
 
+struct NodeRailCanonicalPointSet {
+    all_points: Vec<NodeOwnershipPointKey>,
+    points_by_owner: BTreeMap<NodeBandOwner, Vec<NodeOwnershipPointKey>>,
+    height_points_by_source:
+        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeOwnershipPointKey>>,
+    paths_by_owner: BTreeMap<NodeBandOwner, Vec<Vec<NodeOwnershipPointKey>>>,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn build_node_boolean_ownership_from_rails(
         rails: &NodeRailContourSet,
@@ -192,10 +200,12 @@ impl NodeBooleanOwnership {
 
         sort_boolean_owned_regions(&mut owned_regions);
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
+        let rail_canonical_points = canonical_points_for_rail_set(rails);
         clean_canonical_owned_region_shapes(
             &mut owned_regions,
             &footprint_shapes,
             &rails.constraints,
+            &rail_canonical_points,
             allow_grid_bounded_constraint_overlap,
         )?;
         materialize_noded_region_seam_constraints(
@@ -1037,6 +1047,7 @@ fn clean_canonical_owned_region_shapes(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
+    rail_canonical_points: &NodeRailCanonicalPointSet,
     allow_grid_bounded_constraint_overlap: bool,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let mut cleaned_regions = Vec::with_capacity(regions.len());
@@ -1072,17 +1083,23 @@ fn clean_canonical_owned_region_shapes(
             });
         }
     }
-    canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
+    canonicalize_owned_region_rings_with_rail_point_set(
+        &mut cleaned_regions,
+        rail_canonical_points,
+    );
     clean_owned_region_shapes_once(
         &mut cleaned_regions,
         rail_constraints,
         allow_grid_bounded_constraint_overlap,
     )?;
-    canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
+    canonicalize_owned_region_rings_with_rail_point_set(
+        &mut cleaned_regions,
+        rail_canonical_points,
+    );
     canonicalize_final_owned_region_boundary_edges(
         &mut cleaned_regions,
         footprint_shapes,
-        rail_constraints,
+        rail_canonical_points,
     );
     clean_owned_region_shapes_once(
         &mut cleaned_regions,
@@ -1092,9 +1109,13 @@ fn clean_canonical_owned_region_shapes(
     canonicalize_final_owned_region_boundary_edges(
         &mut cleaned_regions,
         footprint_shapes,
-        rail_constraints,
+        rail_canonical_points,
     );
     split_final_canonical_owned_region_self_touches(&mut cleaned_regions, rail_constraints, false);
+    canonicalize_owned_region_rings_with_rail_point_set(
+        &mut cleaned_regions,
+        rail_canonical_points,
+    );
     for region in &mut cleaned_regions {
         region.seam_constraints = seam_constraints_for_shape(
             &region.shape,
@@ -1110,11 +1131,11 @@ fn clean_canonical_owned_region_shapes(
 fn canonicalize_final_owned_region_boundary_edges(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
-    rail_constraints: &[NodeRailConstraint],
+    rail_canonical_points: &NodeRailCanonicalPointSet,
 ) {
-    canonicalize_owned_region_rings_with_rail_constraints(regions, rail_constraints);
+    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points);
     node_owned_region_rings_to_global_points(regions, footprint_shapes);
-    canonicalize_owned_region_rings_with_rail_constraints(regions, rail_constraints);
+    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points);
 }
 
 fn node_owned_region_rings_to_global_points(
@@ -1207,6 +1228,7 @@ fn clean_owned_region_shapes_once(
     Ok(())
 }
 
+#[cfg(test)]
 fn canonicalize_owned_region_rings_with_rail_constraints(
     regions: &mut [NodeBooleanOwnedRegion],
     rail_constraints: &[NodeRailConstraint],
@@ -1218,13 +1240,157 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
         .collect::<Vec<_>>();
     constraint_points.sort_unstable();
     constraint_points.dedup();
-    if constraint_points.is_empty() {
+    canonicalize_owned_region_rings_with_rail_points(regions, &constraint_points);
+}
+
+fn canonical_points_for_rail_set(rails: &NodeRailContourSet) -> NodeRailCanonicalPointSet {
+    let mut all_points = rails
+        .constraints
+        .iter()
+        .flat_map(|constraint| constraint.points_xz.iter().copied())
+        .chain(
+            rails
+                .contours
+                .iter()
+                .flat_map(|contour| contour.points_xz.iter().copied()),
+        )
+        .map(road_point_key)
+        .collect::<Vec<_>>();
+    let mut points_by_owner = BTreeMap::<NodeBandOwner, Vec<NodeOwnershipPointKey>>::new();
+    let mut height_points_by_source =
+        BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<NodeOwnershipPointKey>>::new();
+    let mut paths_by_owner = BTreeMap::<NodeBandOwner, Vec<Vec<NodeOwnershipPointKey>>>::new();
+    for (source, points) in &rails.height_carrier_points_by_source {
+        let points = points
+            .iter()
+            .copied()
+            .map(road_point_key)
+            .collect::<Vec<_>>();
+        all_points.extend(points.iter().copied());
+        height_points_by_source
+            .entry(*source)
+            .or_default()
+            .extend(points);
+    }
+    for constraint in &rails.constraints {
+        let (Some(owner), Some(source_band_index)) =
+            (constraint.owner, constraint.source_band_index)
+        else {
+            continue;
+        };
+        height_points_by_source
+            .entry((
+                owner.kind(),
+                constraint.source_mouth_order_index,
+                source_band_index,
+            ))
+            .or_default()
+            .extend(constraint.points_xz.iter().copied().map(road_point_key));
+    }
+    for contour in &rails.contours {
+        let path = contour
+            .points_xz
+            .iter()
+            .copied()
+            .map(road_point_key)
+            .collect::<Vec<_>>();
+        if let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index)) =
+            (contour.kind, contour.source_band_index)
+        {
+            height_points_by_source
+                .entry((kind, contour.source_mouth_order_index, source_band_index))
+                .or_default()
+                .extend(path.iter().copied());
+        }
+        let Some(owner) = contour.owner else {
+            continue;
+        };
+        points_by_owner
+            .entry(owner)
+            .or_default()
+            .extend(path.iter().copied());
+        if contour.height_points_world.is_some() {
+            points_by_owner
+                .entry(owner)
+                .or_default()
+                .extend(path.iter().copied());
+        }
+        paths_by_owner.entry(owner).or_default().push(path);
+    }
+    NodeRailCanonicalPointSet {
+        all_points,
+        points_by_owner,
+        height_points_by_source,
+        paths_by_owner,
+    }
+}
+
+fn canonicalize_owned_region_rings_with_rail_point_set(
+    regions: &mut [NodeBooleanOwnedRegion],
+    rail_points: &NodeRailCanonicalPointSet,
+) {
+    if rail_points.all_points.is_empty() {
         return;
     }
-    let canonical_point_by_projected_key =
-        canonical_rail_point_by_projected_key(&constraint_points);
+
+    for region in regions {
+        let snap_points = rail_points
+            .points_by_owner
+            .get(&region.owner)
+            .map(Vec::as_slice)
+            .unwrap_or(&rail_points.all_points);
+        let snap_points = if let Some(source_band_index) = region.source_band_index {
+            if let Some(height_points) = rail_points.height_points_by_source.get(&(
+                region.kind,
+                region.source_mouth_order_index,
+                source_band_index,
+            )) {
+                height_points.as_slice()
+            } else {
+                snap_points
+            }
+        } else {
+            snap_points
+        };
+        let owner_paths = if region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap {
+            rail_points
+                .paths_by_owner
+                .get(&region.owner)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        let canonical_point_by_projected_key = canonical_rail_point_by_projected_key(snap_points);
+        let canonical_point_by_overlay_neighbor_key =
+            canonical_rail_point_by_overlay_neighbor_key(snap_points);
+
+        for contour in &mut region.shape {
+            snap_owned_region_contour_to_rail_constraint_points(
+                contour,
+                &canonical_point_by_projected_key,
+                &canonical_point_by_overlay_neighbor_key,
+            );
+            *contour = noded_owned_region_contour_with_rail_paths(
+                contour,
+                &rail_points.all_points,
+                owner_paths,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+fn canonicalize_owned_region_rings_with_rail_points(
+    regions: &mut [NodeBooleanOwnedRegion],
+    rail_points: &[NodeOwnershipPointKey],
+) {
+    if rail_points.is_empty() {
+        return;
+    }
+    let canonical_point_by_projected_key = canonical_rail_point_by_projected_key(rail_points);
     let canonical_point_by_overlay_neighbor_key =
-        canonical_rail_point_by_overlay_neighbor_key(&constraint_points);
+        canonical_rail_point_by_overlay_neighbor_key(rail_points);
 
     for region in regions {
         for contour in &mut region.shape {
@@ -1233,7 +1399,7 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
                 &canonical_point_by_projected_key,
                 &canonical_point_by_overlay_neighbor_key,
             );
-            *contour = noded_owned_region_contour(contour, &constraint_points);
+            *contour = noded_owned_region_contour(contour, rail_points);
         }
     }
 }
@@ -1266,56 +1432,28 @@ fn canonical_rail_point_by_overlay_neighbor_key(
     for point in constraint_points.iter().copied() {
         *point_counts.entry(point).or_default() += 1;
     }
-    let canonical_constraint_point_by_key = point_counts
-        .keys()
-        .copied()
-        .filter_map(|point| {
-            overlay_neighbor_points(point)
-                .into_iter()
-                .filter_map(|candidate| {
-                    point_counts
-                        .get(&candidate)
-                        .copied()
-                        .map(|count| (candidate, count))
-                })
-                .max_by(|(left_point, left_count), (right_point, right_count)| {
-                    left_count
-                        .cmp(right_count)
-                        .then_with(|| right_point.cmp(left_point))
-                })
-                .map(|(canonical, _)| (point, canonical))
-        })
-        .collect::<BTreeMap<_, _>>();
-
     let mut candidates_by_neighbor =
-        BTreeMap::<NodeOwnershipPointKey, BTreeSet<NodeOwnershipPointKey>>::new();
-    for point in point_counts.keys().copied() {
-        let canonical = canonical_constraint_point_by_key
-            .get(&point)
-            .copied()
-            .unwrap_or(point);
+        BTreeMap::<NodeOwnershipPointKey, Vec<(NodeOwnershipPointKey, usize)>>::new();
+    for (point, count) in point_counts.iter().map(|(point, count)| (*point, *count)) {
         for neighbor in overlay_neighbor_points(point) {
             candidates_by_neighbor
                 .entry(neighbor)
                 .or_default()
-                .insert(canonical);
+                .push((point, count));
         }
     }
 
     candidates_by_neighbor
         .into_iter()
         .filter_map(|(neighbor, candidates)| {
-            if candidates.len() == 1 {
-                return candidates
-                    .into_iter()
-                    .next()
-                    .map(|canonical| (neighbor, canonical));
-            }
-            if candidates.contains(&neighbor) {
-                Some((neighbor, neighbor))
-            } else {
-                None
-            }
+            candidates
+                .into_iter()
+                .max_by(|(left_point, left_count), (right_point, right_count)| {
+                    left_count
+                        .cmp(right_count)
+                        .then_with(|| right_point.cmp(left_point))
+                })
+                .map(|(canonical, _)| (neighbor, canonical))
         })
         .collect()
 }
@@ -1342,13 +1480,8 @@ fn snap_owned_region_contour_to_rail_constraint_points(
     if contour.len() < 2 {
         return;
     }
-    let original_keys = contour
-        .iter()
-        .copied()
-        .map(overlay_point_key)
-        .collect::<Vec<_>>();
-    for (index, point) in contour.iter_mut().enumerate() {
-        let key = original_keys[index];
+    for point in contour.iter_mut() {
+        let key = overlay_point_key(*point);
         let Some(canonical_key) = canonical_rail_key_for_owned_key(
             key,
             canonical_point_by_projected_key,
@@ -1356,9 +1489,7 @@ fn snap_owned_region_contour_to_rail_constraint_points(
         ) else {
             continue;
         };
-        if canonical_key != key {
-            *point = overlay_point_from_key(canonical_key);
-        }
+        *point = overlay_point_from_key(canonical_key);
     }
     dedup_consecutive_overlay_points(contour);
     if contour.len() >= 2
@@ -1563,6 +1694,28 @@ fn noded_owned_region_contour(
     contour: &NodeOverlayContour,
     global_points: &[NodeOwnershipPointKey],
 ) -> NodeOverlayContour {
+    noded_owned_region_contour_with_edge_points(contour, |start, end| {
+        noded_owned_region_edge_points(start, end, global_points)
+    })
+}
+
+fn noded_owned_region_contour_with_rail_paths(
+    contour: &NodeOverlayContour,
+    global_points: &[NodeOwnershipPointKey],
+    rail_paths: &[Vec<NodeOwnershipPointKey>],
+) -> NodeOverlayContour {
+    noded_owned_region_contour_with_edge_points(contour, |start, end| {
+        noded_owned_region_edge_points_with_rail_paths(start, end, global_points, rail_paths)
+    })
+}
+
+fn noded_owned_region_contour_with_edge_points(
+    contour: &NodeOverlayContour,
+    mut edge_points: impl FnMut(
+        NodeOwnershipPointKey,
+        NodeOwnershipPointKey,
+    ) -> Vec<NodeOwnershipPointKey>,
+) -> NodeOverlayContour {
     if contour.len() < 2 {
         return contour.clone();
     }
@@ -1574,7 +1727,7 @@ fn noded_owned_region_contour(
         if start == end {
             continue;
         }
-        let points = noded_owned_region_edge_points(start, end, global_points);
+        let points = edge_points(start, end);
         let limit = points.len().saturating_sub(1);
         noded.extend(points.into_iter().take(limit).map(overlay_point_from_key));
     }
@@ -1586,6 +1739,16 @@ fn noded_owned_region_contour(
         noded.pop();
     }
     noded
+}
+
+fn noded_owned_region_edge_points_with_rail_paths(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    global_points: &[NodeOwnershipPointKey],
+    rail_paths: &[Vec<NodeOwnershipPointKey>],
+) -> Vec<NodeOwnershipPointKey> {
+    rail_path_points_between(start, end, rail_paths)
+        .unwrap_or_else(|| noded_owned_region_edge_points(start, end, global_points))
 }
 
 fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
@@ -1780,7 +1943,7 @@ fn noded_owned_region_edge_points(
         .iter()
         .copied()
         .filter(|point| *point != start && *point != end)
-        .filter(|point| point_key_lies_on_segment(*point, start, end))
+        .filter(|point| point_key_lies_exactly_on_segment(*point, start, end))
         .collect::<Vec<_>>();
     split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
     split_points.dedup();
@@ -1790,6 +1953,69 @@ fn noded_owned_region_edge_points(
     points.extend(split_points);
     points.push(end);
     points
+}
+
+fn rail_path_points_between(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_paths: &[Vec<NodeOwnershipPointKey>],
+) -> Option<Vec<NodeOwnershipPointKey>> {
+    if start == end {
+        return None;
+    }
+    let mut best = None;
+    for points in rail_paths {
+        for start_index in points
+            .iter()
+            .enumerate()
+            .filter_map(|(index, point)| (*point == start).then_some(index))
+        {
+            for end_index in start_index + 1..points.len() {
+                if points[end_index] != end {
+                    continue;
+                }
+                let mut candidate = points[start_index..=end_index].to_vec();
+                dedup_consecutive_ownership_keys(&mut candidate);
+                if candidate.len() == 3
+                    && best
+                        .as_ref()
+                        .is_none_or(|best: &Vec<NodeOwnershipPointKey>| {
+                            candidate.len() > best.len()
+                        })
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+        for end_index in points
+            .iter()
+            .enumerate()
+            .filter_map(|(index, point)| (*point == end).then_some(index))
+        {
+            for start_index in end_index + 1..points.len() {
+                if points[start_index] != start {
+                    continue;
+                }
+                let mut candidate = points[end_index..=start_index].to_vec();
+                candidate.reverse();
+                dedup_consecutive_ownership_keys(&mut candidate);
+                if candidate.len() == 3
+                    && best
+                        .as_ref()
+                        .is_none_or(|best: &Vec<NodeOwnershipPointKey>| {
+                            candidate.len() > best.len()
+                        })
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+    }
+    best
+}
+
+fn dedup_consecutive_ownership_keys(points: &mut Vec<NodeOwnershipPointKey>) {
+    points.dedup();
 }
 
 fn segment_parameter_key(
@@ -2186,6 +2412,37 @@ fn point_key_lies_on_segment(
     let pz = i128::from(point.1 - start.1);
     let cross = px * dz - pz * dx;
     if cross != 0 && cross.abs() > overlay_grid_collinearity_error_bound(dx, dz) {
+        return false;
+    }
+    let inside_x = if start.0 == end.0 {
+        point.0 == start.0
+    } else {
+        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
+    };
+    let inside_z = if start.1 == end.1 {
+        point.1 == start.1
+    } else {
+        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
+    };
+    inside_x && inside_z
+}
+
+fn point_key_lies_exactly_on_segment(
+    point: NodeOwnershipPointKey,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    let px = i128::from(point.0 - start.0);
+    let pz = i128::from(point.1 - start.1);
+    if px * dz - pz * dx != 0 {
         return false;
     }
     let inside_x = if start.0 == end.0 {
@@ -2620,10 +2877,20 @@ mod tests {
             points_xz: vec![RoadVec2::new(1.0, 0.0), RoadVec2::new(1.0, 2.0)],
         }];
 
+        let rail_canonical_points = NodeRailCanonicalPointSet {
+            all_points: rail_constraints
+                .iter()
+                .flat_map(|constraint| constraint.points_xz.iter().copied())
+                .map(road_point_key)
+                .collect(),
+            points_by_owner: BTreeMap::new(),
+            height_points_by_source: BTreeMap::new(),
+            paths_by_owner: BTreeMap::new(),
+        };
         canonicalize_final_owned_region_boundary_edges(
             &mut regions,
             &footprint_shapes,
-            &rail_constraints,
+            &rail_canonical_points,
         );
         materialize_noded_region_seam_constraints(
             &mut regions,
@@ -2764,10 +3031,20 @@ mod tests {
         }];
         let footprint_shapes = Vec::new();
 
+        let rail_canonical_points = NodeRailCanonicalPointSet {
+            all_points: rail_constraints
+                .iter()
+                .flat_map(|constraint| constraint.points_xz.iter().copied())
+                .map(road_point_key)
+                .collect(),
+            points_by_owner: BTreeMap::new(),
+            height_points_by_source: BTreeMap::new(),
+            paths_by_owner: BTreeMap::new(),
+        };
         canonicalize_final_owned_region_boundary_edges(
             &mut regions,
             &footprint_shapes,
-            &rail_constraints,
+            &rail_canonical_points,
         );
         materialize_noded_region_seam_constraints(
             &mut regions,
@@ -3014,6 +3291,49 @@ mod tests {
                     && overlay_point_key(*point) != overlay_point_key([1.000004, 2.0])
             }),
             "owned region vertices must use the canonical source rail keys, not overlay drift"
+        );
+    }
+
+    #[test]
+    fn canonicalizes_closing_overlay_dust_to_source_rail_endpoint() {
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 6);
+        let endpoint = RoadVec2::new(15.169048, 5.0);
+        let mut regions = vec![test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            vec![
+                [15.169047, 5.0],
+                [15.169048, 3.65],
+                [15.979047, 3.65],
+                [15.596568, 4.287465],
+                [15.169048, 4.999998],
+            ],
+        )];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 34,
+            kind: NodeRailConstraintKind::FootprintSeam {
+                adjacent_kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            source_mouth_order_index: 1,
+            source_band_index: Some(0),
+            source_boundary_index: Some(0),
+            owner: Some(sidewalk),
+            opposite_owner: None,
+            points_xz: vec![endpoint, RoadVec2::new(15.169048, 3.65)],
+        }];
+
+        canonicalize_owned_region_rings_with_rail_constraints(&mut regions, &rail_constraints);
+
+        let contour = &regions[0].shape[0];
+        let endpoint_key = road_point_key(endpoint);
+        assert_eq!(overlay_point_key(contour[0]), endpoint_key);
+        assert_eq!(
+            contour
+                .iter()
+                .filter(|point| overlay_point_key(**point) == endpoint_key)
+                .count(),
+            1,
+            "closing overlay dust must collapse onto the authorized source rail endpoint"
         );
     }
 

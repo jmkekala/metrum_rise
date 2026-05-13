@@ -1,6 +1,5 @@
 //! Compiled roadbed top-surface and lane-marking rendering.
 
-use crate::config::ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
@@ -18,9 +17,6 @@ use super::{
 
 const BAND_EPSILON_M: f32 = 0.001;
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
-const EARTHWORK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
-const SIDEWALK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
-const ROAD_RENDER_SURFACE_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 const MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
 /// Surface classes replaced by the compiled roadbed renderer.
 pub(super) struct CompiledSurfaceCoverage {
@@ -418,20 +414,14 @@ fn emit_surface_polygon(
         return;
     }
 
-    let render_z_bias_m = render_z_bias_for_layer(layer);
     for triangle in &polygon.triangles_world {
-        let biased = [
-            apply_render_z_bias(triangle[0], render_z_bias_m),
-            apply_render_z_bias(triangle[1], render_z_bias_m),
-            apply_render_z_bias(triangle[2], render_z_bias_m),
-        ];
-        if triangle_is_too_small(biased[0], biased[1], biased[2]) {
+        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
             continue;
         }
         super::push_triangle(
             mesh,
             layer,
-            biased,
+            *triangle,
             [
                 Vector2::ZERO,
                 Vector2::new(1.0, 0.0),
@@ -451,14 +441,7 @@ fn emit_vertical_surface_polygon(
         return;
     };
 
-    let lower_render_z_bias_m = render_z_bias_for_layer(MeshLayer::Road);
-    let upper_render_z_bias_m = render_z_bias_for_layer(MeshLayer::Curb);
-    let vertices = [
-        apply_render_z_bias(*upper_start, upper_render_z_bias_m),
-        apply_render_z_bias(*lower_start, lower_render_z_bias_m),
-        apply_render_z_bias(*lower_end, lower_render_z_bias_m),
-        apply_render_z_bias(*upper_end, upper_render_z_bias_m),
-    ];
+    let vertices = [*upper_start, *lower_start, *lower_end, *upper_end];
     let uvs = [
         Vector2::ZERO,
         Vector2::new(1.0, 0.0),
@@ -489,21 +472,6 @@ fn emit_vertical_surface_polygon(
     }
 }
 
-fn apply_render_z_bias(point: Vector3, render_z_bias_m: f32) -> Vector3 {
-    Vector3::new(point.x, point.y + render_z_bias_m, point.z)
-}
-
-fn render_z_bias_for_layer(layer: MeshLayer) -> f32 {
-    match layer {
-        MeshLayer::Earthwork => EARTHWORK_RENDER_Z_BIAS_M,
-        MeshLayer::Curb => SIDEWALK_RENDER_Z_BIAS_M,
-        MeshLayer::CurbVertical => 0.0,
-        MeshLayer::Sidewalk => SIDEWALK_RENDER_Z_BIAS_M,
-        MeshLayer::Road => ROAD_RENDER_SURFACE_Z_BIAS_M,
-        MeshLayer::Marking | MeshLayer::Concrete => 0.0,
-    }
-}
-
 fn section_boundary_world_point(
     section: &RoadSurfaceSection,
     lateral_offset_m: f32,
@@ -525,6 +493,21 @@ fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {
 mod tests {
     use super::triangle_is_too_small;
     use godot::prelude::Vector3;
+
+    #[test]
+    fn compiled_surface_renderer_has_no_top_surface_z_bias_path() {
+        let source = include_str!("standard_surface.rs");
+        for forbidden in [
+            concat!("ROAD_TOP_SURFACE_RENDER_", "Z_BIAS_M"),
+            concat!("render_", "z_bias_for_layer"),
+            concat!("apply_render_", "z_bias"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "compiled road surfaces must render at solved physical coordinates, not through `{forbidden}`"
+            );
+        }
+    }
 
     #[test]
     fn renderer_keeps_valid_skinny_surface_triangles() {
