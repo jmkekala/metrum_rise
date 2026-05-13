@@ -194,6 +194,7 @@ impl NodeBooleanOwnership {
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
         clean_canonical_owned_region_shapes(
             &mut owned_regions,
+            &footprint_shapes,
             &rails.constraints,
             allow_grid_bounded_constraint_overlap,
         )?;
@@ -247,26 +248,28 @@ impl NodeOwnedRegionArrangement {
                 if let Some(opposite_owner) = opposite_owner {
                     let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
                     let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
-                    if source_constraints.is_empty() {
-                        diagnostics.push(
-                            NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
-                                region_index: edge_ref.region_index,
-                                owner: edge_ref.owner,
-                                opposite_owner,
-                                start,
-                                end,
-                            },
-                        );
-                    } else if owned_source_constraints_are_ambiguous(&source_constraints) {
-                        diagnostics.push(
-                            NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
-                                region_index: edge_ref.region_index,
-                                owner: edge_ref.owner,
-                                opposite_owner,
-                                start,
-                                end,
-                            },
-                        );
+                    if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
+                        if source_constraints.is_empty() {
+                            diagnostics.push(
+                                NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+                                    region_index: edge_ref.region_index,
+                                    owner: edge_ref.owner,
+                                    opposite_owner,
+                                    start,
+                                    end,
+                                },
+                            );
+                        } else if owned_source_constraints_are_ambiguous(&source_constraints) {
+                            diagnostics.push(
+                                NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
+                                    region_index: edge_ref.region_index,
+                                    owner: edge_ref.owner,
+                                    opposite_owner,
+                                    start,
+                                    end,
+                                },
+                            );
+                        }
                     }
                 }
                 let seam_source = source_constraints
@@ -1032,6 +1035,7 @@ fn snap_owned_region_contour_to_overlay_neighbor_points(
 
 fn clean_canonical_owned_region_shapes(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
+    footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
     allow_grid_bounded_constraint_overlap: bool,
 ) -> Result<(), NodeBooleanOwnershipError> {
@@ -1075,13 +1079,22 @@ fn clean_canonical_owned_region_shapes(
         allow_grid_bounded_constraint_overlap,
     )?;
     canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
-    if !allow_grid_bounded_constraint_overlap {
-        split_final_canonical_owned_region_self_touches(
-            &mut cleaned_regions,
-            rail_constraints,
-            allow_grid_bounded_constraint_overlap,
-        );
-    }
+    canonicalize_final_owned_region_boundary_edges(
+        &mut cleaned_regions,
+        footprint_shapes,
+        rail_constraints,
+    );
+    clean_owned_region_shapes_once(
+        &mut cleaned_regions,
+        rail_constraints,
+        allow_grid_bounded_constraint_overlap,
+    )?;
+    canonicalize_final_owned_region_boundary_edges(
+        &mut cleaned_regions,
+        footprint_shapes,
+        rail_constraints,
+    );
+    split_final_canonical_owned_region_self_touches(&mut cleaned_regions, rail_constraints, false);
     for region in &mut cleaned_regions {
         region.seam_constraints = seam_constraints_for_shape(
             &region.shape,
@@ -1092,6 +1105,28 @@ fn clean_canonical_owned_region_shapes(
     }
     *regions = cleaned_regions;
     Ok(())
+}
+
+fn canonicalize_final_owned_region_boundary_edges(
+    regions: &mut [NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+    rail_constraints: &[NodeRailConstraint],
+) {
+    canonicalize_owned_region_rings_with_rail_constraints(regions, rail_constraints);
+    node_owned_region_rings_to_global_points(regions, footprint_shapes);
+    canonicalize_owned_region_rings_with_rail_constraints(regions, rail_constraints);
+}
+
+fn node_owned_region_rings_to_global_points(
+    regions: &mut [NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+) {
+    let global_points = owned_region_global_points(regions, footprint_shapes);
+    for region in regions {
+        for contour in &mut region.shape {
+            *contour = noded_owned_region_contour(contour, &global_points);
+        }
+    }
 }
 
 fn split_final_canonical_owned_region_self_touches(
@@ -1712,6 +1747,13 @@ fn owned_source_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstrai
         .skip(1)
         .take_while(|constraint| owned_seam_constraint_priority(constraint) == first_priority)
         .any(|constraint| constraint.seam_source != first.seam_source)
+}
+
+fn owned_boundary_requires_explicit_seam(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    owner.kind() != opposite_owner.kind()
 }
 
 fn owned_seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, bool, usize) {
@@ -2578,6 +2620,11 @@ mod tests {
             points_xz: vec![RoadVec2::new(1.0, 0.0), RoadVec2::new(1.0, 2.0)],
         }];
 
+        canonicalize_final_owned_region_boundary_edges(
+            &mut regions,
+            &footprint_shapes,
+            &rail_constraints,
+        );
         materialize_noded_region_seam_constraints(
             &mut regions,
             &footprint_shapes,
@@ -2676,6 +2723,105 @@ mod tests {
                 "final shared asphalt-curb edge must carry the owner-explicit step seam"
             );
         }
+    }
+
+    #[test]
+    fn materializes_asymmetric_asphalt_curb_boundary_from_final_noded_edges() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let first_split = RoadVec2::new(1.0, 0.0);
+        let second_split = RoadVec2::new(2.0, 0.0);
+        let end = RoadVec2::new(3.0, 0.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [3.0, 0.0], [3.0, -1.0], [0.0, -1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [2.0, 0.0],
+                    [3.0, 0.0],
+                    [3.0, 1.0],
+                    [0.0, 1.0],
+                ],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 37,
+            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![start, first_split, second_split, end],
+        }];
+        let footprint_shapes = Vec::new();
+
+        canonicalize_final_owned_region_boundary_edges(
+            &mut regions,
+            &footprint_shapes,
+            &rail_constraints,
+        );
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &footprint_shapes,
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        let carriageway_contour = &regions[0].shape[0];
+        assert!(
+            carriageway_contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == road_point_key(first_split))
+        );
+        assert!(
+            carriageway_contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == road_point_key(second_split))
+        );
+        for (subedge_start, subedge_end) in [
+            (start, first_split),
+            (first_split, second_split),
+            (second_split, end),
+        ] {
+            for region in &regions {
+                assert!(
+                    region.seam_constraints.iter().any(|constraint| {
+                        road_point_key(constraint.start_xz) == road_point_key(subedge_start)
+                            && road_point_key(constraint.end_xz) == road_point_key(subedge_end)
+                            && constraint.owner == Some(carriageway)
+                            && constraint.opposite_owner == Some(curb)
+                            && matches!(
+                                constraint.seam_source,
+                                NodeSeamSource::AsphaltCurbContact { .. }
+                            )
+                    }),
+                    "final owned asphalt-curb subedge must carry the exact explicit step seam"
+                );
+            }
+        }
+
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            42,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &regions,
+            &footprint_shapes,
+        );
+        assert!(arrangement.diagnostics().is_empty());
+        assert!(!arrangement.edges().iter().any(|edge| {
+            edge.owner == carriageway
+                && edge.opposite_owner == Some(curb)
+                && edge.start == NodeOwnedRegionArrangementKey::from_point(start)
+                && edge.end == NodeOwnedRegionArrangementKey::from_point(end)
+        }));
     }
 
     #[test]
@@ -2956,6 +3102,33 @@ mod tests {
                 && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 0.0))
                 && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 2.0))
         )));
+    }
+
+    #[test]
+    fn same_band_owned_region_edge_does_not_require_material_seam_constraint() {
+        let first = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let second = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 1);
+        let regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                first,
+                vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                second,
+                vec![[4.0, 0.0], [6.0, 0.0], [6.0, 2.0], [4.0, 2.0]],
+            ),
+        ];
+
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            44,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &regions,
+            &Vec::new(),
+        );
+
+        assert!(arrangement.diagnostics().is_empty());
     }
 
     fn test_owned_region(

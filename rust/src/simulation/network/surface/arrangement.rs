@@ -577,26 +577,28 @@ impl NodeArrangement {
                     &arrangement.vertices,
                 );
                 if let Some(opposite_owner) = opposite_owner {
-                    if source_constraints.is_empty() {
-                        arrangement.diagnostics.push(
-                            NodeArrangementDiagnostic::MissingSeamConstraint {
-                                region_index: pending.region_index,
-                                owner: pending.owner,
-                                opposite_owner,
-                                start: edge.key.start,
-                                end: edge.key.end,
-                            },
-                        );
-                    } else if source_constraints_are_ambiguous(&source_constraints) {
-                        arrangement.diagnostics.push(
-                            NodeArrangementDiagnostic::AmbiguousSeamConstraint {
-                                region_index: pending.region_index,
-                                owner: pending.owner,
-                                opposite_owner,
-                                start: edge.key.start,
-                                end: edge.key.end,
-                            },
-                        );
+                    if owners_require_explicit_boundary_seam(pending.owner, opposite_owner) {
+                        if source_constraints.is_empty() {
+                            arrangement.diagnostics.push(
+                                NodeArrangementDiagnostic::MissingSeamConstraint {
+                                    region_index: pending.region_index,
+                                    owner: pending.owner,
+                                    opposite_owner,
+                                    start: edge.key.start,
+                                    end: edge.key.end,
+                                },
+                            );
+                        } else if source_constraints_are_ambiguous(&source_constraints) {
+                            arrangement.diagnostics.push(
+                                NodeArrangementDiagnostic::AmbiguousSeamConstraint {
+                                    region_index: pending.region_index,
+                                    owner: pending.owner,
+                                    opposite_owner,
+                                    start: edge.key.start,
+                                    end: edge.key.end,
+                                },
+                            );
+                        }
                     }
                 }
                 let seam_source = source_constraints
@@ -1335,6 +1337,10 @@ fn owners_share_non_curb_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> 
         a_owner.kind != RoadSurfaceBandKind::CurbOrShoulder
             && b.iter().any(|b_owner| a_owner.kind == b_owner.kind)
     })
+}
+
+fn owners_require_explicit_boundary_seam(a: NodeBandOwner, b: NodeBandOwner) -> bool {
+    a.kind() != b.kind()
 }
 
 fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
@@ -2079,6 +2085,45 @@ mod tests {
                 ..
             }) if *owner == carriageway && *opposite_owner == sidewalk
         ));
+    }
+
+    #[test]
+    fn same_band_arrangement_edge_does_not_require_material_seam_constraint() {
+        let first = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let second = owner(RoadSurfaceBandKind::Carriageway, 1);
+        let heights = NodeHeightSolution {
+            node_id: 12,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+            regions: vec![
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Carriageway,
+                    first,
+                    vec![
+                        height_vertex(0.0, 0.0, 0.0),
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                        height_vertex(0.0, 1.0, 0.0),
+                    ],
+                    Vec::new(),
+                ),
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Carriageway,
+                    second,
+                    vec![
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(2.0, 0.0, 0.0),
+                        height_vertex(2.0, 1.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                    ],
+                    Vec::new(),
+                ),
+            ],
+        };
+
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("same-band owned regions should share a non-material boundary");
+
+        assert!(arrangement.diagnostics().is_empty());
     }
 
     #[test]

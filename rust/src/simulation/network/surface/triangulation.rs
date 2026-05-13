@@ -6,9 +6,9 @@ use super::arrangement::{
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour,
-    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
+    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    SurfaceCdt,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
@@ -332,7 +332,7 @@ fn triangle_is_inside_owner(
         &owner_shapes,
         "triangle_minus_owner",
     )?;
-    Ok(overlay_area_m2(&residual) <= NODE_OVERLAY_NUMERIC_AREA_EPS_M2)
+    Ok(residual.is_empty())
 }
 
 fn reject_triangle_coverage_mismatch(
