@@ -3,7 +3,7 @@
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
 use super::{
-    PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
+    PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
@@ -21,6 +21,89 @@ use crate::simulation::terrain::cdt::{
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[test]
+fn span_curbface_generation_does_not_use_legacy_section_pair_seam_finder() {
+    let span_source = include_str!("span.rs");
+    for forbidden in [
+        "curb_vertical_face_polygon_for_section_pair",
+        "curb_asphalt_boundary",
+    ] {
+        assert!(
+            !span_source.contains(forbidden),
+            "span curbface generation must consume explicit vertical-step boundaries, not legacy section-pair seam finder `{forbidden}`"
+        );
+    }
+    assert!(
+        span_source.contains("compile_span_explicit_vertical_step_faces_for_ranges"),
+        "span curbface generation must keep an explicit vertical-step consumption path"
+    );
+}
+
+#[test]
+fn span_vertical_steps_include_direct_carriageway_sidewalk_boundaries() {
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        a,
+        b,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        5.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR,
+    ));
+    let section_at = |s_m: f32| RoadSurfaceSection {
+        edge_idx,
+        s_m,
+        center_xz: Vector2::new(s_m, 0.0),
+        center_height_m: 0.0,
+        tangent_xz: Vector2::new(1.0, 0.0),
+        lateral_xz: Vector2::new(0.0, 1.0),
+        bands: vec![
+            RoadSurfaceBand {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: -3.0,
+                lateral_end_m: 0.0,
+                height_start_m: 0.0,
+                height_end_m: 0.0,
+            },
+            RoadSurfaceBand {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                lateral_start_m: 0.0,
+                lateral_end_m: 2.0,
+                height_start_m: CURB_STEP_HEIGHT_M,
+                height_end_m: CURB_STEP_HEIGHT_M,
+            },
+        ],
+    };
+    let sections = vec![
+        section_at(0.0),
+        section_at(4.0),
+        section_at(6.0),
+        section_at(10.0),
+    ];
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    surface.compiled_sections.insert(edge_idx, sections);
+
+    let span_piece = surface
+        .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
+        .expect("direct carriageway-sidewalk span should compile");
+    assert!(!span_piece.curb_vertical_face_polygons.is_empty());
+    assert!(
+        span_piece.curb_vertical_face_polygons.iter().any(|face| {
+            face.points_world
+                .iter()
+                .any(|point| (point.y - CURB_STEP_HEIGHT_M).abs() <= SAMPLE_EPSILON_M)
+                && face
+                    .points_world
+                    .iter()
+                    .any(|point| point.y.abs() <= SAMPLE_EPSILON_M)
+        }),
+        "direct carriageway-sidewalk span boundary must emit a raised vertical face"
+    );
+}
 
 fn test_edge(
     start_node: u32,

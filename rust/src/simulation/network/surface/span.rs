@@ -14,6 +14,16 @@ use godot::prelude::Vector3;
 // Avoid strip construction between adjacent bands whose widths have collapsed together.
 const BAND_WIDTH_MATCH_EPSILON_M: f32 = 0.05;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpanExplicitVerticalStepBoundary {
+    boundary_lateral_m: f32,
+    lower_height_m: f32,
+    raised_height_m: f32,
+    lower_mid_lateral_m: f32,
+    lower_kind: RoadSurfaceBandKind,
+    raised_kind: RoadSurfaceBandKind,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_span_piece(
         &self,
@@ -28,12 +38,10 @@ impl RoadSurfaceSystem {
         let sections = self.compiled_sections.get(&edge_idx)?;
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
-        let (
-            mut road_surface_polygons,
-            mut curb_surface_polygons,
-            mut curb_vertical_face_polygons,
-            mut sidewalk_surface_polygons,
-        ) = self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
+        let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
+            self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
+        let mut curb_vertical_face_polygons =
+            Self::compile_span_explicit_vertical_step_faces_for_ranges(sections, &visible_ranges);
 
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
@@ -57,7 +65,6 @@ impl RoadSurfaceSystem {
         let (
             mut clearance_road_surface_polygons,
             mut clearance_curb_surface_polygons,
-            _clearance_curb_vertical_face_polygons,
             mut clearance_sidewalk_surface_polygons,
         ) = self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
         Self::sort_visual_polygons(&mut clearance_road_surface_polygons);
@@ -104,11 +111,9 @@ impl RoadSurfaceSystem {
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
     ) {
         let mut road_surface_polygons = Vec::new();
         let mut curb_surface_polygons = Vec::new();
-        let mut curb_vertical_face_polygons = Vec::new();
         let mut sidewalk_surface_polygons = Vec::new();
 
         for &(start_index, end_index) in ranges {
@@ -119,9 +124,7 @@ impl RoadSurfaceSystem {
                 if pair[0].bands.len() != pair[1].bands.len() {
                     continue;
                 }
-                for (band_index, (band_a, band_b)) in
-                    pair[0].bands.iter().zip(&pair[1].bands).enumerate()
-                {
+                for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
                     let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
                     let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
                     if width_a <= BAND_WIDTH_MATCH_EPSILON_M
@@ -164,11 +167,6 @@ impl RoadSurfaceSystem {
                             RoadSurfaceBandKind::CurbOrShoulder,
                         ) => {
                             curb_surface_polygons.push(polygon);
-                            if let Some(face) =
-                                Self::curb_vertical_face_polygon_for_section_pair(pair, band_index)
-                            {
-                                curb_vertical_face_polygons.push(face);
-                            }
                         }
                         _ => {
                             sidewalk_surface_polygons.push(polygon);
@@ -181,43 +179,140 @@ impl RoadSurfaceSystem {
         (
             road_surface_polygons,
             curb_surface_polygons,
-            curb_vertical_face_polygons,
             sidewalk_surface_polygons,
         )
     }
 
-    fn curb_vertical_face_polygon_for_section_pair(
-        pair: &[RoadSurfaceSection],
-        band_index: usize,
-    ) -> Option<RoadSurfaceVisualPolygon> {
-        if pair.len() != 2 {
+    fn compile_span_explicit_vertical_step_faces_for_ranges(
+        sections: &[RoadSurfaceSection],
+        ranges: &[(usize, usize)],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut faces = Vec::new();
+        for &(start_index, end_index) in ranges {
+            if end_index <= start_index {
+                continue;
+            }
+            for pair in sections[start_index..=end_index].windows(2) {
+                if pair[0].bands.len() != pair[1].bands.len() {
+                    continue;
+                }
+                for boundary_index in 0..pair[0].bands.len().saturating_sub(1) {
+                    let Some(start_boundary) =
+                        Self::span_explicit_vertical_step_boundary(&pair[0], boundary_index)
+                    else {
+                        continue;
+                    };
+                    let Some(end_boundary) =
+                        Self::span_explicit_vertical_step_boundary(&pair[1], boundary_index)
+                    else {
+                        continue;
+                    };
+                    let Some(face) =
+                        Self::span_explicit_vertical_step_face(pair, start_boundary, end_boundary)
+                    else {
+                        continue;
+                    };
+                    faces.push(face);
+                }
+            }
+        }
+        faces
+    }
+
+    fn span_explicit_vertical_step_boundary(
+        section: &RoadSurfaceSection,
+        boundary_index: usize,
+    ) -> Option<SpanExplicitVerticalStepBoundary> {
+        let lower_index = boundary_index;
+        let upper_index = boundary_index + 1;
+        let left = section.bands.get(lower_index)?;
+        let right = section.bands.get(upper_index)?;
+        if left.lateral_end_m != right.lateral_start_m {
             return None;
         }
-        let (lateral_a, asphalt_lateral_a, lower_height_a, raised_height_a) =
-            curb_asphalt_boundary(&pair[0], band_index)?;
-        let (lateral_b, asphalt_lateral_b, lower_height_b, raised_height_b) =
-            curb_asphalt_boundary(&pair[1], band_index)?;
-        if (raised_height_a - lower_height_a).abs() <= BAND_WIDTH_MATCH_EPSILON_M
-            && (raised_height_b - lower_height_b).abs() <= BAND_WIDTH_MATCH_EPSILON_M
+
+        let boundary_lateral_m = left.lateral_end_m;
+        let left_mid_lateral_m = (left.lateral_start_m + left.lateral_end_m) * 0.5;
+        let right_mid_lateral_m = (right.lateral_start_m + right.lateral_end_m) * 0.5;
+        let boundary = match (left.kind, right.kind) {
+            (RoadSurfaceBandKind::Carriageway, raised_kind)
+                if raised_kind != RoadSurfaceBandKind::Carriageway =>
+            {
+                SpanExplicitVerticalStepBoundary {
+                    boundary_lateral_m,
+                    lower_height_m: left.height_end_m,
+                    raised_height_m: right.height_start_m,
+                    lower_mid_lateral_m: left_mid_lateral_m,
+                    lower_kind: left.kind,
+                    raised_kind,
+                }
+            }
+            (raised_kind, RoadSurfaceBandKind::Carriageway)
+                if raised_kind != RoadSurfaceBandKind::Carriageway =>
+            {
+                SpanExplicitVerticalStepBoundary {
+                    boundary_lateral_m,
+                    lower_height_m: right.height_start_m,
+                    raised_height_m: left.height_end_m,
+                    lower_mid_lateral_m: right_mid_lateral_m,
+                    lower_kind: right.kind,
+                    raised_kind,
+                }
+            }
+            _ => return None,
+        };
+
+        if boundary.raised_height_m <= boundary.lower_height_m {
+            return None;
+        }
+        Some(boundary)
+    }
+
+    fn span_explicit_vertical_step_face(
+        pair: &[RoadSurfaceSection],
+        start_boundary: SpanExplicitVerticalStepBoundary,
+        end_boundary: SpanExplicitVerticalStepBoundary,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        if pair.len() != 2
+            || start_boundary.lower_kind != end_boundary.lower_kind
+            || start_boundary.raised_kind != end_boundary.raised_kind
         {
             return None;
         }
 
         let mut points = [
-            Self::section_boundary_world_point_static(&pair[0], lateral_a, raised_height_a),
-            Self::section_boundary_world_point_static(&pair[0], lateral_a, lower_height_a),
-            Self::section_boundary_world_point_static(&pair[1], lateral_b, lower_height_b),
-            Self::section_boundary_world_point_static(&pair[1], lateral_b, raised_height_b),
+            Self::section_boundary_world_point_static(
+                &pair[0],
+                start_boundary.boundary_lateral_m,
+                start_boundary.raised_height_m,
+            ),
+            Self::section_boundary_world_point_static(
+                &pair[0],
+                start_boundary.boundary_lateral_m,
+                start_boundary.lower_height_m,
+            ),
+            Self::section_boundary_world_point_static(
+                &pair[1],
+                end_boundary.boundary_lateral_m,
+                end_boundary.lower_height_m,
+            ),
+            Self::section_boundary_world_point_static(
+                &pair[1],
+                end_boundary.boundary_lateral_m,
+                end_boundary.raised_height_m,
+            ),
         ];
-        let asphalt_direction_a = pair[0].lateral_xz * (asphalt_lateral_a - lateral_a);
-        let asphalt_direction_b = pair[1].lateral_xz * (asphalt_lateral_b - lateral_b);
-        let asphalt_direction = Vector3::new(
-            asphalt_direction_a.x + asphalt_direction_b.x,
+        let lower_direction_a = pair[0].lateral_xz
+            * (start_boundary.lower_mid_lateral_m - start_boundary.boundary_lateral_m);
+        let lower_direction_b = pair[1].lateral_xz
+            * (end_boundary.lower_mid_lateral_m - end_boundary.boundary_lateral_m);
+        let lower_direction = Vector3::new(
+            lower_direction_a.x + lower_direction_b.x,
             0.0,
-            asphalt_direction_a.y + asphalt_direction_b.y,
+            lower_direction_a.y + lower_direction_b.y,
         );
         let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-        if face_normal.dot(asphalt_direction) > 0.0 {
+        if face_normal.dot(lower_direction) > 0.0 {
             points = [points[3], points[2], points[1], points[0]];
         }
 
@@ -466,44 +561,4 @@ fn matching_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Opt
     loop_points.iter().copied().find(|candidate| {
         (*candidate - point).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
     })
-}
-
-fn curb_asphalt_boundary(
-    section: &RoadSurfaceSection,
-    band_index: usize,
-) -> Option<(f32, f32, f32, f32)> {
-    let band = section.bands.get(band_index)?;
-    if band.kind != RoadSurfaceBandKind::CurbOrShoulder {
-        return None;
-    }
-
-    if let Some(previous) = band_index
-        .checked_sub(1)
-        .and_then(|index| section.bands.get(index))
-        && previous.kind == RoadSurfaceBandKind::Carriageway
-        && (previous.lateral_end_m - band.lateral_start_m).abs() <= BAND_WIDTH_MATCH_EPSILON_M
-    {
-        let asphalt_lateral_m = (previous.lateral_start_m + previous.lateral_end_m) * 0.5;
-        return Some((
-            band.lateral_start_m,
-            asphalt_lateral_m,
-            previous.height_end_m,
-            band.height_start_m,
-        ));
-    }
-
-    if let Some(next) = section.bands.get(band_index + 1)
-        && next.kind == RoadSurfaceBandKind::Carriageway
-        && (band.lateral_end_m - next.lateral_start_m).abs() <= BAND_WIDTH_MATCH_EPSILON_M
-    {
-        let asphalt_lateral_m = (next.lateral_start_m + next.lateral_end_m) * 0.5;
-        return Some((
-            band.lateral_end_m,
-            asphalt_lateral_m,
-            next.height_start_m,
-            band.height_end_m,
-        ));
-    }
-
-    None
 }
