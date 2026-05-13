@@ -296,11 +296,19 @@ impl NodeRailContourSet {
         append_generated_role_material_contact_constraints(&contours, &mut constraints);
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         append_generated_material_point_contact_constraints(&contours, &mut constraints);
+        node_generated_contact_contours(&mut contours, &mut constraints)?;
         append_generated_same_band_contact_constraints(
             input.piece_kind,
             &contours,
             &mut constraints,
         );
+        node_generated_contact_contours(&mut contours, &mut constraints)?;
+        node_generated_contact_constraint_points_on_contours(
+            input.piece_kind,
+            &mut contours,
+            &mut constraints,
+        )?;
+        canonicalize_generated_contact_constraints_to_source_contours(&contours, &mut constraints);
         Ok(Self {
             node_id: input.node_id,
             piece_kind: input.piece_kind,
@@ -2474,9 +2482,10 @@ fn append_generated_owner_group_contact_constraints(
     contact_edges: &mut BTreeSet<GeneratedSameBandContactConstraint>,
 ) {
     let groups = generated_owner_contact_groups(contours);
-    let canonical_point_by_projected_key = generated_canonical_point_by_projected_key(constraints);
-    let canonical_point_by_overlay_key =
-        generated_canonical_point_by_overlay_neighbor_key(constraints);
+    let canonical_points_by_group = groups
+        .iter()
+        .map(|group| GeneratedOwnerGroupCanonicalPoints::from_group(group, contours))
+        .collect::<Vec<_>>();
     for left_index in 0..groups.len() {
         for right_index in left_index + 1..groups.len() {
             let left = &groups[left_index];
@@ -2495,9 +2504,10 @@ fn append_generated_owner_group_contact_constraints(
                 (right.key.owner, left.key.owner)
             };
             for edge in generated_owner_group_contact_edges_inside_group(left, right, contours) {
-                let Some(edge) =
-                    generated_canonicalized_contact_edge(edge, &canonical_point_by_projected_key)
-                else {
+                let Some(edge) = generated_canonicalized_contact_edge_for_group(
+                    edge,
+                    &canonical_points_by_group[left_index],
+                ) else {
                     continue;
                 };
                 let has_roles = generated_owner_group_contact_edge_has_explicit_roles(
@@ -2521,9 +2531,10 @@ fn append_generated_owner_group_contact_constraints(
                 }
             }
             for edge in generated_owner_group_contact_edges_inside_group(right, left, contours) {
-                let Some(edge) =
-                    generated_canonicalized_contact_edge(edge, &canonical_point_by_projected_key)
-                else {
+                let Some(edge) = generated_canonicalized_contact_edge_for_group(
+                    edge,
+                    &canonical_points_by_group[right_index],
+                ) else {
                     continue;
                 };
                 let has_roles = generated_owner_group_contact_edge_has_explicit_roles(
@@ -2547,13 +2558,19 @@ fn append_generated_owner_group_contact_constraints(
                 }
             }
             if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-                let intersection_source = generated_owner_group_intersection_source(left, right);
+                let intersection_source_index = generated_owner_group_intersection_source_index(
+                    left_index,
+                    right_index,
+                    left,
+                    right,
+                );
+                let intersection_source = &groups[intersection_source_index];
                 for edge in
                     generated_owner_group_contact_edges_from_overlay_intersection(left, right)
                 {
-                    let Some(edge) = generated_canonicalized_contact_edge_by_overlay_key(
+                    let Some(edge) = generated_canonicalized_contact_edge_for_group(
                         edge,
-                        &canonical_point_by_overlay_key,
+                        &canonical_points_by_group[intersection_source_index],
                     ) else {
                         continue;
                     };
@@ -2582,31 +2599,89 @@ fn append_generated_owner_group_contact_constraints(
     }
 }
 
-fn generated_owner_group_intersection_source<'a>(
-    left: &'a GeneratedOwnerContactGroup,
-    right: &'a GeneratedOwnerContactGroup,
-) -> &'a GeneratedOwnerContactGroup {
+fn generated_owner_group_intersection_source_index(
+    left_index: usize,
+    right_index: usize,
+    left: &GeneratedOwnerContactGroup,
+    right: &GeneratedOwnerContactGroup,
+) -> usize {
     if is_carriageway(left.key.kind) {
-        left
+        left_index
     } else if is_carriageway(right.key.kind) {
-        right
+        right_index
     } else if left.key <= right.key {
-        left
+        left_index
     } else {
-        right
+        right_index
+    }
+}
+
+struct GeneratedOwnerGroupCanonicalPoints {
+    keys: BTreeSet<NodeRailPointKey>,
+    by_projected_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+    by_overlay_neighbor_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+}
+
+impl GeneratedOwnerGroupCanonicalPoints {
+    fn from_group(group: &GeneratedOwnerContactGroup, contours: &[NodeGeneratedContour]) -> Self {
+        let keys = group
+            .contour_indices
+            .iter()
+            .filter_map(|index| contours.get(*index))
+            .flat_map(generated_contour_keys)
+            .collect::<Vec<_>>();
+        Self {
+            keys: keys.iter().copied().collect(),
+            by_projected_key: generated_preferred_point_by_projected_key(&keys),
+            by_overlay_neighbor_key: generated_preferred_point_by_overlay_neighbor_key(&keys),
+        }
+    }
+
+    fn canonicalize(&self, point: NodeRailPointKey) -> NodeRailPointKey {
+        if self.keys.contains(&point) {
+            return point;
+        }
+        self.by_overlay_neighbor_key
+            .get(&point)
+            .copied()
+            .or_else(|| {
+                self.by_projected_key
+                    .get(&generated_project_point_key(point))
+                    .copied()
+            })
+            .unwrap_or(point)
     }
 }
 
 fn generated_canonical_point_by_projected_key(
-    constraints: &[NodeRailConstraint],
+    points: &[NodeRailPointKey],
+) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
+    let mut canonical_by_projected_key =
+        BTreeMap::<NodeRailPointKey, Option<NodeRailPointKey>>::new();
+    for point in points.iter().copied() {
+        canonical_by_projected_key
+            .entry(generated_project_point_key(point))
+            .and_modify(|existing| {
+                if *existing != Some(point) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(point));
+    }
+    canonical_by_projected_key
+        .into_iter()
+        .filter_map(|(projected_key, canonical)| {
+            canonical.map(|canonical| (projected_key, canonical))
+        })
+        .collect()
+}
+
+fn generated_preferred_point_by_projected_key(
+    points: &[NodeRailPointKey],
 ) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
     let mut counts_by_projected_key =
         BTreeMap::<NodeRailPointKey, BTreeMap<NodeRailPointKey, usize>>::new();
-    for point in constraints
-        .iter()
-        .flat_map(|constraint| constraint.points_xz.iter().copied())
-        .map(road_point_key)
-    {
+    for point in points.iter().copied() {
         *counts_by_projected_key
             .entry(generated_project_point_key(point))
             .or_default()
@@ -2629,14 +2704,33 @@ fn generated_canonical_point_by_projected_key(
 }
 
 fn generated_canonical_point_by_overlay_neighbor_key(
-    constraints: &[NodeRailConstraint],
+    points: &[NodeRailPointKey],
+) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
+    let mut canonical_by_neighbor_key =
+        BTreeMap::<NodeRailPointKey, Option<NodeRailPointKey>>::new();
+    for point in points.iter().copied() {
+        for neighbor in generated_overlay_neighbor_points(point) {
+            canonical_by_neighbor_key
+                .entry(neighbor)
+                .and_modify(|existing| {
+                    if *existing != Some(point) {
+                        *existing = None;
+                    }
+                })
+                .or_insert(Some(point));
+        }
+    }
+    canonical_by_neighbor_key
+        .into_iter()
+        .filter_map(|(neighbor, canonical)| canonical.map(|canonical| (neighbor, canonical)))
+        .collect()
+}
+
+fn generated_preferred_point_by_overlay_neighbor_key(
+    points: &[NodeRailPointKey],
 ) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
     let mut point_counts = BTreeMap::<NodeRailPointKey, usize>::new();
-    for point in constraints
-        .iter()
-        .flat_map(|constraint| constraint.points_xz.iter().copied())
-        .map(road_point_key)
-    {
+    for point in points.iter().copied() {
         *point_counts.entry(point).or_default() += 1;
     }
     point_counts
@@ -2688,38 +2782,20 @@ fn generated_coordinate_key_to_mm(value: i64) -> i64 {
     }
 }
 
-fn generated_canonicalized_contact_edge(
+fn generated_canonicalized_contact_edge_for_group(
     edge: GeneratedContourEdgeKey,
-    canonical_point_by_projected_key: &BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+    canonical_points: &GeneratedOwnerGroupCanonicalPoints,
 ) -> Option<GeneratedContourEdgeKey> {
-    let start = generated_canonicalized_contact_point(edge.start, canonical_point_by_projected_key);
-    let end = generated_canonicalized_contact_point(edge.end, canonical_point_by_projected_key);
-    (start != end).then_some(GeneratedContourEdgeKey::new(start, end))
-}
-
-fn generated_canonicalized_contact_edge_by_overlay_key(
-    edge: GeneratedContourEdgeKey,
-    canonical_point_by_overlay_key: &BTreeMap<NodeRailPointKey, NodeRailPointKey>,
-) -> Option<GeneratedContourEdgeKey> {
-    let start = canonical_point_by_overlay_key
-        .get(&edge.start)
-        .copied()
-        .unwrap_or(edge.start);
-    let end = canonical_point_by_overlay_key
-        .get(&edge.end)
-        .copied()
-        .unwrap_or(edge.end);
+    let start = generated_canonicalized_contact_point(edge.start, canonical_points);
+    let end = generated_canonicalized_contact_point(edge.end, canonical_points);
     (start != end).then_some(GeneratedContourEdgeKey::new(start, end))
 }
 
 fn generated_canonicalized_contact_point(
     point: NodeRailPointKey,
-    canonical_point_by_projected_key: &BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+    canonical_points: &GeneratedOwnerGroupCanonicalPoints,
 ) -> NodeRailPointKey {
-    canonical_point_by_projected_key
-        .get(&generated_project_point_key(point))
-        .copied()
-        .unwrap_or(point)
+    canonical_points.canonicalize(point)
 }
 
 fn generated_owner_contact_groups(
@@ -3443,6 +3519,195 @@ fn generated_contact_contour_noding_candidate(
     None
 }
 
+fn node_generated_contact_constraint_points_on_contours(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+) -> Result<(), NodeRailGenerationError> {
+    if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
+        return Ok(());
+    }
+    let mut candidates =
+        generated_contact_constraint_point_noding_candidates(contours, constraints);
+    candidates.sort_unstable();
+    candidates.dedup();
+    for (contour_index, insert_key) in candidates {
+        insert_key_on_generated_contour_source_edge(
+            contours,
+            constraints,
+            contour_index,
+            insert_key,
+        )?;
+    }
+    Ok(())
+}
+
+fn canonicalize_generated_contact_constraints_to_source_contours(
+    contours: &[NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+) {
+    let mut keys_by_source =
+        BTreeMap::<(NodeBandOwner, usize, usize), Vec<NodeRailPointKey>>::new();
+    for contour in contours {
+        let (Some(owner), Some(source_band_index)) = (contour.owner, contour.source_band_index)
+        else {
+            continue;
+        };
+        keys_by_source
+            .entry((owner, contour.source_mouth_order_index, source_band_index))
+            .or_default()
+            .extend(generated_contour_keys(contour));
+    }
+    let canonical_by_source = keys_by_source
+        .into_iter()
+        .map(|(source, keys)| {
+            (
+                source,
+                GeneratedSourceContourCanonicalPoints::from_keys(keys),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for constraint in constraints {
+        if generated_contact_constraint_kind_from_constraint(constraint.kind).is_none() {
+            continue;
+        }
+        let Some(source_band_index) = constraint.source_band_index else {
+            continue;
+        };
+        let owners = [constraint.owner, constraint.opposite_owner];
+        for point in &mut constraint.points_xz {
+            let key = road_point_key(*point);
+            let mut candidates = owners
+                .into_iter()
+                .flatten()
+                .filter_map(|owner| {
+                    canonical_by_source
+                        .get(&(
+                            owner,
+                            constraint.source_mouth_order_index,
+                            source_band_index,
+                        ))
+                        .map(|canonical| canonical.canonicalize(key))
+                })
+                .filter(|candidate| *candidate != key)
+                .collect::<Vec<_>>();
+            candidates.sort_unstable();
+            candidates.dedup();
+            if let [candidate] = candidates.as_slice() {
+                *point = road_point_from_key(*candidate);
+            }
+        }
+    }
+}
+
+struct GeneratedSourceContourCanonicalPoints {
+    keys: BTreeSet<NodeRailPointKey>,
+    by_projected_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+    by_overlay_neighbor_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
+}
+
+impl GeneratedSourceContourCanonicalPoints {
+    fn from_keys(keys: Vec<NodeRailPointKey>) -> Self {
+        Self {
+            keys: keys.iter().copied().collect(),
+            by_projected_key: generated_canonical_point_by_projected_key(&keys),
+            by_overlay_neighbor_key: generated_canonical_point_by_overlay_neighbor_key(&keys),
+        }
+    }
+
+    fn canonicalize(&self, point: NodeRailPointKey) -> NodeRailPointKey {
+        if self.keys.contains(&point) {
+            return point;
+        }
+        self.by_overlay_neighbor_key
+            .get(&point)
+            .copied()
+            .or_else(|| {
+                self.by_projected_key
+                    .get(&generated_project_point_key(point))
+                    .copied()
+            })
+            .unwrap_or(point)
+    }
+}
+
+fn generated_contact_constraint_point_noding_candidates(
+    contours: &[NodeGeneratedContour],
+    constraints: &[NodeRailConstraint],
+) -> Vec<(usize, NodeRailPointKey)> {
+    let mut candidates = Vec::new();
+    for constraint in constraints {
+        if generated_contact_constraint_kind_from_constraint(constraint.kind).is_none() {
+            continue;
+        }
+        let Some(source_band_index) = constraint.source_band_index else {
+            continue;
+        };
+        for (contour_index, contour) in contours.iter().enumerate() {
+            let Some(contour_owner) = contour.owner else {
+                continue;
+            };
+            if ![constraint.owner, constraint.opposite_owner].contains(&Some(contour_owner))
+                || contour.source_mouth_order_index != constraint.source_mouth_order_index
+                || contour.source_band_index != Some(source_band_index)
+                || generated_contour_band_kind(contour) != Some(contour_owner.kind())
+            {
+                continue;
+            }
+            let contour_keys = generated_contour_keys(contour);
+            for point in constraint.points_xz.iter().copied().map(road_point_key) {
+                if !contour_keys.contains(&point) {
+                    candidates.push((contour_index, point));
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn insert_key_on_generated_contour_source_edge(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    contour_index: usize,
+    insert_key: NodeRailPointKey,
+) -> Result<(), NodeRailGenerationError> {
+    let Some(contour) = contours.get_mut(contour_index) else {
+        return Ok(());
+    };
+    let Some(edge) = generated_contour_source_edge_for_key(contour, insert_key) else {
+        return Ok(());
+    };
+    let mut keys = generated_contour_keys(contour);
+    if insert_key_on_generated_contour_edge(&mut keys, edge.start, edge.end, insert_key) {
+        insert_height_key_on_generated_contour_edge(contour, edge, insert_key);
+        set_generated_contour_from_keys(contour, constraints, keys)?;
+    }
+    Ok(())
+}
+
+fn generated_contour_source_edge_for_key(
+    contour: &NodeGeneratedContour,
+    point: NodeRailPointKey,
+) -> Option<GeneratedContourDirectedEdge> {
+    if generated_contour_keys(contour).contains(&point) {
+        return None;
+    }
+    let candidates = generated_contour_directed_edges(contour)
+        .into_iter()
+        .filter(|edge| {
+            generated_point_key_lies_on_segment(point, edge.start, edge.end)
+                || generated_point_key_quantization_cell_intersects_segment(
+                    point, edge.start, edge.end,
+                )
+        })
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [edge] => Some(*edge),
+        _ => None,
+    }
+}
+
 fn generated_contours_support_contact_noding(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
@@ -3711,9 +3976,79 @@ fn insert_key_on_generated_contour(
     };
     let mut keys = generated_contour_keys(contour);
     if insert_key_on_generated_contour_edge(&mut keys, edge.start, edge.end, insert_key) {
+        insert_height_key_on_generated_contour_edge(contour, edge, insert_key);
         set_generated_contour_from_keys(contour, constraints, keys)?;
     }
     Ok(())
+}
+
+fn insert_height_key_on_generated_contour_edge(
+    contour: &mut NodeGeneratedContour,
+    edge: GeneratedContourDirectedEdge,
+    insert_key: NodeRailPointKey,
+) {
+    let keys = generated_contour_keys(contour);
+    let Some(height_points_world) = contour.height_points_world.as_mut() else {
+        return;
+    };
+    if keys.len() != height_points_world.len() || keys.len() < 2 {
+        contour.height_points_world = None;
+        return;
+    }
+    if keys.contains(&insert_key) {
+        return;
+    }
+    for index in 0..keys.len() {
+        let next = if index + 1 == keys.len() {
+            0
+        } else {
+            index + 1
+        };
+        if keys[index] != edge.start || keys[next] != edge.end {
+            continue;
+        }
+        let start_height_m = height_points_world[index].y;
+        let end_height_m = height_points_world[next].y;
+        let Some(height_m) = height_for_key_on_generated_edge(
+            insert_key,
+            edge.start,
+            edge.end,
+            start_height_m,
+            end_height_m,
+        ) else {
+            contour.height_points_world = None;
+            return;
+        };
+        let point = road_point_from_key(insert_key);
+        height_points_world.insert(next, RoadVec3::new(point.x, height_m, point.y));
+        return;
+    }
+    contour.height_points_world = None;
+}
+
+fn height_for_key_on_generated_edge(
+    point: NodeRailPointKey,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+    start_height_m: f64,
+    end_height_m: f64,
+) -> Option<f64> {
+    if start == end {
+        return None;
+    }
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
+    if denominator == 0 {
+        return None;
+    }
+    let numerator = if dx.abs() >= dz.abs() {
+        point.0 - start.0
+    } else {
+        point.1 - start.1
+    };
+    let t = numerator as f64 / denominator as f64;
+    Some(start_height_m + (end_height_m - start_height_m) * t)
 }
 
 fn set_generated_contour_from_keys(
@@ -3733,6 +4068,10 @@ fn set_generated_contour_from_keys(
     )?;
     contour.points_xz = polyline_to_road_points(&polyline);
     contour.backend_polyline = polyline;
+    if let Some(height_points_world) = contour.height_points_world.as_deref() {
+        contour.height_points_world =
+            align_height_points_to_contour(&contour.points_xz, height_points_world);
+    }
     update_generated_band_contour_constraint(contour, constraints);
     Ok(())
 }
@@ -4110,6 +4449,91 @@ fn generated_point_key_lies_on_segment(
         point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
     };
     inside_x && inside_z
+}
+
+fn generated_point_key_quantization_cell_intersects_segment(
+    point: NodeRailPointKey,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+) -> bool {
+    if start == end {
+        return false;
+    }
+    let min_x2 = i128::from(point.0) * 2 - 1;
+    let max_x2 = i128::from(point.0) * 2 + 1;
+    let min_z2 = i128::from(point.1) * 2 - 1;
+    let max_z2 = i128::from(point.1) * 2 + 1;
+    let segment_start = (i128::from(start.0) * 2, i128::from(start.1) * 2);
+    let segment_end = (i128::from(end.0) * 2, i128::from(end.1) * 2);
+    if doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
+        || doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
+    {
+        return true;
+    }
+    let lower_left = (min_x2, min_z2);
+    let lower_right = (max_x2, min_z2);
+    let upper_right = (max_x2, max_z2);
+    let upper_left = (min_x2, max_z2);
+    [
+        (lower_left, lower_right),
+        (lower_right, upper_right),
+        (upper_right, upper_left),
+        (upper_left, lower_left),
+    ]
+    .into_iter()
+    .any(|(edge_start, edge_end)| {
+        doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
+    })
+}
+
+fn doubled_point_inside_axis_aligned_box(
+    point: (i128, i128),
+    min_x: i128,
+    max_x: i128,
+    min_z: i128,
+    max_z: i128,
+) -> bool {
+    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
+}
+
+fn doubled_segments_intersect(
+    a: (i128, i128),
+    b: (i128, i128),
+    c: (i128, i128),
+    d: (i128, i128),
+) -> bool {
+    let ab_c = doubled_triangle_area2(a, b, c);
+    let ab_d = doubled_triangle_area2(a, b, d);
+    let cd_a = doubled_triangle_area2(c, d, a);
+    let cd_b = doubled_triangle_area2(c, d, b);
+    if ab_c == 0 && doubled_point_on_segment(c, a, b) {
+        return true;
+    }
+    if ab_d == 0 && doubled_point_on_segment(d, a, b) {
+        return true;
+    }
+    if cd_a == 0 && doubled_point_on_segment(a, c, d) {
+        return true;
+    }
+    if cd_b == 0 && doubled_point_on_segment(b, c, d) {
+        return true;
+    }
+    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
+}
+
+fn doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
+    let ab_x = b.0 - a.0;
+    let ab_z = b.1 - a.1;
+    let ac_x = c.0 - a.0;
+    let ac_z = c.1 - a.1;
+    ab_x * ac_z - ab_z * ac_x
+}
+
+fn doubled_point_on_segment(point: (i128, i128), start: (i128, i128), end: (i128, i128)) -> bool {
+    point.0 >= start.0.min(end.0)
+        && point.0 <= start.0.max(end.0)
+        && point.1 >= start.1.min(end.1)
+        && point.1 <= start.1.max(end.1)
 }
 
 fn insert_key_on_generated_contour_edge(

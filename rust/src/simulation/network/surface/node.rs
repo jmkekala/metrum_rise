@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+const VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ArrangementFaceBoundaryInterval {
@@ -578,56 +579,70 @@ impl RoadSurfaceSystem {
                 raised_owner,
                 segment_key,
             );
-            for (lower_interval, raised_interval, start_t, end_t) in
-                arrangement_shared_face_boundary_intervals(&lower_intervals, &raised_intervals)
+            Self::push_arrangement_vertical_step_faces_from_intervals(
+                arrangement,
+                lower_owner,
+                segment_key,
+                segment_key,
+                &lower_intervals,
+                &raised_intervals,
+                step_index,
+                segment,
+                &mut emitted,
+                &mut faces,
+            );
+            for sibling in explicit_vertical_step_segments
+                .iter()
+                .copied()
+                .filter(|sibling| *sibling != segment)
             {
-                let Some(lower_start) = arrangement_face_boundary_interval_point_at(
-                    segment_key,
-                    lower_interval,
-                    start_t,
-                ) else {
-                    continue;
-                };
-                let Some(lower_end) =
-                    arrangement_face_boundary_interval_point_at(segment_key, lower_interval, end_t)
+                let Some((sibling_lower_owner, sibling_raised_owner)) =
+                    canonical_vertical_step_lower_and_raised_owners(sibling)
                 else {
                     continue;
                 };
-                let Some(raised_start) = arrangement_face_boundary_interval_point_at(
-                    segment_key,
-                    raised_interval,
-                    start_t,
-                ) else {
+                if sibling_lower_owner != lower_owner || sibling_raised_owner != raised_owner {
                     continue;
-                };
-                let Some(raised_end) = arrangement_face_boundary_interval_point_at(
-                    segment_key,
-                    raised_interval,
-                    end_t,
-                ) else {
+                }
+                let sibling_key = (sibling.start(), sibling.end());
+                if !arrangement_step_segments_are_overlay_siblings(segment_key, sibling_key) {
                     continue;
-                };
-                let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_polygon(
+                }
+                let sibling_lower_intervals = arrangement_owner_face_boundary_intervals_for_segment(
+                    arrangement,
+                    lower_owner,
+                    sibling_key,
+                );
+                let sibling_raised_intervals =
+                    arrangement_owner_face_boundary_intervals_for_segment(
+                        arrangement,
+                        raised_owner,
+                        sibling_key,
+                    );
+                Self::push_arrangement_vertical_step_faces_from_intervals(
                     arrangement,
                     lower_owner,
                     segment_key,
-                    lower_start,
-                    lower_end,
-                    raised_start,
-                    raised_end,
-                ) else {
-                    continue;
-                };
-                if !emitted.insert(dedup_key) {
-                    continue;
-                }
-                faces.push((
-                    face,
-                    RoadSurfaceVerticalFaceSource {
-                        explicit_vertical_step_index: step_index,
-                        segment,
-                    },
-                ));
+                    sibling_key,
+                    &lower_intervals,
+                    &sibling_raised_intervals,
+                    step_index,
+                    segment,
+                    &mut emitted,
+                    &mut faces,
+                );
+                Self::push_arrangement_vertical_step_faces_from_intervals(
+                    arrangement,
+                    lower_owner,
+                    sibling_key,
+                    segment_key,
+                    &sibling_lower_intervals,
+                    &raised_intervals,
+                    step_index,
+                    segment,
+                    &mut emitted,
+                    &mut faces,
+                );
             }
             let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_from_segment(
                 arrangement,
@@ -649,6 +664,76 @@ impl RoadSurfaceSystem {
             ));
         }
         faces
+    }
+
+    fn push_arrangement_vertical_step_faces_from_intervals(
+        arrangement: &NodeArrangement,
+        lower_owner: NodeBandOwner,
+        lower_segment_key: (NodeArrangementKey, NodeArrangementKey),
+        raised_segment_key: (NodeArrangementKey, NodeArrangementKey),
+        lower_intervals: &[ArrangementFaceBoundaryInterval],
+        raised_intervals: &[ArrangementFaceBoundaryInterval],
+        step_index: usize,
+        segment: NodeExplicitVerticalStepSegment,
+        emitted: &mut BTreeSet<(
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+        )>,
+        faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+    ) {
+        for (lower_interval, raised_interval, start_t, end_t) in
+            arrangement_shared_face_boundary_intervals(lower_intervals, raised_intervals)
+        {
+            let Some(lower_start) = arrangement_face_boundary_interval_point_at(
+                lower_segment_key,
+                lower_interval,
+                start_t,
+            ) else {
+                continue;
+            };
+            let Some(lower_end) = arrangement_face_boundary_interval_point_at(
+                lower_segment_key,
+                lower_interval,
+                end_t,
+            ) else {
+                continue;
+            };
+            let Some(raised_start) = arrangement_face_boundary_interval_point_at(
+                raised_segment_key,
+                raised_interval,
+                start_t,
+            ) else {
+                continue;
+            };
+            let Some(raised_end) = arrangement_face_boundary_interval_point_at(
+                raised_segment_key,
+                raised_interval,
+                end_t,
+            ) else {
+                continue;
+            };
+            let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_polygon(
+                arrangement,
+                lower_owner,
+                lower_segment_key,
+                lower_start,
+                lower_end,
+                raised_start,
+                raised_end,
+            ) else {
+                continue;
+            };
+            if !emitted.insert(dedup_key) {
+                continue;
+            }
+            faces.push((
+                face,
+                RoadSurfaceVerticalFaceSource {
+                    explicit_vertical_step_index: step_index,
+                    segment,
+                },
+            ));
+        }
     }
 
     fn arrangement_vertical_step_face_from_segment(
@@ -1892,6 +1977,24 @@ fn arrangement_segments_overlap_with_length(
     let b_min = b0.min(b1);
     let b_max = b0.max(b1);
     a_min.max(b_min) < a_max.min(b_max)
+}
+
+fn arrangement_step_segments_are_overlay_siblings(
+    left: (NodeArrangementKey, NodeArrangementKey),
+    right: (NodeArrangementKey, NodeArrangementKey),
+) -> bool {
+    (arrangement_keys_are_overlay_siblings(left.0, right.0)
+        && arrangement_keys_are_overlay_siblings(left.1, right.1))
+        || (arrangement_keys_are_overlay_siblings(left.0, right.1)
+            && arrangement_keys_are_overlay_siblings(left.1, right.0))
+}
+
+fn arrangement_keys_are_overlay_siblings(
+    left: NodeArrangementKey,
+    right: NodeArrangementKey,
+) -> bool {
+    (left.x_key() - right.x_key()).abs() <= VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS
+        && (left.z_key() - right.z_key()).abs() <= VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS
 }
 
 fn arrangement_region_centroid(

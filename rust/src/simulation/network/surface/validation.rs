@@ -389,7 +389,8 @@ fn point_lies_on_validation_segment(
     let dz = i128::from(end.z_key - start.z_key);
     let px = i128::from(point.x_key - start.x_key);
     let pz = i128::from(point.z_key - start.z_key);
-    if px * dz - pz * dx != 0 {
+    let cross = px * dz - pz * dx;
+    if cross != 0 && cross.abs() > validation_overlay_grid_collinearity_error_bound(dx, dz) {
         return false;
     }
     let inside_x = if start.x_key == end.x_key {
@@ -403,6 +404,10 @@ fn point_lies_on_validation_segment(
         point.z_key > start.z_key.min(end.z_key) && point.z_key < start.z_key.max(end.z_key)
     };
     inside_x && inside_z
+}
+
+fn validation_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
+    (dx.abs() + dz.abs()) * 2
 }
 
 fn push_triangle_edge_height_conflict(

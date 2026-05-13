@@ -12,10 +12,7 @@ use super::input::{
     NodeInputTerminalEndBandBoundaryMode,
 };
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
-use super::rails::{
-    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
-    NodeRailContourSet,
-};
+use super::rails::{NodeGeneratedContour, NodeGeneratedContourKind, NodeRailContourSet};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind, SurfaceCdt,
@@ -26,7 +23,7 @@ use std::collections::BTreeMap;
 const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
+const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 2;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 type NodeHeightSourcePointKey = (i64, i64);
@@ -627,20 +624,7 @@ fn heighted_region(
             source_kind: field.kind,
         });
     }
-    let shape = match heighted_shape(&region.shape, field) {
-        Ok(shape) => shape,
-        Err(error)
-            if matches!(
-                region.claim_priority,
-                NodeGeneratedContourClaimPriority::MouthBand
-                    | NodeGeneratedContourClaimPriority::SideJoin
-                    | NodeGeneratedContourClaimPriority::JoinOrCap
-            ) =>
-        {
-            heighted_shape_with_canonical_contour_insertions(&region.shape, field, error)?
-        }
-        Err(error) => return Err(error),
-    };
+    let shape = heighted_shape(&region.shape, field)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -666,22 +650,6 @@ fn heighted_shape(
     Ok(heighted)
 }
 
-fn heighted_shape_with_canonical_contour_insertions(
-    shape: &NodeOverlayShape,
-    field: &NodeBandHeightField,
-    original_error: NodeHeightFieldError,
-) -> Result<NodeHeightedShape, NodeHeightFieldError> {
-    let mut heighted = Vec::with_capacity(shape.len());
-    for contour in shape {
-        let contour =
-            heighted_contour_with_canonical_insertions(contour, field, original_error.clone())?;
-        if contour.len() >= 3 {
-            heighted.push(contour);
-        }
-    }
-    Ok(heighted)
-}
-
 fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
@@ -691,133 +659,6 @@ fn heighted_contour(
         .copied()
         .map(|point| heighted_vertex(point, field))
         .collect()
-}
-
-fn heighted_contour_with_canonical_insertions(
-    contour: &NodeOverlayContour,
-    field: &NodeBandHeightField,
-    original_error: NodeHeightFieldError,
-) -> Result<NodeHeightedContour, NodeHeightFieldError> {
-    let mut vertices = Vec::with_capacity(contour.len());
-    let mut solved_indices = Vec::new();
-    let mut first_outside_error = None;
-
-    for (index, point) in contour.iter().copied().enumerate() {
-        let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-        match field.evaluate_height(point_xz) {
-            Ok(height_m) => {
-                vertices.push((point_xz, Some(quantize_source_height_m(height_m))));
-                solved_indices.push(index);
-            }
-            Err(error @ NodeHeightFieldError::VertexOutsideHeightField { .. }) => {
-                first_outside_error.get_or_insert(error);
-                vertices.push((point_xz, None));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    if first_outside_error.is_none() {
-        return Ok(vertices
-            .into_iter()
-            .map(|(point_xz, height_m)| NodeHeightedVertex {
-                point_xz,
-                height_m: height_m.expect("directly solved contour vertex has a height"),
-                height_field_id: field.id,
-            })
-            .collect());
-    }
-    if solved_indices.len() < 2 {
-        return Err(first_outside_error.unwrap_or(original_error));
-    }
-
-    fill_canonical_contour_height_insertions(
-        &mut vertices,
-        first_outside_error
-            .clone()
-            .unwrap_or(original_error.clone()),
-    )?;
-
-    vertices
-        .into_iter()
-        .map(|(point_xz, height_m)| {
-            let height_m = height_m.ok_or_else(|| {
-                first_outside_error
-                    .clone()
-                    .unwrap_or(original_error.clone())
-            })?;
-            Ok(NodeHeightedVertex {
-                point_xz,
-                height_m,
-                height_field_id: field.id,
-            })
-        })
-        .collect()
-}
-
-fn fill_canonical_contour_height_insertions(
-    vertices: &mut [(RoadVec2, Option<f64>)],
-    outside_error: NodeHeightFieldError,
-) -> Result<(), NodeHeightFieldError> {
-    let Some(first_solved_index) = vertices.iter().position(|(_, height_m)| height_m.is_some())
-    else {
-        return Err(outside_error);
-    };
-    if vertices
-        .iter()
-        .filter(|(_, height_m)| height_m.is_some())
-        .count()
-        < 2
-    {
-        return Err(outside_error);
-    }
-
-    let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
-    ordered_indices.extend(first_solved_index..vertices.len());
-    ordered_indices.extend(0..=first_solved_index);
-
-    let mut start_pos = 0;
-    while start_pos + 1 < ordered_indices.len() {
-        let start_index = ordered_indices[start_pos];
-        let Some(start_height_m) = vertices[start_index].1 else {
-            return Err(outside_error);
-        };
-
-        let Some(end_pos) = (start_pos + 1..ordered_indices.len())
-            .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
-        else {
-            return Err(outside_error);
-        };
-        if end_pos == start_pos + 1 {
-            start_pos = end_pos;
-            continue;
-        }
-
-        let end_index = ordered_indices[end_pos];
-        let Some(end_height_m) = vertices[end_index].1 else {
-            return Err(outside_error);
-        };
-        let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
-        cumulative_lengths.push(0.0);
-        let mut total_length_m = 0.0;
-        for pair_pos in start_pos..end_pos {
-            let a = vertices[ordered_indices[pair_pos]].0;
-            let b = vertices[ordered_indices[pair_pos + 1]].0;
-            total_length_m += (b - a).length();
-            cumulative_lengths.push(total_length_m);
-        }
-        if total_length_m <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2.sqrt() {
-            return Err(outside_error);
-        }
-        for run_offset in 1..cumulative_lengths.len() - 1 {
-            let index = ordered_indices[start_pos + run_offset];
-            let t = cumulative_lengths[run_offset] / total_length_m;
-            let height_m = start_height_m + (end_height_m - start_height_m) * t;
-            vertices[index].1 = Some(quantize_source_height_m(height_m));
-        }
-        start_pos = end_pos;
-    }
-    Ok(())
 }
 
 fn heighted_vertex(
@@ -1330,7 +1171,9 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
     for edge in edges {
         let start = height_source_point_key(edge.start_xz);
         let end = height_source_point_key(edge.end_xz);
-        if height_source_point_key_lies_on_segment(point, start, end) {
+        if height_source_point_key_lies_on_segment(point, start, end)
+            || height_source_point_key_quantization_cell_intersects_segment(point, start, end)
+        {
             let dx = end.0 - start.0;
             let dz = end.1 - start.1;
             let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
@@ -1343,6 +1186,9 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
                 point.1 - start.1
             };
             let t = numerator as f64 / denominator as f64;
+            if !(0.0..=1.0).contains(&t) {
+                continue;
+            }
             return Some(edge.start_height_m + (edge.end_height_m - edge.start_height_m) * t);
         }
 
@@ -1395,6 +1241,96 @@ fn height_source_point_key_lies_on_segment(
 ) -> bool {
     height_triangle_area2(start, end, point) == 0
         && point.0 >= start.0.min(end.0)
+        && point.0 <= start.0.max(end.0)
+        && point.1 >= start.1.min(end.1)
+        && point.1 <= start.1.max(end.1)
+}
+
+fn height_source_point_key_quantization_cell_intersects_segment(
+    point: NodeHeightSourcePointKey,
+    start: NodeHeightSourcePointKey,
+    end: NodeHeightSourcePointKey,
+) -> bool {
+    if start == end {
+        return false;
+    }
+    let neighbor_radius_x2 = HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS * 2;
+    let min_x2 = i128::from(point.0) * 2 - neighbor_radius_x2;
+    let max_x2 = i128::from(point.0) * 2 + neighbor_radius_x2;
+    let min_z2 = i128::from(point.1) * 2 - neighbor_radius_x2;
+    let max_z2 = i128::from(point.1) * 2 + neighbor_radius_x2;
+    let segment_start = (i128::from(start.0) * 2, i128::from(start.1) * 2);
+    let segment_end = (i128::from(end.0) * 2, i128::from(end.1) * 2);
+    if height_doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
+        || height_doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
+    {
+        return true;
+    }
+    let lower_left = (min_x2, min_z2);
+    let lower_right = (max_x2, min_z2);
+    let upper_right = (max_x2, max_z2);
+    let upper_left = (min_x2, max_z2);
+    [
+        (lower_left, lower_right),
+        (lower_right, upper_right),
+        (upper_right, upper_left),
+        (upper_left, lower_left),
+    ]
+    .into_iter()
+    .any(|(edge_start, edge_end)| {
+        height_doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
+    })
+}
+
+fn height_doubled_point_inside_axis_aligned_box(
+    point: (i128, i128),
+    min_x: i128,
+    max_x: i128,
+    min_z: i128,
+    max_z: i128,
+) -> bool {
+    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
+}
+
+fn height_doubled_segments_intersect(
+    a: (i128, i128),
+    b: (i128, i128),
+    c: (i128, i128),
+    d: (i128, i128),
+) -> bool {
+    let ab_c = height_doubled_triangle_area2(a, b, c);
+    let ab_d = height_doubled_triangle_area2(a, b, d);
+    let cd_a = height_doubled_triangle_area2(c, d, a);
+    let cd_b = height_doubled_triangle_area2(c, d, b);
+    if ab_c == 0 && height_doubled_point_on_segment(c, a, b) {
+        return true;
+    }
+    if ab_d == 0 && height_doubled_point_on_segment(d, a, b) {
+        return true;
+    }
+    if cd_a == 0 && height_doubled_point_on_segment(a, c, d) {
+        return true;
+    }
+    if cd_b == 0 && height_doubled_point_on_segment(b, c, d) {
+        return true;
+    }
+    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
+}
+
+fn height_doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
+    let ab_x = b.0 - a.0;
+    let ab_z = b.1 - a.1;
+    let ac_x = c.0 - a.0;
+    let ac_z = c.1 - a.1;
+    ab_x * ac_z - ab_z * ac_x
+}
+
+fn height_doubled_point_on_segment(
+    point: (i128, i128),
+    start: (i128, i128),
+    end: (i128, i128),
+) -> bool {
+    point.0 >= start.0.min(end.0)
         && point.0 <= start.0.max(end.0)
         && point.1 >= start.1.min(end.1)
         && point.1 <= start.1.max(end.1)
@@ -1576,6 +1512,53 @@ mod tests {
                 band_index: 99,
             })
         );
+    }
+
+    #[test]
+    fn rejects_owned_region_vertex_outside_explicit_height_carrier() {
+        let input = conflicting_manual_input();
+        let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
+        region.shape = vec![vec![[0.0, 0.0], [10.0, 0.0], [11.0, 1.0], [0.0, 2.0]]];
+        let owned_regions = vec![region];
+        let ownership = NodeBooleanOwnership {
+            node_id: 77,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+            footprint_shapes: Vec::new(),
+            asphalt_shapes: Vec::new(),
+            non_road_shapes: Vec::new(),
+            owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+                77,
+                RoadSurfaceVisualNodePieceKind::Bend,
+                &owned_regions,
+                &Vec::new(),
+            ),
+            owned_regions,
+        };
+
+        assert!(matches!(
+            NodeHeightSolution::from_ownership_and_input(&input, &ownership),
+            Err(NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index: 0,
+                band_index: 0,
+                source_kind: RoadSurfaceBandKind::Carriageway,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn height_solution_has_no_post_overlay_height_repair_path() {
+        let source = include_str!("height.rs");
+        for forbidden in [
+            concat!("heighted_shape_with_", "canonical_contour_insertions"),
+            concat!("heighted_contour_with_", "canonical_insertions"),
+            concat!("fill_canonical_contour_", "height_insertions"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "canonical arrangement vertices must be inside their explicit height carrier, not repaired by `{forbidden}`"
+            );
+        }
     }
 
     #[test]

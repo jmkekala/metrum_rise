@@ -838,6 +838,27 @@ impl TestRenderXzEdgeKey {
             }
         })
     }
+
+    fn contains(self, edge: Self) -> bool {
+        test_render_xz_vertex_key_lies_on_segment(edge.start, self.start, self.end)
+            && test_render_xz_vertex_key_lies_on_segment(edge.end, self.start, self.end)
+    }
+}
+
+fn test_render_xz_vertex_key_lies_on_segment(
+    point: TestRenderXzVertexKey,
+    start: TestRenderXzVertexKey,
+    end: TestRenderXzVertexKey,
+) -> bool {
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
+    dx * pz - dz * px == 0
+        && point.x_key >= start.x_key.min(end.x_key)
+        && point.x_key <= start.x_key.max(end.x_key)
+        && point.z_key >= start.z_key.min(end.z_key)
+        && point.z_key <= start.z_key.max(end.z_key)
 }
 
 fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
@@ -849,7 +870,7 @@ fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
         .iter()
         .filter_map(vertical_face_lower_edge_for_test)
         .filter_map(|edge| TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz()))
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
     let mut edges_by_xz = BTreeMap::<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>::new();
     for edge in top_edges {
         edges_by_xz.entry(edge.xz_key).or_default().push(edge);
@@ -870,7 +891,10 @@ fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
                 let matching_canonical_steps =
                     explicit_vertical_step_descriptions_for_xz_key(piece, road_edge.xz_key);
                 assert!(
-                    face_lower_keys.contains(&road_edge.xz_key),
+                    face_lower_keys
+                        .iter()
+                        .copied()
+                        .any(|face_key| face_key.contains(road_edge.xz_key)),
                     "surviving asphalt-to-raised-non-road top boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] matching_canonical_steps={:?}",
                     piece.kind,
                     road_edge.xz_key,
@@ -896,9 +920,9 @@ fn explicit_vertical_step_descriptions_for_xz_key(
         .iter()
         .enumerate()
         .filter_map(|(step_index, segment)| {
-            (TestRenderXzEdgeKey::normalized_from_arrangement_keys(segment.start(), segment.end())?
-                == xz_key)
-                .then(|| {
+            TestRenderXzEdgeKey::normalized_from_arrangement_keys(segment.start(), segment.end())
+                .filter(|step_key| step_key.contains(xz_key))
+                .map(|_| {
                     format!(
                         "#{step_index} {:?}<->{:?}",
                         segment.owner(),
@@ -4046,7 +4070,7 @@ fn logged_current_flat_three_way_oblique_junction_compiles_side_join_ownership()
 }
 
 #[test]
-fn logged_flat_three_way_oblique_variant_rejects_implicit_same_band_curb_height_edge() {
+fn logged_flat_three_way_oblique_variant_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-74.754, 0.0, -4.117), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-20.950, 0.0, -6.649), NodeType::Junction);
@@ -4096,7 +4120,7 @@ fn logged_flat_three_way_oblique_variant_rejects_implicit_same_band_curb_height_
 
     assert!(
         !surface.compiled_visual_node_pieces().contains_key(&center),
-        "flat oblique 3-way variant must reject until same-band curb transition ownership removes the 0-to-120 mm implicit shared edge"
+        "flat oblique 3-way variant must reject cross-owner height edges without an explicit vertical step"
     );
 }
 
