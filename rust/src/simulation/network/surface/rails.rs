@@ -3345,21 +3345,28 @@ fn node_generated_contact_contours(
     constraints: &mut [NodeRailConstraint],
 ) -> Result<(), NodeRailGenerationError> {
     let max_passes = contours.len().saturating_mul(contours.len()).max(1) * 4;
+    let mut previous_candidates = None;
     for _ in 0..max_passes {
-        let Some((contour_index, edge, insert_key)) =
-            generated_contact_contour_noding_candidate(contours, constraints)
-        else {
+        let candidates = generated_contact_contour_noding_candidates(contours, constraints);
+        if candidates.is_empty() {
             return Ok(());
         };
-        insert_key_on_generated_contour(contours, constraints, contour_index, edge, insert_key)?;
+        if previous_candidates.as_ref() == Some(&candidates) {
+            return Ok(());
+        }
+        if !insert_contact_noding_candidates(contours, constraints, candidates.clone())? {
+            return Ok(());
+        }
+        previous_candidates = Some(candidates);
     }
     Ok(())
 }
 
-fn generated_contact_contour_noding_candidate(
+fn generated_contact_contour_noding_candidates(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
-) -> Option<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)> {
+) -> Vec<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)> {
+    let mut candidates = Vec::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
             let left = &contours[left_index];
@@ -3367,24 +3374,139 @@ fn generated_contact_contour_noding_candidate(
             if !generated_contours_support_contact_noding(left, right) {
                 continue;
             }
-            if let Some((edge, insert_key)) =
-                generated_contact_point_on_edge_noding_candidate(left, right, constraints)
+            candidates.extend(
+                generated_contact_point_on_edge_noding_candidates(left, right, constraints)
+                    .into_iter()
+                    .map(|(edge, insert_key)| (left_index, edge, insert_key)),
+            );
+            candidates.extend(
+                generated_contact_point_on_edge_noding_candidates(right, left, constraints)
+                    .into_iter()
+                    .map(|(edge, insert_key)| (right_index, edge, insert_key)),
+            );
+            candidates.extend(
+                generated_contact_edge_intersection_noding_candidates(left, right, constraints)
+                    .into_iter()
+                    .flat_map(|(left_edge, right_edge, insert_key)| {
+                        [
+                            (left_index, left_edge, insert_key),
+                            (right_index, right_edge, insert_key),
+                        ]
+                    }),
+            );
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
+fn insert_contact_noding_candidates(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    candidates: Vec<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)>,
+) -> Result<bool, NodeRailGenerationError> {
+    let mut insertions_by_contour =
+        BTreeMap::<usize, BTreeMap<GeneratedContourDirectedEdge, BTreeSet<NodeRailPointKey>>>::new(
+        );
+    for (contour_index, edge, insert_key) in candidates {
+        insertions_by_contour
+            .entry(contour_index)
+            .or_default()
+            .entry(edge)
+            .or_default()
+            .insert(insert_key);
+    }
+
+    let mut inserted_any = false;
+    for (contour_index, insertions_by_edge) in insertions_by_contour {
+        inserted_any |= insert_keys_on_generated_contour_edges(
+            contours,
+            constraints,
+            contour_index,
+            insertions_by_edge,
+        )?;
+    }
+    Ok(inserted_any)
+}
+
+fn insert_keys_on_generated_contour_edges(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    contour_index: usize,
+    insertions_by_edge: BTreeMap<GeneratedContourDirectedEdge, BTreeSet<NodeRailPointKey>>,
+) -> Result<bool, NodeRailGenerationError> {
+    let Some(contour) = contours.get_mut(contour_index) else {
+        return Ok(false);
+    };
+    let keys = generated_contour_keys(contour);
+    if keys.len() < 2 {
+        return Ok(false);
+    }
+
+    let height_points = contour.height_points_world.clone();
+    let mut new_keys = Vec::with_capacity(keys.len());
+    let mut new_height_points = height_points
+        .as_ref()
+        .filter(|points| points.len() == keys.len())
+        .map(|_| Vec::with_capacity(keys.len()));
+    let mut inserted_any = false;
+
+    for index in 0..keys.len() {
+        let next = (index + 1) % keys.len();
+        let start = keys[index];
+        let end = keys[next];
+        new_keys.push(start);
+        if let (Some(height_points), Some(new_height_points)) =
+            (height_points.as_ref(), new_height_points.as_mut())
+        {
+            new_height_points.push(height_points[index]);
+        }
+
+        let edge = GeneratedContourDirectedEdge { start, end };
+        let Some(insertions) = insertions_by_edge.get(&edge) else {
+            continue;
+        };
+        let mut insertions = insertions
+            .iter()
+            .copied()
+            .filter(|point| *point != start && *point != end)
+            .filter(|point| generated_point_key_lies_on_segment(*point, start, end))
+            .collect::<Vec<_>>();
+        insertions.sort_by_key(|point| generated_segment_parameter_key(start, end, *point));
+        insertions.dedup();
+        for insert_key in insertions {
+            inserted_any = true;
+            new_keys.push(insert_key);
+            if let (Some(height_points), Some(new_height_points)) =
+                (height_points.as_ref(), new_height_points.as_mut())
             {
-                return Some((left_index, edge, insert_key));
-            }
-            if let Some((edge, insert_key)) =
-                generated_contact_point_on_edge_noding_candidate(right, left, constraints)
-            {
-                return Some((right_index, edge, insert_key));
-            }
-            if let Some((left_edge, _right_edge, insert_key)) =
-                generated_contact_edge_intersection_noding_candidate(left, right, constraints)
-            {
-                return Some((left_index, left_edge, insert_key));
+                let Some(height_m) = height_for_key_on_generated_edge(
+                    insert_key,
+                    start,
+                    end,
+                    height_points[index].y,
+                    height_points[next].y,
+                ) else {
+                    contour.height_points_world = None;
+                    continue;
+                };
+                let point = road_point_from_key(insert_key);
+                new_height_points.push(RoadVec3::new(point.x, height_m, point.y));
             }
         }
     }
-    None
+
+    if !inserted_any {
+        return Ok(false);
+    }
+    remove_generated_contour_spikes(&mut new_keys);
+    if new_keys == keys {
+        return Ok(false);
+    }
+    contour.height_points_world = new_height_points;
+    set_generated_contour_from_keys(contour, constraints, new_keys)?;
+    Ok(generated_contour_keys(contour) != keys)
 }
 
 fn node_generated_contact_constraint_points_on_contours(
@@ -3630,11 +3752,12 @@ fn generated_contours_support_contact_noding(
     left_owner != right_owner
 }
 
-fn generated_contact_point_on_edge_noding_candidate(
+fn generated_contact_point_on_edge_noding_candidates(
     edge_contour: &NodeGeneratedContour,
     point_contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
-) -> Option<(GeneratedContourDirectedEdge, NodeRailPointKey)> {
+) -> Vec<(GeneratedContourDirectedEdge, NodeRailPointKey)> {
+    let mut candidates = Vec::new();
     let edge_keys = generated_contour_keys(edge_contour);
     for edge in generated_contour_directed_edges(edge_contour) {
         for point_key in generated_contour_keys(point_contour) {
@@ -3649,21 +3772,22 @@ fn generated_contact_point_on_edge_noding_candidate(
             {
                 continue;
             }
-            return Some((edge, point_key));
+            candidates.push((edge, point_key));
         }
     }
-    None
+    candidates
 }
 
-fn generated_contact_edge_intersection_noding_candidate(
+fn generated_contact_edge_intersection_noding_candidates(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
-) -> Option<(
+) -> Vec<(
     GeneratedContourDirectedEdge,
     GeneratedContourDirectedEdge,
     NodeRailPointKey,
 )> {
+    let mut candidates = Vec::new();
     for left_edge in generated_contour_directed_edges(left) {
         for right_edge in generated_contour_directed_edges(right) {
             let Some(intersection) = quantized_proper_segment_intersection(
@@ -3682,10 +3806,10 @@ fn generated_contact_edge_intersection_noding_candidate(
             ) {
                 continue;
             }
-            return Some((left_edge, right_edge, intersection));
+            candidates.push((left_edge, right_edge, intersection));
         }
     }
-    None
+    candidates
 }
 
 fn generated_contact_noding_point_has_explicit_roles(
@@ -3862,24 +3986,6 @@ fn generated_contact_constraint_kind_from_constraint(
         | NodeRailConstraintKind::SpanHandoff { .. }
         | NodeRailConstraintKind::FootprintSeam { .. } => None,
     }
-}
-
-fn insert_key_on_generated_contour(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    contour_index: usize,
-    edge: GeneratedContourDirectedEdge,
-    insert_key: NodeRailPointKey,
-) -> Result<(), NodeRailGenerationError> {
-    let Some(contour) = contours.get_mut(contour_index) else {
-        return Ok(());
-    };
-    let mut keys = generated_contour_keys(contour);
-    if insert_key_on_generated_contour_edge(&mut keys, edge.start, edge.end, insert_key) {
-        insert_height_key_on_generated_contour_edge(contour, edge, insert_key);
-        set_generated_contour_from_keys(contour, constraints, keys)?;
-    }
-    Ok(())
 }
 
 fn insert_height_key_on_generated_contour_edge(
