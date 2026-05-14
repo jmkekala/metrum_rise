@@ -158,10 +158,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   from exact source rails. Non-terminal side-join ownership now enters through the dedicated
   `surface::joins` adapter rather than the input extractor; the rail contour set consumes terminal
   end bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add
-  carriageway bubble fill. `JunctionN` side-join paths are now Cavalier-cleaned adjacent-mouth
-  non-road joins; the remaining blocking work is the broader canonical node arrangement for
-  arbitrary oblique / sharp nodes, plus clipped terrain topology hardening, followed by retaining,
-  wall, and material variants.
+  carriageway bubble fill or contribute to `node_footprint`. `JunctionN` side-join paths are now
+  Cavalier-cleaned adjacent-mouth non-road joins; the remaining blocking work is the broader
+  canonical node arrangement for arbitrary oblique / sharp nodes, plus clipped terrain topology
+  hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

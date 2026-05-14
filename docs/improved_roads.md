@@ -143,10 +143,10 @@ Live behavior:
   input extractor in `surface::joins`, with dedicated side-join carriers consumed separately from
   terminal end bands by the rail contour set. Bend side joins keep their carriageway closure, while
   `JunctionN` side joins carry curb / sidewalk ownership through Cavalier-cleaned adjacent-mouth
-  non-road join paths without adding carriageway bubble fill. The remaining blocker is the broader
-  canonical node arrangement for `JunctionN` and not-yet-validated arbitrary-node cases; boolean
-  ownership and height-field validation must keep rejecting real band residuals instead of
-  silently patching them.
+  non-road join paths without contributing to `node_footprint` or adding carriageway bubble fill.
+  The remaining blocker is the broader canonical node arrangement for `JunctionN` and
+  not-yet-validated arbitrary-node cases; boolean ownership and height-field validation must keep
+  rejecting real band residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a

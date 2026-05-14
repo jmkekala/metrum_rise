@@ -783,7 +783,10 @@ fn push_side_join_band_contours(
                 kind: side_join_band.band_kind,
                 source_band_index: side_join_band.source_band_index,
                 owner: *owner,
-                contributes_footprint: side_join_band_contributes_footprint(side_join_band),
+                contributes_footprint: side_join_band_contributes_footprint(
+                    piece_kind,
+                    side_join_band,
+                ),
             })
             .or_insert_with(|| SideJoinBandGroup {
                 contour_world: Vec::new(),
@@ -1204,7 +1207,13 @@ fn side_join_band_contributes_domain(side_join_band: &NodeInputSideJoinBand) -> 
     )
 }
 
-fn side_join_band_contributes_footprint(side_join_band: &NodeInputSideJoinBand) -> bool {
+fn side_join_band_contributes_footprint(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    side_join_band: &NodeInputSideJoinBand,
+) -> bool {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+        return false;
+    }
     match side_join_band.boundary_mode {
         NodeInputSideJoinBandBoundaryMode::MaterialBand
         | NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
@@ -6255,9 +6264,9 @@ mod tests {
         assert!(
             NodeGeneratedContourClaimPriority::SideJoin
                 < NodeGeneratedContourClaimPriority::MouthBand,
-            "side-join candidates must remain whole so their protected footprint seam survives ownership cleanup"
+            "side-join candidates must stay ahead of mouth bands during non-road ownership cleanup"
         );
-        assert!(contours.iter().any(|contour| {
+        assert!(!contours.iter().any(|contour| {
             contour.kind == NodeGeneratedContourKind::FullRoadbed
                 && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
                 && contour
