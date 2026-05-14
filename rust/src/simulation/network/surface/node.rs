@@ -1353,7 +1353,7 @@ impl RoadSurfaceSystem {
         (!incidents.is_empty()).then(|| self.classify_visual_node_kind(&incidents))
     }
 
-    fn sorted_incident_surface_edges_from_graph_geometry(
+    pub(super) fn sorted_incident_surface_edges_from_graph_geometry(
         &self,
         graph: &RegionGraph,
         node_id: u32,

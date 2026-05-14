@@ -142,9 +142,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   concrete path. Dirty surface and road-touched terrain chunk rebuilds now use piece-owned chunk
   coverage indices, so changed `Span`, `Terminal`, `Bend`, and `JunctionN` pieces rebuild
   `old_coverage union new_coverage` instead of relying on edge-centerline chunk guesses or global
-  node-piece scans. Visual node handoffs now need a conflict-first ownership hardcut: local
-  profile width is the minimum handoff, but shallow-angle arms must extend shared visual ownership
-  as far as their roadbed / asphalt materials would otherwise overlap.
+  node-piece scans. Visual node handoffs now use a conflict-first ownership hardcut: local profile
+  width is the minimum handoff, shallow-angle arms extend shared visual ownership as far as their
+  roadbed / asphalt materials would otherwise overlap, and exact graph clip points remain section
+  carrier samples for height and routing metadata.
   The paired adjacent-mouth strip candidate model has been hard-cut out of node-piece ownership.
   Conflict-bounded full-roadbed corridor unions now define node footprints, conflict-bounded
   carriageway corridor unions define asphalt, and non-road ownership is split into explicit curb /
@@ -162,9 +163,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Cavalier-cleaned adjacent-mouth non-road joins. Generated node contours now carry explicit
   footprint / asphalt / non-road authority roles, so boolean ownership no longer infers primary
   material authority from band kind alone and clips asphalt authority to `node_footprint` before
-  residual checks; the remaining blocking work is the broader
-  canonical node arrangement for arbitrary oblique / sharp nodes, plus clipped terrain topology
-  hardening, followed by retaining, wall, and material variants.
+  residual checks; the remaining blocking work is the broader canonical node arrangement that emits
+  raw full-roadbed and carriageway corridor authority for arbitrary oblique / sharp nodes, plus
+  clipped terrain topology hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

@@ -122,7 +122,9 @@ Live behavior:
   reject the node with a deterministic diagnostic.
 - visual edge-to-node handoff extends far enough to cover deterministic material conflicts between
   incident road arms; shallow-angle roads therefore create a longer shared ownership region instead
-  of allowing independent sidewalk strips to cross asphalt before they reach the graph node
+  of allowing independent sidewalk strips to cross asphalt before they reach the graph node. Exact
+  graph clip distances remain section carrier samples for routing / lane metadata and height
+  support even when the visual conflict throat moves farther from the node.
 - terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
   intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
   resolved before Spade sees terrain constraints
@@ -147,9 +149,10 @@ Live behavior:
   Generated node contours now carry explicit footprint / asphalt / non-road authority roles, so
   boolean ownership selects full-roadbed corridors, carriageway corridors, and non-road band
   candidates by role and clips asphalt authority to `node_footprint` before residual checks.
-  The remaining blocker is the broader canonical node arrangement for `JunctionN` and
-  not-yet-validated arbitrary-node cases; boolean ownership and height-field validation must keep
-  rejecting real band residuals instead of silently patching them.
+  Bend / JunctionN visual throats now use the section 10A pairwise material-conflict distances
+  rather than only local graph clip radii. The remaining blocker is the broader canonical node
+  arrangement for `JunctionN` and not-yet-validated arbitrary-node cases; boolean ownership and
+  height-field validation must keep rejecting real band residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -168,11 +171,12 @@ Remaining ROAD-01 gap:
   ownership. Raised-step rail authority is now generic and owner-pair based, with bend side-join
   final-owner handoff limited to exact-source-rail endpoint contacts. `surface::joins` is now the
   side-join adapter boundary and routes generated bands through Cavalier cleanup, bend arc
-  sampling, and `JunctionN` adjacent-mouth non-road join paths. The remaining work is a
-  library-backed canonical node arrangement that creates explicit join ownership before boolean
-  splitting so oblique junctions do not produce real curb / sidewalk residuals. Hand-built miter
-  caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN ownership
-  strategy; they are the failure mode this rework is replacing.
+  sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend / JunctionN edge throats now
+  grow from pairwise roadbed / asphalt material conflicts. The remaining work is a library-backed
+  canonical node arrangement that emits raw full-roadbed and carriageway corridor authority before
+  boolean splitting so oblique junctions do not produce real curb / sidewalk residuals. Hand-built
+  miter caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN
+  ownership strategy; they are the failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 
