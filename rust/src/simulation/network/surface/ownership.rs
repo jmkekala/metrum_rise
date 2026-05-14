@@ -235,6 +235,10 @@ impl NodeBooleanOwnership {
             &rails.constraints,
             rails.piece_kind,
         );
+        validate_non_road_regions_have_explicit_profile_seam_rails(
+            &owned_regions,
+            &rails.constraints,
+        )?;
         let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
             rails.node_id,
             rails.piece_kind,
@@ -462,6 +466,7 @@ fn owned_regions_from_domains(
             continue;
         }
 
+        let mut group_claimed_shapes = Vec::new();
         for shape in &domain_shapes {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
             if owned_shape_is_discardable_numeric_dust(
@@ -470,8 +475,21 @@ fn owned_regions_from_domains(
                 group.owner,
                 rail_constraints,
             ) {
+                group_claimed_shapes.push(shape.clone());
                 continue;
             }
+            let seam_constraints = seam_constraints_for_shape(
+                shape,
+                group.owner,
+                rail_constraints,
+                allow_grid_bounded_constraint_overlap,
+            );
+            if residual_kind.requires_explicit_profile_seam_rail()
+                && !region_has_explicit_profile_seam_rail(&seam_constraints, rail_constraints)
+            {
+                continue;
+            }
+            group_claimed_shapes.push(shape.clone());
             regions.push(NodeBooleanOwnedRegion {
                 kind: group.kind,
                 owner: group.owner,
@@ -480,16 +498,11 @@ fn owned_regions_from_domains(
                 source_band_index: group.source_band_index,
                 shape: shape.clone(),
                 area_m2,
-                seam_constraints: seam_constraints_for_shape(
-                    shape,
-                    group.owner,
-                    rail_constraints,
-                    allow_grid_bounded_constraint_overlap,
-                ),
+                seam_constraints,
             });
         }
         claimed_shapes =
-            overlay_union_shape_sets(&claimed_shapes, &domain_shapes, "domain_claim_union")?;
+            overlay_union_shape_sets(&claimed_shapes, &group_claimed_shapes, "domain_claim_union")?;
     }
 
     let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual_final")?;
@@ -3400,6 +3413,70 @@ enum ResidualKind {
     NonRoad,
 }
 
+impl ResidualKind {
+    fn requires_explicit_profile_seam_rail(self) -> bool {
+        match self {
+            ResidualKind::Band(kind) => band_kind_requires_explicit_profile_seam_rail(kind),
+            ResidualKind::Asphalt | ResidualKind::NonRoad => false,
+        }
+    }
+}
+
+fn validate_non_road_regions_have_explicit_profile_seam_rails(
+    regions: &[NodeBooleanOwnedRegion],
+    rail_constraints: &[NodeRailConstraint],
+) -> Result<(), NodeBooleanOwnershipError> {
+    let mut missing_by_kind = BTreeMap::<RoadSurfaceBandKind, (usize, f32)>::new();
+    for region in regions {
+        if !band_kind_requires_explicit_profile_seam_rail(region.kind)
+            || region_has_explicit_profile_seam_rail(&region.seam_constraints, rail_constraints)
+        {
+            continue;
+        }
+        let entry = missing_by_kind.entry(region.kind).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += region.area_m2;
+    }
+    if let Some((kind, (shape_count, area_m2))) = missing_by_kind.into_iter().next() {
+        return Err(NodeBooleanOwnershipError::UnownedBandResidual {
+            kind,
+            shape_count,
+            area_m2,
+        });
+    }
+    Ok(())
+}
+
+fn band_kind_requires_explicit_profile_seam_rail(kind: RoadSurfaceBandKind) -> bool {
+    matches!(
+        kind,
+        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk
+    )
+}
+
+fn region_has_explicit_profile_seam_rail(
+    seam_constraints: &[NodeRegionSeamConstraint],
+    rail_constraints: &[NodeRailConstraint],
+) -> bool {
+    seam_constraints.iter().any(|seam| {
+        rail_constraints
+            .iter()
+            .find(|constraint| constraint.constraint_index == seam.constraint_index)
+            .is_some_and(rail_constraint_is_explicit_profile_seam_rail)
+    })
+}
+
+fn rail_constraint_is_explicit_profile_seam_rail(constraint: &NodeRailConstraint) -> bool {
+    matches!(
+        constraint.kind,
+        NodeRailConstraintKind::SpanHandoff { .. }
+            | NodeRailConstraintKind::FootprintSeam { .. }
+            | NodeRailConstraintKind::AsphaltBoundary { .. }
+            | NodeRailConstraintKind::RaisedStepContact
+            | NodeRailConstraintKind::BandBoundary { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3408,6 +3485,7 @@ mod tests {
     use crate::simulation::network::surface::rails::{
         NodeGeneratedContourPurpose, NodeRailContourSet,
     };
+    use crate::simulation::network::surface::validation::NodeValidationReport;
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     };
@@ -3546,6 +3624,37 @@ mod tests {
             error,
             NodeBooleanOwnershipError::UnownedNonRoadResidual { .. }
         ));
+    }
+
+    #[test]
+    fn non_road_owner_regions_require_explicit_profile_seam_rails() {
+        let mut rails = contour_set();
+        rails.constraints.retain(|constraint| {
+            matches!(
+                constraint.kind,
+                NodeRailConstraintKind::FullRoadbedContour
+                    | NodeRailConstraintKind::BandContour { .. }
+            )
+        });
+
+        let error = NodeBooleanOwnership::from_rails(&rails)
+            .expect_err("non-road owner carriers without profile seam rails must be rejected");
+
+        assert!(matches!(
+            error,
+            NodeBooleanOwnershipError::UnownedBandResidual {
+                kind: RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk,
+                ..
+            }
+        ));
+        let report = NodeValidationReport::from_boolean_ownership_error(
+            rails.node_id,
+            rails.piece_kind,
+            &error,
+        );
+        let dump = report.debug_dump();
+        assert!(dump.contains("\"stage\":\"boolean_ownership\""));
+        assert!(dump.contains("\"kind\":\"rejected_residual\""));
     }
 
     #[test]

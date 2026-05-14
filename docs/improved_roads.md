@@ -152,10 +152,13 @@ Live behavior:
   Bend / JunctionN visual throats now use the section 10A pairwise material-conflict distances
   rather than only local graph clip radii. Bend / JunctionN mouths now also emit one raw
   full-roadbed corridor authority and one raw carriageway corridor authority before per-band owner
-  carriers are clipped through boolean ownership. The remaining blocker is broader arbitrary-node
-  hardening around `node_non_road` subdivision and elevated / contradictory height cases; boolean
-  ownership and height-field validation must keep rejecting real band residuals instead of silently
-  patching them.
+  carriers are clipped through boolean ownership. Post-boolean `node_non_road` subdivision now
+  accepts curb / shoulder and sidewalk regions only when the clipped owned region carries explicit
+  profile seam-rail evidence before and after cleanup / seam materialization; carrier-only shapes
+  become deterministic boolean-ownership residual diagnostics instead of rendered fallback
+  polygons. The remaining blocker is clipped terrain topology and broader DEM validation around
+  road-touched earthworks; boolean ownership and height-field validation must keep rejecting real
+  band residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -176,12 +179,13 @@ Remaining ROAD-01 gap:
   side-join adapter boundary and routes generated bands through Cavalier cleanup, bend arc
   sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend / JunctionN edge throats now
   grow from pairwise roadbed / asphalt material conflicts, and raw full-roadbed / carriageway
-  corridor authority is separated from per-band owner carriers before boolean splitting. The
-  remaining work is to harden the post-boolean `node_non_road` subdivision and arbitrary
-  elevated / contradictory-node validation so every accepted curb / sidewalk region is explicitly
-  owner-backed and every rejected case reports the deterministic failing stage. Hand-built miter
-  caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN ownership
-  strategy; they are the failure mode this rework is replacing.
+  corridor authority is separated from per-band owner carriers before boolean splitting.
+  Post-boolean `node_non_road` subdivision now requires final curb / shoulder and sidewalk owned
+  regions to carry explicit profile seam rails, and missing evidence is reported as a structured
+  boolean-ownership residual. The remaining work is clipped terrain topology hardening and broader
+  DEM validation for road-touched earthworks. Hand-built miter caps, miter guards, or
+  adjacent-mouth connector patches are not the Bend / JunctionN ownership strategy; they are the
+  failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 
@@ -1817,7 +1821,9 @@ Boolean ownership order for `Bend` and `JunctionN`:
 5. `i_overlay` subtracts `node_asphalt` from `node_footprint` to produce final `node_non_road`.
 6. Degenerate output rings below the documented minimum area threshold are dropped and counted.
 7. `node_non_road` is split into final curb / shoulder and sidewalk owned regions using explicit
-   profile seam rails. Unowned residual area is rejected or debug-counted.
+   profile seam rails. Each accepted non-road owned region must still carry explicit seam-rail
+   evidence after clipping, cleanup, and seam materialization. Unowned residual area is rejected or
+   debug-counted.
 8. Final asphalt, curb / shoulder, and sidewalk owned regions are triangulated with Spade CDT.
 9. `Terminal` skips this boolean ownership order for visible non-road geometry and instead exports
    the explicit terminal top-surface footprint from its asphalt, side non-road, and end-band

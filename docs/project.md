@@ -164,9 +164,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   footprint / asphalt / non-road authority roles, so boolean ownership no longer infers primary
   material authority from band kind alone and clips asphalt authority to `node_footprint` before
   residual checks. Bend / JunctionN raw full-roadbed and carriageway corridor authority is now
-  separated from per-band owner carriers before boolean splitting; the remaining blocking work is
-  post-boolean `node_non_road` subdivision and arbitrary elevated / contradictory-node hardening,
-  plus clipped terrain topology hardening, followed by retaining, wall, and material variants.
+  separated from per-band owner carriers before boolean splitting. Post-boolean `node_non_road`
+  subdivision now requires every final curb / shoulder and sidewalk owned region to carry explicit
+  profile seam-rail evidence, and carrier-only leftovers are reported as deterministic
+  boolean-ownership residual diagnostics. The remaining blocking work is clipped terrain topology
+  hardening and broader DEM validation for road-touched earthworks, followed by retaining, wall,
+  and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
