@@ -1372,11 +1372,10 @@ impl RoadSurfaceSystem {
 
     fn debug_raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
         match kind {
-            RoadSurfaceBandKind::Carriageway => Some(0),
+            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::Footpath => Some(0),
             RoadSurfaceBandKind::CurbOrShoulder => Some(1),
             RoadSurfaceBandKind::Sidewalk => Some(2),
-            RoadSurfaceBandKind::Footpath
-            | RoadSurfaceBandKind::Median
+            RoadSurfaceBandKind::Median
             | RoadSurfaceBandKind::Parking
             | RoadSurfaceBandKind::CycleTrack
             | RoadSurfaceBandKind::TramReservation => None,

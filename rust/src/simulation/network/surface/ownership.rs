@@ -1074,6 +1074,26 @@ fn materialize_noded_region_seam_constraints(
                     }
                     continue;
                 }
+                if let Some((constraint_index, materialized_kind)) =
+                    materialized_source_constraint_for_owned_step_edge(
+                        edge_key.start,
+                        edge_key.end,
+                        rail_constraints,
+                        edge_ref.owner,
+                        opposite_owner,
+                        piece_kind,
+                    )
+                {
+                    push_materialized_endpoint_pair_region_seam_constraint(
+                        &mut additions[edge_ref.region_index],
+                        constraint_index,
+                        materialized_kind,
+                        region.owner,
+                        opposite_owner,
+                        road_point_from_key(edge_key.start),
+                        road_point_from_key(edge_key.end),
+                    );
+                }
             }
             let has_exact_owner_pair_source = matching_constraints.iter().any(|constraint| {
                 rail_constraint_owner_pair_matches_edge(constraint, edge_ref.owner, opposite_owner)
@@ -2176,6 +2196,40 @@ fn materialized_endpoint_pair_constraint_indices_for_owned_edge(
     canonical_source_indices([start_constraint_index, end_constraint_index])
 }
 
+fn materialized_source_constraint_for_owned_step_edge(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_constraints: &[NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> Option<(usize, NodeRailConstraintKind)> {
+    let kind = material_contact_kind_for_owned_edge(owner, opposite_owner)?;
+    rail_constraints
+        .iter()
+        .filter(|constraint| {
+            constraint_applies_to_owner(constraint, owner)
+                || constraint_applies_to_owner(constraint, opposite_owner)
+        })
+        .filter(|constraint| {
+            owned_edge_lies_on_rail_constraint(
+                start,
+                end,
+                constraint,
+                owner,
+                opposite_owner,
+                piece_kind,
+            )
+        })
+        .min_by_key(|constraint| {
+            (
+                constraint_is_material_transition(constraint),
+                constraint.constraint_index,
+            )
+        })
+        .map(|constraint| (constraint.constraint_index, kind))
+}
+
 fn exact_owner_pair_point_contact_constraint_index_at_key(
     key: NodeOwnershipPointKey,
     rail_constraints: &[NodeRailConstraint],
@@ -2858,7 +2912,9 @@ fn raised_step_contact_requires_exact_constraint_span(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
-    raised_step_contact_priority_for_owners(owner, opposite_owner) == Some(0)
+    owner.kind() == RoadSurfaceBandKind::Footpath
+        || opposite_owner.kind() == RoadSurfaceBandKind::Footpath
+        || raised_step_contact_priority_for_owners(owner, opposite_owner) == Some(0)
 }
 
 fn raised_step_contact_constrains_shared_height(
@@ -2872,10 +2928,9 @@ fn raised_step_contact_constrains_shared_height(
 fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
     match kind {
         RoadSurfaceBandKind::Carriageway => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Footpath => Some(1),
         RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Footpath
-        | RoadSurfaceBandKind::Median
+        RoadSurfaceBandKind::Median
         | RoadSurfaceBandKind::Parking
         | RoadSurfaceBandKind::CycleTrack
         | RoadSurfaceBandKind::TramReservation => None,

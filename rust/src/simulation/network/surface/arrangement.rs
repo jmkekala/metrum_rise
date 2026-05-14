@@ -859,11 +859,15 @@ impl NodeArrangement {
         key: NodeArrangementKey,
     ) -> BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>> {
         let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
+        let mut owners_by_kind = BTreeMap::<RoadSurfaceBandKind, Vec<NodeBandOwner>>::new();
         for region in &self.regions {
+            let mut region_touches_key = false;
             for constraint in &region.seam_constraints {
-                if !constraint.is_material_transition
-                    || !seam_constraint_touches_key(constraint, key)
-                {
+                if !seam_constraint_touches_key(constraint, key) {
+                    continue;
+                }
+                region_touches_key = true;
+                if !constraint.is_material_transition {
                     continue;
                 }
                 let owners = owners_for_material_seam_constraint(constraint, region.owner);
@@ -874,10 +878,28 @@ impl NodeArrangement {
                     owners,
                 );
             }
+            if region_touches_key {
+                owners_by_kind
+                    .entry(region.owner.kind())
+                    .or_default()
+                    .push(region.owner);
+            }
         }
 
         let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
         for mut owners in owners_by_constraint.into_values() {
+            owners.sort_unstable();
+            owners.dedup();
+            for left_index in 0..owners.len() {
+                for right_index in left_index + 1..owners.len() {
+                    let left = owners[left_index];
+                    let right = owners[right_index];
+                    adjacency.entry(left).or_default().insert(right);
+                    adjacency.entry(right).or_default().insert(left);
+                }
+            }
+        }
+        for mut owners in owners_by_kind.into_values() {
             owners.sort_unstable();
             owners.dedup();
             for left_index in 0..owners.len() {
@@ -1466,11 +1488,10 @@ pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeB
 
 fn explicit_vertical_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
     match kind {
-        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::Footpath => Some(0),
         RoadSurfaceBandKind::CurbOrShoulder => Some(1),
         RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Footpath
-        | RoadSurfaceBandKind::Median
+        RoadSurfaceBandKind::Median
         | RoadSurfaceBandKind::Parking
         | RoadSurfaceBandKind::CycleTrack
         | RoadSurfaceBandKind::TramReservation => None,
