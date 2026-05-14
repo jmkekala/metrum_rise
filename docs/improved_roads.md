@@ -141,9 +141,11 @@ Live behavior:
   curb/sidewalk contact kinds; generated edge contacts must come from the exact source owner pair,
   while source endpoint contacts may close only between raised-step rails that meet at the same
   canonical key or, for bend side-join ownership, as endpoint-only reownership from an exact source
-  rail to a same-kind final owner. Non-terminal side-join contour adaptation now lives outside the
-  input extractor in `surface::joins`, with dedicated side-join carriers consumed separately from
-  terminal end bands by the rail contour set. Bend side joins keep their carriageway closure, while
+  rail to a same-kind final owner. The rail generator no longer rewrites generated contour or
+  contact endpoints through projected-key or overlay-neighbor repair. Non-terminal side-join
+  contour adaptation now lives outside the input extractor in `surface::joins`, with dedicated
+  side-join carriers consumed separately from terminal end bands by the rail contour set. Bend side
+  joins keep their carriageway closure, while
   `JunctionN` side joins carry curb / sidewalk ownership through Cavalier-cleaned adjacent-mouth
   non-road join paths without contributing to `node_footprint` or adding carriageway bubble fill.
   Generated node contours now carry explicit footprint / asphalt / non-road authority roles, so
@@ -178,11 +180,13 @@ Remaining ROAD-01 gap:
 - elevated and flat `Bend` / `JunctionN` pieces now use the canonical runtime path, and logged
   2-arm bend cases now preserve closed top-surface coverage through explicit curb / sidewalk join
   ownership. Raised-step rail authority is now generic and owner-pair based, with bend side-join
-  final-owner handoff limited to exact-source-rail endpoint contacts. `surface::joins` is now the
-  side-join adapter boundary and routes generated bands through Cavalier cleanup, bend arc
-  sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend / JunctionN edge throats now
-  grow from pairwise roadbed / asphalt material conflicts, and raw full-roadbed / carriageway
-  corridor authority is separated from per-band owner carriers before boolean splitting.
+  final-owner handoff limited to exact-source-rail endpoint contacts, and generated contact
+  contours are no longer canonicalized through projected-key / overlay-neighbor repair.
+  `surface::joins` is now the side-join adapter boundary and routes generated bands through
+  Cavalier cleanup, bend arc sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend /
+  JunctionN edge throats now grow from pairwise roadbed / asphalt material conflicts, and raw
+  full-roadbed / carriageway corridor authority is separated from per-band owner carriers before
+  boolean splitting.
   Post-boolean `node_non_road` subdivision now requires final curb / shoulder and sidewalk owned
   regions to carry explicit profile seam rails, and missing evidence is reported as a structured
   boolean-ownership residual. Road-touched terrain support now uses the lower road-owned

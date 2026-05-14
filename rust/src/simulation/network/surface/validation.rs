@@ -775,6 +775,12 @@ impl NodeGeometryDiagnostic {
                     reason: "empty_input",
                 }
             }
+            #[cfg(test)]
+            NodeRailGenerationError::NonCanonicalGeneratedContactEndpoint { .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "noncanonical_generated_contact_endpoint",
+                }
+            }
         };
         Self {
             node_id,
