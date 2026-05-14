@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS: i64 = 2;
+const VERTICAL_STEP_MIN_SPAN_M: f32 = 1.0e-6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ArrangementFaceBoundaryInterval {
@@ -793,25 +794,30 @@ impl RoadSurfaceSystem {
         ),
         RoadSurfaceVisualPolygon,
     )> {
-        if !arrangement_owner_has_visible_face_boundary_for_segment(
+        let lower_start = arrangement_owner_boundary_point_at_key(
             arrangement,
             lower_owner,
-            segment_key,
-        ) || !arrangement_owner_has_visible_face_boundary_for_segment(
+            segment_key.0,
+            false,
+        )?;
+        let lower_end = arrangement_owner_boundary_point_at_key(
+            arrangement,
+            lower_owner,
+            segment_key.1,
+            false,
+        )?;
+        let raised_start = arrangement_owner_boundary_point_at_key(
             arrangement,
             raised_owner,
-            segment_key,
-        ) {
-            return None;
-        }
-        let lower_start =
-            arrangement_owner_boundary_point_at_key(arrangement, lower_owner, segment_key.0)?;
-        let lower_end =
-            arrangement_owner_boundary_point_at_key(arrangement, lower_owner, segment_key.1)?;
-        let raised_start =
-            arrangement_owner_boundary_point_at_key(arrangement, raised_owner, segment_key.0)?;
-        let raised_end =
-            arrangement_owner_boundary_point_at_key(arrangement, raised_owner, segment_key.1)?;
+            segment_key.0,
+            true,
+        )?;
+        let raised_end = arrangement_owner_boundary_point_at_key(
+            arrangement,
+            raised_owner,
+            segment_key.1,
+            true,
+        )?;
         Self::arrangement_vertical_step_face_polygon(
             arrangement,
             lower_owner,
@@ -841,8 +847,9 @@ impl RoadSurfaceSystem {
         let lower_span_xz = Vector2::new(lower_end.x - lower_start.x, lower_end.z - lower_start.z);
         let raised_span_xz =
             Vector2::new(raised_end.x - raised_start.x, raised_end.z - raised_start.z);
-        if lower_span_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
-            || raised_span_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        if lower_span_xz.length_squared() <= VERTICAL_STEP_MIN_SPAN_M * VERTICAL_STEP_MIN_SPAN_M
+            || raised_span_xz.length_squared()
+                <= VERTICAL_STEP_MIN_SPAN_M * VERTICAL_STEP_MIN_SPAN_M
         {
             return None;
         }
@@ -1634,7 +1641,7 @@ fn visual_polygon_boundary_overlaps_edge_at_height(
             && {
                 let polygon_edge_start = ArrangementBoundaryPointKey::from_world(start).xz_key();
                 let polygon_edge_end = ArrangementBoundaryPointKey::from_world(end).xz_key();
-                arrangement_segments_overlap_with_length(
+                arrangement_segments_exact_overlap_with_length(
                     polygon_edge_start,
                     polygon_edge_end,
                     edge_start,
@@ -1642,6 +1649,63 @@ fn visual_polygon_boundary_overlaps_edge_at_height(
                 )
             }
     })
+}
+
+fn arrangement_segments_exact_overlap_with_length(
+    a_start: NodeArrangementKey,
+    a_end: NodeArrangementKey,
+    b_start: NodeArrangementKey,
+    b_end: NodeArrangementKey,
+) -> bool {
+    if a_start == a_end || b_start == b_end {
+        return false;
+    }
+    let a_dx = i128::from(a_end.x_key() - a_start.x_key());
+    let a_dz = i128::from(a_end.z_key() - a_start.z_key());
+    let b_dx = i128::from(b_end.x_key() - b_start.x_key());
+    let b_dz = i128::from(b_end.z_key() - b_start.z_key());
+    if a_dx * b_dz - a_dz * b_dx != 0 {
+        return false;
+    }
+    if !arrangement_key_lies_exactly_on_segment(a_start, b_start, b_end)
+        && !arrangement_key_lies_exactly_on_segment(a_end, b_start, b_end)
+        && !arrangement_key_lies_exactly_on_segment(b_start, a_start, a_end)
+        && !arrangement_key_lies_exactly_on_segment(b_end, a_start, a_end)
+    {
+        return false;
+    }
+    let use_x = (a_end.x_key() - a_start.x_key()).abs() >= (a_end.z_key() - a_start.z_key()).abs();
+    let coordinate = |key: NodeArrangementKey| {
+        if use_x { key.x_key() } else { key.z_key() }
+    };
+    let a0 = coordinate(a_start);
+    let a1 = coordinate(a_end);
+    let b0 = coordinate(b_start);
+    let b1 = coordinate(b_end);
+    a0.min(a1).max(b0.min(b1)) < a0.max(a1).min(b0.max(b1))
+}
+
+fn arrangement_key_lies_exactly_on_segment(
+    point: NodeArrangementKey,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+) -> bool {
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.x_key() - start.x_key());
+    let dz = i128::from(end.z_key() - start.z_key());
+    let px = i128::from(point.x_key() - start.x_key());
+    let pz = i128::from(point.z_key() - start.z_key());
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let dot = px * dx + pz * dz;
+    let len_squared = dx * dx + dz * dz;
+    dot >= 0 && dot <= len_squared
 }
 
 impl RoadSurfaceSystem {
@@ -1914,17 +1978,34 @@ fn arrangement_owner_boundary_point_at_key(
     arrangement: &NodeArrangement,
     owner: NodeBandOwner,
     key: NodeArrangementKey,
+    prefer_highest: bool,
 ) -> Option<Vector3> {
-    arrangement
+    let mut candidates = arrangement
         .vertices()
         .iter()
-        .find(|vertex| vertex.key() == key && vertex.owners().contains(&owner))
-        .map(|vertex| {
-            arrangement_boundary_point_to_world(arrangement_key_boundary_point(
-                vertex.key(),
-                vertex.height_mm(),
-            ))
+        .filter(|vertex| vertex.owners().contains(&owner))
+        .filter(|vertex| {
+            vertex.key() == key || arrangement_keys_are_overlay_siblings(vertex.key(), key)
         })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|vertex| {
+        let height_key = if prefer_highest {
+            -vertex.height_mm()
+        } else {
+            vertex.height_mm()
+        };
+        (
+            (vertex.key().x_key() - key.x_key()).abs() + (vertex.key().z_key() - key.z_key()).abs(),
+            height_key,
+            vertex.key(),
+        )
+    });
+    candidates.first().map(|vertex| {
+        arrangement_boundary_point_to_world(arrangement_key_boundary_point(
+            vertex.key(),
+            vertex.height_mm(),
+        ))
+    })
 }
 
 fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Vector3 {
@@ -2048,17 +2129,6 @@ fn arrangement_face_boundary_overlaps_segment(
     false
 }
 
-fn arrangement_owner_has_visible_face_boundary_for_segment(
-    arrangement: &NodeArrangement,
-    owner: NodeBandOwner,
-    segment_key: (NodeArrangementKey, NodeArrangementKey),
-) -> bool {
-    arrangement.faces().iter().any(|face| {
-        face.owner() == owner
-            && arrangement_face_boundary_overlaps_segment(arrangement, face, segment_key)
-    })
-}
-
 fn arrangement_face_centroid(
     arrangement: &NodeArrangement,
     face: &NodeArrangementFace,
@@ -2111,7 +2181,11 @@ fn arrangement_segments_overlap_with_length(
     let a_dz = i128::from(a_end.z_key() - a_start.z_key());
     let b_dx = i128::from(b_end.x_key() - b_start.x_key());
     let b_dz = i128::from(b_end.z_key() - b_start.z_key());
-    if a_dx * b_dz - a_dz * b_dx != 0 {
+    let cross = a_dx * b_dz - a_dz * b_dx;
+    let collinearity_bound = arrangement_overlay_grid_collinearity_error_bound(a_dx, a_dz).max(
+        arrangement_overlay_grid_collinearity_error_bound(b_dx, b_dz),
+    );
+    if cross != 0 && cross.abs() > collinearity_bound {
         return false;
     }
     if !arrangement_key_lies_on_segment(a_start, b_start, b_end)
@@ -2204,22 +2278,27 @@ fn arrangement_key_lies_on_segment(
     let dz = i128::from(end.z_key() - start.z_key());
     let px = i128::from(point.x_key() - start.x_key());
     let pz = i128::from(point.z_key() - start.z_key());
-    if px * dz - pz * dx != 0 {
+    let cross = px * dz - pz * dx;
+    if cross != 0 && cross.abs() > arrangement_overlay_grid_collinearity_error_bound(dx, dz) {
         return false;
     }
     let inside_x = if start.x_key() == end.x_key() {
         point.x_key() == start.x_key()
     } else {
-        point.x_key() > start.x_key().min(end.x_key())
-            && point.x_key() < start.x_key().max(end.x_key())
+        point.x_key() >= start.x_key().min(end.x_key())
+            && point.x_key() <= start.x_key().max(end.x_key())
     };
     let inside_z = if start.z_key() == end.z_key() {
         point.z_key() == start.z_key()
     } else {
-        point.z_key() > start.z_key().min(end.z_key())
-            && point.z_key() < start.z_key().max(end.z_key())
+        point.z_key() >= start.z_key().min(end.z_key())
+            && point.z_key() <= start.z_key().max(end.z_key())
     };
     inside_x && inside_z
+}
+
+fn arrangement_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
+    (dx.abs() + dz.abs()) * 2
 }
 
 fn visible_top_boundary_height_mm_at_key(

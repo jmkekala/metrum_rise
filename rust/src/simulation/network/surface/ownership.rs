@@ -3178,12 +3178,12 @@ fn point_key_lies_on_segment(
     let inside_x = if start.0 == end.0 {
         point.0 == start.0
     } else {
-        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
+        point.0 >= start.0.min(end.0) && point.0 <= start.0.max(end.0)
     };
     let inside_z = if start.1 == end.1 {
         point.1 == start.1
     } else {
-        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
+        point.1 >= start.1.min(end.1) && point.1 <= start.1.max(end.1)
     };
     inside_x && inside_z
 }
