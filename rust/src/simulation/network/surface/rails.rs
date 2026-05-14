@@ -2482,10 +2482,6 @@ fn append_generated_owner_group_contact_constraints(
     contact_edges: &mut BTreeSet<GeneratedSameBandContactConstraint>,
 ) {
     let groups = generated_owner_contact_groups(contours);
-    let canonical_points_by_group = groups
-        .iter()
-        .map(|group| GeneratedOwnerGroupCanonicalPoints::from_group(group, contours))
-        .collect::<Vec<_>>();
     for left_index in 0..groups.len() {
         for right_index in left_index + 1..groups.len() {
             let left = &groups[left_index];
@@ -2504,12 +2500,6 @@ fn append_generated_owner_group_contact_constraints(
                 (right.key.owner, left.key.owner)
             };
             for edge in generated_owner_group_contact_edges_inside_group(left, right, contours) {
-                let Some(edge) = generated_canonicalized_contact_edge_for_group(
-                    edge,
-                    &canonical_points_by_group[left_index],
-                ) else {
-                    continue;
-                };
                 let has_roles = generated_owner_group_contact_edge_has_explicit_roles(
                     left,
                     right,
@@ -2531,12 +2521,6 @@ fn append_generated_owner_group_contact_constraints(
                 }
             }
             for edge in generated_owner_group_contact_edges_inside_group(right, left, contours) {
-                let Some(edge) = generated_canonicalized_contact_edge_for_group(
-                    edge,
-                    &canonical_points_by_group[right_index],
-                ) else {
-                    continue;
-                };
                 let has_roles = generated_owner_group_contact_edge_has_explicit_roles(
                     left,
                     right,
@@ -2568,12 +2552,6 @@ fn append_generated_owner_group_contact_constraints(
                 for edge in
                     generated_owner_group_contact_edges_from_overlay_intersection(left, right)
                 {
-                    let Some(edge) = generated_canonicalized_contact_edge_for_group(
-                        edge,
-                        &canonical_points_by_group[intersection_source_index],
-                    ) else {
-                        continue;
-                    };
                     let has_roles = generated_owner_group_contact_edge_has_explicit_roles(
                         left,
                         right,
@@ -2616,43 +2594,6 @@ fn generated_owner_group_intersection_source_index(
     }
 }
 
-struct GeneratedOwnerGroupCanonicalPoints {
-    keys: BTreeSet<NodeRailPointKey>,
-    by_projected_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
-    by_overlay_neighbor_key: BTreeMap<NodeRailPointKey, NodeRailPointKey>,
-}
-
-impl GeneratedOwnerGroupCanonicalPoints {
-    fn from_group(group: &GeneratedOwnerContactGroup, contours: &[NodeGeneratedContour]) -> Self {
-        let keys = group
-            .contour_indices
-            .iter()
-            .filter_map(|index| contours.get(*index))
-            .flat_map(generated_contour_keys)
-            .collect::<Vec<_>>();
-        Self {
-            keys: keys.iter().copied().collect(),
-            by_projected_key: generated_preferred_point_by_projected_key(&keys),
-            by_overlay_neighbor_key: generated_preferred_point_by_overlay_neighbor_key(&keys),
-        }
-    }
-
-    fn canonicalize(&self, point: NodeRailPointKey) -> NodeRailPointKey {
-        if self.keys.contains(&point) {
-            return point;
-        }
-        self.by_overlay_neighbor_key
-            .get(&point)
-            .copied()
-            .or_else(|| {
-                self.by_projected_key
-                    .get(&generated_project_point_key(point))
-                    .copied()
-            })
-            .unwrap_or(point)
-    }
-}
-
 fn generated_canonical_point_by_projected_key(
     points: &[NodeRailPointKey],
 ) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
@@ -2672,33 +2613,6 @@ fn generated_canonical_point_by_projected_key(
         .into_iter()
         .filter_map(|(projected_key, canonical)| {
             canonical.map(|canonical| (projected_key, canonical))
-        })
-        .collect()
-}
-
-fn generated_preferred_point_by_projected_key(
-    points: &[NodeRailPointKey],
-) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
-    let mut counts_by_projected_key =
-        BTreeMap::<NodeRailPointKey, BTreeMap<NodeRailPointKey, usize>>::new();
-    for point in points.iter().copied() {
-        *counts_by_projected_key
-            .entry(generated_project_point_key(point))
-            .or_default()
-            .entry(point)
-            .or_default() += 1;
-    }
-    counts_by_projected_key
-        .into_iter()
-        .filter_map(|(projected_key, counts)| {
-            counts
-                .into_iter()
-                .max_by(|(left_point, left_count), (right_point, right_count)| {
-                    left_count
-                        .cmp(right_count)
-                        .then_with(|| right_point.cmp(left_point))
-                })
-                .map(|(point, _)| (projected_key, point))
         })
         .collect()
 }
@@ -2723,35 +2637,6 @@ fn generated_canonical_point_by_overlay_neighbor_key(
     canonical_by_neighbor_key
         .into_iter()
         .filter_map(|(neighbor, canonical)| canonical.map(|canonical| (neighbor, canonical)))
-        .collect()
-}
-
-fn generated_preferred_point_by_overlay_neighbor_key(
-    points: &[NodeRailPointKey],
-) -> BTreeMap<NodeRailPointKey, NodeRailPointKey> {
-    let mut point_counts = BTreeMap::<NodeRailPointKey, usize>::new();
-    for point in points.iter().copied() {
-        *point_counts.entry(point).or_default() += 1;
-    }
-    point_counts
-        .keys()
-        .copied()
-        .filter_map(|point| {
-            generated_overlay_neighbor_points(point)
-                .into_iter()
-                .filter_map(|candidate| {
-                    point_counts
-                        .get(&candidate)
-                        .copied()
-                        .map(|count| (candidate, count))
-                })
-                .max_by(|(left_point, left_count), (right_point, right_count)| {
-                    left_count
-                        .cmp(right_count)
-                        .then_with(|| right_point.cmp(left_point))
-                })
-                .map(|(canonical, _)| (point, canonical))
-        })
         .collect()
 }
 
@@ -2780,22 +2665,6 @@ fn generated_coordinate_key_to_mm(value: i64) -> i64 {
     } else {
         (value - units_per_mm / 2) / units_per_mm
     }
-}
-
-fn generated_canonicalized_contact_edge_for_group(
-    edge: GeneratedContourEdgeKey,
-    canonical_points: &GeneratedOwnerGroupCanonicalPoints,
-) -> Option<GeneratedContourEdgeKey> {
-    let start = generated_canonicalized_contact_point(edge.start, canonical_points);
-    let end = generated_canonicalized_contact_point(edge.end, canonical_points);
-    (start != end).then_some(GeneratedContourEdgeKey::new(start, end))
-}
-
-fn generated_canonicalized_contact_point(
-    point: NodeRailPointKey,
-    canonical_points: &GeneratedOwnerGroupCanonicalPoints,
-) -> NodeRailPointKey {
-    canonical_points.canonicalize(point)
 }
 
 fn generated_owner_contact_groups(
