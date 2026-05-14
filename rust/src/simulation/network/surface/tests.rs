@@ -4070,7 +4070,7 @@ fn logged_current_flat_three_way_oblique_junction_compiles_side_join_ownership()
 }
 
 #[test]
-fn logged_flat_three_way_oblique_variant_rejects_implicit_cross_owner_cdt_height_edge() {
+fn logged_flat_three_way_oblique_variant_compiles_with_explicit_vertical_steps() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-74.754, 0.0, -4.117), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-20.950, 0.0, -6.649), NodeType::Junction);
@@ -4118,10 +4118,8 @@ fn logged_flat_three_way_oblique_variant_rejects_implicit_cross_owner_cdt_height
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "flat oblique 3-way variant must reject cross-owner height edges without an explicit vertical step"
-    );
+    let piece = assert_compiled_junction_piece(&surface, center);
+    assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
 
 #[test]

@@ -124,12 +124,6 @@ enum GeneratedSameBandBoundaryRole {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CurbAsphaltContactOppositeOwnerMode {
-    RoleOnly,
-    EndpointOrAdjacentCarriageway,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GeneratedPointContourLocation {
     Outside,
     Boundary,
@@ -239,6 +233,9 @@ impl NodeRailContourSet {
         let owners_by_mouth = owners_by_mouth(input);
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
+        let allow_projected_material_endpoint_handoff = input.piece_kind
+            == RoadSurfaceVisualNodePieceKind::JunctionN
+            && input.mouths.len() <= 4;
         let mut height_carrier_points_by_source =
             BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>::new();
 
@@ -294,20 +291,55 @@ impl NodeRailContourSet {
             }
         }
         append_generated_role_material_contact_constraints(&contours, &mut constraints);
-        node_generated_contact_contours(&mut contours, &mut constraints)?;
+        node_generated_contact_contours(
+            &mut contours,
+            &mut constraints,
+            allow_projected_material_endpoint_handoff,
+        )?;
         append_generated_material_point_contact_constraints(&contours, &mut constraints);
-        node_generated_contact_contours(&mut contours, &mut constraints)?;
+        node_generated_contact_contours(
+            &mut contours,
+            &mut constraints,
+            allow_projected_material_endpoint_handoff,
+        )?;
         append_generated_same_band_contact_constraints(
             input.piece_kind,
             &contours,
             &mut constraints,
         );
-        node_generated_contact_contours(&mut contours, &mut constraints)?;
+        node_generated_contact_contours(
+            &mut contours,
+            &mut constraints,
+            allow_projected_material_endpoint_handoff,
+        )?;
         node_generated_contact_constraint_points_on_contours(
             input.piece_kind,
             &mut contours,
             &mut constraints,
+            allow_projected_material_endpoint_handoff,
         )?;
+        canonicalize_generated_contours_to_source_height_carriers(
+            &mut contours,
+            &mut constraints,
+            &height_carrier_points_by_source,
+        )?;
+        if allow_projected_material_endpoint_handoff {
+            authorize_generated_material_contact_constraint_endpoints_from_owner_sources(
+                &contours,
+                &mut constraints,
+            );
+        }
+        canonicalize_generated_contours_to_material_contact_sources(
+            &mut contours,
+            &mut constraints,
+        )?;
+        authorize_generated_contact_constraint_endpoints_from_sources(&contours, &mut constraints);
+        if allow_projected_material_endpoint_handoff {
+            authorize_generated_material_contact_constraint_endpoints_from_owner_sources(
+                &contours,
+                &mut constraints,
+            );
+        }
         Ok(Self {
             node_id: input.node_id,
             piece_kind: input.piece_kind,
@@ -650,17 +682,9 @@ fn push_terminal_end_band_contours(
     let owner_by_kind_and_source =
         terminal_owner_by_kind_and_source(mouth, mouth_owners, end_bands, owners);
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-        push_node_side_join_candidate_contours(
-            piece_kind,
-            mouth,
-            end_bands,
-            owners,
-            contours,
-            constraints,
-        )?;
+        push_node_side_join_candidate_contours(mouth, end_bands, owners, contours, constraints)?;
         for (end_band, owner) in end_bands.iter().zip(owners) {
             push_terminal_end_band_boundary_constraints(
-                piece_kind,
                 mouth,
                 end_band,
                 *owner,
@@ -699,7 +723,6 @@ fn push_terminal_end_band_contours(
         )?;
         for end_band in group.end_bands {
             push_terminal_end_band_boundary_constraints(
-                piece_kind,
                 mouth,
                 end_band,
                 key.owner,
@@ -713,7 +736,6 @@ fn push_terminal_end_band_contours(
 }
 
 fn push_node_side_join_candidate_contours(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
     end_bands: &[NodeInputTerminalEndBand],
     owners: &[NodeBandOwner],
@@ -730,9 +752,7 @@ fn push_node_side_join_candidate_contours(
                 kind: end_band.band_kind,
                 source_band_index: end_band.source_band_index,
                 owner: *owner,
-                contributes_footprint: node_side_join_end_band_contributes_footprint(
-                    piece_kind, end_band,
-                ),
+                contributes_footprint: node_side_join_end_band_contributes_footprint(end_band),
             })
             .or_insert_with(|| TerminalEndBandGroup {
                 contour_world: Vec::new(),
@@ -792,7 +812,8 @@ impl<'a> TerminalEndBandGroup<'a> {
             .iter()
             .map(|point| [point.x, point.z])
             .collect::<Vec<_>>();
-        if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+        if end_band.boundary_mode
+            != NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             && RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0
         {
             contour.reverse();
@@ -860,12 +881,8 @@ fn push_grouped_end_band_candidate_contours(
                 points,
             )?;
             let points_xz = polyline_to_road_points(&band_contour);
-            let source_height_points_world = end_bands
-                .iter()
-                .flat_map(|end_band| end_band.contour_world.iter().copied())
-                .collect::<Vec<_>>();
             let height_points_world =
-                align_height_points_to_contour(&points_xz, &source_height_points_world);
+                align_height_points_to_end_band_contours(&points_xz, end_bands);
             contours.push(NodeGeneratedContour {
                 kind,
                 source_mouth_order_index: mouth.order_index,
@@ -893,7 +910,6 @@ fn push_grouped_end_band_candidate_contours(
 }
 
 fn push_terminal_end_band_boundary_constraints(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
     end_band: &NodeInputTerminalEndBand,
     owner: NodeBandOwner,
@@ -907,63 +923,12 @@ fn push_terminal_end_band_boundary_constraints(
         terminal_end_band_material_opposite_owner(mouth, end_band, owner_by_kind_and_source);
     match end_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => {
-            if end_band.boundary_mode
-                == NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
-            {
-                push_terminal_curb_asphalt_contact_constraints(
-                    piece_kind,
-                    mouth,
-                    end_band,
-                    owner,
-                    owner_by_kind_and_source,
-                    constraints,
-                )?;
-                push_terminal_curb_asphalt_side_role_constraints(
-                    piece_kind,
-                    mouth,
-                    end_band,
-                    owner,
-                    constraints,
-                )?;
-                if let Some(points) = outer_path.clone() {
-                    push_terminal_end_band_path_constraint(
-                        constraints,
-                        NodeRailConstraintKind::CurbSidewalkContact,
-                        mouth.order_index,
-                        end_band.source_band_index,
-                        owner,
-                        opposite_owner,
-                        points,
-                    )?;
-                }
-                for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
-                    push_terminal_end_band_constraint(
-                        constraints,
-                        NodeRailConstraintKind::CurbSidewalkContact,
-                        mouth.order_index,
-                        end_band.source_band_index,
-                        owner,
-                        opposite_owner,
-                        xz(start),
-                        xz(end),
-                    )?;
-                }
-                return Ok(());
-            }
             if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap {
                 push_terminal_curb_asphalt_contact_constraints(
-                    piece_kind,
                     mouth,
                     end_band,
                     owner,
                     owner_by_kind_and_source,
-                    constraints,
-                )?;
-                push_terminal_curb_asphalt_side_role_constraints(
-                    piece_kind,
-                    mouth,
-                    end_band,
-                    owner,
                     constraints,
                 )?;
             }
@@ -1055,38 +1020,15 @@ fn push_terminal_end_band_boundary_constraints(
     }
 }
 
-fn push_terminal_curb_asphalt_side_role_constraints(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
-    owner: NodeBandOwner,
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    if curb_asphalt_contact_opposite_owner_mode(piece_kind, end_band)
-        != CurbAsphaltContactOppositeOwnerMode::RoleOnly
-    {
-        return Ok(());
-    }
-    for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
-        push_terminal_end_band_constraint(
-            constraints,
-            NodeRailConstraintKind::AsphaltCurbContact,
-            mouth.order_index,
-            end_band.source_band_index,
-            owner,
-            None,
-            xz(start),
-            xz(end),
-        )?;
-    }
-    Ok(())
-}
-
 fn terminal_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
-    !matches!(
+    matches!(
         end_band.boundary_mode,
-        NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
-            | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
+        NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
+            | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
+            | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
     )
 }
 
@@ -1094,27 +1036,21 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
-            | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
             | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
             | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
     )
 }
 
-fn node_side_join_end_band_contributes_footprint(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    end_band: &NodeInputTerminalEndBand,
-) -> bool {
+fn node_side_join_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
     match end_band.boundary_mode {
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+        | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
+        | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
         | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
         | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap => true,
-        NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
-        | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint => {
-            piece_kind == RoadSurfaceVisualNodePieceKind::Bend
-                && end_band.band_kind == RoadSurfaceBandKind::CurbOrShoulder
-        }
         NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand => false,
     }
 }
@@ -1179,7 +1115,6 @@ fn terminal_generated_material_opposite_owner(
 }
 
 fn push_terminal_curb_asphalt_contact_constraints(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
     end_band: &NodeInputTerminalEndBand,
     owner: NodeBandOwner,
@@ -1189,7 +1124,6 @@ fn push_terminal_curb_asphalt_contact_constraints(
     let Some(points) = terminal_end_band_inner_contour_path(end_band) else {
         return Ok(());
     };
-    let opposite_owner_mode = curb_asphalt_contact_opposite_owner_mode(piece_kind, end_band);
     for segment in points.windows(2) {
         let opposite_owner = terminal_curb_asphalt_opposite_owner_for_inner_segment(
             mouth,
@@ -1197,7 +1131,6 @@ fn push_terminal_curb_asphalt_contact_constraints(
             segment[0],
             segment[1],
             owner_by_kind_and_source,
-            opposite_owner_mode,
         );
         push_terminal_end_band_constraint(
             constraints,
@@ -1213,34 +1146,13 @@ fn push_terminal_curb_asphalt_contact_constraints(
     Ok(())
 }
 
-fn curb_asphalt_contact_opposite_owner_mode(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    end_band: &NodeInputTerminalEndBand,
-) -> CurbAsphaltContactOppositeOwnerMode {
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
-        && matches!(
-            end_band.boundary_mode,
-            NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
-                | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
-        )
-    {
-        CurbAsphaltContactOppositeOwnerMode::RoleOnly
-    } else {
-        CurbAsphaltContactOppositeOwnerMode::EndpointOrAdjacentCarriageway
-    }
-}
-
 fn terminal_curb_asphalt_opposite_owner_for_inner_segment(
     mouth: &NodeInputMouth,
     source_band_index: usize,
     start: RoadVec2,
     end: RoadVec2,
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
-    mode: CurbAsphaltContactOppositeOwnerMode,
 ) -> Option<NodeBandOwner> {
-    if mode == CurbAsphaltContactOppositeOwnerMode::RoleOnly {
-        return None;
-    }
     if let Some(owner) =
         terminal_curb_asphalt_endpoint_opposite_owner(mouth, start, end, owner_by_kind_and_source)
     {
@@ -1325,9 +1237,9 @@ fn terminal_end_band_has_material_boundary(end_band: &NodeInputTerminalEndBand) 
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
-            | NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint
     )
 }
 
@@ -1594,6 +1506,73 @@ fn align_height_points_to_contour(
                 .map(|height_m| RoadVec3::new(point_xz.x, height_m, point_xz.y))
         })
         .collect()
+}
+
+fn align_height_points_to_end_band_contours(
+    contour_points_xz: &[RoadVec2],
+    end_bands: &[&NodeInputTerminalEndBand],
+) -> Option<Vec<RoadVec3>> {
+    contour_points_xz
+        .iter()
+        .copied()
+        .map(|point_xz| {
+            height_on_end_band_contours(point_xz, end_bands)
+                .map(|height_m| RoadVec3::new(point_xz.x, height_m, point_xz.y))
+        })
+        .collect()
+}
+
+fn height_on_end_band_contours(
+    point_xz: RoadVec2,
+    end_bands: &[&NodeInputTerminalEndBand],
+) -> Option<f64> {
+    let key = road_point_key(point_xz);
+    let mut height_m: Option<f64> = None;
+    for end_band in end_bands {
+        if let Some(candidate_height_m) =
+            height_on_source_contour_edge(key, &end_band.contour_world)
+        {
+            if let Some(existing_height_m) = height_m
+                && (existing_height_m - candidate_height_m).abs() > f64::EPSILON
+            {
+                return None;
+            }
+            height_m = Some(candidate_height_m);
+        }
+    }
+    height_m
+}
+
+fn height_on_source_contour_edge(
+    key: NodeRailPointKey,
+    source_points_world: &[RoadVec3],
+) -> Option<f64> {
+    if source_points_world.is_empty() {
+        return None;
+    }
+    for point in source_points_world {
+        if road_point_key(xz(*point)) == key {
+            return Some(point.y);
+        }
+    }
+    for index in 0..source_points_world.len() {
+        let next = (index + 1) % source_points_world.len();
+        let start = road_point_key(xz(source_points_world[index]));
+        let end = road_point_key(xz(source_points_world[next]));
+        if start == end || !generated_point_key_lies_on_segment(key, start, end) {
+            continue;
+        }
+        if let Some(height_m) = height_for_key_on_generated_edge(
+            key,
+            start,
+            end,
+            source_points_world[index].y,
+            source_points_world[next].y,
+        ) {
+            return Some(height_m);
+        }
+    }
+    None
 }
 
 fn push_boundary_constraint(
@@ -3343,6 +3322,7 @@ fn doubled_point_lies_on_generated_segment(
 fn node_generated_contact_contours(
     contours: &mut [NodeGeneratedContour],
     constraints: &mut [NodeRailConstraint],
+    allow_projected_edge_insertions: bool,
 ) -> Result<(), NodeRailGenerationError> {
     let max_passes = contours.len().saturating_mul(contours.len()).max(1) * 4;
     let mut previous_candidates = None;
@@ -3354,7 +3334,12 @@ fn node_generated_contact_contours(
         if previous_candidates.as_ref() == Some(&candidates) {
             return Ok(());
         }
-        if !insert_contact_noding_candidates(contours, constraints, candidates.clone())? {
+        if !insert_contact_noding_candidates(
+            contours,
+            constraints,
+            candidates.clone(),
+            allow_projected_edge_insertions,
+        )? {
             return Ok(());
         }
         previous_candidates = Some(candidates);
@@ -3405,6 +3390,7 @@ fn insert_contact_noding_candidates(
     contours: &mut [NodeGeneratedContour],
     constraints: &mut [NodeRailConstraint],
     candidates: Vec<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)>,
+    allow_projected_edge_insertions: bool,
 ) -> Result<bool, NodeRailGenerationError> {
     let mut insertions_by_contour =
         BTreeMap::<usize, BTreeMap<GeneratedContourDirectedEdge, BTreeSet<NodeRailPointKey>>>::new(
@@ -3425,6 +3411,7 @@ fn insert_contact_noding_candidates(
             constraints,
             contour_index,
             insertions_by_edge,
+            allow_projected_edge_insertions,
         )?;
     }
     Ok(inserted_any)
@@ -3435,6 +3422,7 @@ fn insert_keys_on_generated_contour_edges(
     constraints: &mut [NodeRailConstraint],
     contour_index: usize,
     insertions_by_edge: BTreeMap<GeneratedContourDirectedEdge, BTreeSet<NodeRailPointKey>>,
+    allow_projected_edge_insertions: bool,
 ) -> Result<bool, NodeRailGenerationError> {
     let Some(contour) = contours.get_mut(contour_index) else {
         return Ok(false);
@@ -3471,7 +3459,11 @@ fn insert_keys_on_generated_contour_edges(
             .iter()
             .copied()
             .filter(|point| *point != start && *point != end)
-            .filter(|point| generated_point_key_lies_on_segment(*point, start, end))
+            .filter(|point| {
+                generated_point_key_lies_on_segment(*point, start, end)
+                    || (allow_projected_edge_insertions
+                        && generated_point_key_projects_inside_segment(*point, start, end))
+            })
             .collect::<Vec<_>>();
         insertions.sort_by_key(|point| generated_segment_parameter_key(start, end, *point));
         insertions.dedup();
@@ -3513,10 +3505,14 @@ fn node_generated_contact_constraint_points_on_contours(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &mut [NodeGeneratedContour],
     constraints: &mut [NodeRailConstraint],
+    allow_projected_material_endpoint_handoff: bool,
 ) -> Result<(), NodeRailGenerationError> {
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-        let mut candidates =
-            generated_contact_constraint_point_noding_candidates(contours, constraints);
+        let mut candidates = generated_contact_constraint_point_noding_candidates(
+            contours,
+            constraints,
+            allow_projected_material_endpoint_handoff,
+        );
         candidates.sort_unstable();
         candidates.dedup();
         for (contour_index, insert_key) in candidates {
@@ -3525,11 +3521,133 @@ fn node_generated_contact_constraint_points_on_contours(
                 constraints,
                 contour_index,
                 insert_key,
+                allow_projected_material_endpoint_handoff,
             )?;
         }
     }
     authorize_generated_contact_constraint_endpoints_from_sources(contours, constraints);
     Ok(())
+}
+
+fn canonicalize_generated_contours_to_source_height_carriers(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    height_carrier_points_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>,
+) -> Result<(), NodeRailGenerationError> {
+    let canonical_by_source = height_carrier_points_by_source
+        .iter()
+        .map(|(source, points)| {
+            let keys = points
+                .iter()
+                .copied()
+                .map(road_point_key)
+                .collect::<Vec<_>>();
+            (
+                *source,
+                GeneratedSourceContourCanonicalPoints::from_keys(keys),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for contour in contours {
+        let NodeGeneratedContourKind::Band { kind } = contour.kind else {
+            continue;
+        };
+        let Some(source_band_index) = contour.source_band_index else {
+            continue;
+        };
+        let Some(canonical_points) =
+            canonical_by_source.get(&(kind, contour.source_mouth_order_index, source_band_index))
+        else {
+            continue;
+        };
+        canonicalize_generated_contour_to_source_height_carriers(
+            contour,
+            constraints,
+            canonical_points,
+        )?;
+    }
+    Ok(())
+}
+
+fn canonicalize_generated_contour_to_source_height_carriers(
+    contour: &mut NodeGeneratedContour,
+    constraints: &mut [NodeRailConstraint],
+    canonical_points: &GeneratedSourceContourCanonicalPoints,
+) -> Result<(), NodeRailGenerationError> {
+    let keys = generated_contour_keys(contour);
+    let mut canonical_keys = keys
+        .iter()
+        .copied()
+        .map(|key| canonical_points.canonicalize_to_source(key))
+        .collect::<Vec<_>>();
+    if canonical_keys == keys {
+        return Ok(());
+    }
+    if let Some(height_points_world) = contour.height_points_world.as_mut() {
+        if height_points_world.len() == keys.len() {
+            for (point, key) in height_points_world.iter_mut().zip(&canonical_keys) {
+                let point_xz = road_point_from_key(*key);
+                point.x = point_xz.x;
+                point.z = point_xz.y;
+            }
+        } else {
+            contour.height_points_world = None;
+        }
+    }
+    remove_generated_contour_spikes(&mut canonical_keys);
+    set_generated_contour_from_keys(contour, constraints, canonical_keys)
+}
+
+fn canonicalize_generated_contours_to_material_contact_sources(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+) -> Result<(), NodeRailGenerationError> {
+    let authority = GeneratedMaterialContactEndpointAuthority::from_constraints(constraints);
+    for contour in contours {
+        let NodeGeneratedContourKind::Band { .. } = contour.kind else {
+            continue;
+        };
+        let Some(owner) = contour.owner else {
+            continue;
+        };
+        canonicalize_generated_contour_to_material_contact_sources(
+            contour,
+            constraints,
+            &authority,
+            owner,
+        )?;
+    }
+    Ok(())
+}
+
+fn canonicalize_generated_contour_to_material_contact_sources(
+    contour: &mut NodeGeneratedContour,
+    constraints: &mut [NodeRailConstraint],
+    authority: &GeneratedMaterialContactEndpointAuthority,
+    owner: NodeBandOwner,
+) -> Result<(), NodeRailGenerationError> {
+    let keys = generated_contour_keys(contour);
+    let mut canonical_keys = keys
+        .iter()
+        .copied()
+        .map(|key| authority.canonicalize(owner, key))
+        .collect::<Vec<_>>();
+    if canonical_keys == keys {
+        return Ok(());
+    }
+    if let Some(height_points_world) = contour.height_points_world.as_mut() {
+        if height_points_world.len() == keys.len() {
+            for (point, key) in height_points_world.iter_mut().zip(&canonical_keys) {
+                let point_xz = road_point_from_key(*key);
+                point.x = point_xz.x;
+                point.z = point_xz.y;
+            }
+        } else {
+            contour.height_points_world = None;
+        }
+    }
+    remove_generated_contour_spikes(&mut canonical_keys);
+    set_generated_contour_from_keys(contour, constraints, canonical_keys)
 }
 
 fn authorize_generated_contact_constraint_endpoints_from_sources(
@@ -3540,6 +3658,120 @@ fn authorize_generated_contact_constraint_endpoints_from_sources(
     for constraint in constraints {
         source_authority.authorize_constraint(constraint);
     }
+}
+
+fn authorize_generated_material_contact_constraint_endpoints_from_owner_sources(
+    contours: &[NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+) {
+    let source_authority = GeneratedSourceEndpointAuthority::from_contours(contours);
+    for constraint in constraints {
+        source_authority.authorize_material_contact_constraint_from_owner_sources(constraint);
+    }
+}
+
+struct GeneratedMaterialContactEndpointAuthority {
+    canonical_by_owner_and_projected_key:
+        BTreeMap<(NodeBandOwner, NodeRailPointKey), NodeRailPointKey>,
+}
+
+impl GeneratedMaterialContactEndpointAuthority {
+    fn from_constraints(constraints: &[NodeRailConstraint]) -> Self {
+        let mut candidates = BTreeMap::<
+            (NodeBandOwner, NodeRailPointKey),
+            Vec<(usize, usize, usize, NodeRailPointKey)>,
+        >::new();
+        for constraint in constraints {
+            let Some(priority) = generated_material_endpoint_authority_priority(constraint) else {
+                continue;
+            };
+            let source_owner_priority = generated_constraint_source_owner_priority(constraint);
+            for owner in generated_constraint_authority_owners(constraint) {
+                for point in constraint.points_xz.iter().copied().map(road_point_key) {
+                    candidates
+                        .entry((owner, generated_project_point_key(point)))
+                        .or_default()
+                        .push((
+                            priority,
+                            source_owner_priority,
+                            constraint.constraint_index,
+                            point,
+                        ));
+                }
+            }
+        }
+        Self {
+            canonical_by_owner_and_projected_key: candidates
+                .into_iter()
+                .filter_map(|(key, mut candidates)| {
+                    candidates.sort_unstable();
+                    candidates
+                        .into_iter()
+                        .next()
+                        .map(|(_, _, _, point)| (key, point))
+                })
+                .collect(),
+        }
+    }
+
+    fn canonicalize(&self, owner: NodeBandOwner, point: NodeRailPointKey) -> NodeRailPointKey {
+        self.canonical_by_owner_and_projected_key
+            .get(&(owner, generated_project_point_key(point)))
+            .copied()
+            .unwrap_or(point)
+    }
+}
+
+fn generated_material_endpoint_authority_priority(
+    constraint: &NodeRailConstraint,
+) -> Option<usize> {
+    let kind_priority = match constraint.kind {
+        NodeRailConstraintKind::AsphaltCurbContact => 0,
+        NodeRailConstraintKind::CurbSidewalkContact => 1,
+        _ => return None,
+    };
+    let owner_pair_offset =
+        usize::from(constraint.owner.is_none() || constraint.opposite_owner.is_none());
+    let point_contact_offset = usize::from(generated_constraint_is_point_contact(constraint));
+    Some(kind_priority * 4 + owner_pair_offset * 2 + point_contact_offset)
+}
+
+fn generated_constraint_source_owner_priority(constraint: &NodeRailConstraint) -> usize {
+    constraint
+        .owner
+        .map(generated_owner_boundary_source_priority)
+        .unwrap_or(usize::MAX)
+}
+
+fn generated_owner_boundary_source_priority(owner: NodeBandOwner) -> usize {
+    match owner.kind() {
+        RoadSurfaceBandKind::Carriageway => 0,
+        RoadSurfaceBandKind::CurbOrShoulder => 1,
+        RoadSurfaceBandKind::Sidewalk => 2,
+        _ => 3,
+    }
+}
+
+fn generated_constraint_authority_owners(constraint: &NodeRailConstraint) -> Vec<NodeBandOwner> {
+    let mut owners = [constraint.owner, constraint.opposite_owner]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    owners.sort_unstable();
+    owners.dedup();
+    owners
+}
+
+fn generated_constraint_is_point_contact(constraint: &NodeRailConstraint) -> bool {
+    let Some(first) = constraint.points_xz.first().copied().map(road_point_key) else {
+        return false;
+    };
+    constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(road_point_key)
+        .all(|point| point == first)
 }
 
 struct GeneratedSourceEndpointAuthority {
@@ -3621,6 +3853,65 @@ impl GeneratedSourceEndpointAuthority {
             point
         }
     }
+
+    fn authorize_material_contact_constraint_from_owner_sources(
+        &self,
+        constraint: &mut NodeRailConstraint,
+    ) {
+        if constraint.kind != NodeRailConstraintKind::CurbSidewalkContact
+            || constraint.owner.zip(constraint.opposite_owner).is_none()
+        {
+            return;
+        }
+        let owners = [constraint.owner, constraint.opposite_owner];
+        for point in &mut constraint.points_xz {
+            let key = road_point_key(*point);
+            let authorized = self.authorized_point_from_owner_sources(owners, key);
+            if authorized != key {
+                *point = road_point_from_key(authorized);
+            }
+        }
+    }
+
+    fn authorized_point_from_owner_sources(
+        &self,
+        owners: [Option<NodeBandOwner>; 2],
+        point: NodeRailPointKey,
+    ) -> NodeRailPointKey {
+        let mut candidates = self
+            .canonical_by_source
+            .iter()
+            .filter(|((source_owner, _, _), _)| owners.contains(&Some(*source_owner)))
+            .filter_map(
+                |((source_owner, source_mouth_order_index, source_band_index), canonical)| {
+                    let owner_priority = generated_owner_boundary_source_priority(*source_owner);
+                    if canonical.contains(point) {
+                        return Some((
+                            owner_priority,
+                            0usize,
+                            *source_mouth_order_index,
+                            *source_band_index,
+                            point,
+                        ));
+                    }
+                    let candidate = canonical.canonicalize(point);
+                    (candidate != point).then_some((
+                        owner_priority,
+                        1usize,
+                        *source_mouth_order_index,
+                        *source_band_index,
+                        candidate,
+                    ))
+                },
+            )
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, _, _, _, candidate)| candidate)
+            .unwrap_or(point)
+    }
 }
 
 struct GeneratedSourceContourCanonicalPoints {
@@ -3652,11 +3943,26 @@ impl GeneratedSourceContourCanonicalPoints {
             })
             .unwrap_or(point)
     }
+
+    fn contains(&self, point: NodeRailPointKey) -> bool {
+        self.keys.contains(&point)
+    }
+
+    fn canonicalize_to_source(&self, point: NodeRailPointKey) -> NodeRailPointKey {
+        if self.keys.contains(&point) {
+            return point;
+        }
+        self.by_projected_key
+            .get(&generated_project_point_key(point))
+            .copied()
+            .unwrap_or(point)
+    }
 }
 
 fn generated_contact_constraint_point_noding_candidates(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
+    allow_cross_source_owner_pair_contacts: bool,
 ) -> Vec<(usize, NodeRailPointKey)> {
     let mut candidates = Vec::new();
     for constraint in constraints {
@@ -3671,10 +3977,18 @@ fn generated_contact_constraint_point_noding_candidates(
                 continue;
             };
             if ![constraint.owner, constraint.opposite_owner].contains(&Some(contour_owner))
-                || contour.source_mouth_order_index != constraint.source_mouth_order_index
-                || contour.source_band_index != Some(source_band_index)
                 || generated_contour_band_kind(contour) != Some(contour_owner.kind())
             {
+                continue;
+            }
+            let source_matches = contour.source_mouth_order_index
+                == constraint.source_mouth_order_index
+                && contour.source_band_index == Some(source_band_index);
+            let exact_owner_pair_material_contact = allow_cross_source_owner_pair_contacts
+                && constraint.kind == NodeRailConstraintKind::CurbSidewalkContact
+                && constraint.owner.is_some()
+                && constraint.opposite_owner.is_some();
+            if !source_matches && !exact_owner_pair_material_contact {
                 continue;
             }
             let contour_keys = generated_contour_keys(contour);
@@ -3693,11 +4007,14 @@ fn insert_key_on_generated_contour_source_edge(
     constraints: &mut [NodeRailConstraint],
     contour_index: usize,
     insert_key: NodeRailPointKey,
+    allow_projected_source_edge: bool,
 ) -> Result<(), NodeRailGenerationError> {
     let Some(contour) = contours.get_mut(contour_index) else {
         return Ok(());
     };
-    let Some(edge) = generated_contour_source_edge_for_key(contour, insert_key) else {
+    let Some(edge) =
+        generated_contour_source_edge_for_key(contour, insert_key, allow_projected_source_edge)
+    else {
         return Ok(());
     };
     let mut keys = generated_contour_keys(contour);
@@ -3711,6 +4028,7 @@ fn insert_key_on_generated_contour_source_edge(
 fn generated_contour_source_edge_for_key(
     contour: &NodeGeneratedContour,
     point: NodeRailPointKey,
+    allow_projected_source_edge: bool,
 ) -> Option<GeneratedContourDirectedEdge> {
     if generated_contour_keys(contour).contains(&point) {
         return None;
@@ -3722,6 +4040,10 @@ fn generated_contour_source_edge_for_key(
                 || generated_point_key_quantization_cell_intersects_segment(
                     point, edge.start, edge.end,
                 )
+                || (allow_projected_source_edge
+                    && generated_projected_point_key_quantization_cell_intersects_segment(
+                        point, edge.start, edge.end,
+                    ))
         })
         .collect::<Vec<_>>();
     match candidates.as_slice() {
@@ -3843,12 +4165,7 @@ fn generated_contact_constraint_kind(
     right_kind: RoadSurfaceBandKind,
 ) -> Option<NodeRailConstraintKind> {
     if left_kind == right_kind {
-        return generated_contour_supports_same_band_contact(left_kind).then_some(
-            NodeRailConstraintKind::BandBoundary {
-                left_kind,
-                right_kind,
-            },
-        );
+        return None;
     }
     if (is_carriageway(left_kind) && is_curb_or_shoulder(right_kind))
         || (is_curb_or_shoulder(left_kind) && is_carriageway(right_kind))
@@ -4228,15 +4545,6 @@ fn generated_contour_supports_same_band_role(kind: RoadSurfaceBandKind) -> bool 
     )
 }
 
-fn generated_contour_supports_same_band_contact(kind: RoadSurfaceBandKind) -> bool {
-    matches!(
-        kind,
-        RoadSurfaceBandKind::Carriageway
-            | RoadSurfaceBandKind::CurbOrShoulder
-            | RoadSurfaceBandKind::Sidewalk
-    )
-}
-
 fn collect_generated_same_band_role_on_segment(
     contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
@@ -4457,6 +4765,23 @@ fn generated_point_key_lies_on_segment(
     inside_x && inside_z
 }
 
+fn generated_point_key_projects_inside_segment(
+    point: NodeRailPointKey,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+) -> bool {
+    if start == end {
+        return false;
+    }
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    if dx.abs() >= dz.abs() {
+        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
+    } else {
+        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
+    }
+}
+
 fn generated_point_key_quantization_cell_intersects_segment(
     point: NodeRailPointKey,
     start: NodeRailPointKey,
@@ -4490,6 +4815,18 @@ fn generated_point_key_quantization_cell_intersects_segment(
     .any(|(edge_start, edge_end)| {
         doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
     })
+}
+
+fn generated_projected_point_key_quantization_cell_intersects_segment(
+    point: NodeRailPointKey,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+) -> bool {
+    let point = generated_project_point_key(point);
+    let start = generated_project_point_key(start);
+    let end = generated_project_point_key(end);
+    generated_point_key_lies_on_segment(point, start, end)
+        || generated_point_key_quantization_cell_intersects_segment(point, start, end)
 }
 
 fn doubled_point_inside_axis_aligned_box(
@@ -5098,9 +5435,7 @@ mod tests {
         input
     }
 
-    fn bend_input_with_curb_within_footprint(
-        boundary_mode: NodeInputTerminalEndBandBoundaryMode,
-    ) -> NodeArrangementInput {
+    fn bend_input_with_curb_side_join() -> NodeArrangementInput {
         let mut input = input_with_endpoint_x(0.0);
         input.piece_kind = RoadSurfaceVisualNodePieceKind::Bend;
         input.mouths[0]
@@ -5108,7 +5443,7 @@ mod tests {
             .push(NodeInputTerminalEndBand {
                 source_band_index: 1,
                 band_kind: RoadSurfaceBandKind::CurbOrShoulder,
-                boundary_mode,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
                 inner_start_world: RoadVec3::new(0.0, 4.2, -2.0),
                 inner_end_world: RoadVec3::new(2.0, 4.2, -2.0),
                 outer_start_world: RoadVec3::new(0.0, 4.2, -5.0),
@@ -5121,12 +5456,6 @@ mod tests {
                 ],
             });
         input
-    }
-
-    fn bend_input_with_curb_guard_within_footprint() -> NodeArrangementInput {
-        bend_input_with_curb_within_footprint(
-            NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint,
-        )
     }
 
     #[test]
@@ -5200,11 +5529,10 @@ mod tests {
     }
 
     #[test]
-    fn bend_curb_guard_end_bands_contribute_canonical_footprint() {
-        let contours =
-            NodeRailContourSet::from_input(&bend_input_with_curb_guard_within_footprint())
-                .expect("valid contours");
-        let guard_outer_key = road_point_key(RoadVec2::new(0.0, -5.0));
+    fn bend_curb_side_join_bands_contribute_canonical_footprint() {
+        let contours = NodeRailContourSet::from_input(&bend_input_with_curb_side_join())
+            .expect("valid contours");
+        let side_join_outer_key = road_point_key(RoadVec2::new(0.0, -5.0));
 
         assert!(contours.contours.iter().any(|contour| {
             contour.kind == NodeGeneratedContourKind::FullRoadbed
@@ -5212,7 +5540,7 @@ mod tests {
                 && contour
                     .points_xz
                     .iter()
-                    .any(|point| road_point_key(*point) == guard_outer_key)
+                    .any(|point| road_point_key(*point) == side_join_outer_key)
         }));
         assert!(contours.contours.iter().any(|contour| {
             contour.kind
@@ -5224,43 +5552,33 @@ mod tests {
                 && contour
                     .points_xz
                     .iter()
-                    .any(|point| road_point_key(*point) == guard_outer_key)
+                    .any(|point| road_point_key(*point) == side_join_outer_key)
         }));
     }
 
     #[test]
-    fn bend_within_footprint_curb_bands_do_not_emit_fallback_asphalt_contacts() {
-        for boundary_mode in [
-            NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint,
-            NodeInputTerminalEndBandBoundaryMode::CurbGuardWithinFootprint,
-        ] {
-            let contours = NodeRailContourSet::from_input(&bend_input_with_curb_within_footprint(
-                boundary_mode,
-            ))
+    fn bend_curb_side_join_contacts_name_exact_adjacent_owner() {
+        let contours = NodeRailContourSet::from_input(&bend_input_with_curb_side_join())
             .expect("valid contours");
 
-            assert!(!contours.constraints.iter().any(|constraint| {
-                constraint.owner.zip(constraint.opposite_owner).is_some_and(
-                    |(owner, opposite_owner)| {
-                        constraint.kind == NodeRailConstraintKind::AsphaltCurbContact
-                            && constraint.source_band_index == Some(1)
-                            && ((owner.kind() == RoadSurfaceBandKind::CurbOrShoulder
-                                && opposite_owner.kind() == RoadSurfaceBandKind::Carriageway)
-                                || (owner.kind() == RoadSurfaceBandKind::Carriageway
-                                    && opposite_owner.kind()
-                                        == RoadSurfaceBandKind::CurbOrShoulder))
-                    },
-                )
-            }));
-            assert!(contours.constraints.iter().any(|constraint| {
-                constraint.kind == NodeRailConstraintKind::AsphaltCurbContact
-                    && constraint.source_band_index == Some(1)
-                    && constraint
-                        .owner
-                        .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
-                    && constraint.opposite_owner.is_none()
-            }));
-        }
+        assert!(contours.constraints.iter().any(|constraint| {
+            constraint.kind == NodeRailConstraintKind::AsphaltCurbContact
+                && constraint.source_band_index == Some(1)
+                && constraint
+                    .owner
+                    .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
+                && constraint
+                    .opposite_owner
+                    .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::Carriageway)
+        }));
+        assert!(!contours.constraints.iter().any(|constraint| {
+            constraint.kind == NodeRailConstraintKind::AsphaltCurbContact
+                && constraint.source_band_index == Some(1)
+                && constraint
+                    .owner
+                    .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
+                && constraint.opposite_owner.is_none()
+        }));
     }
 
     #[test]

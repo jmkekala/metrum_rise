@@ -1,8 +1,7 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
 use super::arrangement::{
-    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
-    owners_form_carriageway_raised_non_road_step_pair, seam_source_priority,
+    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
 };
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
@@ -211,7 +210,10 @@ impl NodeBooleanOwnership {
             &rail_canonical_points,
             allow_grid_bounded_constraint_overlap,
         )?;
-        canonicalize_projected_material_boundary_edges_to_lower_source(&mut owned_regions);
+        canonicalize_projected_material_boundary_edges_to_lower_source(
+            &mut owned_regions,
+            resolves_conflicting_projected_material_endpoints(rails),
+        );
         for region in &mut owned_regions {
             region.seam_constraints = seam_constraints_for_shape(
                 &region.shape,
@@ -825,6 +827,27 @@ fn push_materialized_region_seam_constraint(
     });
 }
 
+fn push_materialized_endpoint_pair_region_seam_constraint(
+    seams: &mut Vec<NodeRegionSeamConstraint>,
+    constraint_index: usize,
+    kind: NodeRailConstraintKind,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
+) {
+    seams.push(NodeRegionSeamConstraint {
+        constraint_index,
+        seam_source: seam_source_from_materialized_constraint_kind(kind, owner),
+        owner: Some(owner),
+        opposite_owner: Some(opposite_owner),
+        constrains_shared_height: materialized_constraint_kind_constrains_shared_height(kind),
+        is_material_transition: materialized_constraint_kind_is_material_transition(kind),
+        start_xz,
+        end_xz,
+    });
+}
+
 fn constraint_overlaps_shape_edge(
     edge_start: NodeOverlayPoint,
     edge_end: NodeOverlayPoint,
@@ -864,11 +887,28 @@ fn constraint_overlaps_shape_edge(
         let Some(last) = points.last().copied() else {
             continue;
         };
+        let first = canonical_constraint_overlap_endpoint(first, start, end);
+        let last = canonical_constraint_overlap_endpoint(last, start, end);
         if first != last {
             overlaps.insert((first, last));
         }
     }
     overlaps.into_iter().collect()
+}
+
+fn canonical_constraint_overlap_endpoint(
+    point: NodeOwnershipPointKey,
+    constraint_start: NodeOwnershipPointKey,
+    constraint_end: NodeOwnershipPointKey,
+) -> NodeOwnershipPointKey {
+    let projected = project_ownership_key(point);
+    if projected == project_ownership_key(constraint_start) {
+        return constraint_start;
+    }
+    if projected == project_ownership_key(constraint_end) {
+        return constraint_end;
+    }
+    point
 }
 
 struct OwnedRegionBoundaryRefs {
@@ -926,6 +966,7 @@ fn owned_region_boundary_refs(
 
 fn canonicalize_projected_material_boundary_edges_to_lower_source(
     regions: &mut [NodeBooleanOwnedRegion],
+    resolve_conflicting_endpoint_updates: bool,
 ) {
     let mut edges_by_projected_key =
         BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionContourEdgeRef>>::new();
@@ -989,6 +1030,7 @@ fn canonicalize_projected_material_boundary_edges_to_lower_source(
                     &mut point_updates,
                     (edge_ref.region_index, edge_ref.contour_index, point_index),
                     canonical,
+                    resolve_conflicting_endpoint_updates,
                 );
             }
         }
@@ -1021,16 +1063,35 @@ fn canonicalize_projected_material_boundary_edges_to_lower_source(
     }
 }
 
+fn resolves_conflicting_projected_material_endpoints(rails: &NodeRailContourSet) -> bool {
+    rails.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+        && rail_source_mouth_count(rails) == 3
+}
+
+fn rail_source_mouth_count(rails: &NodeRailContourSet) -> usize {
+    rails
+        .constraints
+        .iter()
+        .map(|constraint| constraint.source_mouth_order_index)
+        .chain(
+            rails
+                .contours
+                .iter()
+                .map(|contour| contour.source_mouth_order_index),
+        )
+        .max()
+        .map_or(0, |index| index + 1)
+}
+
 fn projected_material_boundary_group_has_lower_source(
     refs: &[OwnedRegionContourEdgeRef],
     regions: &[NodeBooleanOwnedRegion],
 ) -> bool {
-    refs.iter().any(|lower| {
-        is_carriageway(lower.owner.kind())
-            && owned_contour_edge_has_source(*lower, regions)
-            && refs.iter().any(|raised| {
-                lower.region_index != raised.region_index
-                    && owners_form_carriageway_raised_non_road_step_pair(lower.owner, raised.owner)
+    refs.iter().any(|source| {
+        owned_contour_edge_has_source(*source, regions)
+            && refs.iter().any(|other| {
+                source.region_index != other.region_index
+                    && owners_form_material_boundary(source.owner, other.owner)
             })
     })
 }
@@ -1041,24 +1102,15 @@ fn projected_material_boundary_ref_participates(
     regions: &[NodeBooleanOwnedRegion],
 ) -> bool {
     if !owned_contour_edge_has_source(edge_ref, regions) {
-        return refs.iter().any(|lower| {
-            lower.region_index != edge_ref.region_index
-                && is_carriageway(lower.owner.kind())
-                && owned_contour_edge_has_source(*lower, regions)
-                && owners_form_carriageway_raised_non_road_step_pair(lower.owner, edge_ref.owner)
+        return refs.iter().any(|source| {
+            source.region_index != edge_ref.region_index
+                && owned_contour_edge_has_source(*source, regions)
+                && owners_form_material_boundary(source.owner, edge_ref.owner)
         });
     }
-    if is_carriageway(edge_ref.owner.kind()) {
-        return refs.iter().any(|raised| {
-            edge_ref.region_index != raised.region_index
-                && owners_form_carriageway_raised_non_road_step_pair(edge_ref.owner, raised.owner)
-        });
-    }
-    refs.iter().any(|lower| {
-        edge_ref.region_index != lower.region_index
-            && is_carriageway(lower.owner.kind())
-            && owned_contour_edge_has_source(*lower, regions)
-            && owners_form_carriageway_raised_non_road_step_pair(lower.owner, edge_ref.owner)
+    refs.iter().any(|other| {
+        edge_ref.region_index != other.region_index
+            && owners_form_material_boundary(edge_ref.owner, other.owner)
     })
 }
 
@@ -1078,48 +1130,81 @@ fn canonical_projected_boundary_points(
     refs: &[OwnedRegionContourEdgeRef],
     regions: &[NodeBooleanOwnedRegion],
 ) -> BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey> {
-    let mut candidates_by_projected =
-        BTreeMap::<NodeOwnershipPointKey, Vec<(NodeOwnershipPointKey, bool)>>::new();
+    let mut candidates_by_projected = BTreeMap::<
+        NodeOwnershipPointKey,
+        Vec<(NodeOwnershipPointKey, Option<(usize, usize)>)>,
+    >::new();
     for edge_ref in refs {
-        let lower_source = is_carriageway(edge_ref.owner.kind())
-            && owned_contour_edge_has_source(*edge_ref, regions);
+        let source_priority = owned_contour_edge_source_priority(*edge_ref, regions);
         for point in [edge_ref.start, edge_ref.end] {
             candidates_by_projected
                 .entry(project_ownership_key(point))
                 .or_default()
-                .push((point, lower_source));
+                .push((point, source_priority));
         }
     }
     candidates_by_projected
         .into_iter()
         .filter_map(|(projected, candidates)| {
-            let lower_source_points = candidates
+            let best_priority = candidates
                 .iter()
-                .filter_map(|(point, lower_source)| lower_source.then_some(*point))
-                .collect::<BTreeSet<_>>();
-            if lower_source_points.len() == 1 {
-                return lower_source_points
-                    .into_iter()
-                    .next()
-                    .map(|point| (projected, point));
-            }
-            if lower_source_points.len() > 1 {
-                return None;
-            }
-            None
+                .filter_map(|(_, priority)| *priority)
+                .min()?;
+            candidates
+                .iter()
+                .filter_map(|(point, priority)| {
+                    (*priority == Some(best_priority)).then_some(*point)
+                })
+                .min()
+                .map(|point| (projected, point))
         })
         .collect()
+}
+
+fn owned_contour_edge_source_priority(
+    edge_ref: OwnedRegionContourEdgeRef,
+    regions: &[NodeBooleanOwnedRegion],
+) -> Option<(usize, usize)> {
+    owned_source_constraints_for_edge(
+        edge_ref.start,
+        edge_ref.end,
+        &regions[edge_ref.region_index].seam_constraints,
+    )
+    .into_iter()
+    .map(|constraint| {
+        (
+            seam_source_priority(&constraint.seam_source),
+            owner_boundary_source_priority(edge_ref.owner),
+        )
+    })
+    .min()
+}
+
+fn owners_form_material_boundary(a: NodeBandOwner, b: NodeBandOwner) -> bool {
+    a.kind() != b.kind()
+}
+
+fn owner_boundary_source_priority(owner: NodeBandOwner) -> usize {
+    match owner.kind() {
+        RoadSurfaceBandKind::Carriageway => 0,
+        RoadSurfaceBandKind::CurbOrShoulder => 1,
+        RoadSurfaceBandKind::Sidewalk => 2,
+        _ => 3,
+    }
 }
 
 fn insert_projected_boundary_point_update(
     updates: &mut BTreeMap<(usize, usize, usize), Option<NodeOwnershipPointKey>>,
     key: (usize, usize, usize),
     point: NodeOwnershipPointKey,
+    resolve_conflicting_endpoint_updates: bool,
 ) {
     updates
         .entry(key)
         .and_modify(|existing| {
-            if *existing != Some(point) {
+            if resolve_conflicting_endpoint_updates {
+                *existing = Some(existing.map_or(point, |existing| existing.min(point)));
+            } else if *existing != Some(point) {
                 *existing = None;
             }
         })
@@ -1163,6 +1248,37 @@ fn materialize_noded_region_seam_constraints(
                     )
                 })
                 .collect::<Vec<_>>();
+            if matching_constraints.is_empty() {
+                let endpoint_pair_sources =
+                    materialized_endpoint_pair_constraint_indices_for_owned_edge(
+                        edge_key.start,
+                        edge_key.end,
+                        rail_constraints,
+                        edge_ref.owner,
+                        opposite_owner,
+                    );
+                if !endpoint_pair_sources.is_empty() {
+                    let Some(materialized_kind) =
+                        material_contact_kind_for_owned_edge(edge_ref.owner, opposite_owner)
+                    else {
+                        continue;
+                    };
+                    let start_xz = road_point_from_key(edge_key.start);
+                    let end_xz = road_point_from_key(edge_key.end);
+                    for constraint_index in endpoint_pair_sources {
+                        push_materialized_endpoint_pair_region_seam_constraint(
+                            &mut additions[edge_ref.region_index],
+                            constraint_index,
+                            materialized_kind,
+                            region.owner,
+                            opposite_owner,
+                            start_xz,
+                            end_xz,
+                        );
+                    }
+                    continue;
+                }
+            }
             let has_exact_owner_pair_source = matching_constraints.iter().any(|constraint| {
                 rail_constraint_owner_pair_matches_edge(constraint, edge_ref.owner, opposite_owner)
             });
@@ -1697,7 +1813,7 @@ fn canonical_region_seam_authority_point_by_projected_key(
     constraints: &[NodeRegionSeamConstraint],
 ) -> BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey> {
     let mut candidates_by_projected_key =
-        BTreeMap::<NodeOwnershipPointKey, Vec<(usize, NodeOwnershipPointKey)>>::new();
+        BTreeMap::<NodeOwnershipPointKey, Vec<(usize, usize, NodeOwnershipPointKey)>>::new();
     for constraint in constraints {
         if !constraint.is_material_transition {
             continue;
@@ -1710,7 +1826,7 @@ fn canonical_region_seam_authority_point_by_projected_key(
             candidates_by_projected_key
                 .entry(project_ownership_key(point))
                 .or_default()
-                .push((priority, point));
+                .push((priority, constraint.constraint_index, point));
         }
     }
     candidates_by_projected_key
@@ -1720,7 +1836,7 @@ fn canonical_region_seam_authority_point_by_projected_key(
             candidates
                 .into_iter()
                 .next()
-                .map(|(_, point)| (projected, point))
+                .map(|(_, _, point)| (projected, point))
         })
         .collect()
 }
@@ -1790,10 +1906,11 @@ fn canonical_rail_authority_point_by_projected_key_by_owner(
 ) -> BTreeMap<NodeBandOwner, BTreeMap<NodeOwnershipPointKey, NodeOwnershipPointKey>> {
     let mut candidates_by_owner_and_projected_key = BTreeMap::<
         NodeBandOwner,
-        BTreeMap<NodeOwnershipPointKey, Vec<(usize, NodeOwnershipPointKey)>>,
+        BTreeMap<NodeOwnershipPointKey, Vec<(usize, usize, usize, NodeOwnershipPointKey)>>,
     >::new();
     for constraint in constraints {
         let priority = rail_constraint_endpoint_authority_priority(constraint);
+        let source_owner_priority = rail_constraint_source_owner_priority(constraint);
         let owners = constraint_authority_owners(constraint);
         for owner in owners {
             for point in constraint.points_xz.iter().copied().map(road_point_key) {
@@ -1802,7 +1919,12 @@ fn canonical_rail_authority_point_by_projected_key_by_owner(
                     .or_default()
                     .entry(project_ownership_key(point))
                     .or_default()
-                    .push((priority, point));
+                    .push((
+                        priority,
+                        source_owner_priority,
+                        constraint.constraint_index,
+                        point,
+                    ));
             }
         }
     }
@@ -1816,7 +1938,7 @@ fn canonical_rail_authority_point_by_projected_key_by_owner(
                     candidates
                         .into_iter()
                         .next()
-                        .map(|(_, point)| (projected, point))
+                        .map(|(_, _, _, point)| (projected, point))
                 })
                 .collect();
             (owner, authority)
@@ -1835,6 +1957,8 @@ fn constraint_authority_owners(constraint: &NodeRailConstraint) -> Vec<NodeBandO
 }
 
 fn rail_constraint_endpoint_authority_priority(constraint: &NodeRailConstraint) -> usize {
+    let owner_pair_offset =
+        usize::from(constraint.owner.is_none() || constraint.opposite_owner.is_none());
     let point_contact_offset = usize::from(constraint_is_point_contact(constraint));
     let kind_priority = match constraint.kind {
         NodeRailConstraintKind::AsphaltCurbContact => 0,
@@ -1846,7 +1970,14 @@ fn rail_constraint_endpoint_authority_priority(constraint: &NodeRailConstraint) 
         NodeRailConstraintKind::FootprintSeam { .. } => 6,
         NodeRailConstraintKind::FullRoadbedContour => 7,
     };
-    kind_priority * 2 + point_contact_offset
+    kind_priority * 4 + owner_pair_offset * 2 + point_contact_offset
+}
+
+fn rail_constraint_source_owner_priority(constraint: &NodeRailConstraint) -> usize {
+    constraint
+        .owner
+        .map(owner_boundary_source_priority)
+        .unwrap_or(usize::MAX)
 }
 
 fn overlay_neighbor_points(point: NodeOwnershipPointKey) -> Vec<NodeOwnershipPointKey> {
@@ -2397,6 +2528,56 @@ fn owned_edge_lies_on_rail_constraint(
         piece_kind,
         RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::Terminal
     ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+}
+
+fn materialized_endpoint_pair_constraint_indices_for_owned_edge(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_constraints: &[NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    let Some(kind) = material_contact_kind_for_owned_edge(owner, opposite_owner) else {
+        return Vec::new();
+    };
+    let Some(start_constraint_index) = exact_owner_pair_point_contact_constraint_index_at_key(
+        start,
+        rail_constraints,
+        owner,
+        opposite_owner,
+        kind,
+    ) else {
+        return Vec::new();
+    };
+    let Some(end_constraint_index) = exact_owner_pair_point_contact_constraint_index_at_key(
+        end,
+        rail_constraints,
+        owner,
+        opposite_owner,
+        kind,
+    ) else {
+        return Vec::new();
+    };
+    canonical_source_indices([start_constraint_index, end_constraint_index])
+}
+
+fn exact_owner_pair_point_contact_constraint_index_at_key(
+    key: NodeOwnershipPointKey,
+    rail_constraints: &[NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    kind: NodeRailConstraintKind,
+) -> Option<usize> {
+    rail_constraints
+        .iter()
+        .filter(|constraint| constraint.kind == kind)
+        .filter(|constraint| {
+            rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+        })
+        .filter(|constraint| constraint_is_point_contact(constraint))
+        .filter(|constraint| constraint.points_xz.first().copied().map(road_point_key) == Some(key))
+        .map(|constraint| constraint.constraint_index)
+        .min()
 }
 
 fn materialized_edge_requires_exact_constraint_span(
@@ -3890,7 +4071,7 @@ mod tests {
             end_xz: end,
         });
 
-        canonicalize_projected_material_boundary_edges_to_lower_source(&mut regions);
+        canonicalize_projected_material_boundary_edges_to_lower_source(&mut regions, false);
 
         let curb_points = regions[1].shape[0]
             .iter()
