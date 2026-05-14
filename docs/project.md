@@ -176,6 +176,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   subdivision now requires every final curb /
   shoulder and sidewalk owned region to carry explicit profile seam-rail evidence, and
   carrier-only leftovers are reported as deterministic boolean-ownership residual diagnostics.
+  Span output now also routes through resolved top-region records and generic owner-pair
+  raised-step constraints before exporting the existing render, query, terrain-clip, earthwork, and
+  chunk-coverage fields, so span rendering is no longer the authority layer for material ownership.
   Road-touched terrain support now uses the lower
   road-owned top-surface envelope when grounded support overlaps terminal caps or raised bands, and
   bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while

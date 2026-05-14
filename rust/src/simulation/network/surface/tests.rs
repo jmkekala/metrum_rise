@@ -23,20 +23,24 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
-fn span_curbface_generation_does_not_use_legacy_section_pair_seam_finder() {
+fn span_raised_step_generation_uses_resolved_regions() {
     let span_source = include_str!("span.rs");
     for forbidden in [
         "curb_vertical_face_polygon_for_section_pair",
         "curb_asphalt_boundary",
+        "compile_surface_polygons_for_ranges",
+        "compile_span_explicit_vertical_step_faces_for_ranges",
+        "SpanExplicitVerticalStepBoundary",
     ] {
         assert!(
             !span_source.contains(forbidden),
-            "span curbface generation must consume explicit vertical-step boundaries, not legacy section-pair seam finder `{forbidden}`"
+            "span output must consume resolved regions and generic raised-step constraints, not legacy section-window helper `{forbidden}`"
         );
     }
     assert!(
-        span_source.contains("compile_span_explicit_vertical_step_faces_for_ranges"),
-        "span curbface generation must keep an explicit vertical-step consumption path"
+        span_source.contains("resolve_span_regions_for_ranges")
+            && span_source.contains("span_vertical_face_polygons_from_constraints"),
+        "span output must route through resolved regions and raised-step constraints"
     );
 }
 
@@ -102,6 +106,80 @@ fn span_vertical_steps_include_direct_carriageway_walkable_boundaries() {
                     .any(|point| point.y.abs() <= SAMPLE_EPSILON_M)
         }),
         "direct carriageway-sidewalk span boundary must emit a raised vertical face"
+    );
+}
+
+#[test]
+fn span_vertical_steps_include_generic_non_road_owner_pairs() {
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        a,
+        b,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        5.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR,
+    ));
+    let sidewalk_height_m = CURB_STEP_HEIGHT_M * 2.0;
+    let section_at = |s_m: f32| RoadSurfaceSection {
+        edge_idx,
+        s_m,
+        center_xz: Vector2::new(s_m, 0.0),
+        center_height_m: 0.0,
+        tangent_xz: Vector2::new(1.0, 0.0),
+        lateral_xz: Vector2::new(0.0, 1.0),
+        bands: vec![
+            RoadSurfaceBand {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: -3.0,
+                lateral_end_m: 0.0,
+                height_start_m: 0.0,
+                height_end_m: 0.0,
+            },
+            RoadSurfaceBand {
+                kind: RoadSurfaceBandKind::CurbOrShoulder,
+                lateral_start_m: 0.0,
+                lateral_end_m: 0.5,
+                height_start_m: CURB_STEP_HEIGHT_M,
+                height_end_m: CURB_STEP_HEIGHT_M,
+            },
+            RoadSurfaceBand {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                lateral_start_m: 0.5,
+                lateral_end_m: 2.0,
+                height_start_m: sidewalk_height_m,
+                height_end_m: sidewalk_height_m,
+            },
+        ],
+    };
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    surface.compiled_sections.insert(
+        edge_idx,
+        vec![
+            section_at(0.0),
+            section_at(4.0),
+            section_at(6.0),
+            section_at(10.0),
+        ],
+    );
+
+    let span_piece = surface
+        .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
+        .expect("curb-sidewalk stepped span should compile");
+    assert!(
+        span_piece.curb_vertical_face_polygons.iter().any(|face| {
+            face.points_world
+                .iter()
+                .any(|point| (point.y - sidewalk_height_m).abs() <= SAMPLE_EPSILON_M)
+                && face
+                    .points_world
+                    .iter()
+                    .any(|point| (point.y - CURB_STEP_HEIGHT_M).abs() <= SAMPLE_EPSILON_M)
+        }),
+        "span raised-step output must be owner-pair generic, including curb / sidewalk"
     );
 }
 

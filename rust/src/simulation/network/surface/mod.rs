@@ -190,7 +190,7 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit curb / shoulder-owned polygons for the span piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit vertical curb faces at asphalt / curb material contacts.
+    /// Explicit vertical faces at raised owner-pair material contacts.
     pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the span piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,

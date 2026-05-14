@@ -169,6 +169,10 @@ Live behavior:
   stamp. The remaining blocker is broader DEM validation around road-touched tie-in steepness,
   retaining / wall variants, and material classification; boolean ownership and height-field
   validation must keep rejecting real band residuals instead of silently patching them.
+- `Span` output now uses the same resolved-region staging shape as node output: section samples
+  first produce role-tagged asphalt, curb / shoulder, and non-road top regions plus generic
+  owner-pair raised-step constraints, then render polygons, query support, terrain clip loops,
+  earthwork roots, and chunk coverage are derived from those resolved span regions.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -1741,7 +1745,7 @@ Scope:
 - `Terminal` is a one-mouth explicit band builder. The legacy sidewalk / curb end-band helper is
   not carried over by this hardcut.
 - `JunctionN` is the same node-region builder with `n >= 3` mouths
-- deferred target: adapting `Span` output to the same resolved-region data structure after node
+- completed follow-up: `Span` output adapts to the same resolved-region staging shape after node
   pieces are stable
 - out of scope for this hardcut: lane-routing policy, pedestrian legality, building frontage rules,
   retaining-wall variants, and cosmetic sidewalk texture changes

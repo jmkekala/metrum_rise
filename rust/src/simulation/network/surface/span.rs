@@ -4,24 +4,76 @@ use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
     terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
-// Avoid strip construction between adjacent bands whose widths have collapsed together.
-const BAND_WIDTH_MATCH_EPSILON_M: f32 = 0.05;
+// Avoid resolved region construction between adjacent bands whose widths have collapsed together.
+const SPAN_REGION_MIN_BAND_WIDTH_M: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct SpanExplicitVerticalStepBoundary {
-    boundary_lateral_m: f32,
-    lower_height_m: f32,
-    raised_height_m: f32,
-    lower_mid_lateral_m: f32,
-    lower_kind: RoadSurfaceBandKind,
-    raised_kind: RoadSurfaceBandKind,
+struct SpanBandOwner {
+    source_band_index: usize,
+    kind: RoadSurfaceBandKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpanResolvedRegionRole {
+    Asphalt,
+    CurbOrShoulder,
+    NonRoad,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SpanResolvedRegion {
+    owner: SpanBandOwner,
+    role: SpanResolvedRegionRole,
+    polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SpanResolvedRegionSet {
+    regions: Vec<SpanResolvedRegion>,
+    raised_step_constraints: Vec<SpanRaisedStepConstraint>,
+    outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpanRaisedStepConstraint {
+    lower_owner: SpanBandOwner,
+    raised_owner: SpanBandOwner,
+    start: SpanRaisedStepSample,
+    end: SpanRaisedStepSample,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpanRaisedStepSample {
+    lower_world: Vector3,
+    raised_world: Vector3,
+    lower_direction: Vector3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpanResolvedRaisedStepSample {
+    lower_owner: SpanBandOwner,
+    raised_owner: SpanBandOwner,
+    sample: SpanRaisedStepSample,
+}
+
+impl SpanResolvedRegionRole {
+    fn from_band_pair(start_kind: RoadSurfaceBandKind, end_kind: RoadSurfaceBandKind) -> Self {
+        match (start_kind, end_kind) {
+            (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::Carriageway) => Self::Asphalt,
+            (RoadSurfaceBandKind::CurbOrShoulder, RoadSurfaceBandKind::CurbOrShoulder) => {
+                Self::CurbOrShoulder
+            }
+            _ => Self::NonRoad,
+        }
+    }
 }
 
 impl RoadSurfaceSystem {
@@ -38,10 +90,12 @@ impl RoadSurfaceSystem {
         let sections = self.compiled_sections.get(&edge_idx)?;
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
+        let mut visible_regions = self.resolve_span_regions_for_ranges(sections, &visible_ranges);
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
-            self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
-        let mut curb_vertical_face_polygons =
-            Self::compile_span_explicit_vertical_step_faces_for_ranges(sections, &visible_ranges);
+            Self::span_surface_polygons_from_regions(&visible_regions.regions);
+        let mut curb_vertical_face_polygons = Self::span_vertical_face_polygons_from_constraints(
+            &visible_regions.raised_step_constraints,
+        );
 
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
@@ -54,24 +108,25 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_visual_polygons(&mut curb_vertical_face_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
-        let outer_boundary_loops = Self::build_span_outer_boundary_loops(sections, &visible_ranges);
+        let outer_boundary_loops = std::mem::take(&mut visible_regions.outer_boundary_loops);
         if outer_boundary_loops.is_empty() {
             return None;
         }
         let terrain_clip_boundary_loops =
-            Self::build_span_terrain_clip_boundary_loops(sections, &visible_ranges);
+            std::mem::take(&mut visible_regions.terrain_clip_boundary_loops);
 
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
+        let mut clearance_regions =
+            self.resolve_span_regions_for_ranges(sections, &earthwork_ranges);
         let (
             mut clearance_road_surface_polygons,
             mut clearance_curb_surface_polygons,
             mut clearance_sidewalk_surface_polygons,
-        ) = self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
+        ) = Self::span_surface_polygons_from_regions(&clearance_regions.regions);
         Self::sort_visual_polygons(&mut clearance_road_surface_polygons);
         Self::sort_visual_polygons(&mut clearance_curb_surface_polygons);
         Self::sort_visual_polygons(&mut clearance_sidewalk_surface_polygons);
-        let earthwork_boundary_loops =
-            Self::build_span_outer_boundary_loops(sections, &earthwork_ranges);
+        let earthwork_boundary_loops = std::mem::take(&mut clearance_regions.outer_boundary_loops);
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &earthwork_boundary_loops,
@@ -103,18 +158,18 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn compile_surface_polygons_for_ranges(
+    fn resolve_span_regions_for_ranges(
         &self,
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
-    ) -> (
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-    ) {
-        let mut road_surface_polygons = Vec::new();
-        let mut curb_surface_polygons = Vec::new();
-        let mut sidewalk_surface_polygons = Vec::new();
+    ) -> SpanResolvedRegionSet {
+        let mut resolved = SpanResolvedRegionSet {
+            outer_boundary_loops: Self::build_span_outer_boundary_loops(sections, ranges),
+            terrain_clip_boundary_loops: Self::build_span_terrain_clip_boundary_loops(
+                sections, ranges,
+            ),
+            ..SpanResolvedRegionSet::default()
+        };
 
         for &(start_index, end_index) in ranges {
             if end_index <= start_index {
@@ -124,11 +179,13 @@ impl RoadSurfaceSystem {
                 if pair[0].bands.len() != pair[1].bands.len() {
                     continue;
                 }
-                for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
+                for (band_index, (band_a, band_b)) in
+                    pair[0].bands.iter().zip(&pair[1].bands).enumerate()
+                {
                     let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
                     let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
-                    if width_a <= BAND_WIDTH_MATCH_EPSILON_M
-                        && width_b <= BAND_WIDTH_MATCH_EPSILON_M
+                    if width_a <= SPAN_REGION_MIN_BAND_WIDTH_M
+                        && width_b <= SPAN_REGION_MIN_BAND_WIDTH_M
                     {
                         continue;
                     }
@@ -158,20 +215,45 @@ impl RoadSurfaceSystem {
                         continue;
                     };
 
-                    match (band_a.kind, band_b.kind) {
-                        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::Carriageway) => {
-                            road_surface_polygons.push(polygon);
-                        }
-                        (
-                            RoadSurfaceBandKind::CurbOrShoulder,
-                            RoadSurfaceBandKind::CurbOrShoulder,
-                        ) => {
-                            curb_surface_polygons.push(polygon);
-                        }
-                        _ => {
-                            sidewalk_surface_polygons.push(polygon);
-                        }
-                    }
+                    resolved.regions.push(SpanResolvedRegion {
+                        owner: SpanBandOwner {
+                            source_band_index: band_index,
+                            kind: band_a.kind,
+                        },
+                        role: SpanResolvedRegionRole::from_band_pair(band_a.kind, band_b.kind),
+                        polygon,
+                    });
+                }
+                resolved.raised_step_constraints.extend(
+                    Self::span_raised_step_constraints_for_resolved_segment(pair),
+                );
+            }
+        }
+
+        resolved
+    }
+
+    fn span_surface_polygons_from_regions(
+        regions: &[SpanResolvedRegion],
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+    ) {
+        let mut road_surface_polygons = Vec::new();
+        let mut curb_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+
+        for region in regions {
+            match region.role {
+                SpanResolvedRegionRole::Asphalt => {
+                    road_surface_polygons.push(region.polygon.clone());
+                }
+                SpanResolvedRegionRole::CurbOrShoulder => {
+                    curb_surface_polygons.push(region.polygon.clone());
+                }
+                SpanResolvedRegionRole::NonRoad => {
+                    sidewalk_surface_polygons.push(region.polygon.clone());
                 }
             }
         }
@@ -183,46 +265,38 @@ impl RoadSurfaceSystem {
         )
     }
 
-    fn compile_span_explicit_vertical_step_faces_for_ranges(
-        sections: &[RoadSurfaceSection],
-        ranges: &[(usize, usize)],
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut faces = Vec::new();
-        for &(start_index, end_index) in ranges {
-            if end_index <= start_index {
+    fn span_raised_step_constraints_for_resolved_segment(
+        pair: &[RoadSurfaceSection],
+    ) -> Vec<SpanRaisedStepConstraint> {
+        if pair.len() != 2 || pair[0].bands.len() != pair[1].bands.len() {
+            return Vec::new();
+        }
+
+        let mut constraints = Vec::new();
+        for boundary_index in 0..pair[0].bands.len().saturating_sub(1) {
+            let Some(start) = Self::span_raised_step_sample(&pair[0], boundary_index) else {
+                continue;
+            };
+            let Some(end) = Self::span_raised_step_sample(&pair[1], boundary_index) else {
+                continue;
+            };
+            if start.lower_owner != end.lower_owner || start.raised_owner != end.raised_owner {
                 continue;
             }
-            for pair in sections[start_index..=end_index].windows(2) {
-                if pair[0].bands.len() != pair[1].bands.len() {
-                    continue;
-                }
-                for boundary_index in 0..pair[0].bands.len().saturating_sub(1) {
-                    let Some(start_boundary) =
-                        Self::span_explicit_vertical_step_boundary(&pair[0], boundary_index)
-                    else {
-                        continue;
-                    };
-                    let Some(end_boundary) =
-                        Self::span_explicit_vertical_step_boundary(&pair[1], boundary_index)
-                    else {
-                        continue;
-                    };
-                    let Some(face) =
-                        Self::span_explicit_vertical_step_face(pair, start_boundary, end_boundary)
-                    else {
-                        continue;
-                    };
-                    faces.push(face);
-                }
-            }
+            constraints.push(SpanRaisedStepConstraint {
+                lower_owner: start.lower_owner,
+                raised_owner: start.raised_owner,
+                start: start.sample,
+                end: end.sample,
+            });
         }
-        faces
+        constraints
     }
 
-    fn span_explicit_vertical_step_boundary(
+    fn span_raised_step_sample(
         section: &RoadSurfaceSection,
         boundary_index: usize,
-    ) -> Option<SpanExplicitVerticalStepBoundary> {
+    ) -> Option<SpanResolvedRaisedStepSample> {
         let lower_index = boundary_index;
         let upper_index = boundary_index + 1;
         let left = section.bands.get(lower_index)?;
@@ -234,83 +308,79 @@ impl RoadSurfaceSystem {
         let boundary_lateral_m = left.lateral_end_m;
         let left_mid_lateral_m = (left.lateral_start_m + left.lateral_end_m) * 0.5;
         let right_mid_lateral_m = (right.lateral_start_m + right.lateral_end_m) * 0.5;
-        let boundary = match (left.kind, right.kind) {
-            (RoadSurfaceBandKind::Carriageway, raised_kind)
-                if raised_kind != RoadSurfaceBandKind::Carriageway =>
-            {
-                SpanExplicitVerticalStepBoundary {
-                    boundary_lateral_m,
-                    lower_height_m: left.height_end_m,
-                    raised_height_m: right.height_start_m,
-                    lower_mid_lateral_m: left_mid_lateral_m,
-                    lower_kind: left.kind,
-                    raised_kind,
-                }
-            }
-            (raised_kind, RoadSurfaceBandKind::Carriageway)
-                if raised_kind != RoadSurfaceBandKind::Carriageway =>
-            {
-                SpanExplicitVerticalStepBoundary {
-                    boundary_lateral_m,
-                    lower_height_m: right.height_start_m,
-                    raised_height_m: left.height_end_m,
-                    lower_mid_lateral_m: right_mid_lateral_m,
-                    lower_kind: right.kind,
-                    raised_kind,
-                }
-            }
-            _ => return None,
-        };
-
-        if boundary.raised_height_m <= boundary.lower_height_m {
+        if left.kind == right.kind {
             return None;
         }
-        Some(boundary)
+        if (left.height_end_m - right.height_start_m).abs() <= SAMPLE_EPSILON_M {
+            return None;
+        }
+
+        let left_owner = SpanBandOwner {
+            source_band_index: lower_index,
+            kind: left.kind,
+        };
+        let right_owner = SpanBandOwner {
+            source_band_index: upper_index,
+            kind: right.kind,
+        };
+        let (lower_owner, raised_owner, lower_height_m, raised_height_m, lower_mid_lateral_m) =
+            if left.height_end_m < right.height_start_m {
+                (
+                    left_owner,
+                    right_owner,
+                    left.height_end_m,
+                    right.height_start_m,
+                    left_mid_lateral_m,
+                )
+            } else {
+                (
+                    right_owner,
+                    left_owner,
+                    right.height_start_m,
+                    left.height_end_m,
+                    right_mid_lateral_m,
+                )
+            };
+        if raised_height_m <= lower_height_m {
+            return None;
+        }
+
+        let lower_world =
+            Self::section_boundary_world_point_static(section, boundary_lateral_m, lower_height_m);
+        let raised_world =
+            Self::section_boundary_world_point_static(section, boundary_lateral_m, raised_height_m);
+        let lower_direction_xz = section.lateral_xz * (lower_mid_lateral_m - boundary_lateral_m);
+
+        Some(SpanResolvedRaisedStepSample {
+            lower_owner,
+            raised_owner,
+            sample: SpanRaisedStepSample {
+                lower_world,
+                raised_world,
+                lower_direction: Vector3::new(lower_direction_xz.x, 0.0, lower_direction_xz.y),
+            },
+        })
     }
 
-    fn span_explicit_vertical_step_face(
-        pair: &[RoadSurfaceSection],
-        start_boundary: SpanExplicitVerticalStepBoundary,
-        end_boundary: SpanExplicitVerticalStepBoundary,
-    ) -> Option<RoadSurfaceVisualPolygon> {
-        if pair.len() != 2
-            || start_boundary.lower_kind != end_boundary.lower_kind
-            || start_boundary.raised_kind != end_boundary.raised_kind
-        {
-            return None;
-        }
+    fn span_vertical_face_polygons_from_constraints(
+        constraints: &[SpanRaisedStepConstraint],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        constraints
+            .iter()
+            .filter_map(Self::span_vertical_face_polygon_from_constraint)
+            .collect()
+    }
 
+    fn span_vertical_face_polygon_from_constraint(
+        constraint: &SpanRaisedStepConstraint,
+    ) -> Option<RoadSurfaceVisualPolygon> {
         let mut points = [
-            Self::section_boundary_world_point_static(
-                &pair[0],
-                start_boundary.boundary_lateral_m,
-                start_boundary.raised_height_m,
-            ),
-            Self::section_boundary_world_point_static(
-                &pair[0],
-                start_boundary.boundary_lateral_m,
-                start_boundary.lower_height_m,
-            ),
-            Self::section_boundary_world_point_static(
-                &pair[1],
-                end_boundary.boundary_lateral_m,
-                end_boundary.lower_height_m,
-            ),
-            Self::section_boundary_world_point_static(
-                &pair[1],
-                end_boundary.boundary_lateral_m,
-                end_boundary.raised_height_m,
-            ),
+            constraint.start.raised_world,
+            constraint.start.lower_world,
+            constraint.end.lower_world,
+            constraint.end.raised_world,
         ];
-        let lower_direction_a = pair[0].lateral_xz
-            * (start_boundary.lower_mid_lateral_m - start_boundary.boundary_lateral_m);
-        let lower_direction_b = pair[1].lateral_xz
-            * (end_boundary.lower_mid_lateral_m - end_boundary.boundary_lateral_m);
-        let lower_direction = Vector3::new(
-            lower_direction_a.x + lower_direction_b.x,
-            0.0,
-            lower_direction_a.y + lower_direction_b.y,
-        );
+        let lower_direction = constraint.start.lower_direction + constraint.end.lower_direction;
         let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
         if face_normal.dot(lower_direction) > 0.0 {
             points = [points[3], points[2], points[1], points[0]];
