@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_editor_path_straight_road_keeps_terminal_end_bands() {
+    fn test_editor_path_straight_road_keeps_terminal_caps() {
         let road = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
         let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&road, 1, 1)]);
         validate_mesh(&mesh_data, 40.0);
@@ -551,14 +551,14 @@ mod tests {
             0.25,
             VisibleSurface::Sidewalk,
         );
-        let left_terminal_end_band_sidewalk = visible_coverage_ratio(
+        let left_terminal_cap_sidewalk = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(-21.5, -3.3),
             Vector2::new(-20.25, 3.3),
             0.25,
             VisibleSurface::Sidewalk,
         );
-        let right_terminal_end_band_sidewalk = visible_coverage_ratio(
+        let right_terminal_cap_sidewalk = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(20.25, -3.3),
             Vector2::new(21.5, 3.3),
@@ -582,7 +582,7 @@ mod tests {
 
         assert!(left_asphalt >= 0.8 && right_asphalt >= 0.8);
         assert!(left_sidewalk >= 0.45 && right_sidewalk >= 0.45);
-        assert!(left_terminal_end_band_sidewalk >= 0.8 && right_terminal_end_band_sidewalk >= 0.8);
+        assert!(left_terminal_cap_sidewalk >= 0.8 && right_terminal_cap_sidewalk >= 0.8);
         assert!(left_terminal_slab_leak <= 0.05 && right_terminal_slab_leak <= 0.05);
     }
 

@@ -120,17 +120,16 @@ fn append_adjacent_side_join_bands(
         return;
     }
 
-    let mut end_bands =
-        side_join_end_bands(from_mouth, &from_layers, to_mouth, &to_layers, path_mode);
-    canonicalize_side_join_bands(&mut end_bands);
-    bands_by_mouth[from_index].extend(end_bands);
+    let mut join_bands = side_join_bands(from_mouth, &from_layers, to_mouth, &to_layers, path_mode);
+    canonicalize_side_join_bands(&mut join_bands);
+    bands_by_mouth[from_index].extend(join_bands);
 }
 
-fn canonicalize_side_join_bands(end_bands: &mut Vec<NodeInputSideJoinBand>) {
-    for end_band in end_bands.iter_mut() {
-        quantize_side_join_band_xz(end_band);
+fn canonicalize_side_join_bands(join_bands: &mut Vec<NodeInputSideJoinBand>) {
+    for join_band in join_bands.iter_mut() {
+        quantize_side_join_band_xz(join_band);
     }
-    end_bands.retain(side_join_band_has_quantized_area);
+    join_bands.retain(side_join_band_has_quantized_area);
 }
 
 fn side_join_layers(mouth: &NodeInputMouth, side: SideJoinProfileSide) -> Vec<SideJoinLayer> {
@@ -180,14 +179,14 @@ fn side_join_layers(mouth: &NodeInputMouth, side: SideJoinProfileSide) -> Vec<Si
     }
 }
 
-fn side_join_end_bands(
+fn side_join_bands(
     from_mouth: &NodeInputMouth,
     from_layers: &[SideJoinLayer],
     to_mouth: &NodeInputMouth,
     to_layers: &[SideJoinLayer],
     path_mode: SideJoinPathMode,
 ) -> Vec<NodeInputSideJoinBand> {
-    let mut end_bands = Vec::new();
+    let mut join_bands = Vec::new();
     let mut inner_path_world = None;
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
         if from_layer.band_kind != to_layer.band_kind {
@@ -233,7 +232,7 @@ fn side_join_end_bands(
             _ => NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap,
         };
         push_side_join_band(
-            &mut end_bands,
+            &mut join_bands,
             from_layer.band_index,
             from_layer.band_kind,
             boundary_mode,
@@ -242,7 +241,7 @@ fn side_join_end_bands(
         );
         inner_path_world = Some(band_outer_path_world);
     }
-    end_bands
+    join_bands
 }
 
 fn side_join_band_inner_path(
@@ -298,7 +297,7 @@ fn reheight_side_join_path_world(
 }
 
 fn push_side_join_band(
-    end_bands: &mut Vec<NodeInputSideJoinBand>,
+    join_bands: &mut Vec<NodeInputSideJoinBand>,
     source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
     boundary_mode: NodeInputSideJoinBandBoundaryMode,
@@ -312,7 +311,7 @@ fn push_side_join_band(
     let mut contour_world = inner_path_world.clone();
     contour_world.extend(outer_path_world.iter().rev().copied());
     remove_repeated_road_vec3_points(&mut contour_world);
-    end_bands.push(NodeInputSideJoinBand {
+    join_bands.push(NodeInputSideJoinBand {
         source_band_index,
         band_kind,
         boundary_mode,
@@ -675,14 +674,14 @@ fn endpoint_layer_boundary_world(
     }
 }
 
-fn quantize_side_join_band_xz(end_band: &mut NodeInputSideJoinBand) {
-    for point in &mut end_band.inner_path_world {
+fn quantize_side_join_band_xz(join_band: &mut NodeInputSideJoinBand) {
+    for point in &mut join_band.inner_path_world {
         *point = quantize_road_vec3_xz(*point);
     }
-    for point in &mut end_band.outer_path_world {
+    for point in &mut join_band.outer_path_world {
         *point = quantize_road_vec3_xz(*point);
     }
-    for point in &mut end_band.contour_world {
+    for point in &mut join_band.contour_world {
         *point = quantize_road_vec3_xz(*point);
     }
 }
@@ -692,9 +691,9 @@ fn quantize_road_vec3_xz(point: RoadVec3) -> RoadVec3 {
     RoadVec3::new(point_xz.x, point.y, point_xz.y)
 }
 
-fn side_join_band_has_quantized_area(end_band: &NodeInputSideJoinBand) -> bool {
+fn side_join_band_has_quantized_area(join_band: &NodeInputSideJoinBand) -> bool {
     let raw = road_points_to_polyline(
-        end_band
+        join_band
             .contour_world
             .iter()
             .copied()

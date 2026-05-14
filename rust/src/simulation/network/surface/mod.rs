@@ -29,6 +29,7 @@ mod ownership;
 mod query;
 mod rails;
 mod span;
+mod terminal;
 mod triangulation;
 mod validation;
 

@@ -89,6 +89,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   road-owned cells, and visible water patches now use depth-owned local topology plus the same road
   footprint clips so full water patch planes cannot leak through dry terrain or under grounded
   asphalt, shoulder / curb, and sidewalk.
+  Terminal cap topology now also lives outside the node input extractor: `surface::terminal`
+  generates canonical cap carriers consumed by rail ownership and height fields, so the retired
+  endpoint end-band helper is no longer part of the ROAD-01 path.
   `ROAD-01` remains open until that clipped topology is validated against flat, diagonal, sloped,
   water-overlap, and junction cases.
   `ROAD-01` is still open because the recent roads-first earthworks prototype was
@@ -120,7 +123,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   polygons. The `Bend` path no longer borrows the generic junction-style center asphalt core
   either: two-way corners now use direct sampled mouth-to-mouth sector geometry with fixed
   `<= 1 m` connector steps, `Terminal` outer boundary loops now come directly from explicit
-  sidewalk / curb end-band geometry instead of generic polygon extraction, bend outer boundary
+  sidewalk / curb cap geometry instead of generic polygon extraction, bend outer boundary
   loops now come directly from compiled bend sectors instead of a generic polygon extraction pass,
   and footpath mouths now compile directly in the incident-mouth builder instead of through a
   separate fallback helper.
@@ -159,7 +162,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   `RaisedStepContact` sources, with bend side-join final-owner handoff limited to endpoint contacts
   from exact source rails. Non-terminal side-join ownership now enters through the dedicated
   `surface::joins` adapter rather than the input extractor; the rail contour set consumes terminal
-  end bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add
+  cap bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add
   carriageway bubble fill or contribute to `node_footprint`. `JunctionN` side-join paths are now
   Cavalier-cleaned adjacent-mouth non-road joins. Generated node contours now carry explicit
   footprint / asphalt / non-road authority roles, so boolean ownership no longer infers primary

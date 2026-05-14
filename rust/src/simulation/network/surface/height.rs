@@ -7,12 +7,10 @@ use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
 };
-use super::input::{
-    NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand,
-    NodeInputTerminalEndBandBoundaryMode,
-};
+use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::rails::{NodeGeneratedContour, NodeGeneratedContourKind, NodeRailContourSet};
+use super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind, SurfaceCdt,
@@ -213,36 +211,33 @@ impl NodeBandHeightField {
         }
     }
 
-    fn from_terminal_end_band(
-        mouth_order_index: usize,
-        end_band: &NodeInputTerminalEndBand,
-    ) -> Self {
+    fn from_terminal_cap_band(mouth_order_index: usize, cap_band: &NodeTerminalCapBand) -> Self {
         let id = NodeBandHeightFieldId::new(
             mouth_order_index,
-            end_band.source_band_index,
-            end_band.band_kind,
+            cap_band.source_band_index,
+            cap_band.band_kind,
         );
         Self {
             id,
-            kind: end_band.band_kind,
-            patches: vec![NodeBandHeightPatch::from_terminal_end_band(end_band)],
+            kind: cap_band.band_kind,
+            patches: vec![NodeBandHeightPatch::from_terminal_cap_band(cap_band)],
         }
     }
 
-    fn extend_with_terminal_end_band(
+    fn extend_with_terminal_cap_band(
         &mut self,
         mouth_order_index: usize,
-        end_band: &NodeInputTerminalEndBand,
+        cap_band: &NodeTerminalCapBand,
     ) -> Result<(), NodeHeightFieldError> {
-        if end_band.band_kind != self.kind {
+        if cap_band.band_kind != self.kind {
             return Err(NodeHeightFieldError::SourceBandKindMismatch {
                 mouth_order_index,
-                band_index: end_band.source_band_index,
+                band_index: cap_band.source_band_index,
                 region_kind: self.kind,
-                source_kind: end_band.band_kind,
+                source_kind: cap_band.band_kind,
             });
         }
-        let extension = Self::from_terminal_end_band_with_base(mouth_order_index, end_band, self)?;
+        let extension = Self::from_terminal_cap_band_with_base(mouth_order_index, cap_band, self)?;
         self.patches.extend(extension.patches);
         Ok(())
     }
@@ -256,13 +251,13 @@ impl NodeBandHeightField {
         Ok(())
     }
 
-    fn from_terminal_end_band_with_base(
+    fn from_terminal_cap_band_with_base(
         mouth_order_index: usize,
-        end_band: &NodeInputTerminalEndBand,
+        cap_band: &NodeTerminalCapBand,
         base: &Self,
     ) -> Result<Self, NodeHeightFieldError> {
-        let end_band = reheight_terminal_end_band_from_base(end_band, base)?;
-        Ok(Self::from_terminal_end_band(mouth_order_index, &end_band))
+        let cap_band = reheight_terminal_cap_band_from_base(cap_band, base)?;
+        Ok(Self::from_terminal_cap_band(mouth_order_index, &cap_band))
     }
 
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
@@ -332,19 +327,21 @@ impl NodeBandHeightField {
     }
 }
 
-fn reheight_terminal_end_band_from_base(
-    end_band: &NodeInputTerminalEndBand,
+fn reheight_terminal_cap_band_from_base(
+    cap_band: &NodeTerminalCapBand,
     base: &NodeBandHeightField,
-) -> Result<NodeInputTerminalEndBand, NodeHeightFieldError> {
-    let mut end_band = end_band.clone();
-    end_band.inner_start_world = reheight_point_from_base(end_band.inner_start_world, base)?;
-    end_band.inner_end_world = reheight_point_from_base(end_band.inner_end_world, base)?;
-    end_band.outer_start_world = reheight_point_from_base(end_band.outer_start_world, base)?;
-    end_band.outer_end_world = reheight_point_from_base(end_band.outer_end_world, base)?;
-    for point in &mut end_band.contour_world {
+) -> Result<NodeTerminalCapBand, NodeHeightFieldError> {
+    let mut cap_band = cap_band.clone();
+    for point in &mut cap_band.inner_path_world {
         *point = reheight_point_from_base(*point, base)?;
     }
-    Ok(end_band)
+    for point in &mut cap_band.outer_path_world {
+        *point = reheight_point_from_base(*point, base)?;
+    }
+    for point in &mut cap_band.contour_world {
+        *point = reheight_point_from_base(*point, base)?;
+    }
+    Ok(cap_band)
 }
 
 fn reheight_point_from_base(
@@ -367,10 +364,10 @@ impl NodeBandHeightPatch {
         }
     }
 
-    fn from_terminal_end_band(end_band: &NodeInputTerminalEndBand) -> Self {
+    fn from_terminal_cap_band(cap_band: &NodeTerminalCapBand) -> Self {
         Self {
-            triangles: Some(terminal_end_band_height_triangles(end_band)),
-            contour_edges: Some(terminal_end_band_height_edges(end_band)),
+            triangles: Some(terminal_cap_band_height_triangles(cap_band)),
+            contour_edges: Some(terminal_cap_band_height_edges(cap_band)),
         }
     }
 
@@ -530,8 +527,9 @@ fn height_fields_by_source(
     input: &NodeArrangementInput,
     rails: Option<&NodeRailContourSet>,
 ) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
+    let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input);
     let mut fields = BTreeMap::new();
-    for mouth in &input.mouths {
+    for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
             let field = NodeBandHeightField::from_interval(mouth.order_index, interval);
             let key = NodeSourceBandKey {
@@ -545,14 +543,17 @@ fn height_fields_by_source(
                 });
             }
         }
-        for end_band in &mouth.terminal_end_bands {
-            let field = NodeBandHeightField::from_terminal_end_band(mouth.order_index, end_band);
+        let terminal_cap_bands = terminal_cap_bands_by_mouth
+            .get(mouth_index)
+            .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
+        for cap_band in terminal_cap_bands {
+            let field = NodeBandHeightField::from_terminal_cap_band(mouth.order_index, cap_band);
             let key = NodeSourceBandKey {
                 mouth_order_index: mouth.order_index,
-                band_index: end_band.source_band_index,
+                band_index: cap_band.source_band_index,
             };
             if let Some(existing) = fields.get_mut(&key) {
-                existing.extend_with_terminal_end_band(mouth.order_index, end_band)?;
+                existing.extend_with_terminal_cap_band(mouth.order_index, cap_band)?;
             } else {
                 fields.insert(key, field);
             }
@@ -860,42 +861,14 @@ fn path_band_height_edges(
     (!edges.is_empty()).then_some(edges)
 }
 
-fn terminal_end_band_height_triangles(
-    end_band: &NodeInputTerminalEndBand,
+fn terminal_cap_band_height_triangles(
+    cap_band: &NodeTerminalCapBand,
 ) -> Vec<NodeBandHeightTriangle> {
-    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-        && let Some(triangles) = terminal_material_band_height_triangles(&end_band.contour_world)
-    {
+    if let Some(triangles) = terminal_material_band_height_triangles(&cap_band.contour_world) {
         return triangles;
     }
 
-    let mut triangles = height_triangles_from_contour(&end_band.contour_world);
-    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-        && end_band.contour_world.len() >= 3
-    {
-        let a_world = end_band.contour_world[0];
-        let b_world = end_band.contour_world[1];
-        let c_world = (end_band.outer_start_world + end_band.outer_end_world) * 0.5;
-        let a_xz = quantize_road_vec2_to_overlay_grid(xz(a_world));
-        let b_xz = quantize_road_vec2_to_overlay_grid(xz(b_world));
-        let c_xz = quantize_road_vec2_to_overlay_grid(xz(c_world));
-        if height_triangle_area2(
-            height_source_point_key(a_xz),
-            height_source_point_key(b_xz),
-            height_source_point_key(c_xz),
-        ) != 0
-        {
-            triangles.push(NodeBandHeightTriangle {
-                a_xz,
-                b_xz,
-                c_xz,
-                a_height_m: quantize_source_height_m(a_world.y),
-                b_height_m: quantize_source_height_m(b_world.y),
-                c_height_m: quantize_source_height_m(c_world.y),
-            });
-        }
-    }
-    triangles
+    height_triangles_from_contour(&cap_band.contour_world)
 }
 
 fn terminal_material_band_height_triangles(
@@ -946,8 +919,8 @@ fn push_height_triangle(
     });
 }
 
-fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<NodeBandHeightEdge> {
-    height_edges_from_vertices(&end_band.contour_world)
+fn terminal_cap_band_height_edges(cap_band: &NodeTerminalCapBand) -> Vec<NodeBandHeightEdge> {
+    height_edges_from_vertices(&cap_band.contour_world)
 }
 
 fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
@@ -1569,14 +1542,11 @@ mod tests {
         let outer_start = RoadVec3::new(0.15, 0.12, -1.0);
         let outer_center = RoadVec3::new(0.15, 0.12, 0.0);
         let outer_end = RoadVec3::new(0.15, 0.12, 1.0);
-        let end_band = NodeInputTerminalEndBand {
+        let cap_band = NodeTerminalCapBand {
             source_band_index: 0,
             band_kind: RoadSurfaceBandKind::CurbOrShoulder,
-            boundary_mode: NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
-            inner_start_world: inner_start,
-            inner_end_world: inner_end,
-            outer_start_world: outer_start,
-            outer_end_world: outer_end,
+            inner_path_world: vec![inner_start, inner_center, inner_end],
+            outer_path_world: vec![outer_start, outer_center, outer_end],
             contour_world: vec![
                 inner_start,
                 inner_center,
@@ -1586,7 +1556,7 @@ mod tests {
                 outer_start,
             ],
         };
-        let patch = NodeBandHeightPatch::from_terminal_end_band(&end_band);
+        let patch = NodeBandHeightPatch::from_terminal_cap_band(&cap_band);
         let height = match patch
             .evaluate_surface_height(
                 NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder),
@@ -1798,7 +1768,6 @@ mod tests {
                     manual_interval(0, RoadSurfaceBandKind::Carriageway, 2.0, 4.0),
                     manual_interval(1, RoadSurfaceBandKind::Sidewalk, 5.0, 7.0),
                 ],
-                terminal_end_bands: Vec::new(),
                 uses_sampled_band_domain_paths: false,
             }],
         }

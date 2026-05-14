@@ -7,11 +7,12 @@ use super::backend::{
 };
 use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
-    NodeInputProfileRail, NodeInputTerminalEndBand, NodeInputTerminalEndBandBoundaryMode,
+    NodeInputProfileRail,
 };
 use super::joins::{
     NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, side_join_bands_by_mouth,
 };
+use super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -34,7 +35,7 @@ pub(crate) enum NodeGeneratedContourPurpose {
     CarriagewayCorridor,
     CarriagewayOwnerCarrier,
     NonRoadBand,
-    TerminalEndBand,
+    TerminalCap,
     BendSideJoin,
     JunctionSideJoin,
 }
@@ -90,7 +91,7 @@ impl NodeGeneratedContour {
             && matches!(
                 self.purpose,
                 NodeGeneratedContourPurpose::FullRoadbedCorridor
-                    | NodeGeneratedContourPurpose::TerminalEndBand
+                    | NodeGeneratedContourPurpose::TerminalCap
                     | NodeGeneratedContourPurpose::BendSideJoin
             )
     }
@@ -119,7 +120,7 @@ impl NodeGeneratedContour {
                 self.purpose,
                 NodeGeneratedContourPurpose::CarriagewayCorridor
                     | NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
-                    | NodeGeneratedContourPurpose::TerminalEndBand
+                    | NodeGeneratedContourPurpose::TerminalCap
                     | NodeGeneratedContourPurpose::BendSideJoin
             )
     }
@@ -132,7 +133,7 @@ impl NodeGeneratedContour {
         ) && matches!(
             self.purpose,
             NodeGeneratedContourPurpose::NonRoadBand
-                | NodeGeneratedContourPurpose::TerminalEndBand
+                | NodeGeneratedContourPurpose::TerminalCap
                 | NodeGeneratedContourPurpose::BendSideJoin
                 | NodeGeneratedContourPurpose::JunctionSideJoin
         )
@@ -192,7 +193,7 @@ pub(crate) enum NodeRailGenerationError {
 
 struct MouthOwners {
     band_owners: Vec<NodeBandOwner>,
-    terminal_end_band_owners: Vec<NodeBandOwner>,
+    terminal_cap_band_owners: Vec<NodeBandOwner>,
     side_join_band_owners: Vec<NodeBandOwner>,
 }
 
@@ -344,8 +345,13 @@ impl NodeRailContourSet {
             });
         }
 
+        let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input);
         let side_join_bands_by_mouth = side_join_bands_by_mouth(input);
-        let owners_by_mouth = owners_by_mouth(input, &side_join_bands_by_mouth);
+        let owners_by_mouth = owners_by_mouth(
+            input,
+            &terminal_cap_bands_by_mouth,
+            &side_join_bands_by_mouth,
+        );
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_points_by_source =
@@ -357,6 +363,9 @@ impl NodeRailContourSet {
             let side_join_bands = side_join_bands_by_mouth
                 .get(mouth_index)
                 .map_or(&[] as &[NodeInputSideJoinBand], Vec::as_slice);
+            let terminal_cap_bands = terminal_cap_bands_by_mouth
+                .get(mouth_index)
+                .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
             push_raw_carriageway_corridor_contour(
                 input.piece_kind,
@@ -383,13 +392,18 @@ impl NodeRailContourSet {
                     &mut constraints,
                 )?;
             }
-            for end_band in &mouth.terminal_end_bands {
+            for cap_band in terminal_cap_bands {
                 push_band_height_carrier_points(
                     &mut height_carrier_points_by_source,
                     mouth.order_index,
-                    end_band.source_band_index,
-                    end_band.band_kind,
-                    end_band.contour_world.iter().copied(),
+                    cap_band.source_band_index,
+                    cap_band.band_kind,
+                    cap_band
+                        .contour_world
+                        .iter()
+                        .chain(&cap_band.inner_path_world)
+                        .chain(&cap_band.outer_path_world)
+                        .copied(),
                 );
             }
             for side_join_band in side_join_bands {
@@ -402,12 +416,12 @@ impl NodeRailContourSet {
                 );
             }
 
-            push_terminal_end_band_contours(
+            push_terminal_cap_band_contours(
                 input.piece_kind,
                 mouth,
-                &mouth.terminal_end_bands,
+                terminal_cap_bands,
                 mouth_owners,
-                &mouth_owners.terminal_end_band_owners,
+                &mouth_owners.terminal_cap_band_owners,
                 &mut contours,
                 &mut constraints,
             )?;
@@ -912,53 +926,53 @@ fn subdivided_world_chord(start: RoadVec3, end: RoadVec3, point_count: usize) ->
         .collect()
 }
 
-fn push_terminal_end_band_contours(
+fn push_terminal_cap_band_contours(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
-    end_bands: &[NodeInputTerminalEndBand],
+    cap_bands: &[NodeTerminalCapBand],
     mouth_owners: &MouthOwners,
     owners: &[NodeBandOwner],
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
     let owner_by_kind_and_source =
-        terminal_owner_by_kind_and_source(mouth, mouth_owners, end_bands, owners);
+        terminal_owner_by_kind_and_source(mouth, mouth_owners, cap_bands, owners);
     if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
         return Ok(());
     }
 
-    let mut groups = BTreeMap::<TerminalEndBandGroupKey, TerminalEndBandGroup>::new();
-    for (end_band, owner) in end_bands.iter().zip(owners) {
+    let mut groups = BTreeMap::<GeneratedCapOrJoinGroupKey, TerminalCapBandGroup>::new();
+    for (cap_band, owner) in cap_bands.iter().zip(owners) {
         groups
-            .entry(TerminalEndBandGroupKey {
-                kind: end_band.band_kind,
-                source_band_index: end_band.source_band_index,
+            .entry(GeneratedCapOrJoinGroupKey {
+                kind: cap_band.band_kind,
+                source_band_index: cap_band.source_band_index,
                 owner: *owner,
-                contributes_footprint: terminal_end_band_contributes_footprint(end_band),
+                contributes_footprint: true,
             })
-            .or_insert_with(|| TerminalEndBandGroup {
+            .or_insert_with(|| TerminalCapBandGroup {
                 contour_world: Vec::new(),
                 source_contours_world: Vec::new(),
-                end_bands: Vec::new(),
+                cap_bands: Vec::new(),
             })
-            .push(end_band);
+            .push(cap_band);
     }
 
     for (key, group) in groups {
-        push_grouped_end_band_candidate_contours(
+        push_grouped_cap_or_join_candidate_contours(
             mouth,
             key,
-            NodeGeneratedContourPurpose::TerminalEndBand,
+            NodeGeneratedContourPurpose::TerminalCap,
             &group.contour_world,
             &group.source_contours_world,
             NodeGeneratedContourClaimPriority::JoinOrCap,
             contours,
             constraints,
         )?;
-        for end_band in group.end_bands {
-            push_terminal_end_band_boundary_constraints(
+        for cap_band in group.cap_bands {
+            push_terminal_cap_band_boundary_constraints(
                 mouth,
-                end_band,
+                cap_band,
                 key.owner,
                 &owner_by_kind_and_source,
                 constraints,
@@ -984,13 +998,13 @@ fn push_side_join_band_contours(
 
     let owner_by_kind_and_source =
         side_join_owner_by_kind_and_source(mouth, mouth_owners, side_join_bands, owners);
-    let mut groups = BTreeMap::<TerminalEndBandGroupKey, SideJoinBandGroup>::new();
+    let mut groups = BTreeMap::<GeneratedCapOrJoinGroupKey, SideJoinBandGroup>::new();
     for (side_join_band, owner) in side_join_bands.iter().zip(owners) {
         if !side_join_band_contributes_domain(side_join_band) {
             continue;
         }
         groups
-            .entry(TerminalEndBandGroupKey {
+            .entry(GeneratedCapOrJoinGroupKey {
                 kind: side_join_band.band_kind,
                 source_band_index: side_join_band.source_band_index,
                 owner: *owner,
@@ -1007,7 +1021,7 @@ fn push_side_join_band_contours(
     }
 
     for (key, group) in groups {
-        push_grouped_end_band_candidate_contours(
+        push_grouped_cap_or_join_candidate_contours(
             mouth,
             key,
             side_join_contour_purpose(piece_kind),
@@ -1034,15 +1048,15 @@ fn push_side_join_band_contours(
 fn terminal_owner_by_kind_and_source(
     mouth: &NodeInputMouth,
     mouth_owners: &MouthOwners,
-    end_bands: &[NodeInputTerminalEndBand],
+    cap_bands: &[NodeTerminalCapBand],
     owners: &[NodeBandOwner],
 ) -> BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner> {
     let mut owner_by_kind_and_source = BTreeMap::new();
     for (interval, owner) in mouth.band_intervals.iter().zip(&mouth_owners.band_owners) {
         owner_by_kind_and_source.insert((interval.band_kind, interval.band_index), *owner);
     }
-    for (end_band, owner) in end_bands.iter().zip(owners) {
-        owner_by_kind_and_source.insert((end_band.band_kind, end_band.source_band_index), *owner);
+    for (cap_band, owner) in cap_bands.iter().zip(owners) {
+        owner_by_kind_and_source.insert((cap_band.band_kind, cap_band.source_band_index), *owner);
     }
     owner_by_kind_and_source
 }
@@ -1067,22 +1081,22 @@ fn side_join_owner_by_kind_and_source(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct TerminalEndBandGroupKey {
+struct GeneratedCapOrJoinGroupKey {
     kind: RoadSurfaceBandKind,
     source_band_index: usize,
     owner: NodeBandOwner,
     contributes_footprint: bool,
 }
 
-struct TerminalEndBandGroup<'a> {
+struct TerminalCapBandGroup<'a> {
     contour_world: Vec<NodeOverlayContour>,
     source_contours_world: Vec<&'a [RoadVec3]>,
-    end_bands: Vec<&'a NodeInputTerminalEndBand>,
+    cap_bands: Vec<&'a NodeTerminalCapBand>,
 }
 
-impl<'a> TerminalEndBandGroup<'a> {
-    fn push(&mut self, end_band: &'a NodeInputTerminalEndBand) {
-        let mut contour = end_band
+impl<'a> TerminalCapBandGroup<'a> {
+    fn push(&mut self, cap_band: &'a NodeTerminalCapBand) {
+        let mut contour = cap_band
             .contour_world
             .iter()
             .map(|point| [point.x, point.z])
@@ -1092,8 +1106,8 @@ impl<'a> TerminalEndBandGroup<'a> {
         }
         self.contour_world.push(contour);
         self.source_contours_world
-            .push(end_band.contour_world.as_slice());
-        self.end_bands.push(end_band);
+            .push(cap_band.contour_world.as_slice());
+        self.cap_bands.push(cap_band);
     }
 }
 
@@ -1118,9 +1132,9 @@ impl<'a> SideJoinBandGroup<'a> {
     }
 }
 
-fn push_grouped_end_band_candidate_contours(
+fn push_grouped_cap_or_join_candidate_contours(
     mouth: &NodeInputMouth,
-    key: TerminalEndBandGroupKey,
+    key: GeneratedCapOrJoinGroupKey,
     purpose: NodeGeneratedContourPurpose,
     contour_world: &[NodeOverlayContour],
     source_contours_world: &[&[RoadVec3]],
@@ -1213,110 +1227,75 @@ fn side_join_contour_purpose(
     match piece_kind {
         RoadSurfaceVisualNodePieceKind::Bend => NodeGeneratedContourPurpose::BendSideJoin,
         RoadSurfaceVisualNodePieceKind::JunctionN => NodeGeneratedContourPurpose::JunctionSideJoin,
-        RoadSurfaceVisualNodePieceKind::Terminal => NodeGeneratedContourPurpose::TerminalEndBand,
+        RoadSurfaceVisualNodePieceKind::Terminal => NodeGeneratedContourPurpose::TerminalCap,
     }
 }
 
-fn push_terminal_end_band_boundary_constraints(
+fn push_terminal_cap_band_boundary_constraints(
     mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
+    cap_band: &NodeTerminalCapBand,
     owner: NodeBandOwner,
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    let inner_path = terminal_end_band_inner_contour_path(end_band);
-    let outer_path = terminal_end_band_outer_contour_path(end_band);
-    let outer_cap_path = terminal_end_band_outer_cap_contour_path(end_band);
+    let inner_path = terminal_cap_band_inner_contour_path(cap_band);
+    let outer_path = terminal_cap_band_outer_contour_path(cap_band);
     let opposite_owner =
-        terminal_end_band_material_opposite_owner(mouth, end_band, owner_by_kind_and_source);
-    match end_band.band_kind {
+        terminal_cap_band_material_opposite_owner(mouth, cap_band, owner_by_kind_and_source);
+    match cap_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => {
-            if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap {
-                push_terminal_inner_raised_step_contact_constraints(
-                    mouth,
-                    end_band,
-                    owner,
-                    owner_by_kind_and_source,
-                    constraints,
-                )?;
-            }
-            if terminal_end_band_has_material_boundary(end_band)
-                && let Some(points) = outer_path.clone()
-            {
-                push_terminal_end_band_path_constraint(
+            push_terminal_cap_inner_raised_step_contact_constraints(
+                mouth,
+                cap_band,
+                owner,
+                owner_by_kind_and_source,
+                constraints,
+            )?;
+            if let Some(points) = outer_path.clone() {
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::RaisedStepContact,
                     mouth.order_index,
-                    end_band.source_band_index,
+                    cap_band.source_band_index,
                     owner,
                     opposite_owner,
                     points,
                 )?;
             }
-            if terminal_end_band_has_material_boundary(end_band) {
-                for (start, end) in terminal_material_boundary_side_edges(end_band) {
-                    push_terminal_end_band_constraint(
-                        constraints,
-                        NodeRailConstraintKind::RaisedStepContact,
-                        mouth.order_index,
-                        end_band.source_band_index,
-                        owner,
-                        opposite_owner,
-                        xz(start),
-                        xz(end),
-                    )?;
-                }
-            }
-            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap {
-                push_terminal_end_band_cap_role_constraints(
-                    mouth,
-                    end_band,
+            for (start, end) in terminal_cap_material_boundary_side_edges(cap_band) {
+                push_generated_band_constraint(
+                    constraints,
+                    NodeRailConstraintKind::RaisedStepContact,
+                    mouth.order_index,
+                    cap_band.source_band_index,
                     owner,
                     opposite_owner,
-                    constraints,
+                    xz(start),
+                    xz(end),
                 )?;
             }
             Ok(())
         }
         RoadSurfaceBandKind::Sidewalk => {
-            if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-                && let Some(points) = inner_path
-            {
-                push_terminal_end_band_path_constraint(
+            if let Some(points) = inner_path {
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::RaisedStepContact,
                     mouth.order_index,
-                    end_band.source_band_index,
+                    cap_band.source_band_index,
                     owner,
                     opposite_owner,
                     points,
                 )?;
             }
-            if terminal_end_band_has_material_boundary(end_band)
-                && let Some(points) = outer_path
-            {
-                push_terminal_end_band_path_constraint(
+            if let Some(points) = outer_path {
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::FootprintSeam {
                         adjacent_kind: RoadSurfaceBandKind::Sidewalk,
                     },
                     mouth.order_index,
-                    end_band.source_band_index,
-                    owner,
-                    None,
-                    points,
-                )?;
-            }
-            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-                && let Some(points) = outer_cap_path
-            {
-                push_terminal_end_band_path_constraint(
-                    constraints,
-                    NodeRailConstraintKind::FootprintSeam {
-                        adjacent_kind: RoadSurfaceBandKind::Sidewalk,
-                    },
-                    mouth.order_index,
-                    end_band.source_band_index,
+                    cap_band.source_band_index,
                     owner,
                     None,
                     points,
@@ -1354,7 +1333,7 @@ fn push_side_join_band_boundary_constraints(
             if side_join_band_has_material_boundary(side_join_band)
                 && let Some(points) = outer_path.clone()
             {
-                push_terminal_end_band_path_constraint(
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::RaisedStepContact,
                     mouth.order_index,
@@ -1366,7 +1345,7 @@ fn push_side_join_band_boundary_constraints(
             }
             if side_join_band_has_material_boundary(side_join_band) {
                 for (start, end) in side_join_material_boundary_side_edges(side_join_band) {
-                    push_terminal_end_band_constraint(
+                    push_generated_band_constraint(
                         constraints,
                         NodeRailConstraintKind::RaisedStepContact,
                         mouth.order_index,
@@ -1384,7 +1363,7 @@ fn push_side_join_band_boundary_constraints(
             if side_join_band.boundary_mode != NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap
                 && let Some(points) = inner_path
             {
-                push_terminal_end_band_path_constraint(
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::RaisedStepContact,
                     mouth.order_index,
@@ -1397,7 +1376,7 @@ fn push_side_join_band_boundary_constraints(
             if side_join_band_has_material_boundary(side_join_band)
                 && let Some(points) = outer_path
             {
-                push_terminal_end_band_path_constraint(
+                push_generated_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::FootprintSeam {
                         adjacent_kind: RoadSurfaceBandKind::Sidewalk,
@@ -1413,14 +1392,6 @@ fn push_side_join_band_boundary_constraints(
         }
         _ => Ok(()),
     }
-}
-
-fn terminal_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
-    matches!(
-        end_band.boundary_mode,
-        NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-    )
 }
 
 fn side_join_band_contributes_domain(side_join_band: &NodeInputSideJoinBand) -> bool {
@@ -1446,26 +1417,26 @@ fn side_join_band_contributes_footprint(
     }
 }
 
-fn terminal_end_band_material_opposite_owner(
+fn terminal_cap_band_material_opposite_owner(
     mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
+    cap_band: &NodeTerminalCapBand,
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
 ) -> Option<NodeBandOwner> {
     if let Some(owner) =
-        terminal_generated_material_opposite_owner(end_band, owner_by_kind_and_source)
+        terminal_cap_generated_material_opposite_owner(cap_band, owner_by_kind_and_source)
     {
         return Some(owner);
     }
-    match end_band.band_kind {
+    match cap_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => adjacent_source_band_owner(
             mouth,
-            end_band.source_band_index,
+            cap_band.source_band_index,
             RoadSurfaceBandKind::Sidewalk,
             owner_by_kind_and_source,
         ),
         RoadSurfaceBandKind::Sidewalk => adjacent_source_band_owner(
             mouth,
-            end_band.source_band_index,
+            cap_band.source_band_index,
             RoadSurfaceBandKind::CurbOrShoulder,
             owner_by_kind_and_source,
         ),
@@ -1473,16 +1444,13 @@ fn terminal_end_band_material_opposite_owner(
     }
 }
 
-fn terminal_generated_material_opposite_owner(
-    end_band: &NodeInputTerminalEndBand,
+fn terminal_cap_generated_material_opposite_owner(
+    cap_band: &NodeTerminalCapBand,
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
 ) -> Option<NodeBandOwner> {
-    if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand {
-        return None;
-    }
-    match end_band.band_kind {
+    match cap_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => {
-            end_band
+            cap_band
                 .source_band_index
                 .checked_add(1)
                 .and_then(|source_band_index| {
@@ -1492,7 +1460,7 @@ fn terminal_generated_material_opposite_owner(
                 })
         }
         RoadSurfaceBandKind::Sidewalk => {
-            end_band
+            cap_band
                 .source_band_index
                 .checked_sub(1)
                 .and_then(|source_band_index| {
@@ -1527,29 +1495,29 @@ fn side_join_band_material_opposite_owner(
     }
 }
 
-fn push_terminal_inner_raised_step_contact_constraints(
+fn push_terminal_cap_inner_raised_step_contact_constraints(
     mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
+    cap_band: &NodeTerminalCapBand,
     owner: NodeBandOwner,
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    let Some(points) = terminal_end_band_inner_contour_path(end_band) else {
+    let Some(points) = terminal_cap_band_inner_contour_path(cap_band) else {
         return Ok(());
     };
     for segment in points.windows(2) {
         let opposite_owner = inner_raised_step_opposite_owner_for_segment(
             mouth,
-            end_band.source_band_index,
+            cap_band.source_band_index,
             segment[0],
             segment[1],
             owner_by_kind_and_source,
         );
-        push_terminal_end_band_constraint(
+        push_generated_band_constraint(
             constraints,
             NodeRailConstraintKind::RaisedStepContact,
             mouth.order_index,
-            end_band.source_band_index,
+            cap_band.source_band_index,
             owner,
             opposite_owner,
             segment[0],
@@ -1577,7 +1545,7 @@ fn push_side_join_inner_raised_step_contact_constraints(
             segment[1],
             owner_by_kind_and_source,
         );
-        push_terminal_end_band_constraint(
+        push_generated_band_constraint(
             constraints,
             NodeRailConstraintKind::RaisedStepContact,
             mouth.order_index,
@@ -1678,13 +1646,6 @@ fn endpoint_boundary_index_for_point(mouth: &NodeInputMouth, point: RoadVec2) ->
         .map(|rail| rail.boundary_index)
 }
 
-fn terminal_end_band_has_material_boundary(end_band: &NodeInputTerminalEndBand) -> bool {
-    matches!(
-        end_band.boundary_mode,
-        NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-    )
-}
-
 fn side_join_band_has_material_boundary(side_join_band: &NodeInputSideJoinBand) -> bool {
     matches!(
         side_join_band.boundary_mode,
@@ -1692,35 +1653,24 @@ fn side_join_band_has_material_boundary(side_join_band: &NodeInputSideJoinBand) 
     )
 }
 
-fn push_terminal_end_band_cap_role_constraints(
-    mouth: &NodeInputMouth,
-    end_band: &NodeInputTerminalEndBand,
-    owner: NodeBandOwner,
-    opposite_owner: Option<NodeBandOwner>,
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    for (start, end) in terminal_material_boundary_side_edges(end_band) {
-        push_terminal_end_band_constraint(
-            constraints,
-            NodeRailConstraintKind::RaisedStepContact,
-            mouth.order_index,
-            end_band.source_band_index,
-            owner,
-            opposite_owner,
-            xz(start),
-            xz(end),
-        )?;
-    }
-
-    Ok(())
-}
-
-fn terminal_material_boundary_side_edges(
-    end_band: &NodeInputTerminalEndBand,
+fn terminal_cap_material_boundary_side_edges(
+    cap_band: &NodeTerminalCapBand,
 ) -> Vec<(RoadVec3, RoadVec3)> {
+    let Some(inner_start_world) = cap_band.inner_path_world.first().copied() else {
+        return Vec::new();
+    };
+    let Some(inner_end_world) = cap_band.inner_path_world.last().copied() else {
+        return Vec::new();
+    };
+    let Some(outer_start_world) = cap_band.outer_path_world.first().copied() else {
+        return Vec::new();
+    };
+    let Some(outer_end_world) = cap_band.outer_path_world.last().copied() else {
+        return Vec::new();
+    };
     [
-        (end_band.inner_start_world, end_band.outer_start_world),
-        (end_band.inner_end_world, end_band.outer_end_world),
+        (inner_start_world, outer_start_world),
+        (inner_end_world, outer_end_world),
     ]
     .into_iter()
     .filter(|(start, end)| road_point_key(xz(*start)) != road_point_key(xz(*end)))
@@ -1751,77 +1701,24 @@ fn side_join_material_boundary_side_edges(
     .collect()
 }
 
-fn terminal_end_band_inner_contour_path(
-    end_band: &NodeInputTerminalEndBand,
-) -> Option<Vec<RoadVec2>> {
-    if end_band.contour_world.len() < 3 {
-        return None;
-    }
-    let points = if end_band.boundary_mode
-        == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-        && end_band.contour_world.len() > 4
-        && end_band.contour_world.len() % 2 == 0
-    {
-        end_band
-            .contour_world
-            .iter()
-            .copied()
-            .take(end_band.contour_world.len() / 2)
-            .map(xz)
-            .collect::<Vec<_>>()
-    } else {
-        vec![xz(end_band.contour_world[0]), xz(end_band.contour_world[1])]
-    };
-    clean_terminal_constraint_path(points)
-}
-
-fn terminal_end_band_outer_contour_path(
-    end_band: &NodeInputTerminalEndBand,
-) -> Option<Vec<RoadVec2>> {
-    if end_band.contour_world.len() < 3 {
-        return None;
-    }
-    let points = if end_band.boundary_mode
-        == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-        && end_band.contour_world.len() > 4
-        && end_band.contour_world.len() % 2 == 0
-    {
-        end_band
-            .contour_world
-            .iter()
-            .copied()
-            .skip(end_band.contour_world.len() / 2)
-            .rev()
-            .map(xz)
-            .collect::<Vec<_>>()
-    } else {
-        end_band
-            .contour_world
-            .iter()
-            .copied()
-            .skip(2)
-            .rev()
-            .map(xz)
-            .collect::<Vec<_>>()
-    };
-    clean_terminal_constraint_path(points)
-}
-
-fn terminal_end_band_outer_cap_contour_path(
-    end_band: &NodeInputTerminalEndBand,
-) -> Option<Vec<RoadVec2>> {
-    if end_band.contour_world.len() < 3 {
-        return None;
-    }
-    let mut points = end_band
-        .contour_world
+fn terminal_cap_band_inner_contour_path(cap_band: &NodeTerminalCapBand) -> Option<Vec<RoadVec2>> {
+    let points = cap_band
+        .inner_path_world
         .iter()
         .copied()
-        .skip(1)
         .map(xz)
         .collect::<Vec<_>>();
-    points.push(xz(end_band.contour_world[0]));
-    clean_terminal_constraint_path(points)
+    clean_generated_constraint_path(points)
+}
+
+fn terminal_cap_band_outer_contour_path(cap_band: &NodeTerminalCapBand) -> Option<Vec<RoadVec2>> {
+    let points = cap_band
+        .outer_path_world
+        .iter()
+        .copied()
+        .map(xz)
+        .collect::<Vec<_>>();
+    clean_generated_constraint_path(points)
 }
 
 fn side_join_band_inner_contour_path(
@@ -1833,7 +1730,7 @@ fn side_join_band_inner_contour_path(
         .copied()
         .map(xz)
         .collect::<Vec<_>>();
-    clean_terminal_constraint_path(points)
+    clean_generated_constraint_path(points)
 }
 
 fn side_join_band_outer_contour_path(
@@ -1845,10 +1742,10 @@ fn side_join_band_outer_contour_path(
         .copied()
         .map(xz)
         .collect::<Vec<_>>();
-    clean_terminal_constraint_path(points)
+    clean_generated_constraint_path(points)
 }
 
-fn push_terminal_end_band_constraint(
+fn push_generated_band_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
     source_mouth_order_index: usize,
@@ -1873,7 +1770,7 @@ fn push_terminal_end_band_constraint(
     )
 }
 
-fn push_terminal_end_band_path_constraint(
+fn push_generated_band_path_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
     source_mouth_order_index: usize,
@@ -1882,7 +1779,7 @@ fn push_terminal_end_band_path_constraint(
     opposite_owner: Option<NodeBandOwner>,
     points: Vec<RoadVec2>,
 ) -> Result<(), NodeRailGenerationError> {
-    let Some(points) = clean_terminal_constraint_path(points) else {
+    let Some(points) = clean_generated_constraint_path(points) else {
         return Ok(());
     };
     push_owned_rail_constraint(
@@ -1897,7 +1794,7 @@ fn push_terminal_end_band_path_constraint(
     )
 }
 
-fn clean_terminal_constraint_path(points: Vec<RoadVec2>) -> Option<Vec<RoadVec2>> {
+fn clean_generated_constraint_path(points: Vec<RoadVec2>) -> Option<Vec<RoadVec2>> {
     let mut cleaned = Vec::with_capacity(points.len());
     for point in points {
         push_road_path_point(&mut cleaned, point);
@@ -5176,6 +5073,7 @@ fn cleaned_open_rail(
 
 fn owners_by_mouth(
     input: &NodeArrangementInput,
+    terminal_cap_bands_by_mouth: &[Vec<NodeTerminalCapBand>],
     side_join_bands_by_mouth: &[Vec<NodeInputSideJoinBand>],
 ) -> Vec<MouthOwners> {
     let mut next_owner_index = 0usize;
@@ -5201,15 +5099,17 @@ fn owners_by_mouth(
             let side_join_bands = side_join_bands_by_mouth
                 .get(mouth_index)
                 .map_or(&[] as &[NodeInputSideJoinBand], Vec::as_slice);
-            let terminal_end_band_owners = mouth
-                .terminal_end_bands
+            let terminal_cap_bands = terminal_cap_bands_by_mouth
+                .get(mouth_index)
+                .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
+            let terminal_cap_band_owners = terminal_cap_bands
                 .iter()
-                .map(|end_band| {
-                    let key = (end_band.band_kind, end_band.source_band_index);
+                .map(|cap_band| {
+                    let key = (cap_band.band_kind, cap_band.source_band_index);
                     if let Some(owner) = terminal_owner_by_source.get(&key).copied() {
                         owner
                     } else {
-                        let owner = NodeBandOwner::new(end_band.band_kind, next_owner_index);
+                        let owner = NodeBandOwner::new(cap_band.band_kind, next_owner_index);
                         next_owner_index += 1;
                         terminal_owner_by_source.insert(key, owner);
                         owner
@@ -5232,7 +5132,7 @@ fn owners_by_mouth(
                 .collect();
             MouthOwners {
                 band_owners,
-                terminal_end_band_owners,
+                terminal_cap_band_owners,
                 side_join_band_owners,
             }
         })
@@ -5593,7 +5493,7 @@ mod tests {
     }
 
     #[test]
-    fn nonterminal_side_join_end_bands_emit_canonical_ownership_candidates() {
+    fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
         let input = nonterminal_input_with_side_join_candidate();
         let contours = NodeRailContourSet::from_input(&input).expect("valid contours");
         let junction_side_join_contours = contours
@@ -6261,7 +6161,7 @@ mod tests {
     fn nonterminal_same_owner_caps_emit_canonical_side_join_fill() {
         let input = input_with_endpoint_x(0.0);
         let side_join_bands = vec![same_owner_side_join_band()];
-        let owners_by_mouth = owners_by_mouth(&input, std::slice::from_ref(&side_join_bands));
+        let owners_by_mouth = owners_by_mouth(&input, &[], std::slice::from_ref(&side_join_bands));
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         push_side_join_band_contours(
@@ -6305,7 +6205,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_end_band_contacts_name_adjacent_owner_pairs() {
+    fn terminal_cap_contacts_name_adjacent_owner_pairs() {
         let input = terminal_input_with_endpoint_x(0.0);
         let terminal_curb_source = input.mouths[0].band_intervals.len();
         let contours = NodeRailContourSet::from_input(&input).expect("valid terminal contours");
@@ -6313,11 +6213,11 @@ mod tests {
             .contours
             .iter()
             .find(|contour| {
-                contour.purpose == NodeGeneratedContourPurpose::TerminalEndBand
+                contour.purpose == NodeGeneratedContourPurpose::TerminalCap
                     && contour.source_band_index == Some(terminal_curb_source)
             })
             .and_then(|contour| contour.owner)
-            .expect("terminal end band should have an owner");
+            .expect("terminal cap should have an owner");
         let left_carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
         let right_carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 3);
         let left_segment = GeneratedContourEdgeKey::new(
