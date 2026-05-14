@@ -168,8 +168,8 @@ impl NodeBooleanOwnership {
             });
         }
 
-        let asphalt_domains = asphalt_domains(rails);
-        let asphalt_contours = asphalt_domains
+        let asphalt_authority_domains = asphalt_authority_domains(rails);
+        let asphalt_contours = asphalt_authority_domains
             .iter()
             .map(|domain| overlay_contour_from_domain(domain))
             .collect::<Vec<_>>();
@@ -188,9 +188,10 @@ impl NodeBooleanOwnership {
         let allow_grid_bounded_constraint_overlap =
             rails.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal;
         let mut owned_regions = Vec::new();
+        let asphalt_owner_domains = asphalt_owner_domains(rails);
         let asphalt_result = owned_regions_from_domains(
             &asphalt_shapes,
-            &asphalt_domains,
+            &asphalt_owner_domains,
             &rails.constraints,
             ResidualKind::Asphalt,
             allow_grid_bounded_constraint_overlap,
@@ -546,9 +547,15 @@ fn overlay_contours_for_domains(
         .collect()
 }
 
-fn asphalt_domains(rails: &NodeRailContourSet) -> Vec<&NodeGeneratedContour> {
+fn asphalt_authority_domains(rails: &NodeRailContourSet) -> Vec<&NodeGeneratedContour> {
     domains_for_band_kind_matching(rails, RoadSurfaceBandKind::Carriageway, |contour| {
         contour.contributes_to_asphalt()
+    })
+}
+
+fn asphalt_owner_domains(rails: &NodeRailContourSet) -> Vec<&NodeGeneratedContour> {
+    domains_for_band_kind_matching(rails, RoadSurfaceBandKind::Carriageway, |contour| {
+        contour.claims_asphalt_owner_region()
     })
 }
 
@@ -3582,6 +3589,25 @@ mod tests {
             points_xz: outside_asphalt_points.clone(),
             height_points_world: None,
             backend_polyline: road_points_to_polyline(outside_asphalt_points, true),
+        });
+        let owner_carrier_only_points = vec![
+            RoadVec2::new(1.0, -3.5),
+            RoadVec2::new(3.0, -3.5),
+            RoadVec2::new(3.0, -2.5),
+            RoadVec2::new(1.0, -2.5),
+        ];
+        rails.contours.push(NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Carriageway,
+            },
+            purpose: NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+            source_mouth_order_index: 98,
+            source_band_index: Some(98),
+            owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 98)),
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            points_xz: owner_carrier_only_points.clone(),
+            height_points_world: None,
+            backend_polyline: road_points_to_polyline(owner_carrier_only_points, true),
         });
 
         let ownership =

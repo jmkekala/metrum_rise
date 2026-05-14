@@ -163,9 +163,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Cavalier-cleaned adjacent-mouth non-road joins. Generated node contours now carry explicit
   footprint / asphalt / non-road authority roles, so boolean ownership no longer infers primary
   material authority from band kind alone and clips asphalt authority to `node_footprint` before
-  residual checks; the remaining blocking work is the broader canonical node arrangement that emits
-  raw full-roadbed and carriageway corridor authority for arbitrary oblique / sharp nodes, plus
-  clipped terrain topology hardening, followed by retaining, wall, and material variants.
+  residual checks. Bend / JunctionN raw full-roadbed and carriageway corridor authority is now
+  separated from per-band owner carriers before boolean splitting; the remaining blocking work is
+  post-boolean `node_non_road` subdivision and arbitrary elevated / contradictory-node hardening,
+  plus clipped terrain topology hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

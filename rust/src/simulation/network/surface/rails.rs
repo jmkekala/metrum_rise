@@ -32,6 +32,7 @@ pub(crate) enum NodeGeneratedContourKind {
 pub(crate) enum NodeGeneratedContourPurpose {
     FullRoadbedCorridor,
     CarriagewayCorridor,
+    CarriagewayOwnerCarrier,
     NonRoadBand,
     TerminalEndBand,
     BendSideJoin,
@@ -105,6 +106,22 @@ impl NodeGeneratedContour {
             NodeGeneratedContourPurpose::CarriagewayCorridor
                 | NodeGeneratedContourPurpose::BendSideJoin
         )
+    }
+
+    pub(crate) fn claims_asphalt_owner_region(&self) -> bool {
+        matches!(
+            self.kind,
+            NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Carriageway,
+            }
+        ) && self.owner.is_some()
+            && matches!(
+                self.purpose,
+                NodeGeneratedContourPurpose::CarriagewayCorridor
+                    | NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+                    | NodeGeneratedContourPurpose::TerminalEndBand
+                    | NodeGeneratedContourPurpose::BendSideJoin
+            )
     }
 
     pub(crate) fn contributes_to_non_road_band(&self) -> bool {
@@ -313,6 +330,12 @@ impl NodeRailContourSet {
                 .get(mouth_index)
                 .map_or(&[] as &[NodeInputSideJoinBand], Vec::as_slice);
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
+            push_raw_carriageway_corridor_contour(
+                input.piece_kind,
+                mouth,
+                &mut contours,
+                &mut constraints,
+            )?;
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
                 push_band_height_carrier_points(
@@ -323,7 +346,14 @@ impl NodeRailContourSet {
                     interval_height_carrier_points(interval),
                 );
                 let owner = mouth_owners.band_owners[band_index];
-                push_band_contour(mouth, interval, owner, &mut contours, &mut constraints)?;
+                push_band_contour(
+                    input.piece_kind,
+                    mouth,
+                    interval,
+                    owner,
+                    &mut contours,
+                    &mut constraints,
+                )?;
             }
             for end_band in &mouth.terminal_end_bands {
                 push_band_height_carrier_points(
@@ -465,7 +495,62 @@ fn push_full_roadbed_contour(
     )
 }
 
+fn push_raw_carriageway_corridor_contour(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    mouth: &NodeInputMouth,
+    contours: &mut Vec<NodeGeneratedContour>,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
+    if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
+        return Ok(());
+    }
+
+    let Some(first_carriageway_index) = mouth
+        .band_intervals
+        .iter()
+        .position(|interval| interval.band_kind == RoadSurfaceBandKind::Carriageway)
+    else {
+        return Ok(());
+    };
+    let Some(last_carriageway_index) = mouth
+        .band_intervals
+        .iter()
+        .rposition(|interval| interval.band_kind == RoadSurfaceBandKind::Carriageway)
+    else {
+        return Ok(());
+    };
+
+    let first = &mouth.band_intervals[first_carriageway_index];
+    let last = &mouth.band_intervals[last_carriageway_index];
+    let mut points_world = Vec::new();
+    push_world_path_point(&mut points_world, first.mouth_start_world);
+    push_world_path_point(&mut points_world, last.mouth_end_world);
+    append_world_path_points(&mut points_world, last.end_path_world.iter().skip(1));
+    append_world_path_points(&mut points_world, first.start_path_world.iter().rev());
+    remove_closing_world_path_duplicate(&mut points_world);
+    let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
+
+    push_generated_contour_with_purpose(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Carriageway,
+        },
+        NodeGeneratedContourPurpose::CarriagewayCorridor,
+        mouth.order_index,
+        None,
+        None,
+        NodeGeneratedContourClaimPriority::Footprint,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::Carriageway,
+        },
+        points,
+        None,
+        contours,
+        constraints,
+    )
+}
+
 fn push_band_contour(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,
     interval: &NodeInputBandInterval,
     owner: NodeBandOwner,
@@ -475,6 +560,7 @@ fn push_band_contour(
     let kind = NodeGeneratedContourKind::Band {
         kind: interval.band_kind,
     };
+    let purpose = band_contour_purpose(piece_kind, interval.band_kind);
     let last_band_index = mouth.band_intervals.len().saturating_sub(1);
     if mouth.uses_sampled_band_domain_paths
         && interval
@@ -485,6 +571,7 @@ fn push_band_contour(
     {
         return push_path_band_contour(
             kind,
+            purpose,
             mouth.order_index,
             Some(interval.band_index),
             Some(owner),
@@ -506,6 +593,7 @@ fn push_band_contour(
         );
         return push_path_strip_contours(
             kind,
+            purpose,
             mouth.order_index,
             Some(interval.band_index),
             Some(owner),
@@ -527,6 +615,7 @@ fn push_band_contour(
         );
         return push_path_strip_contours(
             kind,
+            purpose,
             mouth.order_index,
             Some(interval.band_index),
             Some(owner),
@@ -555,8 +644,9 @@ fn push_band_contour(
     }
     remove_closing_world_path_duplicate(&mut points_world);
     let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
-    push_generated_contour(
+    push_generated_contour_with_purpose(
         kind,
+        purpose,
         mouth.order_index,
         Some(interval.band_index),
         Some(owner),
@@ -569,6 +659,19 @@ fn push_band_contour(
         contours,
         constraints,
     )
+}
+
+fn band_contour_purpose(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    band_kind: RoadSurfaceBandKind,
+) -> NodeGeneratedContourPurpose {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
+        && band_kind == RoadSurfaceBandKind::Carriageway
+    {
+        NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+    } else {
+        default_generated_contour_purpose(NodeGeneratedContourKind::Band { kind: band_kind })
+    }
 }
 
 fn interval_height_carrier_points(
@@ -602,6 +705,7 @@ fn push_band_height_carrier_points(
 
 fn push_path_strip_contours(
     kind: NodeGeneratedContourKind,
+    purpose: NodeGeneratedContourPurpose,
     mouth_order_index: usize,
     band_index: Option<usize>,
     owner: Option<NodeBandOwner>,
@@ -616,8 +720,9 @@ fn push_path_strip_contours(
     let mut pushed = false;
     for points_world in path_strip_contours_world(start_path_world, end_path_world) {
         let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
-        match push_generated_contour(
+        match push_generated_contour_with_purpose(
             kind,
+            purpose,
             mouth_order_index,
             band_index,
             owner,
@@ -732,6 +837,7 @@ fn default_generated_contour_purpose(
 
 fn push_path_band_contour(
     kind: NodeGeneratedContourKind,
+    purpose: NodeGeneratedContourPurpose,
     mouth_order_index: usize,
     band_index: Option<usize>,
     owner: Option<NodeBandOwner>,
@@ -747,8 +853,9 @@ fn push_path_band_contour(
     append_world_path_points(&mut points_world, end_path_world.iter().rev());
     remove_closing_world_path_duplicate(&mut points_world);
     let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
-    push_generated_contour(
+    push_generated_contour_with_purpose(
         kind,
+        purpose,
         mouth_order_index,
         band_index,
         owner,
@@ -5794,17 +5901,33 @@ mod tests {
             contours.piece_kind,
             RoadSurfaceVisualNodePieceKind::JunctionN
         );
-        assert_eq!(contours.contours.len(), 5);
-        assert_eq!(contours.constraints.len(), 18);
+        assert_eq!(contours.contours.len(), 6);
+        assert_eq!(contours.constraints.len(), 19);
         assert_eq!(
             contours.contours[0].kind,
             NodeGeneratedContourKind::FullRoadbed
         );
         assert_eq!(contours.contours[0].points_xz.len(), 4);
+        assert!(contours.contours.iter().any(|contour| {
+            contour.kind
+                == NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::Carriageway,
+                }
+                && contour.purpose == NodeGeneratedContourPurpose::CarriagewayCorridor
+                && contour.source_mouth_order_index == 0
+                && contour.source_band_index.is_none()
+                && contour.owner.is_none()
+                && contour.contributes_to_asphalt()
+                && !contour.claims_asphalt_owner_region()
+        }));
         assert!(contours.contours.iter().any(|contour| contour.kind
             == NodeGeneratedContourKind::Band {
                 kind: RoadSurfaceBandKind::Carriageway
-            }));
+            }
+            && contour.purpose == NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+            && contour.source_band_index == Some(2)
+            && !contour.contributes_to_asphalt()
+            && contour.claims_asphalt_owner_region()));
         assert!(
             contours
                 .constraints
@@ -5826,14 +5949,60 @@ mod tests {
 
     #[test]
     fn nonterminal_side_join_end_bands_emit_canonical_ownership_candidates() {
-        let contours =
-            NodeRailContourSet::from_input(&nonterminal_input_with_side_join_candidate())
-                .expect("valid contours");
+        let input = nonterminal_input_with_side_join_candidate();
+        let contours = NodeRailContourSet::from_input(&input).expect("valid contours");
         let junction_side_join_contours = contours
             .contours
             .iter()
             .filter(|contour| contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin)
             .collect::<Vec<_>>();
+        let raw_full_roadbed_corridors = contours
+            .contours
+            .iter()
+            .filter(|contour| contour.purpose == NodeGeneratedContourPurpose::FullRoadbedCorridor)
+            .collect::<Vec<_>>();
+        assert_eq!(raw_full_roadbed_corridors.len(), input.mouths.len());
+        let raw_carriageway_corridors = contours
+            .contours
+            .iter()
+            .filter(|contour| {
+                contour.purpose == NodeGeneratedContourPurpose::CarriagewayCorridor
+                    && contour.source_band_index.is_none()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(raw_carriageway_corridors.len(), input.mouths.len());
+        for mouth in &input.mouths {
+            assert!(
+                raw_full_roadbed_corridors
+                    .iter()
+                    .any(|contour| contour.source_mouth_order_index == mouth.order_index),
+                "each non-terminal mouth must emit exactly one raw full-roadbed authority corridor"
+            );
+            assert!(
+                raw_carriageway_corridors
+                    .iter()
+                    .any(|contour| contour.source_mouth_order_index == mouth.order_index),
+                "each non-terminal mouth must emit exactly one raw carriageway authority corridor"
+            );
+        }
+        let expected_carriageway_owner_carriers = input
+            .mouths
+            .iter()
+            .flat_map(|mouth| mouth.band_intervals.iter())
+            .filter(|interval| interval.band_kind == RoadSurfaceBandKind::Carriageway)
+            .count();
+        assert_eq!(
+            contours
+                .contours
+                .iter()
+                .filter(|contour| {
+                    contour.purpose == NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+                        && contour.claims_asphalt_owner_region()
+                        && !contour.contributes_to_asphalt()
+                })
+                .count(),
+            expected_carriageway_owner_carriers
+        );
 
         assert!(contours.contours.iter().any(|contour| {
             contour.kind == NodeGeneratedContourKind::FullRoadbed

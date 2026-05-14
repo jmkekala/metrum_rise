@@ -2079,12 +2079,13 @@ fn node_piece_classification_matches_surface_profiles() {
     ));
     let mut junction_surface = RoadSurfaceSystem::new(16.0);
     junction_surface.compile_dirty(&junction_graph, &terrain);
-    assert!(
+    assert_eq!(
         junction_surface
             .compiled_visual_node_pieces()
             .get(&jb)
-            .is_none(),
-        "short right-angle bend remains rejected until its full curb/sidewalk ownership is generated before heighting"
+            .expect("short right-angle bend should compile through raw corridor ownership")
+            .kind,
+        RoadSurfaceVisualNodePieceKind::Bend
     );
 
     let mut terminal_graph = RegionGraph::new();
@@ -3802,11 +3803,13 @@ fn visual_node_rejection_is_deterministic_for_multi_arm_nodes() {
     surface_a.compile_dirty(&graph, &terrain);
     surface_b.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface_a
+    assert_eq!(
+        surface_a
             .compiled_visual_node_pieces()
-            .contains_key(&center),
-        "multi-arm node must reject implicit cross-owner CDT height sharing deterministically"
+            .get(&center)
+            .expect("flat multi-arm node should compile through raw corridor ownership")
+            .kind,
+        RoadSurfaceVisualNodePieceKind::JunctionN
     );
     assert_eq!(
         surface_a.compiled_visual_node_pieces().get(&center),

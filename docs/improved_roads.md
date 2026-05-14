@@ -150,9 +150,12 @@ Live behavior:
   boolean ownership selects full-roadbed corridors, carriageway corridors, and non-road band
   candidates by role and clips asphalt authority to `node_footprint` before residual checks.
   Bend / JunctionN visual throats now use the section 10A pairwise material-conflict distances
-  rather than only local graph clip radii. The remaining blocker is the broader canonical node
-  arrangement for `JunctionN` and not-yet-validated arbitrary-node cases; boolean ownership and
-  height-field validation must keep rejecting real band residuals instead of silently patching them.
+  rather than only local graph clip radii. Bend / JunctionN mouths now also emit one raw
+  full-roadbed corridor authority and one raw carriageway corridor authority before per-band owner
+  carriers are clipped through boolean ownership. The remaining blocker is broader arbitrary-node
+  hardening around `node_non_road` subdivision and elevated / contradictory height cases; boolean
+  ownership and height-field validation must keep rejecting real band residuals instead of silently
+  patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -172,11 +175,13 @@ Remaining ROAD-01 gap:
   final-owner handoff limited to exact-source-rail endpoint contacts. `surface::joins` is now the
   side-join adapter boundary and routes generated bands through Cavalier cleanup, bend arc
   sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend / JunctionN edge throats now
-  grow from pairwise roadbed / asphalt material conflicts. The remaining work is a library-backed
-  canonical node arrangement that emits raw full-roadbed and carriageway corridor authority before
-  boolean splitting so oblique junctions do not produce real curb / sidewalk residuals. Hand-built
-  miter caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN
-  ownership strategy; they are the failure mode this rework is replacing.
+  grow from pairwise roadbed / asphalt material conflicts, and raw full-roadbed / carriageway
+  corridor authority is separated from per-band owner carriers before boolean splitting. The
+  remaining work is to harden the post-boolean `node_non_road` subdivision and arbitrary
+  elevated / contradictory-node validation so every accepted curb / sidewalk region is explicitly
+  owner-backed and every rejected case reports the deterministic failing stage. Hand-built miter
+  caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN ownership
+  strategy; they are the failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 
