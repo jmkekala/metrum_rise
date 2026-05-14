@@ -29,6 +29,16 @@ pub(crate) enum NodeGeneratedContourKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) enum NodeGeneratedContourPurpose {
+    FullRoadbedCorridor,
+    CarriagewayCorridor,
+    NonRoadBand,
+    TerminalEndBand,
+    BendSideJoin,
+    JunctionSideJoin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeRailConstraintKind {
     FullRoadbedContour,
     BandContour {
@@ -63,6 +73,7 @@ pub(crate) struct NodeRailContourSet {
 #[derive(Clone, Debug)]
 pub(crate) struct NodeGeneratedContour {
     pub(crate) kind: NodeGeneratedContourKind,
+    pub(crate) purpose: NodeGeneratedContourPurpose,
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: Option<usize>,
     pub(crate) owner: Option<NodeBandOwner>,
@@ -70,6 +81,45 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) points_xz: Vec<RoadVec2>,
     pub(crate) height_points_world: Option<Vec<RoadVec3>>,
     pub(crate) backend_polyline: RoadPolyline,
+}
+
+impl NodeGeneratedContour {
+    pub(crate) fn contributes_to_footprint(&self) -> bool {
+        self.kind == NodeGeneratedContourKind::FullRoadbed
+            && matches!(
+                self.purpose,
+                NodeGeneratedContourPurpose::FullRoadbedCorridor
+                    | NodeGeneratedContourPurpose::TerminalEndBand
+                    | NodeGeneratedContourPurpose::BendSideJoin
+            )
+    }
+
+    pub(crate) fn contributes_to_asphalt(&self) -> bool {
+        matches!(
+            self.kind,
+            NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Carriageway,
+            }
+        ) && matches!(
+            self.purpose,
+            NodeGeneratedContourPurpose::CarriagewayCorridor
+                | NodeGeneratedContourPurpose::BendSideJoin
+        )
+    }
+
+    pub(crate) fn contributes_to_non_road_band(&self) -> bool {
+        matches!(
+            self.kind,
+            NodeGeneratedContourKind::Band { kind }
+                if kind != RoadSurfaceBandKind::Carriageway
+        ) && matches!(
+            self.purpose,
+            NodeGeneratedContourPurpose::NonRoadBand
+                | NodeGeneratedContourPurpose::TerminalEndBand
+                | NodeGeneratedContourPurpose::BendSideJoin
+                | NodeGeneratedContourPurpose::JunctionSideJoin
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -611,6 +661,35 @@ fn push_generated_contour(
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
+    let purpose = default_generated_contour_purpose(kind);
+    push_generated_contour_with_purpose(
+        kind,
+        purpose,
+        mouth_order_index,
+        band_index,
+        owner,
+        claim_priority,
+        constraint_kind,
+        points,
+        height_points_world,
+        contours,
+        constraints,
+    )
+}
+
+fn push_generated_contour_with_purpose(
+    kind: NodeGeneratedContourKind,
+    purpose: NodeGeneratedContourPurpose,
+    mouth_order_index: usize,
+    band_index: Option<usize>,
+    owner: Option<NodeBandOwner>,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    constraint_kind: NodeRailConstraintKind,
+    points: Vec<RoadVec2>,
+    height_points_world: Option<Vec<RoadVec3>>,
+    contours: &mut Vec<NodeGeneratedContour>,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
     let contour = cleaned_closed_contour(kind, mouth_order_index, band_index, points)?;
     let points_xz = polyline_to_road_points(&contour);
     let height_points_world = height_points_world
@@ -618,6 +697,7 @@ fn push_generated_contour(
         .and_then(|points_world| align_height_points_to_contour(&points_xz, points_world));
     contours.push(NodeGeneratedContour {
         kind,
+        purpose,
         source_mouth_order_index: mouth_order_index,
         source_band_index: band_index,
         owner,
@@ -636,6 +716,18 @@ fn push_generated_contour(
         None,
         points_xz,
     )
+}
+
+fn default_generated_contour_purpose(
+    kind: NodeGeneratedContourKind,
+) -> NodeGeneratedContourPurpose {
+    match kind {
+        NodeGeneratedContourKind::FullRoadbed => NodeGeneratedContourPurpose::FullRoadbedCorridor,
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Carriageway,
+        } => NodeGeneratedContourPurpose::CarriagewayCorridor,
+        NodeGeneratedContourKind::Band { .. } => NodeGeneratedContourPurpose::NonRoadBand,
+    }
 }
 
 fn push_path_band_contour(
@@ -738,6 +830,7 @@ fn push_terminal_end_band_contours(
         push_grouped_end_band_candidate_contours(
             mouth,
             key,
+            NodeGeneratedContourPurpose::TerminalEndBand,
             &group.contour_world,
             &group.source_contours_world,
             NodeGeneratedContourClaimPriority::JoinOrCap,
@@ -799,6 +892,7 @@ fn push_side_join_band_contours(
         push_grouped_end_band_candidate_contours(
             mouth,
             key,
+            side_join_contour_purpose(piece_kind),
             &group.contour_world,
             &group.source_contours_world,
             NodeGeneratedContourClaimPriority::SideJoin,
@@ -909,6 +1003,7 @@ impl<'a> SideJoinBandGroup<'a> {
 fn push_grouped_end_band_candidate_contours(
     mouth: &NodeInputMouth,
     key: TerminalEndBandGroupKey,
+    purpose: NodeGeneratedContourPurpose,
     contour_world: &[NodeOverlayContour],
     source_contours_world: &[&[RoadVec3]],
     claim_priority: NodeGeneratedContourClaimPriority,
@@ -936,6 +1031,7 @@ fn push_grouped_end_band_candidate_contours(
                 let footprint_points_xz = polyline_to_road_points(&footprint);
                 contours.push(NodeGeneratedContour {
                     kind: NodeGeneratedContourKind::FullRoadbed,
+                    purpose,
                     source_mouth_order_index: mouth.order_index,
                     source_band_index: None,
                     owner: None,
@@ -968,6 +1064,7 @@ fn push_grouped_end_band_candidate_contours(
                 align_height_points_to_source_contours(&points_xz, source_contours_world);
             contours.push(NodeGeneratedContour {
                 kind,
+                purpose,
                 source_mouth_order_index: mouth.order_index,
                 source_band_index: Some(key.source_band_index),
                 owner: Some(key.owner),
@@ -990,6 +1087,16 @@ fn push_grouped_end_band_candidate_contours(
     }
 
     Ok(())
+}
+
+fn side_join_contour_purpose(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> NodeGeneratedContourPurpose {
+    match piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => NodeGeneratedContourPurpose::BendSideJoin,
+        RoadSurfaceVisualNodePieceKind::JunctionN => NodeGeneratedContourPurpose::JunctionSideJoin,
+        RoadSurfaceVisualNodePieceKind::Terminal => NodeGeneratedContourPurpose::TerminalEndBand,
+    }
 }
 
 fn push_terminal_end_band_boundary_constraints(
@@ -5722,6 +5829,11 @@ mod tests {
         let contours =
             NodeRailContourSet::from_input(&nonterminal_input_with_side_join_candidate())
                 .expect("valid contours");
+        let junction_side_join_contours = contours
+            .contours
+            .iter()
+            .filter(|contour| contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin)
+            .collect::<Vec<_>>();
 
         assert!(contours.contours.iter().any(|contour| {
             contour.kind == NodeGeneratedContourKind::FullRoadbed
@@ -5733,10 +5845,15 @@ mod tests {
                 == NodeGeneratedContourKind::Band {
                     kind: RoadSurfaceBandKind::Sidewalk,
                 }
+                && contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
                 && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
                 && contour.source_mouth_order_index == 0
                 && contour.source_band_index == Some(5)
         }));
+        assert!(!junction_side_join_contours.is_empty());
+        assert!(junction_side_join_contours.iter().all(
+            |contour| !contour.contributes_to_footprint() && !contour.contributes_to_asphalt()
+        ));
         assert!(contours.constraints.iter().any(|constraint| {
             matches!(
                 constraint.kind,
@@ -5762,6 +5879,7 @@ mod tests {
                 == NodeGeneratedContourKind::Band {
                     kind: RoadSurfaceBandKind::CurbOrShoulder,
                 }
+                && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
                 && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
                 && contour.source_band_index == Some(4)
         }));
@@ -6279,6 +6397,7 @@ mod tests {
                 == NodeGeneratedContourKind::Band {
                     kind: RoadSurfaceBandKind::Sidewalk,
                 }
+                && contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
                 && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
                 && contour.source_band_index == Some(3)
                 && contour

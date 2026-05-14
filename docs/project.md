@@ -159,7 +159,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   `surface::joins` adapter rather than the input extractor; the rail contour set consumes terminal
   end bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add
   carriageway bubble fill or contribute to `node_footprint`. `JunctionN` side-join paths are now
-  Cavalier-cleaned adjacent-mouth non-road joins; the remaining blocking work is the broader
+  Cavalier-cleaned adjacent-mouth non-road joins. Generated node contours now carry explicit
+  footprint / asphalt / non-road authority roles, so boolean ownership no longer infers primary
+  material authority from band kind alone and clips asphalt authority to `node_footprint` before
+  residual checks; the remaining blocking work is the broader
   canonical node arrangement for arbitrary oblique / sharp nodes, plus clipped terrain topology
   hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in

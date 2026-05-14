@@ -144,6 +144,9 @@ Live behavior:
   terminal end bands by the rail contour set. Bend side joins keep their carriageway closure, while
   `JunctionN` side joins carry curb / sidewalk ownership through Cavalier-cleaned adjacent-mouth
   non-road join paths without contributing to `node_footprint` or adding carriageway bubble fill.
+  Generated node contours now carry explicit footprint / asphalt / non-road authority roles, so
+  boolean ownership selects full-roadbed corridors, carriageway corridors, and non-road band
+  candidates by role and clips asphalt authority to `node_footprint` before residual checks.
   The remaining blocker is the broader canonical node arrangement for `JunctionN` and
   not-yet-validated arbitrary-node cases; boolean ownership and height-field validation must keep
   rejecting real band residuals instead of silently patching them.

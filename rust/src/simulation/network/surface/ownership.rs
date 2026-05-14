@@ -158,9 +158,8 @@ impl NodeBooleanOwnership {
             });
         }
 
-        let footprint_contours = overlay_contours_for_domains(rails, |contour| {
-            contour.kind == NodeGeneratedContourKind::FullRoadbed
-        });
+        let footprint_contours =
+            overlay_contours_for_domains(rails, |contour| contour.contributes_to_footprint());
         let mut footprint_shapes = overlay_union(&footprint_contours, "footprint_union")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut footprint_shapes);
         if footprint_shapes.is_empty() {
@@ -169,12 +168,17 @@ impl NodeBooleanOwnership {
             });
         }
 
-        let asphalt_domains = domains_for_band_kind(rails, RoadSurfaceBandKind::Carriageway);
+        let asphalt_domains = asphalt_domains(rails);
         let asphalt_contours = asphalt_domains
             .iter()
             .map(|domain| overlay_contour_from_domain(domain))
             .collect::<Vec<_>>();
-        let mut asphalt_shapes = overlay_union(&asphalt_contours, "asphalt_union")?;
+        let asphalt_raw_shapes = overlay_union(&asphalt_contours, "asphalt_union")?;
+        let mut asphalt_shapes = overlay_intersect(
+            &asphalt_raw_shapes,
+            &footprint_shapes,
+            "asphalt_clip_to_footprint",
+        )?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut asphalt_shapes);
 
         let mut non_road_shapes =
@@ -386,7 +390,7 @@ fn split_non_road_regions_by_band_order(
     let mut claimed_shapes = Vec::new();
 
     for kind in non_road_band_order() {
-        let kind_domains = domains_for_band_kind(rails, kind);
+        let kind_domains = non_road_domains_for_band_kind(rails, kind);
         if kind_domains.is_empty() {
             continue;
         }
@@ -542,17 +546,34 @@ fn overlay_contours_for_domains(
         .collect()
 }
 
-fn domains_for_band_kind(
+fn asphalt_domains(rails: &NodeRailContourSet) -> Vec<&NodeGeneratedContour> {
+    domains_for_band_kind_matching(rails, RoadSurfaceBandKind::Carriageway, |contour| {
+        contour.contributes_to_asphalt()
+    })
+}
+
+fn non_road_domains_for_band_kind(
     rails: &NodeRailContourSet,
     kind: RoadSurfaceBandKind,
+) -> Vec<&NodeGeneratedContour> {
+    domains_for_band_kind_matching(rails, kind, |contour| {
+        contour.contributes_to_non_road_band()
+    })
+}
+
+fn domains_for_band_kind_matching(
+    rails: &NodeRailContourSet,
+    kind: RoadSurfaceBandKind,
+    predicate: impl Fn(&NodeGeneratedContour) -> bool,
 ) -> Vec<&NodeGeneratedContour> {
     let mut domains = rails
         .contours
         .iter()
-        .filter(|contour| band_kind(contour) == Some(kind))
+        .filter(|contour| band_kind(contour) == Some(kind) && predicate(contour))
         .collect::<Vec<_>>();
     domains.sort_by_key(|contour| {
         (
+            contour.purpose,
             contour.claim_priority,
             contour.source_mouth_order_index,
             contour.source_band_index,
@@ -3375,8 +3396,11 @@ enum ResidualKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::backend::road_points_to_polyline;
     use crate::simulation::network::surface::input::NodeArrangementInput;
-    use crate::simulation::network::surface::rails::NodeRailContourSet;
+    use crate::simulation::network::surface::rails::{
+        NodeGeneratedContourPurpose, NodeRailContourSet,
+    };
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     };
@@ -3515,6 +3539,65 @@ mod tests {
             error,
             NodeBooleanOwnershipError::UnownedNonRoadResidual { .. }
         ));
+    }
+
+    #[test]
+    fn contour_purpose_gates_junction_footprint_and_asphalt_authority() {
+        let mut rails = contour_set();
+        let baseline =
+            NodeBooleanOwnership::from_rails(&rails).expect("baseline ownership solve is valid");
+        let ignored_footprint_points = vec![
+            RoadVec2::new(100.0, 100.0),
+            RoadVec2::new(102.0, 100.0),
+            RoadVec2::new(102.0, 102.0),
+            RoadVec2::new(100.0, 102.0),
+        ];
+        rails.contours.push(NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::FullRoadbed,
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            source_mouth_order_index: 0,
+            source_band_index: None,
+            owner: None,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            points_xz: ignored_footprint_points.clone(),
+            height_points_world: None,
+            backend_polyline: road_points_to_polyline(ignored_footprint_points, true),
+        });
+
+        let outside_asphalt_points = vec![
+            RoadVec2::new(110.0, 100.0),
+            RoadVec2::new(112.0, 100.0),
+            RoadVec2::new(112.0, 102.0),
+            RoadVec2::new(110.0, 102.0),
+        ];
+        rails.contours.push(NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Carriageway,
+            },
+            purpose: NodeGeneratedContourPurpose::CarriagewayCorridor,
+            source_mouth_order_index: 99,
+            source_band_index: Some(99),
+            owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 99)),
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            points_xz: outside_asphalt_points.clone(),
+            height_points_world: None,
+            backend_polyline: road_points_to_polyline(outside_asphalt_points, true),
+        });
+
+        let ownership =
+            NodeBooleanOwnership::from_rails(&rails).expect("extra gated contours remain valid");
+        assert_eq!(ownership.footprint_shapes, baseline.footprint_shapes);
+        assert_eq!(ownership.asphalt_shapes, baseline.asphalt_shapes);
+        let asphalt_outside = overlay_difference(
+            &ownership.asphalt_shapes,
+            &ownership.footprint_shapes,
+            "test_asphalt_outside_footprint",
+        )
+        .expect("test overlay difference succeeds");
+        assert!(
+            asphalt_outside.is_empty(),
+            "asphalt authority must be clipped to node_footprint"
+        );
     }
 
     #[test]
