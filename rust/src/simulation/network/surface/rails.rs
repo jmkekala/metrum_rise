@@ -179,7 +179,6 @@ pub(crate) enum NodeRailGenerationError {
         path_length_m: f64,
         vertex_count: usize,
     },
-    #[cfg(test)]
     NonCanonicalGeneratedContactEndpoint {
         kind: NodeRailConstraintKind,
         mouth_order_index: usize,
@@ -439,6 +438,7 @@ impl NodeRailContourSet {
                 push_span_handoff_constraint(mouth, profile_rail, owner, &mut constraints)?;
             }
         }
+        let source_constraint_count = constraints.len();
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
@@ -458,10 +458,10 @@ impl NodeRailContourSet {
             &mut constraints,
         );
         node_generated_contact_contours(&mut contours, &mut constraints)?;
-        node_generated_contact_constraint_points_on_contours(
-            input.piece_kind,
-            &mut contours,
-            &mut constraints,
+        validate_generated_contact_constraint_endpoints_from_sources(
+            &contours,
+            &constraints,
+            source_constraint_count,
         )?;
         Ok(Self {
             node_id: input.node_id,
@@ -2426,10 +2426,7 @@ impl<'a> RaisedStepSourceAuthority<'a> {
                     .constraints
                     .iter()
                     .filter(|source_constraint| {
-                        generated_constraint_touches_key_quantization_cell(
-                            source_constraint.constraint,
-                            point,
-                        )
+                        generated_constraint_touches_key(source_constraint.constraint, point)
                     })
                     .map(|source_constraint| source_constraint.source)
                     .collect::<Vec<_>>();
@@ -2668,20 +2665,12 @@ fn generated_source_edge_contact_points(
         points.push(point);
     }
     for point in [left.start, left.end] {
-        if generated_point_key_lies_on_segment(point, right.start, right.end)
-            || generated_point_key_quantization_cell_intersects_segment(
-                point,
-                right.start,
-                right.end,
-            )
-        {
+        if generated_point_key_lies_on_segment(point, right.start, right.end) {
             points.push(point);
         }
     }
     for point in [right.start, right.end] {
-        if generated_point_key_lies_on_segment(point, left.start, left.end)
-            || generated_point_key_quantization_cell_intersects_segment(point, left.start, left.end)
-        {
+        if generated_point_key_lies_on_segment(point, left.start, left.end) {
             points.push(point);
         }
     }
@@ -2718,18 +2707,6 @@ fn generated_constraint_endpoint_keys(constraint: &NodeRailConstraint) -> Vec<No
     points.sort_unstable();
     points.dedup();
     points
-}
-
-fn generated_constraint_touches_key_quantization_cell(
-    constraint: &NodeRailConstraint,
-    key: NodeRailPointKey,
-) -> bool {
-    constraint.points_xz.windows(2).any(|segment| {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
-        generated_point_key_lies_on_segment(key, start, end)
-            || generated_point_key_quantization_cell_intersects_segment(key, start, end)
-    })
 }
 
 fn append_generated_material_point_contact_constraints(
@@ -3860,35 +3837,17 @@ fn insert_keys_on_generated_contour_edges(
     Ok(generated_contour_keys(contour) != keys)
 }
 
-fn node_generated_contact_constraint_points_on_contours(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-) -> Result<(), NodeRailGenerationError> {
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-        let mut candidates =
-            generated_contact_constraint_point_noding_candidates(contours, constraints);
-        candidates.sort_unstable();
-        candidates.dedup();
-        for (contour_index, insert_key) in candidates {
-            insert_key_on_generated_contour_source_edge(
-                contours,
-                constraints,
-                contour_index,
-                insert_key,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
 fn validate_generated_contact_constraint_endpoints_from_sources(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
+    generated_constraint_start_index: usize,
 ) -> Result<(), NodeRailGenerationError> {
-    let source_authority = ExactGeneratedSourceEndpointAuthority::from_contours(contours);
-    for constraint in constraints {
+    let source_authority = ExactGeneratedSourceAuthority::from_sources(
+        contours,
+        constraints,
+        generated_constraint_start_index,
+    );
+    for constraint in constraints.iter().skip(generated_constraint_start_index) {
         if generated_contact_kind_from_constraint(constraint.kind).is_none() {
             continue;
         }
@@ -3913,6 +3872,30 @@ fn validate_generated_contact_constraint_endpoints_from_sources(
                 constraint.source_mouth_order_index,
                 source_band_index,
                 key,
+            ) || source_authority.has_exact_source_segment_point(
+                constraint.kind,
+                owners,
+                constraint.source_mouth_order_index,
+                source_band_index,
+                key,
+            ) || source_authority.has_exact_unbanded_source_segment_point(
+                constraint.kind,
+                owners,
+                constraint.source_mouth_order_index,
+                source_band_index,
+                key,
+            ) || source_authority.has_exact_same_kind_source_segment_handoff_point(
+                constraint.kind,
+                owners,
+                constraint.source_mouth_order_index,
+                source_band_index,
+                key,
+            ) || source_authority.has_exact_cross_source_same_kind_contact_point(
+                constraint.kind,
+                owners,
+                constraint.source_mouth_order_index,
+                source_band_index,
+                key,
             ) {
                 continue;
             }
@@ -3932,27 +3915,124 @@ fn validate_generated_contact_constraint_endpoints_from_sources(
     Ok(())
 }
 
-#[cfg(test)]
-struct ExactGeneratedSourceEndpointAuthority {
+struct ExactGeneratedSourceAuthority {
+    keys_by_owner: BTreeMap<NodeBandOwner, BTreeSet<NodeRailPointKey>>,
+    segments_by_owner: BTreeMap<NodeBandOwner, BTreeSet<GeneratedContourEdgeKey>>,
     keys_by_source: BTreeMap<(NodeBandOwner, usize, usize), BTreeSet<NodeRailPointKey>>,
+    segments_by_source: BTreeMap<(NodeBandOwner, usize, usize), BTreeSet<GeneratedContourEdgeKey>>,
+    segments_by_contact_source: BTreeMap<
+        (
+            NodeRailConstraintKind,
+            NodeBandOwner,
+            NodeBandOwner,
+            usize,
+            Option<usize>,
+        ),
+        BTreeSet<GeneratedContourEdgeKey>,
+    >,
 }
 
-#[cfg(test)]
-impl ExactGeneratedSourceEndpointAuthority {
-    fn from_contours(contours: &[NodeGeneratedContour]) -> Self {
+impl ExactGeneratedSourceAuthority {
+    fn from_sources(
+        contours: &[NodeGeneratedContour],
+        constraints: &[NodeRailConstraint],
+        generated_constraint_start_index: usize,
+    ) -> Self {
+        let mut keys_by_owner = BTreeMap::<NodeBandOwner, BTreeSet<NodeRailPointKey>>::new();
+        let mut segments_by_owner =
+            BTreeMap::<NodeBandOwner, BTreeSet<GeneratedContourEdgeKey>>::new();
         let mut keys_by_source =
             BTreeMap::<(NodeBandOwner, usize, usize), BTreeSet<NodeRailPointKey>>::new();
+        let mut segments_by_source =
+            BTreeMap::<(NodeBandOwner, usize, usize), BTreeSet<GeneratedContourEdgeKey>>::new();
+        let mut segments_by_contact_source = BTreeMap::<
+            (
+                NodeRailConstraintKind,
+                NodeBandOwner,
+                NodeBandOwner,
+                usize,
+                Option<usize>,
+            ),
+            BTreeSet<GeneratedContourEdgeKey>,
+        >::new();
         for contour in contours {
-            let (Some(owner), Some(source_band_index)) = (contour.owner, contour.source_band_index)
-            else {
+            let Some(owner) = contour.owner else {
+                continue;
+            };
+            let keys = generated_contour_keys(contour);
+            keys_by_owner
+                .entry(owner)
+                .or_default()
+                .extend(keys.iter().copied());
+            segments_by_owner.entry(owner).or_default().extend(
+                generated_contour_directed_edges(contour)
+                    .into_iter()
+                    .map(|edge| GeneratedContourEdgeKey::new(edge.start, edge.end)),
+            );
+            let Some(source_band_index) = contour.source_band_index else {
                 continue;
             };
             keys_by_source
                 .entry((owner, contour.source_mouth_order_index, source_band_index))
                 .or_default()
-                .extend(generated_contour_keys(contour).into_iter());
+                .extend(keys.into_iter());
+            segments_by_source
+                .entry((owner, contour.source_mouth_order_index, source_band_index))
+                .or_default()
+                .extend(
+                    generated_contour_directed_edges(contour)
+                        .into_iter()
+                        .map(|edge| GeneratedContourEdgeKey::new(edge.start, edge.end)),
+                );
         }
-        Self { keys_by_source }
+        for constraint in constraints.iter().take(generated_constraint_start_index) {
+            if generated_contact_kind_from_constraint(constraint.kind).is_none() {
+                continue;
+            }
+            if let Some(source_band_index) = constraint.source_band_index {
+                let owners = [constraint.owner, constraint.opposite_owner];
+                for owner in owners.into_iter().flatten() {
+                    keys_by_source
+                        .entry((
+                            owner,
+                            constraint.source_mouth_order_index,
+                            source_band_index,
+                        ))
+                        .or_default()
+                        .extend(constraint.points_xz.iter().copied().map(road_point_key));
+                }
+            }
+            let (Some(owner), Some(opposite_owner)) = (constraint.owner, constraint.opposite_owner)
+            else {
+                continue;
+            };
+            let Some((owner, opposite_owner)) =
+                exact_generated_contact_owner_pair(constraint.kind, owner, opposite_owner)
+            else {
+                continue;
+            };
+            segments_by_contact_source
+                .entry((
+                    constraint.kind,
+                    owner,
+                    opposite_owner,
+                    constraint.source_mouth_order_index,
+                    constraint.source_band_index,
+                ))
+                .or_default()
+                .extend(
+                    generated_constraint_directed_edges(constraint)
+                        .into_iter()
+                        .map(|edge| GeneratedContourEdgeKey::new(edge.start, edge.end)),
+                );
+        }
+        Self {
+            keys_by_owner,
+            segments_by_owner,
+            keys_by_source,
+            segments_by_source,
+            segments_by_contact_source,
+        }
     }
 
     fn has_any_source(
@@ -3980,90 +4060,253 @@ impl ExactGeneratedSourceEndpointAuthority {
                 .is_some_and(|keys| keys.contains(&point))
         })
     }
-}
 
-fn generated_contact_constraint_point_noding_candidates(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-) -> Vec<(usize, NodeRailPointKey)> {
-    let mut candidates = Vec::new();
-    for constraint in constraints {
-        if generated_contact_kind_from_constraint(constraint.kind).is_none() {
-            continue;
-        }
-        let Some(source_band_index) = constraint.source_band_index else {
-            continue;
+    fn has_exact_source_segment_point(
+        &self,
+        kind: NodeRailConstraintKind,
+        owners: [Option<NodeBandOwner>; 2],
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        let (Some(owner), Some(opposite_owner)) = (owners[0], owners[1]) else {
+            return false;
         };
-        for (contour_index, contour) in contours.iter().enumerate() {
-            let Some(contour_owner) = contour.owner else {
-                continue;
-            };
-            if ![constraint.owner, constraint.opposite_owner].contains(&Some(contour_owner))
-                || generated_contour_band_kind(contour) != Some(contour_owner.kind())
-            {
-                continue;
-            }
-            let source_matches = contour.source_mouth_order_index
-                == constraint.source_mouth_order_index
-                && contour.source_band_index == Some(source_band_index);
-            let exact_owner_pair_contact = constraint.kind
-                == NodeRailConstraintKind::RaisedStepContact
-                && constraint.owner.is_some()
-                && constraint.opposite_owner.is_some();
-            if !source_matches && !exact_owner_pair_contact {
-                continue;
-            }
-            let contour_keys = generated_contour_keys(contour);
-            for point in constraint.points_xz.iter().copied().map(road_point_key) {
-                if !contour_keys.contains(&point) {
-                    candidates.push((contour_index, point));
-                }
-            }
+        let Some((owner, opposite_owner)) =
+            exact_generated_contact_owner_pair(kind, owner, opposite_owner)
+        else {
+            return false;
+        };
+        self.segments_by_contact_source
+            .get(&(
+                kind,
+                owner,
+                opposite_owner,
+                source_mouth_order_index,
+                Some(source_band_index),
+            ))
+            .is_some_and(|segments| {
+                segments.iter().any(|segment| {
+                    generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                })
+            })
+    }
+
+    fn has_exact_unbanded_source_segment_point(
+        &self,
+        kind: NodeRailConstraintKind,
+        owners: [Option<NodeBandOwner>; 2],
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        if !self.source_geometry_contains_point(
+            owners,
+            source_mouth_order_index,
+            source_band_index,
+            point,
+        ) {
+            return false;
         }
+        let (Some(owner), Some(opposite_owner)) = (owners[0], owners[1]) else {
+            return false;
+        };
+        let Some((owner, opposite_owner)) =
+            exact_generated_contact_owner_pair(kind, owner, opposite_owner)
+        else {
+            return false;
+        };
+        self.segments_by_contact_source
+            .get(&(kind, owner, opposite_owner, source_mouth_order_index, None))
+            .is_some_and(|segments| {
+                segments.iter().any(|segment| {
+                    generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                })
+            })
     }
-    candidates
+
+    fn has_exact_same_kind_source_segment_handoff_point(
+        &self,
+        kind: NodeRailConstraintKind,
+        owners: [Option<NodeBandOwner>; 2],
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        let (Some(left_owner), Some(right_owner)) = (owners[0], owners[1]) else {
+            return false;
+        };
+        self.has_exact_same_kind_source_segment_handoff_side(
+            kind,
+            left_owner,
+            right_owner,
+            source_mouth_order_index,
+            source_band_index,
+            point,
+        ) || self.has_exact_same_kind_source_segment_handoff_side(
+            kind,
+            right_owner,
+            left_owner,
+            source_mouth_order_index,
+            source_band_index,
+            point,
+        )
+    }
+
+    fn has_exact_same_kind_source_segment_handoff_side(
+        &self,
+        kind: NodeRailConstraintKind,
+        retained_owner: NodeBandOwner,
+        final_owner: NodeBandOwner,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        if !self.owner_geometry_contains_point(final_owner, point) {
+            return false;
+        }
+        self.segments_by_contact_source
+            .iter()
+            .filter(|((source_kind, _, _, source_mouth, source_band), _)| {
+                *source_kind == kind
+                    && *source_mouth == source_mouth_order_index
+                    && *source_band == Some(source_band_index)
+            })
+            .any(
+                |((_, source_owner, source_opposite_owner, _, _), segments)| {
+                    let same_kind_handoff = (*source_owner == retained_owner
+                        && source_opposite_owner.kind() == final_owner.kind())
+                        || (*source_opposite_owner == retained_owner
+                            && source_owner.kind() == final_owner.kind());
+                    same_kind_handoff
+                        && segments.iter().any(|segment| {
+                            generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                        })
+                },
+            )
+    }
+
+    fn has_exact_cross_source_same_kind_contact_point(
+        &self,
+        kind: NodeRailConstraintKind,
+        owners: [Option<NodeBandOwner>; 2],
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        let (Some(left_owner), Some(right_owner)) = (owners[0], owners[1]) else {
+            return false;
+        };
+        (self.has_same_kind_source_segment_for_owner(
+            kind,
+            left_owner,
+            right_owner.kind(),
+            Some(source_mouth_order_index),
+            Some(source_band_index),
+            point,
+        ) && self.has_same_kind_source_segment_for_owner(
+            kind,
+            right_owner,
+            left_owner.kind(),
+            None,
+            None,
+            point,
+        )) || (self.has_same_kind_source_segment_for_owner(
+            kind,
+            left_owner,
+            right_owner.kind(),
+            None,
+            None,
+            point,
+        ) && self.has_same_kind_source_segment_for_owner(
+            kind,
+            right_owner,
+            left_owner.kind(),
+            Some(source_mouth_order_index),
+            Some(source_band_index),
+            point,
+        ))
+    }
+
+    fn has_same_kind_source_segment_for_owner(
+        &self,
+        kind: NodeRailConstraintKind,
+        owner: NodeBandOwner,
+        counterpart_kind: RoadSurfaceBandKind,
+        required_source_mouth_order_index: Option<usize>,
+        required_source_band_index: Option<usize>,
+        point: NodeRailPointKey,
+    ) -> bool {
+        self.segments_by_contact_source
+            .iter()
+            .filter(|((source_kind, _, _, source_mouth, source_band), _)| {
+                *source_kind == kind
+                    && required_source_mouth_order_index
+                        .is_none_or(|required| *source_mouth == required)
+                    && required_source_band_index
+                        .is_none_or(|required| *source_band == Some(required))
+            })
+            .any(
+                |((_, source_owner, source_opposite_owner, _, _), segments)| {
+                    let owner_matches = (*source_owner == owner
+                        && source_opposite_owner.kind() == counterpart_kind)
+                        || (*source_opposite_owner == owner
+                            && source_owner.kind() == counterpart_kind);
+                    owner_matches
+                        && segments.iter().any(|segment| {
+                            generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                        })
+                },
+            )
+    }
+
+    fn source_geometry_contains_point(
+        &self,
+        owners: [Option<NodeBandOwner>; 2],
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        point: NodeRailPointKey,
+    ) -> bool {
+        owners.into_iter().flatten().any(|owner| {
+            self.keys_by_source
+                .get(&(owner, source_mouth_order_index, source_band_index))
+                .is_some_and(|keys| keys.contains(&point))
+                || self
+                    .segments_by_source
+                    .get(&(owner, source_mouth_order_index, source_band_index))
+                    .is_some_and(|segments| {
+                        segments.iter().any(|segment| {
+                            generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                        })
+                    })
+        })
+    }
+
+    fn owner_geometry_contains_point(&self, owner: NodeBandOwner, point: NodeRailPointKey) -> bool {
+        self.keys_by_owner
+            .get(&owner)
+            .is_some_and(|keys| keys.contains(&point))
+            || self.segments_by_owner.get(&owner).is_some_and(|segments| {
+                segments.iter().any(|segment| {
+                    generated_point_key_lies_on_segment(point, segment.start, segment.end)
+                })
+            })
+    }
 }
 
-fn insert_key_on_generated_contour_source_edge(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    contour_index: usize,
-    insert_key: NodeRailPointKey,
-) -> Result<(), NodeRailGenerationError> {
-    let Some(contour) = contours.get_mut(contour_index) else {
-        return Ok(());
-    };
-    let Some(edge) = generated_contour_source_edge_for_key(contour, insert_key) else {
-        return Ok(());
-    };
-    let mut keys = generated_contour_keys(contour);
-    if insert_key_on_generated_contour_edge(&mut keys, edge.start, edge.end, insert_key) {
-        insert_height_key_on_generated_contour_edge(contour, edge, insert_key);
-        set_generated_contour_from_keys(contour, constraints, keys)?;
-    }
-    Ok(())
-}
-
-fn generated_contour_source_edge_for_key(
-    contour: &NodeGeneratedContour,
-    point: NodeRailPointKey,
-) -> Option<GeneratedContourDirectedEdge> {
-    if generated_contour_keys(contour).contains(&point) {
+fn exact_generated_contact_owner_pair(
+    kind: NodeRailConstraintKind,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    if generated_contact_kind_from_constraint(kind).is_none() {
         return None;
     }
-    let candidates = generated_contour_directed_edges(contour)
-        .into_iter()
-        .filter(|edge| {
-            generated_point_key_lies_on_segment(point, edge.start, edge.end)
-                || generated_point_key_quantization_cell_intersects_segment(
-                    point, edge.start, edge.end,
-                )
-        })
-        .collect::<Vec<_>>();
-    match candidates.as_slice() {
-        [edge] => Some(*edge),
-        _ => None,
+    if kind == NodeRailConstraintKind::RaisedStepContact {
+        let pair = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
+        return Some((pair.owner, pair.opposite_owner));
     }
+    Some((owner.min(opposite_owner), owner.max(opposite_owner)))
 }
 
 fn generated_contours_support_contact_noding(
@@ -4328,50 +4571,6 @@ fn generated_contact_kind_from_constraint(
         | NodeRailConstraintKind::SpanHandoff { .. }
         | NodeRailConstraintKind::FootprintSeam { .. } => None,
     }
-}
-
-fn insert_height_key_on_generated_contour_edge(
-    contour: &mut NodeGeneratedContour,
-    edge: GeneratedContourDirectedEdge,
-    insert_key: NodeRailPointKey,
-) {
-    let keys = generated_contour_keys(contour);
-    let Some(height_points_world) = contour.height_points_world.as_mut() else {
-        return;
-    };
-    if keys.len() != height_points_world.len() || keys.len() < 2 {
-        contour.height_points_world = None;
-        return;
-    }
-    if keys.contains(&insert_key) {
-        return;
-    }
-    for index in 0..keys.len() {
-        let next = if index + 1 == keys.len() {
-            0
-        } else {
-            index + 1
-        };
-        if keys[index] != edge.start || keys[next] != edge.end {
-            continue;
-        }
-        let start_height_m = height_points_world[index].y;
-        let end_height_m = height_points_world[next].y;
-        let Some(height_m) = height_for_key_on_generated_edge(
-            insert_key,
-            edge.start,
-            edge.end,
-            start_height_m,
-            end_height_m,
-        ) else {
-            contour.height_points_world = None;
-            return;
-        };
-        let point = road_point_from_key(insert_key);
-        height_points_world.insert(next, RoadVec3::new(point.x, height_m, point.y));
-        return;
-    }
-    contour.height_points_world = None;
 }
 
 fn height_for_key_on_generated_edge(
@@ -4790,115 +4989,6 @@ fn generated_point_key_lies_on_segment(
 
 fn generated_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
     (dx.abs() + dz.abs()) * 2
-}
-
-fn generated_point_key_quantization_cell_intersects_segment(
-    point: NodeRailPointKey,
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-) -> bool {
-    if start == end {
-        return false;
-    }
-    let min_x2 = i128::from(point.0) * 2 - 1;
-    let max_x2 = i128::from(point.0) * 2 + 1;
-    let min_z2 = i128::from(point.1) * 2 - 1;
-    let max_z2 = i128::from(point.1) * 2 + 1;
-    let segment_start = (i128::from(start.0) * 2, i128::from(start.1) * 2);
-    let segment_end = (i128::from(end.0) * 2, i128::from(end.1) * 2);
-    if doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
-        || doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
-    {
-        return true;
-    }
-    let lower_left = (min_x2, min_z2);
-    let lower_right = (max_x2, min_z2);
-    let upper_right = (max_x2, max_z2);
-    let upper_left = (min_x2, max_z2);
-    [
-        (lower_left, lower_right),
-        (lower_right, upper_right),
-        (upper_right, upper_left),
-        (upper_left, lower_left),
-    ]
-    .into_iter()
-    .any(|(edge_start, edge_end)| {
-        doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
-    })
-}
-
-fn doubled_point_inside_axis_aligned_box(
-    point: (i128, i128),
-    min_x: i128,
-    max_x: i128,
-    min_z: i128,
-    max_z: i128,
-) -> bool {
-    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
-}
-
-fn doubled_segments_intersect(
-    a: (i128, i128),
-    b: (i128, i128),
-    c: (i128, i128),
-    d: (i128, i128),
-) -> bool {
-    let ab_c = doubled_triangle_area2(a, b, c);
-    let ab_d = doubled_triangle_area2(a, b, d);
-    let cd_a = doubled_triangle_area2(c, d, a);
-    let cd_b = doubled_triangle_area2(c, d, b);
-    if ab_c == 0 && doubled_point_on_segment(c, a, b) {
-        return true;
-    }
-    if ab_d == 0 && doubled_point_on_segment(d, a, b) {
-        return true;
-    }
-    if cd_a == 0 && doubled_point_on_segment(a, c, d) {
-        return true;
-    }
-    if cd_b == 0 && doubled_point_on_segment(b, c, d) {
-        return true;
-    }
-    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
-}
-
-fn doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
-    let ab_x = b.0 - a.0;
-    let ab_z = b.1 - a.1;
-    let ac_x = c.0 - a.0;
-    let ac_z = c.1 - a.1;
-    ab_x * ac_z - ab_z * ac_x
-}
-
-fn doubled_point_on_segment(point: (i128, i128), start: (i128, i128), end: (i128, i128)) -> bool {
-    point.0 >= start.0.min(end.0)
-        && point.0 <= start.0.max(end.0)
-        && point.1 >= start.1.min(end.1)
-        && point.1 <= start.1.max(end.1)
-}
-
-fn insert_key_on_generated_contour_edge(
-    keys: &mut Vec<NodeRailPointKey>,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    insert_key: NodeRailPointKey,
-) -> bool {
-    if keys.len() < 2 {
-        return false;
-    }
-    for index in 0..keys.len() {
-        let next = if index + 1 == keys.len() {
-            0
-        } else {
-            index + 1
-        };
-        if keys[index] == start_key && keys[next] == end_key {
-            keys.insert(next, insert_key);
-            remove_generated_contour_spikes(keys);
-            return true;
-        }
-    }
-    false
 }
 
 fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
@@ -5868,6 +5958,7 @@ mod tests {
             &mut constraints,
         )
         .expect("curb contour is valid");
+        let generated_constraint_start_index = constraints.len();
         constraints.push(NodeRailConstraint {
             constraint_index: constraints.len(),
             kind: NodeRailConstraintKind::RaisedStepContact,
@@ -5880,9 +5971,12 @@ mod tests {
         });
 
         let drifted_start = road_point_key(RoadVec2::new(0.000001, 1.0));
-        let error =
-            validate_generated_contact_constraint_endpoints_from_sources(&contours, &constraints)
-                .expect_err("generated contact endpoints must be exact source keys");
+        let error = validate_generated_contact_constraint_endpoints_from_sources(
+            &contours,
+            &constraints,
+            generated_constraint_start_index,
+        )
+        .expect_err("generated contact endpoints must be exact source keys");
 
         assert!(matches!(
             error,
