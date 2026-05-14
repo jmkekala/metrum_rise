@@ -2,15 +2,16 @@
 
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
-    NODE_OVERLAY_MIN_AREA_M2, NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, NodeOwnedRegion,
+    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{
         NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
         NodeExplicitVerticalStepSegment,
     },
+    backend::{RoadVec2, road_vec2_to_overlay_point},
     input::NodeInputExtractionError,
     validation::NodeValidationReport,
 };
@@ -92,6 +93,13 @@ impl ArrangementSegmentParameter {
 
     fn max(self, other: Self) -> Self {
         if self >= other { self } else { other }
+    }
+
+    fn reversed(self) -> Self {
+        Self {
+            numerator: self.denominator - self.numerator,
+            denominator: self.denominator,
+        }
     }
 }
 
@@ -325,7 +333,7 @@ impl RoadSurfaceSystem {
 
     fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
-        footprint_shapes: &super::NodeOverlayShapes,
+        _footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
         let mut owned_regions = Vec::new();
 
@@ -336,6 +344,11 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for polygon in polygons {
+                if Self::signed_polygon_area_xz(&polygon.points_world).abs()
+                    <= NODE_OVERLAY_MIN_AREA_M2
+                {
+                    continue;
+                }
                 owned_regions.push(NodeOwnedRegion {
                     kind: owner.kind(),
                     owner_index: owner.owner_index(),
@@ -348,7 +361,6 @@ impl RoadSurfaceSystem {
             arrangement,
             &explicit_vertical_step_segments,
         );
-        dedup_curb_vertical_faces(&mut curb_vertical_faces);
 
         if owned_regions.is_empty() {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
@@ -356,6 +368,13 @@ impl RoadSurfaceSystem {
 
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::visible_top_polygons_from_owned_regions(&owned_regions);
+        retain_curb_vertical_faces_with_top_support(
+            &mut curb_vertical_faces,
+            &road_surface_polygons,
+            &curb_surface_polygons,
+            &sidewalk_surface_polygons,
+        );
+        dedup_curb_vertical_faces(&mut curb_vertical_faces);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()
@@ -368,11 +387,12 @@ impl RoadSurfaceSystem {
             .chain(curb_surface_polygons.iter())
             .chain(sidewalk_surface_polygons.iter())
             .collect::<Vec<_>>();
+        let visible_top_shapes = Self::visible_top_overlay_shapes(&top_polygons)?;
         let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
             arrangement,
             &top_polygons,
-            footprint_shapes,
-            arrangement.piece_kind() == RoadSurfaceVisualNodePieceKind::Terminal,
+            &visible_top_shapes,
+            true,
         )?;
         let mut earthwork_boundary_point_loops =
             Self::earthwork_boundary_point_loops_from_footprint_loops(
@@ -403,6 +423,31 @@ impl RoadSurfaceSystem {
             explicit_vertical_step_segments,
             owned_regions,
         })
+    }
+
+    fn visible_top_overlay_shapes(
+        top_polygons: &[&RoadSurfaceVisualPolygon],
+    ) -> Result<NodeOverlayShapes, NodeBoundaryExportError> {
+        let contours = top_polygons
+            .iter()
+            .filter_map(|polygon| {
+                (polygon.points_world.len() >= 3).then(|| {
+                    polygon
+                        .points_world
+                        .iter()
+                        .map(|point| {
+                            road_vec2_to_overlay_point(RoadVec2::new(
+                                f64::from(point.x),
+                                f64::from(point.z),
+                            ))
+                        })
+                        .collect::<NodeOverlayContour>()
+                })
+            })
+            .collect::<Vec<_>>();
+        RoadSurfaceSystem::overlay_union_contours(&contours)
+            .filter(|shapes| !shapes.is_empty())
+            .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
     }
 
     fn footprint_boundary_point_loops_from_shapes(
@@ -793,6 +838,14 @@ impl RoadSurfaceSystem {
         ),
         RoadSurfaceVisualPolygon,
     )> {
+        let lower_span_xz = Vector2::new(lower_end.x - lower_start.x, lower_end.z - lower_start.z);
+        let raised_span_xz =
+            Vector2::new(raised_end.x - raised_start.x, raised_end.z - raised_start.z);
+        if lower_span_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+            || raised_span_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        {
+            return None;
+        }
         if (raised_start.y - lower_start.y <= SAMPLE_EPSILON_M)
             && (raised_end.y - lower_end.y <= SAMPLE_EPSILON_M)
         {
@@ -1506,6 +1559,91 @@ fn dedup_curb_vertical_faces(
     });
 }
 
+fn retain_curb_vertical_faces_with_top_support(
+    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+    road_surface_polygons: &[RoadSurfaceVisualPolygon],
+    curb_surface_polygons: &[RoadSurfaceVisualPolygon],
+    sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+) {
+    faces.retain(|(polygon, _)| {
+        let Some((lower_edge, upper_edge)) = vertical_face_support_edges(polygon) else {
+            return false;
+        };
+        road_surface_polygons
+            .iter()
+            .any(|polygon| visual_polygon_boundary_overlaps_edge_at_height(polygon, lower_edge))
+            && curb_surface_polygons
+                .iter()
+                .chain(sidewalk_surface_polygons.iter())
+                .any(|polygon| visual_polygon_boundary_overlaps_edge_at_height(polygon, upper_edge))
+    });
+}
+
+fn vertical_face_support_edges(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Option<([Vector3; 2], [Vector3; 2])> {
+    if polygon.points_world.len() != 4 {
+        return None;
+    }
+    let lower_y = polygon
+        .points_world
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min);
+    let upper_y = polygon
+        .points_world
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let lower_points = polygon
+        .points_world
+        .iter()
+        .copied()
+        .filter(|point| (point.y - lower_y).abs() <= SAMPLE_EPSILON_M)
+        .collect::<Vec<_>>();
+    let upper_points = polygon
+        .points_world
+        .iter()
+        .copied()
+        .filter(|point| (point.y - upper_y).abs() <= SAMPLE_EPSILON_M)
+        .collect::<Vec<_>>();
+    match (lower_points.as_slice(), upper_points.as_slice()) {
+        ([lower_start, lower_end], [upper_start, upper_end]) => {
+            Some(([*lower_start, *lower_end], [*upper_start, *upper_end]))
+        }
+        _ => None,
+    }
+}
+
+fn visual_polygon_boundary_overlaps_edge_at_height(
+    polygon: &RoadSurfaceVisualPolygon,
+    edge: [Vector3; 2],
+) -> bool {
+    let points = &polygon.points_world;
+    if points.len() < 2 {
+        return false;
+    }
+    let expected_y = (edge[0].y + edge[1].y) * 0.5;
+    let edge_start = ArrangementBoundaryPointKey::from_world(edge[0]).xz_key();
+    let edge_end = ArrangementBoundaryPointKey::from_world(edge[1]).xz_key();
+    (0..points.len()).any(|index| {
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        (start.y - expected_y).abs() <= SAMPLE_EPSILON_M
+            && (end.y - expected_y).abs() <= SAMPLE_EPSILON_M
+            && {
+                let polygon_edge_start = ArrangementBoundaryPointKey::from_world(start).xz_key();
+                let polygon_edge_end = ArrangementBoundaryPointKey::from_world(end).xz_key();
+                arrangement_segments_overlap_with_length(
+                    polygon_edge_start,
+                    polygon_edge_end,
+                    edge_start,
+                    edge_end,
+                )
+            }
+    })
+}
+
 impl RoadSurfaceSystem {
     fn sort_curb_vertical_faces(
         faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)],
@@ -1711,6 +1849,15 @@ fn arrangement_face_boundary_overlap_interval(
     edge_start: ArrangementBoundaryPointKey,
     edge_end: ArrangementBoundaryPointKey,
 ) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
+    if arrangement_step_segments_are_overlay_siblings(
+        (edge_start.xz_key(), edge_end.xz_key()),
+        segment_key,
+    ) {
+        return Some((
+            ArrangementSegmentParameter::zero(),
+            ArrangementSegmentParameter::one(),
+        ));
+    }
     let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
     let edge_start_t = boundary_segment_parameter_xz(edge_start, segment_start, segment_end)?;
@@ -1733,12 +1880,20 @@ fn arrangement_face_boundary_interval_point_at(
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
     let segment_point = interpolated_segment_point_key(segment_start, segment_end, parameter);
     let edge_t =
-        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)?;
+        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)
+            .or_else(|| {
+                arrangement_step_segment_sibling_parameter(
+                    (interval.edge_start.xz_key(), interval.edge_end.xz_key()),
+                    segment_key,
+                    parameter,
+                )
+            })?;
+    let edge_point = interpolated_segment_point_key(interval.edge_start, interval.edge_end, edge_t);
     let y_mm = interpolated_segment_height_mm(interval.edge_start, interval.edge_end, edge_t);
     Some(arrangement_boundary_point_to_world(
         ArrangementBoundaryPointKey {
-            x_key: segment_point.x_key,
-            z_key: segment_point.z_key,
+            x_key: edge_point.x_key,
+            z_key: edge_point.z_key,
             y_mm,
         },
     ))
@@ -1884,7 +2039,9 @@ fn arrangement_face_boundary_overlaps_segment(
         let end = NodeArrangementKey::from_point(super::backend::godot_vec3_xz_to_road(
             triangle[(index + 1) % triangle.len()],
         ));
-        if arrangement_segments_overlap_with_length(start, end, segment_key.0, segment_key.1) {
+        if arrangement_segments_overlap_with_length(start, end, segment_key.0, segment_key.1)
+            || arrangement_step_segments_are_overlay_siblings((start, end), segment_key)
+        {
             return true;
         }
     }
@@ -1987,6 +2144,24 @@ fn arrangement_step_segments_are_overlay_siblings(
         && arrangement_keys_are_overlay_siblings(left.1, right.1))
         || (arrangement_keys_are_overlay_siblings(left.0, right.1)
             && arrangement_keys_are_overlay_siblings(left.1, right.0))
+}
+
+fn arrangement_step_segment_sibling_parameter(
+    edge: (NodeArrangementKey, NodeArrangementKey),
+    segment: (NodeArrangementKey, NodeArrangementKey),
+    parameter: ArrangementSegmentParameter,
+) -> Option<ArrangementSegmentParameter> {
+    if arrangement_keys_are_overlay_siblings(edge.0, segment.0)
+        && arrangement_keys_are_overlay_siblings(edge.1, segment.1)
+    {
+        return Some(parameter);
+    }
+    if arrangement_keys_are_overlay_siblings(edge.0, segment.1)
+        && arrangement_keys_are_overlay_siblings(edge.1, segment.0)
+    {
+        return Some(parameter.reversed());
+    }
+    None
 }
 
 fn arrangement_keys_are_overlay_siblings(

@@ -152,9 +152,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   use owner-local `NodeBandHeightField` surfaces identified by `NodeBandHeightFieldId`; the old
   source-vector plumbing, boundary rail snapping, shared post-overlay grade sampler, and derived
   curb-transition fallback have been removed. Logged terminal and 2-arm bend curb / sidewalk join
-  ownership is now hardened through the canonical path; the remaining blocking work is broader
-  legal join ownership for `JunctionN` and arbitrary oblique / sharp nodes, plus clipped terrain
-  topology hardening, followed by retaining, wall, and material variants.
+  ownership is now hardened through the canonical path, and raised-step contact rails now use a
+  generic source-owned owner-pair constraint instead of material-specific asphalt/curb and
+  curb/sidewalk contact kinds, with bend side-join final-owner handoff limited to endpoint contacts
+  from exact source rails. The remaining blocking work is broader legal join ownership for
+  `JunctionN` and arbitrary oblique / sharp nodes, bend material-split strip cleanup once it is no
+  longer an authority source, plus clipped terrain topology hardening, followed by retaining, wall,
+  and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

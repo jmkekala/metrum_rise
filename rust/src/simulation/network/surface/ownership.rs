@@ -17,6 +17,8 @@ use super::{
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::{BTreeMap, BTreeSet};
 
+const OWNERSHIP_OVERLAY_SIBLING_NEIGHBOR_UNITS: i64 = 2;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
     pub(crate) node_id: u32,
@@ -813,11 +815,17 @@ fn push_materialized_region_seam_constraint(
         materialized_constraint_kind_for_owned_edge(constraint, owner, opposite_owner);
     seams.push(NodeRegionSeamConstraint {
         constraint_index: constraint.constraint_index,
-        seam_source: seam_source_from_materialized_constraint_kind(materialized_kind, owner),
+        seam_source: seam_source_from_materialized_constraint_kind(
+            materialized_kind,
+            owner,
+            opposite_owner,
+        ),
         owner: constraint_owner,
         opposite_owner: constraint_opposite_owner,
         constrains_shared_height: materialized_constraint_kind_constrains_shared_height(
             materialized_kind,
+            owner,
+            opposite_owner,
         ),
         is_material_transition: materialized_constraint_kind_is_material_transition(
             materialized_kind,
@@ -838,10 +846,14 @@ fn push_materialized_endpoint_pair_region_seam_constraint(
 ) {
     seams.push(NodeRegionSeamConstraint {
         constraint_index,
-        seam_source: seam_source_from_materialized_constraint_kind(kind, owner),
+        seam_source: seam_source_from_materialized_constraint_kind(kind, owner, opposite_owner),
         owner: Some(owner),
         opposite_owner: Some(opposite_owner),
-        constrains_shared_height: materialized_constraint_kind_constrains_shared_height(kind),
+        constrains_shared_height: materialized_constraint_kind_constrains_shared_height(
+            kind,
+            owner,
+            opposite_owner,
+        ),
         is_material_transition: materialized_constraint_kind_is_material_transition(kind),
         start_xz,
         end_xz,
@@ -1961,8 +1973,19 @@ fn rail_constraint_endpoint_authority_priority(constraint: &NodeRailConstraint) 
         usize::from(constraint.owner.is_none() || constraint.opposite_owner.is_none());
     let point_contact_offset = usize::from(constraint_is_point_contact(constraint));
     let kind_priority = match constraint.kind {
-        NodeRailConstraintKind::AsphaltCurbContact => 0,
-        NodeRailConstraintKind::CurbSidewalkContact => 1,
+        NodeRailConstraintKind::RaisedStepContact => {
+            let Some((owner, opposite_owner)) = constraint.owner.zip(constraint.opposite_owner)
+            else {
+                return 8 * 4 + owner_pair_offset * 2 + point_contact_offset;
+            };
+            if owners_form_carriageway_raised_step_contact(owner, opposite_owner) {
+                0
+            } else if owners_form_curb_sidewalk_contact(owner, opposite_owner) {
+                1
+            } else {
+                4
+            }
+        }
         NodeRailConstraintKind::SpanHandoff { .. } => 2,
         NodeRailConstraintKind::AsphaltBoundary { .. } => 3,
         NodeRailConstraintKind::BandBoundary { .. } => 4,
@@ -2403,13 +2426,9 @@ fn rail_constraint_role_matches_owned_edge(
         return false;
     }
     match constraint.kind {
-        NodeRailConstraintKind::AsphaltCurbContact => {
-            (is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
-                || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind()))
-        }
-        NodeRailConstraintKind::CurbSidewalkContact => {
-            (is_curb_or_shoulder(owner.kind()) && is_sidewalk(opposite_owner.kind()))
-                || (is_curb_or_shoulder(opposite_owner.kind()) && is_sidewalk(owner.kind()))
+        NodeRailConstraintKind::RaisedStepContact => {
+            owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+                || owners_form_curb_sidewalk_contact(owner, opposite_owner)
         }
         _ => false,
     }
@@ -2443,30 +2462,32 @@ fn material_contact_kind_for_owned_edge(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> Option<NodeRailConstraintKind> {
-    if (is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
-        || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind()))
-    {
-        return Some(NodeRailConstraintKind::AsphaltCurbContact);
-    }
-    if (is_curb_or_shoulder(owner.kind()) && is_sidewalk(opposite_owner.kind()))
-        || (is_curb_or_shoulder(opposite_owner.kind()) && is_sidewalk(owner.kind()))
-    {
-        return Some(NodeRailConstraintKind::CurbSidewalkContact);
-    }
-    None
+    (owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+        || owners_form_curb_sidewalk_contact(owner, opposite_owner))
+    .then_some(NodeRailConstraintKind::RaisedStepContact)
 }
 
 fn seam_source_from_materialized_constraint_kind(
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
 ) -> NodeSeamSource {
     match kind {
-        NodeRailConstraintKind::AsphaltCurbContact => NodeSeamSource::AsphaltCurbContact {
-            owner_index: owner.owner_index(),
-        },
-        NodeRailConstraintKind::CurbSidewalkContact => NodeSeamSource::CurbSidewalkContact {
-            owner_index: owner.owner_index(),
-        },
+        NodeRailConstraintKind::RaisedStepContact
+            if owners_form_carriageway_raised_step_contact(owner, opposite_owner) =>
+        {
+            NodeSeamSource::AsphaltCurbContact {
+                owner_index: owner.owner_index(),
+            }
+        }
+        NodeRailConstraintKind::RaisedStepContact
+            if owners_form_curb_sidewalk_contact(owner, opposite_owner) =>
+        {
+            NodeSeamSource::CurbSidewalkContact {
+                owner_index: owner.owner_index(),
+            }
+        }
+        NodeRailConstraintKind::RaisedStepContact => seam_source_for_owner(owner),
         NodeRailConstraintKind::AsphaltBoundary { .. } => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index(),
         },
@@ -2480,13 +2501,19 @@ fn seam_source_from_materialized_constraint_kind(
     }
 }
 
-fn materialized_constraint_kind_constrains_shared_height(kind: NodeRailConstraintKind) -> bool {
-    matches!(
-        kind,
+fn materialized_constraint_kind_constrains_shared_height(
+    kind: NodeRailConstraintKind,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    match kind {
         NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::CurbSidewalkContact
-    )
+        | NodeRailConstraintKind::AsphaltBoundary { .. } => true,
+        NodeRailConstraintKind::RaisedStepContact => {
+            !owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+        }
+        _ => false,
+    }
 }
 
 fn materialized_constraint_kind_is_material_transition(kind: NodeRailConstraintKind) -> bool {
@@ -2494,8 +2521,7 @@ fn materialized_constraint_kind_is_material_transition(kind: NodeRailConstraintK
         kind,
         NodeRailConstraintKind::SpanHandoff { .. }
             | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::AsphaltCurbContact
-            | NodeRailConstraintKind::CurbSidewalkContact
+            | NodeRailConstraintKind::RaisedStepContact
             | NodeRailConstraintKind::BandBoundary { .. }
     )
 }
@@ -2585,9 +2611,8 @@ fn materialized_edge_requires_exact_constraint_span(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
-    matches!(constraint.kind, NodeRailConstraintKind::AsphaltCurbContact)
-        && ((is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
-            || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind())))
+    matches!(constraint.kind, NodeRailConstraintKind::RaisedStepContact)
+        && owners_form_carriageway_raised_step_contact(owner, opposite_owner)
 }
 
 fn owned_source_constraints_for_edge<'a>(
@@ -2809,12 +2834,18 @@ fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool 
     if constraint_is_point_contact(constraint) {
         return false;
     }
-    matches!(
-        constraint.kind,
+    match constraint.kind {
         NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::CurbSidewalkContact
-    )
+        | NodeRailConstraintKind::AsphaltBoundary { .. } => true,
+        NodeRailConstraintKind::RaisedStepContact => {
+            let Some((owner, opposite_owner)) = constraint.owner.zip(constraint.opposite_owner)
+            else {
+                return false;
+            };
+            !owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+        }
+        _ => false,
+    }
 }
 
 fn constraint_is_point_contact(constraint: &NodeRailConstraint) -> bool {
@@ -2834,8 +2865,7 @@ fn constraint_is_material_transition(constraint: &NodeRailConstraint) -> bool {
         constraint.kind,
         NodeRailConstraintKind::SpanHandoff { .. }
             | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::AsphaltCurbContact
-            | NodeRailConstraintKind::CurbSidewalkContact
+            | NodeRailConstraintKind::RaisedStepContact
             | NodeRailConstraintKind::BandBoundary { .. }
     )
 }
@@ -2854,12 +2884,7 @@ fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandO
         NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
             is_carriageway(owner.kind()) || adjacent_kind == owner.kind()
         }
-        NodeRailConstraintKind::AsphaltCurbContact => {
-            is_carriageway(owner.kind()) || is_curb_or_shoulder(owner.kind())
-        }
-        NodeRailConstraintKind::CurbSidewalkContact => {
-            is_curb_or_shoulder(owner.kind()) || is_sidewalk(owner.kind())
-        }
+        NodeRailConstraintKind::RaisedStepContact => false,
         NodeRailConstraintKind::BandBoundary {
             left_kind,
             right_kind,
@@ -2902,7 +2927,7 @@ fn shape_edge_carries_full_seam_constraint(
 }
 
 fn shape_edge_requires_exact_constraint_span(constraint: &NodeRailConstraint) -> bool {
-    matches!(constraint.kind, NodeRailConstraintKind::AsphaltCurbContact)
+    matches!(constraint.kind, NodeRailConstraintKind::RaisedStepContact)
 }
 
 fn edge_lies_on_single_constraint_segment(
@@ -2913,9 +2938,30 @@ fn edge_lies_on_single_constraint_segment(
     constraint.points_xz.windows(2).any(|segment| {
         let start = road_point_key(segment[0]);
         let end = road_point_key(segment[1]);
-        point_key_lies_on_segment(edge_start, start, end)
-            && point_key_lies_on_segment(edge_end, start, end)
+        (point_key_lies_on_segment(edge_start, start, end)
+            && point_key_lies_on_segment(edge_end, start, end))
+            || edge_segment_is_overlay_sibling(edge_start, edge_end, start, end)
     })
+}
+
+fn edge_segment_is_overlay_sibling(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint_start: NodeOwnershipPointKey,
+    constraint_end: NodeOwnershipPointKey,
+) -> bool {
+    (point_keys_are_overlay_siblings(edge_start, constraint_start)
+        && point_keys_are_overlay_siblings(edge_end, constraint_end))
+        || (point_keys_are_overlay_siblings(edge_start, constraint_end)
+            && point_keys_are_overlay_siblings(edge_end, constraint_start))
+}
+
+fn point_keys_are_overlay_siblings(
+    left: NodeOwnershipPointKey,
+    right: NodeOwnershipPointKey,
+) -> bool {
+    (left.0 - right.0).abs() <= OWNERSHIP_OVERLAY_SIBLING_NEIGHBOR_UNITS
+        && (left.1 - right.1).abs() <= OWNERSHIP_OVERLAY_SIBLING_NEIGHBOR_UNITS
 }
 
 fn edge_lies_on_constraint_polyline(
@@ -3065,8 +3111,7 @@ fn constraint_allows_path_chord(constraint: &NodeRailConstraint) -> bool {
         constraint.kind,
         NodeRailConstraintKind::SpanHandoff { .. }
             | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::AsphaltCurbContact
-            | NodeRailConstraintKind::CurbSidewalkContact
+            | NodeRailConstraintKind::RaisedStepContact
             | NodeRailConstraintKind::BandBoundary { .. }
     )
 }
@@ -3187,15 +3232,32 @@ fn seam_source_from_constraint(
     owner: NodeBandOwner,
 ) -> NodeSeamSource {
     match constraint.kind {
-        NodeRailConstraintKind::AsphaltCurbContact => NodeSeamSource::AsphaltCurbContact {
-            owner_index: owner.owner_index(),
-        },
+        NodeRailConstraintKind::RaisedStepContact
+            if constraint
+                .owner
+                .zip(constraint.opposite_owner)
+                .is_some_and(|(left, right)| {
+                    owners_form_carriageway_raised_step_contact(left, right)
+                }) =>
+        {
+            NodeSeamSource::AsphaltCurbContact {
+                owner_index: owner.owner_index(),
+            }
+        }
         NodeRailConstraintKind::AsphaltBoundary { .. } => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index(),
         },
-        NodeRailConstraintKind::CurbSidewalkContact => NodeSeamSource::CurbSidewalkContact {
-            owner_index: owner.owner_index(),
-        },
+        NodeRailConstraintKind::RaisedStepContact
+            if constraint
+                .owner
+                .zip(constraint.opposite_owner)
+                .is_some_and(|(left, right)| owners_form_curb_sidewalk_contact(left, right)) =>
+        {
+            NodeSeamSource::CurbSidewalkContact {
+                owner_index: owner.owner_index(),
+            }
+        }
+        NodeRailConstraintKind::RaisedStepContact => seam_source_for_owner(owner),
         NodeRailConstraintKind::FootprintSeam { .. }
         | NodeRailConstraintKind::FullRoadbedContour => NodeSeamSource::FootprintBoundary {
             owner_index: owner.owner_index(),
@@ -3246,6 +3308,19 @@ fn road_point_key(point: RoadVec2) -> NodeOwnershipPointKey {
         (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
     )
+}
+
+fn owners_form_carriageway_raised_step_contact(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    (is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
+        || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind()))
+}
+
+fn owners_form_curb_sidewalk_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
+    (is_curb_or_shoulder(owner.kind()) && is_sidewalk(opposite_owner.kind()))
+        || (is_curb_or_shoulder(opposite_owner.kind()) && is_sidewalk(owner.kind()))
 }
 
 fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
@@ -3584,7 +3659,7 @@ mod tests {
         ]]];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 33,
-            kind: NodeRailConstraintKind::CurbSidewalkContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -3725,7 +3800,7 @@ mod tests {
         ];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 34,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -3789,7 +3864,7 @@ mod tests {
         ];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 37,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -3891,7 +3966,7 @@ mod tests {
         ];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 35,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -3947,7 +4022,7 @@ mod tests {
         ];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 35,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -4158,7 +4233,7 @@ mod tests {
         ];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 35,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -4201,7 +4276,7 @@ mod tests {
         let shape = vec![vec![[0.0, 0.0], [2.0, 2.0], [0.0, 2.0]]];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 36,
-            kind: NodeRailConstraintKind::AsphaltCurbContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
@@ -4245,7 +4320,7 @@ mod tests {
         )];
         let rail_constraints = vec![NodeRailConstraint {
             constraint_index: 33,
-            kind: NodeRailConstraintKind::CurbSidewalkContact,
+            kind: NodeRailConstraintKind::RaisedStepContact,
             source_mouth_order_index: 0,
             source_band_index: Some(1),
             source_boundary_index: Some(1),
