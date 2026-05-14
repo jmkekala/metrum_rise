@@ -155,7 +155,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   curb-transition fallback have been removed. Logged terminal and 2-arm bend curb / sidewalk join
   ownership is now hardened through the canonical path, and raised-step contact rails now use a
   generic source-owned owner-pair constraint instead of material-specific asphalt/curb and
-  curb/sidewalk contact kinds, with bend side-join final-owner handoff limited to endpoint contacts
+  curb/sidewalk contact kinds; arrangement and debug seam output now reports generic
+  `RaisedStepContact` sources, with bend side-join final-owner handoff limited to endpoint contacts
   from exact source rails. Non-terminal side-join ownership now enters through the dedicated
   `surface::joins` adapter rather than the input extractor; the rail contour set consumes terminal
   end bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add

@@ -139,9 +139,11 @@ Live behavior:
   ownership, including top-surface footprint coverage and upward-facing top triangles. Raised-step
   contact rails now use one generic source-owned owner-pair constraint instead of asphalt/curb and
   curb/sidewalk contact kinds; generated edge contacts must come from the exact source owner pair,
-  while source endpoint contacts may close only between raised-step rails that meet at the same
-  canonical key or, for bend side-join ownership, as endpoint-only reownership from an exact source
-  rail to a same-kind final owner. The rail generator no longer rewrites generated contour or
+  and arrangement / debug seam sources export the same generic `RaisedStepContact` authority
+  instead of curb-first contact variants. Source endpoint contacts may close only between
+  raised-step rails that meet at the same canonical key or, for bend side-join ownership, as
+  endpoint-only reownership from an exact source rail to a same-kind final owner. The rail generator
+  no longer rewrites generated contour or
   contact endpoints through projected-key or overlay-neighbor repair. Non-terminal side-join
   contour adaptation now lives outside the input extractor in `surface::joins`, with dedicated
   side-join carriers consumed separately from terminal end bands by the rail contour set. Bend side

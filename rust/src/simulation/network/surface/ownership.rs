@@ -2019,13 +2019,7 @@ fn rail_constraint_endpoint_authority_priority(constraint: &NodeRailConstraint) 
             else {
                 return 8 * 4 + owner_pair_offset * 2 + point_contact_offset;
             };
-            if owners_form_carriageway_raised_step_contact(owner, opposite_owner) {
-                0
-            } else if owners_form_curb_sidewalk_contact(owner, opposite_owner) {
-                1
-            } else {
-                4
-            }
+            raised_step_contact_priority_for_owners(owner, opposite_owner).unwrap_or(4)
         }
         NodeRailConstraintKind::SpanHandoff { .. } => 2,
         NodeRailConstraintKind::AsphaltBoundary { .. } => 3,
@@ -2468,8 +2462,7 @@ fn rail_constraint_role_matches_owned_edge(
     }
     match constraint.kind {
         NodeRailConstraintKind::RaisedStepContact => {
-            owners_form_carriageway_raised_step_contact(owner, opposite_owner)
-                || owners_form_curb_sidewalk_contact(owner, opposite_owner)
+            owners_form_raised_step_contact(owner, opposite_owner)
         }
         _ => false,
     }
@@ -2503,32 +2496,19 @@ fn material_contact_kind_for_owned_edge(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> Option<NodeRailConstraintKind> {
-    (owners_form_carriageway_raised_step_contact(owner, opposite_owner)
-        || owners_form_curb_sidewalk_contact(owner, opposite_owner))
-    .then_some(NodeRailConstraintKind::RaisedStepContact)
+    owners_form_raised_step_contact(owner, opposite_owner)
+        .then_some(NodeRailConstraintKind::RaisedStepContact)
 }
 
 fn seam_source_from_materialized_constraint_kind(
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
+    _opposite_owner: NodeBandOwner,
 ) -> NodeSeamSource {
     match kind {
-        NodeRailConstraintKind::RaisedStepContact
-            if owners_form_carriageway_raised_step_contact(owner, opposite_owner) =>
-        {
-            NodeSeamSource::AsphaltCurbContact {
-                owner_index: owner.owner_index(),
-            }
-        }
-        NodeRailConstraintKind::RaisedStepContact
-            if owners_form_curb_sidewalk_contact(owner, opposite_owner) =>
-        {
-            NodeSeamSource::CurbSidewalkContact {
-                owner_index: owner.owner_index(),
-            }
-        }
-        NodeRailConstraintKind::RaisedStepContact => seam_source_for_owner(owner),
+        NodeRailConstraintKind::RaisedStepContact => NodeSeamSource::RaisedStepContact {
+            owner_index: owner.owner_index(),
+        },
         NodeRailConstraintKind::AsphaltBoundary { .. } => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index(),
         },
@@ -2551,7 +2531,7 @@ fn materialized_constraint_kind_constrains_shared_height(
         NodeRailConstraintKind::SpanHandoff { .. }
         | NodeRailConstraintKind::AsphaltBoundary { .. } => true,
         NodeRailConstraintKind::RaisedStepContact => {
-            !owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+            raised_step_contact_constrains_shared_height(owner, opposite_owner)
         }
         _ => false,
     }
@@ -2653,7 +2633,7 @@ fn materialized_edge_requires_exact_constraint_span(
     opposite_owner: NodeBandOwner,
 ) -> bool {
     matches!(constraint.kind, NodeRailConstraintKind::RaisedStepContact)
-        && owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+        && raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
 }
 
 fn owned_source_constraints_for_edge<'a>(
@@ -2883,7 +2863,7 @@ fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool 
             else {
                 return false;
             };
-            !owners_form_carriageway_raised_step_contact(owner, opposite_owner)
+            raised_step_contact_constrains_shared_height(owner, opposite_owner)
         }
         _ => false,
     }
@@ -2923,7 +2903,7 @@ fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandO
             adjacent_kind: kind,
         } => kind == owner.kind(),
         NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
-            is_carriageway(owner.kind()) || adjacent_kind == owner.kind()
+            owner.kind() == RoadSurfaceBandKind::Carriageway || adjacent_kind == owner.kind()
         }
         NodeRailConstraintKind::RaisedStepContact => false,
         NodeRailConstraintKind::BandBoundary {
@@ -3273,32 +3253,12 @@ fn seam_source_from_constraint(
     owner: NodeBandOwner,
 ) -> NodeSeamSource {
     match constraint.kind {
-        NodeRailConstraintKind::RaisedStepContact
-            if constraint
-                .owner
-                .zip(constraint.opposite_owner)
-                .is_some_and(|(left, right)| {
-                    owners_form_carriageway_raised_step_contact(left, right)
-                }) =>
-        {
-            NodeSeamSource::AsphaltCurbContact {
-                owner_index: owner.owner_index(),
-            }
-        }
+        NodeRailConstraintKind::RaisedStepContact => NodeSeamSource::RaisedStepContact {
+            owner_index: owner.owner_index(),
+        },
         NodeRailConstraintKind::AsphaltBoundary { .. } => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index(),
         },
-        NodeRailConstraintKind::RaisedStepContact
-            if constraint
-                .owner
-                .zip(constraint.opposite_owner)
-                .is_some_and(|(left, right)| owners_form_curb_sidewalk_contact(left, right)) =>
-        {
-            NodeSeamSource::CurbSidewalkContact {
-                owner_index: owner.owner_index(),
-            }
-        }
-        NodeRailConstraintKind::RaisedStepContact => seam_source_for_owner(owner),
         NodeRailConstraintKind::FootprintSeam { .. }
         | NodeRailConstraintKind::FullRoadbedContour => NodeSeamSource::FootprintBoundary {
             owner_index: owner.owner_index(),
@@ -3314,7 +3274,7 @@ fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
         RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index(),
         },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::AsphaltCurbContact {
+        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::RaisedStepContact {
             owner_index: owner.owner_index(),
         },
         RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
@@ -3351,29 +3311,51 @@ fn road_point_key(point: RoadVec2) -> NodeOwnershipPointKey {
     )
 }
 
-fn owners_form_carriageway_raised_step_contact(
+fn owners_form_raised_step_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
+    let Some(owner_rank) = raised_step_band_kind_rank(owner.kind()) else {
+        return false;
+    };
+    let Some(opposite_rank) = raised_step_band_kind_rank(opposite_owner.kind()) else {
+        return false;
+    };
+    owner_rank.abs_diff(opposite_rank) == 1
+}
+
+fn raised_step_contact_priority_for_owners(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Option<usize> {
+    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
+    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
+    (owner_rank.abs_diff(opposite_rank) == 1).then_some(usize::from(owner_rank.min(opposite_rank)))
+}
+
+fn raised_step_contact_requires_exact_constraint_span(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
-    (is_carriageway(owner.kind()) && is_curb_or_shoulder(opposite_owner.kind()))
-        || (is_carriageway(opposite_owner.kind()) && is_curb_or_shoulder(owner.kind()))
+    raised_step_contact_priority_for_owners(owner, opposite_owner) == Some(0)
 }
 
-fn owners_form_curb_sidewalk_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
-    (is_curb_or_shoulder(owner.kind()) && is_sidewalk(opposite_owner.kind()))
-        || (is_curb_or_shoulder(opposite_owner.kind()) && is_sidewalk(owner.kind()))
+fn raised_step_contact_constrains_shared_height(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    owners_form_raised_step_contact(owner, opposite_owner)
+        && !raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
 }
 
-fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::Carriageway
-}
-
-fn is_curb_or_shoulder(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::CurbOrShoulder
-}
-
-fn is_sidewalk(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::Sidewalk
+fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Footpath
+        | RoadSurfaceBandKind::Median
+        | RoadSurfaceBandKind::Parking
+        | RoadSurfaceBandKind::CycleTrack
+        | RoadSurfaceBandKind::TramReservation => None,
+    }
 }
 
 fn band_kind(contour: &NodeGeneratedContour) -> Option<RoadSurfaceBandKind> {
@@ -3588,8 +3570,7 @@ mod tests {
                 region.seam_constraints.iter().any(|constraint| {
                     matches!(
                         constraint.seam_source,
-                        NodeSeamSource::AsphaltCurbContact { .. }
-                            | NodeSeamSource::CurbSidewalkContact { .. }
+                        NodeSeamSource::RaisedStepContact { .. }
                             | NodeSeamSource::FootprintBoundary { .. }
                     )
                 })
@@ -3920,10 +3901,10 @@ mod tests {
                         && constraint.opposite_owner == Some(sidewalk)
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::CurbSidewalkContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
-                "first final subedge must carry the original curb/sidewalk seam"
+                "first final subedge must carry the original raised-step seam"
             );
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
@@ -3934,10 +3915,10 @@ mod tests {
                         && constraint.opposite_owner == Some(sidewalk)
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::CurbSidewalkContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
-                "second final subedge must carry the original curb/sidewalk seam"
+                "second final subedge must carry the original raised-step seam"
             );
         }
         let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
@@ -4045,7 +4026,7 @@ mod tests {
                                 && constraint.opposite_owner == Some(carriageway)))
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "final shared asphalt-curb edge must carry the owner-explicit step seam"
@@ -4141,7 +4122,7 @@ mod tests {
                             && constraint.opposite_owner == Some(curb)
                             && matches!(
                                 constraint.seam_source,
-                                NodeSeamSource::AsphaltCurbContact { .. }
+                                NodeSeamSource::RaisedStepContact { .. }
                             )
                     }),
                     "final owned asphalt-curb subedge must carry the exact explicit step seam"
@@ -4165,7 +4146,7 @@ mod tests {
     }
 
     #[test]
-    fn materializes_role_only_asphalt_curb_contact_as_exact_owned_edge_pair() {
+    fn materializes_role_only_raised_step_contact_as_exact_owned_edge_pair() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let start = RoadVec2::new(0.0, 0.0);
@@ -4211,7 +4192,7 @@ mod tests {
                                 && constraint.opposite_owner == Some(carriageway)))
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "role-only asphalt-curb contact must instantiate the actual owned edge pair"
@@ -4220,7 +4201,7 @@ mod tests {
     }
 
     #[test]
-    fn materializes_same_kind_reowned_asphalt_curb_contact_as_exact_owned_edge_pair() {
+    fn materializes_same_kind_reowned_raised_step_contact_as_exact_owned_edge_pair() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let source_curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let final_curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 2);
@@ -4267,7 +4248,7 @@ mod tests {
                                 && constraint.opposite_owner == Some(carriageway)))
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "final owned edge must instantiate its exact owner pair from a same-kind source rail"
@@ -4326,7 +4307,7 @@ mod tests {
                         && constraint.is_material_transition
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "exact final owner band contour edge must authorize the asphalt-curb step"
@@ -4355,7 +4336,7 @@ mod tests {
         ];
         regions[0].seam_constraints.push(NodeRegionSeamConstraint {
             constraint_index: 41,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 0 },
             owner: Some(carriageway),
             opposite_owner: Some(curb),
             constrains_shared_height: false,
@@ -4423,7 +4404,7 @@ mod tests {
                         && constraint.opposite_owner == Some(curb)
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "band contours authorize final contacts only on exact source segments"
@@ -4476,7 +4457,7 @@ mod tests {
                         && constraint.opposite_owner == Some(curb)
                         && matches!(
                             constraint.seam_source,
-                            NodeSeamSource::AsphaltCurbContact { .. }
+                            NodeSeamSource::RaisedStepContact { .. }
                         )
                 }),
                 "asphalt-curb vertical steps must come from an exact rail span, not Bend polyline coverage"

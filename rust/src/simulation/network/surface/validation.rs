@@ -2,7 +2,7 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
-    NodeExplicitVerticalStepSegment, owners_form_carriageway_raised_non_road_step_pair,
+    NodeExplicitVerticalStepSegment, owners_form_explicit_vertical_step_pair,
 };
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 use super::height::NodeHeightFieldError;
@@ -340,7 +340,7 @@ fn cross_region_edges_form_explicit_vertical_step(
         .get(left.region_index)
         .zip(solution.regions.get(right.region_index))
         .is_some_and(|(left_region, right_region)| {
-            owners_form_carriageway_raised_non_road_step_pair(left_region.owner, right_region.owner)
+            owners_form_explicit_vertical_step_pair(left_region.owner, right_region.owner)
                 && solution
                     .explicit_vertical_step_segments
                     .iter()

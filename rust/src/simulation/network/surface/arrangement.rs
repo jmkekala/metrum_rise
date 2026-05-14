@@ -62,8 +62,7 @@ pub(crate) struct NodeBandHeightFieldId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeSeamSource {
     AsphaltBoundary { owner_index: usize },
-    AsphaltCurbContact { owner_index: usize },
-    CurbSidewalkContact { owner_index: usize },
+    RaisedStepContact { owner_index: usize },
     SidewalkOuter { owner_index: usize },
     FootprintBoundary { owner_index: usize },
 }
@@ -961,7 +960,7 @@ impl NodeArrangement {
 
         let mut candidates = BTreeSet::new();
         if let Some(opposite_owner) = edge.opposite_owner {
-            if owners_form_carriageway_raised_non_road_step_pair(edge.owner, opposite_owner)
+            if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
                 && self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
             {
                 return Some(opposite_owner);
@@ -971,7 +970,7 @@ impl NodeArrangement {
             self.edge_source_constraint_opposite_owners(edge)
                 .into_iter()
                 .filter(|opposite_owner| {
-                    owners_form_carriageway_raised_non_road_step_pair(edge.owner, *opposite_owner)
+                    owners_form_explicit_vertical_step_pair(edge.owner, *opposite_owner)
                 }),
         );
 
@@ -1017,7 +1016,7 @@ impl NodeArrangement {
         constraints.into_iter().find_map(|constraint| {
             let opposite_owner =
                 seam_constraint_opposite_owner_for_edge_owner(constraint, edge.owner)?;
-            owners_form_carriageway_raised_non_road_step_pair(edge.owner, opposite_owner)
+            owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
                 .then_some(opposite_owner)
         })
     }
@@ -1363,11 +1362,10 @@ fn owners_for_material_seam_constraint(
 
 pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
     match source {
-        NodeSeamSource::AsphaltCurbContact { .. } => 0,
-        NodeSeamSource::CurbSidewalkContact { .. } => 1,
-        NodeSeamSource::AsphaltBoundary { .. } => 2,
-        NodeSeamSource::SidewalkOuter { .. } => 3,
-        NodeSeamSource::FootprintBoundary { .. } => 4,
+        NodeSeamSource::RaisedStepContact { .. } => 0,
+        NodeSeamSource::AsphaltBoundary { .. } => 1,
+        NodeSeamSource::SidewalkOuter { .. } => 2,
+        NodeSeamSource::FootprintBoundary { .. } => 3,
     }
 }
 
@@ -1412,7 +1410,7 @@ fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
         RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
             owner_index: owner.owner_index,
         },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::AsphaltCurbContact {
+        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::RaisedStepContact {
             owner_index: owner.owner_index,
         },
         RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
@@ -1456,15 +1454,14 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
 }
 
-pub(crate) fn owners_form_carriageway_raised_non_road_step_pair(
-    a: NodeBandOwner,
-    b: NodeBandOwner,
-) -> bool {
-    (a.kind == RoadSurfaceBandKind::Carriageway && owner_kind_is_raised_non_road(b.kind))
-        || (b.kind == RoadSurfaceBandKind::Carriageway && owner_kind_is_raised_non_road(a.kind))
+pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
+    (a.kind == RoadSurfaceBandKind::Carriageway
+        && owner_kind_can_be_vertical_step_raised_side(b.kind))
+        || (b.kind == RoadSurfaceBandKind::Carriageway
+            && owner_kind_can_be_vertical_step_raised_side(a.kind))
 }
 
-fn owner_kind_is_raised_non_road(kind: RoadSurfaceBandKind) -> bool {
+fn owner_kind_can_be_vertical_step_raised_side(kind: RoadSurfaceBandKind) -> bool {
     kind != RoadSurfaceBandKind::Carriageway
 }
 
@@ -1680,7 +1677,7 @@ mod tests {
                 0.0,
                 [owner(RoadSurfaceBandKind::CurbOrShoulder, 0)],
                 height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 0),
-                [NodeSeamSource::AsphaltCurbContact { owner_index: 0 }],
+                [NodeSeamSource::RaisedStepContact { owner_index: 0 }],
             )
             .expect("lower curb rail vertex should insert");
         let raised = arrangement
@@ -1689,7 +1686,7 @@ mod tests {
                 0.12,
                 [owner(RoadSurfaceBandKind::CurbOrShoulder, 1)],
                 height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1),
-                [NodeSeamSource::CurbSidewalkContact { owner_index: 1 }],
+                [NodeSeamSource::RaisedStepContact { owner_index: 1 }],
             )
             .expect("raised curb rail vertex should keep separate owner-height context");
 
@@ -1909,7 +1906,7 @@ mod tests {
         let end = RoadVec2::new(1.0, 1.0);
         let seam = NodeRegionSeamConstraint {
             constraint_index: 91,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 1 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
             owner: Some(carriageway),
             opposite_owner: Some(curb),
             constrains_shared_height: false,
@@ -2096,7 +2093,7 @@ mod tests {
         let end = RoadVec2::new(2.0, 0.0);
         let seam = NodeRegionSeamConstraint {
             constraint_index: 95,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 7 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 7 },
             owner: Some(carriageway),
             opposite_owner: Some(curb),
             constrains_shared_height: false,
@@ -2142,7 +2139,7 @@ mod tests {
         let end = RoadVec2::new(2.0, 0.0);
         let selected_seam = NodeRegionSeamConstraint {
             constraint_index: 103,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 9 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 9 },
             owner: Some(carriageway),
             opposite_owner: Some(selected_curb),
             constrains_shared_height: false,
@@ -2152,7 +2149,7 @@ mod tests {
         };
         let stale_seam = NodeRegionSeamConstraint {
             constraint_index: 416,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 9 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 9 },
             owner: Some(carriageway),
             opposite_owner: Some(stale_curb),
             constrains_shared_height: false,
@@ -2206,7 +2203,7 @@ mod tests {
         let end = RoadVec2::new(1.0, 1.0);
         let actual_seam = NodeRegionSeamConstraint {
             constraint_index: 572,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 1 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
             owner: Some(carriageway),
             opposite_owner: Some(actual_curb),
             constrains_shared_height: false,
@@ -2216,7 +2213,7 @@ mod tests {
         };
         let stale_overlapping_seam = NodeRegionSeamConstraint {
             constraint_index: 96,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 10 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 10 },
             owner: Some(carriageway),
             opposite_owner: Some(stale_curb),
             constrains_shared_height: false,
@@ -2281,7 +2278,7 @@ mod tests {
         let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let seam = NodeRegionSeamConstraint {
             constraint_index: 93,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 1 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
             owner: Some(curb),
             opposite_owner: None,
             constrains_shared_height: false,
@@ -2319,7 +2316,7 @@ mod tests {
         let terminal_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 6);
         let seam = NodeRegionSeamConstraint {
             constraint_index: 92,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 6 },
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 6 },
             owner: Some(carriageway),
             opposite_owner: Some(terminal_curb),
             constrains_shared_height: false,

@@ -203,6 +203,12 @@ enum GeneratedSameBandBoundaryRole {
     RaisedSide,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct GeneratedRaisedStepOwnerPair {
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GeneratedPointContourLocation {
     Outside,
@@ -305,6 +311,19 @@ impl GeneratedSameBandContactConstraint {
             start: edge.start,
             end: edge.end,
         }
+    }
+}
+
+impl GeneratedRaisedStepOwnerPair {
+    fn new(a: NodeBandOwner, b: NodeBandOwner) -> Option<Self> {
+        if a == b || !raised_step_band_kinds_can_contact(a.kind(), b.kind()) {
+            return None;
+        }
+        let (owner, opposite_owner) = if a <= b { (a, b) } else { (b, a) };
+        Some(Self {
+            owner,
+            opposite_owner,
+        })
     }
 }
 
@@ -1213,7 +1232,7 @@ fn push_terminal_end_band_boundary_constraints(
     match end_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => {
             if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap {
-                push_terminal_curb_asphalt_contact_constraints(
+                push_terminal_inner_raised_step_contact_constraints(
                     mouth,
                     end_band,
                     owner,
@@ -1235,7 +1254,7 @@ fn push_terminal_end_band_boundary_constraints(
                 )?;
             }
             if terminal_end_band_has_material_boundary(end_band) {
-                for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
+                for (start, end) in terminal_material_boundary_side_edges(end_band) {
                     push_terminal_end_band_constraint(
                         constraints,
                         NodeRailConstraintKind::RaisedStepContact,
@@ -1324,7 +1343,7 @@ fn push_side_join_band_boundary_constraints(
         RoadSurfaceBandKind::CurbOrShoulder => {
             if side_join_band.boundary_mode != NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap
             {
-                push_side_join_curb_asphalt_contact_constraints(
+                push_side_join_inner_raised_step_contact_constraints(
                     mouth,
                     side_join_band,
                     owner,
@@ -1346,7 +1365,7 @@ fn push_side_join_band_boundary_constraints(
                 )?;
             }
             if side_join_band_has_material_boundary(side_join_band) {
-                for (start, end) in side_join_curb_sidewalk_side_edges(side_join_band) {
+                for (start, end) in side_join_material_boundary_side_edges(side_join_band) {
                     push_terminal_end_band_constraint(
                         constraints,
                         NodeRailConstraintKind::RaisedStepContact,
@@ -1508,7 +1527,7 @@ fn side_join_band_material_opposite_owner(
     }
 }
 
-fn push_terminal_curb_asphalt_contact_constraints(
+fn push_terminal_inner_raised_step_contact_constraints(
     mouth: &NodeInputMouth,
     end_band: &NodeInputTerminalEndBand,
     owner: NodeBandOwner,
@@ -1519,7 +1538,7 @@ fn push_terminal_curb_asphalt_contact_constraints(
         return Ok(());
     };
     for segment in points.windows(2) {
-        let opposite_owner = terminal_curb_asphalt_opposite_owner_for_inner_segment(
+        let opposite_owner = inner_raised_step_opposite_owner_for_segment(
             mouth,
             end_band.source_band_index,
             segment[0],
@@ -1540,7 +1559,7 @@ fn push_terminal_curb_asphalt_contact_constraints(
     Ok(())
 }
 
-fn push_side_join_curb_asphalt_contact_constraints(
+fn push_side_join_inner_raised_step_contact_constraints(
     mouth: &NodeInputMouth,
     side_join_band: &NodeInputSideJoinBand,
     owner: NodeBandOwner,
@@ -1551,7 +1570,7 @@ fn push_side_join_curb_asphalt_contact_constraints(
         return Ok(());
     };
     for segment in points.windows(2) {
-        let opposite_owner = terminal_curb_asphalt_opposite_owner_for_inner_segment(
+        let opposite_owner = inner_raised_step_opposite_owner_for_segment(
             mouth,
             side_join_band.source_band_index,
             segment[0],
@@ -1572,7 +1591,7 @@ fn push_side_join_curb_asphalt_contact_constraints(
     Ok(())
 }
 
-fn terminal_curb_asphalt_opposite_owner_for_inner_segment(
+fn inner_raised_step_opposite_owner_for_segment(
     mouth: &NodeInputMouth,
     source_band_index: usize,
     start: RoadVec2,
@@ -1580,7 +1599,7 @@ fn terminal_curb_asphalt_opposite_owner_for_inner_segment(
     owner_by_kind_and_source: &BTreeMap<(RoadSurfaceBandKind, usize), NodeBandOwner>,
 ) -> Option<NodeBandOwner> {
     if let Some(owner) =
-        terminal_curb_asphalt_endpoint_opposite_owner(mouth, start, end, owner_by_kind_and_source)
+        endpoint_raised_step_opposite_owner(mouth, start, end, owner_by_kind_and_source)
     {
         return Some(owner);
     }
@@ -1592,7 +1611,7 @@ fn terminal_curb_asphalt_opposite_owner_for_inner_segment(
     )
 }
 
-fn terminal_curb_asphalt_endpoint_opposite_owner(
+fn endpoint_raised_step_opposite_owner(
     mouth: &NodeInputMouth,
     start: RoadVec2,
     end: RoadVec2,
@@ -1680,7 +1699,7 @@ fn push_terminal_end_band_cap_role_constraints(
     opposite_owner: Option<NodeBandOwner>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
+    for (start, end) in terminal_material_boundary_side_edges(end_band) {
         push_terminal_end_band_constraint(
             constraints,
             NodeRailConstraintKind::RaisedStepContact,
@@ -1696,7 +1715,7 @@ fn push_terminal_end_band_cap_role_constraints(
     Ok(())
 }
 
-fn terminal_curb_sidewalk_side_edges(
+fn terminal_material_boundary_side_edges(
     end_band: &NodeInputTerminalEndBand,
 ) -> Vec<(RoadVec3, RoadVec3)> {
     [
@@ -1708,7 +1727,7 @@ fn terminal_curb_sidewalk_side_edges(
     .collect()
 }
 
-fn side_join_curb_sidewalk_side_edges(
+fn side_join_material_boundary_side_edges(
     side_join_band: &NodeInputSideJoinBand,
 ) -> Vec<(RoadVec3, RoadVec3)> {
     let Some(inner_start_world) = side_join_band.inner_path_world.first().copied() else {
@@ -1842,7 +1861,7 @@ fn push_terminal_end_band_constraint(
     if road_point_key(start) == road_point_key(end) {
         return Ok(());
     }
-    push_constraint(
+    push_owned_rail_constraint(
         constraints,
         kind,
         source_mouth_order_index,
@@ -1866,7 +1885,7 @@ fn push_terminal_end_band_path_constraint(
     let Some(points) = clean_terminal_constraint_path(points) else {
         return Ok(());
     };
-    push_constraint(
+    push_owned_rail_constraint(
         constraints,
         kind,
         source_mouth_order_index,
@@ -2060,7 +2079,7 @@ fn push_boundary_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
     let rail = &mouth.boundary_rails[boundary_index];
-    push_constraint(
+    push_owned_rail_constraint(
         constraints,
         boundary_constraint_kind(role),
         mouth.order_index,
@@ -2089,6 +2108,46 @@ fn push_span_handoff_constraint(
         Some(owner),
         None,
         vec![xz(profile_rail.start_world), xz(profile_rail.end_world)],
+    )
+}
+
+fn push_owned_rail_constraint(
+    constraints: &mut Vec<NodeRailConstraint>,
+    kind: NodeRailConstraintKind,
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+    source_boundary_index: Option<usize>,
+    owner: Option<NodeBandOwner>,
+    opposite_owner: Option<NodeBandOwner>,
+    points: Vec<RoadVec2>,
+) -> Result<(), NodeRailGenerationError> {
+    if kind == NodeRailConstraintKind::RaisedStepContact {
+        let (Some(owner), Some(opposite_owner)) = (owner, opposite_owner) else {
+            return Ok(());
+        };
+        let Some(pair) = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner) else {
+            return Ok(());
+        };
+        return push_constraint(
+            constraints,
+            kind,
+            source_mouth_order_index,
+            source_band_index,
+            source_boundary_index,
+            Some(pair.owner),
+            Some(pair.opposite_owner),
+            points,
+        );
+    }
+    push_constraint(
+        constraints,
+        kind,
+        source_mouth_order_index,
+        source_band_index,
+        source_boundary_index,
+        owner,
+        opposite_owner,
+        points,
     )
 }
 
@@ -2132,6 +2191,14 @@ fn insert_generated_material_point_constraint(
     source_mouth_order_index: usize,
     source_band_index: Option<usize>,
 ) {
+    let (owner, opposite_owner) = if kind == NodeRailConstraintKind::RaisedStepContact {
+        let Some(pair) = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner) else {
+            return;
+        };
+        (pair.owner, pair.opposite_owner)
+    } else {
+        (owner, opposite_owner)
+    };
     let edge = [road_point_from_key(point), road_point_from_key(point)];
     if constraints.iter().any(|constraint| {
         constraint.kind == kind
@@ -2312,15 +2379,14 @@ fn collect_source_authorized_raised_step_contacts(
                         else {
                             continue;
                         };
-                        let (owner, opposite_owner) = if left_owner <= right_owner {
-                            (left_owner, right_owner)
-                        } else {
-                            (right_owner, left_owner)
+                        let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner)
+                        else {
+                            continue;
                         };
                         contacts.insert(GeneratedSameBandContactConstraint {
                             kind,
-                            owner,
-                            opposite_owner,
+                            owner: pair.owner,
+                            opposite_owner: pair.opposite_owner,
                             start: point,
                             end: point,
                             source_mouth_order_index: source.source_mouth_order_index,
@@ -2506,7 +2572,11 @@ fn source_authorized_raised_step_target_pairs(
         if Some(target.claim_priority)
             == source_authorized_target_claim_priority(contours, target_owner)
         {
-            return vec![(source.owners[0], source.owners[1], true)];
+            let Some(pair) = GeneratedRaisedStepOwnerPair::new(source.owners[0], source.owners[1])
+            else {
+                return Vec::new();
+            };
+            return vec![(pair.owner, pair.opposite_owner, true)];
         }
         return Vec::new();
     }
@@ -2526,12 +2596,10 @@ fn source_authorized_raised_step_target_pairs(
         {
             continue;
         }
-        let (owner, opposite_owner) = if source_owner <= target_owner {
-            (source_owner, target_owner)
-        } else {
-            (target_owner, source_owner)
+        let Some(pair) = GeneratedRaisedStepOwnerPair::new(source_owner, target_owner) else {
+            continue;
         };
-        pairs.push((owner, opposite_owner, false));
+        pairs.push((pair.owner, pair.opposite_owner, false));
     }
     pairs.sort_unstable();
     pairs.dedup();
@@ -2630,17 +2698,12 @@ fn generated_raised_step_endpoint_source(
     }
     let owner = constraint.owner?;
     let opposite_owner = constraint.opposite_owner?;
-    generated_raised_step_contact_kind_for_owners(owner, opposite_owner)?;
-    let owners = if owner <= opposite_owner {
-        [owner, opposite_owner]
-    } else {
-        [opposite_owner, owner]
-    };
+    let pair = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
     Some(GeneratedRaisedStepEndpointSource {
         constraint_index: constraint.constraint_index,
         source_mouth_order_index: constraint.source_mouth_order_index,
         source_band_index: constraint.source_band_index,
-        owners,
+        owners: [pair.owner, pair.opposite_owner],
     })
 }
 
@@ -2763,15 +2826,13 @@ fn append_generated_material_point_contact_constraints(
                 ) else {
                     continue;
                 };
-                let (owner, opposite_owner) = if left_owner <= right_owner {
-                    (left_owner, right_owner)
-                } else {
-                    (right_owner, left_owner)
+                let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+                    continue;
                 };
                 contact_points.insert(GeneratedSameBandContactConstraint {
                     kind: contact_kind,
-                    owner,
-                    opposite_owner,
+                    owner: pair.owner,
+                    opposite_owner: pair.opposite_owner,
                     start: point,
                     end: point,
                     source_mouth_order_index: contact_source.source_mouth_order_index,
@@ -3003,10 +3064,8 @@ fn append_generated_same_band_contact_constraints(
             else {
                 continue;
             };
-            let (owner, opposite_owner) = if left_owner <= right_owner {
-                (left_owner, right_owner)
-            } else {
-                (right_owner, left_owner)
+            let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+                continue;
             };
             let shared_edges = shared_generated_contour_edges(left, right);
             let shared_edge_points = shared_edges
@@ -3021,16 +3080,16 @@ fn append_generated_same_band_contact_constraints(
                     edge,
                     contact_kind,
                 ) && let Some(source) = generated_exact_owner_pair_contact_authority_for_edge(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
                         &mut contact_edges,
                         contact_kind,
-                        owner,
-                        opposite_owner,
+                        pair.owner,
+                        pair.opposite_owner,
                         edge,
                         source,
                     );
@@ -3044,16 +3103,16 @@ fn append_generated_same_band_contact_constraints(
                     edge,
                     contact_kind,
                 ) && let Some(source) = generated_exact_owner_pair_contact_authority_for_edge(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
                         &mut contact_edges,
                         contact_kind,
-                        owner,
-                        opposite_owner,
+                        pair.owner,
+                        pair.opposite_owner,
                         edge,
                         source,
                     );
@@ -3067,16 +3126,16 @@ fn append_generated_same_band_contact_constraints(
                     edge,
                     contact_kind,
                 ) && let Some(source) = generated_exact_owner_pair_contact_authority_for_edge(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
                         &mut contact_edges,
                         contact_kind,
-                        owner,
-                        opposite_owner,
+                        pair.owner,
+                        pair.opposite_owner,
                         edge,
                         source,
                     );
@@ -3090,16 +3149,16 @@ fn append_generated_same_band_contact_constraints(
                     edge,
                     contact_kind,
                 ) && let Some(source) = generated_exact_owner_pair_contact_authority_for_edge(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
                         &mut contact_edges,
                         contact_kind,
-                        owner,
-                        opposite_owner,
+                        pair.owner,
+                        pair.opposite_owner,
                         edge,
                         source,
                     );
@@ -3121,8 +3180,8 @@ fn append_generated_same_band_contact_constraints(
                     continue;
                 }
                 let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     point,
                 ) else {
@@ -3130,8 +3189,8 @@ fn append_generated_same_band_contact_constraints(
                 };
                 contact_edges.insert(GeneratedSameBandContactConstraint {
                     kind: contact_kind,
-                    owner,
-                    opposite_owner,
+                    owner: pair.owner,
+                    opposite_owner: pair.opposite_owner,
                     start: point,
                     end: point,
                     source_mouth_order_index: source.source_mouth_order_index,
@@ -3154,8 +3213,8 @@ fn append_generated_same_band_contact_constraints(
                     continue;
                 }
                 let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-                    owner,
-                    opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
                     constraints,
                     point,
                 ) else {
@@ -3163,8 +3222,8 @@ fn append_generated_same_band_contact_constraints(
                 };
                 contact_edges.insert(GeneratedSameBandContactConstraint {
                     kind: contact_kind,
-                    owner,
-                    opposite_owner,
+                    owner: pair.owner,
+                    opposite_owner: pair.opposite_owner,
                     start: point,
                     end: point,
                     source_mouth_order_index: source.source_mouth_order_index,
@@ -3252,6 +3311,14 @@ fn insert_generated_contact_constraint(
     edge: GeneratedContourEdgeKey,
     source: GeneratedMaterialPointContactAuthority,
 ) {
+    let (owner, opposite_owner) = if kind == NodeRailConstraintKind::RaisedStepContact {
+        let Some(pair) = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner) else {
+            return;
+        };
+        (pair.owner, pair.opposite_owner)
+    } else {
+        (owner, opposite_owner)
+    };
     for (start, end) in [
         (edge.start, edge.end),
         (edge.start, edge.start),
@@ -3278,130 +3345,24 @@ fn generated_contact_edge_has_explicit_roles(
 ) -> bool {
     match contact_kind {
         NodeRailConstraintKind::RaisedStepContact => {
-            let Some(left_kind) = generated_contour_band_kind(left) else {
+            let Some(left_owner) = left.owner else {
                 return false;
             };
-            let Some(right_kind) = generated_contour_band_kind(right) else {
+            let Some(right_owner) = right.owner else {
                 return false;
             };
-            if owner_kinds_form_carriageway_raised_step_contact(left_kind, right_kind) {
-                generated_curb_contact_role_on_edge(left, right, constraints, edge)
-                    == Some(GeneratedSameBandBoundaryRole::LowerSide)
-                    || generated_asphalt_curb_contact_on_carriageway_edge(
-                        left,
-                        right,
-                        constraints,
-                        edge,
-                    )
-            } else if owner_kinds_form_curb_sidewalk_contact(left_kind, right_kind) {
-                let Some(curb_role) =
-                    generated_curb_contact_role_on_edge(left, right, constraints, edge)
-                else {
-                    return false;
-                };
-                let Some(sidewalk_role) =
-                    generated_sidewalk_contact_role_on_edge(left, right, constraints, edge)
-                else {
-                    return false;
-                };
-                curb_role == GeneratedSameBandBoundaryRole::RaisedSide
-                    && sidewalk_role == GeneratedSameBandBoundaryRole::LowerSide
-            } else {
-                false
-            }
+            let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+                return false;
+            };
+            generated_exact_owner_pair_contact_authority_for_edge(
+                pair.owner,
+                pair.opposite_owner,
+                constraints,
+                edge,
+            )
+            .is_some()
         }
         _ => true,
-    }
-}
-
-fn generated_curb_contact_role_on_edge(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    edge: GeneratedContourEdgeKey,
-) -> Option<GeneratedSameBandBoundaryRole> {
-    [left, right]
-        .into_iter()
-        .find(|contour| generated_contour_band_kind(contour).is_some_and(is_curb_or_shoulder))
-        .and_then(|contour| generated_contact_role_on_edge(contour, constraints, edge))
-}
-
-fn generated_asphalt_curb_contact_on_carriageway_edge(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    edge: GeneratedContourEdgeKey,
-) -> bool {
-    [left, right]
-        .into_iter()
-        .find(|contour| generated_contour_band_kind(contour).is_some_and(is_carriageway))
-        .is_some_and(|contour| generated_carriageway_contact_on_edge(contour, constraints, edge))
-}
-
-fn generated_carriageway_contact_on_edge(
-    contour: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    edge: GeneratedContourEdgeKey,
-) -> bool {
-    let Some(owner) = contour.owner else {
-        return false;
-    };
-    constraints
-        .iter()
-        .filter(|constraint| generated_constraint_applies_to_owner(constraint, owner))
-        .filter(|constraint| {
-            matches!(
-                constraint.kind,
-                NodeRailConstraintKind::RaisedStepContact
-                    | NodeRailConstraintKind::AsphaltBoundary { .. }
-                    | NodeRailConstraintKind::BandContour {
-                        kind: RoadSurfaceBandKind::Carriageway,
-                    }
-            )
-        })
-        .any(|constraint| {
-            generated_constraint_contains_key_segment(constraint, edge.start, edge.end)
-        })
-}
-
-fn generated_sidewalk_contact_role_on_edge(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    edge: GeneratedContourEdgeKey,
-) -> Option<GeneratedSameBandBoundaryRole> {
-    [left, right]
-        .into_iter()
-        .find(|contour| generated_contour_band_kind(contour).is_some_and(is_sidewalk))
-        .and_then(|contour| generated_contact_role_on_edge(contour, constraints, edge))
-}
-
-fn generated_contact_role_on_edge(
-    contour: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    edge: GeneratedContourEdgeKey,
-) -> Option<GeneratedSameBandBoundaryRole> {
-    let mut roles = Vec::new();
-    collect_generated_same_band_role_on_segment(
-        contour,
-        constraints,
-        edge.start,
-        edge.end,
-        &mut roles,
-    );
-    roles.sort_unstable();
-    roles.dedup();
-    if roles.len() == 1 {
-        return roles.first().copied();
-    }
-
-    let start_role =
-        generated_same_band_boundary_role_at_contour_vertex(contour, constraints, edge.start);
-    let end_role =
-        generated_same_band_boundary_role_at_contour_vertex(contour, constraints, edge.end);
-    match (start_role, end_role) {
-        (Some(start_role), Some(end_role)) if start_role == end_role => Some(start_role),
-        _ => None,
     }
 }
 
@@ -4215,42 +4176,50 @@ fn generated_raised_step_contact_kind_for_owners(
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
 ) -> Option<NodeRailConstraintKind> {
-    if left_owner == right_owner {
-        return None;
+    GeneratedRaisedStepOwnerPair::new(left_owner, right_owner)
+        .map(|_| NodeRailConstraintKind::RaisedStepContact)
+}
+
+fn raised_step_band_kinds_can_contact(
+    left_kind: RoadSurfaceBandKind,
+    right_kind: RoadSurfaceBandKind,
+) -> bool {
+    let Some(left_rank) = raised_step_band_kind_rank(left_kind) else {
+        return false;
+    };
+    let Some(right_rank) = raised_step_band_kind_rank(right_kind) else {
+        return false;
+    };
+    left_rank.abs_diff(right_rank) == 1
+}
+
+fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Footpath
+        | RoadSurfaceBandKind::Median
+        | RoadSurfaceBandKind::Parking
+        | RoadSurfaceBandKind::CycleTrack
+        | RoadSurfaceBandKind::TramReservation => None,
     }
-    (owners_form_carriageway_raised_step_contact(left_owner, right_owner)
-        || owners_form_curb_sidewalk_contact(left_owner, right_owner))
-    .then_some(NodeRailConstraintKind::RaisedStepContact)
 }
 
-fn owners_form_carriageway_raised_step_contact(
-    left_owner: NodeBandOwner,
-    right_owner: NodeBandOwner,
-) -> bool {
-    owner_kinds_form_carriageway_raised_step_contact(left_owner.kind(), right_owner.kind())
-}
-
-fn owner_kinds_form_carriageway_raised_step_contact(
-    left_kind: RoadSurfaceBandKind,
-    right_kind: RoadSurfaceBandKind,
-) -> bool {
-    (is_carriageway(left_kind) && is_curb_or_shoulder(right_kind))
-        || (is_carriageway(right_kind) && is_curb_or_shoulder(left_kind))
-}
-
-fn owners_form_curb_sidewalk_contact(
-    left_owner: NodeBandOwner,
-    right_owner: NodeBandOwner,
-) -> bool {
-    owner_kinds_form_curb_sidewalk_contact(left_owner.kind(), right_owner.kind())
-}
-
-fn owner_kinds_form_curb_sidewalk_contact(
-    left_kind: RoadSurfaceBandKind,
-    right_kind: RoadSurfaceBandKind,
-) -> bool {
-    (is_curb_or_shoulder(left_kind) && is_sidewalk(right_kind))
-        || (is_sidewalk(left_kind) && is_curb_or_shoulder(right_kind))
+fn generated_raised_step_boundary_role_for_owner(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Option<GeneratedSameBandBoundaryRole> {
+    GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
+    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
+    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
+    if opposite_rank < owner_rank {
+        Some(GeneratedSameBandBoundaryRole::LowerSide)
+    } else if opposite_rank > owner_rank {
+        Some(GeneratedSameBandBoundaryRole::RaisedSide)
+    } else {
+        None
+    }
 }
 
 fn generated_same_band_point_contact_has_explicit_roles(
@@ -4285,48 +4254,25 @@ fn generated_contact_point_has_explicit_roles(
     }
     match contact_kind {
         NodeRailConstraintKind::RaisedStepContact => {
-            if owner_kinds_form_carriageway_raised_step_contact(left_kind, right_kind) {
-                generated_curb_contact_role_at_point(left, right, constraints, point)
-                    == Some(GeneratedSameBandBoundaryRole::LowerSide)
-            } else if owner_kinds_form_curb_sidewalk_contact(left_kind, right_kind) {
-                generated_curb_contact_role_at_point(left, right, constraints, point)
-                    == Some(GeneratedSameBandBoundaryRole::RaisedSide)
-                    && generated_sidewalk_contact_role_at_point(left, right, constraints, point)
-                        == Some(GeneratedSameBandBoundaryRole::LowerSide)
-            } else {
-                false
-            }
+            let Some(left_owner) = left.owner else {
+                return false;
+            };
+            let Some(right_owner) = right.owner else {
+                return false;
+            };
+            let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+                return false;
+            };
+            generated_exact_owner_pair_contact_authority_at_point(
+                pair.owner,
+                pair.opposite_owner,
+                constraints,
+                point,
+            )
+            .is_some()
         }
         _ => true,
     }
-}
-
-fn generated_curb_contact_role_at_point(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    point: NodeRailPointKey,
-) -> Option<GeneratedSameBandBoundaryRole> {
-    [left, right]
-        .into_iter()
-        .find(|contour| generated_contour_band_kind(contour).is_some_and(is_curb_or_shoulder))
-        .and_then(|contour| {
-            generated_same_band_boundary_role_at_contour_vertex(contour, constraints, point)
-        })
-}
-
-fn generated_sidewalk_contact_role_at_point(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    point: NodeRailPointKey,
-) -> Option<GeneratedSameBandBoundaryRole> {
-    [left, right]
-        .into_iter()
-        .find(|contour| generated_contour_band_kind(contour).is_some_and(is_sidewalk))
-        .and_then(|contour| {
-            generated_same_band_boundary_role_at_contour_vertex(contour, constraints, point)
-        })
 }
 
 fn generated_same_band_contact_constraint_key(
@@ -4350,10 +4296,16 @@ fn generated_same_band_contact_constraint(
     if points.len() != 2 {
         return None;
     }
+    let (owner, opposite_owner) = if kind == NodeRailConstraintKind::RaisedStepContact {
+        let pair = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
+        (pair.owner, pair.opposite_owner)
+    } else {
+        (owner.min(opposite_owner), owner.max(opposite_owner))
+    };
     Some(GeneratedSameBandContactConstraint {
         kind,
-        owner: owner.min(opposite_owner),
-        opposite_owner: owner.max(opposite_owner),
+        owner,
+        opposite_owner,
         start: road_point_key(points[0]),
         end: road_point_key(points[1]),
         source_mouth_order_index: constraint.source_mouth_order_index,
@@ -4370,9 +4322,7 @@ fn generated_contact_kind_from_constraint(
         NodeRailConstraintKind::BandBoundary {
             left_kind,
             right_kind,
-        } => (owner_kinds_form_carriageway_raised_step_contact(left_kind, right_kind)
-            || owner_kinds_form_curb_sidewalk_contact(left_kind, right_kind))
-        .then_some(kind),
+        } => raised_step_band_kinds_can_contact(left_kind, right_kind).then_some(kind),
         NodeRailConstraintKind::FullRoadbedContour
         | NodeRailConstraintKind::BandContour { .. }
         | NodeRailConstraintKind::SpanHandoff { .. }
@@ -4688,70 +4638,36 @@ fn generated_boundary_role_from_constraint(
     owner: NodeBandOwner,
     constraint: &NodeRailConstraint,
 ) -> Option<GeneratedSameBandBoundaryRole> {
-    match contour_kind {
-        RoadSurfaceBandKind::CurbOrShoulder => match constraint.kind {
-            NodeRailConstraintKind::RaisedStepContact
-                if generated_constraint_pairs_owner_with_kind(
-                    constraint,
-                    owner,
-                    RoadSurfaceBandKind::Carriageway,
-                ) =>
-            {
-                Some(GeneratedSameBandBoundaryRole::LowerSide)
-            }
-            NodeRailConstraintKind::AsphaltBoundary { .. } => {
-                Some(GeneratedSameBandBoundaryRole::LowerSide)
-            }
-            NodeRailConstraintKind::RaisedStepContact
-                if generated_constraint_pairs_owner_with_kind(
-                    constraint,
-                    owner,
-                    RoadSurfaceBandKind::Sidewalk,
-                ) =>
-            {
-                Some(GeneratedSameBandBoundaryRole::RaisedSide)
-            }
-            NodeRailConstraintKind::FullRoadbedContour
-            | NodeRailConstraintKind::BandContour { .. }
-            | NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::RaisedStepContact
-            | NodeRailConstraintKind::FootprintSeam { .. }
-            | NodeRailConstraintKind::BandBoundary { .. } => None,
-        },
-        RoadSurfaceBandKind::Sidewalk => match constraint.kind {
-            NodeRailConstraintKind::RaisedStepContact
-                if generated_constraint_pairs_owner_with_kind(
-                    constraint,
-                    owner,
-                    RoadSurfaceBandKind::CurbOrShoulder,
-                ) =>
-            {
-                Some(GeneratedSameBandBoundaryRole::LowerSide)
-            }
-            NodeRailConstraintKind::FootprintSeam {
-                adjacent_kind: RoadSurfaceBandKind::Sidewalk,
-            } => Some(GeneratedSameBandBoundaryRole::RaisedSide),
-            NodeRailConstraintKind::FullRoadbedContour
-            | NodeRailConstraintKind::BandContour { .. }
-            | NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::RaisedStepContact
-            | NodeRailConstraintKind::FootprintSeam { .. }
-            | NodeRailConstraintKind::BandBoundary { .. } => None,
-        },
-        _ => None,
+    if contour_kind != owner.kind() {
+        return None;
+    }
+    match constraint.kind {
+        NodeRailConstraintKind::RaisedStepContact => {
+            let opposite_owner = generated_constraint_opposite_owner(constraint, owner)?;
+            generated_raised_step_boundary_role_for_owner(owner, opposite_owner)
+        }
+        NodeRailConstraintKind::FootprintSeam {
+            adjacent_kind: RoadSurfaceBandKind::Sidewalk,
+        } if contour_kind == RoadSurfaceBandKind::Sidewalk => {
+            Some(GeneratedSameBandBoundaryRole::RaisedSide)
+        }
+        NodeRailConstraintKind::FullRoadbedContour
+        | NodeRailConstraintKind::BandContour { .. }
+        | NodeRailConstraintKind::SpanHandoff { .. }
+        | NodeRailConstraintKind::AsphaltBoundary { .. }
+        | NodeRailConstraintKind::FootprintSeam { .. }
+        | NodeRailConstraintKind::BandBoundary { .. } => None,
     }
 }
 
-fn generated_constraint_pairs_owner_with_kind(
+fn generated_constraint_opposite_owner(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,
-    opposite_kind: RoadSurfaceBandKind,
-) -> bool {
+) -> Option<NodeBandOwner> {
     match (constraint.owner, constraint.opposite_owner) {
-        (Some(left), Some(right)) if left == owner => right.kind() == opposite_kind,
-        (Some(left), Some(right)) if right == owner => left.kind() == opposite_kind,
-        _ => false,
+        (Some(left), Some(right)) if left == owner => Some(right),
+        (Some(left), Some(right)) if right == owner => Some(left),
+        _ => None,
     }
 }
 
@@ -5258,9 +5174,7 @@ fn boundary_constraint_kind(role: NodeInputBoundaryRailRole) -> NodeRailConstrai
             left_kind,
             right_kind,
         } => {
-            if is_carriageway(left_kind) && is_curb_or_shoulder(right_kind)
-                || is_curb_or_shoulder(left_kind) && is_carriageway(right_kind)
-            {
+            if raised_step_band_kinds_can_contact(left_kind, right_kind) {
                 NodeRailConstraintKind::RaisedStepContact
             } else if is_carriageway(left_kind) || is_carriageway(right_kind) {
                 let adjacent_kind = if is_carriageway(left_kind) {
@@ -5269,10 +5183,6 @@ fn boundary_constraint_kind(role: NodeInputBoundaryRailRole) -> NodeRailConstrai
                     left_kind
                 };
                 NodeRailConstraintKind::AsphaltBoundary { adjacent_kind }
-            } else if is_curb_or_shoulder(left_kind) && is_sidewalk(right_kind)
-                || is_sidewalk(left_kind) && is_curb_or_shoulder(right_kind)
-            {
-                NodeRailConstraintKind::RaisedStepContact
             } else {
                 NodeRailConstraintKind::BandBoundary {
                     left_kind,
@@ -5289,14 +5199,6 @@ fn xz(point: RoadVec3) -> RoadVec2 {
 
 fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
     kind == RoadSurfaceBandKind::Carriageway
-}
-
-fn is_curb_or_shoulder(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::CurbOrShoulder
-}
-
-fn is_sidewalk(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::Sidewalk
 }
 
 #[cfg(test)]
@@ -5708,26 +5610,32 @@ mod tests {
     }
 
     #[test]
-    fn bend_curb_side_join_contacts_name_exact_adjacent_owner() {
+    fn bend_side_join_contacts_name_exact_adjacent_owner_pair() {
         let contours = NodeRailContourSet::from_input(&bend_input_with_curb_side_join())
             .expect("valid contours");
 
+        let side_join_owner = contours
+            .contours
+            .iter()
+            .find(|contour| {
+                contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+                    && contour.source_band_index == Some(4)
+            })
+            .and_then(|contour| contour.owner)
+            .expect("side-join contour should have a band owner");
         assert!(contours.constraints.iter().any(|constraint| {
             constraint.kind == NodeRailConstraintKind::RaisedStepContact
                 && constraint.source_band_index == Some(4)
-                && constraint
-                    .owner
-                    .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
-                && constraint
-                    .opposite_owner
+                && (constraint.owner == Some(side_join_owner)
+                    || constraint.opposite_owner == Some(side_join_owner))
+                && generated_constraint_opposite_owner(constraint, side_join_owner)
                     .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::Carriageway)
         }));
         assert!(!contours.constraints.iter().any(|constraint| {
             constraint.kind == NodeRailConstraintKind::RaisedStepContact
                 && constraint.source_band_index == Some(4)
-                && constraint
-                    .owner
-                    .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
+                && (constraint.owner == Some(side_join_owner)
+                    || constraint.opposite_owner == Some(side_join_owner))
                 && constraint.opposite_owner.is_none()
         }));
     }
@@ -5994,7 +5902,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_asphalt_curb_contact_splits_carriageway_boundary_at_overlay_contact() {
+    fn generated_raised_step_owner_pair_splits_carriageway_boundary_at_overlay_contact() {
         let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let actual_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let mut contours = Vec::new();
@@ -6078,7 +5986,91 @@ mod tests {
     }
 
     #[test]
-    fn generated_asphalt_curb_contact_uses_source_authority_union_for_split_domains() {
+    fn generated_raised_step_owner_pair_splits_curb_sidewalk_boundary_at_overlay_contact() {
+        let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
+        let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let mut contours = Vec::new();
+        let mut constraints = Vec::new();
+
+        push_generated_contour(
+            NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::CurbOrShoulder,
+            },
+            0,
+            Some(0),
+            Some(curb_owner),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            NodeRailConstraintKind::BandContour {
+                kind: RoadSurfaceBandKind::CurbOrShoulder,
+            },
+            vec![
+                RoadVec2::new(0.0, 0.0),
+                RoadVec2::new(4.0, 0.0),
+                RoadVec2::new(4.0, 1.0),
+                RoadVec2::new(0.0, 1.0),
+            ],
+            None,
+            &mut contours,
+            &mut constraints,
+        )
+        .expect("curb contour is valid");
+        push_generated_contour(
+            NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            0,
+            Some(1),
+            Some(sidewalk_owner),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            NodeRailConstraintKind::BandContour {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            vec![
+                RoadVec2::new(3.0, 0.5),
+                RoadVec2::new(4.0, 0.5),
+                RoadVec2::new(4.0, 1.5),
+                RoadVec2::new(3.0, 1.5),
+            ],
+            None,
+            &mut contours,
+            &mut constraints,
+        )
+        .expect("sidewalk contour is valid");
+        constraints.push(NodeRailConstraint {
+            constraint_index: constraints.len(),
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(sidewalk_owner),
+            opposite_owner: Some(curb_owner),
+            points_xz: vec![RoadVec2::new(0.0, 1.0), RoadVec2::new(4.0, 1.0)],
+        });
+
+        append_generated_same_band_contact_constraints(
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &contours,
+            &mut constraints,
+        );
+
+        let start = road_point_key(RoadVec2::new(3.0, 1.0));
+        let end = road_point_key(RoadVec2::new(4.0, 1.0));
+        assert!(constraints.iter().any(|constraint| {
+            constraint.kind == NodeRailConstraintKind::RaisedStepContact
+                && owners_match_unordered(
+                    constraint.owner,
+                    constraint.opposite_owner,
+                    curb_owner,
+                    sidewalk_owner,
+                )
+                && constraint.points_xz.len() == 2
+                && road_point_key(constraint.points_xz[0]) == start
+                && road_point_key(constraint.points_xz[1]) == end
+        }));
+    }
+
+    #[test]
+    fn generated_raised_step_owner_pair_uses_source_authority_union_for_split_domains() {
         let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let actual_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let mut contours = Vec::new();
@@ -6219,10 +6211,19 @@ mod tests {
     }
 
     #[test]
-    fn terminal_curb_end_band_asphalt_contacts_name_adjacent_carriageways() {
+    fn terminal_end_band_contacts_name_adjacent_owner_pairs() {
         let input = terminal_input_with_endpoint_x(0.0);
         let terminal_curb_source = input.mouths[0].band_intervals.len();
         let contours = NodeRailContourSet::from_input(&input).expect("valid terminal contours");
+        let terminal_curb_owner = contours
+            .contours
+            .iter()
+            .find(|contour| {
+                contour.purpose == NodeGeneratedContourPurpose::TerminalEndBand
+                    && contour.source_band_index == Some(terminal_curb_source)
+            })
+            .and_then(|contour| contour.owner)
+            .expect("terminal end band should have an owner");
         let left_carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
         let right_carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 3);
         let left_segment = GeneratedContourEdgeKey::new(
@@ -6239,12 +6240,12 @@ mod tests {
             .filter(|constraint| {
                 constraint.kind == NodeRailConstraintKind::RaisedStepContact
                     && constraint.source_band_index == Some(terminal_curb_source)
-                    && constraint
-                        .owner
-                        .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::CurbOrShoulder)
+                    && (constraint.owner == Some(terminal_curb_owner)
+                        || constraint.opposite_owner == Some(terminal_curb_owner))
             })
             .filter_map(|constraint| {
-                let opposite_owner = constraint.opposite_owner?;
+                let opposite_owner =
+                    generated_constraint_opposite_owner(constraint, terminal_curb_owner)?;
                 Some((
                     GeneratedContourEdgeKey::new(
                         road_point_key(constraint.points_xz[0]),

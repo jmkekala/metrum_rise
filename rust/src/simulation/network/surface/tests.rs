@@ -41,7 +41,7 @@ fn span_curbface_generation_does_not_use_legacy_section_pair_seam_finder() {
 }
 
 #[test]
-fn span_vertical_steps_include_direct_carriageway_sidewalk_boundaries() {
+fn span_vertical_steps_include_direct_carriageway_walkable_boundaries() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
@@ -6247,7 +6247,7 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"road_topology\""));
     assert!(dump.contains("\"sidewalk_topology\""));
     assert!(dump.contains("\"curb_vertical_face_details\""));
-    assert!(dump.contains("\"expected_asphalt_curb_steps\""));
+    assert!(dump.contains("\"expected_raised_steps\""));
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"seam_constraints\""));

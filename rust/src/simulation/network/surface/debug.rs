@@ -875,7 +875,7 @@ impl RoadSurfaceSystem {
         for edge in &top_edges {
             top_edges_by_key.entry(edge.key).or_default().push(*edge);
         }
-        let expected_steps = Self::debug_expected_asphalt_curb_steps(&top_edges);
+        let expected_steps = Self::debug_expected_raised_steps(&top_edges);
         let canonical_steps = Self::debug_canonical_raised_non_road_steps(piece, &top_edges);
 
         let face_span_edges: Vec<Option<DebugVerticalFaceSpanEdges>> = piece
@@ -1006,7 +1006,7 @@ impl RoadSurfaceSystem {
             })
             .count();
         problem_count += canonical_problem_count;
-        let direct_carriageway_sidewalk_step_count = canonical_steps
+        let direct_carriageway_walkable_step_count = canonical_steps
             .iter()
             .filter(|step| step.raised_owner.kind() == RoadSurfaceBandKind::Sidewalk)
             .count();
@@ -1014,12 +1014,12 @@ impl RoadSurfaceSystem {
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_asphalt_curb_step_count\":{},\"canonical_raised_non_road_step_count\":{},\"direct_carriageway_sidewalk_step_count\":{},\"canonical_raised_non_road_problem_count\":{},\"problem_count\":{}",
+            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_raised_step_count\":{},\"canonical_raised_non_road_step_count\":{},\"direct_carriageway_walkable_step_count\":{},\"canonical_raised_non_road_problem_count\":{},\"problem_count\":{}",
             piece.curb_vertical_face_polygons.len(),
             top_edges.len(),
             expected_steps.len(),
             canonical_steps.len(),
-            direct_carriageway_sidewalk_step_count,
+            direct_carriageway_walkable_step_count,
             canonical_problem_count,
             problem_count
         );
@@ -1040,7 +1040,7 @@ impl RoadSurfaceSystem {
                 &face_canonical_matches[face_index],
             );
         }
-        dump.push_str("],\"expected_asphalt_curb_steps\":[");
+        dump.push_str("],\"expected_raised_steps\":[");
         for (step_index, step) in expected_steps.iter().enumerate() {
             if step_index > 0 {
                 dump.push_str(", ");
@@ -1541,7 +1541,7 @@ impl RoadSurfaceSystem {
             .or_insert((1, start, end));
     }
 
-    fn debug_expected_asphalt_curb_steps(
+    fn debug_expected_raised_steps(
         top_edges: &[DebugTopBoundaryEdge],
     ) -> Vec<DebugExpectedVerticalStep> {
         let mut edges_by_xz: BTreeMap<DebugRenderXzEdgeKey, Vec<DebugTopBoundaryEdge>> =
@@ -2723,7 +2723,7 @@ mod tests {
         RoadSurfaceSystem::append_curb_vertical_face_details_debug_literal(&mut dump, &piece);
 
         assert!(dump.contains("\"face_count\":1"));
-        assert!(dump.contains("\"expected_asphalt_curb_step_count\":1"));
+        assert!(dump.contains("\"expected_raised_step_count\":1"));
         assert!(dump.contains("\"problem_count\":0"));
         assert!(dump.contains("\"lower_matches_carriageway\":true"));
         assert!(dump.contains("\"upper_matches_curb\":true"));
@@ -2760,14 +2760,14 @@ mod tests {
                 NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
                 NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 11),
             )
-            .expect("direct asphalt-sidewalk step should be non-degenerate"),
+            .expect("direct carriageway-walkable step should be non-degenerate"),
         );
 
         let mut dump = String::new();
         RoadSurfaceSystem::append_curb_vertical_face_details_debug_literal(&mut dump, &piece);
 
         assert!(dump.contains("\"canonical_raised_non_road_step_count\":1"));
-        assert!(dump.contains("\"direct_carriageway_sidewalk_step_count\":1"));
+        assert!(dump.contains("\"direct_carriageway_walkable_step_count\":1"));
         assert!(dump.contains("\"canonical_raised_non_road_problem_count\":1"));
         assert!(dump.contains("\"raised_owner\":{\"kind\":\"Sidewalk\",\"owner_index\":11}"));
         assert!(dump.contains("\"matching_face_indices\":[]"));

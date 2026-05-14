@@ -1659,7 +1659,7 @@ mod tests {
     fn explicit_curb_sidewalk_seam_rejects_shared_height_disagreement() {
         let seam = manual_seam_constraint(
             12,
-            NodeSeamSource::CurbSidewalkContact { owner_index: 0 },
+            NodeSeamSource::RaisedStepContact { owner_index: 0 },
             true,
             true,
         );
@@ -1690,7 +1690,7 @@ mod tests {
     fn explicit_curb_sidewalk_seam_accepts_matching_shared_height() {
         let seam = manual_seam_constraint(
             12,
-            NodeSeamSource::CurbSidewalkContact { owner_index: 0 },
+            NodeSeamSource::RaisedStepContact { owner_index: 0 },
             true,
             true,
         );
@@ -1719,7 +1719,7 @@ mod tests {
     fn asphalt_curb_seams_allow_explicit_vertical_height_step() {
         let seam = manual_seam_constraint(
             3,
-            NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
+            NodeSeamSource::RaisedStepContact { owner_index: 0 },
             false,
             true,
         );
