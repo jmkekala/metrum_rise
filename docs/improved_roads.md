@@ -156,9 +156,12 @@ Live behavior:
   accepts curb / shoulder and sidewalk regions only when the clipped owned region carries explicit
   profile seam-rail evidence before and after cleanup / seam materialization; carrier-only shapes
   become deterministic boolean-ownership residual diagnostics instead of rendered fallback
-  polygons. The remaining blocker is clipped terrain topology and broader DEM validation around
-  road-touched earthworks; boolean ownership and height-field validation must keep rejecting real
-  band residuals instead of silently patching them.
+  polygons. Road-touched terrain hardening now keeps grounded road support below the lower envelope
+  of overlapping road-owned top surfaces, and bridge / tunnel structural earthworks are selected
+  from class-owned endpoint ranges so bridge midspans stay unflattened while tunnel portals still
+  stamp. The remaining blocker is broader DEM validation around road-touched tie-in steepness,
+  retaining / wall variants, and material classification; boolean ownership and height-field
+  validation must keep rejecting real band residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -182,10 +185,13 @@ Remaining ROAD-01 gap:
   corridor authority is separated from per-band owner carriers before boolean splitting.
   Post-boolean `node_non_road` subdivision now requires final curb / shoulder and sidewalk owned
   regions to carry explicit profile seam rails, and missing evidence is reported as a structured
-  boolean-ownership residual. The remaining work is clipped terrain topology hardening and broader
-  DEM validation for road-touched earthworks. Hand-built miter caps, miter guards, or
-  adjacent-mouth connector patches are not the Bend / JunctionN ownership strategy; they are the
-  failure mode this rework is replacing.
+  boolean-ownership residual. Road-touched terrain support now uses the lower road-owned
+  top-surface envelope for overlapping grounded support checks, and bridge / tunnel earthwork
+  ranges are class-aware so structural stamps stay limited to abutments and visible portals. The
+  remaining work is broader DEM validation of road-to-terrain tie-in steepness plus retaining /
+  wall and material variants. Hand-built miter caps, miter guards, or adjacent-mouth connector
+  patches are not the Bend / JunctionN ownership strategy; they are the failure mode this rework is
+  replacing.
 
 Accepted Geometry Backends:
 

@@ -206,6 +206,9 @@ impl RoadSurfaceSystem {
         let point = Vector2::new(world_x, world_z);
         let mut best_height_m: Option<f32> = None;
 
+        // Terrain support clearance is a lower envelope: where terminal caps, spans, or raised
+        // bands overlap in XZ, terrain must remain below every road-owned top surface. Visible
+        // picking uses the highest rendered surface instead.
         for &node_id in &node_ids {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
@@ -229,7 +232,7 @@ impl RoadSurfaceSystem {
                     };
                     let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc
                         - height_offset_m;
-                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.min(height_m)));
                 });
             }
         }
@@ -246,7 +249,7 @@ impl RoadSurfaceSystem {
                 };
                 let height_m =
                     triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc - height_offset_m;
-                best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                best_height_m = Some(best_height_m.map_or(height_m, |best| best.min(height_m)));
             });
         }
 

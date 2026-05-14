@@ -618,6 +618,13 @@ impl RoadSurfaceSystem {
             return None;
         }
 
+        // Bridge abutments and tunnel portals are structural endpoint regions; trimming them by
+        // the ordinary road-width handoff can either erase portals or collapse short spans into
+        // one full-length stamp.
+        if edge.class != EdgeClass::Standard {
+            return Some((0, sections.len().saturating_sub(1)));
+        }
+
         let total_length = sections.last()?.s_m.max(0.0);
         let start_handoff = Self::visual_start_handoff_m(edge, total_length);
         let end_handoff = Self::visual_end_handoff_s_m(edge, total_length);

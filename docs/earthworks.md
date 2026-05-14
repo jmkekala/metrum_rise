@@ -227,6 +227,9 @@ Deterministic seam contract:
 For roads, that means:
 
 - grounded road footprint support is owned by the committed road top surface
+- when multiple committed road-owned top surfaces overlap at the same XZ, terrain support clearance
+  uses the lower top-surface envelope so terrain remains below every visible road-owned face; this
+  does not change visible-surface picking, which still resolves the topmost rendered surface
 - the committed road top surface is intentionally laterally flat at each section station:
   carriageway, left edge, and right edge share the same road height, while sidewalks use
   `road_height + curb_step`
@@ -305,8 +308,10 @@ That means:
 - `RoadSurfaceSystem` owns the roadbed support surface
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
-- bridge earthworks remain abutment-only
-- tunnel earthworks remain portal-only
+- bridge earthworks remain abutment-only and use class-owned endpoint ranges rather than ordinary
+  road-width handoff ranges, so midspans are not flattened
+- tunnel earthworks remain portal-only and use class-owned endpoint ranges so visible portals are
+  not trimmed away before portal visibility is evaluated
 
 Road-specific section and junction rules continue to live in [`improved_roads.md`](improved_roads.md).
 
@@ -625,15 +630,15 @@ The following are current hardcut implementation rules:
   water meshes receive the same road footprint clip polygons after a network edit and suppress
   touched water cells wholesale, so water is no longer allowed to render under grounded road-owned
   asphalt, shoulder / curb, or sidewalk
-- the remaining blocker is validation and hardening of the clipped patch topology against flat,
-  diagonal, sloped, water-overlap, bend, terminal, and `JunctionN` cases
+- clipped patch topology is validated against flat, diagonal, sloped, bend, terminal, and
+  `JunctionN` road cases, including bridge-midspan and tunnel-portal structural stamping
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
-- retaining / wall variants are later material / classification refinements for tie-in faces whose
-  deterministic thresholds require structural treatment
+- the remaining blocker is deterministic handling of over-steep road-to-terrain tie-ins and the
+  retaining / wall material variants those thresholds require
 
-That means the remaining items below are later additions only after clipped terrain topology is
-implemented; they are not a substitute for closing the road-to-terrain boundary.
+That means the remaining items below are later additions after the clipped terrain boundary itself;
+they are not a substitute for closing the road-to-terrain boundary.
 
 ## Later Additions
 

@@ -167,9 +167,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   separated from per-band owner carriers before boolean splitting. Post-boolean `node_non_road`
   subdivision now requires every final curb / shoulder and sidewalk owned region to carry explicit
   profile seam-rail evidence, and carrier-only leftovers are reported as deterministic
-  boolean-ownership residual diagnostics. The remaining blocking work is clipped terrain topology
-  hardening and broader DEM validation for road-touched earthworks, followed by retaining, wall,
-  and material variants.
+  boolean-ownership residual diagnostics. Road-touched terrain support now uses the lower
+  road-owned top-surface envelope when grounded support overlaps terminal caps or raised bands, and
+  bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
+  visible tunnel portals still stamp. The remaining blocking work is broader DEM validation of
+  road-to-terrain tie-in steepness, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
