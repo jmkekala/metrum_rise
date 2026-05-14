@@ -139,10 +139,13 @@ Live behavior:
   curb/sidewalk contact kinds; generated edge contacts must come from the exact source owner pair,
   while source endpoint contacts may close only between raised-step rails that meet at the same
   canonical key or, for bend side-join ownership, as endpoint-only reownership from an exact source
-  rail to a same-kind final owner. The remaining blocker is broader rail / contour generation for
-  `JunctionN`, continued cleanup of bend material-split strip authority, and not-yet-validated
-  arbitrary-node cases; boolean ownership and height-field validation must keep rejecting real band
-  residuals instead of silently patching them.
+  rail to a same-kind final owner. Non-terminal side-join contour adaptation now lives outside the
+  input extractor in `surface::joins`, with dedicated side-join carriers consumed separately from
+  terminal end bands by the rail contour set. Bend side joins keep their carriageway closure, while
+  `JunctionN` side joins carry curb / sidewalk ownership without adding carriageway bubble fill.
+  The remaining blocker is fully library-backed rail / contour generation for broader `JunctionN`
+  and not-yet-validated arbitrary-node cases; boolean ownership and height-field validation must
+  keep rejecting real band residuals instead of silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -159,12 +162,14 @@ Remaining ROAD-01 gap:
 - elevated and flat `Bend` / `JunctionN` pieces now use the canonical runtime path, and logged
   2-arm bend cases now preserve closed top-surface coverage through explicit curb / sidewalk join
   ownership. Raised-step rail authority is now generic and owner-pair based, with bend side-join
-  final-owner handoff limited to exact-source-rail endpoint contacts; bend material-split strip
-  geometry still exists as an input-stage authority source and `span.rs` still emits from section
-  windows. The remaining work is a library-backed canonical node arrangement that creates explicit
-  corner / join ownership before boolean splitting so oblique junctions do not produce real curb /
-  sidewalk residuals. Hand-built miter caps, miter guards, or adjacent-mouth connector patches are
-  not the Bend / JunctionN ownership strategy; they are the failure mode this rework is replacing.
+  final-owner handoff limited to exact-source-rail endpoint contacts. `surface::joins` is now the
+  side-join adapter boundary and already routes generated bands through Cavalier cleanup / arc
+  sampling where available, but the broader `JunctionN` join construction still needs to be owned
+  by the accepted geometry backends instead of local blending helpers. The remaining work is a
+  library-backed canonical node arrangement that creates explicit join ownership before boolean
+  splitting so oblique junctions do not produce real curb / sidewalk residuals. Hand-built miter
+  caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN ownership
+  strategy; they are the failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 

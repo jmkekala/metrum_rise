@@ -95,9 +95,7 @@ pub(crate) struct NodeInputTerminalEndBand {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NodeInputTerminalEndBandBoundaryMode {
-    MaterialBand,
     TerminalMaterialBand,
-    MaterialBandWithSameOwnerOuterCap,
     SameOwnerOuterCap,
 }
 

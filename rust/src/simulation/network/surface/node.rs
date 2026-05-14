@@ -375,6 +375,10 @@ impl RoadSurfaceSystem {
             &curb_surface_polygons,
             &sidewalk_surface_polygons,
         );
+        orient_curb_vertical_faces_to_road_support(
+            &mut curb_vertical_faces,
+            &road_surface_polygons,
+        );
         dedup_curb_vertical_faces(&mut curb_vertical_faces);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
@@ -1584,6 +1588,85 @@ fn retain_curb_vertical_faces_with_top_support(
                 .chain(sidewalk_surface_polygons.iter())
                 .any(|polygon| visual_polygon_boundary_overlaps_edge_at_height(polygon, upper_edge))
     });
+}
+
+fn orient_curb_vertical_faces_to_road_support(
+    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+    road_surface_polygons: &[RoadSurfaceVisualPolygon],
+) {
+    for (polygon, _) in faces {
+        let Some((lower_edge, _)) = vertical_face_support_edges(polygon) else {
+            continue;
+        };
+        let Some(visible_dot) =
+            vertical_face_visible_dot_to_supported_road(polygon, lower_edge, road_surface_polygons)
+        else {
+            continue;
+        };
+        if visible_dot > 0.0 {
+            continue;
+        }
+        let Some(points) = reversed_vertical_face_points(polygon) else {
+            continue;
+        };
+        if let Some(oriented) = RoadSurfaceSystem::make_vertical_quad_polygon(points) {
+            *polygon = oriented;
+        }
+    }
+}
+
+fn vertical_face_visible_dot_to_supported_road(
+    polygon: &RoadSurfaceVisualPolygon,
+    lower_edge: [Vector3; 2],
+    road_surface_polygons: &[RoadSurfaceVisualPolygon],
+) -> Option<f32> {
+    let visible_direction = vertical_face_visible_direction(polygon)?;
+    let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
+    let mut best_dot: Option<f32> = None;
+    for road_polygon in road_surface_polygons {
+        if !visual_polygon_boundary_overlaps_edge_at_height(road_polygon, lower_edge) {
+            continue;
+        }
+        let Some(centroid) = visual_polygon_centroid(road_polygon) else {
+            continue;
+        };
+        let owner_direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+        if owner_direction.length_squared() <= 1e-8 {
+            continue;
+        }
+        let dot = visible_direction.dot(owner_direction.normalized());
+        best_dot = Some(best_dot.map_or(dot, |current| current.max(dot)));
+    }
+    best_dot
+}
+
+fn vertical_face_visible_direction(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
+    let [upper_start, lower_start, lower_end, _upper_end] = polygon.points_world.as_slice() else {
+        return None;
+    };
+    let normal = (*lower_start - *upper_start).cross(*lower_end - *upper_start);
+    let visible_direction = Vector3::new(-normal.x, 0.0, -normal.z);
+    if visible_direction.length_squared() <= 1e-8 {
+        return None;
+    }
+    Some(visible_direction.normalized())
+}
+
+fn visual_polygon_centroid(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
+    let mut sum = Vector3::ZERO;
+    let mut count = 0usize;
+    for point in &polygon.points_world {
+        sum += Vector3::new(point.x, 0.0, point.z);
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f32)
+}
+
+fn reversed_vertical_face_points(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 4]> {
+    let [a, b, c, d] = polygon.points_world.as_slice() else {
+        return None;
+    };
+    Some([*d, *c, *b, *a])
 }
 
 fn vertical_face_support_edges(

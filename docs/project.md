@@ -155,10 +155,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   ownership is now hardened through the canonical path, and raised-step contact rails now use a
   generic source-owned owner-pair constraint instead of material-specific asphalt/curb and
   curb/sidewalk contact kinds, with bend side-join final-owner handoff limited to endpoint contacts
-  from exact source rails. The remaining blocking work is broader legal join ownership for
-  `JunctionN` and arbitrary oblique / sharp nodes, bend material-split strip cleanup once it is no
-  longer an authority source, plus clipped terrain topology hardening, followed by retaining, wall,
-  and material variants.
+  from exact source rails. Non-terminal side-join ownership now enters through the dedicated
+  `surface::joins` adapter rather than the input extractor; the rail contour set consumes terminal
+  end bands and side-join bands as separate carriers, and `JunctionN` side joins no longer add
+  carriageway bubble fill. The remaining blocking work is broader backend-owned legal join
+  construction for `JunctionN` and arbitrary oblique / sharp nodes, plus clipped terrain topology
+  hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
