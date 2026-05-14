@@ -4683,7 +4683,7 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
 }
 
 #[test]
-fn logged_flat_oblique_t_junction_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
+fn logged_flat_oblique_t_junction_compiles_with_explicit_curb_sidewalk_endpoint_authority() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
     let north = graph.add_node(Vector3::new(-75.827, 0.0, 89.838), NodeType::Junction);
@@ -4731,10 +4731,12 @@ fn logged_flat_oblique_t_junction_rejects_missing_explicit_curb_sidewalk_endpoin
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "logged flat oblique T must reject same-key carriageway/sidewalk height contact until rails emit the explicit curb/sidewalk endpoint path"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat oblique T must compile with explicit curb/sidewalk endpoint path");
+    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
+    assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
 
 #[test]
