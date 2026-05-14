@@ -144,7 +144,10 @@ Live behavior:
   raised-step rails that meet at the same canonical key or, for bend side-join ownership, as
   endpoint-only reownership from an exact source rail to a same-kind final owner. The rail generator
   no longer rewrites generated contour or
-  contact endpoints through projected-key or overlay-neighbor repair. Non-terminal side-join
+  contact endpoints through projected-key or overlay-neighbor repair. Node vertical-step export
+  also no longer pairs exact edges with overlay-sibling top support: only matching canonical
+  arrangement keys emit a vertical face, and nearby support is ignored rather than bridged.
+  Non-terminal side-join
   contour adaptation now lives outside the input extractor in `surface::joins`, with dedicated
   side-join carriers consumed separately from terminal end bands by the rail contour set. Bend side
   joins keep their carriageway closure, while
@@ -186,7 +189,8 @@ Remaining ROAD-01 gap:
   contours are no longer canonicalized through projected-key / overlay-neighbor repair. Final
   owned-region rings also no longer use post-overlay projected or neighbor snapping: backend drift
   may canonicalize only through the owning source rail key, while noncanonical residual vertices
-  become blocking boolean-ownership diagnostics.
+  become blocking boolean-ownership diagnostics. Node vertical-step export now consumes only exact
+  canonical arrangement-key support and does not synthesize curb faces from overlay-sibling edges.
   `surface::joins` is now the side-join adapter boundary and routes generated bands through
   Cavalier cleanup, bend arc sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend /
   JunctionN edge throats now grow from pairwise roadbed / asphalt material conflicts, and raw

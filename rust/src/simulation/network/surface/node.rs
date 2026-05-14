@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS: i64 = 2;
 const VERTICAL_STEP_MIN_SPAN_M: f32 = 1.0e-6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -94,13 +93,6 @@ impl ArrangementSegmentParameter {
 
     fn max(self, other: Self) -> Self {
         if self >= other { self } else { other }
-    }
-
-    fn reversed(self) -> Self {
-        Self {
-            numerator: self.denominator - self.numerator,
-            denominator: self.denominator,
-        }
     }
 }
 
@@ -641,77 +633,22 @@ impl RoadSurfaceSystem {
                 &mut emitted,
                 &mut faces,
             );
-            for sibling in explicit_vertical_step_segments
-                .iter()
-                .copied()
-                .filter(|sibling| *sibling != segment)
-            {
-                let Some((sibling_lower_owner, sibling_raised_owner)) =
-                    canonical_vertical_step_lower_and_raised_owners(sibling)
-                else {
-                    continue;
-                };
-                if sibling_lower_owner != lower_owner || sibling_raised_owner != raised_owner {
-                    continue;
-                }
-                let sibling_key = (sibling.start(), sibling.end());
-                if !arrangement_step_segments_are_overlay_siblings(segment_key, sibling_key) {
-                    continue;
-                }
-                let sibling_lower_intervals = arrangement_owner_face_boundary_intervals_for_segment(
-                    arrangement,
-                    lower_owner,
-                    sibling_key,
-                );
-                let sibling_raised_intervals =
-                    arrangement_owner_face_boundary_intervals_for_segment(
-                        arrangement,
-                        raised_owner,
-                        sibling_key,
-                    );
-                Self::push_arrangement_vertical_step_faces_from_intervals(
-                    arrangement,
-                    lower_owner,
-                    segment_key,
-                    sibling_key,
-                    &lower_intervals,
-                    &sibling_raised_intervals,
-                    step_index,
-                    segment,
-                    &mut emitted,
-                    &mut faces,
-                );
-                Self::push_arrangement_vertical_step_faces_from_intervals(
-                    arrangement,
-                    lower_owner,
-                    sibling_key,
-                    segment_key,
-                    &sibling_lower_intervals,
-                    &raised_intervals,
-                    step_index,
-                    segment,
-                    &mut emitted,
-                    &mut faces,
-                );
-            }
-            let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_from_segment(
+            if let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_from_segment(
                 arrangement,
                 lower_owner,
                 raised_owner,
                 segment_key,
-            ) else {
-                continue;
-            };
-            if !emitted.insert(dedup_key) {
-                continue;
+            ) {
+                if emitted.insert(dedup_key) {
+                    faces.push((
+                        face,
+                        RoadSurfaceVerticalFaceSource {
+                            explicit_vertical_step_index: step_index,
+                            segment,
+                        },
+                    ));
+                }
             }
-            faces.push((
-                face,
-                RoadSurfaceVerticalFaceSource {
-                    explicit_vertical_step_index: step_index,
-                    segment,
-                },
-            ));
         }
         faces
     }
@@ -1996,15 +1933,6 @@ fn arrangement_face_boundary_overlap_interval(
     edge_start: ArrangementBoundaryPointKey,
     edge_end: ArrangementBoundaryPointKey,
 ) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
-    if arrangement_step_segments_are_overlay_siblings(
-        (edge_start.xz_key(), edge_end.xz_key()),
-        segment_key,
-    ) {
-        return Some((
-            ArrangementSegmentParameter::zero(),
-            ArrangementSegmentParameter::one(),
-        ));
-    }
     let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
     let edge_start_t = boundary_segment_parameter_xz(edge_start, segment_start, segment_end)?;
@@ -2027,14 +1955,7 @@ fn arrangement_face_boundary_interval_point_at(
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
     let segment_point = interpolated_segment_point_key(segment_start, segment_end, parameter);
     let edge_t =
-        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)
-            .or_else(|| {
-                arrangement_step_segment_sibling_parameter(
-                    (interval.edge_start.xz_key(), interval.edge_end.xz_key()),
-                    segment_key,
-                    parameter,
-                )
-            })?;
+        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)?;
     let edge_point = interpolated_segment_point_key(interval.edge_start, interval.edge_end, edge_t);
     let y_mm = interpolated_segment_height_mm(interval.edge_start, interval.edge_end, edge_t);
     Some(arrangement_boundary_point_to_world(
@@ -2067,9 +1988,7 @@ fn arrangement_owner_boundary_point_at_key(
         .vertices()
         .iter()
         .filter(|vertex| vertex.owners().contains(&owner))
-        .filter(|vertex| {
-            vertex.key() == key || arrangement_keys_are_overlay_siblings(vertex.key(), key)
-        })
+        .filter(|vertex| vertex.key() == key)
         .collect::<Vec<_>>();
     candidates.sort_by_key(|vertex| {
         let height_key = if prefer_highest {
@@ -2077,11 +1996,7 @@ fn arrangement_owner_boundary_point_at_key(
         } else {
             vertex.height_mm()
         };
-        (
-            (vertex.key().x_key() - key.x_key()).abs() + (vertex.key().z_key() - key.z_key()).abs(),
-            height_key,
-            vertex.key(),
-        )
+        (height_key, vertex.key())
     });
     candidates.first().map(|vertex| {
         arrangement_boundary_point_to_world(arrangement_key_boundary_point(
@@ -2203,9 +2118,7 @@ fn arrangement_face_boundary_overlaps_segment(
         let end = NodeArrangementKey::from_point(super::backend::godot_vec3_xz_to_road(
             triangle[(index + 1) % triangle.len()],
         ));
-        if arrangement_segments_overlap_with_length(start, end, segment_key.0, segment_key.1)
-            || arrangement_step_segments_are_overlay_siblings((start, end), segment_key)
-        {
+        if arrangement_segments_overlap_with_length(start, end, segment_key.0, segment_key.1) {
             return true;
         }
     }
@@ -2291,42 +2204,6 @@ fn arrangement_segments_overlap_with_length(
     let b_min = b0.min(b1);
     let b_max = b0.max(b1);
     a_min.max(b_min) < a_max.min(b_max)
-}
-
-fn arrangement_step_segments_are_overlay_siblings(
-    left: (NodeArrangementKey, NodeArrangementKey),
-    right: (NodeArrangementKey, NodeArrangementKey),
-) -> bool {
-    (arrangement_keys_are_overlay_siblings(left.0, right.0)
-        && arrangement_keys_are_overlay_siblings(left.1, right.1))
-        || (arrangement_keys_are_overlay_siblings(left.0, right.1)
-            && arrangement_keys_are_overlay_siblings(left.1, right.0))
-}
-
-fn arrangement_step_segment_sibling_parameter(
-    edge: (NodeArrangementKey, NodeArrangementKey),
-    segment: (NodeArrangementKey, NodeArrangementKey),
-    parameter: ArrangementSegmentParameter,
-) -> Option<ArrangementSegmentParameter> {
-    if arrangement_keys_are_overlay_siblings(edge.0, segment.0)
-        && arrangement_keys_are_overlay_siblings(edge.1, segment.1)
-    {
-        return Some(parameter);
-    }
-    if arrangement_keys_are_overlay_siblings(edge.0, segment.1)
-        && arrangement_keys_are_overlay_siblings(edge.1, segment.0)
-    {
-        return Some(parameter.reversed());
-    }
-    None
-}
-
-fn arrangement_keys_are_overlay_siblings(
-    left: NodeArrangementKey,
-    right: NodeArrangementKey,
-) -> bool {
-    (left.x_key() - right.x_key()).abs() <= VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS
-        && (left.z_key() - right.z_key()).abs() <= VERTICAL_STEP_SIBLING_NEIGHBOR_UNITS
 }
 
 fn arrangement_region_centroid(
@@ -2714,4 +2591,163 @@ fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
         .map(|(start, end)| Vector2::new(start.x - end.x, start.z - end.z).length())
         .sum::<f32>();
     RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::arrangement::{
+        NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource,
+    };
+    use super::*;
+
+    fn owner(kind: RoadSurfaceBandKind, owner_index: usize) -> NodeBandOwner {
+        NodeBandOwner::new(kind, owner_index)
+    }
+
+    fn height_field(owner: NodeBandOwner) -> NodeBandHeightFieldId {
+        NodeBandHeightFieldId::new(owner.owner_index(), owner.owner_index(), owner.kind())
+    }
+
+    fn raised_step_seam(
+        carriageway: NodeBandOwner,
+        curb: NodeBandOwner,
+        start: RoadVec2,
+        end: RoadVec2,
+    ) -> NodeRegionSeamConstraint {
+        NodeRegionSeamConstraint {
+            constraint_index: 7,
+            seam_source: NodeSeamSource::RaisedStepContact {
+                owner_index: curb.owner_index(),
+            },
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: start,
+            end_xz: end,
+        }
+    }
+
+    fn arrangement_with_vertical_step_support(
+        raised_start: RoadVec2,
+        raised_end: RoadVec2,
+    ) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let carriageway_height = height_field(carriageway);
+        let curb_height = height_field(curb);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(2.0, 0.0);
+        let seam = raised_step_seam(carriageway, curb, start, end);
+        let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::Bend);
+
+        let lower_start = arrangement
+            .insert_vertex(start, 0.0, [carriageway], carriageway_height, [])
+            .expect("lower start vertex is valid");
+        let lower_end = arrangement
+            .insert_vertex(end, 0.0, [carriageway], carriageway_height, [])
+            .expect("lower end vertex is valid");
+        let lower_apex = arrangement
+            .insert_vertex(
+                RoadVec2::new(0.0, -1.0),
+                0.0,
+                [carriageway],
+                carriageway_height,
+                [],
+            )
+            .expect("lower apex vertex is valid");
+        let lower_edge = arrangement.push_edge(
+            lower_start,
+            lower_end,
+            carriageway,
+            carriageway_height,
+            Some(curb),
+            Some(curb_height),
+            false,
+            false,
+            true,
+            NodeSeamSource::RaisedStepContact {
+                owner_index: curb.owner_index(),
+            },
+            vec![seam.constraint_index],
+        );
+        let lower_region = arrangement.push_region(
+            carriageway,
+            carriageway_height,
+            vec![lower_start, lower_end, lower_apex],
+            Vec::new(),
+            vec![lower_edge],
+            1.0,
+            vec![seam.clone()],
+        );
+        arrangement.push_face(
+            lower_region,
+            carriageway,
+            [lower_start, lower_end, lower_apex],
+        );
+
+        let upper_start = arrangement
+            .insert_vertex(raised_start, 0.12, [curb], curb_height, [])
+            .expect("upper start vertex is valid");
+        let upper_end = arrangement
+            .insert_vertex(raised_end, 0.12, [curb], curb_height, [])
+            .expect("upper end vertex is valid");
+        let upper_apex = arrangement
+            .insert_vertex(
+                RoadVec2::new(raised_start.x, 1.0),
+                0.12,
+                [curb],
+                curb_height,
+                [],
+            )
+            .expect("upper apex vertex is valid");
+        let upper_region = arrangement.push_region(
+            curb,
+            curb_height,
+            vec![upper_start, upper_apex, upper_end],
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            vec![seam],
+        );
+        arrangement.push_face(upper_region, curb, [upper_start, upper_apex, upper_end]);
+
+        let segments = arrangement.explicit_vertical_step_segments();
+        (arrangement, segments)
+    }
+
+    #[test]
+    fn vertical_step_export_uses_exact_canonical_arrangement_keys() {
+        let (arrangement, segments) = arrangement_with_vertical_step_support(
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(2.0, 0.0),
+        );
+
+        let faces = RoadSurfaceSystem::curb_vertical_face_polygons_from_arrangement(
+            &arrangement,
+            &segments,
+        );
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(faces.len(), 1);
+    }
+
+    #[test]
+    fn vertical_step_export_does_not_repair_overlay_sibling_support() {
+        let (arrangement, segments) = arrangement_with_vertical_step_support(
+            RoadVec2::new(0.0, 0.000001),
+            RoadVec2::new(2.0, 0.000001),
+        );
+
+        let faces = RoadSurfaceSystem::curb_vertical_face_polygons_from_arrangement(
+            &arrangement,
+            &segments,
+        );
+
+        assert_eq!(segments.len(), 1);
+        assert!(
+            faces.is_empty(),
+            "overlay-neighbor support must not synthesize a vertical face"
+        );
+    }
 }
