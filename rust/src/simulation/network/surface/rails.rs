@@ -9,6 +9,7 @@ use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
     NodeInputProfileRail, NodeInputTerminalEndBand, NodeInputTerminalEndBandBoundaryMode,
 };
+use super::joins::side_join_bands_by_mouth;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -245,13 +246,21 @@ impl NodeRailContourSet {
             });
         }
 
-        let owners_by_mouth = owners_by_mouth(input);
+        let side_join_bands_by_mouth = side_join_bands_by_mouth(input);
+        let owners_by_mouth = owners_by_mouth(input, &side_join_bands_by_mouth);
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_points_by_source =
             BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>::new();
 
-        for (mouth, mouth_owners) in input.mouths.iter().zip(&owners_by_mouth) {
+        for (mouth_index, (mouth, mouth_owners)) in
+            input.mouths.iter().zip(&owners_by_mouth).enumerate()
+        {
+            let side_join_bands = side_join_bands_by_mouth
+                .get(mouth_index)
+                .map_or(&[] as &[NodeInputTerminalEndBand], Vec::as_slice);
+            let mut end_bands = mouth.terminal_end_bands.clone();
+            end_bands.extend_from_slice(side_join_bands);
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
@@ -265,7 +274,7 @@ impl NodeRailContourSet {
                 let owner = mouth_owners.band_owners[band_index];
                 push_band_contour(mouth, interval, owner, &mut contours, &mut constraints)?;
             }
-            for end_band in &mouth.terminal_end_bands {
+            for end_band in &end_bands {
                 push_band_height_carrier_points(
                     &mut height_carrier_points_by_source,
                     mouth.order_index,
@@ -278,7 +287,7 @@ impl NodeRailContourSet {
             push_terminal_end_band_contours(
                 input.piece_kind,
                 mouth,
-                &mouth.terminal_end_bands,
+                &end_bands,
                 mouth_owners,
                 &mouth_owners.terminal_end_band_owners,
                 &mut contours,
@@ -5024,12 +5033,16 @@ fn cleaned_open_rail(
     Ok(rail)
 }
 
-fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<MouthOwners> {
+fn owners_by_mouth(
+    input: &NodeArrangementInput,
+    side_join_bands_by_mouth: &[Vec<NodeInputTerminalEndBand>],
+) -> Vec<MouthOwners> {
     let mut next_owner_index = 0usize;
     input
         .mouths
         .iter()
-        .map(|mouth| {
+        .enumerate()
+        .map(|(mouth_index, mouth)| {
             let band_owners: Vec<NodeBandOwner> = mouth
                 .band_intervals
                 .iter()
@@ -5044,9 +5057,13 @@ fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<MouthOwners> {
             for (interval, owner) in mouth.band_intervals.iter().zip(&band_owners) {
                 terminal_owner_by_source.insert((interval.band_kind, interval.band_index), *owner);
             }
+            let side_join_bands = side_join_bands_by_mouth
+                .get(mouth_index)
+                .map_or(&[] as &[NodeInputTerminalEndBand], Vec::as_slice);
             let terminal_end_band_owners = mouth
                 .terminal_end_bands
                 .iter()
+                .chain(side_join_bands.iter())
                 .map(|end_band| {
                     let key = (end_band.band_kind, end_band.source_band_index);
                     if let Some(owner) = terminal_owner_by_source.get(&key).copied() {
