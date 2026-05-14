@@ -183,7 +183,10 @@ Remaining ROAD-01 gap:
   2-arm bend cases now preserve closed top-surface coverage through explicit curb / sidewalk join
   ownership. Raised-step rail authority is now generic and owner-pair based, with bend side-join
   final-owner handoff limited to exact-source-rail endpoint contacts, and generated contact
-  contours are no longer canonicalized through projected-key / overlay-neighbor repair.
+  contours are no longer canonicalized through projected-key / overlay-neighbor repair. Final
+  owned-region rings also no longer use post-overlay projected or neighbor snapping: backend drift
+  may canonicalize only through the owning source rail key, while noncanonical residual vertices
+  become blocking boolean-ownership diagnostics.
   `surface::joins` is now the side-join adapter boundary and routes generated bands through
   Cavalier cleanup, bend arc sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend /
   JunctionN edge throats now grow from pairwise roadbed / asphalt material conflicts, and raw

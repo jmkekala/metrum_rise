@@ -829,6 +829,11 @@ impl NodeGeometryDiagnostic {
                     reason: "missing_band_owner",
                 }
             }
+            NodeBooleanOwnershipError::NonCanonicalOwnedRegionVertex { .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "noncanonical_owned_region_vertex",
+                }
+            }
             NodeBooleanOwnershipError::EmptyContourSet { .. }
             | NodeBooleanOwnershipError::EmptyFootprint { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
