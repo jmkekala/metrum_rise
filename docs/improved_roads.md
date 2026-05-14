@@ -142,10 +142,11 @@ Live behavior:
   rail to a same-kind final owner. Non-terminal side-join contour adaptation now lives outside the
   input extractor in `surface::joins`, with dedicated side-join carriers consumed separately from
   terminal end bands by the rail contour set. Bend side joins keep their carriageway closure, while
-  `JunctionN` side joins carry curb / sidewalk ownership without adding carriageway bubble fill.
-  The remaining blocker is fully library-backed rail / contour generation for broader `JunctionN`
-  and not-yet-validated arbitrary-node cases; boolean ownership and height-field validation must
-  keep rejecting real band residuals instead of silently patching them.
+  `JunctionN` side joins carry curb / sidewalk ownership through Cavalier-cleaned adjacent-mouth
+  non-road join paths without adding carriageway bubble fill. The remaining blocker is the broader
+  canonical node arrangement for `JunctionN` and not-yet-validated arbitrary-node cases; boolean
+  ownership and height-field validation must keep rejecting real band residuals instead of
+  silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -163,9 +164,8 @@ Remaining ROAD-01 gap:
   2-arm bend cases now preserve closed top-surface coverage through explicit curb / sidewalk join
   ownership. Raised-step rail authority is now generic and owner-pair based, with bend side-join
   final-owner handoff limited to exact-source-rail endpoint contacts. `surface::joins` is now the
-  side-join adapter boundary and already routes generated bands through Cavalier cleanup / arc
-  sampling where available, but the broader `JunctionN` join construction still needs to be owned
-  by the accepted geometry backends instead of local blending helpers. The remaining work is a
+  side-join adapter boundary and routes generated bands through Cavalier cleanup, bend arc
+  sampling, and `JunctionN` adjacent-mouth non-road join paths. The remaining work is a
   library-backed canonical node arrangement that creates explicit join ownership before boolean
   splitting so oblique junctions do not produce real curb / sidewalk residuals. Hand-built miter
   caps, miter guards, or adjacent-mouth connector patches are not the Bend / JunctionN ownership
