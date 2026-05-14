@@ -816,10 +816,7 @@ impl<'a> TerminalEndBandGroup<'a> {
             .iter()
             .map(|point| [point.x, point.z])
             .collect::<Vec<_>>();
-        if end_band.boundary_mode
-            != NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
-            && RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0
-        {
+        if RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0 {
             contour.reverse();
         }
         self.contour_world.push(contour);
@@ -1028,8 +1025,6 @@ fn terminal_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) 
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
             | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
             | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
@@ -1040,8 +1035,6 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
             | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
             | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
@@ -1051,8 +1044,6 @@ fn node_side_join_end_band_contributes_domain(end_band: &NodeInputTerminalEndBan
 fn node_side_join_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
     match end_band.boundary_mode {
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
-        | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
-        | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
         | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
         | NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap => true,
         NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand => false,
@@ -1241,8 +1232,6 @@ fn terminal_end_band_has_material_boundary(end_band: &NodeInputTerminalEndBand) 
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitBand
-            | NodeInputTerminalEndBandBoundaryMode::MaterialSplitInnerBoundaryBand
             | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
     )
 }
