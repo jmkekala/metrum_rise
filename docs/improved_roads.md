@@ -193,8 +193,10 @@ Remaining ROAD-01 gap:
   contours are no longer canonicalized through projected-key / overlay-neighbor repair. Final
   owned-region rings also no longer use post-overlay projected or neighbor snapping: backend drift
   may canonicalize only through the owning source rail key, while noncanonical residual vertices
-  become blocking boolean-ownership diagnostics. Node vertical-step export now consumes only exact
-  canonical arrangement-key support and does not synthesize curb faces from overlay-sibling edges.
+  become blocking boolean-ownership diagnostics. Node raised-step face export now consumes only
+  exact canonical arrangement-key support and does not synthesize faces from overlay-sibling edges.
+  Runtime mesh payloads expose those faces as `raised_step_*` buffers instead of curb-specific
+  vertical-face buckets.
   `surface::joins` is now the side-join adapter boundary and routes generated bands through
   Cavalier cleanup, bend arc sampling, and `JunctionN` adjacent-mouth non-road join paths. Bend /
   JunctionN edge throats now grow from pairwise roadbed / asphalt material conflicts, and raw

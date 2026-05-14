@@ -20,7 +20,7 @@ pub(super) const MARKING_WIDTH: f32 = 0.16;
 pub(super) enum MeshLayer {
     Earthwork,
     Curb,
-    CurbVertical,
+    RaisedStep,
     Sidewalk,
     Road,
     Marking,
@@ -146,11 +146,11 @@ pub(super) fn push_triangle_preserving_winding(
             &mut mesh.curb_uvs,
             &mut mesh.curb_colors,
         ),
-        MeshLayer::CurbVertical => (
-            &mut mesh.curb_vertical_vertices,
-            &mut mesh.curb_vertical_normals,
-            &mut mesh.curb_vertical_uvs,
-            &mut mesh.curb_vertical_colors,
+        MeshLayer::RaisedStep => (
+            &mut mesh.raised_step_vertices,
+            &mut mesh.raised_step_normals,
+            &mut mesh.raised_step_uvs,
+            &mut mesh.raised_step_colors,
         ),
         MeshLayer::Sidewalk => (
             &mut mesh.sidewalk_vertices,

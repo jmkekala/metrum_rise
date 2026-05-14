@@ -42,7 +42,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum CurbFaceRegion {
+    enum RaisedStepFaceRegion {
         LeftSpan,
         RightSpan,
         StartTerminalCap,
@@ -174,7 +174,7 @@ mod tests {
 
         validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
         validate_triangles(&mesh_data.curb_vertices, max_dist, "curb");
-        validate_triangles(&mesh_data.curb_vertical_vertices, max_dist, "curb_vertical");
+        validate_triangles(&mesh_data.raised_step_vertices, max_dist, "raised_step");
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
@@ -284,7 +284,7 @@ mod tests {
             .join(", ")
     }
 
-    fn vertical_curb_face_horizontal_edges(vertices: &[Vector3]) -> Vec<[Vector3; 2]> {
+    fn raised_step_face_horizontal_edges(vertices: &[Vector3]) -> Vec<[Vector3; 2]> {
         let mut edges = Vec::new();
         for triangle in triangles_from_vertices(vertices) {
             if triangle_projected_double_area(triangle).abs() >= 0.001
@@ -302,16 +302,16 @@ mod tests {
         edges
     }
 
-    fn curb_face_region(edge: [Vector3; 2]) -> Option<CurbFaceRegion> {
+    fn raised_step_face_region(edge: [Vector3; 2]) -> Option<RaisedStepFaceRegion> {
         let midpoint = (edge[0] + edge[1]) / 2.0;
         if midpoint.x.abs() < 12.0 && (midpoint.z + 5.0).abs() <= 0.2 {
-            Some(CurbFaceRegion::LeftSpan)
+            Some(RaisedStepFaceRegion::LeftSpan)
         } else if midpoint.x.abs() < 12.0 && (midpoint.z - 5.0).abs() <= 0.2 {
-            Some(CurbFaceRegion::RightSpan)
+            Some(RaisedStepFaceRegion::RightSpan)
         } else if (midpoint.x + 20.0).abs() <= 0.2 && midpoint.z.abs() <= 4.9 {
-            Some(CurbFaceRegion::StartTerminalCap)
+            Some(RaisedStepFaceRegion::StartTerminalCap)
         } else if (midpoint.x - 20.0).abs() <= 0.2 && midpoint.z.abs() <= 4.9 {
-            Some(CurbFaceRegion::EndTerminalCap)
+            Some(RaisedStepFaceRegion::EndTerminalCap)
         } else {
             None
         }
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn test_curb_mesh_has_flat_top_and_explicit_vertical_face() {
+    fn test_curb_mesh_has_flat_top_and_explicit_raised_step_faces() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -831,37 +831,37 @@ mod tests {
             flat_top_triangles += 1;
         }
 
-        for triangle in triangles_from_vertices(&mesh_data.curb_vertical_vertices) {
+        for triangle in triangles_from_vertices(&mesh_data.raised_step_vertices) {
             let projected_area = triangle_projected_double_area(triangle).abs();
             let y_delta = triangle_y_delta(triangle);
             assert!(
                 projected_area < 0.001 && y_delta >= 0.05,
-                "curb vertical bucket must contain only vertical faces; triangle={triangle:?}"
+                "raised-step bucket must contain only vertical faces; triangle={triangle:?}"
             );
             let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
             let visible_direction = godot_cull_back_visible_direction(triangle);
             if centroid.x.abs() < 12.0 && (centroid.z + 5.0).abs() <= 0.2 {
                 assert!(
                     visible_direction.z > 0.0,
-                    "left curb face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "left raised-step face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 asphalt_facing_left_curb_triangles += 1;
             } else if centroid.x.abs() < 12.0 && (centroid.z - 5.0).abs() <= 0.2 {
                 assert!(
                     visible_direction.z < 0.0,
-                    "right curb face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "right raised-step face winding must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 asphalt_facing_right_curb_triangles += 1;
             } else if (centroid.x + 20.0).abs() <= 0.2 && centroid.z.abs() <= 4.9 {
                 assert!(
                     visible_direction.x > 0.0,
-                    "start terminal curb cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "start terminal raised-step cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 asphalt_facing_start_cap_triangles += 1;
             } else if (centroid.x - 20.0).abs() <= 0.2 && centroid.z.abs() <= 4.9 {
                 assert!(
                     visible_direction.x < 0.0,
-                    "end terminal curb cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "end terminal raised-step cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 asphalt_facing_end_cap_triangles += 1;
             }
@@ -881,29 +881,29 @@ mod tests {
         let mut end_cap_lower_edges = 0usize;
         let mut end_cap_upper_edges = 0usize;
 
-        for edge in vertical_curb_face_horizontal_edges(&mesh_data.curb_vertical_vertices) {
+        for edge in raised_step_face_horizontal_edges(&mesh_data.raised_step_vertices) {
             let edge_key = RenderEdgeKey::new(edge[0], edge[1]);
             let matches_road = road_boundary_edges.contains(&edge_key);
             let matches_curb_top = curb_top_boundary_edges.contains(&edge_key);
             assert!(
                 matches_road ^ matches_curb_top,
-                "vertical curb face horizontal edge must exactly match one adjacent rendered top boundary edge; edge={edge:?} matches_road={matches_road} matches_curb_top={matches_curb_top} nearby_road=[{}] nearby_curb_top=[{}]",
+                "raised-step face horizontal edge must exactly match one adjacent rendered top boundary edge; edge={edge:?} matches_road={matches_road} matches_curb_top={matches_curb_top} nearby_road=[{}] nearby_curb_top=[{}]",
                 nearby_boundary_edges_debug(edge, &road_boundary_segments),
                 nearby_boundary_edges_debug(edge, &curb_top_boundary_segments)
             );
 
-            let Some(region) = curb_face_region(edge) else {
+            let Some(region) = raised_step_face_region(edge) else {
                 continue;
             };
             match (region, matches_road) {
-                (CurbFaceRegion::LeftSpan, true) => left_span_lower_edges += 1,
-                (CurbFaceRegion::LeftSpan, false) => left_span_upper_edges += 1,
-                (CurbFaceRegion::RightSpan, true) => right_span_lower_edges += 1,
-                (CurbFaceRegion::RightSpan, false) => right_span_upper_edges += 1,
-                (CurbFaceRegion::StartTerminalCap, true) => start_cap_lower_edges += 1,
-                (CurbFaceRegion::StartTerminalCap, false) => start_cap_upper_edges += 1,
-                (CurbFaceRegion::EndTerminalCap, true) => end_cap_lower_edges += 1,
-                (CurbFaceRegion::EndTerminalCap, false) => end_cap_upper_edges += 1,
+                (RaisedStepFaceRegion::LeftSpan, true) => left_span_lower_edges += 1,
+                (RaisedStepFaceRegion::LeftSpan, false) => left_span_upper_edges += 1,
+                (RaisedStepFaceRegion::RightSpan, true) => right_span_lower_edges += 1,
+                (RaisedStepFaceRegion::RightSpan, false) => right_span_upper_edges += 1,
+                (RaisedStepFaceRegion::StartTerminalCap, true) => start_cap_lower_edges += 1,
+                (RaisedStepFaceRegion::StartTerminalCap, false) => start_cap_upper_edges += 1,
+                (RaisedStepFaceRegion::EndTerminalCap, true) => end_cap_lower_edges += 1,
+                (RaisedStepFaceRegion::EndTerminalCap, false) => end_cap_upper_edges += 1,
             }
         }
 
@@ -913,29 +913,29 @@ mod tests {
         );
         assert!(
             vertical_face_triangles > 0,
-            "curb mesh should include explicit vertical curb face triangles"
+            "curb mesh should include explicit raised-step face triangles"
         );
         assert!(
             asphalt_facing_left_curb_triangles > 0 && asphalt_facing_right_curb_triangles > 0,
-            "span curb faces should be one-sided and front-facing from the asphalt side; left={asphalt_facing_left_curb_triangles} right={asphalt_facing_right_curb_triangles} vertical={vertical_face_triangles}"
+            "span raised-step faces should be one-sided and front-facing from the asphalt side; left={asphalt_facing_left_curb_triangles} right={asphalt_facing_right_curb_triangles} vertical={vertical_face_triangles}"
         );
         assert!(
             asphalt_facing_start_cap_triangles > 0 && asphalt_facing_end_cap_triangles > 0,
-            "terminal curb caps should be one-sided and front-facing from the asphalt side; start={asphalt_facing_start_cap_triangles} end={asphalt_facing_end_cap_triangles} vertical={vertical_face_triangles}"
+            "terminal raised-step caps should be one-sided and front-facing from the asphalt side; start={asphalt_facing_start_cap_triangles} end={asphalt_facing_end_cap_triangles} vertical={vertical_face_triangles}"
         );
         assert!(
             left_span_lower_edges > 0
                 && left_span_upper_edges > 0
                 && right_span_lower_edges > 0
                 && right_span_upper_edges > 0,
-            "span curb face edges must close exactly against rendered asphalt and curb top boundaries; left_lower={left_span_lower_edges} left_upper={left_span_upper_edges} right_lower={right_span_lower_edges} right_upper={right_span_upper_edges}"
+            "span raised-step face edges must close exactly against rendered asphalt and curb top boundaries; left_lower={left_span_lower_edges} left_upper={left_span_upper_edges} right_lower={right_span_lower_edges} right_upper={right_span_upper_edges}"
         );
         assert!(
             start_cap_lower_edges > 0
                 && start_cap_upper_edges > 0
                 && end_cap_lower_edges > 0
                 && end_cap_upper_edges > 0,
-            "terminal curb cap face edges must close exactly against rendered asphalt and curb top boundaries; start_lower={start_cap_lower_edges} start_upper={start_cap_upper_edges} end_lower={end_cap_lower_edges} end_upper={end_cap_upper_edges}"
+            "terminal raised-step cap face edges must close exactly against rendered asphalt and curb top boundaries; start_lower={start_cap_lower_edges} start_upper={start_cap_upper_edges} end_lower={end_cap_lower_edges} end_upper={end_cap_upper_edges}"
         );
     }
 
@@ -971,13 +971,13 @@ mod tests {
         let mut end_lower_length = 0.0f32;
         let mut end_upper_length = 0.0f32;
 
-        for edge in vertical_curb_face_horizontal_edges(&mesh_data.curb_vertical_vertices) {
-            let Some(region) = curb_face_region(edge) else {
+        for edge in raised_step_face_horizontal_edges(&mesh_data.raised_step_vertices) {
+            let Some(region) = raised_step_face_region(edge) else {
                 continue;
             };
             if !matches!(
                 region,
-                CurbFaceRegion::StartTerminalCap | CurbFaceRegion::EndTerminalCap
+                RaisedStepFaceRegion::StartTerminalCap | RaisedStepFaceRegion::EndTerminalCap
             ) {
                 continue;
             }
@@ -992,16 +992,16 @@ mod tests {
 
             let length = Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length();
             match (region, matches_road) {
-                (CurbFaceRegion::StartTerminalCap, true) => start_lower_length += length,
-                (CurbFaceRegion::StartTerminalCap, false) => {
+                (RaisedStepFaceRegion::StartTerminalCap, true) => start_lower_length += length,
+                (RaisedStepFaceRegion::StartTerminalCap, false) => {
                     assert!(
                         edge[0].y >= 0.119 && edge[1].y >= 0.119,
                         "start terminal cap upper edge must stay at raised curb height; edge={edge:?}"
                     );
                     start_upper_length += length;
                 }
-                (CurbFaceRegion::EndTerminalCap, true) => end_lower_length += length,
-                (CurbFaceRegion::EndTerminalCap, false) => {
+                (RaisedStepFaceRegion::EndTerminalCap, true) => end_lower_length += length,
+                (RaisedStepFaceRegion::EndTerminalCap, false) => {
                     assert!(
                         edge[0].y >= 0.119 && edge[1].y >= 0.119,
                         "end terminal cap upper edge must stay at raised curb height; edge={edge:?}"
@@ -1059,7 +1059,7 @@ mod tests {
         let mut left_side_triangles = 0usize;
         let mut right_side_triangles = 0usize;
 
-        for triangle in triangles_from_vertices(&mesh_data.curb_vertical_vertices) {
+        for triangle in triangles_from_vertices(&mesh_data.raised_step_vertices) {
             if triangle_projected_double_area(triangle).abs() >= 0.001
                 || triangle_y_delta(triangle) < 0.05
             {
@@ -1090,7 +1090,7 @@ mod tests {
             {
                 assert!(
                     visible_xz.dot(left_xz) > 0.0,
-                    "oblique negative-lateral curb face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "oblique negative-lateral raised-step face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 left_side_triangles += 1;
             } else if along > 2.0
@@ -1099,7 +1099,7 @@ mod tests {
             {
                 assert!(
                     visible_xz.dot(left_xz) < 0.0,
-                    "oblique positive-lateral curb face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                    "oblique positive-lateral raised-step face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
                 );
                 right_side_triangles += 1;
             }

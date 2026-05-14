@@ -27,6 +27,7 @@ fn span_raised_step_generation_uses_resolved_regions() {
     let span_source = include_str!("span.rs");
     for forbidden in [
         "curb_vertical_face_polygon_for_section_pair",
+        "curb_vertical_face",
         "curb_asphalt_boundary",
         "compile_surface_polygons_for_ranges",
         "compile_span_explicit_vertical_step_faces_for_ranges",
@@ -39,13 +40,13 @@ fn span_raised_step_generation_uses_resolved_regions() {
     }
     assert!(
         span_source.contains("resolve_span_regions_for_ranges")
-            && span_source.contains("span_vertical_face_polygons_from_constraints"),
+            && span_source.contains("span_raised_step_face_polygons_from_constraints"),
         "span output must route through resolved regions and raised-step constraints"
     );
 }
 
 #[test]
-fn span_vertical_steps_include_direct_carriageway_walkable_boundaries() {
+fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_no_curb() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
@@ -94,9 +95,9 @@ fn span_vertical_steps_include_direct_carriageway_walkable_boundaries() {
     let span_piece = surface
         .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
         .expect("direct carriageway-sidewalk span should compile");
-    assert!(!span_piece.curb_vertical_face_polygons.is_empty());
+    assert!(!span_piece.raised_step_face_polygons.is_empty());
     assert!(
-        span_piece.curb_vertical_face_polygons.iter().any(|face| {
+        span_piece.raised_step_face_polygons.iter().any(|face| {
             face.points_world
                 .iter()
                 .any(|point| (point.y - CURB_STEP_HEIGHT_M).abs() <= SAMPLE_EPSILON_M)
@@ -170,7 +171,7 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
         .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
         .expect("curb-sidewalk stepped span should compile");
     assert!(
-        span_piece.curb_vertical_face_polygons.iter().any(|face| {
+        span_piece.raised_step_face_polygons.iter().any(|face| {
             face.points_world
                 .iter()
                 .any(|point| (point.y - sidewalk_height_m).abs() <= SAMPLE_EPSILON_M)
@@ -778,7 +779,7 @@ fn assert_terminal_band_interval_grid_is_not_duplicated_by_span(
     }
 }
 
-fn assert_vertical_curb_face_lower_edge_covers(
+fn assert_raised_step_face_lower_edge_covers(
     polygons: &[RoadSurfaceVisualPolygon],
     start: Vector3,
     end: Vector3,
@@ -799,7 +800,7 @@ fn assert_vertical_curb_face_lower_edge_covers(
 
     assert!(
         covered_length + 0.001 >= expected_length,
-        "vertical curb face lower edge must cover expected segment; label={label} start={start:?} end={end:?} covered={covered_length:.4} expected={expected_length:.4}"
+        "raised-step face lower edge must cover expected segment; label={label} start={start:?} end={end:?} covered={covered_length:.4} expected={expected_length:.4}"
     );
 }
 
@@ -939,12 +940,10 @@ fn test_render_xz_vertex_key_lies_on_segment(
         && point.z_key <= start.z_key.max(end.z_key)
 }
 
-fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
-    piece: &RoadSurfaceVisualNodePiece,
-) {
+fn assert_top_raised_step_owner_boundaries_have_vertical_faces(piece: &RoadSurfaceVisualNodePiece) {
     let top_edges = test_owned_top_boundary_edges(piece);
     let face_lower_keys = piece
-        .curb_vertical_face_polygons
+        .raised_step_face_polygons
         .iter()
         .filter_map(vertical_face_lower_edge_for_test)
         .filter_map(|edge| TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz()))
@@ -955,31 +954,33 @@ fn assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(
     }
 
     for edges in edges_by_xz.values() {
-        for road_edge in edges
-            .iter()
-            .filter(|edge| edge.kind == RoadSurfaceBandKind::Carriageway)
-        {
-            for raised_edge in edges
-                .iter()
-                .filter(|edge| edge.kind != RoadSurfaceBandKind::Carriageway)
-            {
-                if road_edge.key == raised_edge.key || road_edge.avg_y_m >= raised_edge.avg_y_m {
+        for (left_index, left_edge) in edges.iter().enumerate() {
+            for right_edge in edges.iter().skip(left_index + 1) {
+                let (lower_edge, raised_edge) = if left_edge.avg_y_m <= right_edge.avg_y_m {
+                    (*left_edge, *right_edge)
+                } else {
+                    (*right_edge, *left_edge)
+                };
+                if lower_edge.key == raised_edge.key
+                    || lower_edge.avg_y_m >= raised_edge.avg_y_m
+                    || !test_top_edges_form_raised_step(lower_edge, raised_edge)
+                {
                     continue;
                 }
                 let matching_canonical_steps =
-                    explicit_vertical_step_descriptions_for_xz_key(piece, road_edge.xz_key);
+                    explicit_vertical_step_descriptions_for_xz_key(piece, lower_edge.xz_key);
                 assert!(
                     face_lower_keys
                         .iter()
                         .copied()
-                        .any(|face_key| face_key.contains(road_edge.xz_key)),
-                    "surviving asphalt-to-raised-non-road top boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] matching_canonical_steps={:?}",
+                        .any(|face_key| face_key.contains(lower_edge.xz_key)),
+                    "surviving raised-step owner boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] matching_canonical_steps={:?}",
                     piece.kind,
-                    road_edge.xz_key,
-                    road_edge.kind,
-                    road_edge.owner_index,
-                    road_edge.start,
-                    road_edge.end,
+                    lower_edge.xz_key,
+                    lower_edge.kind,
+                    lower_edge.owner_index,
+                    lower_edge.start,
+                    lower_edge.end,
                     raised_edge.kind,
                     raised_edge.owner_index,
                     matching_canonical_steps
@@ -1018,7 +1019,7 @@ fn assert_canonical_explicit_vertical_steps_have_faces(piece: &RoadSurfaceVisual
         top_edges_by_xz.entry(edge.xz_key).or_default().push(edge);
     }
     let face_source_segments = piece
-        .curb_vertical_face_sources
+        .raised_step_face_sources
         .iter()
         .map(|source| source.segment)
         .collect::<BTreeSet<_>>();
@@ -1026,10 +1027,8 @@ fn assert_canonical_explicit_vertical_steps_have_faces(piece: &RoadSurfaceVisual
     for (step_index, segment) in piece.explicit_vertical_step_segments.iter().enumerate() {
         let owner = segment.owner();
         let opposite_owner = segment.opposite_owner();
-        let owner_pair_requires_face = (owner.kind() == RoadSurfaceBandKind::Carriageway
-            && opposite_owner.kind() != RoadSurfaceBandKind::Carriageway)
-            || (opposite_owner.kind() == RoadSurfaceBandKind::Carriageway
-                && owner.kind() != RoadSurfaceBandKind::Carriageway);
+        let owner_pair_requires_face =
+            test_owners_form_raised_step(owner.kind(), opposite_owner.kind());
         if !owner_pair_requires_face {
             continue;
         }
@@ -1064,15 +1063,45 @@ fn explicit_vertical_step_has_visible_top_support(
     let Some(edges) = top_edges_by_xz.get(&xz_key) else {
         return false;
     };
-    edges
-        .iter()
-        .filter(|edge| edge.kind == RoadSurfaceBandKind::Carriageway)
-        .any(|road_edge| {
-            edges
-                .iter()
-                .filter(|edge| edge.kind != RoadSurfaceBandKind::Carriageway)
-                .any(|raised_edge| road_edge.avg_y_m < raised_edge.avg_y_m)
+    edges.iter().any(|lower_edge| {
+        edges.iter().any(|raised_edge| {
+            lower_edge.avg_y_m < raised_edge.avg_y_m
+                && test_top_edges_form_raised_step(*lower_edge, *raised_edge)
         })
+    })
+}
+
+fn test_raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Footpath
+        | RoadSurfaceBandKind::Median
+        | RoadSurfaceBandKind::Parking
+        | RoadSurfaceBandKind::CycleTrack
+        | RoadSurfaceBandKind::TramReservation => None,
+    }
+}
+
+fn test_owners_form_raised_step(
+    lower_kind: RoadSurfaceBandKind,
+    raised_kind: RoadSurfaceBandKind,
+) -> bool {
+    let Some(lower_rank) = test_raised_step_band_kind_rank(lower_kind) else {
+        return false;
+    };
+    let Some(raised_rank) = test_raised_step_band_kind_rank(raised_kind) else {
+        return false;
+    };
+    lower_rank < raised_rank
+}
+
+fn test_top_edges_form_raised_step(
+    lower_edge: TestTopBoundaryEdge,
+    raised_edge: TestTopBoundaryEdge,
+) -> bool {
+    test_owners_form_raised_step(lower_edge.kind, raised_edge.kind)
 }
 
 fn explicit_vertical_step_segment_len_squared_m2(
@@ -1089,16 +1118,33 @@ fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<Test
     let mut boundary_edges = Vec::new();
     for region in &piece.owned_regions {
         let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, Vector3, Vector3)>::new();
-        for triangle in &region.polygon.triangles_world {
-            for edge_index in 0..3 {
-                if let Some(key) = TestRenderEdgeKey::normalized(
-                    triangle[edge_index],
-                    triangle[(edge_index + 1) % 3],
-                ) {
-                    edge_counts
-                        .entry(key)
-                        .and_modify(|entry| entry.0 += 1)
-                        .or_insert((1, triangle[edge_index], triangle[(edge_index + 1) % 3]));
+        if region.polygon.triangles_world.is_empty() {
+            let points = &region.polygon.points_world;
+            if points.len() >= 2 {
+                for index in 0..points.len() {
+                    if let Some(key) = TestRenderEdgeKey::normalized(
+                        points[index],
+                        points[(index + 1) % points.len()],
+                    ) {
+                        edge_counts
+                            .entry(key)
+                            .and_modify(|entry| entry.0 += 1)
+                            .or_insert((1, points[index], points[(index + 1) % points.len()]));
+                    }
+                }
+            }
+        } else {
+            for triangle in &region.polygon.triangles_world {
+                for edge_index in 0..3 {
+                    if let Some(key) = TestRenderEdgeKey::normalized(
+                        triangle[edge_index],
+                        triangle[(edge_index + 1) % 3],
+                    ) {
+                        edge_counts
+                            .entry(key)
+                            .and_modify(|entry| entry.0 += 1)
+                            .or_insert((1, triangle[edge_index], triangle[(edge_index + 1) % 3]));
+                    }
                 }
             }
         }
@@ -1233,9 +1279,12 @@ fn assert_top_surface_triangles_face_up(piece: &RoadSurfaceVisualNodePiece) {
     }
 }
 
-fn assert_curb_vertical_faces_visible_from_carriageway(piece: &RoadSurfaceVisualNodePiece) {
-    for face in &piece.curb_vertical_face_polygons {
+fn assert_raised_step_faces_visible_from_lower_owner(piece: &RoadSurfaceVisualNodePiece) {
+    for face in &piece.raised_step_face_polygons {
         let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
+            continue;
+        };
+        let Some(upper_edge) = vertical_face_upper_edge_for_test(face) else {
             continue;
         };
         let Some(visible_direction) = vertical_face_visible_direction_for_test(face) else {
@@ -1246,11 +1295,22 @@ fn assert_curb_vertical_faces_visible_from_carriageway(piece: &RoadSurfaceVisual
         let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
         let mut best_dot: Option<f32> = None;
 
-        for road_polygon in &piece.road_surface_polygons {
-            if !polygon_boundary_overlaps_edge_at_height_for_test(road_polygon, lower_edge) {
+        for (lower_index, lower_region) in piece.owned_regions.iter().enumerate() {
+            if !polygon_boundary_overlaps_edge_at_height_for_test(&lower_region.polygon, lower_edge)
+            {
                 continue;
             }
-            let Some(centroid) = polygon_centroid_for_test(road_polygon) else {
+            let lower_has_raised_pair = piece.owned_regions.iter().any(|upper_region| {
+                polygon_boundary_overlaps_edge_at_height_for_test(&upper_region.polygon, upper_edge)
+                    && test_owners_form_raised_step(lower_region.kind, upper_region.kind)
+            });
+            if !lower_has_raised_pair {
+                continue;
+            }
+            let Some(region) = piece.owned_regions.get(lower_index) else {
+                continue;
+            };
+            let Some(centroid) = polygon_centroid_for_test(&region.polygon) else {
                 continue;
             };
             let owner_direction =
@@ -1265,7 +1325,7 @@ fn assert_curb_vertical_faces_visible_from_carriageway(piece: &RoadSurfaceVisual
         if let Some(dot) = best_dot {
             assert!(
                 dot > 0.0,
-                "curb vertical face must be visible from the lower carriageway owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
+                "raised-step face must be visible from its lower owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
                 piece.kind,
                 face.points_world
             );
@@ -1273,35 +1333,51 @@ fn assert_curb_vertical_faces_visible_from_carriageway(piece: &RoadSurfaceVisual
     }
 }
 
-fn assert_curb_vertical_faces_have_top_support(piece: &RoadSurfaceVisualNodePiece) {
-    for face in &piece.curb_vertical_face_polygons {
+fn assert_raised_step_faces_have_top_support(piece: &RoadSurfaceVisualNodePiece) {
+    for face in &piece.raised_step_face_polygons {
         let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
             panic!(
-                "curb vertical face must expose a non-degenerate lower edge; face={:?}",
+                "raised-step face must expose a non-degenerate lower edge; face={:?}",
                 face.points_world
             );
         };
         let Some(upper_edge) = vertical_face_upper_edge_for_test(face) else {
             panic!(
-                "curb vertical face must expose a non-degenerate upper edge; face={:?}",
+                "raised-step face must expose a non-degenerate upper edge; face={:?}",
                 face.points_world
             );
         };
+        let lower_matches = piece
+            .owned_regions
+            .iter()
+            .filter(|region| {
+                polygon_boundary_overlaps_edge_at_height_for_test(&region.polygon, lower_edge)
+            })
+            .collect::<Vec<_>>();
+        let upper_matches = piece
+            .owned_regions
+            .iter()
+            .filter(|region| {
+                polygon_boundary_overlaps_edge_at_height_for_test(&region.polygon, upper_edge)
+            })
+            .collect::<Vec<_>>();
         assert!(
-            piece.road_surface_polygons.iter().any(|polygon| {
-                polygon_boundary_overlaps_edge_at_height_for_test(polygon, lower_edge)
-            }),
-            "curb vertical face lower edge must be backed by carriageway top; lower_edge={lower_edge:?} face={:?}",
+            !lower_matches.is_empty(),
+            "raised-step face lower edge must be backed by a top owner; lower_edge={lower_edge:?} face={:?}",
             face.points_world
         );
-        let upper_supported_by_raised_non_road = piece
-            .curb_surface_polygons
-            .iter()
-            .chain(piece.sidewalk_surface_polygons.iter())
-            .any(|polygon| polygon_boundary_overlaps_edge_at_height_for_test(polygon, upper_edge));
         assert!(
-            upper_supported_by_raised_non_road,
-            "curb vertical face upper edge must be backed by a raised non-road top; upper_edge={upper_edge:?} face={:?}",
+            !upper_matches.is_empty(),
+            "raised-step face upper edge must be backed by a top owner; upper_edge={upper_edge:?} face={:?}",
+            face.points_world
+        );
+        assert!(
+            lower_matches.iter().any(|lower_match| {
+                upper_matches.iter().any(|upper_match| {
+                    test_owners_form_raised_step(lower_match.kind, upper_match.kind)
+                })
+            }),
+            "raised-step face support edges must belong to an explicit raised-step owner pair; lower_edge={lower_edge:?} upper_edge={upper_edge:?} face={:?}",
             face.points_world
         );
     }
@@ -1488,13 +1564,13 @@ fn assert_compiled_bend_piece(
     );
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.curb_surface_polygons.is_empty());
-    assert!(!piece.curb_vertical_face_polygons.is_empty());
+    assert!(!piece.raised_step_face_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
-    assert_curb_vertical_faces_have_top_support(piece);
-    assert_curb_vertical_faces_visible_from_carriageway(piece);
-    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
+    assert_raised_step_faces_have_top_support(piece);
+    assert_raised_step_faces_visible_from_lower_owner(piece);
+    assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
@@ -1520,13 +1596,13 @@ fn assert_compiled_junction_piece(
     );
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.curb_surface_polygons.is_empty());
-    assert!(!piece.curb_vertical_face_polygons.is_empty());
+    assert!(!piece.raised_step_face_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
-    assert_curb_vertical_faces_have_top_support(piece);
-    assert_curb_vertical_faces_visible_from_carriageway(piece);
-    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
+    assert_raised_step_faces_have_top_support(piece);
+    assert_raised_step_faces_visible_from_lower_owner(piece);
+    assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
@@ -2657,7 +2733,7 @@ fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
         .expect("bend should compile through canonical owned regions");
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_top_covers_footprint(bend_piece);
-    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(bend_piece);
+    assert_top_raised_step_owner_boundaries_have_vertical_faces(bend_piece);
     assert_canonical_explicit_vertical_steps_have_faces(bend_piece);
     assert_earthwork_faces_stay_outside_top_footprint(bend_piece);
 }
@@ -3139,17 +3215,17 @@ fn logged_terminal_handoff_keeps_both_sidewalk_edges_owned() {
         6,
         "right sidewalk interval at logged terminal start",
     );
-    assert_vertical_curb_face_lower_edge_covers(
-        &start_terminal.curb_vertical_face_polygons,
+    assert_raised_step_face_lower_edge_covers(
+        &start_terminal.raised_step_face_polygons,
         start_endpoint.boundary_points_world[2],
         start_mouth.boundary_points_world[2],
-        "left longitudinal curb face at logged terminal handoff",
+        "left longitudinal raised-step face at logged terminal handoff",
     );
-    assert_vertical_curb_face_lower_edge_covers(
-        &start_terminal.curb_vertical_face_polygons,
+    assert_raised_step_face_lower_edge_covers(
+        &start_terminal.raised_step_face_polygons,
         start_endpoint.boundary_points_world[4],
         start_mouth.boundary_points_world[4],
-        "right longitudinal curb face at logged terminal handoff",
+        "right longitudinal raised-step face at logged terminal handoff",
     );
 }
 
@@ -3415,7 +3491,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     assert!(!span_piece.outer_boundary_loops.is_empty());
     assert!(!span_piece.road_surface_polygons.is_empty());
     assert!(!span_piece.curb_surface_polygons.is_empty());
-    assert!(!span_piece.curb_vertical_face_polygons.is_empty());
+    assert!(!span_piece.raised_step_face_polygons.is_empty());
     assert!(!span_piece.sidewalk_surface_polygons.is_empty());
     assert!(
         span_piece
@@ -3437,11 +3513,11 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
                 max_y - min_y <= 0.001
             })
         }),
-        "curb top surface must be flat; vertical drop belongs to explicit curb faces"
+        "curb top surface must be flat; vertical drop belongs to explicit raised-step faces"
     );
     assert!(
         span_piece
-            .curb_vertical_face_polygons
+            .raised_step_face_polygons
             .iter()
             .all(|polygon| !RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );
@@ -4814,7 +4890,7 @@ fn logged_flat_oblique_t_junction_compiles_with_explicit_curb_sidewalk_endpoint_
         .compiled_visual_node_pieces()
         .get(&center)
         .expect("logged flat oblique T must compile with explicit curb/sidewalk endpoint path");
-    assert_top_asphalt_raised_non_road_boundaries_have_vertical_faces(piece);
+    assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
 
@@ -6324,7 +6400,7 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"nodes\""));
     assert!(dump.contains("\"road_topology\""));
     assert!(dump.contains("\"sidewalk_topology\""));
-    assert!(dump.contains("\"curb_vertical_face_details\""));
+    assert!(dump.contains("\"raised_step_face_details\""));
     assert!(dump.contains("\"expected_raised_steps\""));
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));

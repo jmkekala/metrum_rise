@@ -331,14 +331,14 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_curb_mat)
 
-	# Explicit vertical curb faces between asphalt and raised curb / sidewalk
-	if data.has("curb_vertical_vertices") and data.curb_vertical_vertices.size() > 0:
+	# Explicit raised-step faces between solved owner-pair top surfaces
+	if data.has("raised_step_vertices") and data.raised_step_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.curb_vertical_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.curb_vertical_normals
-		arrays[Mesh.ARRAY_COLOR] = data.curb_vertical_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.curb_vertical_uvs
+		arrays[Mesh.ARRAY_VERTEX] = data.raised_step_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.raised_step_normals
+		arrays[Mesh.ARRAY_COLOR] = data.raised_step_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.raised_step_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_curb_mat)
 

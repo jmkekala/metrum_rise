@@ -93,7 +93,7 @@ impl RoadSurfaceSystem {
         let mut visible_regions = self.resolve_span_regions_for_ranges(sections, &visible_ranges);
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::span_surface_polygons_from_regions(&visible_regions.regions);
-        let mut curb_vertical_face_polygons = Self::span_vertical_face_polygons_from_constraints(
+        let mut raised_step_face_polygons = Self::span_raised_step_face_polygons_from_constraints(
             &visible_regions.raised_step_constraints,
         );
 
@@ -106,7 +106,7 @@ impl RoadSurfaceSystem {
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_visual_polygons(&mut curb_vertical_face_polygons);
+        Self::sort_visual_polygons(&mut raised_step_face_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         let outer_boundary_loops = std::mem::take(&mut visible_regions.outer_boundary_loops);
         if outer_boundary_loops.is_empty() {
@@ -144,7 +144,7 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
-            curb_vertical_face_polygons,
+            raised_step_face_polygons,
             sidewalk_surface_polygons,
             edge_class: edge.class,
             start_mouth_profile,
@@ -362,16 +362,16 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn span_vertical_face_polygons_from_constraints(
+    fn span_raised_step_face_polygons_from_constraints(
         constraints: &[SpanRaisedStepConstraint],
     ) -> Vec<RoadSurfaceVisualPolygon> {
         constraints
             .iter()
-            .filter_map(Self::span_vertical_face_polygon_from_constraint)
+            .filter_map(Self::span_raised_step_face_polygon_from_constraint)
             .collect()
     }
 
-    fn span_vertical_face_polygon_from_constraint(
+    fn span_raised_step_face_polygon_from_constraint(
         constraint: &SpanRaisedStepConstraint,
     ) -> Option<RoadSurfaceVisualPolygon> {
         let mut points = [

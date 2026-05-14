@@ -217,7 +217,7 @@ impl RoadSurfaceSystem {
             node_regions.terrain_clip_boundary_loops,
             node_regions.road_surface_polygons,
             node_regions.curb_surface_polygons,
-            node_regions.curb_vertical_faces,
+            node_regions.raised_step_faces,
             node_regions.sidewalk_surface_polygons,
             node_regions.explicit_vertical_step_segments,
             node_regions.owned_regions,
@@ -350,7 +350,7 @@ impl RoadSurfaceSystem {
             }
         }
         let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
-        let mut curb_vertical_faces = Self::curb_vertical_face_polygons_from_arrangement(
+        let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(
             arrangement,
             &explicit_vertical_step_segments,
         );
@@ -361,17 +361,9 @@ impl RoadSurfaceSystem {
 
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::visible_top_polygons_from_owned_regions(&owned_regions);
-        retain_curb_vertical_faces_with_top_support(
-            &mut curb_vertical_faces,
-            &road_surface_polygons,
-            &curb_surface_polygons,
-            &sidewalk_surface_polygons,
-        );
-        orient_curb_vertical_faces_to_road_support(
-            &mut curb_vertical_faces,
-            &road_surface_polygons,
-        );
-        dedup_curb_vertical_faces(&mut curb_vertical_faces);
+        retain_raised_step_faces_with_top_support(&mut raised_step_faces, &owned_regions);
+        orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
+        dedup_raised_step_faces(&mut raised_step_faces);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()
@@ -407,7 +399,7 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_node_owned_regions(&mut owned_regions);
-        Self::sort_curb_vertical_faces(&mut curb_vertical_faces);
+        Self::sort_raised_step_faces(&mut raised_step_faces);
 
         Ok(super::NodeSurfaceRegionResult {
             outer_boundary_loops,
@@ -415,7 +407,7 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
-            curb_vertical_faces,
+            raised_step_faces,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             owned_regions,
@@ -598,7 +590,7 @@ impl RoadSurfaceSystem {
         loops
     }
 
-    fn curb_vertical_face_polygons_from_arrangement(
+    fn raised_step_face_polygons_from_arrangement(
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
     ) -> Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)> {
@@ -1216,7 +1208,7 @@ impl RoadSurfaceSystem {
         mut terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
         mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-        mut curb_vertical_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+        mut raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
         mut owned_regions: Vec<NodeOwnedRegion>,
@@ -1232,7 +1224,7 @@ impl RoadSurfaceSystem {
         }
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_curb_vertical_faces(&mut curb_vertical_faces);
+        Self::sort_raised_step_faces(&mut raised_step_faces);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_node_owned_regions(&mut owned_regions);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
@@ -1242,8 +1234,8 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
-        let (curb_vertical_face_polygons, curb_vertical_face_sources) =
-            curb_vertical_faces.into_iter().unzip();
+        let (raised_step_face_polygons, raised_step_face_sources) =
+            raised_step_faces.into_iter().unzip();
         Some(RoadSurfaceVisualNodePiece {
             node_id,
             kind,
@@ -1251,8 +1243,8 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
-            curb_vertical_face_polygons,
-            curb_vertical_face_sources,
+            raised_step_face_polygons,
+            raised_step_face_sources,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             owned_regions,
@@ -1482,62 +1474,80 @@ fn canonical_vertical_step_lower_and_raised_owners(
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {
     let owner = segment.owner();
     let opposite_owner = segment.opposite_owner();
-    if owner.kind() == RoadSurfaceBandKind::Carriageway
-        && opposite_owner.kind() != RoadSurfaceBandKind::Carriageway
-    {
-        return Some((owner, opposite_owner));
+    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
+    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
+    if owner_rank == opposite_rank {
+        return None;
     }
-    if opposite_owner.kind() == RoadSurfaceBandKind::Carriageway
-        && owner.kind() != RoadSurfaceBandKind::Carriageway
-    {
-        return Some((opposite_owner, owner));
+    if owner_rank < opposite_rank {
+        Some((owner, opposite_owner))
+    } else {
+        Some((opposite_owner, owner))
     }
-    None
 }
 
-fn dedup_curb_vertical_faces(
+fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Footpath
+        | RoadSurfaceBandKind::Median
+        | RoadSurfaceBandKind::Parking
+        | RoadSurfaceBandKind::CycleTrack
+        | RoadSurfaceBandKind::TramReservation => None,
+    }
+}
+
+fn dedup_raised_step_faces(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
 ) {
     let mut emitted = BTreeSet::new();
     faces.retain(|(polygon, _)| {
-        let Some(key) = curb_vertical_face_span_key(polygon) else {
+        let Some(key) = raised_step_face_span_key(polygon) else {
             return true;
         };
         emitted.insert(key)
     });
 }
 
-fn retain_curb_vertical_faces_with_top_support(
+fn retain_raised_step_faces_with_top_support(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-    road_surface_polygons: &[RoadSurfaceVisualPolygon],
-    curb_surface_polygons: &[RoadSurfaceVisualPolygon],
-    sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    owned_regions: &[NodeOwnedRegion],
 ) {
-    faces.retain(|(polygon, _)| {
+    faces.retain(|(polygon, source)| {
+        let Some((lower_owner, raised_owner)) =
+            canonical_vertical_step_lower_and_raised_owners(source.segment)
+        else {
+            return false;
+        };
         let Some((lower_edge, upper_edge)) = vertical_face_support_edges(polygon) else {
             return false;
         };
-        road_surface_polygons
-            .iter()
-            .any(|polygon| visual_polygon_boundary_overlaps_edge_at_height(polygon, lower_edge))
-            && curb_surface_polygons
-                .iter()
-                .chain(sidewalk_surface_polygons.iter())
-                .any(|polygon| visual_polygon_boundary_overlaps_edge_at_height(polygon, upper_edge))
+        owned_region_has_top_boundary_edge(owned_regions, lower_owner, lower_edge)
+            && owned_region_has_top_boundary_edge(owned_regions, raised_owner, upper_edge)
     });
 }
 
-fn orient_curb_vertical_faces_to_road_support(
+fn orient_raised_step_faces_to_lower_owner_support(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-    road_surface_polygons: &[RoadSurfaceVisualPolygon],
+    owned_regions: &[NodeOwnedRegion],
 ) {
-    for (polygon, _) in faces {
+    for (polygon, source) in faces {
+        let Some((lower_owner, _)) =
+            canonical_vertical_step_lower_and_raised_owners(source.segment)
+        else {
+            continue;
+        };
         let Some((lower_edge, _)) = vertical_face_support_edges(polygon) else {
             continue;
         };
-        let Some(visible_dot) =
-            vertical_face_visible_dot_to_supported_road(polygon, lower_edge, road_surface_polygons)
-        else {
+        let Some(visible_dot) = vertical_face_visible_dot_to_supported_owner(
+            polygon,
+            lower_edge,
+            owned_regions,
+            lower_owner,
+        ) else {
             continue;
         };
         if visible_dot > 0.0 {
@@ -1552,19 +1562,38 @@ fn orient_curb_vertical_faces_to_road_support(
     }
 }
 
-fn vertical_face_visible_dot_to_supported_road(
+fn owned_region_has_top_boundary_edge(
+    owned_regions: &[NodeOwnedRegion],
+    owner: NodeBandOwner,
+    edge: [Vector3; 2],
+) -> bool {
+    owned_regions
+        .iter()
+        .filter(|region| node_owned_region_matches_owner(region, owner))
+        .any(|region| visual_polygon_boundary_overlaps_edge_at_height(&region.polygon, edge))
+}
+
+fn node_owned_region_matches_owner(region: &NodeOwnedRegion, owner: NodeBandOwner) -> bool {
+    region.kind == owner.kind() && region.owner_index == owner.owner_index()
+}
+
+fn vertical_face_visible_dot_to_supported_owner(
     polygon: &RoadSurfaceVisualPolygon,
     lower_edge: [Vector3; 2],
-    road_surface_polygons: &[RoadSurfaceVisualPolygon],
+    owned_regions: &[NodeOwnedRegion],
+    owner: NodeBandOwner,
 ) -> Option<f32> {
     let visible_direction = vertical_face_visible_direction(polygon)?;
     let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
     let mut best_dot: Option<f32> = None;
-    for road_polygon in road_surface_polygons {
-        if !visual_polygon_boundary_overlaps_edge_at_height(road_polygon, lower_edge) {
+    for region in owned_regions
+        .iter()
+        .filter(|region| node_owned_region_matches_owner(region, owner))
+    {
+        if !visual_polygon_boundary_overlaps_edge_at_height(&region.polygon, lower_edge) {
             continue;
         }
-        let Some(centroid) = visual_polygon_centroid(road_polygon) else {
+        let Some(centroid) = visual_polygon_centroid(&region.polygon) else {
             continue;
         };
         let owner_direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
@@ -1729,7 +1758,7 @@ fn arrangement_key_lies_exactly_on_segment(
 }
 
 impl RoadSurfaceSystem {
-    fn sort_curb_vertical_faces(
+    fn sort_raised_step_faces(
         faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)],
     ) {
         faces.sort_by(
@@ -1746,7 +1775,7 @@ impl RoadSurfaceSystem {
     }
 }
 
-fn curb_vertical_face_span_key(
+fn raised_step_face_span_key(
     polygon: &RoadSurfaceVisualPolygon,
 ) -> Option<(
     (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
@@ -2609,18 +2638,18 @@ mod tests {
     }
 
     fn raised_step_seam(
-        carriageway: NodeBandOwner,
-        curb: NodeBandOwner,
+        lower_owner: NodeBandOwner,
+        raised_owner: NodeBandOwner,
         start: RoadVec2,
         end: RoadVec2,
     ) -> NodeRegionSeamConstraint {
         NodeRegionSeamConstraint {
             constraint_index: 7,
             seam_source: NodeSeamSource::RaisedStepContact {
-                owner_index: curb.owner_index(),
+                owner_index: raised_owner.owner_index(),
             },
-            owner: Some(carriageway),
-            opposite_owner: Some(curb),
+            owner: Some(lower_owner),
+            opposite_owner: Some(raised_owner),
             constrains_shared_height: false,
             is_material_transition: true,
             start_xz: start,
@@ -2632,48 +2661,62 @@ mod tests {
         raised_start: RoadVec2,
         raised_end: RoadVec2,
     ) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
-        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
-        let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let carriageway_height = height_field(carriageway);
-        let curb_height = height_field(curb);
+        arrangement_with_owner_pair_vertical_step_support(
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            raised_start,
+            raised_end,
+        )
+    }
+
+    fn arrangement_with_owner_pair_vertical_step_support(
+        lower_kind: RoadSurfaceBandKind,
+        raised_kind: RoadSurfaceBandKind,
+        raised_start: RoadVec2,
+        raised_end: RoadVec2,
+    ) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
+        let lower_owner = owner(lower_kind, 0);
+        let raised_owner = owner(raised_kind, 1);
+        let lower_height = height_field(lower_owner);
+        let raised_height = height_field(raised_owner);
         let start = RoadVec2::new(0.0, 0.0);
         let end = RoadVec2::new(2.0, 0.0);
-        let seam = raised_step_seam(carriageway, curb, start, end);
+        let seam = raised_step_seam(lower_owner, raised_owner, start, end);
         let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::Bend);
 
         let lower_start = arrangement
-            .insert_vertex(start, 0.0, [carriageway], carriageway_height, [])
+            .insert_vertex(start, 0.0, [lower_owner], lower_height, [])
             .expect("lower start vertex is valid");
         let lower_end = arrangement
-            .insert_vertex(end, 0.0, [carriageway], carriageway_height, [])
+            .insert_vertex(end, 0.0, [lower_owner], lower_height, [])
             .expect("lower end vertex is valid");
         let lower_apex = arrangement
             .insert_vertex(
                 RoadVec2::new(0.0, -1.0),
                 0.0,
-                [carriageway],
-                carriageway_height,
+                [lower_owner],
+                lower_height,
                 [],
             )
             .expect("lower apex vertex is valid");
         let lower_edge = arrangement.push_edge(
             lower_start,
             lower_end,
-            carriageway,
-            carriageway_height,
-            Some(curb),
-            Some(curb_height),
+            lower_owner,
+            lower_height,
+            Some(raised_owner),
+            Some(raised_height),
             false,
             false,
             true,
             NodeSeamSource::RaisedStepContact {
-                owner_index: curb.owner_index(),
+                owner_index: raised_owner.owner_index(),
             },
             vec![seam.constraint_index],
         );
         let lower_region = arrangement.push_region(
-            carriageway,
-            carriageway_height,
+            lower_owner,
+            lower_height,
             vec![lower_start, lower_end, lower_apex],
             Vec::new(),
             vec![lower_edge],
@@ -2682,35 +2725,39 @@ mod tests {
         );
         arrangement.push_face(
             lower_region,
-            carriageway,
+            lower_owner,
             [lower_start, lower_end, lower_apex],
         );
 
         let upper_start = arrangement
-            .insert_vertex(raised_start, 0.12, [curb], curb_height, [])
+            .insert_vertex(raised_start, 0.12, [raised_owner], raised_height, [])
             .expect("upper start vertex is valid");
         let upper_end = arrangement
-            .insert_vertex(raised_end, 0.12, [curb], curb_height, [])
+            .insert_vertex(raised_end, 0.12, [raised_owner], raised_height, [])
             .expect("upper end vertex is valid");
         let upper_apex = arrangement
             .insert_vertex(
                 RoadVec2::new(raised_start.x, 1.0),
                 0.12,
-                [curb],
-                curb_height,
+                [raised_owner],
+                raised_height,
                 [],
             )
             .expect("upper apex vertex is valid");
         let upper_region = arrangement.push_region(
-            curb,
-            curb_height,
+            raised_owner,
+            raised_height,
             vec![upper_start, upper_apex, upper_end],
             Vec::new(),
             Vec::new(),
             1.0,
             vec![seam],
         );
-        arrangement.push_face(upper_region, curb, [upper_start, upper_apex, upper_end]);
+        arrangement.push_face(
+            upper_region,
+            raised_owner,
+            [upper_start, upper_apex, upper_end],
+        );
 
         let segments = arrangement.explicit_vertical_step_segments();
         (arrangement, segments)
@@ -2723,10 +2770,24 @@ mod tests {
             RoadVec2::new(2.0, 0.0),
         );
 
-        let faces = RoadSurfaceSystem::curb_vertical_face_polygons_from_arrangement(
-            &arrangement,
-            &segments,
+        let faces =
+            RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(faces.len(), 1);
+    }
+
+    #[test]
+    fn vertical_step_export_uses_generic_curb_sidewalk_owner_pair() {
+        let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Sidewalk,
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(2.0, 0.0),
         );
+
+        let faces =
+            RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
 
         assert_eq!(segments.len(), 1);
         assert_eq!(faces.len(), 1);
@@ -2739,10 +2800,8 @@ mod tests {
             RoadVec2::new(2.0, 0.000001),
         );
 
-        let faces = RoadSurfaceSystem::curb_vertical_face_polygons_from_arrangement(
-            &arrangement,
-            &segments,
-        );
+        let faces =
+            RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
 
         assert_eq!(segments.len(), 1);
         assert!(

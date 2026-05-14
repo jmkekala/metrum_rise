@@ -77,7 +77,7 @@ pub(super) fn emit_compiled_surface_mesh(
         for polygon in &piece.curb_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
         }
-        for polygon in &piece.curb_vertical_face_polygons {
+        for polygon in &piece.raised_step_face_polygons {
             emit_vertical_surface_polygon(mesh, polygon, curb_color());
         }
         for polygon in &piece.sidewalk_surface_polygons {
@@ -110,7 +110,7 @@ pub(super) fn emit_compiled_surface_mesh(
         for polygon in &piece.curb_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
         }
-        for polygon in &piece.curb_vertical_face_polygons {
+        for polygon in &piece.raised_step_face_polygons {
             emit_vertical_surface_polygon(mesh, polygon, curb_color());
         }
         for polygon in &piece.sidewalk_surface_polygons {
@@ -464,7 +464,7 @@ fn emit_vertical_surface_polygon(
         }
         super::push_triangle_preserving_winding(
             mesh,
-            MeshLayer::CurbVertical,
+            MeshLayer::RaisedStep,
             triangle,
             triangle_uvs,
             color,

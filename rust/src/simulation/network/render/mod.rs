@@ -25,14 +25,14 @@ pub struct NetworkMeshData {
     pub curb_uvs: Vec<Vector2>,
     /// Vertex colors for the curb / shoulder transition layer.
     pub curb_colors: Vec<Color>,
-    /// Vertices for vertical curb faces between asphalt and raised curb / sidewalk.
-    pub curb_vertical_vertices: Vec<Vector3>,
-    /// Normals for vertical curb faces.
-    pub curb_vertical_normals: Vec<Vector3>,
-    /// UV coordinates for vertical curb faces.
-    pub curb_vertical_uvs: Vec<Vector2>,
-    /// Vertex colors for vertical curb faces.
-    pub curb_vertical_colors: Vec<Color>,
+    /// Vertices for raised-step faces between solved owner-pair top surfaces.
+    pub raised_step_vertices: Vec<Vector3>,
+    /// Normals for raised-step faces.
+    pub raised_step_normals: Vec<Vector3>,
+    /// UV coordinates for raised-step faces.
+    pub raised_step_uvs: Vec<Vector2>,
+    /// Vertex colors for raised-step faces.
+    pub raised_step_colors: Vec<Color>,
     /// Vertices for the sidewalk layer.
     pub sidewalk_vertices: Vec<Vector3>,
     /// Normals for the sidewalk layer.
@@ -79,10 +79,10 @@ impl NetworkMeshData {
             curb_normals: Vec::new(),
             curb_uvs: Vec::new(),
             curb_colors: Vec::new(),
-            curb_vertical_vertices: Vec::new(),
-            curb_vertical_normals: Vec::new(),
-            curb_vertical_uvs: Vec::new(),
-            curb_vertical_colors: Vec::new(),
+            raised_step_vertices: Vec::new(),
+            raised_step_normals: Vec::new(),
+            raised_step_uvs: Vec::new(),
+            raised_step_colors: Vec::new(),
             sidewalk_vertices: Vec::new(),
             sidewalk_normals: Vec::new(),
             sidewalk_uvs: Vec::new(),

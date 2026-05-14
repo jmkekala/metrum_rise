@@ -166,9 +166,9 @@ pub struct RoadSurfaceVisualNodePiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit curb / shoulder-owned polygons for the node piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit vertical faces at raised non-road material contacts.
-    pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
-    curb_vertical_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
+    /// Explicit vertical faces at raised owner-pair material contacts.
+    pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    raised_step_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
@@ -191,7 +191,7 @@ pub struct RoadSurfaceVisualSpanPiece {
     /// Explicit curb / shoulder-owned polygons for the span piece.
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit vertical faces at raised owner-pair material contacts.
-    pub curb_vertical_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the span piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     edge_class: EdgeClass,
@@ -351,7 +351,7 @@ struct NodeSurfaceRegionResult {
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    curb_vertical_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+    raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     owned_regions: Vec<NodeOwnedRegion>,

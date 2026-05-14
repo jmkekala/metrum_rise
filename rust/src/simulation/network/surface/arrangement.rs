@@ -1455,14 +1455,26 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
 }
 
 pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
-    (a.kind == RoadSurfaceBandKind::Carriageway
-        && owner_kind_can_be_vertical_step_raised_side(b.kind))
-        || (b.kind == RoadSurfaceBandKind::Carriageway
-            && owner_kind_can_be_vertical_step_raised_side(a.kind))
+    let Some(a_rank) = explicit_vertical_step_band_kind_rank(a.kind) else {
+        return false;
+    };
+    let Some(b_rank) = explicit_vertical_step_band_kind_rank(b.kind) else {
+        return false;
+    };
+    a_rank != b_rank
 }
 
-fn owner_kind_can_be_vertical_step_raised_side(kind: RoadSurfaceBandKind) -> bool {
-    kind != RoadSurfaceBandKind::Carriageway
+fn explicit_vertical_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => Some(0),
+        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
+        RoadSurfaceBandKind::Sidewalk => Some(2),
+        RoadSurfaceBandKind::Footpath
+        | RoadSurfaceBandKind::Median
+        | RoadSurfaceBandKind::Parking
+        | RoadSurfaceBandKind::CycleTrack
+        | RoadSurfaceBandKind::TramReservation => None,
+    }
 }
 
 fn owner_sets_match_edge(
