@@ -545,30 +545,12 @@ impl RoadSurfaceSystem {
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<RoadSurfaceTerrainClipLoop> {
         let outer_contour = shape.first()?;
-        let points_world = Self::world_points_from_overlay_contour_with_source_edges(
-            outer_contour,
-            shape_index,
-            source_edges,
-        )?;
-        let source_edges =
-            Self::terrain_clip_output_source_edges_for_points(&points_world, source_edges)?;
-        Some(RoadSurfaceTerrainClipLoop {
-            points_world,
-            source_edges,
-        })
-    }
-
-    fn world_points_from_overlay_contour_with_source_edges(
-        contour: &NodeOverlayContour,
-        shape_index: usize,
-        source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<Vector3>> {
-        let contour = Self::compact_overlay_contour_by_key(contour);
+        let contour = Self::compact_overlay_contour_by_key(outer_contour);
         if contour.len() < 3 {
             return None;
         }
 
-        let mut points = Vec::new();
+        let mut output_edges = Vec::new();
         for index in 0..contour.len() {
             let start = contour[index];
             let end = contour[(index + 1) % contour.len()];
@@ -603,11 +585,49 @@ impl RoadSurfaceSystem {
                 );
                 return None;
             };
-            Self::append_terrain_clip_segment_points(&mut points, segment_points);
+            if let Err((missing_start, missing_end)) =
+                Self::append_terrain_clip_sourced_segment_points(
+                    &mut output_edges,
+                    segment_points,
+                    source_edges,
+                )
+            {
+                crate::debug_log!(
+                    "road",
+                    "terrain_clip_missing_output_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3})",
+                    shape_index,
+                    missing_start.x,
+                    missing_start.z,
+                    missing_end.x,
+                    missing_end.z
+                );
+                return None;
+            }
         }
 
-        Self::close_terrain_clip_contour_points(&mut points);
-        (points.len() >= 3).then_some(points)
+        Self::close_terrain_clip_source_edges(&mut output_edges);
+        if output_edges.len() < 3 {
+            return None;
+        }
+        let first_start = output_edges.first().map(|edge| edge.start)?;
+        let last_end = output_edges.last().map(|edge| edge.end)?;
+        if !Self::world_points_same_for_boundary(first_start, last_end) {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_unclosed_output_boundary shape={} start=({:.3},{:.3}) end=({:.3},{:.3})",
+                shape_index,
+                first_start.x,
+                first_start.z,
+                last_end.x,
+                last_end.z
+            );
+            return None;
+        }
+        let points_world = output_edges.iter().map(|edge| edge.start).collect();
+        Some(RoadSurfaceTerrainClipLoop {
+            points_world,
+            source_edges: output_edges,
+        })
     }
 
     fn compact_overlay_contour_by_key(contour: &NodeOverlayContour) -> NodeOverlayContour {
@@ -1290,45 +1310,18 @@ impl RoadSurfaceSystem {
         ])
     }
 
-    fn append_terrain_clip_segment_points(out: &mut Vec<Vector3>, points: Vec<Vector3>) {
-        for point in points {
-            if let Some(last) = out.last_mut() {
-                if Self::world_points_same_for_boundary(*last, point) {
-                    if point.y > last.y {
-                        last.y = point.y;
-                    }
-                    continue;
-                }
-            }
-            out.push(point);
-        }
-    }
-
-    fn close_terrain_clip_contour_points(points: &mut Vec<Vector3>) {
-        while points.len() >= 2
-            && Self::world_points_same_for_boundary(
-                *points.first().unwrap(),
-                *points.last().unwrap(),
-            )
-        {
-            let last = points.pop().unwrap();
-            if last.y > points[0].y {
-                points[0].y = last.y;
-            }
-        }
-    }
-
-    fn terrain_clip_output_source_edges_for_points(
-        points: &[Vector3],
+    fn append_terrain_clip_sourced_segment_points(
+        out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
+        mut points: Vec<Vector3>,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<RoadSurfaceTerrainClipSourceEdge>> {
-        if points.len() < 3 {
-            return None;
-        }
-        let mut output = Vec::with_capacity(points.len());
-        for index in 0..points.len() {
-            let start = points[index];
-            let end = points[(index + 1) % points.len()];
+    ) -> Result<(), (Vector3, Vector3)> {
+        Self::dedup_terrain_clip_segment_points(&mut points);
+        for segment in points.windows(2) {
+            let start = segment[0];
+            let end = segment[1];
+            if Self::world_points_same_for_boundary(start, end) {
+                continue;
+            }
             let start_overlay = [f64::from(start.x), f64::from(start.z)];
             let end_overlay = [f64::from(end.x), f64::from(end.z)];
             let Some(source) = Self::terrain_clip_output_source_for_segment(
@@ -1343,16 +1336,58 @@ impl RoadSurfaceSystem {
                     source_edges,
                 )
             }) else {
-                return None;
+                return Err((start, end));
             };
-            output.push(RoadSurfaceTerrainClipSourceEdge {
-                start,
-                end,
-                kind: source.kind,
-                source: source.source,
-            });
+            Self::append_terrain_clip_source_edge(
+                out,
+                RoadSurfaceTerrainClipSourceEdge {
+                    start,
+                    end,
+                    kind: source.kind,
+                    source: source.source,
+                },
+            );
         }
-        Some(output)
+        Ok(())
+    }
+
+    fn append_terrain_clip_source_edge(
+        out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
+        mut edge: RoadSurfaceTerrainClipSourceEdge,
+    ) {
+        if Self::world_points_same_for_boundary(edge.start, edge.end) {
+            return;
+        }
+        if let Some(last) = out.last_mut() {
+            if Self::world_points_same_for_boundary(last.end, edge.start) {
+                let shared = if edge.start.y > last.end.y {
+                    edge.start
+                } else {
+                    last.end
+                };
+                last.end = shared;
+                edge.start = shared;
+            }
+        }
+        out.push(edge);
+    }
+
+    fn close_terrain_clip_source_edges(edges: &mut [RoadSurfaceTerrainClipSourceEdge]) {
+        if edges.len() < 2 {
+            return;
+        }
+        let first_start = edges[0].start;
+        let last_index = edges.len() - 1;
+        let last_end = edges[last_index].end;
+        if Self::world_points_same_for_boundary(first_start, last_end) {
+            let shared = if last_end.y > first_start.y {
+                last_end
+            } else {
+                first_start
+            };
+            edges[0].start = shared;
+            edges[last_index].end = shared;
+        }
     }
 
     fn terrain_clip_output_source_for_segment(
