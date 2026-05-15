@@ -28,6 +28,7 @@ const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 8192;
 const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = 0.01;
+const EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M: f64 = 0.01;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 type NodeHeightSourcePointKey = (i64, i64);
@@ -356,6 +357,7 @@ impl NodeHeightSolution {
             apply_junctionn_same_owner_height_field_vertex_unification(&mut regions);
             apply_junctionn_same_material_shared_edge_height_tiebreak(&mut regions);
             apply_junctionn_same_material_vertex_height_tiebreak(&mut regions);
+            apply_junctionn_explicit_material_seam_height_unification(&mut regions);
         }
         validate_explicit_material_seam_heights(&regions)?;
         validate_shared_source_height_agreement(&regions)?;
@@ -1535,6 +1537,80 @@ fn same_material_vertex_height_candidate_key(
         candidate.height_field_id.band_index(),
         candidate.owner.owner_index(),
     )
+}
+
+fn apply_junctionn_explicit_material_seam_height_unification(
+    regions: &mut [NodeHeightedRegion],
+) {
+    let mut ranges_by_key =
+        BTreeMap::<ExplicitSeamHeightKey, (f64, f64, SameMaterialVertexHeightCandidate)>::new();
+
+    for region in regions.iter() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            for constraint in
+                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
+            {
+                if !constraint.is_material_transition {
+                    continue;
+                }
+                let point = NodeHeightPointKey::from_point(vertex.point_xz);
+                let key = ExplicitSeamHeightKey::new(point, constraint);
+                let candidate = SameMaterialVertexHeightCandidate {
+                    owner: region.owner,
+                    height_field_id: vertex.height_field_id,
+                    height_m: vertex.height_m,
+                    height_authority: vertex.height_authority,
+                    has_explicit_shared_material_seam: true,
+                };
+                ranges_by_key
+                    .entry(key)
+                    .and_modify(|(min_height, max_height, selected)| {
+                        *min_height = min_height.min(vertex.height_m);
+                        *max_height = max_height.max(vertex.height_m);
+                        if same_material_vertex_height_candidate_key(candidate)
+                            < same_material_vertex_height_candidate_key(*selected)
+                        {
+                            *selected = candidate;
+                        }
+                    })
+                    .or_insert((vertex.height_m, vertex.height_m, candidate));
+            }
+        }
+    }
+
+    let selected_by_key = ranges_by_key
+        .into_iter()
+        .filter_map(|(key, (min_height, max_height, selected))| {
+            (max_height - min_height <= EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M)
+                .then_some((key, selected.height_m))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    if selected_by_key.is_empty() {
+        return;
+    }
+
+    for region in regions {
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            let constraints =
+                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints);
+            for constraint in constraints {
+                if !constraint.is_material_transition {
+                    continue;
+                }
+                let point = NodeHeightPointKey::from_point(vertex.point_xz);
+                let key = ExplicitSeamHeightKey::new(point, constraint);
+                if let Some(height_m) = selected_by_key.get(&key) {
+                    vertex.height_m = *height_m;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn vertex_has_explicit_shared_material_seam(

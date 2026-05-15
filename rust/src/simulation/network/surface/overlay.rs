@@ -1330,6 +1330,13 @@ impl RoadSurfaceSystem {
                 source_edges,
             )
             .or_else(|| {
+                Self::terrain_clip_output_source_for_endpoint_segment(
+                    start_overlay,
+                    end_overlay,
+                    source_edges,
+                )
+            })
+            .or_else(|| {
                 Self::terrain_clip_output_dust_connector_source(
                     start_overlay,
                     end_overlay,
@@ -1411,6 +1418,33 @@ impl RoadSurfaceSystem {
             }
         }
         best.map(|(_, source_edge)| source_edge)
+    }
+
+    fn terrain_clip_output_source_for_endpoint_segment(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<TerrainClipSourceEdge> {
+        let start_key = Self::overlay_point_key(start);
+        let end_key = Self::overlay_point_key(end);
+        let mut candidates = source_edges
+            .iter()
+            .copied()
+            .filter(|source_edge| {
+                let source_start_key = Self::overlay_point_key([
+                    f64::from(source_edge.start.x),
+                    f64::from(source_edge.start.z),
+                ]);
+                let source_end_key = Self::overlay_point_key([
+                    f64::from(source_edge.end.x),
+                    f64::from(source_edge.end.z),
+                ]);
+                (source_start_key == start_key && source_end_key == end_key)
+                    || (source_start_key == end_key && source_end_key == start_key)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b));
+        candidates.into_iter().next()
     }
 
     fn terrain_clip_output_dust_connector_source(

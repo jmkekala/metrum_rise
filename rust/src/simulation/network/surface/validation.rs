@@ -27,6 +27,7 @@ use std::fmt::Write as _;
 const VALIDATION_KEY_SCALE: f64 = 1000.0;
 const VALIDATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
+const VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M: f64 = 0.01;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeValidationReport {
@@ -600,6 +601,7 @@ impl NodeValidationReport {
         for (edge, region_indices) in exposed_edges {
             if region_indices.len() > 2
                 && !duplicate_exposed_edge_has_explicit_owner_context(solution, &region_indices)
+                && !duplicate_exposed_edge_is_canonical_drift(solution, edge, &region_indices)
             {
                 diagnostics.push(NodeGeometryDiagnostic {
                     node_id: solution.node_id,
@@ -1421,12 +1423,62 @@ fn duplicate_exposed_edge_has_explicit_owner_context(
         };
         owners.insert(region.owner);
     }
-    match owners.into_iter().collect::<Vec<_>>().as_slice() {
-        [] => false,
-        [_] => true,
-        [left, right] => owners_form_explicit_vertical_step_pair(*left, *right),
-        _ => false,
+    let owners = owners.into_iter().collect::<Vec<_>>();
+    if owners.is_empty() {
+        return false;
     }
+    for (left_index, left) in owners.iter().copied().enumerate() {
+        for right in owners.iter().copied().skip(left_index + 1) {
+            if left.kind() == right.kind() || owners_form_explicit_vertical_step_pair(left, right) {
+                continue;
+            }
+            return false;
+        }
+    }
+    true
+}
+
+fn duplicate_exposed_edge_is_canonical_drift(
+    solution: &NodeTriangulationSolution,
+    edge: NodeValidationEdgeKey,
+    region_indices: &[usize],
+) -> bool {
+    if validation_edge_length_m(edge) > VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M {
+        return false;
+    }
+
+    let mut start_heights = BTreeSet::new();
+    let mut end_heights = BTreeSet::new();
+    for region_index in region_indices {
+        let Some(region) = solution.regions.get(*region_index) else {
+            return false;
+        };
+        let Some(start_height_mm) = region_height_mm_at_key(region, edge.start) else {
+            return false;
+        };
+        let Some(end_height_mm) = region_height_mm_at_key(region, edge.end) else {
+            return false;
+        };
+        start_heights.insert(start_height_mm);
+        end_heights.insert(end_height_mm);
+    }
+
+    start_heights.len() == 1 && end_heights.len() == 1
+}
+
+fn validation_edge_length_m(edge: NodeValidationEdgeKey) -> f64 {
+    let dx = (edge.end.x_key - edge.start.x_key) as f64 / VALIDATION_POINT_KEY_SCALE;
+    let dz = (edge.end.z_key - edge.start.z_key) as f64 / VALIDATION_POINT_KEY_SCALE;
+    dx.hypot(dz)
+}
+
+fn region_height_mm_at_key(
+    region: &NodeTriangulatedRegion,
+    point: NodeValidationPointKey,
+) -> Option<i64> {
+    region.vertices.iter().find_map(|vertex| {
+        (point_key_from_world(vertex.point_world) == point).then(|| quantize_m(vertex.point_world.y))
+    })
 }
 
 fn validate_region(

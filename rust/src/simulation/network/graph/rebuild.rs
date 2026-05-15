@@ -2,13 +2,17 @@
 
 use super::super::types::*;
 use super::data::RegionGraph;
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
 const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const CLIP_MIN_SIN: f32 = 0.0001;
 const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
 const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
+const JUNCTION_PROFILE_HARD_ZONE_M: f32 = 12.0;
+const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 16.0;
+const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
+const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 
 #[derive(Clone, Copy)]
 struct ClipIncident {
@@ -24,6 +28,19 @@ struct ClipNodeStats {
     min_road_width_m: f32,
     max_half_width_m: f32,
     incidents: Vec<ClipIncident>,
+}
+
+#[derive(Clone, Copy)]
+struct JunctionProfileIncident {
+    edge_idx: usize,
+    at_start: bool,
+}
+
+#[derive(Clone, Copy)]
+struct JunctionProfilePlane {
+    origin: Vector3,
+    grade_x: f32,
+    grade_z: f32,
 }
 
 impl RegionGraph {
@@ -287,12 +304,18 @@ impl RegionGraph {
             .map(|i| self.get_valid_node(i as u32))
             .collect();
 
+        let mut reindex_ids = self.surface_edges_touching_nodes(&valid_node_ids, affected_nodes);
+        reindex_ids.sort_unstable();
+        reindex_ids.dedup();
+        for &edge_idx in &reindex_ids {
+            self.remove_from_spatial_index(edge_idx);
+        }
+
         let clip_stats = self.build_clip_node_stats(&valid_node_ids, Some(affected_nodes));
         let computed_clips =
             self.compute_intersection_clips(&valid_node_ids, &clip_stats, Some(affected_nodes));
 
         // Pass 2 (mutable): resample only edges that touch an affected node.
-        let mut reindex_ids: Vec<usize> = Vec::new();
         for (edge_idx, edge) in self.edges.iter_mut().enumerate() {
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
@@ -318,16 +341,310 @@ impl RegionGraph {
             }
 
             edge.physical_geometry = edge.geometry.clone();
-
-            reindex_ids.push(edge_idx);
         }
 
         // Update the spatial R-tree only for the affected edges (not full rebuild).
         for edge_idx in reindex_ids {
-            self.remove_from_spatial_index(edge_idx);
             self.add_to_spatial_index(edge_idx);
         }
         // Adjacency is unchanged — no rebuild needed.
+    }
+
+    /// Adapts newly authored edge endpoints to existing JunctionN grade/profile anchors.
+    ///
+    /// The node compiler consumes the resulting edge profiles as source authority; it still
+    /// rejects any contradictory mouth heights that remain after this edit-stage solve.
+    pub(in crate::simulation::network) fn solve_junction_endpoint_profiles_for_edges(
+        &mut self,
+        affected_nodes: &HashSet<u32>,
+        adaptable_edges: &HashSet<usize>,
+    ) {
+        if affected_nodes.is_empty() || adaptable_edges.is_empty() {
+            return;
+        }
+
+        let valid_node_ids: Vec<u32> = (0..self.nodes.len())
+            .map(|i| self.get_valid_node(i as u32))
+            .collect();
+        let mut reindex_ids = adaptable_edges
+            .iter()
+            .copied()
+            .filter(|&edge_idx| edge_idx < self.edges.len() && !self.edges[edge_idx].deleted)
+            .collect::<Vec<_>>();
+        reindex_ids.sort_unstable();
+        reindex_ids.dedup();
+        for &edge_idx in &reindex_ids {
+            self.remove_from_spatial_index(edge_idx);
+        }
+
+        self.solve_junction_endpoint_profiles(&valid_node_ids, affected_nodes, adaptable_edges);
+
+        for edge_idx in reindex_ids {
+            self.add_to_spatial_index(edge_idx);
+        }
+    }
+
+    fn solve_junction_endpoint_profiles(
+        &mut self,
+        valid_node_ids: &[u32],
+        affected_nodes: &HashSet<u32>,
+        adaptable_edges: &HashSet<usize>,
+    ) {
+        let incidents_by_node =
+            self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
+        let mut edge_solves: Vec<(usize, bool, JunctionProfilePlane)> = Vec::new();
+
+        let mut node_ids: Vec<u32> = incidents_by_node.keys().copied().collect();
+        node_ids.sort_unstable();
+        for node_id in node_ids {
+            let incidents = &incidents_by_node[&node_id];
+            if incidents.len() < 3 {
+                continue;
+            }
+            let stable_incidents = incidents
+                .iter()
+                .copied()
+                .filter(|incident| !adaptable_edges.contains(&incident.edge_idx))
+                .collect::<Vec<_>>();
+            let plane = if stable_incidents.len() >= 2 {
+                self.solve_junction_profile_plane(node_id, &stable_incidents)
+                    .or_else(|| self.solve_junction_profile_plane(node_id, incidents))
+            } else {
+                self.solve_junction_profile_plane(node_id, incidents)
+            };
+            let Some(plane) = plane else {
+                continue;
+            };
+            for incident in incidents {
+                if !adaptable_edges.contains(&incident.edge_idx) {
+                    continue;
+                }
+                edge_solves.push((incident.edge_idx, incident.at_start, plane));
+            }
+        }
+
+        edge_solves.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut changed_edges = Vec::new();
+        for (edge_idx, at_start, plane) in edge_solves {
+            if edge_idx >= self.edges.len() || self.edges[edge_idx].deleted {
+                continue;
+            }
+            Self::apply_junction_profile_plane_to_edge(&mut self.edges[edge_idx], at_start, plane);
+            changed_edges.push(edge_idx);
+        }
+        changed_edges.sort_unstable();
+        changed_edges.dedup();
+        for edge_idx in changed_edges {
+            let (cost, length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(
+                    &self.edges[edge_idx],
+                );
+            self.edges[edge_idx].base_cost = cost;
+            self.edges[edge_idx].physical_length = length;
+        }
+    }
+
+    fn build_junction_profile_incidents(
+        &self,
+        valid_node_ids: &[u32],
+        affected_nodes: Option<&HashSet<u32>>,
+    ) -> HashMap<u32, Vec<JunctionProfileIncident>> {
+        let mut incidents_by_node: HashMap<u32, Vec<JunctionProfileIncident>> = HashMap::new();
+
+        for (edge_idx, edge) in self.edges.iter().enumerate() {
+            if edge.deleted
+                || edge.primary_type != TransitType::Road
+                || edge.geometry.len() < 2
+                || edge.start_node as usize >= valid_node_ids.len()
+                || edge.end_node as usize >= valid_node_ids.len()
+            {
+                continue;
+            }
+
+            let start_node = valid_node_ids[edge.start_node as usize];
+            let end_node = valid_node_ids[edge.end_node as usize];
+            for (node_id, at_start) in [(start_node, true), (end_node, false)] {
+                if affected_nodes.is_some_and(|affected| !affected.contains(&node_id)) {
+                    continue;
+                }
+                if self.nodes[node_id as usize].node_type != NodeType::Junction {
+                    continue;
+                }
+                incidents_by_node
+                    .entry(node_id)
+                    .or_default()
+                    .push(JunctionProfileIncident { edge_idx, at_start });
+            }
+        }
+
+        for incidents in incidents_by_node.values_mut() {
+            incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.at_start.cmp(&b.at_start)));
+        }
+        incidents_by_node
+    }
+
+    fn solve_junction_profile_plane(
+        &self,
+        node_id: u32,
+        incidents: &[JunctionProfileIncident],
+    ) -> Option<JunctionProfilePlane> {
+        let origin = self.nodes.get(node_id as usize)?.pos;
+        let mut xx = 0.0;
+        let mut xz = 0.0;
+        let mut zz = 0.0;
+        let mut xy = 0.0;
+        let mut zy = 0.0;
+        let mut sample_count = 0;
+
+        for incident in incidents {
+            let edge = self.edges.get(incident.edge_idx)?;
+            let total_length_m = Self::edge_geometry_length_m(edge);
+            if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            let sample_distance_m = JUNCTION_PROFILE_HARD_ZONE_M.min(total_length_m * 0.5);
+            if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            let Some(sample) =
+                Self::sample_edge_geometry_from_endpoint(edge, incident.at_start, sample_distance_m)
+            else {
+                continue;
+            };
+            let dx = sample.x - origin.x;
+            let dz = sample.z - origin.z;
+            let dy = sample.y - origin.y;
+            if dx * dx + dz * dz <= JUNCTION_PROFILE_MIN_SAMPLE_M * JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            xx += dx * dx;
+            xz += dx * dz;
+            zz += dz * dz;
+            xy += dx * dy;
+            zy += dz * dy;
+            sample_count += 1;
+        }
+
+        if sample_count < 2 {
+            return None;
+        }
+        let det = xx * zz - xz * xz;
+        if det.abs() <= JUNCTION_PROFILE_PLANE_DET_EPS {
+            return None;
+        }
+
+        Some(JunctionProfilePlane {
+            origin,
+            grade_x: (xy * zz - zy * xz) / det,
+            grade_z: (xx * zy - xz * xy) / det,
+        })
+    }
+
+    fn apply_junction_profile_plane_to_edge(
+        edge: &mut super::data::Edge,
+        at_start: bool,
+        plane: JunctionProfilePlane,
+    ) {
+        let total_length_m = Self::edge_geometry_length_m(edge);
+        if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+            return;
+        }
+        let hard_zone_m = JUNCTION_PROFILE_HARD_ZONE_M.min(total_length_m * 0.5);
+        let blend_end_m =
+            (hard_zone_m + JUNCTION_PROFILE_BLEND_ZONE_M).min(total_length_m.max(hard_zone_m));
+        if hard_zone_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
+            return;
+        }
+
+        let distances = Self::edge_endpoint_distances(edge, at_start);
+        for (point, distance_m) in edge.geometry.iter_mut().zip(distances.iter().copied()) {
+            if distance_m > blend_end_m {
+                continue;
+            }
+            let target_y = plane.origin.y
+                + plane.grade_x * (point.x - plane.origin.x)
+                + plane.grade_z * (point.z - plane.origin.z);
+            let weight = if distance_m <= hard_zone_m || blend_end_m <= hard_zone_m {
+                1.0
+            } else {
+                let t = ((distance_m - hard_zone_m) / (blend_end_m - hard_zone_m)).clamp(0.0, 1.0);
+                1.0 - t * t * (3.0 - 2.0 * t)
+            };
+            point.y = point.y * (1.0 - weight) + target_y * weight;
+        }
+        edge.physical_geometry = edge.geometry.clone();
+    }
+
+    fn sample_edge_geometry_from_endpoint(
+        edge: &super::data::Edge,
+        at_start: bool,
+        distance_m: f32,
+    ) -> Option<Vector3> {
+        let distances = Self::edge_endpoint_distances(edge, at_start);
+        let points = &edge.geometry;
+        if points.is_empty() {
+            return None;
+        }
+        if points.len() == 1 {
+            return Some(points[0]);
+        }
+
+        for index in 0..points.len() - 1 {
+            let start_d = distances[index];
+            let end_d = distances[index + 1];
+            if distance_m > end_d && index + 2 < points.len() {
+                continue;
+            }
+            let segment_m = (end_d - start_d).max(f32::EPSILON);
+            let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
+            return Some(points[index].lerp(points[index + 1], t));
+        }
+
+        points.last().copied()
+    }
+
+    fn edge_endpoint_distances(edge: &super::data::Edge, at_start: bool) -> Vec<f32> {
+        let mut distances = vec![0.0; edge.geometry.len()];
+        if edge.geometry.len() < 2 {
+            return distances;
+        }
+
+        if at_start {
+            for index in 1..edge.geometry.len() {
+                distances[index] =
+                    distances[index - 1] + edge.geometry[index - 1].distance_to(edge.geometry[index]);
+            }
+        } else {
+            for index in (0..edge.geometry.len() - 1).rev() {
+                distances[index] =
+                    distances[index + 1] + edge.geometry[index + 1].distance_to(edge.geometry[index]);
+            }
+        }
+        distances
+    }
+
+    fn surface_edges_touching_nodes(
+        &self,
+        valid_node_ids: &[u32],
+        affected_nodes: &HashSet<u32>,
+    ) -> Vec<usize> {
+        self.edges
+            .iter()
+            .enumerate()
+            .filter_map(|(edge_idx, edge)| {
+                if edge.deleted
+                    || edge.primary_type != TransitType::Road
+                    || edge.start_node as usize >= valid_node_ids.len()
+                    || edge.end_node as usize >= valid_node_ids.len()
+                {
+                    return None;
+                }
+                let start_node = valid_node_ids[edge.start_node as usize];
+                let end_node = valid_node_ids[edge.end_node as usize];
+                (affected_nodes.contains(&start_node) || affected_nodes.contains(&end_node))
+                    .then_some(edge_idx)
+            })
+            .collect()
     }
 
     fn build_clip_node_stats(
