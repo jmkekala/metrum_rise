@@ -10,57 +10,176 @@ use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
 const TERMINAL_CAP_HEIGHT_EDGE_EPS_M: f64 = 0.001;
 const TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
+const TERMINAL_CAP_WIDTH_EPS_M: f64 = 0.001;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalCapBandRole {
+    LeftSide,
+    EndBand,
+    RightSide,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerminalCapBandProvenance {
+    pub(crate) layer_index: usize,
+    pub(crate) role: TerminalCapBandRole,
+    pub(crate) left_source_band_index: usize,
+    pub(crate) right_source_band_index: usize,
+    pub(crate) source_boundary_start_index: usize,
+    pub(crate) source_boundary_end_index: usize,
+    pub(crate) inner_offset_m: f64,
+    pub(crate) outer_offset_m: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalCapFailureReason {
+    MissingBoundaryRails,
+    MissingOutwardDirection,
+    MismatchedPairedBandKind,
+    MismatchedPairedBandWidth,
+    DegenerateBandWidth,
+    DegeneratePath,
+    DegenerateContour,
+    InvalidCapArea,
+}
+
+impl TerminalCapFailureReason {
+    pub(crate) fn diagnostic_reason(self) -> &'static str {
+        match self {
+            Self::MissingBoundaryRails => "terminal_cap_missing_boundary_rails",
+            Self::MissingOutwardDirection => "terminal_cap_missing_outward_direction",
+            Self::MismatchedPairedBandKind => "terminal_cap_mismatched_paired_band_kind",
+            Self::MismatchedPairedBandWidth => "terminal_cap_mismatched_paired_band_width",
+            Self::DegenerateBandWidth => "terminal_cap_degenerate_band_width",
+            Self::DegeneratePath => "terminal_cap_degenerate_path",
+            Self::DegenerateContour => "terminal_cap_degenerate_contour",
+            Self::InvalidCapArea => "terminal_cap_invalid_area",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalCapGenerationError {
+    pub(crate) mouth_order_index: usize,
+    pub(crate) layer_index: Option<usize>,
+    pub(crate) source_band_index: Option<usize>,
+    pub(crate) left_source_band_index: Option<usize>,
+    pub(crate) right_source_band_index: Option<usize>,
+    pub(crate) band_kind: Option<RoadSurfaceBandKind>,
+    pub(crate) reason: TerminalCapFailureReason,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTerminalCapBand {
     pub(crate) source_band_index: usize,
     pub(crate) band_kind: RoadSurfaceBandKind,
+    pub(crate) provenance: TerminalCapBandProvenance,
     pub(crate) inner_path_world: Vec<RoadVec3>,
     pub(crate) outer_path_world: Vec<RoadVec3>,
     pub(crate) contour_world: Vec<RoadVec3>,
 }
 
+impl TerminalCapGenerationError {
+    fn for_mouth(mouth: &NodeInputMouth, reason: TerminalCapFailureReason) -> Self {
+        Self {
+            mouth_order_index: mouth.order_index,
+            layer_index: None,
+            source_band_index: None,
+            left_source_band_index: None,
+            right_source_band_index: None,
+            band_kind: None,
+            reason,
+        }
+    }
+
+    fn for_layer(
+        mouth: &NodeInputMouth,
+        layer_index: usize,
+        source_band_index: usize,
+        left_source_band_index: usize,
+        right_source_band_index: usize,
+        band_kind: RoadSurfaceBandKind,
+        reason: TerminalCapFailureReason,
+    ) -> Self {
+        Self {
+            mouth_order_index: mouth.order_index,
+            layer_index: Some(layer_index),
+            source_band_index: Some(source_band_index),
+            left_source_band_index: Some(left_source_band_index),
+            right_source_band_index: Some(right_source_band_index),
+            band_kind: Some(band_kind),
+            reason,
+        }
+    }
+
+    fn for_cap(
+        mouth: &NodeInputMouth,
+        source_band_index: usize,
+        band_kind: RoadSurfaceBandKind,
+        provenance: TerminalCapBandProvenance,
+        reason: TerminalCapFailureReason,
+    ) -> Self {
+        Self::for_layer(
+            mouth,
+            provenance.layer_index,
+            source_band_index,
+            provenance.left_source_band_index,
+            provenance.right_source_band_index,
+            band_kind,
+            reason,
+        )
+    }
+}
+
 pub(crate) fn terminal_cap_bands_by_mouth(
     input: &NodeArrangementInput,
-) -> Vec<Vec<NodeTerminalCapBand>> {
+) -> Result<Vec<Vec<NodeTerminalCapBand>>, TerminalCapGenerationError> {
     let mut bands_by_mouth = vec![Vec::new(); input.mouths.len()];
     if input.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-        return bands_by_mouth;
+        return Ok(bands_by_mouth);
     }
 
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
-        let mut bands = terminal_cap_bands(mouth);
-        canonicalize_terminal_cap_bands(&mut bands);
+        let mut bands = terminal_cap_bands(mouth)?;
+        canonicalize_terminal_cap_bands(mouth, &mut bands)?;
         bands_by_mouth[mouth_index] = bands;
     }
 
-    bands_by_mouth
+    Ok(bands_by_mouth)
 }
 
-fn terminal_cap_bands(mouth: &NodeInputMouth) -> Vec<NodeTerminalCapBand> {
+fn terminal_cap_bands(
+    mouth: &NodeInputMouth,
+) -> Result<Vec<NodeTerminalCapBand>, TerminalCapGenerationError> {
     let Some(first_carriageway) = mouth
         .band_intervals
         .iter()
         .position(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(last_carriageway) = mouth
         .band_intervals
         .iter()
         .rposition(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    if first_carriageway == 0
-        || last_carriageway + 1 >= mouth.band_intervals.len()
-        || mouth.boundary_rails.len() != mouth.band_intervals.len() + 1
-    {
-        return Vec::new();
+    if first_carriageway == 0 || last_carriageway + 1 >= mouth.band_intervals.len() {
+        return Ok(Vec::new());
+    }
+    if mouth.boundary_rails.len() != mouth.band_intervals.len() + 1 {
+        return Err(TerminalCapGenerationError::for_mouth(
+            mouth,
+            TerminalCapFailureReason::MissingBoundaryRails,
+        ));
     }
 
     let Some(outward) = normalized_terminal_cap_direction(-mouth.direction_xz) else {
-        return Vec::new();
+        return Err(TerminalCapGenerationError::for_mouth(
+            mouth,
+            TerminalCapFailureReason::MissingOutwardDirection,
+        ));
     };
     let paired_layers = first_carriageway.min(mouth.band_intervals.len() - last_carriageway - 1);
     let mut cap_bands = Vec::new();
@@ -72,32 +191,71 @@ fn terminal_cap_bands(mouth: &NodeInputMouth) -> Vec<NodeTerminalCapBand> {
         let right_band_index = last_carriageway + 1 + layer_index;
         let left_band = &mouth.band_intervals[left_band_index];
         let right_band = &mouth.band_intervals[right_band_index];
-        if left_band.band_kind != right_band.band_kind
-            || left_band.band_kind == RoadSurfaceBandKind::Carriageway
-        {
-            break;
+        if left_band.band_kind != right_band.band_kind {
+            return Err(TerminalCapGenerationError::for_layer(
+                mouth,
+                layer_index,
+                next_terminal_source_band_index,
+                left_band_index,
+                right_band_index,
+                left_band.band_kind,
+                TerminalCapFailureReason::MismatchedPairedBandKind,
+            ));
+        }
+        if left_band.band_kind == RoadSurfaceBandKind::Carriageway {
+            return Err(TerminalCapGenerationError::for_layer(
+                mouth,
+                layer_index,
+                next_terminal_source_band_index,
+                left_band_index,
+                right_band_index,
+                left_band.band_kind,
+                TerminalCapFailureReason::MismatchedPairedBandKind,
+            ));
         }
 
-        let depth_m = band_width_m(left_band).min(band_width_m(right_band));
-        if depth_m <= f64::EPSILON {
-            continue;
+        let left_depth_m = band_width_m(left_band);
+        let right_depth_m = band_width_m(right_band);
+        if left_depth_m <= TERMINAL_CAP_WIDTH_EPS_M || right_depth_m <= TERMINAL_CAP_WIDTH_EPS_M {
+            return Err(TerminalCapGenerationError::for_layer(
+                mouth,
+                layer_index,
+                next_terminal_source_band_index,
+                left_band_index,
+                right_band_index,
+                left_band.band_kind,
+                TerminalCapFailureReason::DegenerateBandWidth,
+            ));
         }
+        if (left_depth_m - right_depth_m).abs() > TERMINAL_CAP_WIDTH_EPS_M {
+            return Err(TerminalCapGenerationError::for_layer(
+                mouth,
+                layer_index,
+                next_terminal_source_band_index,
+                left_band_index,
+                right_band_index,
+                left_band.band_kind,
+                TerminalCapFailureReason::MismatchedPairedBandWidth,
+            ));
+        }
+        let depth_m = left_depth_m;
         let outer_offset_m = inner_offset_m + depth_m;
         push_terminal_paired_cap_bands(
             &mut cap_bands,
             mouth,
             outward,
             next_terminal_source_band_index,
+            layer_index,
             left_band_index,
             right_band_index,
             inner_offset_m,
             outer_offset_m,
-        );
+        )?;
         next_terminal_source_band_index += 1;
         inner_offset_m = outer_offset_m;
     }
 
-    cap_bands
+    Ok(cap_bands)
 }
 
 fn push_terminal_paired_cap_bands(
@@ -105,38 +263,67 @@ fn push_terminal_paired_cap_bands(
     mouth: &NodeInputMouth,
     outward: RoadVec2,
     source_band_index: usize,
+    layer_index: usize,
     left_band_index: usize,
     right_band_index: usize,
     inner_offset_m: f64,
     outer_offset_m: f64,
-) {
+) -> Result<(), TerminalCapGenerationError> {
     let band_kind = mouth.band_intervals[left_band_index].band_kind;
     push_terminal_cap_band(
         cap_bands,
+        mouth,
         source_band_index,
         band_kind,
-        terminal_offset_boundary_path(mouth, left_band_index, left_band_index + 1, outward, 0.0),
+        TerminalCapBandProvenance {
+            layer_index,
+            role: TerminalCapBandRole::LeftSide,
+            left_source_band_index: left_band_index,
+            right_source_band_index: right_band_index,
+            source_boundary_start_index: left_band_index,
+            source_boundary_end_index: left_band_index + 1,
+            inner_offset_m,
+            outer_offset_m,
+        },
+        terminal_offset_boundary_path(
+            mouth,
+            left_band_index,
+            left_band_index + 1,
+            outward,
+            inner_offset_m,
+            terminal_side_band_height_anchors(mouth, left_band_index),
+        ),
         terminal_offset_boundary_path(
             mouth,
             left_band_index,
             left_band_index + 1,
             outward,
             outer_offset_m,
+            terminal_side_band_height_anchors(mouth, left_band_index),
         ),
-    );
-    let closure_heights_m =
-        terminal_paired_closure_height_anchors(mouth, left_band_index, right_band_index);
+    )?;
     push_terminal_cap_band(
         cap_bands,
+        mouth,
         source_band_index,
         band_kind,
+        TerminalCapBandProvenance {
+            layer_index,
+            role: TerminalCapBandRole::EndBand,
+            left_source_band_index: left_band_index,
+            right_source_band_index: right_band_index,
+            source_boundary_start_index: left_band_index + 1,
+            source_boundary_end_index: right_band_index,
+            inner_offset_m,
+            outer_offset_m,
+        },
         terminal_offset_boundary_path_with_linear_height(
             mouth,
             left_band_index + 1,
             right_band_index,
             outward,
             inner_offset_m,
-            closure_heights_m,
+            terminal_end_band_inner_height_anchors(mouth, left_band_index, right_band_index),
         ),
         terminal_offset_boundary_path_with_linear_height(
             mouth,
@@ -144,49 +331,95 @@ fn push_terminal_paired_cap_bands(
             right_band_index,
             outward,
             outer_offset_m,
-            closure_heights_m,
+            terminal_end_band_outer_height_anchors(mouth, left_band_index, right_band_index),
         ),
-    );
+    )?;
     push_terminal_cap_band(
         cap_bands,
+        mouth,
         source_band_index,
         band_kind,
-        terminal_offset_boundary_path(mouth, right_band_index, right_band_index + 1, outward, 0.0),
+        TerminalCapBandProvenance {
+            layer_index,
+            role: TerminalCapBandRole::RightSide,
+            left_source_band_index: left_band_index,
+            right_source_band_index: right_band_index,
+            source_boundary_start_index: right_band_index,
+            source_boundary_end_index: right_band_index + 1,
+            inner_offset_m,
+            outer_offset_m,
+        },
+        terminal_offset_boundary_path(
+            mouth,
+            right_band_index,
+            right_band_index + 1,
+            outward,
+            inner_offset_m,
+            terminal_side_band_height_anchors(mouth, right_band_index),
+        ),
         terminal_offset_boundary_path(
             mouth,
             right_band_index,
             right_band_index + 1,
             outward,
             outer_offset_m,
+            terminal_side_band_height_anchors(mouth, right_band_index),
         ),
-    );
+    )?;
+    Ok(())
 }
 
 fn push_terminal_cap_band(
     cap_bands: &mut Vec<NodeTerminalCapBand>,
+    mouth: &NodeInputMouth,
     source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
+    provenance: TerminalCapBandProvenance,
     inner_path_world: Option<Vec<RoadVec3>>,
     outer_path_world: Option<Vec<RoadVec3>>,
-) {
-    let Some(inner_path_world) = inner_path_world.and_then(clean_terminal_cap_path_world) else {
-        return;
-    };
-    let Some(outer_path_world) = outer_path_world.and_then(clean_terminal_cap_path_world) else {
-        return;
-    };
-    let Some(contour_world) = terminal_cap_contour_world(&inner_path_world, &outer_path_world)
-    else {
-        return;
-    };
+) -> Result<(), TerminalCapGenerationError> {
+    let inner_path_world = inner_path_world
+        .and_then(clean_terminal_cap_path_world)
+        .ok_or_else(|| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::DegeneratePath,
+            )
+        })?;
+    let outer_path_world = outer_path_world
+        .and_then(clean_terminal_cap_path_world)
+        .ok_or_else(|| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::DegeneratePath,
+            )
+        })?;
+    let contour_world = terminal_cap_contour_world(&inner_path_world, &outer_path_world)
+        .ok_or_else(|| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::DegenerateContour,
+            )
+        })?;
 
     cap_bands.push(NodeTerminalCapBand {
         source_band_index,
         band_kind,
+        provenance,
         inner_path_world,
         outer_path_world,
         contour_world,
     });
+    Ok(())
 }
 
 fn terminal_offset_boundary_path(
@@ -195,6 +428,7 @@ fn terminal_offset_boundary_path(
     end_boundary_index: usize,
     outward: RoadVec2,
     offset_m: f64,
+    endpoint_heights_m: Option<(f64, f64)>,
 ) -> Option<Vec<RoadVec3>> {
     terminal_offset_boundary_path_with_linear_height(
         mouth,
@@ -202,7 +436,7 @@ fn terminal_offset_boundary_path(
         end_boundary_index,
         outward,
         offset_m,
-        None,
+        endpoint_heights_m,
     )
 }
 
@@ -247,13 +481,36 @@ fn terminal_offset_boundary_path_with_linear_height(
     Some(points)
 }
 
-fn terminal_paired_closure_height_anchors(
+fn terminal_side_band_height_anchors(
+    mouth: &NodeInputMouth,
+    band_index: usize,
+) -> Option<(f64, f64)> {
+    let band = mouth.band_intervals.get(band_index)?;
+    Some((band.endpoint_start_world.y, band.endpoint_end_world.y))
+}
+
+fn terminal_end_band_inner_height_anchors(
     mouth: &NodeInputMouth,
     left_band_index: usize,
     right_band_index: usize,
 ) -> Option<(f64, f64)> {
-    let left_height_m = endpoint_boundary_world(mouth, left_band_index)?.y;
-    let right_height_m = endpoint_boundary_world(mouth, right_band_index + 1)?.y;
+    let left_band = mouth.band_intervals.get(left_band_index)?;
+    let right_band = mouth.band_intervals.get(right_band_index)?;
+    Some((
+        left_band.endpoint_end_world.y,
+        right_band.endpoint_start_world.y,
+    ))
+}
+
+fn terminal_end_band_outer_height_anchors(
+    mouth: &NodeInputMouth,
+    left_band_index: usize,
+    right_band_index: usize,
+) -> Option<(f64, f64)> {
+    let left_band = mouth.band_intervals.get(left_band_index)?;
+    let right_band = mouth.band_intervals.get(right_band_index)?;
+    let left_height_m = left_band.endpoint_start_world.y;
+    let right_height_m = right_band.endpoint_end_world.y;
     Some((left_height_m, right_height_m))
 }
 
@@ -268,31 +525,58 @@ fn band_width_m(band: &super::input::NodeInputBandInterval) -> f64 {
     xz(band.endpoint_start_world).distance(xz(band.endpoint_end_world))
 }
 
-fn canonicalize_terminal_cap_bands(cap_bands: &mut Vec<NodeTerminalCapBand>) {
+fn canonicalize_terminal_cap_bands(
+    mouth: &NodeInputMouth,
+    cap_bands: &mut [NodeTerminalCapBand],
+) -> Result<(), TerminalCapGenerationError> {
     for cap_band in cap_bands.iter_mut() {
         quantize_terminal_cap_band_xz(cap_band);
         let Some(inner_path_world) =
             clean_terminal_cap_path_world(cap_band.inner_path_world.clone())
         else {
-            cap_band.contour_world.clear();
-            continue;
+            return Err(TerminalCapGenerationError::for_cap(
+                mouth,
+                cap_band.source_band_index,
+                cap_band.band_kind,
+                cap_band.provenance,
+                TerminalCapFailureReason::DegeneratePath,
+            ));
         };
         let Some(outer_path_world) =
             clean_terminal_cap_path_world(cap_band.outer_path_world.clone())
         else {
-            cap_band.contour_world.clear();
-            continue;
+            return Err(TerminalCapGenerationError::for_cap(
+                mouth,
+                cap_band.source_band_index,
+                cap_band.band_kind,
+                cap_band.provenance,
+                TerminalCapFailureReason::DegeneratePath,
+            ));
         };
         let Some(contour_world) = terminal_cap_contour_world(&inner_path_world, &outer_path_world)
         else {
-            cap_band.contour_world.clear();
-            continue;
+            return Err(TerminalCapGenerationError::for_cap(
+                mouth,
+                cap_band.source_band_index,
+                cap_band.band_kind,
+                cap_band.provenance,
+                TerminalCapFailureReason::DegenerateContour,
+            ));
         };
         cap_band.inner_path_world = inner_path_world;
         cap_band.outer_path_world = outer_path_world;
         cap_band.contour_world = contour_world;
+        if !terminal_cap_band_has_quantized_area(cap_band) {
+            return Err(TerminalCapGenerationError::for_cap(
+                mouth,
+                cap_band.source_band_index,
+                cap_band.band_kind,
+                cap_band.provenance,
+                TerminalCapFailureReason::InvalidCapArea,
+            ));
+        }
     }
-    cap_bands.retain(terminal_cap_band_has_quantized_area);
+    Ok(())
 }
 
 fn quantize_terminal_cap_band_xz(cap_band: &mut NodeTerminalCapBand) {
@@ -467,7 +751,7 @@ mod tests {
         let boundary_points_world = vec![
             Vector3::new(x, 4.12, -5.0),
             Vector3::new(x, 4.12, -3.65),
-            Vector3::new(x, 4.12, -3.5),
+            Vector3::new(x, 4.0, -3.5),
             Vector3::new(x, 4.0, 0.0),
             Vector3::new(x, 4.0, 3.5),
             Vector3::new(x, 4.12, 3.65),
@@ -482,7 +766,7 @@ mod tests {
             band(
                 RoadSurfaceBandKind::CurbOrShoulder,
                 boundary_points_world[1],
-                boundary_points_world[2],
+                Vector3::new(boundary_points_world[2].x, 4.12, boundary_points_world[2].z),
             ),
             band(
                 RoadSurfaceBandKind::Carriageway,
@@ -496,7 +780,7 @@ mod tests {
             ),
             band(
                 RoadSurfaceBandKind::CurbOrShoulder,
-                boundary_points_world[4],
+                Vector3::new(boundary_points_world[4].x, 4.12, boundary_points_world[4].z),
                 boundary_points_world[5],
             ),
             band(
@@ -535,6 +819,13 @@ mod tests {
             boundary_points_world,
             bands,
         }
+    }
+
+    fn asymmetric_sidewalk_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+        let mut profile = symmetric_profile_x(x, inward_direction_xz);
+        profile.boundary_points_world[6] = Vector3::new(x, 4.12, 5.5);
+        profile.bands[5].end_point_world = profile.boundary_points_world[6];
+        profile
     }
 
     fn terminal_input(profile: IncidentMouthProfile) -> NodeArrangementInput {
@@ -582,15 +873,16 @@ mod tests {
     }
 
     #[test]
-    fn terminal_cap_adapter_uses_paired_outer_source_heights() {
+    fn terminal_cap_adapter_uses_source_band_interval_heights() {
         let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
         let mouth = &input.mouths[0];
-        let cap_bands_by_mouth = terminal_cap_bands_by_mouth(&input);
+        let cap_bands_by_mouth =
+            terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
         let center_boundary = mouth.boundary_rails[3].endpoint_world;
-        let expected_height_m = mouth.boundary_rails[1]
-            .endpoint_world
+        let expected_height_m = mouth.band_intervals[1]
+            .endpoint_end_world
             .y
-            .max(mouth.boundary_rails[5].endpoint_world.y);
+            .max(mouth.band_intervals[4].endpoint_start_world.y);
 
         assert!(cap_bands_by_mouth[0].iter().any(|cap_band| {
             cap_band.band_kind == RoadSurfaceBandKind::CurbOrShoulder
@@ -603,9 +895,47 @@ mod tests {
     }
 
     #[test]
+    fn terminal_cap_adapter_records_cap_source_provenance() {
+        let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
+        let mouth = &input.mouths[0];
+        let cap_bands_by_mouth =
+            terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
+        let first_terminal_source_band = mouth.band_intervals.len();
+        let end_band = cap_bands_by_mouth[0]
+            .iter()
+            .find(|cap_band| {
+                cap_band.source_band_index == first_terminal_source_band
+                    && cap_band.provenance.role == TerminalCapBandRole::EndBand
+            })
+            .expect("curb terminal cap should include an endpoint span");
+
+        assert_eq!(end_band.band_kind, RoadSurfaceBandKind::CurbOrShoulder);
+        assert_eq!(end_band.provenance.layer_index, 0);
+        assert_eq!(end_band.provenance.left_source_band_index, 1);
+        assert_eq!(end_band.provenance.right_source_band_index, 4);
+        assert_eq!(end_band.provenance.source_boundary_start_index, 2);
+        assert_eq!(end_band.provenance.source_boundary_end_index, 4);
+    }
+
+    #[test]
+    fn terminal_cap_adapter_rejects_asymmetric_paired_band_widths() {
+        let input = terminal_input(asymmetric_sidewalk_profile_x(0.0, Vector2::RIGHT));
+        let error = terminal_cap_bands_by_mouth(&input)
+            .expect_err("paired terminal caps must not silently truncate asymmetric widths");
+
+        assert_eq!(
+            error.reason,
+            TerminalCapFailureReason::MismatchedPairedBandWidth
+        );
+        assert_eq!(error.layer_index, Some(1));
+        assert_eq!(error.band_kind, Some(RoadSurfaceBandKind::Sidewalk));
+    }
+
+    #[test]
     fn car_only_terminal_emits_no_non_road_cap() {
         let input = terminal_input(car_only_profile_x(0.0, Vector2::RIGHT));
-        let cap_bands_by_mouth = terminal_cap_bands_by_mouth(&input);
+        let cap_bands_by_mouth =
+            terminal_cap_bands_by_mouth(&input).expect("car-only terminal has no cap bands");
 
         assert!(cap_bands_by_mouth.iter().flatten().next().is_none());
     }

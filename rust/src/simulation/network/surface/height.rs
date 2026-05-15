@@ -10,7 +10,9 @@ use super::backend::{
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::rails::{NodeGeneratedContour, NodeGeneratedContourKind, NodeRailContourSet};
-use super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
+use super::terminal::{
+    NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
+};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind, SurfaceCdt,
@@ -101,6 +103,9 @@ pub(crate) enum NodeHeightFieldError {
         constraint_index: Option<usize>,
         existing_height_mm: i64,
         incoming_height_mm: i64,
+    },
+    TerminalCapGeneration {
+        error: TerminalCapGenerationError,
     },
 }
 
@@ -237,8 +242,8 @@ impl NodeBandHeightField {
                 source_kind: cap_band.band_kind,
             });
         }
-        let extension = Self::from_terminal_cap_band_with_base(mouth_order_index, cap_band, self)?;
-        self.patches.extend(extension.patches);
+        self.patches
+            .push(NodeBandHeightPatch::from_terminal_cap_band(cap_band));
         Ok(())
     }
 
@@ -249,15 +254,6 @@ impl NodeBandHeightField {
         let patch = NodeBandHeightPatch::from_generated_contour(contour, self)?;
         self.patches.push(patch);
         Ok(())
-    }
-
-    fn from_terminal_cap_band_with_base(
-        mouth_order_index: usize,
-        cap_band: &NodeTerminalCapBand,
-        base: &Self,
-    ) -> Result<Self, NodeHeightFieldError> {
-        let cap_band = reheight_terminal_cap_band_from_base(cap_band, base)?;
-        Ok(Self::from_terminal_cap_band(mouth_order_index, &cap_band))
     }
 
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
@@ -324,35 +320,6 @@ impl NodeBandHeightField {
             }
         }
         Ok(first_height_m)
-    }
-}
-
-fn reheight_terminal_cap_band_from_base(
-    cap_band: &NodeTerminalCapBand,
-    base: &NodeBandHeightField,
-) -> Result<NodeTerminalCapBand, NodeHeightFieldError> {
-    let mut cap_band = cap_band.clone();
-    for point in &mut cap_band.inner_path_world {
-        *point = reheight_point_from_base(*point, base)?;
-    }
-    for point in &mut cap_band.outer_path_world {
-        *point = reheight_point_from_base(*point, base)?;
-    }
-    for point in &mut cap_band.contour_world {
-        *point = reheight_point_from_base(*point, base)?;
-    }
-    Ok(cap_band)
-}
-
-fn reheight_point_from_base(
-    point: RoadVec3,
-    base: &NodeBandHeightField,
-) -> Result<RoadVec3, NodeHeightFieldError> {
-    let point_xz = quantize_road_vec2_to_overlay_grid(xz(point));
-    match base.evaluate_height(point_xz) {
-        Ok(height_m) => Ok(RoadVec3::new(point.x, height_m, point.z)),
-        Err(NodeHeightFieldError::VertexOutsideHeightField { .. }) => Ok(point),
-        Err(error) => Err(error),
     }
 }
 
@@ -527,7 +494,8 @@ fn height_fields_by_source(
     input: &NodeArrangementInput,
     rails: Option<&NodeRailContourSet>,
 ) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
-    let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input);
+    let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
+        .map_err(|error| NodeHeightFieldError::TerminalCapGeneration { error })?;
     let mut fields = BTreeMap::new();
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
@@ -1360,6 +1328,9 @@ mod tests {
         NodeBooleanOwnership, NodeOwnedRegionArrangement,
     };
     use crate::simulation::network::surface::rails::NodeRailContourSet;
+    use crate::simulation::network::surface::terminal::{
+        TerminalCapBandProvenance, TerminalCapBandRole,
+    };
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     };
@@ -1526,11 +1497,51 @@ mod tests {
             concat!("heighted_shape_with_", "canonical_contour_insertions"),
             concat!("heighted_contour_with_", "canonical_insertions"),
             concat!("fill_canonical_contour_", "height_insertions"),
+            concat!("reheight_terminal_", "cap_band_from_base"),
+            concat!("reheight_point_", "from_base"),
+            concat!("from_terminal_cap_band_", "with_base"),
         ] {
             assert!(
                 !source.contains(forbidden),
                 "canonical arrangement vertices must be inside their explicit height carrier, not repaired by `{forbidden}`"
             );
+        }
+    }
+
+    fn terminal_cap_band_for_height_test(
+        x: f64,
+        height_m: f64,
+        role: TerminalCapBandRole,
+    ) -> NodeTerminalCapBand {
+        let inner_start = RoadVec3::new(x, height_m, -1.0);
+        let inner_center = RoadVec3::new(x, height_m, 0.0);
+        let inner_end = RoadVec3::new(x, height_m, 1.0);
+        let outer_start = RoadVec3::new(x + 0.15, height_m, -1.0);
+        let outer_center = RoadVec3::new(x + 0.15, height_m, 0.0);
+        let outer_end = RoadVec3::new(x + 0.15, height_m, 1.0);
+        NodeTerminalCapBand {
+            source_band_index: 0,
+            band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            provenance: TerminalCapBandProvenance {
+                layer_index: 0,
+                role,
+                left_source_band_index: 0,
+                right_source_band_index: 1,
+                source_boundary_start_index: 0,
+                source_boundary_end_index: 1,
+                inner_offset_m: 0.0,
+                outer_offset_m: 0.15,
+            },
+            inner_path_world: vec![inner_start, inner_center, inner_end],
+            outer_path_world: vec![outer_start, outer_center, outer_end],
+            contour_world: vec![
+                inner_start,
+                inner_center,
+                inner_end,
+                outer_end,
+                outer_center,
+                outer_start,
+            ],
         }
     }
 
@@ -1545,6 +1556,16 @@ mod tests {
         let cap_band = NodeTerminalCapBand {
             source_band_index: 0,
             band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            provenance: TerminalCapBandProvenance {
+                layer_index: 0,
+                role: TerminalCapBandRole::EndBand,
+                left_source_band_index: 0,
+                right_source_band_index: 0,
+                source_boundary_start_index: 0,
+                source_boundary_end_index: 1,
+                inner_offset_m: 0.0,
+                outer_offset_m: 0.15,
+            },
             inner_path_world: vec![inner_start, inner_center, inner_end],
             outer_path_world: vec![outer_start, outer_center, outer_end],
             contour_world: vec![
@@ -1575,6 +1596,27 @@ mod tests {
             (height - 0.12).abs() <= 1.0e-6,
             "terminal curb cap inner rail must stay raised across the carriageway split"
         );
+    }
+
+    #[test]
+    fn terminal_cap_height_field_extends_with_explicit_cap_patches_only() {
+        let first_cap = terminal_cap_band_for_height_test(0.0, 0.12, TerminalCapBandRole::EndBand);
+        let second_cap =
+            terminal_cap_band_for_height_test(1.0, 0.32, TerminalCapBandRole::RightSide);
+        let mut field = NodeBandHeightField::from_terminal_cap_band(0, &first_cap);
+
+        field
+            .extend_with_terminal_cap_band(0, &second_cap)
+            .expect("same terminal source may carry multiple explicit cap patches");
+
+        let second_height = field
+            .evaluate_height(RoadVec2::new(1.0, 0.0))
+            .expect("second terminal cap patch should be an explicit carrier");
+        assert!((second_height - 0.32).abs() <= 1.0e-6);
+        assert!(matches!(
+            field.evaluate_height(RoadVec2::new(0.5, 0.0)),
+            Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
+        ));
     }
 
     #[test]

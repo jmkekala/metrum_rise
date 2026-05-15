@@ -12,7 +12,9 @@ use super::input::{
 use super::joins::{
     NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, side_join_bands_by_mouth,
 };
-use super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
+use super::terminal::{
+    NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
+};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -189,6 +191,9 @@ pub(crate) enum NodeRailGenerationError {
         point_x_key: i64,
         point_z_key: i64,
     },
+    TerminalCapGeneration {
+        error: TerminalCapGenerationError,
+    },
 }
 
 struct MouthOwners {
@@ -345,7 +350,8 @@ impl NodeRailContourSet {
             });
         }
 
-        let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input);
+        let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
+            .map_err(|error| NodeRailGenerationError::TerminalCapGeneration { error })?;
         let side_join_bands_by_mouth = side_join_bands_by_mouth(input);
         let owners_by_mouth = owners_by_mouth(
             input,

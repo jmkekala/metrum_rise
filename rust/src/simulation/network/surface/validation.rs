@@ -780,6 +780,11 @@ impl NodeGeometryDiagnostic {
                     reason: "noncanonical_generated_contact_endpoint",
                 }
             }
+            NodeRailGenerationError::TerminalCapGeneration { error } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: error.reason.diagnostic_reason(),
+                }
+            }
         };
         Self {
             node_id,
@@ -946,6 +951,19 @@ impl NodeGeometryDiagnostic {
                 axis: Some(*axis),
                 raw_parameter: Some(*raw_parameter),
             },
+            NodeHeightFieldError::TerminalCapGeneration { error } => {
+                NodeGeometryDiagnosticKind::HeightFieldFailure {
+                    reason: error.reason.diagnostic_reason(),
+                    mouth_order_index: Some(error.mouth_order_index),
+                    band_index: error.source_band_index,
+                    kind: error.band_kind,
+                    source_kind: error.band_kind,
+                    point_x_mm: None,
+                    point_z_mm: None,
+                    axis: None,
+                    raw_parameter: None,
+                }
+            }
             NodeHeightFieldError::SourceHeightFieldConflict {
                 point_x_mm,
                 point_z_mm,
