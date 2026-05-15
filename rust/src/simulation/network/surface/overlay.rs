@@ -3,8 +3,9 @@
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2,
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
-    NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon,
+    NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
+    RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
     WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
 };
 use godot::prelude::Vector3;
@@ -33,6 +34,7 @@ struct TerrainClipSourceEdge {
     start: Vector3,
     end: Vector3,
     kind: RoadSurfaceTerrainClipEdgeKind,
+    source: RoadSurfaceEarthworkFaceSource,
     source_index: usize,
     edge_index: usize,
 }
@@ -399,6 +401,17 @@ impl RoadSurfaceSystem {
     pub(super) fn union_terrain_clip_boundary_loops(
         boundary_loops: &[RoadSurfaceTerrainClipLoop],
     ) -> Vec<RoadSurfaceVisualPolygon> {
+        Self::union_terrain_clip_boundary_loops_with_sources(boundary_loops)
+            .into_iter()
+            .filter_map(|boundary_loop| {
+                Self::make_boundary_loop_polygon(boundary_loop.points_world)
+            })
+            .collect()
+    }
+
+    pub(super) fn union_terrain_clip_boundary_loops_with_sources(
+        boundary_loops: &[RoadSurfaceTerrainClipLoop],
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
         if boundary_loops.is_empty() {
             return Vec::new();
         }
@@ -409,26 +422,31 @@ impl RoadSurfaceSystem {
         };
         Self::sort_overlay_shapes(&mut shapes);
         let source_edges = Self::terrain_clip_source_edges_from_boundary_loops(boundary_loops);
-        Self::terrain_clip_polygons_from_overlay_shapes_with_source_edges(&shapes, &source_edges)
+        Self::terrain_clip_boundary_loops_from_overlay_shapes_with_source_edges(
+            &shapes,
+            &source_edges,
+        )
     }
 
-    fn terrain_clip_polygons_from_overlay_shapes_with_source_edges(
+    fn terrain_clip_boundary_loops_from_overlay_shapes_with_source_edges(
         shapes: &[NodeOverlayShape],
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut polygons = Vec::new();
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
+        let mut loops = Vec::new();
         for (shape_index, shape) in shapes.iter().enumerate() {
-            let Some(polygon) = Self::terrain_clip_polygon_from_overlay_shape_with_source_edges(
-                shape,
-                shape_index,
-                source_edges,
-            ) else {
+            let Some(boundary_loop) =
+                Self::terrain_clip_boundary_loop_from_overlay_shape_with_source_edges(
+                    shape,
+                    shape_index,
+                    source_edges,
+                )
+            else {
                 continue;
             };
-            polygons.push(polygon);
+            loops.push(boundary_loop);
         }
-        Self::sort_visual_polygons(&mut polygons);
-        polygons
+        Self::sort_terrain_clip_loops(&mut loops);
+        loops
     }
 
     pub(super) fn overlay_shape_area_m2(shape: &NodeOverlayShape) -> f32 {
@@ -509,18 +527,23 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn terrain_clip_polygon_from_overlay_shape_with_source_edges(
+    fn terrain_clip_boundary_loop_from_overlay_shape_with_source_edges(
         shape: &NodeOverlayShape,
         shape_index: usize,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<RoadSurfaceVisualPolygon> {
+    ) -> Option<RoadSurfaceTerrainClipLoop> {
         let outer_contour = shape.first()?;
-        let outer_points = Self::world_points_from_overlay_contour_with_source_edges(
+        let points_world = Self::world_points_from_overlay_contour_with_source_edges(
             outer_contour,
             shape_index,
             source_edges,
         )?;
-        Self::make_boundary_loop_polygon(outer_points)
+        let source_edges =
+            Self::terrain_clip_output_source_edges_for_points(&points_world, source_edges)?;
+        Some(RoadSurfaceTerrainClipLoop {
+            points_world,
+            source_edges,
+        })
     }
 
     fn world_points_from_overlay_contour_with_source_edges(
@@ -611,6 +634,7 @@ impl RoadSurfaceSystem {
                     start,
                     end,
                     kind: source_edge.kind,
+                    source: source_edge.source,
                     source_index,
                     edge_index,
                 });
@@ -1072,6 +1096,121 @@ impl RoadSurfaceSystem {
                 points[0].y = last.y;
             }
         }
+    }
+
+    fn terrain_clip_output_source_edges_for_points(
+        points: &[Vector3],
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<Vec<RoadSurfaceTerrainClipSourceEdge>> {
+        if points.len() < 3 {
+            return None;
+        }
+        let mut output = Vec::with_capacity(points.len());
+        for index in 0..points.len() {
+            let start = points[index];
+            let end = points[(index + 1) % points.len()];
+            let start_overlay = [f64::from(start.x), f64::from(start.z)];
+            let end_overlay = [f64::from(end.x), f64::from(end.z)];
+            let Some(source) = Self::terrain_clip_output_source_for_segment(
+                start_overlay,
+                end_overlay,
+                source_edges,
+            )
+            .or_else(|| {
+                Self::terrain_clip_output_dust_connector_source(
+                    start_overlay,
+                    end_overlay,
+                    source_edges,
+                )
+            }) else {
+                return None;
+            };
+            output.push(RoadSurfaceTerrainClipSourceEdge {
+                start,
+                end,
+                kind: source.kind,
+                source: source.source,
+            });
+        }
+        Some(output)
+    }
+
+    fn terrain_clip_output_source_for_segment(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<TerrainClipSourceEdge> {
+        let mut best = None;
+        for &source_edge in source_edges {
+            let interval = Self::terrain_clip_source_interval_on_segment(start, end, source_edge)?;
+            if !Self::terrain_clip_interval_covers(interval, 0.0, 1.0) {
+                continue;
+            }
+            let height = interval_height_at(interval, 0.5);
+            if best.is_none_or(|(best_height, best_edge): (f32, TerrainClipSourceEdge)| {
+                height > best_height
+                    || (Self::overlay_heights_equal(height, best_height)
+                        && Self::terrain_clip_source_edge_ordering(source_edge, best_edge).is_lt())
+            }) {
+                best = Some((height, source_edge));
+            }
+        }
+        best.map(|(_, source_edge)| source_edge)
+    }
+
+    fn terrain_clip_output_dust_connector_source(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<TerrainClipSourceEdge> {
+        let mut endpoint_edges =
+            Self::terrain_clip_source_edges_at_overlay_point(start, source_edges);
+        endpoint_edges.extend(Self::terrain_clip_source_edges_at_overlay_point(
+            end,
+            source_edges,
+        ));
+        endpoint_edges.sort_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b));
+        endpoint_edges.dedup_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b).is_eq());
+        endpoint_edges.into_iter().next().or_else(|| {
+            let connector_length_m = overlay_segment_length_m(start, end);
+            if connector_length_m > f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) {
+                return None;
+            }
+            source_edges
+                .iter()
+                .copied()
+                .min_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b))
+        })
+    }
+
+    fn terrain_clip_source_edges_at_overlay_point(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Vec<TerrainClipSourceEdge> {
+        source_edges
+            .iter()
+            .copied()
+            .filter(|source_edge| {
+                Self::overlay_point_key([
+                    f64::from(source_edge.start.x),
+                    f64::from(source_edge.start.z),
+                ]) == Self::overlay_point_key(point)
+                    || Self::overlay_point_key([
+                        f64::from(source_edge.end.x),
+                        f64::from(source_edge.end.z),
+                    ]) == Self::overlay_point_key(point)
+            })
+            .collect()
+    }
+
+    fn terrain_clip_source_edge_ordering(
+        a: TerrainClipSourceEdge,
+        b: TerrainClipSourceEdge,
+    ) -> std::cmp::Ordering {
+        terrain_clip_edge_kind_priority(a.kind)
+            .cmp(&terrain_clip_edge_kind_priority(b.kind))
+            .then(a.source_index.cmp(&b.source_index))
+            .then(a.edge_index.cmp(&b.edge_index))
     }
 
     fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {

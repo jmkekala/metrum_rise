@@ -82,6 +82,7 @@ pub(crate) struct TerrainCdtRoadLoop {
     pub(crate) stable_piece_id: u64,
     pub(crate) local_loop_index: u32,
     pub(crate) vertices: Vec<TerrainCdtVertex>,
+    pub(crate) source_edges: Vec<TerrainCdtRoadLoopSourceEdge>,
 }
 
 impl TerrainCdtRoadLoop {
@@ -90,10 +91,168 @@ impl TerrainCdtRoadLoop {
         local_loop_index: u32,
         vertices: Vec<TerrainCdtVertex>,
     ) -> Self {
+        let source_edges = if vertices.is_empty() {
+            Vec::new()
+        } else {
+            vertices
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                    start,
+                    end: vertices[(index + 1) % vertices.len()],
+                    source: TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                        stable_piece_id,
+                        local_loop_index,
+                        local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    },
+                })
+                .collect()
+        };
         Self {
             stable_piece_id,
             local_loop_index,
             vertices,
+            source_edges,
+        }
+    }
+
+    pub(crate) fn new_with_source_edges(
+        stable_piece_id: u64,
+        local_loop_index: u32,
+        vertices: Vec<TerrainCdtVertex>,
+        source_edges: Vec<TerrainCdtRoadLoopSourceEdge>,
+    ) -> Self {
+        Self {
+            stable_piece_id,
+            local_loop_index,
+            vertices,
+            source_edges,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtRoadLoopSourceEdge {
+    pub(crate) start: TerrainCdtVertex,
+    pub(crate) end: TerrainCdtVertex,
+    pub(crate) source: TerrainCdtRoadBoundarySource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainCdtEdgeClass {
+    Standard,
+    Bridge,
+    Tunnel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainCdtRoadBandKind {
+    Carriageway,
+    CurbOrShoulder,
+    Sidewalk,
+    Footpath,
+    Median,
+    Parking,
+    CycleTrack,
+    TramReservation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainCdtSpanRegionRole {
+    Asphalt,
+    CurbOrShoulder,
+    NonRoad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainCdtEarthworkSupportPolicy {
+    StandardFullGroundedSpan,
+    BridgeEndpointAbutments,
+    TunnelVisiblePortals,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerrainCdtNodePieceKind {
+    Terminal,
+    Bend,
+    JunctionN,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TerrainCdtRoadBoundarySource {
+    SpanSupportBoundary {
+        edge_idx: u64,
+        edge_class: TerrainCdtEdgeClass,
+        support_policy: TerrainCdtEarthworkSupportPolicy,
+        source_band_index: u32,
+        band_kind: TerrainCdtRoadBandKind,
+        role: TerrainCdtSpanRegionRole,
+        start_section_index: u32,
+        end_section_index: u32,
+        start_s_m: f32,
+        end_s_m: f32,
+    },
+    NodeFootprintBoundary {
+        node_id: u32,
+        node_kind: TerrainCdtNodePieceKind,
+        owner_kind: TerrainCdtRoadBandKind,
+        owner_index: u32,
+    },
+    SyntheticTestBoundary {
+        stable_piece_id: u64,
+        local_loop_index: u32,
+        local_edge_index: u32,
+    },
+}
+
+impl TerrainCdtRoadBoundarySource {
+    pub(crate) fn debug_label(self) -> String {
+        match self {
+            Self::SpanSupportBoundary {
+                edge_idx,
+                edge_class,
+                support_policy,
+                source_band_index,
+                band_kind,
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+            } => format!(
+                "span edge={} class={} policy={} band={} kind={} role={} sections={}..{} s={:.3}..{:.3}",
+                edge_idx,
+                terrain_cdt_edge_class_label(edge_class),
+                terrain_cdt_support_policy_label(support_policy),
+                source_band_index,
+                terrain_cdt_band_kind_label(band_kind),
+                terrain_cdt_span_role_label(role),
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m
+            ),
+            Self::NodeFootprintBoundary {
+                node_id,
+                node_kind,
+                owner_kind,
+                owner_index,
+            } => format!(
+                "node id={} kind={} owner_kind={} owner_index={}",
+                node_id,
+                terrain_cdt_node_kind_label(node_kind),
+                terrain_cdt_band_kind_label(owner_kind),
+                owner_index
+            ),
+            Self::SyntheticTestBoundary {
+                stable_piece_id,
+                local_loop_index,
+                local_edge_index,
+            } => format!(
+                "synthetic_test piece={} loop={} edge={}",
+                stable_piece_id, local_loop_index, local_edge_index
+            ),
         }
     }
 }
@@ -168,11 +327,12 @@ impl TerrainCdtTieInKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TerrainCdtFaceSample {
     pub(crate) kind: TerrainCdtTieInKind,
     pub(crate) vertices: [TerrainCdtVertex; 3],
     pub(crate) centroid: TerrainCdtVertex,
+    pub(crate) sources: Vec<TerrainCdtRoadBoundarySource>,
     pub(crate) min_x: f64,
     pub(crate) min_z: f64,
     pub(crate) max_x: f64,
@@ -191,12 +351,14 @@ pub(crate) struct TerrainCdtInvalidConstraintSample {
     pub(crate) stable_piece_id: u64,
     pub(crate) local_loop_index: u32,
     pub(crate) local_edge_index: u32,
+    pub(crate) source: Option<TerrainCdtRoadBoundarySource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TerrainCdtTieInSample {
     pub(crate) source_sample: TerrainCdtVertex,
     pub(crate) seam_point: TerrainCdtVertex,
+    pub(crate) seam_source: TerrainCdtRoadBoundarySource,
     pub(crate) distance_m: f32,
     pub(crate) required_distance_m: f32,
     pub(crate) height_delta_m: f32,
@@ -206,6 +368,7 @@ pub(crate) struct TerrainCdtTieInSample {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerrainCdtError {
     InvalidPatch,
+    MissingRoadBoundarySource,
     TriangulationFailed,
 }
 
@@ -248,7 +411,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         if canonical
             .road_loops
             .iter()
-            .any(|road_loop| point_in_polygon(center, road_loop))
+            .any(|road_loop| point_in_polygon(center, &road_loop.vertices))
         {
             rejected_road_faces += 1;
             continue;
@@ -265,7 +428,7 @@ pub(crate) fn build_road_touched_terrain_patch(
     let diagnostics = terrain_face_diagnostics(
         &canonical.vertices,
         &triangles,
-        &canonical.road_constraint_edges,
+        &canonical.road_constraint_sources,
     );
 
     Ok(TerrainCdtMesh {
@@ -299,11 +462,12 @@ pub(crate) fn build_road_touched_terrain_patch(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct TerrainCdtRoadConstraintSource {
     stable_piece_id: u64,
     local_loop_index: u32,
     local_edge_index: u32,
+    boundary_source: TerrainCdtRoadBoundarySource,
 }
 
 struct TerrainCdtDiagnostics {
@@ -326,11 +490,17 @@ struct CanonicalTerrainCdtInput {
     constraints: Vec<[usize; 2]>,
     road_constraint_edges: Vec<[usize; 2]>,
     road_constraint_sources: BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
-    road_loops: Vec<Vec<TerrainCdtVertex>>,
+    road_loops: Vec<CanonicalTerrainCdtRoadLoop>,
     tie_in_widened_source_samples: usize,
     tie_in_widened_max_y_delta_m: f32,
     tie_in_widened_max_slope_ratio: f32,
     tie_in_widened_samples: Vec<TerrainCdtTieInSample>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CanonicalTerrainCdtRoadLoop {
+    vertices: Vec<TerrainCdtVertex>,
+    edge_sources: Vec<Option<TerrainCdtRoadBoundarySource>>,
 }
 
 fn canonicalize_input(
@@ -357,6 +527,7 @@ fn canonicalize_input(
         .road_loops
         .sort_by_key(|road_loop| (road_loop.stable_piece_id, road_loop.local_loop_index));
     for road_loop in input.road_loops {
+        let original_source_edges = normalized_road_loop_source_edges(&road_loop);
         let original_points = simplified_loop(road_loop.vertices);
         if original_points.len() < 3
             || signed_area(&original_points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M
@@ -371,20 +542,28 @@ fn canonicalize_input(
             continue;
         }
         let points = ensure_ccw(points);
+        let edge_sources = terrain_cdt_loop_edge_sources(&points, &original_source_edges);
         let loop_indices = points
             .iter()
             .map(|&vertex| insert_vertex(vertex, &mut vertices, &mut vertex_lookup))
             .collect::<Vec<_>>();
-        push_road_loop_constraints(
+        let missing_road_boundary_sources = push_road_loop_constraints(
             &loop_indices,
             &vertices,
             input.patch,
             road_loop.stable_piece_id,
             road_loop.local_loop_index,
+            &edge_sources,
             &mut road_constraint_edges,
             &mut road_constraint_sources,
         );
-        road_loops.push(points);
+        if missing_road_boundary_sources > 0 {
+            return Err(TerrainCdtError::MissingRoadBoundarySource);
+        }
+        road_loops.push(CanonicalTerrainCdtRoadLoop {
+            vertices: points,
+            edge_sources,
+        });
     }
 
     input.source_samples.sort_by_key(|sample| {
@@ -400,7 +579,7 @@ fn canonicalize_input(
         }
         if road_loops
             .iter()
-            .any(|road_loop| point_in_polygon(sample, road_loop))
+            .any(|road_loop| point_in_polygon(sample, &road_loop.vertices))
         {
             continue;
         }
@@ -469,15 +648,21 @@ fn push_road_loop_constraints(
     patch: TerrainCdtPatch,
     stable_piece_id: u64,
     local_loop_index: u32,
+    edge_sources: &[Option<TerrainCdtRoadBoundarySource>],
     road_constraint_edges: &mut Vec<[usize; 2]>,
     road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
-) {
+) -> usize {
+    let mut missing_road_boundary_sources = 0usize;
     for index in 0..indices.len() {
         let edge = normalize_edge_array(indices[index], indices[(index + 1) % indices.len()]);
         if edge[0] == edge[1] {
             continue;
         }
         if !edge_lies_on_patch_boundary(vertices[edge[0]], vertices[edge[1]], patch) {
+            let Some(boundary_source) = edge_sources.get(index).copied().flatten() else {
+                missing_road_boundary_sources += 1;
+                continue;
+            };
             road_constraint_edges.push(edge);
             road_constraint_sources
                 .entry(edge)
@@ -485,8 +670,103 @@ fn push_road_loop_constraints(
                     stable_piece_id,
                     local_loop_index,
                     local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    boundary_source,
                 });
         }
+    }
+    missing_road_boundary_sources
+}
+
+fn normalized_road_loop_source_edges(
+    road_loop: &TerrainCdtRoadLoop,
+) -> Vec<TerrainCdtRoadLoopSourceEdge> {
+    let mut source_edges = road_loop.source_edges.clone();
+    if source_edges.is_empty() && !road_loop.vertices.is_empty() {
+        source_edges = road_loop
+            .vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                start,
+                end: road_loop.vertices[(index + 1) % road_loop.vertices.len()],
+                source: TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                    stable_piece_id: road_loop.stable_piece_id,
+                    local_loop_index: road_loop.local_loop_index,
+                    local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
+                },
+            })
+            .collect();
+    }
+    source_edges
+        .into_iter()
+        .filter(|edge| !same_xz(edge.start, edge.end))
+        .collect()
+}
+
+fn terrain_cdt_loop_edge_sources(
+    points: &[TerrainCdtVertex],
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+) -> Vec<Option<TerrainCdtRoadBoundarySource>> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    (0..points.len())
+        .map(|index| {
+            terrain_cdt_loop_segment_source(
+                points[index],
+                points[(index + 1) % points.len()],
+                source_edges,
+            )
+        })
+        .collect()
+}
+
+fn terrain_cdt_loop_segment_source(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+) -> Option<TerrainCdtRoadBoundarySource> {
+    if same_xz(start, end) {
+        return None;
+    }
+    let mut source = None;
+    for &source_edge in source_edges {
+        if !terrain_cdt_segment_lies_on_source_edge(start, end, source_edge) {
+            continue;
+        }
+        merge_terrain_cdt_boundary_source(&mut source, source_edge.source);
+    }
+    source
+}
+
+fn terrain_cdt_segment_lies_on_source_edge(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    source_edge: TerrainCdtRoadLoopSourceEdge,
+) -> bool {
+    if !segment_bounds_overlap(start, end, source_edge.start, source_edge.end) {
+        return false;
+    }
+    let Some(start_t) =
+        source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, start)
+    else {
+        return false;
+    };
+    let Some(end_t) =
+        source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, end)
+    else {
+        return false;
+    };
+    (start_t - end_t).abs() > CDT_EPSILON_M
+}
+
+fn merge_terrain_cdt_boundary_source(
+    target: &mut Option<TerrainCdtRoadBoundarySource>,
+    candidate: TerrainCdtRoadBoundarySource,
+) {
+    if target.is_none_or(|current| terrain_cdt_boundary_source_cmp(candidate, current).is_lt()) {
+        *target = Some(candidate);
     }
 }
 
@@ -682,7 +962,11 @@ fn node_road_constraint_edges(
             if let Some(source) = source {
                 road_constraint_sources
                     .entry(noded_edge)
-                    .and_modify(|existing| *existing = (*existing).min(source))
+                    .and_modify(|existing| {
+                        if terrain_cdt_road_constraint_source_cmp(source, *existing).is_lt() {
+                            *existing = source;
+                        }
+                    })
                     .or_insert(source);
             }
         }
@@ -1107,12 +1391,8 @@ fn emitted_triangle_edges(triangles: &[[usize; 3]]) -> HashSet<(usize, usize)> {
 fn terrain_face_diagnostics(
     vertices: &[TerrainCdtVertex],
     triangles: &[[usize; 3]],
-    road_constraint_edges: &[[usize; 2]],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
 ) -> TerrainCdtDiagnostics {
-    let road_edge_set = road_constraint_edges
-        .iter()
-        .map(|edge| normalize_edge(edge[0], edge[1]))
-        .collect::<HashSet<_>>();
     let mut diagnostics = TerrainCdtDiagnostics {
         terrain_triangles: Vec::new(),
         retaining_wall_triangles: Vec::new(),
@@ -1134,11 +1414,10 @@ fn terrain_face_diagnostics(
             vertices[triangle[1]],
             vertices[triangle[2]],
         ];
-        let touches_road_seam = triangle_edges(triangle)
-            .iter()
-            .any(|edge| road_edge_set.contains(edge));
+        let sources = terrain_triangle_road_sources(triangle, road_constraint_sources);
+        let touches_road_seam = !sources.is_empty();
         let kind = classify_terrain_tie_in_face(points, touches_road_seam);
-        let metrics = terrain_face_sample(points, kind);
+        let metrics = terrain_face_sample(points, kind, sources);
         diagnostics.max_face_y_delta_m = diagnostics.max_face_y_delta_m.max(metrics.max_y_delta_m);
         diagnostics.max_face_slope_ratio = diagnostics
             .max_face_slope_ratio
@@ -1155,7 +1434,10 @@ fn terrain_face_diagnostics(
                 diagnostics.retaining_wall_max_slope_ratio = diagnostics
                     .retaining_wall_max_slope_ratio
                     .max(metrics.max_slope_ratio);
-                insert_road_seam_face_sample(&mut diagnostics.retaining_wall_face_samples, metrics);
+                insert_road_seam_face_sample(
+                    &mut diagnostics.retaining_wall_face_samples,
+                    metrics.clone(),
+                );
             }
         }
 
@@ -1176,6 +1458,22 @@ fn terrain_face_diagnostics(
     diagnostics
 }
 
+fn terrain_triangle_road_sources(
+    triangle: &[usize; 3],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) -> Vec<TerrainCdtRoadBoundarySource> {
+    let mut sources = triangle_edges(triangle)
+        .iter()
+        .filter_map(|edge| {
+            road_constraint_sources
+                .get(&[edge.0, edge.1])
+                .map(|source| source.boundary_source)
+        })
+        .collect::<Vec<_>>();
+    sort_dedup_terrain_cdt_boundary_sources(&mut sources);
+    sources
+}
+
 fn classify_terrain_tie_in_face(
     points: [TerrainCdtVertex; 3],
     touches_road_seam: bool,
@@ -1183,7 +1481,7 @@ fn classify_terrain_tie_in_face(
     if !touches_road_seam {
         return TerrainCdtTieInKind::OrdinaryTerrain;
     }
-    let metrics = terrain_face_sample(points, TerrainCdtTieInKind::OrdinaryTerrain);
+    let metrics = terrain_face_sample(points, TerrainCdtTieInKind::OrdinaryTerrain, Vec::new());
     if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
         TerrainCdtTieInKind::RetainingWall
     } else {
@@ -1193,7 +1491,7 @@ fn classify_terrain_tie_in_face(
 
 fn widening_tie_in_sample_against_any_road_loop(
     sample: TerrainCdtVertex,
-    road_loops: &[Vec<TerrainCdtVertex>],
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> Option<TerrainCdtTieInSample> {
     road_loops
         .iter()
@@ -1208,9 +1506,10 @@ fn widening_tie_in_sample_against_any_road_loop(
 
 fn widening_tie_in_sample(
     sample: TerrainCdtVertex,
-    road_loop: &[TerrainCdtVertex],
+    road_loop: &CanonicalTerrainCdtRoadLoop,
 ) -> Option<TerrainCdtTieInSample> {
-    let (distance_m, seam_point) = closest_loop_edge_distance_and_point(sample, road_loop)?;
+    let (distance_m, seam_point, seam_source) =
+        closest_sourced_loop_edge_distance_point_and_source(sample, road_loop)?;
     let height_delta_m = (sample.height_m - seam_point.height_m).abs();
     if height_delta_m <= MIN_TIE_IN_HEIGHT_DELTA_M {
         return None;
@@ -1219,6 +1518,7 @@ fn widening_tie_in_sample(
         return Some(TerrainCdtTieInSample {
             source_sample: sample,
             seam_point,
+            seam_source,
             distance_m: 0.0,
             required_distance_m: height_delta_m / MAX_TERRAIN_TIE_IN_SLOPE_RATIO,
             height_delta_m,
@@ -1231,6 +1531,7 @@ fn widening_tie_in_sample(
     (distance_m < f64::from(required_distance_m) - CDT_EPSILON_M).then_some(TerrainCdtTieInSample {
         source_sample: sample,
         seam_point,
+        seam_source,
         distance_m: distance_m_f32,
         required_distance_m,
         height_delta_m,
@@ -1238,19 +1539,23 @@ fn widening_tie_in_sample(
     })
 }
 
-fn closest_loop_edge_distance_and_point(
+fn closest_sourced_loop_edge_distance_point_and_source(
     point: TerrainCdtVertex,
-    road_loop: &[TerrainCdtVertex],
-) -> Option<(f64, TerrainCdtVertex)> {
-    if road_loop.len() < 2 {
+    road_loop: &CanonicalTerrainCdtRoadLoop,
+) -> Option<(f64, TerrainCdtVertex, TerrainCdtRoadBoundarySource)> {
+    if road_loop.vertices.len() < 2 {
         return None;
     }
 
     let mut closest_distance_m = f64::INFINITY;
     let mut closest_point = TerrainCdtVertex::new(0.0, 0.0, 0.0);
-    for index in 0..road_loop.len() {
-        let start = road_loop[index];
-        let end = road_loop[(index + 1) % road_loop.len()];
+    let mut closest_source = None;
+    for index in 0..road_loop.vertices.len() {
+        let Some(source) = road_loop.edge_sources.get(index).copied().flatten() else {
+            continue;
+        };
+        let start = road_loop.vertices[index];
+        let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
         let segment_x = end.x - start.x;
         let segment_z = end.z - start.z;
         let segment_len_sq = segment_x * segment_x + segment_z * segment_z;
@@ -1265,17 +1570,22 @@ fn closest_loop_edge_distance_and_point(
         let dx = point.x - closest_x;
         let dz = point.z - closest_z;
         let distance_m = (dx * dx + dz * dz).sqrt();
-        if distance_m < closest_distance_m {
+        if distance_m < closest_distance_m
+            || ((distance_m - closest_distance_m).abs() <= CDT_EPSILON_M
+                && closest_source
+                    .is_none_or(|current| terrain_cdt_boundary_source_cmp(source, current).is_lt()))
+        {
             closest_distance_m = distance_m;
             let height_m =
                 (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32;
             closest_point = TerrainCdtVertex::new(closest_x, height_m, closest_z);
+            closest_source = Some(source);
         }
     }
 
     closest_distance_m
         .is_finite()
-        .then_some((closest_distance_m, closest_point))
+        .then_some((closest_distance_m, closest_point, closest_source?))
 }
 
 fn triangle_edges(triangle: &[usize; 3]) -> [(usize, usize); 3] {
@@ -1289,6 +1599,7 @@ fn triangle_edges(triangle: &[usize; 3]) -> [(usize, usize); 3] {
 fn terrain_face_sample(
     points: [TerrainCdtVertex; 3],
     kind: TerrainCdtTieInKind,
+    sources: Vec<TerrainCdtRoadBoundarySource>,
 ) -> TerrainCdtFaceSample {
     let mut min_x = points[0].x;
     let mut min_z = points[0].z;
@@ -1319,6 +1630,7 @@ fn terrain_face_sample(
         kind,
         vertices: points,
         centroid: centroid(points),
+        sources,
         min_x,
         min_z,
         max_x,
@@ -1360,6 +1672,7 @@ fn insert_road_seam_face_sample(
         b.max_slope_ratio
             .total_cmp(&a.max_slope_ratio)
             .then_with(|| b.max_y_delta_m.total_cmp(&a.max_y_delta_m))
+            .then_with(|| terrain_cdt_boundary_sources_cmp(&a.sources, &b.sources))
             .then_with(|| a.centroid.x.total_cmp(&b.centroid.x))
             .then_with(|| a.centroid.z.total_cmp(&b.centroid.z))
     });
@@ -1375,6 +1688,7 @@ fn insert_tie_in_widened_sample(
         b.slope_ratio
             .total_cmp(&a.slope_ratio)
             .then_with(|| b.height_delta_m.total_cmp(&a.height_delta_m))
+            .then_with(|| terrain_cdt_boundary_source_cmp(a.seam_source, b.seam_source))
             .then_with(|| a.source_sample.x.total_cmp(&b.source_sample.x))
             .then_with(|| a.source_sample.z.total_cmp(&b.source_sample.z))
     });
@@ -1401,6 +1715,7 @@ fn insert_invalid_constraint_sample(
         stable_piece_id: source.map_or(0, |source| source.stable_piece_id),
         local_loop_index: source.map_or(u32::MAX, |source| source.local_loop_index),
         local_edge_index: source.map_or(u32::MAX, |source| source.local_edge_index),
+        source: source.map(|source| source.boundary_source),
     });
     samples.sort_by(|a, b| {
         b.road_owned
@@ -1408,12 +1723,250 @@ fn insert_invalid_constraint_sample(
             .then_with(|| a.stable_piece_id.cmp(&b.stable_piece_id))
             .then_with(|| a.local_loop_index.cmp(&b.local_loop_index))
             .then_with(|| a.local_edge_index.cmp(&b.local_edge_index))
+            .then_with(|| terrain_cdt_optional_boundary_source_cmp(a.source, b.source))
             .then_with(|| a.start.x.total_cmp(&b.start.x))
             .then_with(|| a.start.z.total_cmp(&b.start.z))
             .then_with(|| a.end.x.total_cmp(&b.end.x))
             .then_with(|| a.end.z.total_cmp(&b.end.z))
     });
     samples.truncate(MAX_INVALID_CONSTRAINT_SAMPLES);
+}
+
+fn sort_dedup_terrain_cdt_boundary_sources(sources: &mut Vec<TerrainCdtRoadBoundarySource>) {
+    sources.sort_by(|a, b| terrain_cdt_boundary_source_cmp(*a, *b));
+    sources.dedup_by(|a, b| terrain_cdt_boundary_source_cmp(*a, *b).is_eq());
+}
+
+fn terrain_cdt_road_constraint_source_cmp(
+    a: TerrainCdtRoadConstraintSource,
+    b: TerrainCdtRoadConstraintSource,
+) -> std::cmp::Ordering {
+    a.stable_piece_id
+        .cmp(&b.stable_piece_id)
+        .then(a.local_loop_index.cmp(&b.local_loop_index))
+        .then(a.local_edge_index.cmp(&b.local_edge_index))
+        .then_with(|| terrain_cdt_boundary_source_cmp(a.boundary_source, b.boundary_source))
+}
+
+fn terrain_cdt_optional_boundary_source_cmp(
+    a: Option<TerrainCdtRoadBoundarySource>,
+    b: Option<TerrainCdtRoadBoundarySource>,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => terrain_cdt_boundary_source_cmp(a, b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn terrain_cdt_boundary_sources_cmp(
+    a: &[TerrainCdtRoadBoundarySource],
+    b: &[TerrainCdtRoadBoundarySource],
+) -> std::cmp::Ordering {
+    for (source_a, source_b) in a.iter().copied().zip(b.iter().copied()) {
+        let ordering = terrain_cdt_boundary_source_cmp(source_a, source_b);
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+fn terrain_cdt_boundary_source_cmp(
+    a: TerrainCdtRoadBoundarySource,
+    b: TerrainCdtRoadBoundarySource,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: edge_idx_a,
+                edge_class: edge_class_a,
+                support_policy: support_policy_a,
+                source_band_index: source_band_index_a,
+                band_kind: band_kind_a,
+                role: role_a,
+                start_section_index: start_section_index_a,
+                end_section_index: end_section_index_a,
+                start_s_m: start_s_m_a,
+                end_s_m: end_s_m_a,
+            },
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: edge_idx_b,
+                edge_class: edge_class_b,
+                support_policy: support_policy_b,
+                source_band_index: source_band_index_b,
+                band_kind: band_kind_b,
+                role: role_b,
+                start_section_index: start_section_index_b,
+                end_section_index: end_section_index_b,
+                start_s_m: start_s_m_b,
+                end_s_m: end_s_m_b,
+            },
+        ) => edge_idx_a
+            .cmp(&edge_idx_b)
+            .then(
+                terrain_cdt_edge_class_sort_key(edge_class_a)
+                    .cmp(&terrain_cdt_edge_class_sort_key(edge_class_b)),
+            )
+            .then(
+                terrain_cdt_support_policy_sort_key(support_policy_a)
+                    .cmp(&terrain_cdt_support_policy_sort_key(support_policy_b)),
+            )
+            .then(source_band_index_a.cmp(&source_band_index_b))
+            .then(
+                terrain_cdt_band_kind_sort_key(band_kind_a)
+                    .cmp(&terrain_cdt_band_kind_sort_key(band_kind_b)),
+            )
+            .then(
+                terrain_cdt_span_role_sort_key(role_a).cmp(&terrain_cdt_span_role_sort_key(role_b)),
+            )
+            .then(start_section_index_a.cmp(&start_section_index_b))
+            .then(end_section_index_a.cmp(&end_section_index_b))
+            .then(start_s_m_a.total_cmp(&start_s_m_b))
+            .then(end_s_m_a.total_cmp(&end_s_m_b)),
+        (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id: node_id_a,
+                node_kind: node_kind_a,
+                owner_kind: owner_kind_a,
+                owner_index: owner_index_a,
+            },
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id: node_id_b,
+                node_kind: node_kind_b,
+                owner_kind: owner_kind_b,
+                owner_index: owner_index_b,
+            },
+        ) => node_id_a
+            .cmp(&node_id_b)
+            .then(
+                terrain_cdt_node_kind_sort_key(node_kind_a)
+                    .cmp(&terrain_cdt_node_kind_sort_key(node_kind_b)),
+            )
+            .then(
+                terrain_cdt_band_kind_sort_key(owner_kind_a)
+                    .cmp(&terrain_cdt_band_kind_sort_key(owner_kind_b)),
+            )
+            .then(owner_index_a.cmp(&owner_index_b)),
+        (
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: stable_piece_id_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a,
+            },
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: stable_piece_id_b,
+                local_loop_index: local_loop_index_b,
+                local_edge_index: local_edge_index_b,
+            },
+        ) => stable_piece_id_a
+            .cmp(&stable_piece_id_b)
+            .then(local_loop_index_a.cmp(&local_loop_index_b))
+            .then(local_edge_index_a.cmp(&local_edge_index_b)),
+        (TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }, _) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. },
+        ) => std::cmp::Ordering::Greater,
+        (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
+        ) => std::cmp::Ordering::Less,
+        (TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. }, _) => {
+            std::cmp::Ordering::Greater
+        }
+    }
+}
+
+fn terrain_cdt_edge_class_sort_key(edge_class: TerrainCdtEdgeClass) -> u8 {
+    match edge_class {
+        TerrainCdtEdgeClass::Standard => 0,
+        TerrainCdtEdgeClass::Bridge => 1,
+        TerrainCdtEdgeClass::Tunnel => 2,
+    }
+}
+
+fn terrain_cdt_support_policy_sort_key(policy: TerrainCdtEarthworkSupportPolicy) -> u8 {
+    match policy {
+        TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan => 0,
+        TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments => 1,
+        TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals => 2,
+    }
+}
+
+fn terrain_cdt_band_kind_sort_key(kind: TerrainCdtRoadBandKind) -> u8 {
+    match kind {
+        TerrainCdtRoadBandKind::Carriageway => 0,
+        TerrainCdtRoadBandKind::CurbOrShoulder => 1,
+        TerrainCdtRoadBandKind::Sidewalk => 2,
+        TerrainCdtRoadBandKind::Footpath => 3,
+        TerrainCdtRoadBandKind::Median => 4,
+        TerrainCdtRoadBandKind::Parking => 5,
+        TerrainCdtRoadBandKind::CycleTrack => 6,
+        TerrainCdtRoadBandKind::TramReservation => 7,
+    }
+}
+
+fn terrain_cdt_span_role_sort_key(role: TerrainCdtSpanRegionRole) -> u8 {
+    match role {
+        TerrainCdtSpanRegionRole::Asphalt => 0,
+        TerrainCdtSpanRegionRole::CurbOrShoulder => 1,
+        TerrainCdtSpanRegionRole::NonRoad => 2,
+    }
+}
+
+fn terrain_cdt_node_kind_sort_key(kind: TerrainCdtNodePieceKind) -> u8 {
+    match kind {
+        TerrainCdtNodePieceKind::Terminal => 0,
+        TerrainCdtNodePieceKind::Bend => 1,
+        TerrainCdtNodePieceKind::JunctionN => 2,
+    }
+}
+
+fn terrain_cdt_edge_class_label(edge_class: TerrainCdtEdgeClass) -> &'static str {
+    match edge_class {
+        TerrainCdtEdgeClass::Standard => "standard",
+        TerrainCdtEdgeClass::Bridge => "bridge",
+        TerrainCdtEdgeClass::Tunnel => "tunnel",
+    }
+}
+
+fn terrain_cdt_support_policy_label(policy: TerrainCdtEarthworkSupportPolicy) -> &'static str {
+    match policy {
+        TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan => "standard_full_grounded_span",
+        TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments => "bridge_endpoint_abutments",
+        TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals => "tunnel_visible_portals",
+    }
+}
+
+fn terrain_cdt_band_kind_label(kind: TerrainCdtRoadBandKind) -> &'static str {
+    match kind {
+        TerrainCdtRoadBandKind::Carriageway => "carriageway",
+        TerrainCdtRoadBandKind::CurbOrShoulder => "curb_or_shoulder",
+        TerrainCdtRoadBandKind::Sidewalk => "sidewalk",
+        TerrainCdtRoadBandKind::Footpath => "footpath",
+        TerrainCdtRoadBandKind::Median => "median",
+        TerrainCdtRoadBandKind::Parking => "parking",
+        TerrainCdtRoadBandKind::CycleTrack => "cycle_track",
+        TerrainCdtRoadBandKind::TramReservation => "tram_reservation",
+    }
+}
+
+fn terrain_cdt_span_role_label(role: TerrainCdtSpanRegionRole) -> &'static str {
+    match role {
+        TerrainCdtSpanRegionRole::Asphalt => "asphalt",
+        TerrainCdtSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
+        TerrainCdtSpanRegionRole::NonRoad => "non_road",
+    }
+}
+
+fn terrain_cdt_node_kind_label(kind: TerrainCdtNodePieceKind) -> &'static str {
+    match kind {
+        TerrainCdtNodePieceKind::Terminal => "terminal",
+        TerrainCdtNodePieceKind::Bend => "bend",
+        TerrainCdtNodePieceKind::JunctionN => "junction_n",
+    }
 }
 
 fn normalize_edge(a: usize, b: usize) -> (usize, usize) {
@@ -1545,6 +2098,92 @@ mod tests {
     }
 
     #[test]
+    fn cdt_diagnostics_preserve_explicit_boundary_sources() {
+        let source = test_node_boundary_source(42, TerrainCdtRoadBandKind::Sidewalk, 3);
+        let road = vec![
+            TerrainCdtVertex::new(4.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 6.0),
+            TerrainCdtVertex::new(4.0, 4.0, 6.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![sourced_road_loop(42, 0, road, source)],
+            Vec::new(),
+        );
+
+        let mesh =
+            build_road_touched_terrain_patch(input).expect("sourced road loop should triangulate");
+
+        assert!(!mesh.road_seam_face_samples.is_empty());
+        assert!(
+            mesh.road_seam_face_samples
+                .iter()
+                .all(|sample| sample.sources.contains(&source)),
+            "road seam diagnostics must name the explicit road boundary source"
+        );
+        assert!(!mesh.retaining_wall_face_samples.is_empty());
+        assert!(
+            mesh.retaining_wall_face_samples
+                .iter()
+                .all(|sample| sample.sources.contains(&source)),
+            "retaining wall diagnostics must preserve the same boundary source"
+        );
+    }
+
+    #[test]
+    fn cdt_tie_in_widening_preserves_closest_seam_source() {
+        let source = test_node_boundary_source(77, TerrainCdtRoadBandKind::CurbOrShoulder, 1);
+        let road = vec![
+            TerrainCdtVertex::new(3.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 7.0),
+            TerrainCdtVertex::new(3.0, 0.12, 7.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![sourced_road_loop(77, 0, road, source)],
+            vec![TerrainCdtVertex::new(5.0, 0.0, 2.99)],
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("sourced tie-in widening case should triangulate");
+
+        assert_eq!(mesh.tie_in_widened_samples.len(), 1);
+        assert_eq!(mesh.tie_in_widened_samples[0].seam_source, source);
+    }
+
+    #[test]
+    fn cdt_rejects_unsourced_road_boundary_constraints() {
+        let source = test_node_boundary_source(91, TerrainCdtRoadBandKind::Sidewalk, 2);
+        let road = vec![
+            TerrainCdtVertex::new(3.0, 0.0, 3.0),
+            TerrainCdtVertex::new(7.0, 0.0, 3.0),
+            TerrainCdtVertex::new(7.0, 0.0, 7.0),
+            TerrainCdtVertex::new(3.0, 0.0, 7.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![TerrainCdtRoadLoop::new_with_source_edges(
+                91,
+                0,
+                road.clone(),
+                vec![TerrainCdtRoadLoopSourceEdge {
+                    start: road[0],
+                    end: road[1],
+                    source,
+                }],
+            )],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            build_road_touched_terrain_patch(input),
+            Err(TerrainCdtError::MissingRoadBoundarySource)
+        );
+    }
+
+    #[test]
     fn cdt_classifies_overbudget_road_seam_faces_as_retaining_walls() {
         let road = vec![
             TerrainCdtVertex::new(4.0, 4.0, 4.0),
@@ -1663,6 +2302,36 @@ mod tests {
             mesh.vertices
                 .iter()
                 .any(|vertex| same_coord(vertex.x, patch.min_x))
+        );
+    }
+
+    #[test]
+    fn road_loop_patch_clipping_preserves_boundary_sources() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road = road_loop_from_centerline(
+            TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+            TerrainCdtVertex::new(20.0, 0.0, 20.0),
+            6.0,
+        );
+        let source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 5);
+
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![sourced_road_loop(88, 0, road.clone(), source)],
+            Vec::new(),
+        ))
+        .expect("source-preserving clipped road loop should triangulate");
+
+        assert_valid_clipped_mesh(&mesh, patch, &road);
+        assert!(
+            !mesh.road_seam_face_samples.is_empty(),
+            "clipped sourced road loop should still report seam diagnostics"
+        );
+        assert!(
+            mesh.road_seam_face_samples
+                .iter()
+                .all(|sample| sample.sources.contains(&source)),
+            "patch-clipped road seam constraints must inherit their original source edge"
         );
     }
 
@@ -1980,6 +2649,43 @@ mod tests {
                 && same_coord(vertex.z, -8.916)
                 && (vertex.height_m - 0.12).abs() <= 0.0001
         }));
+    }
+
+    fn sourced_road_loop(
+        stable_piece_id: u64,
+        local_loop_index: u32,
+        vertices: Vec<TerrainCdtVertex>,
+        source: TerrainCdtRoadBoundarySource,
+    ) -> TerrainCdtRoadLoop {
+        let source_edges = vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                start,
+                end: vertices[(index + 1) % vertices.len()],
+                source,
+            })
+            .collect();
+        TerrainCdtRoadLoop::new_with_source_edges(
+            stable_piece_id,
+            local_loop_index,
+            vertices,
+            source_edges,
+        )
+    }
+
+    fn test_node_boundary_source(
+        node_id: u32,
+        owner_kind: TerrainCdtRoadBandKind,
+        owner_index: u32,
+    ) -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            node_id,
+            node_kind: TerrainCdtNodePieceKind::JunctionN,
+            owner_kind,
+            owner_index,
+        }
     }
 
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {

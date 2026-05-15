@@ -146,6 +146,7 @@ pub struct SimulationNode {
 
 struct RoadClipPolygonQuery {
     polygons: Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon>,
+    cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
 }
 
@@ -401,7 +402,7 @@ impl SimulationNode {
         Self::append_cdt_terrain_mesh(
             &mut dict,
             &refined_patch,
-            &road_clip_query.polygons,
+            &road_clip_query.cdt_road_loops,
             road_clip_query.source_count > 0,
             true,
         );
@@ -428,7 +429,16 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon> {
-        Self::road_clip_polygon_query_for_bounds(core, min_x, min_z, max_x, max_z).polygons
+        core.transit_network
+            .road_surface
+            .terrain_clip_polygons_and_source_count_for_world_bounds(
+                &core.region_graph,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            )
+            .0
     }
 
     fn road_clip_polygon_query_for_bounds(
@@ -438,10 +448,10 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> RoadClipPolygonQuery {
-        let (polygons, source_count) = core
+        let (cdt_road_loops, polygons, source_count) = core
             .transit_network
             .road_surface
-            .terrain_clip_polygons_and_source_count_for_world_bounds(
+            .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
                 &core.region_graph,
                 min_x,
                 min_z,
@@ -450,6 +460,7 @@ impl SimulationNode {
             );
         RoadClipPolygonQuery {
             polygons,
+            cdt_road_loops,
             source_count,
         }
     }
@@ -481,18 +492,18 @@ impl SimulationNode {
     fn append_cdt_terrain_mesh(
         dict: &mut VarDictionary,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+        road_loops: &[TerrainCdtRoadLoop],
         has_grounded_road_contributors: bool,
         requires_road_clip: bool,
     ) {
-        if road_clip_polygons.is_empty() {
+        if road_loops.is_empty() {
             if has_grounded_road_contributors || requires_road_clip {
                 Self::append_empty_cdt_failure(dict, "missing_road_clip_polygons");
             }
             return;
         }
 
-        match build_road_touched_terrain_patch(Self::terrain_cdt_input(patch, road_clip_polygons)) {
+        match build_road_touched_terrain_patch(Self::terrain_cdt_input(patch, road_loops)) {
             Ok(mesh) => {
                 let cdt_status = if mesh.stats.invalid_constraint_edges > 0 {
                     "conflicted"
@@ -628,6 +639,14 @@ impl SimulationNode {
             PackedInt32Array::new(),
         );
         dict.set(
+            "terrain_cdt_road_seam_sample_source_counts",
+            PackedInt32Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_sources",
+            PackedStringArray::new(),
+        );
+        dict.set(
             "terrain_cdt_retaining_wall_sample_centroids",
             PackedVector3Array::new(),
         );
@@ -644,6 +663,14 @@ impl SimulationNode {
             PackedVector3Array::new(),
         );
         dict.set(
+            "terrain_cdt_retaining_wall_sample_source_counts",
+            PackedInt32Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_sample_sources",
+            PackedStringArray::new(),
+        );
+        dict.set(
             "terrain_cdt_tie_in_widened_sample_points",
             PackedVector3Array::new(),
         );
@@ -652,12 +679,20 @@ impl SimulationNode {
             PackedFloat32Array::new(),
         );
         dict.set(
+            "terrain_cdt_tie_in_widened_sample_sources",
+            PackedStringArray::new(),
+        );
+        dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
             PackedVector3Array::new(),
         );
         dict.set(
             "terrain_cdt_invalid_constraint_sample_metadata",
             PackedInt32Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_sources",
+            PackedStringArray::new(),
         );
         dict.set("terrain_mesh_vertices", PackedVector3Array::new());
         dict.set("terrain_mesh_normals", PackedVector3Array::new());
@@ -675,7 +710,7 @@ impl SimulationNode {
 
     fn terrain_cdt_input(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+        road_loops: &[TerrainCdtRoadLoop],
     ) -> TerrainCdtInput {
         let patch_model = TerrainCdtPatch::new(
             f64::from(patch.world_origin_x),
@@ -697,24 +732,6 @@ impl SimulationNode {
                 Self::terrain_patch_sample_height_m(patch, patch.sample_width.saturating_sub(1), 0),
             ],
         );
-        let road_loops = road_clip_polygons
-            .iter()
-            .enumerate()
-            .map(|(index, polygon)| {
-                TerrainCdtRoadLoop::new(
-                    u64::try_from(index).unwrap_or(u64::MAX),
-                    0,
-                    polygon
-                        .points_world
-                        .iter()
-                        .map(|point| {
-                            TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-
         let mut source_samples =
             Vec::with_capacity(patch.sample_width.saturating_mul(patch.sample_height));
         for sample_z in 0..patch.sample_height {
@@ -728,7 +745,7 @@ impl SimulationNode {
             }
         }
 
-        TerrainCdtInput::new(patch_model, road_loops, source_samples)
+        TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
     }
 
     fn terrain_patch_sample_world_x(
@@ -878,6 +895,8 @@ impl SimulationNode {
         let mut metrics = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
         let mut vertices = Vec::with_capacity(mesh.road_seam_face_samples.len() * 3);
         let mut kinds = Vec::with_capacity(mesh.road_seam_face_samples.len());
+        let mut source_counts = Vec::with_capacity(mesh.road_seam_face_samples.len());
+        let mut sources = Vec::new();
         for sample in &mesh.road_seam_face_samples {
             centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
             bounds.push(Vector3::new(
@@ -893,6 +912,11 @@ impl SimulationNode {
             metrics.push(sample.max_y_delta_m);
             metrics.push(sample.max_slope_ratio);
             kinds.push(sample.kind.debug_code());
+            source_counts.push(i32::try_from(sample.sources.len()).unwrap_or(i32::MAX));
+            sources.extend(sample.sources.iter().copied().map(|source| {
+                let label = source.debug_label();
+                GString::from(label.as_str())
+            }));
             vertices.extend(
                 sample
                     .vertices
@@ -920,6 +944,14 @@ impl SimulationNode {
             "terrain_cdt_road_seam_sample_kinds",
             PackedInt32Array::from_iter(kinds),
         );
+        dict.set(
+            "terrain_cdt_road_seam_sample_source_counts",
+            PackedInt32Array::from_iter(source_counts),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_sources",
+            PackedStringArray::from_iter(sources),
+        );
     }
 
     fn append_cdt_retaining_wall_face_samples(
@@ -930,6 +962,8 @@ impl SimulationNode {
         let mut bounds = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 2);
         let mut metrics = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 2);
         let mut vertices = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 3);
+        let mut source_counts = Vec::with_capacity(mesh.retaining_wall_face_samples.len());
+        let mut sources = Vec::new();
         for sample in &mesh.retaining_wall_face_samples {
             centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
             bounds.push(Vector3::new(
@@ -944,6 +978,11 @@ impl SimulationNode {
             ));
             metrics.push(sample.max_y_delta_m);
             metrics.push(sample.max_slope_ratio);
+            source_counts.push(i32::try_from(sample.sources.len()).unwrap_or(i32::MAX));
+            sources.extend(sample.sources.iter().copied().map(|source| {
+                let label = source.debug_label();
+                GString::from(label.as_str())
+            }));
             vertices.extend(
                 sample
                     .vertices
@@ -967,6 +1006,14 @@ impl SimulationNode {
             "terrain_cdt_retaining_wall_sample_vertices",
             PackedVector3Array::from_iter(vertices),
         );
+        dict.set(
+            "terrain_cdt_retaining_wall_sample_source_counts",
+            PackedInt32Array::from_iter(source_counts),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_sample_sources",
+            PackedStringArray::from_iter(sources),
+        );
     }
 
     fn append_cdt_tie_in_widened_samples(
@@ -975,9 +1022,12 @@ impl SimulationNode {
     ) {
         let mut points = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 2);
         let mut metrics = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 4);
+        let mut sources = Vec::with_capacity(mesh.tie_in_widened_samples.len());
         for sample in &mesh.tie_in_widened_samples {
             points.push(Self::terrain_cdt_vertex_to_vector3(sample.source_sample));
             points.push(Self::terrain_cdt_vertex_to_vector3(sample.seam_point));
+            let label = sample.seam_source.debug_label();
+            sources.push(GString::from(label.as_str()));
             metrics.push(sample.distance_m);
             metrics.push(sample.required_distance_m);
             metrics.push(sample.height_delta_m);
@@ -991,6 +1041,10 @@ impl SimulationNode {
             "terrain_cdt_tie_in_widened_sample_metrics",
             PackedFloat32Array::from_iter(metrics),
         );
+        dict.set(
+            "terrain_cdt_tie_in_widened_sample_sources",
+            PackedStringArray::from_iter(sources),
+        );
     }
 
     fn append_cdt_invalid_constraint_samples(
@@ -999,6 +1053,7 @@ impl SimulationNode {
     ) {
         let mut edges = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 2);
         let mut metadata = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 4);
+        let mut sources = Vec::with_capacity(mesh.invalid_constraint_samples.len());
         for sample in &mesh.invalid_constraint_samples {
             edges.push(Self::terrain_cdt_vertex_to_vector3(sample.start));
             edges.push(Self::terrain_cdt_vertex_to_vector3(sample.end));
@@ -1006,6 +1061,10 @@ impl SimulationNode {
             metadata.push(i32::try_from(sample.stable_piece_id).unwrap_or(i32::MAX));
             metadata.push(i32::try_from(sample.local_loop_index).unwrap_or(i32::MAX));
             metadata.push(i32::try_from(sample.local_edge_index).unwrap_or(i32::MAX));
+            let label = sample
+                .source
+                .map_or_else(|| "none".to_string(), |source| source.debug_label());
+            sources.push(GString::from(label.as_str()));
         }
         dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
@@ -1014,6 +1073,10 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_invalid_constraint_sample_metadata",
             PackedInt32Array::from_iter(metadata),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_sources",
+            PackedStringArray::from_iter(sources),
         );
     }
 
@@ -1024,6 +1087,7 @@ impl SimulationNode {
     fn terrain_cdt_error_label(err: &TerrainCdtError) -> &'static str {
         match err {
             TerrainCdtError::InvalidPatch => "invalid_patch",
+            TerrainCdtError::MissingRoadBoundarySource => "missing_road_boundary_source",
             TerrainCdtError::TriangulationFailed => "triangulation_failed",
         }
     }

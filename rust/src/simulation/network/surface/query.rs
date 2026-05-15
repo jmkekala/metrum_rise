@@ -9,6 +9,11 @@ use super::{
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::cdt::{
+    TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
+    TerrainCdtRoadBandKind, TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop,
+    TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole, TerrainCdtVertex,
+};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 
@@ -67,6 +72,56 @@ impl RoadSurfaceSystem {
         max_x: f32,
         max_z: f32,
     ) -> (Vec<RoadSurfaceVisualPolygon>, usize) {
+        let boundary_loops =
+            self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
+        let source_count = boundary_loops.len();
+        (
+            Self::union_terrain_clip_boundary_loops(&boundary_loops),
+            source_count,
+        )
+    }
+
+    pub(crate) fn terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
+        &self,
+        graph: &RegionGraph,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> (
+        Vec<TerrainCdtRoadLoop>,
+        Vec<RoadSurfaceVisualPolygon>,
+        usize,
+    ) {
+        let boundary_loops =
+            self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
+        let source_count = boundary_loops.len();
+        let unioned_loops = Self::union_terrain_clip_boundary_loops_with_sources(&boundary_loops);
+        let mut polygons = unioned_loops
+            .iter()
+            .filter_map(|boundary_loop| {
+                Self::make_boundary_loop_polygon(boundary_loop.points_world.clone())
+            })
+            .collect::<Vec<_>>();
+        Self::sort_visual_polygons(&mut polygons);
+        let road_loops = unioned_loops
+            .iter()
+            .enumerate()
+            .map(|(loop_index, boundary_loop)| {
+                Self::terrain_cdt_road_loop_from_terrain_clip_loop(loop_index, boundary_loop)
+            })
+            .collect::<Vec<_>>();
+        (road_loops, polygons, source_count)
+    }
+
+    fn terrain_clip_boundary_loops_for_world_bounds(
+        &self,
+        graph: &RegionGraph,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut boundary_loops = Vec::new();
 
         for piece in self.compiled_visual_span_pieces.values() {
@@ -97,11 +152,159 @@ impl RoadSurfaceSystem {
             );
         }
 
-        let source_count = boundary_loops.len();
-        (
-            Self::union_terrain_clip_boundary_loops(&boundary_loops),
-            source_count,
+        boundary_loops
+    }
+
+    fn terrain_cdt_road_loop_from_terrain_clip_loop(
+        loop_index: usize,
+        boundary_loop: &RoadSurfaceTerrainClipLoop,
+    ) -> TerrainCdtRoadLoop {
+        let stable_piece_id = boundary_loop
+            .source_edges
+            .iter()
+            .map(|edge| Self::terrain_cdt_stable_piece_id_for_source(edge.source))
+            .min()
+            .unwrap_or_else(|| u64::try_from(loop_index).unwrap_or(u64::MAX));
+        let vertices = boundary_loop
+            .points_world
+            .iter()
+            .map(|point| TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z)))
+            .collect::<Vec<_>>();
+        let source_edges = boundary_loop
+            .source_edges
+            .iter()
+            .map(|edge| TerrainCdtRoadLoopSourceEdge {
+                start: TerrainCdtVertex::new(
+                    f64::from(edge.start.x),
+                    edge.start.y,
+                    f64::from(edge.start.z),
+                ),
+                end: TerrainCdtVertex::new(
+                    f64::from(edge.end.x),
+                    edge.end.y,
+                    f64::from(edge.end.z),
+                ),
+                source: Self::terrain_cdt_boundary_source_from_surface(edge.source),
+            })
+            .collect::<Vec<_>>();
+        TerrainCdtRoadLoop::new_with_source_edges(
+            stable_piece_id,
+            u32::try_from(loop_index).unwrap_or(u32::MAX),
+            vertices,
+            source_edges,
         )
+    }
+
+    fn terrain_cdt_stable_piece_id_for_source(
+        source: super::RoadSurfaceEarthworkFaceSource,
+    ) -> u64 {
+        match source {
+            super::RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_idx, .. } => {
+                u64::try_from(edge_idx).unwrap_or(u64::MAX)
+            }
+            super::RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. } => {
+                (1_u64 << 63) | u64::from(node_id)
+            }
+        }
+    }
+
+    fn terrain_cdt_boundary_source_from_surface(
+        source: super::RoadSurfaceEarthworkFaceSource,
+    ) -> TerrainCdtRoadBoundarySource {
+        match source {
+            super::RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                edge_idx,
+                edge_class,
+                support_policy,
+                owner,
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+            } => TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: u64::try_from(edge_idx).unwrap_or(u64::MAX),
+                edge_class: Self::terrain_cdt_edge_class(edge_class),
+                support_policy: Self::terrain_cdt_support_policy(support_policy),
+                source_band_index: u32::try_from(owner.source_band_index).unwrap_or(u32::MAX),
+                band_kind: Self::terrain_cdt_band_kind(owner.kind),
+                role: Self::terrain_cdt_span_region_role(role),
+                start_section_index: u32::try_from(start_section_index).unwrap_or(u32::MAX),
+                end_section_index: u32::try_from(end_section_index).unwrap_or(u32::MAX),
+                start_s_m,
+                end_s_m,
+            },
+            super::RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index,
+            } => TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id,
+                node_kind: Self::terrain_cdt_node_piece_kind(kind),
+                owner_kind: Self::terrain_cdt_band_kind(owner_kind),
+                owner_index: u32::try_from(owner_index).unwrap_or(u32::MAX),
+            },
+        }
+    }
+
+    fn terrain_cdt_edge_class(edge_class: EdgeClass) -> TerrainCdtEdgeClass {
+        match edge_class {
+            EdgeClass::Standard => TerrainCdtEdgeClass::Standard,
+            EdgeClass::Bridge => TerrainCdtEdgeClass::Bridge,
+            EdgeClass::Tunnel => TerrainCdtEdgeClass::Tunnel,
+        }
+    }
+
+    fn terrain_cdt_support_policy(
+        policy: super::RoadSurfaceEarthworkSupportPolicy,
+    ) -> TerrainCdtEarthworkSupportPolicy {
+        match policy {
+            super::RoadSurfaceEarthworkSupportPolicy::StandardFullGroundedSpan => {
+                TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+            }
+            super::RoadSurfaceEarthworkSupportPolicy::BridgeEndpointAbutments => {
+                TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments
+            }
+            super::RoadSurfaceEarthworkSupportPolicy::TunnelVisiblePortals => {
+                TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals
+            }
+        }
+    }
+
+    fn terrain_cdt_band_kind(kind: super::RoadSurfaceBandKind) -> TerrainCdtRoadBandKind {
+        match kind {
+            super::RoadSurfaceBandKind::Carriageway => TerrainCdtRoadBandKind::Carriageway,
+            super::RoadSurfaceBandKind::CurbOrShoulder => TerrainCdtRoadBandKind::CurbOrShoulder,
+            super::RoadSurfaceBandKind::Sidewalk => TerrainCdtRoadBandKind::Sidewalk,
+            super::RoadSurfaceBandKind::Footpath => TerrainCdtRoadBandKind::Footpath,
+            super::RoadSurfaceBandKind::Median => TerrainCdtRoadBandKind::Median,
+            super::RoadSurfaceBandKind::Parking => TerrainCdtRoadBandKind::Parking,
+            super::RoadSurfaceBandKind::CycleTrack => TerrainCdtRoadBandKind::CycleTrack,
+            super::RoadSurfaceBandKind::TramReservation => TerrainCdtRoadBandKind::TramReservation,
+        }
+    }
+
+    fn terrain_cdt_span_region_role(
+        role: super::RoadSurfaceSpanRegionRole,
+    ) -> TerrainCdtSpanRegionRole {
+        match role {
+            super::RoadSurfaceSpanRegionRole::Asphalt => TerrainCdtSpanRegionRole::Asphalt,
+            super::RoadSurfaceSpanRegionRole::CurbOrShoulder => {
+                TerrainCdtSpanRegionRole::CurbOrShoulder
+            }
+            super::RoadSurfaceSpanRegionRole::NonRoad => TerrainCdtSpanRegionRole::NonRoad,
+        }
+    }
+
+    fn terrain_cdt_node_piece_kind(
+        kind: super::RoadSurfaceVisualNodePieceKind,
+    ) -> TerrainCdtNodePieceKind {
+        match kind {
+            super::RoadSurfaceVisualNodePieceKind::Terminal => TerrainCdtNodePieceKind::Terminal,
+            super::RoadSurfaceVisualNodePieceKind::Bend => TerrainCdtNodePieceKind::Bend,
+            super::RoadSurfaceVisualNodePieceKind::JunctionN => TerrainCdtNodePieceKind::JunctionN,
+        }
     }
 
     pub(crate) fn sample_visible_surface_height(

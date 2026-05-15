@@ -15,6 +15,7 @@ use super::{
     backend::{RoadVec2, road_vec2_to_overlay_point},
     edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
+    terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -421,7 +422,7 @@ impl RoadSurfaceSystem {
         let mut outer_boundary_loops =
             Self::outer_boundary_polygons_from_point_loops(&footprint_boundary_point_loops)?;
         let mut terrain_clip_boundary_loops =
-            Self::terrain_clip_boundary_loops_from_point_loops(&footprint_boundary_point_loops);
+            Self::terrain_clip_boundary_loops_from_earthwork_segments(&earthwork_boundary_segments);
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
@@ -891,30 +892,43 @@ impl RoadSurfaceSystem {
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
     }
 
-    fn terrain_clip_boundary_loops_from_point_loops(
-        point_loops: &[Vec<Vector3>],
+    fn terrain_clip_boundary_loops_from_earthwork_segments(
+        segment_loops: &[Vec<RoadSurfaceEarthworkBoundarySegment>],
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut loops = Vec::new();
-        for point_loop in point_loops {
-            for points in same_winding_boundary_point_loops_from_loop(point_loop) {
-                if points.len() < 3 {
-                    continue;
-                }
-                if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
-                    continue;
-                }
-                let source_edges = (0..points.len())
-                    .map(|index| RoadSurfaceTerrainClipSourceEdge {
-                        start: points[index],
-                        end: points[(index + 1) % points.len()],
-                        kind: RoadSurfaceTerrainClipEdgeKind::FootprintBoundary,
-                    })
-                    .collect();
-                loops.push(RoadSurfaceTerrainClipLoop {
-                    points_world: points,
-                    source_edges,
-                });
+        for segment_loop in segment_loops {
+            if segment_loop.len() < 3 {
+                continue;
             }
+            let points = segment_loop
+                .iter()
+                .map(|segment| segment.inner_start)
+                .collect::<Vec<_>>();
+            if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+                continue;
+            }
+            let source_edges = segment_loop
+                .iter()
+                .copied()
+                .map(|segment| RoadSurfaceTerrainClipSourceEdge {
+                    start: segment.inner_start,
+                    end: segment.inner_end,
+                    kind: match segment.source {
+                        super::RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                            owner_kind,
+                            ..
+                        } => terrain_clip_edge_kind_for_band(owner_kind),
+                        super::RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
+                            RoadSurfaceTerrainClipEdgeKind::FootprintBoundary
+                        }
+                    },
+                    source: segment.source,
+                })
+                .collect();
+            loops.push(RoadSurfaceTerrainClipLoop {
+                points_world: points,
+                source_edges,
+            });
         }
         loops
     }

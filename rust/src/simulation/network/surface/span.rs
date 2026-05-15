@@ -2,11 +2,12 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
-    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
-    RoadSurfaceSpanRaisedStepSource, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
-    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M,
-    WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2, terrain_clip_edge_kind_for_band,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
+    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRaisedStepSource,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
@@ -75,7 +76,8 @@ impl RoadSurfaceSystem {
         let sections = self.compiled_sections.get(&edge_idx)?;
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
-        let mut visible_regions = self.resolve_span_regions_for_ranges(sections, &visible_ranges);
+        let mut visible_regions =
+            self.resolve_span_regions_for_ranges(sections, &visible_ranges, edge.class);
         Self::sort_span_owned_regions(&mut visible_regions.regions);
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::span_surface_polygons_from_regions(&visible_regions.regions);
@@ -106,7 +108,7 @@ impl RoadSurfaceSystem {
 
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
         let mut clearance_regions =
-            self.resolve_span_regions_for_ranges(sections, &earthwork_ranges);
+            self.resolve_span_regions_for_ranges(sections, &earthwork_ranges, edge.class);
         Self::sort_span_owned_regions(&mut clearance_regions.regions);
         let span_earthwork_support_regions = clearance_regions.regions;
         let earthwork_boundary_segments =
@@ -150,9 +152,10 @@ impl RoadSurfaceSystem {
         &self,
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
+        edge_class: crate::simulation::network::types::EdgeClass,
     ) -> SpanResolvedRegionSet {
         let (outer_boundary_loops, terrain_clip_boundary_loops) =
-            Self::build_span_boundary_loops(sections, ranges);
+            Self::build_span_boundary_loops(sections, ranges, edge_class);
         let mut resolved = SpanResolvedRegionSet {
             outer_boundary_loops,
             terrain_clip_boundary_loops,
@@ -469,6 +472,7 @@ impl RoadSurfaceSystem {
     fn build_span_boundary_loops(
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
+        edge_class: crate::simulation::network::types::EdgeClass,
     ) -> (
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceTerrainClipLoop>,
@@ -513,32 +517,59 @@ impl RoadSurfaceSystem {
 
             let mut source_edges =
                 Vec::with_capacity(left_points.len() + right_points.len().saturating_sub(2) + 2);
-            for pair in left_points.windows(2) {
+            for (offset, pair) in left_points.windows(2).enumerate() {
+                let section_index = start_index + offset;
+                let source = Self::span_terrain_clip_source_for_outer_band_edge(
+                    &sections[section_index],
+                    &sections[section_index + 1],
+                    edge_class,
+                    0,
+                    section_index,
+                    section_index + 1,
+                );
                 source_edges.push(RoadSurfaceTerrainClipSourceEdge {
                     start: pair[0],
                     end: pair[1],
                     kind: left_kind,
+                    source,
                 });
             }
             let last_left = *left_points.last().unwrap();
             let last_right = *right_points.last().unwrap();
-            source_edges.push(RoadSurfaceTerrainClipSourceEdge {
-                start: last_left,
-                end: last_right,
-                kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
-            });
-            for pair in right_points.windows(2) {
+            Self::push_span_handoff_terrain_clip_source_edges(
+                &sections[end_index],
+                edge_class,
+                last_left,
+                last_right,
+                end_index,
+                &mut source_edges,
+            );
+            for (offset, pair) in right_points.windows(2).enumerate() {
+                let section_index = start_index + offset;
+                let source_band_index = sections[section_index].bands.len().saturating_sub(1);
+                let source = Self::span_terrain_clip_source_for_outer_band_edge(
+                    &sections[section_index],
+                    &sections[section_index + 1],
+                    edge_class,
+                    source_band_index,
+                    section_index,
+                    section_index + 1,
+                );
                 source_edges.push(RoadSurfaceTerrainClipSourceEdge {
                     start: pair[1],
                     end: pair[0],
                     kind: right_kind,
+                    source,
                 });
             }
-            source_edges.push(RoadSurfaceTerrainClipSourceEdge {
-                start: right_points[0],
-                end: left_points[0],
-                kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
-            });
+            Self::push_span_handoff_terrain_clip_source_edges(
+                &sections[start_index],
+                edge_class,
+                right_points[0],
+                left_points[0],
+                start_index,
+                &mut source_edges,
+            );
             canonicalize_span_terrain_clip_source_edges(
                 &mut source_edges,
                 &loop_polygon.points_world,
@@ -551,6 +582,98 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         (outer_boundary_loops, terrain_clip_boundary_loops)
+    }
+
+    fn span_terrain_clip_source_for_outer_band_edge(
+        start_section: &RoadSurfaceSection,
+        end_section: &RoadSurfaceSection,
+        edge_class: crate::simulation::network::types::EdgeClass,
+        source_band_index: usize,
+        start_section_index: usize,
+        end_section_index: usize,
+    ) -> RoadSurfaceEarthworkFaceSource {
+        let start_band = &start_section.bands[source_band_index.min(start_section.bands.len() - 1)];
+        let end_band = &end_section.bands[source_band_index.min(end_section.bands.len() - 1)];
+        RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx: start_section.edge_idx,
+            edge_class,
+            support_policy: RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class),
+            owner: RoadSurfaceSpanBandOwner {
+                source_band_index,
+                kind: start_band.kind,
+            },
+            role: RoadSurfaceSpanRegionRole::from_band_pair(start_band.kind, end_band.kind),
+            start_section_index,
+            end_section_index,
+            start_s_m: start_section.s_m,
+            end_s_m: end_section.s_m,
+        }
+    }
+
+    fn push_span_handoff_terrain_clip_source_edges(
+        section: &RoadSurfaceSection,
+        edge_class: crate::simulation::network::types::EdgeClass,
+        start: Vector3,
+        end: Vector3,
+        section_index: usize,
+        source_edges: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
+    ) {
+        if section.bands.is_empty() {
+            return;
+        }
+        let forward = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
+        let source_points = Self::section_boundary_points_for_handoff(section);
+        for (band_index, pair) in source_points.windows(2).enumerate() {
+            let mut source_start = pair[0];
+            let mut source_end = pair[1];
+            let source_forward = Vector3::new(
+                source_end.x - source_start.x,
+                source_end.y - source_start.y,
+                source_end.z - source_start.z,
+            );
+            if source_forward.x * forward.x + source_forward.z * forward.z < 0.0 {
+                std::mem::swap(&mut source_start, &mut source_end);
+            }
+            let band = &section.bands[band_index];
+            source_edges.push(RoadSurfaceTerrainClipSourceEdge {
+                start: source_start,
+                end: source_end,
+                kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
+                source: RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                    edge_idx: section.edge_idx,
+                    edge_class,
+                    support_policy: RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class),
+                    owner: RoadSurfaceSpanBandOwner {
+                        source_band_index: band_index,
+                        kind: band.kind,
+                    },
+                    role: RoadSurfaceSpanRegionRole::from_band_pair(band.kind, band.kind),
+                    start_section_index: section_index,
+                    end_section_index: section_index,
+                    start_s_m: section.s_m,
+                    end_s_m: section.s_m,
+                },
+            });
+        }
+    }
+
+    fn section_boundary_points_for_handoff(section: &RoadSurfaceSection) -> Vec<Vector3> {
+        let mut points = Vec::with_capacity(section.bands.len() + 1);
+        for band in &section.bands {
+            if points.is_empty() {
+                points.push(Self::section_boundary_world_point_static(
+                    section,
+                    band.lateral_start_m,
+                    band.height_start_m,
+                ));
+            }
+            points.push(Self::section_boundary_world_point_static(
+                section,
+                band.lateral_end_m,
+                band.height_end_m,
+            ));
+        }
+        points
     }
 
     fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {

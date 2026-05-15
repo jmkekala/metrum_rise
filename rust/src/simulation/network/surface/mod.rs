@@ -468,6 +468,7 @@ struct RoadSurfaceTerrainClipSourceEdge {
     start: Vector3,
     end: Vector3,
     kind: RoadSurfaceTerrainClipEdgeKind,
+    source: RoadSurfaceEarthworkFaceSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]

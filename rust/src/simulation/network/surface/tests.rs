@@ -19,8 +19,8 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadLoop, TerrainCdtVertex,
-    build_road_touched_terrain_patch,
+    TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop,
+    TerrainCdtVertex, build_road_touched_terrain_patch,
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -262,6 +262,12 @@ fn terrain_clip_source_edge_for_test(
         start,
         end,
         kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id: 0,
+            kind: RoadSurfaceVisualNodePieceKind::Terminal,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 0,
+        },
     }
 }
 
@@ -4352,6 +4358,33 @@ fn terrain_clip_polygons_include_standard_grounded_footprints() {
         "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} cutters for {} raw outer loops",
         clip_polygons.len(),
         expected_outer_boundary_loop_count
+    );
+    let (cdt_road_loops, cdt_clip_polygons, cdt_source_count) = surface
+        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
+            &graph, -16.0, -32.0, 16.0, 32.0,
+        );
+    assert_eq!(cdt_clip_polygons.len(), clip_polygons.len());
+    assert_eq!(cdt_source_count, expected_outer_boundary_loop_count);
+    assert!(
+        cdt_road_loops
+            .iter()
+            .flat_map(|road_loop| road_loop.source_edges.iter())
+            .all(|edge| !matches!(
+                edge.source,
+                TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. }
+            )),
+        "production terrain CDT loops must carry real span/node boundary sources, not synthetic polygon ids"
+    );
+    assert!(
+        cdt_road_loops
+            .iter()
+            .flat_map(|road_loop| road_loop.source_edges.iter())
+            .any(|edge| matches!(
+                edge.source,
+                TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
+                    | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
+            )),
+        "expected source-preserving CDT export to expose final owned terrain boundary provenance"
     );
 }
 
