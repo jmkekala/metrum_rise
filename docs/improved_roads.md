@@ -201,6 +201,9 @@ Remaining ROAD-01 gap:
   exact canonical arrangement-key support and does not synthesize faces from overlay-sibling edges.
   `JunctionN` final owned asphalt / curb raised-step edges are now materialized after boolean
   ownership from exact owner-pair source polyline authority before height validation / CDT export.
+  `JunctionN` height evaluation now scopes final owned-region vertices to their explicit
+  post-boolean band carrier, so overlapping same-material source patches no longer behave like a
+  shared node-wide grade sampler while unresolved carriers still fail before CDT export.
   If that source-authorized materialization is missing, owned-region arrangement now emits a
   blocking canonical-keys diagnostic naming the final edge and source constraint before height /
   CDT export.

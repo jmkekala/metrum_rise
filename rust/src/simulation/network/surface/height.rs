@@ -155,6 +155,17 @@ struct NodeBandHeightEdge {
     end_height_m: f64,
 }
 
+struct NodeRegionScopedHeightCandidate {
+    patch_index: usize,
+    height_m: f64,
+}
+
+struct NodeRegionScopedEdgeProjection {
+    patch_index: usize,
+    distance_sq_m2: f64,
+    height_m: f64,
+}
+
 enum NodeHeightPatchEvaluation {
     Inside(f64),
     Outside(NodeHeightFieldError),
@@ -187,9 +198,11 @@ impl NodeHeightSolution {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input, rails)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
+        let use_region_scoped_height_carriers =
+            ownership.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN;
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(region, &fields)?;
+            let region = heighted_region(region, &fields, use_region_scoped_height_carriers)?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
@@ -321,6 +334,54 @@ impl NodeBandHeightField {
         }
         Ok(first_height_m)
     }
+
+    fn evaluate_region_scoped_height(
+        &self,
+        point_xz: RoadVec2,
+    ) -> Result<f64, NodeHeightFieldError> {
+        let mut candidates = Vec::new();
+        for (patch_index, patch) in self.patches.iter().enumerate() {
+            if let Some(height_m) = patch.region_scoped_height_at(point_xz) {
+                candidates.push(NodeRegionScopedHeightCandidate {
+                    patch_index,
+                    height_m,
+                });
+            }
+        }
+        if let Some(candidate) = candidates
+            .into_iter()
+            .max_by_key(|candidate| candidate.patch_index)
+        {
+            return Ok(candidate.height_m);
+        }
+
+        let projection = self
+            .patches
+            .iter()
+            .enumerate()
+            .filter_map(|(patch_index, patch)| {
+                patch.bounded_region_scoped_edge_height(point_xz, patch_index)
+            })
+            .min_by(|left, right| {
+                left.distance_sq_m2
+                    .total_cmp(&right.distance_sq_m2)
+                    .then_with(|| right.patch_index.cmp(&left.patch_index))
+            });
+        projection
+            .map(|projection| projection.height_m)
+            .ok_or_else(|| {
+                let key = NodeHeightPointKey::from_point(point_xz);
+                NodeHeightFieldError::VertexOutsideHeightField {
+                    mouth_order_index: self.id.mouth_order_index(),
+                    band_index: self.id.band_index(),
+                    source_kind: self.kind,
+                    point_x_mm: key.x_mm(),
+                    point_z_mm: key.z_mm(),
+                    axis: "region_scoped_carrier",
+                    raw_parameter: f64::NAN,
+                }
+            })
+    }
 }
 
 impl NodeBandHeightPatch {
@@ -390,6 +451,56 @@ impl NodeBandHeightPatch {
         ))
     }
 
+    fn region_scoped_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
+        if let Some(edges) = &self.contour_edges
+            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
+        {
+            return Some(height_m);
+        }
+        self.triangles
+            .as_ref()?
+            .iter()
+            .find_map(|triangle| triangle.height_at(point_xz))
+    }
+
+    fn bounded_region_scoped_edge_height(
+        &self,
+        point_xz: RoadVec2,
+        patch_index: usize,
+    ) -> Option<NodeRegionScopedEdgeProjection> {
+        let projection_limit_sq_m2 = self.region_scoped_projection_limit_sq_m2()?;
+        self.contour_edges
+            .as_ref()?
+            .iter()
+            .filter_map(|edge| edge.project_height(point_xz))
+            .filter(|projection| projection.distance_sq_m2 <= projection_limit_sq_m2)
+            .min_by(|left, right| {
+                left.distance_sq_m2
+                    .total_cmp(&right.distance_sq_m2)
+                    .then_with(|| left.height_m.total_cmp(&right.height_m))
+            })
+            .map(|mut projection| {
+                projection.patch_index = patch_index;
+                projection
+            })
+    }
+
+    fn region_scoped_projection_limit_sq_m2(&self) -> Option<f64> {
+        let edges = self.contour_edges.as_ref()?;
+        let mut signed_area2 = 0.0f64;
+        let mut longest_edge_m = 0.0f64;
+        for edge in edges {
+            signed_area2 += edge.start_xz.x * edge.end_xz.y - edge.end_xz.x * edge.start_xz.y;
+            longest_edge_m = longest_edge_m.max((edge.end_xz - edge.start_xz).length());
+        }
+        let area_m2 = signed_area2.abs() * 0.5;
+        if area_m2 <= f64::EPSILON || longest_edge_m <= f64::EPSILON {
+            return None;
+        }
+        let local_band_width_m = area_m2 / longest_edge_m;
+        Some((local_band_width_m + 1.0e-6).powi(2))
+    }
+
     fn evaluate_triangle_surface_height(
         &self,
         id: NodeBandHeightFieldId,
@@ -445,6 +556,25 @@ impl NodeBandHeightPatch {
             axis,
             raw_parameter,
         }
+    }
+}
+
+impl NodeBandHeightEdge {
+    fn project_height(&self, point_xz: RoadVec2) -> Option<NodeRegionScopedEdgeProjection> {
+        let edge = self.end_xz - self.start_xz;
+        let length_sq = edge.dot(edge);
+        if length_sq <= f64::EPSILON {
+            return None;
+        }
+        let raw_t = (point_xz - self.start_xz).dot(edge) / length_sq;
+        let t = raw_t.clamp(0.0, 1.0);
+        let projected = self.start_xz + edge * t;
+        let delta = point_xz - projected;
+        Some(NodeRegionScopedEdgeProjection {
+            patch_index: 0,
+            distance_sq_m2: delta.dot(delta),
+            height_m: self.start_height_m + (self.end_height_m - self.start_height_m) * t,
+        })
     }
 }
 
@@ -567,6 +697,7 @@ fn extend_height_fields_with_generated_contours(
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    use_region_scoped_height_carriers: bool,
 ) -> Result<NodeHeightedRegion, NodeHeightFieldError> {
     let band_index =
         region
@@ -593,7 +724,7 @@ fn heighted_region(
             source_kind: field.kind,
         });
     }
-    let shape = heighted_shape(&region.shape, field)?;
+    let shape = heighted_shape(&region.shape, field, use_region_scoped_height_carriers)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -608,10 +739,11 @@ fn heighted_region(
 fn heighted_shape(
     shape: &NodeOverlayShape,
     field: &NodeBandHeightField,
+    use_region_scoped_height_carriers: bool,
 ) -> Result<NodeHeightedShape, NodeHeightFieldError> {
     let mut heighted = Vec::with_capacity(shape.len());
     for contour in shape {
-        let contour = heighted_contour(contour, field)?;
+        let contour = heighted_contour(contour, field, use_region_scoped_height_carriers)?;
         if contour.len() >= 3 {
             heighted.push(contour);
         }
@@ -622,22 +754,29 @@ fn heighted_shape(
 fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
+    use_region_scoped_height_carriers: bool,
 ) -> Result<NodeHeightedContour, NodeHeightFieldError> {
     contour
         .iter()
         .copied()
-        .map(|point| heighted_vertex(point, field))
+        .map(|point| heighted_vertex(point, field, use_region_scoped_height_carriers))
         .collect()
 }
 
 fn heighted_vertex(
     point: NodeOverlayPoint,
     field: &NodeBandHeightField,
+    use_region_scoped_height_carriers: bool,
 ) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
     let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+    let height_m = if use_region_scoped_height_carriers {
+        field.evaluate_region_scoped_height(point_xz)?
+    } else {
+        field.evaluate_height(point_xz)?
+    };
     Ok(NodeHeightedVertex {
         point_xz,
-        height_m: field.evaluate_height(point_xz)?,
+        height_m,
         height_field_id: field.id,
     })
 }
@@ -1490,6 +1629,96 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn junctionn_region_scoped_height_carrier_extends_final_owned_vertex_from_source_edge() {
+        let mut input = conflicting_manual_input();
+        input.piece_kind = RoadSurfaceVisualNodePieceKind::JunctionN;
+        let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
+        region.shape = vec![vec![[0.0, 0.0], [10.0, 0.0], [11.0, 1.0], [0.0, 2.0]]];
+        let owned_regions = vec![region];
+        let ownership = NodeBooleanOwnership {
+            node_id: 77,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            footprint_shapes: Vec::new(),
+            asphalt_shapes: Vec::new(),
+            non_road_shapes: Vec::new(),
+            owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+                77,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &owned_regions,
+                &Vec::new(),
+                &[],
+            ),
+            owned_regions,
+        };
+
+        let solution = NodeHeightSolution::from_ownership_and_input(&input, &ownership)
+            .expect("JunctionN final owned region supplies the explicit scoped carrier");
+        let carriageway = solution
+            .regions
+            .iter()
+            .find(|region| region.kind == RoadSurfaceBandKind::Carriageway)
+            .expect("manual input has one carriageway region");
+        assert!(has_vertex_height(carriageway, 11.0, 1.0, 4.0));
+    }
+
+    #[test]
+    fn junctionn_region_scoped_height_carrier_rejects_far_outside_source_edge() {
+        let mut input = conflicting_manual_input();
+        input.piece_kind = RoadSurfaceVisualNodePieceKind::JunctionN;
+        let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
+        region.shape = vec![vec![[0.0, 0.0], [10.0, 0.0], [30.0, 1.0], [0.0, 2.0]]];
+        let owned_regions = vec![region];
+        let ownership = NodeBooleanOwnership {
+            node_id: 77,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            footprint_shapes: Vec::new(),
+            asphalt_shapes: Vec::new(),
+            non_road_shapes: Vec::new(),
+            owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+                77,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &owned_regions,
+                &Vec::new(),
+                &[],
+            ),
+            owned_regions,
+        };
+
+        assert!(matches!(
+            NodeHeightSolution::from_ownership_and_input(&input, &ownership),
+            Err(NodeHeightFieldError::VertexOutsideHeightField {
+                axis: "region_scoped_carrier",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn junctionn_region_scoped_height_carrier_uses_one_deterministic_source_patch() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+        );
+        field
+            .patches
+            .push(NodeBandHeightPatch::from_heighted_contour(&[
+                RoadVec3::new(0.0, 1.0, 0.0),
+                RoadVec3::new(10.0, 1.0, 0.0),
+                RoadVec3::new(10.0, 1.0, 2.0),
+                RoadVec3::new(0.0, 1.0, 2.0),
+            ]));
+
+        assert!(matches!(
+            field.evaluate_height(RoadVec2::new(5.0, 1.0)),
+            Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
+        ));
+        let height = field
+            .evaluate_region_scoped_height(RoadVec2::new(5.0, 1.0))
+            .expect("region-scoped carrier chooses one deterministic source patch");
+        assert!((height - 1.0).abs() <= 1.0e-6);
     }
 
     #[test]
