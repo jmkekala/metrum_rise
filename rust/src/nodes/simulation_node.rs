@@ -105,8 +105,15 @@ use crate::debug_log;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
+const TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL: &str = "cdt_triangulation";
+const TERRAIN_CDT_DIAGNOSTIC_STAGE_CODE: i64 = 0;
+const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
+const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
+const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
+const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
+
 #[derive(Default)]
-struct TerrainCdtFaceSourceExport {
+struct TerrainCdtSourceExport {
     counts: Vec<i32>,
     labels: Vec<String>,
     kind_codes: Vec<i32>,
@@ -121,10 +128,10 @@ struct TerrainCdtFaceSourceExport {
     s_ranges: Vec<f32>,
 }
 
-impl TerrainCdtFaceSourceExport {
-    fn with_face_capacity(face_count: usize) -> Self {
+impl TerrainCdtSourceExport {
+    fn with_sample_capacity(sample_count: usize) -> Self {
         Self {
-            counts: Vec::with_capacity(face_count),
+            counts: Vec::with_capacity(sample_count),
             labels: Vec::new(),
             kind_codes: Vec::new(),
             primary_ids: Vec::new(),
@@ -139,7 +146,7 @@ impl TerrainCdtFaceSourceExport {
         }
     }
 
-    fn push_face_sources(&mut self, sources: &[TerrainCdtRoadBoundarySource]) {
+    fn push_sources(&mut self, sources: &[TerrainCdtRoadBoundarySource]) {
         self.counts
             .push(i32::try_from(sources.len()).unwrap_or(i32::MAX));
         for source in sources.iter().copied() {
@@ -162,7 +169,7 @@ struct TerrainCdtTriangleBufferExport {
     vertices: Vec<Vector3>,
     normals: Vec<Vector3>,
     uvs: Vec<Vector2>,
-    face_sources: TerrainCdtFaceSourceExport,
+    face_sources: TerrainCdtSourceExport,
     emitted_faces: usize,
 }
 
@@ -572,6 +579,7 @@ impl SimulationNode {
                     "ok"
                 };
                 dict.set("terrain_cdt_status", GString::from(cdt_status));
+                Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
                 dict.set(
                     "terrain_cdt_input_vertices",
                     i64::try_from(mesh.stats.input_vertices).unwrap_or(0),
@@ -659,6 +667,12 @@ impl SimulationNode {
     fn append_empty_cdt_failure(dict: &mut VarDictionary, error_label: &'static str) {
         dict.set("terrain_cdt_status", GString::from("failed"));
         dict.set("terrain_cdt_error", GString::from(error_label));
+        let backend_label = if error_label == "triangulation_failed" {
+            TERRAIN_CDT_BACKEND_SPADE_LABEL
+        } else {
+            TERRAIN_CDT_BACKEND_NONE_LABEL
+        };
+        Self::append_cdt_diagnostic_metadata(dict, backend_label);
         dict.set("terrain_cdt_input_vertices", 0i64);
         dict.set("terrain_cdt_constraint_edges", 0i64);
         dict.set("terrain_cdt_road_constraint_edges", 0i64);
@@ -699,14 +713,7 @@ impl SimulationNode {
             "terrain_cdt_road_seam_sample_kinds",
             PackedInt32Array::new(),
         );
-        dict.set(
-            "terrain_cdt_road_seam_sample_source_counts",
-            PackedInt32Array::new(),
-        );
-        dict.set(
-            "terrain_cdt_road_seam_sample_sources",
-            PackedStringArray::new(),
-        );
+        Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_road_seam");
         dict.set(
             "terrain_cdt_retaining_wall_sample_centroids",
             PackedVector3Array::new(),
@@ -723,14 +730,7 @@ impl SimulationNode {
             "terrain_cdt_retaining_wall_sample_vertices",
             PackedVector3Array::new(),
         );
-        dict.set(
-            "terrain_cdt_retaining_wall_sample_source_counts",
-            PackedInt32Array::new(),
-        );
-        dict.set(
-            "terrain_cdt_retaining_wall_sample_sources",
-            PackedStringArray::new(),
-        );
+        Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_retaining_wall");
         dict.set(
             "terrain_cdt_tie_in_widened_sample_points",
             PackedVector3Array::new(),
@@ -739,10 +739,7 @@ impl SimulationNode {
             "terrain_cdt_tie_in_widened_sample_metrics",
             PackedFloat32Array::new(),
         );
-        dict.set(
-            "terrain_cdt_tie_in_widened_sample_sources",
-            PackedStringArray::new(),
-        );
+        Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_tie_in_widened");
         dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
             PackedVector3Array::new(),
@@ -751,10 +748,7 @@ impl SimulationNode {
             "terrain_cdt_invalid_constraint_sample_metadata",
             PackedInt32Array::new(),
         );
-        dict.set(
-            "terrain_cdt_invalid_constraint_sample_sources",
-            PackedStringArray::new(),
-        );
+        Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_invalid_constraint");
         dict.set("terrain_mesh_vertices", PackedVector3Array::new());
         dict.set("terrain_mesh_normals", PackedVector3Array::new());
         dict.set("terrain_mesh_uvs", PackedVector2Array::new());
@@ -771,19 +765,64 @@ impl SimulationNode {
         Self::append_empty_cdt_face_source_export(dict, "terrain_retaining_wall_mesh");
     }
 
+    fn append_cdt_diagnostic_metadata(dict: &mut VarDictionary, backend_label: &str) {
+        let backend_code = if backend_label == TERRAIN_CDT_BACKEND_SPADE_LABEL {
+            TERRAIN_CDT_BACKEND_SPADE_CODE
+        } else {
+            TERRAIN_CDT_BACKEND_NONE_CODE
+        };
+        dict.set(
+            "terrain_cdt_diagnostic_stage",
+            GString::from(TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL),
+        );
+        dict.set(
+            "terrain_cdt_diagnostic_stage_code",
+            TERRAIN_CDT_DIAGNOSTIC_STAGE_CODE,
+        );
+        dict.set(
+            "terrain_cdt_diagnostic_backend",
+            GString::from(backend_label),
+        );
+        dict.set("terrain_cdt_diagnostic_backend_code", backend_code);
+    }
+
     fn append_empty_cdt_face_source_export(dict: &mut VarDictionary, prefix: &str) {
-        Self::append_cdt_face_source_export(dict, prefix, &TerrainCdtFaceSourceExport::default());
+        Self::append_cdt_face_source_export(dict, prefix, &TerrainCdtSourceExport::default());
     }
 
     fn append_cdt_face_source_export(
         dict: &mut VarDictionary,
         prefix: &str,
-        export: &TerrainCdtFaceSourceExport,
+        export: &TerrainCdtSourceExport,
     ) {
-        Self::set_cdt_face_source_i32(dict, prefix, "counts", &export.counts);
-        let labels_key = format!("{prefix}_face_sources");
+        let field_prefix = format!("{prefix}_face_source");
+        let label_key = format!("{prefix}_face_sources");
+        Self::append_cdt_source_export(dict, &field_prefix, &label_key, export);
+    }
+
+    fn append_empty_cdt_sample_source_export(dict: &mut VarDictionary, prefix: &str) {
+        Self::append_cdt_sample_source_export(dict, prefix, &TerrainCdtSourceExport::default());
+    }
+
+    fn append_cdt_sample_source_export(
+        dict: &mut VarDictionary,
+        prefix: &str,
+        export: &TerrainCdtSourceExport,
+    ) {
+        let field_prefix = format!("{prefix}_sample_source");
+        let label_key = format!("{prefix}_sample_sources");
+        Self::append_cdt_source_export(dict, &field_prefix, &label_key, export);
+    }
+
+    fn append_cdt_source_export(
+        dict: &mut VarDictionary,
+        field_prefix: &str,
+        label_key: &str,
+        export: &TerrainCdtSourceExport,
+    ) {
+        Self::set_cdt_source_i32(dict, field_prefix, "counts", &export.counts);
         dict.set(
-            labels_key.as_str(),
+            label_key,
             PackedStringArray::from_iter(
                 export
                     .labels
@@ -791,38 +830,53 @@ impl SimulationNode {
                     .map(|label| GString::from(label.as_str())),
             ),
         );
-        Self::set_cdt_face_source_i32(dict, prefix, "kind_codes", &export.kind_codes);
-        Self::set_cdt_face_source_i32(dict, prefix, "primary_ids", &export.primary_ids);
-        Self::set_cdt_face_source_i32(dict, prefix, "node_kind_codes", &export.node_kind_codes);
-        Self::set_cdt_face_source_i32(dict, prefix, "edge_class_codes", &export.edge_class_codes);
-        Self::set_cdt_face_source_i32(dict, prefix, "owner_kinds", &export.owner_kinds);
-        Self::set_cdt_face_source_i32(dict, prefix, "owner_indices", &export.owner_indices);
-        Self::set_cdt_face_source_i32(dict, prefix, "support_policies", &export.support_policies);
-        Self::set_cdt_face_source_i32(dict, prefix, "roles", &export.roles);
-        Self::set_cdt_face_source_i32(dict, prefix, "section_ranges", &export.section_ranges);
-        Self::set_cdt_face_source_f32(dict, prefix, "s_ranges", &export.s_ranges);
+        Self::set_cdt_source_i32(dict, field_prefix, "kind_codes", &export.kind_codes);
+        Self::set_cdt_source_i32(dict, field_prefix, "primary_ids", &export.primary_ids);
+        Self::set_cdt_source_i32(
+            dict,
+            field_prefix,
+            "node_kind_codes",
+            &export.node_kind_codes,
+        );
+        Self::set_cdt_source_i32(
+            dict,
+            field_prefix,
+            "edge_class_codes",
+            &export.edge_class_codes,
+        );
+        Self::set_cdt_source_i32(dict, field_prefix, "owner_kinds", &export.owner_kinds);
+        Self::set_cdt_source_i32(dict, field_prefix, "owner_indices", &export.owner_indices);
+        Self::set_cdt_source_i32(
+            dict,
+            field_prefix,
+            "support_policies",
+            &export.support_policies,
+        );
+        Self::set_cdt_source_i32(dict, field_prefix, "roles", &export.roles);
+        Self::set_cdt_source_i32(dict, field_prefix, "section_ranges", &export.section_ranges);
+        Self::set_cdt_source_f32(dict, field_prefix, "s_ranges", &export.s_ranges);
     }
 
-    fn set_cdt_face_source_i32(
+    fn set_cdt_source_i32(
         dict: &mut VarDictionary,
-        prefix: &str,
+        field_prefix: &str,
         suffix: &str,
         values: &[i32],
     ) {
-        let key = format!("{prefix}_face_source_{suffix}");
+        let key = format!("{field_prefix}_{suffix}");
         dict.set(
             key.as_str(),
             PackedInt32Array::from_iter(values.iter().copied()),
         );
     }
 
-    fn set_cdt_face_source_f32(
+    fn set_cdt_source_f32(
         dict: &mut VarDictionary,
-        prefix: &str,
+        field_prefix: &str,
         suffix: &str,
         values: &[f32],
     ) {
-        let key = format!("{prefix}_face_source_{suffix}");
+        let key = format!("{field_prefix}_{suffix}");
         dict.set(
             key.as_str(),
             PackedFloat32Array::from_iter(values.iter().copied()),
@@ -989,7 +1043,7 @@ impl SimulationNode {
         let mut vertices = Vec::with_capacity(triangles.len() * 3);
         let mut normals = Vec::with_capacity(triangles.len() * 3);
         let mut uvs = Vec::with_capacity(triangles.len() * 3);
-        let mut source_export = TerrainCdtFaceSourceExport::with_face_capacity(triangles.len());
+        let mut source_export = TerrainCdtSourceExport::with_sample_capacity(triangles.len());
         let mut emitted_faces = 0usize;
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
@@ -1011,7 +1065,7 @@ impl SimulationNode {
             let triangle_face_sources = triangle_sources
                 .get(triangle_index)
                 .map_or(&[][..], Vec::as_slice);
-            source_export.push_face_sources(triangle_face_sources);
+            source_export.push_sources(triangle_face_sources);
             for point in points {
                 vertices.push(Vector3::new(
                     point.x - center_x,
@@ -1046,8 +1100,8 @@ impl SimulationNode {
         let mut metrics = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
         let mut vertices = Vec::with_capacity(mesh.road_seam_face_samples.len() * 3);
         let mut kinds = Vec::with_capacity(mesh.road_seam_face_samples.len());
-        let mut source_counts = Vec::with_capacity(mesh.road_seam_face_samples.len());
-        let mut sources = Vec::new();
+        let mut source_export =
+            TerrainCdtSourceExport::with_sample_capacity(mesh.road_seam_face_samples.len());
         for sample in &mesh.road_seam_face_samples {
             centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
             bounds.push(Vector3::new(
@@ -1063,11 +1117,7 @@ impl SimulationNode {
             metrics.push(sample.max_y_delta_m);
             metrics.push(sample.max_slope_ratio);
             kinds.push(sample.kind.debug_code());
-            source_counts.push(i32::try_from(sample.sources.len()).unwrap_or(i32::MAX));
-            sources.extend(sample.sources.iter().copied().map(|source| {
-                let label = source.debug_label();
-                GString::from(label.as_str())
-            }));
+            source_export.push_sources(&sample.sources);
             vertices.extend(
                 sample
                     .vertices
@@ -1095,14 +1145,7 @@ impl SimulationNode {
             "terrain_cdt_road_seam_sample_kinds",
             PackedInt32Array::from_iter(kinds),
         );
-        dict.set(
-            "terrain_cdt_road_seam_sample_source_counts",
-            PackedInt32Array::from_iter(source_counts),
-        );
-        dict.set(
-            "terrain_cdt_road_seam_sample_sources",
-            PackedStringArray::from_iter(sources),
-        );
+        Self::append_cdt_sample_source_export(dict, "terrain_cdt_road_seam", &source_export);
     }
 
     fn append_cdt_retaining_wall_face_samples(
@@ -1113,8 +1156,8 @@ impl SimulationNode {
         let mut bounds = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 2);
         let mut metrics = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 2);
         let mut vertices = Vec::with_capacity(mesh.retaining_wall_face_samples.len() * 3);
-        let mut source_counts = Vec::with_capacity(mesh.retaining_wall_face_samples.len());
-        let mut sources = Vec::new();
+        let mut source_export =
+            TerrainCdtSourceExport::with_sample_capacity(mesh.retaining_wall_face_samples.len());
         for sample in &mesh.retaining_wall_face_samples {
             centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
             bounds.push(Vector3::new(
@@ -1129,11 +1172,7 @@ impl SimulationNode {
             ));
             metrics.push(sample.max_y_delta_m);
             metrics.push(sample.max_slope_ratio);
-            source_counts.push(i32::try_from(sample.sources.len()).unwrap_or(i32::MAX));
-            sources.extend(sample.sources.iter().copied().map(|source| {
-                let label = source.debug_label();
-                GString::from(label.as_str())
-            }));
+            source_export.push_sources(&sample.sources);
             vertices.extend(
                 sample
                     .vertices
@@ -1157,14 +1196,7 @@ impl SimulationNode {
             "terrain_cdt_retaining_wall_sample_vertices",
             PackedVector3Array::from_iter(vertices),
         );
-        dict.set(
-            "terrain_cdt_retaining_wall_sample_source_counts",
-            PackedInt32Array::from_iter(source_counts),
-        );
-        dict.set(
-            "terrain_cdt_retaining_wall_sample_sources",
-            PackedStringArray::from_iter(sources),
-        );
+        Self::append_cdt_sample_source_export(dict, "terrain_cdt_retaining_wall", &source_export);
     }
 
     fn append_cdt_tie_in_widened_samples(
@@ -1173,12 +1205,12 @@ impl SimulationNode {
     ) {
         let mut points = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 2);
         let mut metrics = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 4);
-        let mut sources = Vec::with_capacity(mesh.tie_in_widened_samples.len());
+        let mut source_export =
+            TerrainCdtSourceExport::with_sample_capacity(mesh.tie_in_widened_samples.len());
         for sample in &mesh.tie_in_widened_samples {
             points.push(Self::terrain_cdt_vertex_to_vector3(sample.source_sample));
             points.push(Self::terrain_cdt_vertex_to_vector3(sample.seam_point));
-            let label = sample.seam_source.debug_label();
-            sources.push(GString::from(label.as_str()));
+            source_export.push_sources(&[sample.seam_source]);
             metrics.push(sample.distance_m);
             metrics.push(sample.required_distance_m);
             metrics.push(sample.height_delta_m);
@@ -1192,10 +1224,7 @@ impl SimulationNode {
             "terrain_cdt_tie_in_widened_sample_metrics",
             PackedFloat32Array::from_iter(metrics),
         );
-        dict.set(
-            "terrain_cdt_tie_in_widened_sample_sources",
-            PackedStringArray::from_iter(sources),
-        );
+        Self::append_cdt_sample_source_export(dict, "terrain_cdt_tie_in_widened", &source_export);
     }
 
     fn append_cdt_invalid_constraint_samples(
@@ -1204,7 +1233,8 @@ impl SimulationNode {
     ) {
         let mut edges = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 2);
         let mut metadata = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 4);
-        let mut sources = Vec::with_capacity(mesh.invalid_constraint_samples.len());
+        let mut source_export =
+            TerrainCdtSourceExport::with_sample_capacity(mesh.invalid_constraint_samples.len());
         for sample in &mesh.invalid_constraint_samples {
             edges.push(Self::terrain_cdt_vertex_to_vector3(sample.start));
             edges.push(Self::terrain_cdt_vertex_to_vector3(sample.end));
@@ -1212,10 +1242,11 @@ impl SimulationNode {
             metadata.push(i32::try_from(sample.stable_piece_id).unwrap_or(i32::MAX));
             metadata.push(i32::try_from(sample.local_loop_index).unwrap_or(i32::MAX));
             metadata.push(i32::try_from(sample.local_edge_index).unwrap_or(i32::MAX));
-            let label = sample
-                .source
-                .map_or_else(|| "none".to_string(), |source| source.debug_label());
-            sources.push(GString::from(label.as_str()));
+            if let Some(source) = sample.source {
+                source_export.push_sources(&[source]);
+            } else {
+                source_export.push_sources(&[]);
+            }
         }
         dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
@@ -1225,9 +1256,10 @@ impl SimulationNode {
             "terrain_cdt_invalid_constraint_sample_metadata",
             PackedInt32Array::from_iter(metadata),
         );
-        dict.set(
-            "terrain_cdt_invalid_constraint_sample_sources",
-            PackedStringArray::from_iter(sources),
+        Self::append_cdt_sample_source_export(
+            dict,
+            "terrain_cdt_invalid_constraint",
+            &source_export,
         );
     }
 
@@ -3494,6 +3526,72 @@ mod tests {
         assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
     }
 
+    #[test]
+    fn terrain_cdt_road_seam_sample_sources_export_structured_rows() {
+        let span = span_source();
+        let node = node_source();
+        let sources = [span, node];
+        let export = source_export_for_samples(&[&sources]);
+
+        assert_eq!(export.counts, vec![2]);
+        assert_eq!(export.labels.len(), 2);
+        assert_eq!(export.kind_codes, vec![0, 1]);
+        assert_eq!(export.primary_ids, vec![123, 77]);
+        assert_eq!(export.node_kind_codes, vec![-1, 2]);
+        assert_eq!(export.edge_class_codes, vec![1, -1]);
+        assert_eq!(export.owner_kinds, vec![2, 1]);
+        assert_eq!(export.owner_indices, vec![7, 3]);
+        assert_eq!(export.support_policies, vec![1, -1]);
+        assert_eq!(export.roles, vec![2, -1]);
+        assert_eq!(export.section_ranges, vec![2, 5, -1, -1]);
+        assert_eq!(export.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_retaining_wall_sample_sources_export_structured_rows() {
+        let span = [span_source()];
+        let node = [node_source()];
+        let export = source_export_for_samples(&[&span, &node]);
+
+        assert_eq!(export.counts, vec![1, 1]);
+        assert_eq!(export.labels.len(), 2);
+        assert_eq!(export.kind_codes, vec![0, 1]);
+        assert_eq!(export.primary_ids, vec![123, 77]);
+        assert_eq!(export.owner_kinds, vec![2, 1]);
+        assert_eq!(export.owner_indices, vec![7, 3]);
+        assert_eq!(export.section_ranges, vec![2, 5, -1, -1]);
+        assert_eq!(export.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_tie_in_widened_sample_sources_export_one_source_per_sample() {
+        let first = [span_source()];
+        let second = [span_source()];
+        let export = source_export_for_samples(&[&first, &second]);
+
+        assert_eq!(export.counts, vec![1, 1]);
+        assert_eq!(export.labels.len(), 2);
+        assert_eq!(export.kind_codes, vec![0, 0]);
+        assert_eq!(export.primary_ids, vec![123, 123]);
+        assert_eq!(export.section_ranges, vec![2, 5, 2, 5]);
+        assert_eq!(export.s_ranges, vec![10.5, 14.0, 10.5, 14.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_invalid_constraint_sample_sources_keep_absence_visible() {
+        let present = [node_source()];
+        let export = source_export_for_samples(&[&[], &present]);
+
+        assert_eq!(export.counts, vec![0, 1]);
+        assert_eq!(export.labels.len(), 1);
+        assert_eq!(export.kind_codes, vec![1]);
+        assert_eq!(export.primary_ids, vec![77]);
+        assert_eq!(export.owner_kinds, vec![1]);
+        assert_eq!(export.owner_indices, vec![3]);
+        assert_eq!(export.section_ranges, vec![-1, -1]);
+        assert_eq!(export.s_ranges, vec![-1.0, -1.0]);
+    }
+
     fn test_patch() -> TerrainPatchSnapshot {
         TerrainPatchSnapshot {
             patch_x: 0,
@@ -3510,6 +3608,16 @@ mod tests {
             world_size_z: 10.0,
             height_data: vec![0.0; 4],
         }
+    }
+
+    fn source_export_for_samples(
+        samples: &[&[TerrainCdtRoadBoundarySource]],
+    ) -> TerrainCdtSourceExport {
+        let mut export = TerrainCdtSourceExport::with_sample_capacity(samples.len());
+        for sources in samples {
+            export.push_sources(sources);
+        }
+        export
     }
 
     fn span_source() -> TerrainCdtRoadBoundarySource {
