@@ -2904,6 +2904,23 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
             !point_inside_visual_polygons(&span_piece.curb_surface_polygons, curb_mid),
             "terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
         );
+
+        let sidewalk_corner = center - travel * 0.075 + lateral * side * 4.325;
+        assert!(
+            point_inside_visual_polygons(
+                &terminal_piece.sidewalk_surface_polygons,
+                sidewalk_corner
+            ),
+            "terminal sidewalk must close the endpoint-to-cap curb-depth corner on side {side}; point={sidewalk_corner:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&terminal_piece.curb_surface_polygons, sidewalk_corner),
+            "terminal sidewalk corner closure must not be owned by curb on side {side}; point={sidewalk_corner:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&terminal_piece.road_surface_polygons, sidewalk_corner),
+            "terminal sidewalk corner closure must not be owned by asphalt on side {side}; point={sidewalk_corner:?}"
+        );
     }
 
     let end_travel = Vector2::new(-40.0, -5.0).normalized();
@@ -2922,6 +2939,29 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
         assert!(
             !point_inside_visual_polygons(&span_piece.curb_surface_polygons, curb_mid),
             "opposite terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
+        );
+
+        let sidewalk_corner = end_center - end_travel * 0.075 + end_lateral * side * 4.325;
+        assert!(
+            point_inside_visual_polygons(
+                &end_terminal_piece.sidewalk_surface_polygons,
+                sidewalk_corner
+            ),
+            "opposite terminal sidewalk must close the endpoint-to-cap curb-depth corner on side {side}; point={sidewalk_corner:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(
+                &end_terminal_piece.curb_surface_polygons,
+                sidewalk_corner
+            ),
+            "opposite terminal sidewalk corner closure must not be owned by curb on side {side}; point={sidewalk_corner:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(
+                &end_terminal_piece.road_surface_polygons,
+                sidewalk_corner
+            ),
+            "opposite terminal sidewalk corner closure must not be owned by asphalt on side {side}; point={sidewalk_corner:?}"
         );
     }
 }

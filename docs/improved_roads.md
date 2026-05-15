@@ -111,8 +111,9 @@ Live behavior:
   terrain clip loops, and node earthwork roots are exported from the same boolean-owned
   `node_footprint` result rather than from the retired post-overlay repair path.
 - the legacy terminal U-shaped end-band helper is deleted in the hardcut. Terminal cap ownership is
-  restored through `surface::terminal`, which generates canonical cap carriers for the rail /
-  contour path instead of reintroducing the retired input-side endpoint patch helper.
+  restored through `surface::terminal`, which generates canonical cap and side-to-end corner
+  carriers for the rail / contour path instead of reintroducing the retired input-side endpoint
+  patch helper.
 - bend / junction non-road ownership starts from the resolved `footprint - asphalt` remainder, then
   splits into explicit curb / shoulder and sidewalk band-owned regions before height sampling or
   triangulation

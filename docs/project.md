@@ -90,8 +90,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   footprint clips so full water patch planes cannot leak through dry terrain or under grounded
   asphalt, shoulder / curb, and sidewalk.
   Terminal cap topology now also lives outside the node input extractor: `surface::terminal`
-  generates canonical cap carriers consumed by rail ownership and height fields, so the retired
-  endpoint end-band helper is no longer part of the ROAD-01 path.
+  generates canonical cap carriers, including side-to-end corner closures, consumed by rail
+  ownership and height fields, so the retired endpoint end-band helper is no longer part of the
+  ROAD-01 path.
   `ROAD-01` remains open until that clipped topology is validated against flat, diagonal, sloped,
   water-overlap, and junction cases.
   `ROAD-01` is still open because the recent roads-first earthworks prototype was

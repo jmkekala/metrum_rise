@@ -15,7 +15,9 @@ const TERMINAL_CAP_WIDTH_EPS_M: f64 = 0.001;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TerminalCapBandRole {
     LeftSide,
+    LeftCorner,
     EndBand,
+    RightCorner,
     RightSide,
 }
 
@@ -270,6 +272,20 @@ fn push_terminal_paired_cap_bands(
     outer_offset_m: f64,
 ) -> Result<(), TerminalCapGenerationError> {
     let band_kind = mouth.band_intervals[left_band_index].band_kind;
+    push_terminal_side_corner_cap_band(
+        cap_bands,
+        mouth,
+        outward,
+        source_band_index,
+        band_kind,
+        layer_index,
+        TerminalCapBandRole::LeftCorner,
+        left_band_index,
+        right_band_index,
+        left_band_index,
+        left_band_index + 1,
+        inner_offset_m,
+    )?;
     push_terminal_cap_band(
         cap_bands,
         mouth,
@@ -334,6 +350,20 @@ fn push_terminal_paired_cap_bands(
             terminal_end_band_outer_height_anchors(mouth, left_band_index, right_band_index),
         ),
     )?;
+    push_terminal_side_corner_cap_band(
+        cap_bands,
+        mouth,
+        outward,
+        source_band_index,
+        band_kind,
+        layer_index,
+        TerminalCapBandRole::RightCorner,
+        left_band_index,
+        right_band_index,
+        right_band_index,
+        right_band_index + 1,
+        inner_offset_m,
+    )?;
     push_terminal_cap_band(
         cap_bands,
         mouth,
@@ -367,6 +397,58 @@ fn push_terminal_paired_cap_bands(
         ),
     )?;
     Ok(())
+}
+
+fn push_terminal_side_corner_cap_band(
+    cap_bands: &mut Vec<NodeTerminalCapBand>,
+    mouth: &NodeInputMouth,
+    outward: RoadVec2,
+    source_band_index: usize,
+    band_kind: RoadSurfaceBandKind,
+    layer_index: usize,
+    role: TerminalCapBandRole,
+    left_band_index: usize,
+    right_band_index: usize,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    corner_depth_m: f64,
+) -> Result<(), TerminalCapGenerationError> {
+    if corner_depth_m <= TERMINAL_CAP_WIDTH_EPS_M {
+        return Ok(());
+    }
+
+    push_terminal_cap_band(
+        cap_bands,
+        mouth,
+        source_band_index,
+        band_kind,
+        TerminalCapBandProvenance {
+            layer_index,
+            role,
+            left_source_band_index: left_band_index,
+            right_source_band_index: right_band_index,
+            source_boundary_start_index: start_boundary_index,
+            source_boundary_end_index: end_boundary_index,
+            inner_offset_m: 0.0,
+            outer_offset_m: corner_depth_m,
+        },
+        terminal_offset_boundary_path(
+            mouth,
+            start_boundary_index,
+            end_boundary_index,
+            outward,
+            0.0,
+            terminal_side_band_height_anchors(mouth, start_boundary_index),
+        ),
+        terminal_offset_boundary_path(
+            mouth,
+            start_boundary_index,
+            end_boundary_index,
+            outward,
+            corner_depth_m,
+            terminal_side_band_height_anchors(mouth, start_boundary_index),
+        ),
+    )
 }
 
 fn push_terminal_cap_band(
@@ -915,6 +997,52 @@ mod tests {
         assert_eq!(end_band.provenance.right_source_band_index, 4);
         assert_eq!(end_band.provenance.source_boundary_start_index, 2);
         assert_eq!(end_band.provenance.source_boundary_end_index, 4);
+    }
+
+    #[test]
+    fn terminal_cap_adapter_emits_side_corner_closures_from_source_rails() {
+        let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
+        let mouth = &input.mouths[0];
+        let cap_bands_by_mouth =
+            terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
+        let sidewalk_terminal_source_band = mouth.band_intervals.len() + 1;
+        let left_corner = cap_bands_by_mouth[0]
+            .iter()
+            .find(|cap_band| {
+                cap_band.source_band_index == sidewalk_terminal_source_band
+                    && cap_band.provenance.role == TerminalCapBandRole::LeftCorner
+            })
+            .expect("sidewalk terminal cap must close the left endpoint-to-cap corner");
+        let right_corner = cap_bands_by_mouth[0]
+            .iter()
+            .find(|cap_band| {
+                cap_band.source_band_index == sidewalk_terminal_source_band
+                    && cap_band.provenance.role == TerminalCapBandRole::RightCorner
+            })
+            .expect("sidewalk terminal cap must close the right endpoint-to-cap corner");
+
+        assert_eq!(left_corner.band_kind, RoadSurfaceBandKind::Sidewalk);
+        assert_eq!(left_corner.provenance.source_boundary_start_index, 0);
+        assert_eq!(left_corner.provenance.source_boundary_end_index, 1);
+        assert!((left_corner.provenance.inner_offset_m - 0.0).abs() <= 0.001);
+        assert!((left_corner.provenance.outer_offset_m - 0.15).abs() <= 0.001);
+        assert_eq!(right_corner.band_kind, RoadSurfaceBandKind::Sidewalk);
+        assert_eq!(right_corner.provenance.source_boundary_start_index, 5);
+        assert_eq!(right_corner.provenance.source_boundary_end_index, 6);
+        assert!((right_corner.provenance.inner_offset_m - 0.0).abs() <= 0.001);
+        assert!((right_corner.provenance.outer_offset_m - 0.15).abs() <= 0.001);
+
+        let left_endpoint_outer = mouth.boundary_rails[0].endpoint_world;
+        assert!(left_corner.inner_path_world.iter().any(|point| {
+            (point.x - left_endpoint_outer.x).abs() <= 0.001
+                && (point.z - left_endpoint_outer.z).abs() <= 0.001
+                && (point.y - left_endpoint_outer.y).abs() <= 0.001
+        }));
+        assert!(left_corner.outer_path_world.iter().any(|point| {
+            (point.x - (left_endpoint_outer.x - 0.15)).abs() <= 0.001
+                && (point.z - left_endpoint_outer.z).abs() <= 0.001
+                && (point.y - left_endpoint_outer.y).abs() <= 0.001
+        }));
     }
 
     #[test]
