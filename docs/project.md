@@ -179,7 +179,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   source-authorized materialization now blocks with a canonical-keys diagnostic that names the
   final edge and source constraint. JunctionN final owned vertices now also evaluate through their
   post-boolean region-scoped band carrier, keeping same-material overlap conflicts local to the
-  explicit owner instead of reviving the old node-wide grade sampler. The render mesh
+  explicit owner instead of reviving the old node-wide grade sampler; same-height seam validation
+  now keys separate materialized owner-pair seams independently even when they came from the same
+  source rail index. The render mesh
   payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
   buckets. Post-boolean `node_non_road`
   subdivision now requires every final curb /

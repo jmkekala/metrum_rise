@@ -128,6 +128,14 @@ struct NodeHeightVertexContextKey {
     height_field_id: NodeBandHeightFieldId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ExplicitSeamHeightKey {
+    point: NodeHeightPointKey,
+    constraint_index: usize,
+    owner: Option<NodeBandOwner>,
+    opposite_owner: Option<NodeBandOwner>,
+}
+
 struct NodeBandHeightField {
     id: NodeBandHeightFieldId,
     kind: RoadSurfaceBandKind,
@@ -784,14 +792,14 @@ fn heighted_vertex(
 fn validate_explicit_material_seam_heights(
     regions: &[NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
-    let mut shared_heights = BTreeMap::<(NodeHeightPointKey, usize), ExplicitSeamHeight>::new();
+    let mut shared_heights = BTreeMap::<ExplicitSeamHeightKey, ExplicitSeamHeight>::new();
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             for constraint in
                 material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
             {
                 let point = NodeHeightPointKey::from_point(vertex.point_xz);
-                let key = (point, constraint.constraint_index);
+                let key = ExplicitSeamHeightKey::new(point, constraint);
                 let height_mm = quantize_m(vertex.height_m);
                 if let Some(existing) = shared_heights.insert(key, ExplicitSeamHeight { height_mm })
                 {
@@ -816,6 +824,31 @@ fn validate_explicit_material_seam_heights(
 #[derive(Clone, Copy, Debug)]
 struct ExplicitSeamHeight {
     height_mm: i64,
+}
+
+impl ExplicitSeamHeightKey {
+    fn new(point: NodeHeightPointKey, constraint: &NodeRegionSeamConstraint) -> Self {
+        let (owner, opposite_owner) =
+            canonical_explicit_seam_owner_pair(constraint.owner, constraint.opposite_owner);
+        Self {
+            point,
+            constraint_index: constraint.constraint_index,
+            owner,
+            opposite_owner,
+        }
+    }
+}
+
+fn canonical_explicit_seam_owner_pair(
+    owner: Option<NodeBandOwner>,
+    opposite_owner: Option<NodeBandOwner>,
+) -> (Option<NodeBandOwner>, Option<NodeBandOwner>) {
+    match (owner, opposite_owner) {
+        (Some(owner), Some(opposite_owner)) if opposite_owner < owner => {
+            (Some(opposite_owner), Some(owner))
+        }
+        pair => pair,
+    }
 }
 
 fn material_height_constraints_for_vertex<'a>(
@@ -1959,6 +1992,55 @@ mod tests {
     }
 
     #[test]
+    fn same_source_constraint_index_keeps_distinct_owner_pair_height_contexts() {
+        let first_pair = manual_owned_pair_seam_constraint(
+            12,
+            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0),
+            NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1),
+            true,
+        );
+        let second_pair = manual_owned_pair_seam_constraint(
+            12,
+            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 2),
+            NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 3),
+            true,
+        );
+        let regions = vec![
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+                vec![first_pair.clone()],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+                vec![first_pair],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                2,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 2.0)],
+                vec![second_pair.clone()],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                3,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 2.0)],
+                vec![second_pair],
+            ),
+        ];
+
+        validate_explicit_material_seam_heights(&regions)
+            .expect("same source rail index may materialize distinct final owner-pair seams");
+    }
+
+    #[test]
     fn asphalt_curb_seams_allow_explicit_vertical_height_step() {
         let seam = manual_seam_constraint(
             3,
@@ -2129,6 +2211,26 @@ mod tests {
             opposite_owner: None,
             constrains_shared_height,
             is_material_transition,
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 0.0),
+        }
+    }
+
+    fn manual_owned_pair_seam_constraint(
+        constraint_index: usize,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        constrains_shared_height: bool,
+    ) -> NodeRegionSeamConstraint {
+        NodeRegionSeamConstraint {
+            constraint_index,
+            seam_source: NodeSeamSource::RaisedStepContact {
+                owner_index: owner.owner_index(),
+            },
+            owner: Some(owner),
+            opposite_owner: Some(opposite_owner),
+            constrains_shared_height,
+            is_material_transition: true,
             start_xz: RoadVec2::new(0.0, 0.0),
             end_xz: RoadVec2::new(1.0, 0.0),
         }
