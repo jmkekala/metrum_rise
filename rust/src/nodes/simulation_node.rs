@@ -105,6 +105,67 @@ use crate::debug_log;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
+#[derive(Default)]
+struct TerrainCdtFaceSourceExport {
+    counts: Vec<i32>,
+    labels: Vec<String>,
+    kind_codes: Vec<i32>,
+    primary_ids: Vec<i32>,
+    node_kind_codes: Vec<i32>,
+    edge_class_codes: Vec<i32>,
+    owner_kinds: Vec<i32>,
+    owner_indices: Vec<i32>,
+    support_policies: Vec<i32>,
+    roles: Vec<i32>,
+    section_ranges: Vec<i32>,
+    s_ranges: Vec<f32>,
+}
+
+impl TerrainCdtFaceSourceExport {
+    fn with_face_capacity(face_count: usize) -> Self {
+        Self {
+            counts: Vec::with_capacity(face_count),
+            labels: Vec::new(),
+            kind_codes: Vec::new(),
+            primary_ids: Vec::new(),
+            node_kind_codes: Vec::new(),
+            edge_class_codes: Vec::new(),
+            owner_kinds: Vec::new(),
+            owner_indices: Vec::new(),
+            support_policies: Vec::new(),
+            roles: Vec::new(),
+            section_ranges: Vec::new(),
+            s_ranges: Vec::new(),
+        }
+    }
+
+    fn push_face_sources(&mut self, sources: &[TerrainCdtRoadBoundarySource]) {
+        self.counts
+            .push(i32::try_from(sources.len()).unwrap_or(i32::MAX));
+        for source in sources.iter().copied() {
+            self.labels.push(source.debug_label());
+            self.kind_codes.push(source.source_kind_code());
+            self.primary_ids.push(source.primary_id_code());
+            self.node_kind_codes.push(source.node_kind_code());
+            self.edge_class_codes.push(source.edge_class_code());
+            self.owner_kinds.push(source.owner_kind_code());
+            self.owner_indices.push(source.owner_index_code());
+            self.support_policies.push(source.support_policy_code());
+            self.roles.push(source.role_code());
+            self.section_ranges.extend(source.section_range_codes());
+            self.s_ranges.extend(source.s_range_values());
+        }
+    }
+}
+
+struct TerrainCdtTriangleBufferExport {
+    vertices: Vec<Vector3>,
+    normals: Vec<Vector3>,
+    uvs: Vec<Vector2>,
+    face_sources: TerrainCdtFaceSourceExport,
+    emitted_faces: usize,
+}
+
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 /// The central simulation node exposed to Godot.
@@ -697,8 +758,7 @@ impl SimulationNode {
         dict.set("terrain_mesh_vertices", PackedVector3Array::new());
         dict.set("terrain_mesh_normals", PackedVector3Array::new());
         dict.set("terrain_mesh_uvs", PackedVector2Array::new());
-        dict.set("terrain_mesh_face_source_counts", PackedInt32Array::new());
-        dict.set("terrain_mesh_face_sources", PackedStringArray::new());
+        Self::append_empty_cdt_face_source_export(dict, "terrain_mesh");
         dict.set(
             "terrain_retaining_wall_mesh_vertices",
             PackedVector3Array::new(),
@@ -708,13 +768,64 @@ impl SimulationNode {
             PackedVector3Array::new(),
         );
         dict.set("terrain_retaining_wall_mesh_uvs", PackedVector2Array::new());
+        Self::append_empty_cdt_face_source_export(dict, "terrain_retaining_wall_mesh");
+    }
+
+    fn append_empty_cdt_face_source_export(dict: &mut VarDictionary, prefix: &str) {
+        Self::append_cdt_face_source_export(dict, prefix, &TerrainCdtFaceSourceExport::default());
+    }
+
+    fn append_cdt_face_source_export(
+        dict: &mut VarDictionary,
+        prefix: &str,
+        export: &TerrainCdtFaceSourceExport,
+    ) {
+        Self::set_cdt_face_source_i32(dict, prefix, "counts", &export.counts);
+        let labels_key = format!("{prefix}_face_sources");
         dict.set(
-            "terrain_retaining_wall_mesh_face_source_counts",
-            PackedInt32Array::new(),
+            labels_key.as_str(),
+            PackedStringArray::from_iter(
+                export
+                    .labels
+                    .iter()
+                    .map(|label| GString::from(label.as_str())),
+            ),
         );
+        Self::set_cdt_face_source_i32(dict, prefix, "kind_codes", &export.kind_codes);
+        Self::set_cdt_face_source_i32(dict, prefix, "primary_ids", &export.primary_ids);
+        Self::set_cdt_face_source_i32(dict, prefix, "node_kind_codes", &export.node_kind_codes);
+        Self::set_cdt_face_source_i32(dict, prefix, "edge_class_codes", &export.edge_class_codes);
+        Self::set_cdt_face_source_i32(dict, prefix, "owner_kinds", &export.owner_kinds);
+        Self::set_cdt_face_source_i32(dict, prefix, "owner_indices", &export.owner_indices);
+        Self::set_cdt_face_source_i32(dict, prefix, "support_policies", &export.support_policies);
+        Self::set_cdt_face_source_i32(dict, prefix, "roles", &export.roles);
+        Self::set_cdt_face_source_i32(dict, prefix, "section_ranges", &export.section_ranges);
+        Self::set_cdt_face_source_f32(dict, prefix, "s_ranges", &export.s_ranges);
+    }
+
+    fn set_cdt_face_source_i32(
+        dict: &mut VarDictionary,
+        prefix: &str,
+        suffix: &str,
+        values: &[i32],
+    ) {
+        let key = format!("{prefix}_face_source_{suffix}");
         dict.set(
-            "terrain_retaining_wall_mesh_face_sources",
-            PackedStringArray::new(),
+            key.as_str(),
+            PackedInt32Array::from_iter(values.iter().copied()),
+        );
+    }
+
+    fn set_cdt_face_source_f32(
+        dict: &mut VarDictionary,
+        prefix: &str,
+        suffix: &str,
+        values: &[f32],
+    ) {
+        let key = format!("{prefix}_face_source_{suffix}");
+        dict.set(
+            key.as_str(),
+            PackedFloat32Array::from_iter(values.iter().copied()),
         );
     }
 
@@ -809,21 +920,13 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
     ) {
-        let (vertices, normals, uvs, source_counts, sources, emitted_faces) =
-            Self::terrain_cdt_triangle_buffers(
-                patch,
-                &mesh.vertices,
-                &mesh.triangles,
-                &mesh.terrain_triangle_sources,
-            );
-        let (
-            retaining_vertices,
-            retaining_normals,
-            retaining_uvs,
-            retaining_source_counts,
-            retaining_sources,
-            retaining_emitted_faces,
-        ) = Self::terrain_cdt_triangle_buffers(
+        let terrain_buffers = Self::terrain_cdt_triangle_buffers(
+            patch,
+            &mesh.vertices,
+            &mesh.triangles,
+            &mesh.terrain_triangle_sources,
+        );
+        let retaining_buffers = Self::terrain_cdt_triangle_buffers(
             patch,
             &mesh.vertices,
             &mesh.retaining_wall_triangles,
@@ -832,48 +935,41 @@ impl SimulationNode {
 
         dict.set(
             "terrain_cdt_emitted_faces",
-            i64::try_from(emitted_faces).unwrap_or(0),
+            i64::try_from(terrain_buffers.emitted_faces).unwrap_or(0),
         );
         dict.set(
             "terrain_cdt_retaining_wall_emitted_faces",
-            i64::try_from(retaining_emitted_faces).unwrap_or(0),
+            i64::try_from(retaining_buffers.emitted_faces).unwrap_or(0),
         );
         dict.set(
             "terrain_mesh_vertices",
-            PackedVector3Array::from_iter(vertices),
+            PackedVector3Array::from_iter(terrain_buffers.vertices),
         );
         dict.set(
             "terrain_mesh_normals",
-            PackedVector3Array::from_iter(normals),
-        );
-        dict.set("terrain_mesh_uvs", PackedVector2Array::from_iter(uvs));
-        dict.set(
-            "terrain_mesh_face_source_counts",
-            PackedInt32Array::from_iter(source_counts),
+            PackedVector3Array::from_iter(terrain_buffers.normals),
         );
         dict.set(
-            "terrain_mesh_face_sources",
-            PackedStringArray::from_iter(sources),
+            "terrain_mesh_uvs",
+            PackedVector2Array::from_iter(terrain_buffers.uvs),
         );
+        Self::append_cdt_face_source_export(dict, "terrain_mesh", &terrain_buffers.face_sources);
         dict.set(
             "terrain_retaining_wall_mesh_vertices",
-            PackedVector3Array::from_iter(retaining_vertices),
+            PackedVector3Array::from_iter(retaining_buffers.vertices),
         );
         dict.set(
             "terrain_retaining_wall_mesh_normals",
-            PackedVector3Array::from_iter(retaining_normals),
+            PackedVector3Array::from_iter(retaining_buffers.normals),
         );
         dict.set(
             "terrain_retaining_wall_mesh_uvs",
-            PackedVector2Array::from_iter(retaining_uvs),
+            PackedVector2Array::from_iter(retaining_buffers.uvs),
         );
-        dict.set(
-            "terrain_retaining_wall_mesh_face_source_counts",
-            PackedInt32Array::from_iter(retaining_source_counts),
-        );
-        dict.set(
-            "terrain_retaining_wall_mesh_face_sources",
-            PackedStringArray::from_iter(retaining_sources),
+        Self::append_cdt_face_source_export(
+            dict,
+            "terrain_retaining_wall_mesh",
+            &retaining_buffers.face_sources,
         );
     }
 
@@ -882,14 +978,7 @@ impl SimulationNode {
         vertices_source: &[TerrainCdtVertex],
         triangles: &[[usize; 3]],
         triangle_sources: &[Vec<TerrainCdtRoadBoundarySource>],
-    ) -> (
-        Vec<Vector3>,
-        Vec<Vector3>,
-        Vec<Vector2>,
-        Vec<i32>,
-        Vec<GString>,
-        usize,
-    ) {
+    ) -> TerrainCdtTriangleBufferExport {
         debug_assert_eq!(
             triangles.len(),
             triangle_sources.len(),
@@ -900,8 +989,7 @@ impl SimulationNode {
         let mut vertices = Vec::with_capacity(triangles.len() * 3);
         let mut normals = Vec::with_capacity(triangles.len() * 3);
         let mut uvs = Vec::with_capacity(triangles.len() * 3);
-        let mut source_counts = Vec::with_capacity(triangles.len());
-        let mut sources = Vec::new();
+        let mut source_export = TerrainCdtFaceSourceExport::with_face_capacity(triangles.len());
         let mut emitted_faces = 0usize;
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
@@ -920,14 +1008,10 @@ impl SimulationNode {
             }
             let normal = raw_normal.normalized();
             emitted_faces += 1;
-            let face_sources = triangle_sources
+            let triangle_face_sources = triangle_sources
                 .get(triangle_index)
                 .map_or(&[][..], Vec::as_slice);
-            source_counts.push(i32::try_from(face_sources.len()).unwrap_or(i32::MAX));
-            sources.extend(face_sources.iter().copied().map(|source| {
-                let label = source.debug_label();
-                GString::from(label.as_str())
-            }));
+            source_export.push_face_sources(triangle_face_sources);
             for point in points {
                 vertices.push(Vector3::new(
                     point.x - center_x,
@@ -944,14 +1028,13 @@ impl SimulationNode {
             }
         }
 
-        (
+        TerrainCdtTriangleBufferExport {
             vertices,
             normals,
             uvs,
-            source_counts,
-            sources,
+            face_sources: source_export,
             emitted_faces,
-        )
+        }
     }
 
     fn append_cdt_road_seam_face_samples(
@@ -3315,6 +3398,141 @@ impl INode3D for SimulationNode {
                 godot_print!("[bench] DONE — 3000 frames complete. See benchmark_results.csv.");
                 self.base_mut().get_tree().unwrap().quit();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::terrain::TerrainPatchSnapshot;
+    use crate::simulation::terrain::cdt::{
+        TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
+        TerrainCdtRoadBandKind, TerrainCdtSpanRegionRole,
+    };
+
+    #[test]
+    fn terrain_cdt_structured_face_sources_preserve_span_fields() {
+        let source = span_source();
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(1.0, 0.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 1.0),
+            ],
+            &[[0, 1, 2]],
+            &[vec![source]],
+        );
+
+        assert_eq!(export.emitted_faces, 1);
+        assert_eq!(export.face_sources.counts, vec![1]);
+        assert_eq!(export.face_sources.labels.len(), 1);
+        assert_eq!(export.face_sources.kind_codes, vec![0]);
+        assert_eq!(export.face_sources.primary_ids, vec![123]);
+        assert_eq!(export.face_sources.node_kind_codes, vec![-1]);
+        assert_eq!(export.face_sources.edge_class_codes, vec![1]);
+        assert_eq!(export.face_sources.owner_kinds, vec![2]);
+        assert_eq!(export.face_sources.owner_indices, vec![7]);
+        assert_eq!(export.face_sources.support_policies, vec![1]);
+        assert_eq!(export.face_sources.roles, vec![2]);
+        assert_eq!(export.face_sources.section_ranges, vec![2, 5]);
+        assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_structured_face_sources_preserve_node_fields() {
+        let source = node_source();
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(1.0, 0.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 1.0),
+            ],
+            &[[0, 1, 2]],
+            &[vec![source]],
+        );
+
+        assert_eq!(export.emitted_faces, 1);
+        assert_eq!(export.face_sources.counts, vec![1]);
+        assert_eq!(export.face_sources.labels.len(), 1);
+        assert_eq!(export.face_sources.kind_codes, vec![1]);
+        assert_eq!(export.face_sources.primary_ids, vec![77]);
+        assert_eq!(export.face_sources.node_kind_codes, vec![2]);
+        assert_eq!(export.face_sources.edge_class_codes, vec![-1]);
+        assert_eq!(export.face_sources.owner_kinds, vec![1]);
+        assert_eq!(export.face_sources.owner_indices, vec![3]);
+        assert_eq!(export.face_sources.support_policies, vec![-1]);
+        assert_eq!(export.face_sources.roles, vec![-1]);
+        assert_eq!(export.face_sources.section_ranges, vec![-1, -1]);
+        assert_eq!(export.face_sources.s_ranges, vec![-1.0, -1.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_face_source_counts_skip_degenerate_triangles() {
+        let span = span_source();
+        let node = node_source();
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(1.0, 0.0, 0.0),
+                TerrainCdtVertex::new(2.0, 0.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 1.0),
+            ],
+            &[[0, 1, 2], [0, 1, 3]],
+            &[vec![span], vec![span, node]],
+        );
+
+        assert_eq!(export.emitted_faces, 1);
+        assert_eq!(export.face_sources.counts, vec![2]);
+        assert_eq!(export.face_sources.labels.len(), 2);
+        assert_eq!(export.face_sources.kind_codes, vec![0, 1]);
+        assert_eq!(export.face_sources.primary_ids, vec![123, 77]);
+        assert_eq!(export.face_sources.section_ranges, vec![2, 5, -1, -1]);
+        assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
+    }
+
+    fn test_patch() -> TerrainPatchSnapshot {
+        TerrainPatchSnapshot {
+            patch_x: 0,
+            patch_z: 0,
+            sample_width: 2,
+            sample_height: 2,
+            texture_width: 2,
+            texture_height: 2,
+            inner_offset_x: 0,
+            inner_offset_z: 0,
+            world_origin_x: 0.0,
+            world_origin_z: 0.0,
+            world_size_x: 10.0,
+            world_size_z: 10.0,
+            height_data: vec![0.0; 4],
+        }
+    }
+
+    fn span_source() -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+            edge_idx: 123,
+            edge_class: TerrainCdtEdgeClass::Bridge,
+            support_policy: TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
+            source_band_index: 7,
+            band_kind: TerrainCdtRoadBandKind::Sidewalk,
+            role: TerrainCdtSpanRegionRole::NonRoad,
+            start_section_index: 2,
+            end_section_index: 5,
+            start_s_m: 10.5,
+            end_s_m: 14.0,
+        }
+    }
+
+    fn node_source() -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            node_id: 77,
+            node_kind: TerrainCdtNodePieceKind::JunctionN,
+            owner_kind: TerrainCdtRoadBandKind::CurbOrShoulder,
+            owner_index: 3,
         }
     }
 }

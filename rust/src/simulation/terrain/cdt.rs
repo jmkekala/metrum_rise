@@ -207,6 +207,105 @@ pub(crate) enum TerrainCdtRoadBoundarySource {
 }
 
 impl TerrainCdtRoadBoundarySource {
+    pub(crate) fn source_kind_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { .. } => 0,
+            Self::NodeFootprintBoundary { .. } => 1,
+            Self::SyntheticTestBoundary { .. } => 2,
+        }
+    }
+
+    pub(crate) fn primary_id_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { edge_idx, .. } => clamp_u64_to_i32(edge_idx),
+            Self::NodeFootprintBoundary { node_id, .. } => clamp_u32_to_i32(node_id),
+            Self::SyntheticTestBoundary {
+                stable_piece_id, ..
+            } => clamp_u64_to_i32(stable_piece_id),
+        }
+    }
+
+    pub(crate) fn node_kind_code(self) -> i32 {
+        match self {
+            Self::NodeFootprintBoundary { node_kind, .. } => {
+                i32::from(terrain_cdt_node_kind_sort_key(node_kind))
+            }
+            _ => -1,
+        }
+    }
+
+    pub(crate) fn edge_class_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { edge_class, .. } => {
+                i32::from(terrain_cdt_edge_class_sort_key(edge_class))
+            }
+            _ => -1,
+        }
+    }
+
+    pub(crate) fn support_policy_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { support_policy, .. } => {
+                i32::from(terrain_cdt_support_policy_sort_key(support_policy))
+            }
+            _ => -1,
+        }
+    }
+
+    pub(crate) fn owner_kind_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { band_kind, .. } => {
+                i32::from(terrain_cdt_band_kind_sort_key(band_kind))
+            }
+            Self::NodeFootprintBoundary { owner_kind, .. } => {
+                i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
+            }
+            Self::SyntheticTestBoundary { .. } => -1,
+        }
+    }
+
+    pub(crate) fn owner_index_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary {
+                source_band_index, ..
+            } => clamp_u32_to_i32(source_band_index),
+            Self::NodeFootprintBoundary { owner_index, .. } => clamp_u32_to_i32(owner_index),
+            Self::SyntheticTestBoundary { .. } => -1,
+        }
+    }
+
+    pub(crate) fn role_code(self) -> i32 {
+        match self {
+            Self::SpanSupportBoundary { role, .. } => {
+                i32::from(terrain_cdt_span_role_sort_key(role))
+            }
+            _ => -1,
+        }
+    }
+
+    pub(crate) fn section_range_codes(self) -> [i32; 2] {
+        match self {
+            Self::SpanSupportBoundary {
+                start_section_index,
+                end_section_index,
+                ..
+            } => [
+                clamp_u32_to_i32(start_section_index),
+                clamp_u32_to_i32(end_section_index),
+            ],
+            _ => [-1, -1],
+        }
+    }
+
+    pub(crate) fn s_range_values(self) -> [f32; 2] {
+        match self {
+            Self::SpanSupportBoundary {
+                start_s_m, end_s_m, ..
+            } => [start_s_m, end_s_m],
+            _ => [-1.0, -1.0],
+        }
+    }
+
     pub(crate) fn debug_label(self) -> String {
         match self {
             Self::SpanSupportBoundary {
@@ -255,6 +354,14 @@ impl TerrainCdtRoadBoundarySource {
             ),
         }
     }
+}
+
+fn clamp_u64_to_i32(value: u64) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn clamp_u32_to_i32(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
 }
 
 #[derive(Clone, Debug, PartialEq)]
