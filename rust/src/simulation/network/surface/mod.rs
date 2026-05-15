@@ -138,9 +138,71 @@ pub(crate) enum RoadSurfaceEarthworkFaceKind {
     RetainingWall,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoadSurfaceEarthworkSupportPolicy {
+    StandardFullGroundedSpan,
+    BridgeEndpointAbutments,
+    TunnelVisiblePortals,
+}
+
+impl RoadSurfaceEarthworkSupportPolicy {
+    fn from_edge_class(edge_class: EdgeClass) -> Self {
+        match edge_class {
+            EdgeClass::Standard => Self::StandardFullGroundedSpan,
+            EdgeClass::Bridge => Self::BridgeEndpointAbutments,
+            EdgeClass::Tunnel => Self::TunnelVisiblePortals,
+        }
+    }
+
+    fn debug_name(self) -> &'static str {
+        match self {
+            Self::StandardFullGroundedSpan => "standard_full_grounded_span",
+            Self::BridgeEndpointAbutments => "bridge_endpoint_abutments",
+            Self::TunnelVisiblePortals => "tunnel_visible_portals",
+        }
+    }
+
+    fn sort_key(self) -> u8 {
+        match self {
+            Self::StandardFullGroundedSpan => 0,
+            Self::BridgeEndpointAbutments => 1,
+            Self::TunnelVisiblePortals => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RoadSurfaceEarthworkFaceSource {
+    SpanSupportBoundary {
+        edge_idx: usize,
+        edge_class: EdgeClass,
+        support_policy: RoadSurfaceEarthworkSupportPolicy,
+        owner: RoadSurfaceSpanBandOwner,
+        role: RoadSurfaceSpanRegionRole,
+        start_section_index: usize,
+        end_section_index: usize,
+        start_s_m: f32,
+        end_s_m: f32,
+    },
+    NodeFootprintBoundary {
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        owner_kind: RoadSurfaceBandKind,
+        owner_index: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoadSurfaceEarthworkBoundarySegment {
+    inner_start: Vector3,
+    inner_end: Vector3,
+    source: RoadSurfaceEarthworkFaceSource,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadSurfaceEarthworkRenderFace {
     pub(crate) kind: RoadSurfaceEarthworkFaceKind,
+    source: RoadSurfaceEarthworkFaceSource,
     pub(crate) inner_start: Vector3,
     pub(crate) inner_end: Vector3,
     pub(crate) polygon: RoadSurfaceVisualPolygon,
@@ -425,7 +487,7 @@ fn terrain_clip_edge_kind_for_band(kind: RoadSurfaceBandKind) -> RoadSurfaceTerr
 #[derive(Clone, Debug, PartialEq)]
 struct NodeSurfaceRegionResult {
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
-    earthwork_boundary_point_loops: Vec<Vec<Vector3>>,
+    earthwork_boundary_segments: Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>,
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,

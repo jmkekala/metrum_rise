@@ -3,16 +3,15 @@
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
-    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceVerticalFaceSource,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceSection, RoadSurfaceSpanBandOwner,
+    RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
+    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -499,6 +498,9 @@ impl RoadSurfaceSystem {
             dump.push_str("      \"span_earthwork_support\": ");
             Self::append_span_earthwork_support_debug_literal(dump, piece);
             dump.push_str(",\n");
+            dump.push_str("      \"span_earthwork_face_sources\": ");
+            Self::append_earthwork_face_sources_debug_literal(dump, &piece.render_earthwork_faces);
+            dump.push_str(",\n");
             dump.push_str("      \"span_raised_step_face_sources\": ");
             Self::append_span_raised_step_sources_debug_literal(dump, piece);
             dump.push_str(",\n");
@@ -513,6 +515,7 @@ impl RoadSurfaceSystem {
             dump.push_str(
                 "      \"span_earthwork_support\": {\"support_region_count\":0,\"regions\":[]},\n",
             );
+            dump.push_str("      \"span_earthwork_face_sources\": [],\n");
             dump.push_str("      \"span_raised_step_face_sources\": [],\n");
             dump.push_str("      \"terrain_clip_source_edges\": [],\n");
             dump.push_str(
@@ -686,7 +689,8 @@ impl RoadSurfaceSystem {
             "\"support_region_count\":{},\"edge_class\":\"{:?}\",\"support_policy\":\"{}\"",
             piece.span_earthwork_support_regions.len(),
             piece.edge_class,
-            Self::span_earthwork_support_policy_debug_name(piece.edge_class)
+            super::RoadSurfaceEarthworkSupportPolicy::from_edge_class(piece.edge_class)
+                .debug_name()
         );
         for role in [
             RoadSurfaceSpanRegionRole::Asphalt,
@@ -804,6 +808,93 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
+    fn append_earthwork_face_sources_debug_literal(
+        dump: &mut String,
+        faces: &[super::RoadSurfaceEarthworkRenderFace],
+    ) {
+        dump.push('[');
+        for (face_index, face) in faces.iter().enumerate() {
+            if face_index > 0 {
+                dump.push_str(", ");
+            }
+            let outer_end = face.polygon.points_world.get(2).copied();
+            let outer_start = face.polygon.points_world.get(3).copied();
+            let _ = write!(
+                dump,
+                "{{\"face_index\":{},\"kind\":\"{:?}\",\"source\":",
+                face_index, face.kind
+            );
+            Self::append_earthwork_face_source_debug_literal(dump, face.source);
+            dump.push_str(",\"inner_start\":");
+            Self::append_vector3_precise_literal(dump, face.inner_start);
+            dump.push_str(",\"inner_end\":");
+            Self::append_vector3_precise_literal(dump, face.inner_end);
+            dump.push_str(",\"outer_start\":");
+            if let Some(outer_start) = outer_start {
+                Self::append_vector3_precise_literal(dump, outer_start);
+            } else {
+                dump.push_str("null");
+            }
+            dump.push_str(",\"outer_end\":");
+            if let Some(outer_end) = outer_end {
+                Self::append_vector3_precise_literal(dump, outer_end);
+            } else {
+                dump.push_str("null");
+            }
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    fn append_earthwork_face_source_debug_literal(
+        dump: &mut String,
+        source: RoadSurfaceEarthworkFaceSource,
+    ) {
+        match source {
+            RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                edge_idx,
+                edge_class,
+                support_policy,
+                owner,
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+            } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"span_support_boundary\",\"edge_idx\":{},\"edge_class\":\"{:?}\",\"support_policy\":\"{}\",\"owner\":",
+                    edge_idx,
+                    edge_class,
+                    support_policy.debug_name()
+                );
+                Self::append_span_band_owner_debug_literal(dump, owner);
+                let _ = write!(
+                    dump,
+                    ",\"role\":\"{}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3}}}",
+                    Self::span_region_role_debug_name(role),
+                    start_section_index,
+                    end_section_index,
+                    start_s_m,
+                    end_s_m
+                );
+            }
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index,
+            } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"node_footprint_boundary\",\"node_id\":{},\"node_kind\":\"{:?}\",\"owner_kind\":\"{:?}\",\"owner_index\":{}}}",
+                    node_id, kind, owner_kind, owner_index
+                );
+            }
+        }
+    }
+
     fn append_span_projection_diagnostics_debug_literal(
         dump: &mut String,
         piece: &RoadSurfaceVisualSpanPiece,
@@ -825,9 +916,10 @@ impl RoadSurfaceSystem {
         );
         let raised_step_source_count_matches =
             piece.raised_step_face_polygons.len() == piece.span_raised_step_sources.len();
+        let sourced_earthwork_face_count = piece.render_earthwork_faces.len();
         let _ = write!(
             dump,
-            "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{},\"earthwork_support_region_count\":{}}}",
+            "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{},\"earthwork_support_region_count\":{},\"sourced_earthwork_face_count\":{},\"missing_earthwork_face_source_count\":0}}",
             road_projection_matches,
             curb_projection_matches,
             sidewalk_projection_matches,
@@ -838,7 +930,8 @@ impl RoadSurfaceSystem {
                 .iter()
                 .map(|boundary_loop| boundary_loop.source_edges.len())
                 .sum::<usize>(),
-            piece.span_earthwork_support_regions.len()
+            piece.span_earthwork_support_regions.len(),
+            sourced_earthwork_face_count
         );
     }
 
@@ -881,14 +974,6 @@ impl RoadSurfaceSystem {
             RoadSurfaceSpanRegionRole::Asphalt => "asphalt",
             RoadSurfaceSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
             RoadSurfaceSpanRegionRole::NonRoad => "non_road",
-        }
-    }
-
-    fn span_earthwork_support_policy_debug_name(edge_class: EdgeClass) -> &'static str {
-        match edge_class {
-            EdgeClass::Standard => "standard_full_grounded_span",
-            EdgeClass::Bridge => "bridge_endpoint_abutments",
-            EdgeClass::Tunnel => "tunnel_visible_portals",
         }
     }
 
@@ -971,6 +1056,9 @@ impl RoadSurfaceSystem {
         dump.push_str(",\n");
         dump.push_str("      \"mouth_seams\": ");
         self.append_mouth_seam_debug_literal(dump, graph, node_id, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"earthwork_face_sources\": ");
+        Self::append_earthwork_face_sources_debug_literal(dump, &piece.render_earthwork_faces);
         dump.push_str(",\n");
         dump.push_str("      \"earthwork_face_top_match\": ");
         self.append_earthwork_face_top_match_debug_literal(dump, terrain, piece);
@@ -2284,10 +2372,20 @@ impl RoadSurfaceSystem {
         let mut samples = Vec::new();
         let mut slope_count = 0_usize;
         let mut retaining_wall_count = 0_usize;
+        let mut span_support_source_count = 0_usize;
+        let mut node_footprint_source_count = 0_usize;
         for (face_index, face) in piece.render_earthwork_faces.iter().enumerate() {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => slope_count += 1,
                 RoadSurfaceEarthworkFaceKind::RetainingWall => retaining_wall_count += 1,
+            }
+            match face.source {
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
+                    span_support_source_count += 1
+                }
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. } => {
+                    node_footprint_source_count += 1
+                }
             }
             let inner_start = face.inner_start;
             let inner_end = face.inner_end;
@@ -2305,9 +2403,11 @@ impl RoadSurfaceSystem {
                 let mut sample = String::new();
                 let _ = write!(
                     sample,
-                    "{{\"face\":{},\"kind\":\"{:?}\",\"inner_start\":",
+                    "{{\"face\":{},\"kind\":\"{:?}\",\"source\":",
                     face_index, face.kind
                 );
+                Self::append_earthwork_face_source_debug_literal(&mut sample, face.source);
+                sample.push_str(",\"inner_start\":");
                 Self::append_surface_sample_literal(&mut sample, terrain, inner_start);
                 sample.push_str(",\"inner_end\":");
                 Self::append_surface_sample_literal(&mut sample, terrain, inner_end);
@@ -2323,10 +2423,12 @@ impl RoadSurfaceSystem {
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"slope_count\":{},\"retaining_wall_count\":{},",
+            "\"face_count\":{},\"slope_count\":{},\"retaining_wall_count\":{},\"span_support_source_count\":{},\"node_footprint_source_count\":{},\"missing_source_count\":0,",
             piece.render_earthwork_faces.len(),
             slope_count,
-            retaining_wall_count
+            retaining_wall_count,
+            span_support_source_count,
+            node_footprint_source_count
         );
         Self::append_match_stats_fields(dump, &stats);
         dump.push_str(",\"samples\":[");

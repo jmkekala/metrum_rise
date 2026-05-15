@@ -108,12 +108,17 @@ impl RoadSurfaceSystem {
         let mut clearance_regions =
             self.resolve_span_regions_for_ranges(sections, &earthwork_ranges);
         Self::sort_span_owned_regions(&mut clearance_regions.regions);
-        let earthwork_boundary_loops = std::mem::take(&mut clearance_regions.outer_boundary_loops);
         let span_earthwork_support_regions = clearance_regions.regions;
+        let earthwork_boundary_segments =
+            Self::span_earthwork_boundary_segment_loops_from_support_regions(
+                &span_earthwork_support_regions,
+                edge.class,
+            );
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
-            self.build_closed_earthwork_geometry_from_boundary_loops(
-                &earthwork_boundary_loops,
+            self.build_closed_earthwork_geometry_from_boundary_segments(
+                &earthwork_boundary_segments,
                 terrain,
+                None,
             );
 
         let start_mouth_profile =

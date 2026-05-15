@@ -3,10 +3,11 @@
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, NodeOwnedRegion,
-    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
+    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
+    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{
         NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
         NodeExplicitVerticalStepSegment,
@@ -115,6 +116,14 @@ enum NodeBoundaryExportError {
     EmptyOuterBoundary,
     MissingFootprintBoundaryHeight,
     DegenerateOuterBoundaryLoop,
+    MissingEarthworkBoundarySource,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NodeEarthworkBoundarySourceEdge {
+    start_key: NodeArrangementKey,
+    end_key: NodeArrangementKey,
+    source: RoadSurfaceEarthworkFaceSource,
 }
 
 impl RoadSurfaceSystem {
@@ -213,8 +222,8 @@ impl RoadSurfaceSystem {
                 .chain(node_regions.sidewalk_surface_polygons.iter()),
         );
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
-            self.build_closed_earthwork_geometry_from_boundary_point_loops(
-                &node_regions.earthwork_boundary_point_loops,
+            self.build_closed_earthwork_geometry_from_boundary_segments(
+                &node_regions.earthwork_boundary_segments,
                 terrain,
                 top_surface_shapes.as_ref(),
             );
@@ -401,11 +410,14 @@ impl RoadSurfaceSystem {
             &visible_top_shapes,
             true,
         )?;
-        let mut earthwork_boundary_point_loops =
-            Self::earthwork_boundary_point_loops_from_footprint_loops(
+        let mut earthwork_boundary_segments =
+            Self::node_earthwork_boundary_segments_from_footprint_loops(
+                arrangement.node_id(),
+                arrangement.piece_kind(),
                 &footprint_boundary_point_loops,
-            );
-        Self::orient_earthwork_boundary_point_loops_by_nesting(&mut earthwork_boundary_point_loops);
+                &owned_regions,
+            )?;
+        Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut earthwork_boundary_segments);
         let mut outer_boundary_loops =
             Self::outer_boundary_polygons_from_point_loops(&footprint_boundary_point_loops)?;
         let mut terrain_clip_boundary_loops =
@@ -421,7 +433,7 @@ impl RoadSurfaceSystem {
 
         Ok(super::NodeSurfaceRegionResult {
             outer_boundary_loops,
-            earthwork_boundary_point_loops,
+            earthwork_boundary_segments,
             terrain_clip_boundary_loops,
             road_surface_polygons,
             curb_surface_polygons,
@@ -594,18 +606,6 @@ impl RoadSurfaceSystem {
         heights.sort_unstable();
         heights.dedup();
         heights
-    }
-
-    fn earthwork_boundary_point_loops_from_footprint_loops(
-        footprint_loops: &[Vec<Vector3>],
-    ) -> Vec<Vec<Vector3>> {
-        let mut loops = Vec::new();
-        for footprint_loop in footprint_loops {
-            for points in same_winding_boundary_point_loops_from_loop(footprint_loop) {
-                loops.push(points);
-            }
-        }
-        loops
     }
 
     fn raised_step_face_polygons_from_arrangement(
@@ -891,41 +891,6 @@ impl RoadSurfaceSystem {
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
     }
 
-    fn orient_earthwork_boundary_point_loops_by_nesting(loops: &mut [Vec<Vector3>]) {
-        let samples = loops
-            .iter()
-            .map(|points| {
-                points.iter().fold(Vector2::ZERO, |sum, point| {
-                    sum + Vector2::new(point.x, point.z)
-                }) / points.len().max(1) as f32
-            })
-            .collect::<Vec<_>>();
-        let should_be_ccw = loops
-            .iter()
-            .enumerate()
-            .map(|(loop_index, _)| {
-                let depth = loops
-                    .iter()
-                    .enumerate()
-                    .filter(|(candidate_index, candidate)| {
-                        *candidate_index != loop_index
-                            && RoadSurfaceSystem::polygon_contains_point_xz(
-                                candidate,
-                                samples[loop_index],
-                            )
-                    })
-                    .count();
-                depth % 2 == 0
-            })
-            .collect::<Vec<_>>();
-        for (points, should_be_ccw) in loops.iter_mut().zip(should_be_ccw) {
-            let is_ccw = Self::signed_polygon_area_xz(points) > 0.0;
-            if is_ccw != should_be_ccw {
-                points.reverse();
-            }
-        }
-    }
-
     fn terrain_clip_boundary_loops_from_point_loops(
         point_loops: &[Vec<Vector3>],
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
@@ -952,6 +917,274 @@ impl RoadSurfaceSystem {
             }
         }
         loops
+    }
+
+    fn node_earthwork_boundary_segments_from_footprint_loops(
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        footprint_loops: &[Vec<Vector3>],
+        owned_regions: &[NodeOwnedRegion],
+    ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, NodeBoundaryExportError> {
+        let source_edges = Self::node_earthwork_boundary_source_edges_from_owned_regions(
+            node_id,
+            kind,
+            owned_regions,
+        );
+        if source_edges.is_empty() {
+            return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
+        }
+
+        let mut loops = Vec::new();
+        for footprint_loop in footprint_loops {
+            for points in same_winding_boundary_point_loops_from_loop(footprint_loop) {
+                let mut segments = Vec::new();
+                for index in 0..points.len() {
+                    Self::push_sourced_node_earthwork_boundary_segments(
+                        node_id,
+                        kind,
+                        points[index],
+                        points[(index + 1) % points.len()],
+                        &source_edges,
+                        owned_regions,
+                        &mut segments,
+                    )?;
+                }
+                if segments.len() >= 3 {
+                    loops.push(segments);
+                }
+            }
+        }
+
+        (!loops.is_empty())
+            .then_some(loops)
+            .ok_or(NodeBoundaryExportError::MissingEarthworkBoundarySource)
+    }
+
+    fn node_earthwork_boundary_source_edges_from_owned_regions(
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        owned_regions: &[NodeOwnedRegion],
+    ) -> Vec<NodeEarthworkBoundarySourceEdge> {
+        let mut source_edges = Vec::new();
+        for region in owned_regions {
+            let points = &region.polygon.points_world;
+            if points.len() < 3 {
+                continue;
+            }
+            let source = RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind: region.kind,
+                owner_index: region.owner_index,
+            };
+            for index in 0..points.len() {
+                let start_key = ArrangementBoundaryPointKey::from_world(points[index]).xz_key();
+                let end_key =
+                    ArrangementBoundaryPointKey::from_world(points[(index + 1) % points.len()])
+                        .xz_key();
+                if start_key == end_key {
+                    continue;
+                }
+                source_edges.push(NodeEarthworkBoundarySourceEdge {
+                    start_key,
+                    end_key,
+                    source,
+                });
+            }
+        }
+        source_edges.sort_by(|a, b| {
+            Self::node_earthwork_boundary_source_ordering(a.source, b.source)
+                .then(a.start_key.cmp(&b.start_key))
+                .then(a.end_key.cmp(&b.end_key))
+        });
+        source_edges
+    }
+
+    fn push_sourced_node_earthwork_boundary_segments(
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        start: Vector3,
+        end: Vector3,
+        source_edges: &[NodeEarthworkBoundarySourceEdge],
+        owned_regions: &[NodeOwnedRegion],
+        segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
+    ) -> Result<(), NodeBoundaryExportError> {
+        let start_key = ArrangementBoundaryPointKey::from_world(start).xz_key();
+        let end_key = ArrangementBoundaryPointKey::from_world(end).xz_key();
+        if start_key == end_key {
+            return Ok(());
+        }
+        let mut split_points = BTreeMap::<ArrangementSegmentParameter, Vector3>::new();
+        split_points.insert(
+            ArrangementSegmentParameter {
+                numerator: 0,
+                denominator: 1,
+            },
+            start,
+        );
+        split_points.insert(
+            ArrangementSegmentParameter {
+                numerator: 1,
+                denominator: 1,
+            },
+            end,
+        );
+        for source_edge in source_edges {
+            for split_key in [source_edge.start_key, source_edge.end_key] {
+                if !arrangement_key_lies_on_segment(split_key, start_key, end_key) {
+                    continue;
+                }
+                let Some(parameter) =
+                    arrangement_key_segment_parameter_xz(split_key, start_key, end_key)
+                else {
+                    continue;
+                };
+                if parameter
+                    <= (ArrangementSegmentParameter {
+                        numerator: 0,
+                        denominator: 1,
+                    })
+                    || parameter
+                        >= (ArrangementSegmentParameter {
+                            numerator: 1,
+                            denominator: 1,
+                        })
+                {
+                    continue;
+                }
+                split_points.entry(parameter).or_insert_with(|| {
+                    let t = parameter.numerator as f32 / parameter.denominator as f32;
+                    start + (end - start) * t
+                });
+            }
+        }
+
+        let ordered_points = split_points.into_iter().collect::<Vec<_>>();
+        for pair in ordered_points.windows(2) {
+            let sub_start = pair[0].1;
+            let sub_end = pair[1].1;
+            if Vector2::new(sub_end.x - sub_start.x, sub_end.z - sub_start.z).length_squared()
+                <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+            {
+                continue;
+            }
+            let sub_start_key = ArrangementBoundaryPointKey::from_world(sub_start).xz_key();
+            let sub_end_key = ArrangementBoundaryPointKey::from_world(sub_end).xz_key();
+            let source = Self::node_earthwork_source_for_boundary_subsegment(
+                sub_start_key,
+                sub_end_key,
+                source_edges,
+            )
+            .or_else(|| {
+                Self::node_earthwork_source_for_owned_boundary_subsegment(
+                    node_id,
+                    kind,
+                    sub_start,
+                    sub_end,
+                    owned_regions,
+                )
+            });
+            let Some(source) = source else {
+                return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
+            };
+            segments.push(RoadSurfaceEarthworkBoundarySegment {
+                inner_start: sub_start,
+                inner_end: sub_end,
+                source,
+            });
+        }
+        Ok(())
+    }
+
+    fn node_earthwork_source_for_boundary_subsegment(
+        start_key: NodeArrangementKey,
+        end_key: NodeArrangementKey,
+        source_edges: &[NodeEarthworkBoundarySourceEdge],
+    ) -> Option<RoadSurfaceEarthworkFaceSource> {
+        source_edges
+            .iter()
+            .filter(|source_edge| {
+                arrangement_key_lies_on_segment(
+                    start_key,
+                    source_edge.start_key,
+                    source_edge.end_key,
+                ) && arrangement_key_lies_on_segment(
+                    end_key,
+                    source_edge.start_key,
+                    source_edge.end_key,
+                )
+            })
+            .map(|source_edge| source_edge.source)
+            .min_by(|a, b| Self::node_earthwork_boundary_source_ordering(*a, *b))
+    }
+
+    fn node_earthwork_source_for_owned_boundary_subsegment(
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        start: Vector3,
+        end: Vector3,
+        owned_regions: &[NodeOwnedRegion],
+    ) -> Option<RoadSurfaceEarthworkFaceSource> {
+        let midpoint = (start + end) * 0.5;
+        let start_xz = Vector2::new(start.x, start.z);
+        let midpoint_xz = Vector2::new(midpoint.x, midpoint.z);
+        let end_xz = Vector2::new(end.x, end.z);
+        owned_regions
+            .iter()
+            .filter(|region| {
+                RoadSurfaceSystem::polygon_contains_point_xz(&region.polygon.points_world, start_xz)
+                    && RoadSurfaceSystem::polygon_contains_point_xz(
+                        &region.polygon.points_world,
+                        midpoint_xz,
+                    )
+                    && RoadSurfaceSystem::polygon_contains_point_xz(
+                        &region.polygon.points_world,
+                        end_xz,
+                    )
+            })
+            .map(
+                |region| RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    node_id,
+                    kind,
+                    owner_kind: region.kind,
+                    owner_index: region.owner_index,
+                },
+            )
+            .min_by(|a, b| Self::node_earthwork_boundary_source_ordering(*a, *b))
+    }
+
+    fn node_earthwork_boundary_source_ordering(
+        a: RoadSurfaceEarthworkFaceSource,
+        b: RoadSurfaceEarthworkFaceSource,
+    ) -> std::cmp::Ordering {
+        match (a, b) {
+            (
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    owner_kind: owner_kind_a,
+                    owner_index: owner_index_a,
+                    ..
+                },
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    owner_kind: owner_kind_b,
+                    owner_index: owner_index_b,
+                    ..
+                },
+            ) => Self::band_kind_sort_key(owner_kind_a)
+                .cmp(&Self::band_kind_sort_key(owner_kind_b))
+                .then(owner_index_a.cmp(&owner_index_b)),
+            (
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
+            ) => std::cmp::Ordering::Less,
+            (
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
+            ) => std::cmp::Ordering::Greater,
+            (
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
+            ) => std::cmp::Ordering::Equal,
+        }
     }
 
     fn visual_polygons_from_arrangement_face(
@@ -1057,6 +1290,13 @@ impl RoadSurfaceSystem {
                     arrangement.node_id(),
                     arrangement.piece_kind(),
                     "degenerate_outer_boundary_loop",
+                )
+            }
+            NodeBoundaryExportError::MissingEarthworkBoundarySource => {
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "missing_earthwork_boundary_source",
                 )
             }
         };
@@ -2615,6 +2855,34 @@ fn arrangement_key_lies_on_segment(
             && point.z_key() <= start.z_key().max(end.z_key())
     };
     inside_x && inside_z
+}
+
+fn arrangement_key_segment_parameter_xz(
+    point: NodeArrangementKey,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+) -> Option<ArrangementSegmentParameter> {
+    if !arrangement_key_lies_on_segment(point, start, end) || start == end {
+        return None;
+    }
+    let dx = end.x_key() - start.x_key();
+    let dz = end.z_key() - start.z_key();
+    let (mut numerator, mut denominator) = if dx.abs() >= dz.abs() {
+        (point.x_key() - start.x_key(), dx)
+    } else {
+        (point.z_key() - start.z_key(), dz)
+    };
+    if denominator == 0 {
+        return None;
+    }
+    if denominator < 0 {
+        numerator = -numerator;
+        denominator = -denominator;
+    }
+    Some(ArrangementSegmentParameter {
+        numerator: i128::from(numerator),
+        denominator: i128::from(denominator),
+    })
 }
 
 fn arrangement_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {

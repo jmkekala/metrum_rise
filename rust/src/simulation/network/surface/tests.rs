@@ -7,10 +7,10 @@ use super::height::NodeHeightFieldError;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -661,6 +661,82 @@ fn assert_earthwork_faces_stay_outside_top_footprint(piece: &RoadSurfaceVisualNo
             face.inner_start,
             face.inner_end,
             face.polygon.points_world
+        );
+    }
+}
+
+fn assert_node_earthwork_faces_have_footprint_provenance(piece: &RoadSurfaceVisualNodePiece) {
+    assert!(
+        !piece.render_earthwork_faces.is_empty(),
+        "node earthwork faces should be generated from owned footprint boundaries"
+    );
+    for face in &piece.render_earthwork_faces {
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind,
+            owner_index,
+        } = face.source
+        else {
+            panic!(
+                "node earthwork face must carry node footprint provenance, got {:?}",
+                face.source
+            );
+        };
+        assert_eq!(node_id, piece.node_id);
+        assert_eq!(kind, piece.kind);
+        assert!(
+            piece
+                .owned_regions
+                .iter()
+                .any(|region| region.kind == owner_kind && region.owner_index == owner_index),
+            "node earthwork face owner must refer to a canonical owned top region"
+        );
+    }
+}
+
+fn assert_span_earthwork_faces_have_support_provenance(
+    piece: &super::RoadSurfaceVisualSpanPiece,
+    edge_idx: usize,
+    edge_class: EdgeClass,
+) {
+    assert!(
+        !piece.render_earthwork_faces.is_empty(),
+        "span earthwork faces should be generated from span support region boundaries"
+    );
+    let expected_policy = RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class);
+    for face in &piece.render_earthwork_faces {
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx: source_edge_idx,
+            edge_class: source_edge_class,
+            support_policy,
+            owner,
+            role,
+            start_section_index,
+            end_section_index,
+            start_s_m,
+            end_s_m,
+        } = face.source
+        else {
+            panic!(
+                "span earthwork face must carry span support provenance, got {:?}",
+                face.source
+            );
+        };
+        assert_eq!(source_edge_idx, edge_idx);
+        assert_eq!(source_edge_class, edge_class);
+        assert_eq!(support_policy, expected_policy);
+        assert!(
+            piece.span_earthwork_support_regions.iter().any(|region| {
+                region.edge_idx == source_edge_idx
+                    && region.owner == owner
+                    && region.role == role
+                    && region.start_section_index == start_section_index
+                    && region.end_section_index == end_section_index
+                    && (region.start_s_m - start_s_m).abs() <= SAMPLE_EPSILON_M
+                    && (region.end_s_m - end_s_m).abs() <= SAMPLE_EPSILON_M
+            }),
+            "span earthwork face source must refer to a stored support region"
         );
     }
 }
@@ -1662,6 +1738,7 @@ fn assert_compiled_bend_piece(
     assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
+    assert_node_earthwork_faces_have_footprint_provenance(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
     piece
 }
@@ -1694,6 +1771,7 @@ fn assert_compiled_junction_piece(
     assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_top_covers_footprint(piece);
+    assert_node_earthwork_faces_have_footprint_provenance(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
     piece
 }
@@ -2854,6 +2932,7 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     assert!(!terminal_piece.earthwork_surface_polygons.is_empty());
     assert!(!terminal_piece.earthwork_outer_boundary_loops.is_empty());
     assert!(!terminal_piece.render_earthwork_faces.is_empty());
+    assert_node_earthwork_faces_have_footprint_provenance(terminal_piece);
     assert!(
         terminal_piece
             .earthwork_surface_polygons
@@ -4134,6 +4213,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     assert!(!span_piece.earthwork_surface_polygons.is_empty());
     assert!(!span_piece.earthwork_outer_boundary_loops.is_empty());
     assert!(!span_piece.render_earthwork_faces.is_empty());
+    assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, EdgeClass::Standard);
     assert!(
         span_piece
             .earthwork_surface_polygons
@@ -4174,21 +4254,47 @@ fn span_earthwork_outer_loops_stay_outside_paved_footprint() {
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("standard edge should compile a visual span piece");
-    let max_inner_abs_x = span_piece
-        .outer_boundary_loops
-        .iter()
-        .flat_map(|polygon| polygon.points_world.iter())
-        .map(|point| point.x.abs())
-        .fold(0.0, f32::max);
-    let min_outer_abs_x = span_piece
+    let earthwork_outer_points = span_piece
         .earthwork_outer_boundary_loops
         .iter()
         .flat_map(|polygon| polygon.points_world.iter())
-        .map(|point| point.x.abs())
+        .copied()
+        .collect::<Vec<_>>();
+    let min_outer_footprint_distance_m = earthwork_outer_points
+        .iter()
+        .map(|outer_point| {
+            span_piece
+                .outer_boundary_loops
+                .iter()
+                .flat_map(|footprint| {
+                    (0..footprint.points_world.len()).map(|index| {
+                        let start = footprint.points_world[index];
+                        let end =
+                            footprint.points_world[(index + 1) % footprint.points_world.len()];
+                        let start_xz = Vector2::new(start.x, start.z);
+                        let end_xz = Vector2::new(end.x, end.z);
+                        let point_xz = Vector2::new(outer_point.x, outer_point.z);
+                        let segment = end_xz - start_xz;
+                        if segment.length_squared() <= SAMPLE_EPSILON_M {
+                            point_xz.distance_to(start_xz)
+                        } else {
+                            let t = ((point_xz - start_xz).dot(segment) / segment.length_squared())
+                                .clamp(0.0, 1.0);
+                            point_xz.distance_to(start_xz + segment * t)
+                        }
+                    })
+                })
+                .fold(f32::INFINITY, f32::min)
+        })
         .fold(f32::INFINITY, f32::min);
     assert!(
-        min_outer_abs_x >= max_inner_abs_x + 0.5,
-        "expected span earthwork tie-in to stay outside the paved footprint, got min_outer_abs_x={min_outer_abs_x:.3} max_inner_abs_x={max_inner_abs_x:.3}"
+        earthwork_outer_points.iter().all(|outer_point| {
+            let point_xz = Vector2::new(outer_point.x, outer_point.z);
+            span_piece.outer_boundary_loops.iter().all(|footprint| {
+                !RoadSurfaceSystem::polygon_contains_point_xz(&footprint.points_world, point_xz)
+            })
+        }) && min_outer_footprint_distance_m >= 0.5,
+        "expected span earthwork tie-in to stay outside the paved footprint, got min_outer_footprint_distance_m={min_outer_footprint_distance_m:.3}"
     );
 }
 
@@ -6762,12 +6868,29 @@ fn bridge_earthworks_do_not_flatten_under_the_span() {
         .get(&edge_idx)
         .expect("bridge span should compile");
     assert!(!span_piece.span_earthwork_support_regions.is_empty());
+    assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, EdgeClass::Bridge);
     assert!(
         span_piece
             .span_earthwork_support_regions
             .iter()
             .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
         "bridge support regions must stay at endpoint abutments instead of owning midspan terrain"
+    );
+    assert!(
+        span_piece.render_earthwork_faces.iter().all(|face| {
+            let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                start_s_m,
+                end_s_m,
+                support_policy,
+                ..
+            } = face.source
+            else {
+                return false;
+            };
+            support_policy == RoadSurfaceEarthworkSupportPolicy::BridgeEndpointAbutments
+                && !(start_s_m < 24.0 && end_s_m > 24.0)
+        }),
+        "bridge earthwork faces must preserve endpoint abutment support provenance"
     );
 
     let span_center = terrain.sample_visual_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
@@ -6804,12 +6927,29 @@ fn tunnel_earthworks_only_stamp_portals() {
         .get(&edge_idx)
         .expect("tunnel span should compile");
     assert!(!span_piece.span_earthwork_support_regions.is_empty());
+    assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, EdgeClass::Tunnel);
     assert!(
         span_piece
             .span_earthwork_support_regions
             .iter()
             .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
         "tunnel support regions must stay at visible portals instead of owning buried midspan terrain"
+    );
+    assert!(
+        span_piece.render_earthwork_faces.iter().all(|face| {
+            let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                start_s_m,
+                end_s_m,
+                support_policy,
+                ..
+            } = face.source
+            else {
+                return false;
+            };
+            support_policy == RoadSurfaceEarthworkSupportPolicy::TunnelVisiblePortals
+                && !(start_s_m < 24.0 && end_s_m > 24.0)
+        }),
+        "tunnel earthwork faces must preserve visible portal support provenance"
     );
 
     let center = terrain.sample_visual_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
@@ -7188,6 +7328,10 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"span_earthwork_support\""));
     assert!(dump.contains("\"support_region_count\""));
     assert!(dump.contains("\"support_policy\""));
+    assert!(dump.contains("\"span_earthwork_face_sources\""));
+    assert!(dump.contains("\"source_kind\":\"span_support_boundary\""));
+    assert!(dump.contains("\"sourced_earthwork_face_count\""));
+    assert!(dump.contains("\"missing_earthwork_face_source_count\":0"));
     assert!(dump.contains("\"span_raised_step_face_sources\""));
     assert!(dump.contains("\"lower_owner\""));
     assert!(dump.contains("\"raised_owner\""));
@@ -7215,6 +7359,10 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"material_footprint_coverage\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
     assert!(dump.contains("\"mouth_seams\""));
+    assert!(dump.contains("\"earthwork_face_sources\""));
+    assert!(dump.contains("\"source_kind\":\"node_footprint_boundary\""));
+    assert!(dump.contains("\"node_footprint_source_count\""));
+    assert!(dump.contains("\"missing_source_count\":0"));
     assert!(dump.contains("\"earthwork_face_top_match\""));
     assert!(dump.contains("ROAD_GEOMETRY_DUMP_END"));
 }
