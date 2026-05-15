@@ -102,6 +102,7 @@ struct DebugExpectedVerticalStep {
 }
 
 struct DebugCanonicalVerticalStep {
+    explicit_vertical_step_index: usize,
     segment: NodeExplicitVerticalStepSegment,
     lower_owner: NodeBandOwner,
     raised_owner: NodeBandOwner,
@@ -1285,6 +1286,19 @@ impl RoadSurfaceSystem {
         let mut expected_face_matches = vec![Vec::new(); expected_steps.len()];
         let mut face_canonical_matches = vec![Vec::new(); face_span_edges.len()];
         let mut canonical_face_matches = vec![Vec::new(); canonical_steps.len()];
+        let canonical_step_indices_by_source: BTreeMap<
+            (usize, NodeExplicitVerticalStepSegment),
+            usize,
+        > = canonical_steps
+            .iter()
+            .enumerate()
+            .map(|(step_index, step)| {
+                (
+                    (step.explicit_vertical_step_index, step.segment),
+                    step_index,
+                )
+            })
+            .collect();
         for (face_index, source) in piece.raised_step_face_sources.iter().copied().enumerate() {
             if face_index >= face_canonical_matches.len() {
                 continue;
@@ -1294,12 +1308,11 @@ impl RoadSurfaceSystem {
                 segment,
             } = source
             {
-                if canonical_steps
-                    .get(explicit_vertical_step_index)
-                    .is_some_and(|step| step.segment == segment)
+                if let Some(&canonical_step_index) =
+                    canonical_step_indices_by_source.get(&(explicit_vertical_step_index, segment))
                 {
-                    face_canonical_matches[face_index].push(explicit_vertical_step_index);
-                    canonical_face_matches[explicit_vertical_step_index].push(face_index);
+                    face_canonical_matches[face_index].push(canonical_step_index);
+                    canonical_face_matches[canonical_step_index].push(face_index);
                 }
             }
         }
@@ -1326,10 +1339,10 @@ impl RoadSurfaceSystem {
             }
         }
 
-        let mut problem_count = 0usize;
+        let mut face_problem_count = 0usize;
         for (face_index, span_edges) in face_span_edges.iter().enumerate() {
             let Some(span_edges) = span_edges else {
-                problem_count += 1;
+                face_problem_count += 1;
                 continue;
             };
             let lower_key =
@@ -1365,10 +1378,15 @@ impl RoadSurfaceSystem {
                     && face_canonical_matches[face_index].is_empty())
                 || !visible_from_lower_owner;
             if face_problem {
-                problem_count += 1;
+                face_problem_count += 1;
             }
         }
-        problem_count += expected_face_matches
+        let missing_required_face_count = expected_face_matches
+            .iter()
+            .filter(|matches| matches.is_empty())
+            .count();
+        let final_required_problem_count = face_problem_count + missing_required_face_count;
+        let non_exposed_source_constraint_count = canonical_face_matches
             .iter()
             .filter(|matches| matches.is_empty())
             .count();
@@ -1376,8 +1394,8 @@ impl RoadSurfaceSystem {
             .iter()
             .zip(&canonical_face_matches)
             .filter(|(step, matches)| {
-                matches.is_empty()
-                    || !Self::debug_canonical_step_visible_from_lower_owner(
+                !matches.is_empty()
+                    && !Self::debug_canonical_step_visible_from_lower_owner(
                         piece,
                         step,
                         matches,
@@ -1387,17 +1405,23 @@ impl RoadSurfaceSystem {
                     .unwrap_or(false)
             })
             .count();
-        problem_count += canonical_problem_count;
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_raised_step_count\":{},\"canonical_raised_step_count\":{},\"canonical_raised_step_problem_count\":{},\"problem_count\":{}",
+            "\"face_count\":{},\"emitted_face_count\":{},\"top_boundary_edge_count\":{},\"expected_raised_step_count\":{},\"final_required_face_count\":{},\"missing_required_face_count\":{},\"face_problem_count\":{},\"final_required_problem_count\":{},\"canonical_raised_step_count\":{},\"source_constraint_count\":{},\"non_exposed_source_constraint_count\":{},\"canonical_raised_step_problem_count\":{},\"problem_count\":{}",
+            piece.raised_step_face_polygons.len(),
             piece.raised_step_face_polygons.len(),
             top_edges.len(),
             expected_steps.len(),
+            expected_steps.len(),
+            missing_required_face_count,
+            face_problem_count,
+            final_required_problem_count,
             canonical_steps.len(),
+            canonical_steps.len(),
+            non_exposed_source_constraint_count,
             canonical_problem_count,
-            problem_count
+            final_required_problem_count
         );
         dump.push_str(",\"faces\":[");
         for (face_index, polygon) in piece.raised_step_face_polygons.iter().enumerate() {
@@ -1543,7 +1567,8 @@ impl RoadSurfaceSystem {
             upper_matches.map(Vec::as_slice).unwrap_or(&[]),
         );
         let face_problem = !matches_raised_step_owner_pair
-            || (expected_step_matches.is_empty() && canonical_step_matches.is_empty());
+            || (expected_step_matches.is_empty() && canonical_step_matches.is_empty())
+            || visible_dot.is_none_or(|dot| dot <= 0.0);
         let _ = write!(
             dump,
             ",\"matches_raised_step_owner_pair\":{},\"problem\":{}",
@@ -1628,10 +1653,15 @@ impl RoadSurfaceSystem {
             top_edges_by_key,
         );
         let visible_from_lower_owner = visible_dot.map(|dot| dot > 0.0);
-        let problem = face_matches.is_empty() || visible_from_lower_owner != Some(true);
+        let materialized = !face_matches.is_empty();
+        let problem = materialized && visible_from_lower_owner != Some(true);
 
         dump.push('{');
-        let _ = write!(dump, "\"step\":{},\"owner_pair\":{{\"owner\":", step_index);
+        let _ = write!(
+            dump,
+            "\"step\":{},\"explicit_vertical_step_index\":{},\"owner_pair\":{{\"owner\":",
+            step_index, step.explicit_vertical_step_index
+        );
         Self::append_node_band_owner_literal(dump, step.segment.owner());
         dump.push_str(",\"opposite_owner\":");
         Self::append_node_band_owner_literal(dump, step.segment.opposite_owner());
@@ -1656,6 +1686,12 @@ impl RoadSurfaceSystem {
         Self::append_debug_top_boundary_edge_list_literal(dump, &step.raised_top_matches);
         dump.push_str(",\"matching_face_indices\":");
         Self::append_usize_list_literal(dump, face_matches);
+        dump.push_str(",\"materialization_status\":");
+        if materialized {
+            dump.push_str("\"materialized\"");
+        } else {
+            dump.push_str("\"not_exposed_after_boolean_ownership\"");
+        }
         dump.push_str(",\"visible_dot_lower_owner\":");
         Self::append_optional_f32_precise_literal(dump, visible_dot);
         dump.push_str(",\"visible_from_lower_owner\":");
@@ -1673,7 +1709,12 @@ impl RoadSurfaceSystem {
         top_edges: &[DebugTopBoundaryEdge],
     ) -> Vec<DebugCanonicalVerticalStep> {
         let mut steps = Vec::new();
-        for segment in piece.explicit_vertical_step_segments.iter().copied() {
+        for (explicit_vertical_step_index, segment) in piece
+            .explicit_vertical_step_segments
+            .iter()
+            .copied()
+            .enumerate()
+        {
             let Some((lower_owner, raised_owner)) =
                 Self::debug_canonical_step_lower_and_raised_owners(segment)
             else {
@@ -1698,6 +1739,7 @@ impl RoadSurfaceSystem {
                 })
                 .collect();
             steps.push(DebugCanonicalVerticalStep {
+                explicit_vertical_step_index,
                 segment,
                 lower_owner,
                 raised_owner,
@@ -1706,9 +1748,9 @@ impl RoadSurfaceSystem {
             });
         }
         steps.sort_by(|a, b| {
-            a.segment
-                .start()
-                .cmp(&b.segment.start())
+            a.explicit_vertical_step_index
+                .cmp(&b.explicit_vertical_step_index)
+                .then(a.segment.start().cmp(&b.segment.start()))
                 .then(a.segment.end().cmp(&b.segment.end()))
                 .then(a.lower_owner.cmp(&b.lower_owner))
                 .then(a.raised_owner.cmp(&b.raised_owner))
@@ -3344,5 +3386,97 @@ mod tests {
         assert!(dump.contains("\"source_owner_pair\":{\"owner\":{\"kind\":\"Carriageway\",\"owner_index\":7},\"opposite_owner\":{\"kind\":\"CurbOrShoulder\",\"owner_index\":11}}"));
         assert!(dump.contains("\"source_canonical_edge_key\":{\"start\""));
         assert!(!dump.contains("18446744073709551615"));
+    }
+
+    #[test]
+    fn raised_step_face_debug_matches_canonical_step_by_original_source_index() {
+        let mut piece = empty_node_piece();
+        let filtered_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(backend::RoadVec2::new(-2.0, 0.0)),
+            NodeArrangementKey::from_point(backend::RoadVec2::new(-1.5, 0.0)),
+            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 1),
+            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2),
+        )
+        .expect("same-height owner segment should still be non-degenerate");
+        let canonical_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(backend::RoadVec2::new(-1.0, 0.0)),
+            NodeArrangementKey::from_point(backend::RoadVec2::new(1.0, 0.0)),
+            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
+            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 11),
+        )
+        .expect("test step should be non-degenerate");
+        piece.explicit_vertical_step_segments.push(filtered_segment);
+        piece
+            .explicit_vertical_step_segments
+            .push(canonical_segment);
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 7,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(-1.0, 0.0, 0.0),
+            ]),
+        });
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner_index: 11,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 1.0),
+                Vector3::new(-1.0, 0.12, 1.0),
+            ]),
+        });
+        piece.raised_step_face_polygons.push(polygon(vec![
+            Vector3::new(-1.0, 0.12, 0.0),
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.12, 0.0),
+        ]));
+        piece
+            .raised_step_face_sources
+            .push(RoadSurfaceVerticalFaceSource::CanonicalStep {
+                explicit_vertical_step_index: 1,
+                segment: canonical_segment,
+            });
+
+        let mut dump = String::new();
+        RoadSurfaceSystem::append_raised_step_face_details_debug_literal(&mut dump, &piece);
+
+        assert!(dump.contains("\"source_constraint_count\":1"));
+        assert!(dump.contains("\"canonical_raised_step_problem_count\":0"));
+        assert!(dump.contains("\"problem_count\":0"));
+        assert!(dump.contains("\"matching_canonical_step_indices\":[0]"));
+        assert!(dump.contains("\"explicit_vertical_step_index\":1"));
+        assert!(dump.contains("\"materialization_status\":\"materialized\""));
+    }
+
+    #[test]
+    fn raised_step_debug_reports_non_exposed_source_constraints_without_failing_final_faces() {
+        let mut piece = empty_node_piece();
+        let canonical_segment = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(backend::RoadVec2::new(-1.0, 0.0)),
+            NodeArrangementKey::from_point(backend::RoadVec2::new(1.0, 0.0)),
+            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
+            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 11),
+        )
+        .expect("test step should be non-degenerate");
+        piece
+            .explicit_vertical_step_segments
+            .push(canonical_segment);
+
+        let mut dump = String::new();
+        RoadSurfaceSystem::append_raised_step_face_details_debug_literal(&mut dump, &piece);
+
+        assert!(dump.contains("\"source_constraint_count\":1"));
+        assert!(dump.contains("\"final_required_face_count\":0"));
+        assert!(dump.contains("\"non_exposed_source_constraint_count\":1"));
+        assert!(dump.contains("\"canonical_raised_step_problem_count\":0"));
+        assert!(dump.contains("\"problem_count\":0"));
+        assert!(
+            dump.contains("\"materialization_status\":\"not_exposed_after_boolean_ownership\"")
+        );
     }
 }

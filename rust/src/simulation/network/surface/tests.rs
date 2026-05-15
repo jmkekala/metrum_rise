@@ -8275,6 +8275,11 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"sidewalk_topology\""));
     assert!(dump.contains("\"raised_step_face_details\""));
     assert!(dump.contains("\"expected_raised_steps\""));
+    assert!(dump.contains("\"source_constraint_count\""));
+    assert!(dump.contains("\"final_required_face_count\""));
+    assert!(dump.contains("\"missing_required_face_count\""));
+    assert!(dump.contains("\"non_exposed_source_constraint_count\""));
+    assert!(dump.contains("\"materialization_status\""));
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"seam_constraints\""));
