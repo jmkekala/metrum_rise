@@ -302,10 +302,7 @@ impl TransitNetwork {
                     affected_edges.insert(new_eid);
                 }
             }
-            graph.solve_junction_endpoint_profiles_for_edges(
-                &affected_nodes,
-                &affected_edges,
-            );
+            graph.solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
             self.lane_system
                 .rebuild_edges_incremental(graph, &affected_edges);

@@ -1480,14 +1480,12 @@ impl RoadSurfaceSystem {
             .iter()
             .copied()
             .filter(|source_edge| {
-                Self::overlay_point_key([
+                let source_start = [
                     f64::from(source_edge.start.x),
                     f64::from(source_edge.start.z),
-                ]) == Self::overlay_point_key(point)
-                    || Self::overlay_point_key([
-                        f64::from(source_edge.end.x),
-                        f64::from(source_edge.end.z),
-                    ]) == Self::overlay_point_key(point)
+                ];
+                let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+                Self::overlay_segment_parameter(point, source_start, source_end).is_some()
             })
             .collect()
     }

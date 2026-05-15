@@ -5,6 +5,7 @@ use super::{
     RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
 };
 use crate::config;
+use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -217,7 +218,7 @@ impl RoadSurfaceSystem {
                 center_height_m,
                 tangent_xz,
                 lateral_xz,
-                bands: self.build_lateral_bands(edge, center_height_m),
+                bands: self.build_lateral_bands(edge, center, lateral_xz, None),
             }];
         }
 
@@ -230,6 +231,20 @@ impl RoadSurfaceSystem {
             graph,
             graph.get_valid_node(edge.end_node),
         );
+        let handoff_range = self.visual_surface_handoff_range_for_edge(
+            graph,
+            edge_idx,
+            edge,
+            *cumulative.last().unwrap_or(&0.0),
+            start_kind,
+            end_kind,
+        );
+        let start_profile_plane = matches!(start_kind, Some(CompiledNodeKind::JunctionN))
+            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node)))
+            .flatten();
+        let end_profile_plane = matches!(end_kind, Some(CompiledNodeKind::JunctionN))
+            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node)))
+            .flatten();
         let sample_distances = self.build_section_sample_distances(
             graph,
             edge_idx,
@@ -242,8 +257,21 @@ impl RoadSurfaceSystem {
             .into_iter()
             .map(|s_m| {
                 let (center, tangent_xz) = self.sample_polyline(points, &cumulative, s_m);
-                let center_height_m = self.solve_section_height(center);
                 let lateral_xz = Vector2::new(-tangent_xz.y, tangent_xz.x).normalized();
+                let profile_plane =
+                    handoff_range.and_then(|(start_handoff_s_m, end_handoff_s_m)| {
+                        if s_m <= start_handoff_s_m + SAMPLE_EPSILON_M {
+                            start_profile_plane
+                        } else if s_m >= end_handoff_s_m - SAMPLE_EPSILON_M {
+                            end_profile_plane
+                        } else {
+                            None
+                        }
+                    });
+                let center_height_m = profile_plane.map_or_else(
+                    || self.solve_section_height(center),
+                    |plane| plane.height_at_xz(center.x, center.z),
+                );
                 RoadSurfaceSection {
                     edge_idx,
                     s_m,
@@ -251,7 +279,7 @@ impl RoadSurfaceSystem {
                     center_height_m,
                     tangent_xz,
                     lateral_xz,
-                    bands: self.build_lateral_bands(edge, center_height_m),
+                    bands: self.build_lateral_bands(edge, center, lateral_xz, profile_plane),
                 }
             })
             .collect()
@@ -310,20 +338,35 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn build_lateral_bands(&self, edge: &Edge, center_height_m: f32) -> Vec<RoadSurfaceBand> {
+    fn build_lateral_bands(
+        &self,
+        edge: &Edge,
+        center: Vector3,
+        lateral_xz: Vector2,
+        profile_plane: Option<JunctionEndpointProfilePlane>,
+    ) -> Vec<RoadSurfaceBand> {
+        let center_height_m =
+            profile_plane.map_or(center.y, |plane| plane.height_at_xz(center.x, center.z));
+        let boundary_height_m = |lateral_m: f32, offset_m: f32| {
+            profile_plane.map_or(center_height_m, |plane| {
+                plane.height_at_xz(
+                    center.x + lateral_xz.x * lateral_m,
+                    center.z + lateral_xz.y * lateral_m,
+                )
+            }) + offset_m
+        };
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
             let half_width = edge.width.max(2.0) * 0.5;
             return vec![RoadSurfaceBand {
                 kind: RoadSurfaceBandKind::Footpath,
                 lateral_start_m: -half_width,
                 lateral_end_m: half_width,
-                height_start_m: center_height_m,
-                height_end_m: center_height_m,
+                height_start_m: boundary_height_m(-half_width, 0.0),
+                height_end_m: boundary_height_m(half_width, 0.0),
             }];
         }
 
         let half_carriageway = edge.width.max(config::LANE_WIDTH) * 0.5;
-        let carriageway_height = center_height_m;
         let sidewalk_total = if edge.allowed_types & TransitFlags::FOOT != 0 {
             config::SIDEWALK_WIDTH
         } else {
@@ -335,20 +378,22 @@ impl RoadSurfaceSystem {
             0.0
         };
         let sidewalk_width = (sidewalk_total - curb_width).max(0.0);
-        let sidewalk_height = carriageway_height
-            + if curb_width > 0.0 {
-                CURB_STEP_HEIGHT_M
-            } else {
-                0.0
-            };
+        let raised_offset_m = if curb_width > 0.0 {
+            CURB_STEP_HEIGHT_M
+        } else {
+            0.0
+        };
         let mut bands = Vec::new();
         if sidewalk_width > 0.0 {
             bands.push(RoadSurfaceBand {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 lateral_start_m: -(half_carriageway + curb_width + sidewalk_width),
                 lateral_end_m: -(half_carriageway + curb_width),
-                height_start_m: sidewalk_height,
-                height_end_m: sidewalk_height,
+                height_start_m: boundary_height_m(
+                    -(half_carriageway + curb_width + sidewalk_width),
+                    raised_offset_m,
+                ),
+                height_end_m: boundary_height_m(-(half_carriageway + curb_width), raised_offset_m),
             });
         }
 
@@ -356,29 +401,29 @@ impl RoadSurfaceSystem {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: -(half_carriageway + curb_width),
             lateral_end_m: -half_carriageway,
-            height_start_m: sidewalk_height,
-            height_end_m: sidewalk_height,
+            height_start_m: boundary_height_m(-(half_carriageway + curb_width), raised_offset_m),
+            height_end_m: boundary_height_m(-half_carriageway, raised_offset_m),
         });
         bands.push(RoadSurfaceBand {
             kind: RoadSurfaceBandKind::Carriageway,
             lateral_start_m: -half_carriageway,
             lateral_end_m: 0.0,
-            height_start_m: carriageway_height,
-            height_end_m: carriageway_height,
+            height_start_m: boundary_height_m(-half_carriageway, 0.0),
+            height_end_m: boundary_height_m(0.0, 0.0),
         });
         bands.push(RoadSurfaceBand {
             kind: RoadSurfaceBandKind::Carriageway,
             lateral_start_m: 0.0,
             lateral_end_m: half_carriageway,
-            height_start_m: carriageway_height,
-            height_end_m: carriageway_height,
+            height_start_m: boundary_height_m(0.0, 0.0),
+            height_end_m: boundary_height_m(half_carriageway, 0.0),
         });
         bands.push(RoadSurfaceBand {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: half_carriageway,
             lateral_end_m: half_carriageway + curb_width,
-            height_start_m: sidewalk_height,
-            height_end_m: sidewalk_height,
+            height_start_m: boundary_height_m(half_carriageway, raised_offset_m),
+            height_end_m: boundary_height_m(half_carriageway + curb_width, raised_offset_m),
         });
 
         if sidewalk_width > 0.0 {
@@ -386,8 +431,11 @@ impl RoadSurfaceSystem {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 lateral_start_m: half_carriageway + curb_width,
                 lateral_end_m: half_carriageway + curb_width + sidewalk_width,
-                height_start_m: sidewalk_height,
-                height_end_m: sidewalk_height,
+                height_start_m: boundary_height_m(half_carriageway + curb_width, raised_offset_m),
+                height_end_m: boundary_height_m(
+                    half_carriageway + curb_width + sidewalk_width,
+                    raised_offset_m,
+                ),
             });
         }
 

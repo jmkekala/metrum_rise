@@ -1746,7 +1746,7 @@ fn vertical_face_visible_direction_for_test(polygon: &RoadSurfaceVisualPolygon) 
         return None;
     };
     let normal = (*lower_start - *upper_start).cross(*lower_end - *upper_start);
-    (normal.length_squared() > 1e-8).then_some(-normal.normalized())
+    (normal.length_squared() > 1e-8).then(|| -normal.normalized())
 }
 
 fn vertical_face_upper_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
@@ -5788,7 +5788,7 @@ fn logged_elevated_three_way_oblique_junction_compiles_with_scoped_side_join_hei
 }
 
 #[test]
-fn logged_current_elevated_oblique_three_way_rejects_contradictory_junction_node() {
+fn logged_current_elevated_oblique_three_way_compiles_with_endpoint_profile_solve() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-6.578, 141.206, -5.989), NodeType::Junction);
@@ -6141,14 +6141,16 @@ fn logged_current_elevated_oblique_three_way_rejects_contradictory_junction_node
     }
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "current elevated oblique 3-way must not emit a JunctionN while its sidewalk seam has contradictory same-XZ heights"
-    );
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "current elevated oblique 3-way JunctionN did not compile after endpoint profile solve: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
 }
 
 #[test]
-fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node() {
+fn logged_latest_elevated_oblique_three_way_compiles_with_endpoint_profile_solve() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let edge0_points = road_points_from_json(
         r#"[[-29.527,139.925,4.210],[-29.585,139.927,3.491],[-29.629,139.928,2.946],[-29.685,139.930,2.256],[-29.752,139.931,1.428],[-29.809,139.933,0.718],[-29.851,139.936,0.204],[-29.895,139.940,-0.342],[-29.941,139.944,-0.919],[-29.991,139.950,-1.526],[-30.042,139.956,-2.164],[-30.096,139.962,-2.831],[-30.152,139.969,-3.526],[-30.211,139.975,-4.250],[-30.271,139.981,-5.000],[-30.334,139.984,-5.778],[-30.399,139.986,-6.582],[-30.466,139.989,-7.411],[-30.535,139.996,-8.265],[-30.606,140.014,-9.143],[-30.679,140.046,-10.044],[-30.754,140.091,-10.969],[-30.830,140.146,-11.915],[-30.909,140.204,-12.884],[-30.969,140.258,-13.623],[-31.009,140.304,-14.123],[-31.050,140.342,-14.628],[-31.091,140.375,-15.138],[-31.132,140.406,-15.652],[-31.174,140.438,-16.171],[-31.217,140.470,-16.696],[-31.260,140.502,-17.224],[-31.303,140.533,-17.757],[-31.346,140.564,-18.295],[-31.390,140.598,-18.837],[-31.434,140.636,-19.384],[-31.479,140.684,-19.934],[-31.523,140.741,-20.489],[-31.569,140.808,-21.048],[-31.614,140.881,-21.611],[-31.660,140.958,-22.177],[-31.706,141.036,-22.748],[-31.753,141.113,-23.322],[-31.799,141.190,-23.900],[-31.846,141.266,-24.482],[-31.894,141.342,-25.067],[-31.941,141.419,-25.655],[-31.989,141.496,-26.247],[-32.037,141.571,-26.842],[-32.085,141.645,-27.440],[-32.134,141.719,-28.041],[-32.183,141.796,-28.646],[-32.232,141.881,-29.253],[-32.281,141.977,-29.863],[-32.331,142.088,-30.476],[-32.381,142.212,-31.092],[-32.431,142.347,-31.710],[-32.481,142.486,-32.331],[-32.531,142.628,-32.954],[-32.582,142.768,-33.579],[-32.632,142.908,-34.207],[-32.683,143.047,-34.837],[-32.734,143.187,-35.470],[-32.786,143.326,-36.104],[-32.837,143.464,-36.740],[-32.889,143.601,-37.378],[-32.940,143.739,-38.018],[-32.992,143.880,-38.660],[-33.044,144.030,-39.303],[-33.096,144.192,-39.948],[-33.149,144.369,-40.595],[-33.201,144.558,-41.243],[-33.254,144.756,-41.892],[-33.306,144.959,-42.542],[-33.359,145.162,-43.194],[-33.412,145.365,-43.846],[-33.464,145.566,-44.500],[-33.517,145.766,-45.155],[-33.570,145.965,-45.810],[-33.623,146.164,-46.466],[-33.676,146.362,-47.123],[-33.730,146.562,-47.780],[-33.783,146.765,-48.438],[-33.836,146.974,-49.097],[-33.889,147.190,-49.756],[-33.943,147.407,-50.415],[-33.996,147.618,-51.074],[-34.049,147.816,-51.733],[-34.102,147.998,-52.393],[-34.129,148.170,-52.715]]"#,
@@ -6239,10 +6241,12 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
     }
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "latest elevated oblique 3-way must not emit a JunctionN with contradictory same-XZ sidewalk seam heights"
-    );
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "latest elevated oblique 3-way JunctionN did not compile after endpoint profile solve: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
 
     let mut edit_graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -6280,13 +6284,16 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
                 == 3
         })
         .expect("add_road edit path must create a 3-way junction node");
-    assert!(
-        !network
-            .road_surface
-            .compiled_visual_node_pieces()
-            .contains_key(&edit_center),
-        "add_road edit path must not emit the elevated oblique JunctionN while its sidewalk seam has contradictory same-XZ heights"
-    );
+    if !network
+        .road_surface
+        .compiled_visual_node_pieces()
+        .contains_key(&edit_center)
+    {
+        panic!(
+            "add_road elevated oblique JunctionN did not compile after endpoint profile solve: {}",
+            canonical_junction_pipeline_report(&network.road_surface, &edit_graph, edit_center)
+        );
+    }
 }
 
 #[test]
@@ -6310,7 +6317,7 @@ fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
     graph.add_edge(test_edge(
         west,
         center,
-        edge0_points,
+        edge0_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6319,7 +6326,7 @@ fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
     graph.add_edge(test_edge(
         center,
         east,
-        edge1_points,
+        edge1_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6328,7 +6335,7 @@ fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
     graph.add_edge(test_edge(
         center,
         south,
-        edge2_points,
+        edge2_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6475,7 +6482,7 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
     graph.add_edge(test_edge(
         west,
         center,
-        edge0_points,
+        edge0_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6484,7 +6491,7 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
     graph.add_edge(test_edge(
         center,
         east,
-        edge1_points,
+        edge1_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6493,7 +6500,7 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
     graph.add_edge(test_edge(
         center,
         south,
-        edge2_points,
+        edge2_points.clone(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -6513,6 +6520,112 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
+    let patch_bounds = (-330.0, -330.0, 180.0, 180.0);
+    let (road_loops, clip_polygons, source_count) = surface
+        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
+            &graph,
+            patch_bounds.0,
+            patch_bounds.1,
+            patch_bounds.2,
+            patch_bounds.3,
+        );
+    assert!(
+        source_count > 0,
+        "current elevated 3-way patch must have grounded road-owned clip source loops"
+    );
+    assert!(
+        !clip_polygons.is_empty(),
+        "current elevated 3-way terrain clip union must not collapse to an empty 500 m patch cutter"
+    );
+    let mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
+        &terrain,
+        road_loops,
+        patch_bounds.0,
+        patch_bounds.1,
+        patch_bounds.2,
+        patch_bounds.3,
+        8.0,
+    ))
+    .expect("current elevated 3-way production terrain CDT input should build");
+    assert_eq!(
+        mesh.stats.invalid_constraint_edges, 0,
+        "current elevated 3-way terrain CDT must not receive invalid road constraints"
+    );
+    assert_cdt_mesh_stays_outside_clip_polygons(
+        "current elevated 3-way terrain patch unioned footprint",
+        &mesh,
+        &clip_polygons,
+    );
+
+    let mut edit_graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let config = crate::simulation::core::config::WorldConfig::default();
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+    for points in [edge0_points, edge1_points, edge2_points] {
+        network.add_road(
+            &mut edit_graph,
+            points,
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        network.road_surface.compile_dirty(&edit_graph, &terrain);
+    }
+    let edit_center = (0..edit_graph.node_count() as u32)
+        .find(|&node_id| {
+            edit_graph
+                .node_adjacency(node_id)
+                .iter()
+                .filter(|&&edge_idx| !edit_graph.edge(edge_idx).deleted)
+                .count()
+                == 3
+        })
+        .expect("add_road edit path must create the elevated 3-way junction node");
+    if !network
+        .road_surface
+        .compiled_visual_node_pieces()
+        .contains_key(&edit_center)
+    {
+        panic!(
+            "add_road elevated JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&network.road_surface, &edit_graph, edit_center)
+        );
+    }
+    let (edit_road_loops, edit_clip_polygons, edit_source_count) = network
+        .road_surface
+        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
+            &edit_graph,
+            patch_bounds.0,
+            patch_bounds.1,
+            patch_bounds.2,
+            patch_bounds.3,
+        );
+    assert!(
+        edit_source_count > 0 && !edit_clip_polygons.is_empty(),
+        "add_road elevated 3-way must keep non-empty source-owned terrain clip loops"
+    );
+    let edit_mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
+        &terrain,
+        edit_road_loops,
+        patch_bounds.0,
+        patch_bounds.1,
+        patch_bounds.2,
+        patch_bounds.3,
+        8.0,
+    ))
+    .expect("add_road elevated 3-way terrain CDT input should build");
+    assert_eq!(
+        edit_mesh.stats.invalid_constraint_edges, 0,
+        "add_road elevated 3-way terrain CDT must not receive invalid road constraints"
+    );
+    assert_cdt_mesh_stays_outside_clip_polygons(
+        "add_road current elevated 3-way terrain patch unioned footprint",
+        &edit_mesh,
+        &edit_clip_polygons,
+    );
 }
 
 #[test]
@@ -6975,7 +7088,7 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
 }
 
 #[test]
-fn elevated_four_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn elevated_four_way_junction_compiles_with_endpoint_profile_solve() {
     let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(
@@ -7029,10 +7142,7 @@ fn elevated_four_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "elevated 4-way node must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
@@ -7096,7 +7206,7 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
 }
 
 #[test]
-fn elevated_three_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn elevated_three_way_junction_compiles_with_endpoint_profile_solve() {
     let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(
@@ -7149,14 +7259,11 @@ fn elevated_three_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "elevated 3-way node must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]
-fn skewed_elevated_four_way_junction_rejects_implicit_cross_owner_cdt_height_edge() {
+fn skewed_elevated_four_way_junction_compiles_with_endpoint_profile_solve() {
     let terrain = planar_world_terrain(256, 256, 1.0, 148.0, -0.080, -0.035);
     let mut graph = RegionGraph::new();
     let center_xz = Vector2::new(14.096, -65.592);
@@ -7207,10 +7314,7 @@ fn skewed_elevated_four_way_junction_rejects_implicit_cross_owner_cdt_height_edg
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "skewed elevated 4-way node must reject implicit cross-owner CDT height sharing"
-    );
+    assert_compiled_junction_piece(&surface, center);
 }
 
 #[test]

@@ -1539,9 +1539,7 @@ fn same_material_vertex_height_candidate_key(
     )
 }
 
-fn apply_junctionn_explicit_material_seam_height_unification(
-    regions: &mut [NodeHeightedRegion],
-) {
+fn apply_junctionn_explicit_material_seam_height_unification(regions: &mut [NodeHeightedRegion]) {
     let mut ranges_by_key =
         BTreeMap::<ExplicitSeamHeightKey, (f64, f64, SameMaterialVertexHeightCandidate)>::new();
 

@@ -379,24 +379,179 @@ fn cross_region_edges_form_explicit_vertical_step(
     left: HeightedTriangleEdge,
     right: HeightedTriangleEdge,
 ) -> bool {
-    solution
+    let Some((left_region, right_region)) = solution
         .regions
         .get(left.region_index)
         .zip(solution.regions.get(right.region_index))
-        .is_some_and(|(left_region, right_region)| {
-            owners_form_explicit_vertical_step_pair(left_region.owner, right_region.owner)
-                && solution
-                    .explicit_vertical_step_segments
-                    .iter()
-                    .copied()
-                    .any(|segment| {
-                        explicit_vertical_step_owners_match_regions(
-                            segment,
-                            left_region.owner,
-                            right_region.owner,
-                        ) && edge_lies_on_explicit_vertical_step(segment, edge)
-                    })
+    else {
+        return false;
+    };
+    if !owners_form_explicit_vertical_step_pair(left_region.owner, right_region.owner) {
+        return false;
+    }
+    if solution
+        .explicit_vertical_step_segments
+        .iter()
+        .copied()
+        .any(|segment| {
+            explicit_vertical_step_owners_match_regions(
+                segment,
+                left_region.owner,
+                right_region.owner,
+            ) && edge_lies_on_explicit_vertical_step(segment, edge)
         })
+    {
+        return true;
+    }
+    cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
+        solution,
+        edge,
+        left_region.owner,
+        left,
+        right_region.owner,
+        right,
+    )
+}
+
+fn cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
+    solution: &NodeTriangulationSolution,
+    edge: NodeValidationEdgeKey,
+    left_owner: super::arrangement::NodeBandOwner,
+    left: HeightedTriangleEdge,
+    right_owner: super::arrangement::NodeBandOwner,
+    right: HeightedTriangleEdge,
+) -> bool {
+    solution
+        .explicit_vertical_step_segments
+        .iter()
+        .copied()
+        .filter(|segment| edge_lies_on_explicit_vertical_step(*segment, edge))
+        .any(|step_segment| {
+            if explicit_vertical_step_handoff_authorizes_owner(
+                solution,
+                edge,
+                step_segment,
+                left_owner,
+                left,
+                right_owner,
+            ) {
+                return true;
+            }
+            explicit_vertical_step_handoff_authorizes_owner(
+                solution,
+                edge,
+                step_segment,
+                right_owner,
+                right,
+                left_owner,
+            )
+        })
+}
+
+fn explicit_vertical_step_handoff_authorizes_owner(
+    solution: &NodeTriangulationSolution,
+    edge: NodeValidationEdgeKey,
+    step_segment: NodeExplicitVerticalStepSegment,
+    missing_owner: super::arrangement::NodeBandOwner,
+    missing_edge: HeightedTriangleEdge,
+    direct_owner: super::arrangement::NodeBandOwner,
+) -> bool {
+    let Some(bridge_owner) = explicit_step_segment_bridge_owner(step_segment, direct_owner) else {
+        return false;
+    };
+    if bridge_owner.kind() != missing_owner.kind() || bridge_owner == missing_owner {
+        return false;
+    }
+    if !solution
+        .explicit_vertical_step_segments
+        .iter()
+        .copied()
+        .any(|segment| {
+            explicit_vertical_step_owners_match_regions(segment, bridge_owner, missing_owner)
+                && edge_lies_on_explicit_vertical_step(segment, edge)
+        })
+    {
+        return false;
+    }
+    heighted_triangle_edge_for_owner_on_validation_edge(solution, bridge_owner, edge).is_some_and(
+        |bridge_edge| {
+            bridge_edge.start_height_mm == missing_edge.start_height_mm
+                && bridge_edge.end_height_mm == missing_edge.end_height_mm
+        },
+    ) || heighted_region_endpoint_pair_for_owner_on_validation_edge(solution, bridge_owner, edge)
+        .is_some_and(|bridge_edge| {
+            bridge_edge.start_height_mm == missing_edge.start_height_mm
+                && bridge_edge.end_height_mm == missing_edge.end_height_mm
+        })
+}
+
+fn explicit_step_segment_bridge_owner(
+    segment: NodeExplicitVerticalStepSegment,
+    direct_owner: super::arrangement::NodeBandOwner,
+) -> Option<super::arrangement::NodeBandOwner> {
+    if segment.owner() == direct_owner {
+        Some(segment.opposite_owner())
+    } else if segment.opposite_owner() == direct_owner {
+        Some(segment.owner())
+    } else {
+        None
+    }
+}
+
+fn heighted_triangle_edge_for_owner_on_validation_edge(
+    solution: &NodeTriangulationSolution,
+    owner: super::arrangement::NodeBandOwner,
+    edge: NodeValidationEdgeKey,
+) -> Option<HeightedTriangleEdge> {
+    for (region_index, region) in solution.regions.iter().enumerate() {
+        if region.owner != owner {
+            continue;
+        }
+        for triangle in &region.triangles {
+            if !triangle_indices_valid(triangle, region.vertices.len()) {
+                continue;
+            }
+            for triangle_edge in triangle_edges(triangle) {
+                let (candidate, heighted_edge) =
+                    heighted_triangle_edge_for_indices(region_index, region, triangle_edge);
+                if candidate == edge {
+                    return Some(heighted_edge);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn heighted_region_endpoint_pair_for_owner_on_validation_edge(
+    solution: &NodeTriangulationSolution,
+    owner: super::arrangement::NodeBandOwner,
+    edge: NodeValidationEdgeKey,
+) -> Option<HeightedTriangleEdge> {
+    for (region_index, region) in solution.regions.iter().enumerate() {
+        if region.owner != owner {
+            continue;
+        }
+        let mut start_heights = BTreeSet::new();
+        let mut end_heights = BTreeSet::new();
+        for vertex in &region.vertices {
+            let key = point_key_from_world(vertex.point_world);
+            if key == edge.start {
+                start_heights.insert(quantize_m(vertex.point_world.y));
+            }
+            if key == edge.end {
+                end_heights.insert(quantize_m(vertex.point_world.y));
+            }
+        }
+        if start_heights.len() == 1 && end_heights.len() == 1 {
+            return Some(HeightedTriangleEdge {
+                region_index,
+                start_height_mm: *start_heights.iter().next()?,
+                end_height_mm: *end_heights.iter().next()?,
+            });
+        }
+    }
+    None
 }
 
 fn edge_lies_on_explicit_vertical_step(
@@ -1477,7 +1632,8 @@ fn region_height_mm_at_key(
     point: NodeValidationPointKey,
 ) -> Option<i64> {
     region.vertices.iter().find_map(|vertex| {
-        (point_key_from_world(vertex.point_world) == point).then(|| quantize_m(vertex.point_world.y))
+        (point_key_from_world(vertex.point_world) == point)
+            .then(|| quantize_m(vertex.point_world.y))
     })
 }
 
@@ -2392,6 +2548,71 @@ mod tests {
 
         NodeValidationReport::from_triangulation_solution(&solution)
             .expect("canonical asphalt-curb vertical step should allow the curb height delta");
+    }
+
+    #[test]
+    fn accepts_explicit_step_across_same_height_asphalt_owner_handoff() {
+        let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+        let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mouth_asphalt_field =
+            NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+        let joined_asphalt_field =
+            NodeBandHeightFieldId::new(1, 0, RoadSurfaceBandKind::Carriageway);
+        let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+        let start = NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0));
+        let end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+        let asphalt_handoff = NodeExplicitVerticalStepSegment::new(
+            start,
+            end,
+            mouth_asphalt_owner,
+            joined_asphalt_owner,
+        )
+        .expect("non-degenerate asphalt handoff segment");
+        let curb_step =
+            NodeExplicitVerticalStepSegment::new(start, end, joined_asphalt_owner, curb_owner)
+                .expect("non-degenerate curb step segment");
+        let solution = NodeTriangulationSolution {
+            node_id: 102,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::Carriageway,
+                    0,
+                    mouth_asphalt_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.0, 0.0),
+                        RoadVec3::new(1.0, 0.0, 0.0),
+                        RoadVec3::new(0.0, 0.0, -1.0),
+                    ],
+                ),
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::Carriageway,
+                    2,
+                    joined_asphalt_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.0, 0.0),
+                        RoadVec3::new(1.0, 0.0, 0.0),
+                        RoadVec3::new(0.0, 0.0, 1.0),
+                    ],
+                ),
+                manual_region_with_kind(
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    1,
+                    curb_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 1.0),
+                    ],
+                ),
+            ],
+            explicit_vertical_step_segments: vec![asphalt_handoff, curb_step],
+        };
+
+        NodeValidationReport::from_triangulation_solution(&solution).expect(
+            "same-height asphalt owner handoff should carry the explicit curb step authority",
+        );
     }
 
     #[test]

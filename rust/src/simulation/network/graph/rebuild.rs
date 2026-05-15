@@ -12,6 +12,7 @@ const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
 const JUNCTION_PROFILE_HARD_ZONE_M: f32 = 12.0;
 const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 16.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
+const JUNCTION_PROFILE_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 
 #[derive(Clone, Copy)]
@@ -36,11 +37,19 @@ struct JunctionProfileIncident {
     at_start: bool,
 }
 
+/// Node-local profile plane used to make incident JunctionN mouth rails height-compatible.
 #[derive(Clone, Copy)]
-struct JunctionProfilePlane {
+pub(crate) struct JunctionEndpointProfilePlane {
     origin: Vector3,
     grade_x: f32,
     grade_z: f32,
+}
+
+impl JunctionEndpointProfilePlane {
+    /// Evaluates the solved endpoint profile height at an arbitrary world XZ coordinate.
+    pub(crate) fn height_at_xz(&self, x: f32, z: f32) -> f32 {
+        self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
+    }
 }
 
 impl RegionGraph {
@@ -392,7 +401,7 @@ impl RegionGraph {
     ) {
         let incidents_by_node =
             self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
-        let mut edge_solves: Vec<(usize, bool, JunctionProfilePlane)> = Vec::new();
+        let mut edge_solves: Vec<(usize, bool, JunctionEndpointProfilePlane)> = Vec::new();
 
         let mut node_ids: Vec<u32> = incidents_by_node.keys().copied().collect();
         node_ids.sort_unstable();
@@ -435,10 +444,9 @@ impl RegionGraph {
         changed_edges.sort_unstable();
         changed_edges.dedup();
         for edge_idx in changed_edges {
-            let (cost, length) =
-                crate::simulation::pathing::cost::CostCalculator::calculate_costs(
-                    &self.edges[edge_idx],
-                );
+            let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
+                &self.edges[edge_idx],
+            );
             self.edges[edge_idx].base_cost = cost;
             self.edges[edge_idx].physical_length = length;
         }
@@ -478,16 +486,40 @@ impl RegionGraph {
         }
 
         for incidents in incidents_by_node.values_mut() {
-            incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.at_start.cmp(&b.at_start)));
+            incidents.sort_by(|a, b| {
+                a.edge_idx
+                    .cmp(&b.edge_idx)
+                    .then(a.at_start.cmp(&b.at_start))
+            });
         }
         incidents_by_node
+    }
+
+    /// Builds the canonical endpoint profile plane for a JunctionN node from incident edge mouths.
+    pub(crate) fn junction_endpoint_profile_plane(
+        &self,
+        node_id: u32,
+    ) -> Option<JunctionEndpointProfilePlane> {
+        if self.nodes.get(node_id as usize)?.node_type != NodeType::Junction {
+            return None;
+        }
+        let valid_node_ids: Vec<u32> = (0..self.nodes.len())
+            .map(|i| self.get_valid_node(i as u32))
+            .collect();
+        let affected_nodes = HashSet::from([node_id]);
+        let incidents_by_node =
+            self.build_junction_profile_incidents(&valid_node_ids, Some(&affected_nodes));
+        let incidents = incidents_by_node.get(&node_id)?;
+        (incidents.len() >= 3)
+            .then(|| self.solve_junction_profile_plane(node_id, incidents))
+            .flatten()
     }
 
     fn solve_junction_profile_plane(
         &self,
         node_id: u32,
         incidents: &[JunctionProfileIncident],
-    ) -> Option<JunctionProfilePlane> {
+    ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
         let mut xx = 0.0;
         let mut xz = 0.0;
@@ -506,9 +538,11 @@ impl RegionGraph {
             if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
                 continue;
             }
-            let Some(sample) =
-                Self::sample_edge_geometry_from_endpoint(edge, incident.at_start, sample_distance_m)
-            else {
+            let Some(sample) = Self::sample_edge_geometry_from_endpoint(
+                edge,
+                incident.at_start,
+                sample_distance_m,
+            ) else {
                 continue;
             };
             let dx = sample.x - origin.x;
@@ -533,17 +567,23 @@ impl RegionGraph {
             return None;
         }
 
-        Some(JunctionProfilePlane {
+        let grade_x = (xy * zz - zy * xz) / det;
+        let grade_z = (xx * zy - xz * xy) / det;
+        if grade_x.hypot(grade_z) > JUNCTION_PROFILE_MAX_GRADE {
+            return None;
+        }
+
+        Some(JunctionEndpointProfilePlane {
             origin,
-            grade_x: (xy * zz - zy * xz) / det,
-            grade_z: (xx * zy - xz * xy) / det,
+            grade_x,
+            grade_z,
         })
     }
 
     fn apply_junction_profile_plane_to_edge(
         edge: &mut super::data::Edge,
         at_start: bool,
-        plane: JunctionProfilePlane,
+        plane: JunctionEndpointProfilePlane,
     ) {
         let total_length_m = Self::edge_geometry_length_m(edge);
         if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
@@ -589,18 +629,35 @@ impl RegionGraph {
             return Some(points[0]);
         }
 
-        for index in 0..points.len() - 1 {
-            let start_d = distances[index];
-            let end_d = distances[index + 1];
-            if distance_m > end_d && index + 2 < points.len() {
-                continue;
+        if at_start {
+            for index in 0..points.len() - 1 {
+                let start_d = distances[index];
+                let end_d = distances[index + 1];
+                if distance_m > end_d && index + 2 < points.len() {
+                    continue;
+                }
+                let segment_m = (end_d - start_d).max(f32::EPSILON);
+                let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
+                return Some(points[index].lerp(points[index + 1], t));
             }
-            let segment_m = (end_d - start_d).max(f32::EPSILON);
-            let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
-            return Some(points[index].lerp(points[index + 1], t));
+        } else {
+            for index in (1..points.len()).rev() {
+                let start_d = distances[index];
+                let end_d = distances[index - 1];
+                if distance_m > end_d && index > 1 {
+                    continue;
+                }
+                let segment_m = (end_d - start_d).max(f32::EPSILON);
+                let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
+                return Some(points[index].lerp(points[index - 1], t));
+            }
         }
 
-        points.last().copied()
+        if at_start {
+            points.last().copied()
+        } else {
+            points.first().copied()
+        }
     }
 
     fn edge_endpoint_distances(edge: &super::data::Edge, at_start: bool) -> Vec<f32> {
@@ -611,13 +668,13 @@ impl RegionGraph {
 
         if at_start {
             for index in 1..edge.geometry.len() {
-                distances[index] =
-                    distances[index - 1] + edge.geometry[index - 1].distance_to(edge.geometry[index]);
+                distances[index] = distances[index - 1]
+                    + edge.geometry[index - 1].distance_to(edge.geometry[index]);
             }
         } else {
             for index in (0..edge.geometry.len() - 1).rev() {
-                distances[index] =
-                    distances[index + 1] + edge.geometry[index + 1].distance_to(edge.geometry[index]);
+                distances[index] = distances[index + 1]
+                    + edge.geometry[index + 1].distance_to(edge.geometry[index]);
             }
         }
         distances
@@ -891,5 +948,41 @@ impl RegionGraph {
 
         let scale = max_sum / sum;
         (start_clip_m * scale, end_clip_m * scale)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_test_edge(points: Vec<Vector3>) -> super::super::data::Edge {
+        super::super::data::Edge {
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn junction_profile_sampling_uses_requested_distance_from_edge_end() {
+        let edge = profile_test_edge(vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+        ]);
+
+        let sample = RegionGraph::sample_edge_geometry_from_endpoint(&edge, false, 5.0)
+            .expect("edge-end profile sample should exist");
+
+        assert!((sample.x - 15.0).abs() <= f32::EPSILON);
+        assert!((sample.y - 0.0).abs() <= f32::EPSILON);
+        assert!((sample.z - 0.0).abs() <= f32::EPSILON);
     }
 }
