@@ -14,9 +14,11 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 const CDT_EPSILON_M: f64 = 0.001;
 const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
+const MAX_SEAM_QUALITY_SAMPLES: usize = 8;
 const MAX_TIE_IN_SAMPLE_DIAGNOSTICS: usize = 8;
 const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
+const MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M: f64 = 0.05;
 
 type SpadeCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
@@ -398,6 +400,7 @@ pub(crate) struct TerrainCdtMesh {
     pub(crate) road_seam_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) tie_in_widened_samples: Vec<TerrainCdtTieInSample>,
+    pub(crate) seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -424,6 +427,12 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) retaining_wall_faces: usize,
     pub(crate) retaining_wall_max_y_delta_m: f32,
     pub(crate) retaining_wall_max_slope_ratio: f32,
+    pub(crate) accepted_seam_edges: usize,
+    pub(crate) merged_subbudget_seam_edges: usize,
+    pub(crate) omitted_near_seam_source_samples: usize,
+    pub(crate) retaining_wall_required_seam_edges: usize,
+    pub(crate) retaining_wall_required_seam_faces: usize,
+    pub(crate) blocking_degenerate_seam_edges: usize,
     pub(crate) tie_in_widened_source_samples: usize,
     pub(crate) tie_in_widened_max_y_delta_m: f32,
     pub(crate) tie_in_widened_max_slope_ratio: f32,
@@ -480,6 +489,33 @@ pub(crate) struct TerrainCdtTieInSample {
     pub(crate) required_distance_m: f32,
     pub(crate) height_delta_m: f32,
     pub(crate) slope_ratio: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerrainCdtSeamQualityKind {
+    MergedSubbudgetSeamEdge,
+    RetainingWallRequired,
+    BlockingDegenerateSeam,
+}
+
+impl TerrainCdtSeamQualityKind {
+    pub(crate) fn debug_code(self) -> i32 {
+        match self {
+            Self::MergedSubbudgetSeamEdge => 0,
+            Self::RetainingWallRequired => 1,
+            Self::BlockingDegenerateSeam => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtSeamQualitySample {
+    pub(crate) kind: TerrainCdtSeamQualityKind,
+    pub(crate) start: TerrainCdtVertex,
+    pub(crate) end: TerrainCdtVertex,
+    pub(crate) source: TerrainCdtRoadBoundarySource,
+    pub(crate) length_m: f32,
+    pub(crate) height_delta_m: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -581,6 +617,12 @@ pub(crate) fn build_road_touched_terrain_patch(
             retaining_wall_faces: diagnostics.retaining_wall_faces,
             retaining_wall_max_y_delta_m: diagnostics.retaining_wall_max_y_delta_m,
             retaining_wall_max_slope_ratio: diagnostics.retaining_wall_max_slope_ratio,
+            accepted_seam_edges: canonical.accepted_seam_edges,
+            merged_subbudget_seam_edges: canonical.merged_subbudget_seam_edges,
+            omitted_near_seam_source_samples: canonical.tie_in_widened_source_samples,
+            retaining_wall_required_seam_edges: canonical.retaining_wall_required_seam_edges,
+            retaining_wall_required_seam_faces: diagnostics.retaining_wall_faces,
+            blocking_degenerate_seam_edges: canonical.blocking_degenerate_seam_edges,
             tie_in_widened_source_samples: canonical.tie_in_widened_source_samples,
             tie_in_widened_max_y_delta_m: canonical.tie_in_widened_max_y_delta_m,
             tie_in_widened_max_slope_ratio: canonical.tie_in_widened_max_slope_ratio,
@@ -595,6 +637,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         road_seam_face_samples: diagnostics.road_seam_face_samples,
         retaining_wall_face_samples: diagnostics.retaining_wall_face_samples,
         tie_in_widened_samples: canonical.tie_in_widened_samples,
+        seam_quality_samples: canonical.seam_quality_samples,
     })
 }
 
@@ -626,6 +669,11 @@ struct CanonicalTerrainCdtInput {
     road_constraint_edges: Vec<[usize; 2]>,
     road_constraint_sources: BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
     road_loops: Vec<CanonicalTerrainCdtRoadLoop>,
+    accepted_seam_edges: usize,
+    merged_subbudget_seam_edges: usize,
+    retaining_wall_required_seam_edges: usize,
+    blocking_degenerate_seam_edges: usize,
+    seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
     tie_in_widened_source_samples: usize,
     tie_in_widened_max_y_delta_m: f32,
     tie_in_widened_max_slope_ratio: f32,
@@ -638,6 +686,17 @@ struct CanonicalTerrainCdtRoadLoop {
     edge_sources: Vec<Option<TerrainCdtRoadBoundarySource>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct TerrainCdtLoopSeamQuality {
+    points: Vec<TerrainCdtVertex>,
+    edge_sources: Vec<Option<TerrainCdtRoadBoundarySource>>,
+    accepted_seam_edges: usize,
+    merged_subbudget_seam_edges: usize,
+    retaining_wall_required_seam_edges: usize,
+    blocking_degenerate_seam_edges: usize,
+    samples: Vec<TerrainCdtSeamQualitySample>,
+}
+
 fn canonicalize_input(
     mut input: TerrainCdtInput,
 ) -> Result<CanonicalTerrainCdtInput, TerrainCdtError> {
@@ -648,6 +707,11 @@ fn canonicalize_input(
     let mut road_constraint_sources = BTreeMap::new();
     let mut road_loops = Vec::new();
     let mut source_sample_vertex_indices = Vec::new();
+    let mut accepted_seam_edges = 0usize;
+    let mut merged_subbudget_seam_edges = 0usize;
+    let mut retaining_wall_required_seam_edges = 0usize;
+    let mut blocking_degenerate_seam_edges = 0usize;
+    let mut seam_quality_samples = Vec::new();
     let mut tie_in_widened_source_samples = 0usize;
     let mut tie_in_widened_max_y_delta_m = 0.0_f32;
     let mut tie_in_widened_max_slope_ratio = 0.0_f32;
@@ -677,7 +741,18 @@ fn canonicalize_input(
             continue;
         }
         let points = ensure_ccw(points);
-        let edge_sources = terrain_cdt_loop_edge_sources(&points, &original_source_edges);
+        let seam_quality =
+            harden_terrain_cdt_road_loop_seams(points, &original_source_edges, input.patch);
+        let points = seam_quality.points;
+        let edge_sources = seam_quality.edge_sources;
+        accepted_seam_edges += seam_quality.accepted_seam_edges;
+        merged_subbudget_seam_edges += seam_quality.merged_subbudget_seam_edges;
+        retaining_wall_required_seam_edges += seam_quality.retaining_wall_required_seam_edges;
+        blocking_degenerate_seam_edges += seam_quality.blocking_degenerate_seam_edges;
+        append_seam_quality_samples(&mut seam_quality_samples, seam_quality.samples);
+        if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+            continue;
+        }
         let loop_indices = points
             .iter()
             .map(|&vertex| insert_vertex(vertex, &mut vertices, &mut vertex_lookup))
@@ -755,6 +830,11 @@ fn canonicalize_input(
         road_constraint_edges,
         road_constraint_sources,
         road_loops,
+        accepted_seam_edges,
+        merged_subbudget_seam_edges,
+        retaining_wall_required_seam_edges,
+        blocking_degenerate_seam_edges,
+        seam_quality_samples,
         tie_in_widened_source_samples,
         tie_in_widened_max_y_delta_m,
         tie_in_widened_max_slope_ratio,
@@ -810,6 +890,321 @@ fn push_road_loop_constraints(
         }
     }
     missing_road_boundary_sources
+}
+
+fn harden_terrain_cdt_road_loop_seams(
+    mut points: Vec<TerrainCdtVertex>,
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+    patch: TerrainCdtPatch,
+) -> TerrainCdtLoopSeamQuality {
+    let mut edge_sources = terrain_cdt_loop_edge_sources(&points, source_edges);
+    let mut merged_subbudget_seam_edges = 0usize;
+    let mut samples = Vec::new();
+
+    loop {
+        if points.len() < 3 || edge_sources.len() != points.len() {
+            break;
+        }
+        let Some(merge) = next_mergeable_subbudget_seam_vertex(&points, &edge_sources) else {
+            break;
+        };
+        let start = points[merge.previous_index];
+        let end = points[merge.next_index];
+        let length_m = edge_length_xz_m(start, end) as f32;
+        let height_delta_m = (end.height_m - start.height_m).abs();
+        insert_seam_quality_sample(
+            &mut samples,
+            TerrainCdtSeamQualitySample {
+                kind: TerrainCdtSeamQualityKind::MergedSubbudgetSeamEdge,
+                start,
+                end,
+                source: merge.source,
+                length_m,
+                height_delta_m,
+            },
+        );
+        remove_loop_vertex_and_merge_source(
+            &mut points,
+            &mut edge_sources,
+            merge.vertex_index,
+            merge.source,
+        );
+        merged_subbudget_seam_edges += 1;
+    }
+
+    let mut accepted_seam_edges = 0usize;
+    let mut retaining_wall_required_seam_edges = 0usize;
+    let mut blocking_degenerate_seam_edges = 0usize;
+    for index in 0..points.len() {
+        let Some(source) = edge_sources.get(index).copied().flatten() else {
+            continue;
+        };
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        if edge_lies_on_patch_boundary(start, end, patch) {
+            continue;
+        }
+        let length_m = edge_length_xz_m(start, end);
+        let height_delta_m = (end.height_m - start.height_m).abs();
+        if length_m + CDT_EPSILON_M < MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M {
+            if height_delta_m > MIN_TIE_IN_HEIGHT_DELTA_M
+                && (length_m <= CDT_EPSILON_M
+                    || height_delta_m / length_m as f32 > MAX_TERRAIN_TIE_IN_SLOPE_RATIO)
+            {
+                retaining_wall_required_seam_edges += 1;
+                insert_seam_quality_sample(
+                    &mut samples,
+                    TerrainCdtSeamQualitySample {
+                        kind: TerrainCdtSeamQualityKind::RetainingWallRequired,
+                        start,
+                        end,
+                        source,
+                        length_m: length_m as f32,
+                        height_delta_m,
+                    },
+                );
+            } else if length_m <= CDT_EPSILON_M {
+                blocking_degenerate_seam_edges += 1;
+                insert_seam_quality_sample(
+                    &mut samples,
+                    TerrainCdtSeamQualitySample {
+                        kind: TerrainCdtSeamQualityKind::BlockingDegenerateSeam,
+                        start,
+                        end,
+                        source,
+                        length_m: length_m as f32,
+                        height_delta_m,
+                    },
+                );
+            } else {
+                accepted_seam_edges += 1;
+            }
+        } else {
+            accepted_seam_edges += 1;
+        }
+    }
+
+    TerrainCdtLoopSeamQuality {
+        points,
+        edge_sources,
+        accepted_seam_edges,
+        merged_subbudget_seam_edges,
+        retaining_wall_required_seam_edges,
+        blocking_degenerate_seam_edges,
+        samples,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainCdtSeamMerge {
+    previous_index: usize,
+    vertex_index: usize,
+    next_index: usize,
+    source: TerrainCdtRoadBoundarySource,
+}
+
+fn next_mergeable_subbudget_seam_vertex(
+    points: &[TerrainCdtVertex],
+    edge_sources: &[Option<TerrainCdtRoadBoundarySource>],
+) -> Option<TerrainCdtSeamMerge> {
+    for vertex_index in 0..points.len() {
+        let previous_index = if vertex_index == 0 {
+            points.len() - 1
+        } else {
+            vertex_index - 1
+        };
+        let next_index = (vertex_index + 1) % points.len();
+        let previous_len_m = edge_length_xz_m(points[previous_index], points[vertex_index]);
+        let next_len_m = edge_length_xz_m(points[vertex_index], points[next_index]);
+        if previous_len_m >= MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M
+            && next_len_m >= MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M
+        {
+            continue;
+        }
+        let Some(previous_source) = edge_sources.get(previous_index).copied().flatten() else {
+            continue;
+        };
+        let Some(next_source) = edge_sources.get(vertex_index).copied().flatten() else {
+            continue;
+        };
+        let Some(source) = mergeable_terrain_cdt_seam_source(previous_source, next_source) else {
+            continue;
+        };
+        if !source_owned_vertex_can_be_removed(
+            points[previous_index],
+            points[vertex_index],
+            points[next_index],
+        ) {
+            continue;
+        }
+        return Some(TerrainCdtSeamMerge {
+            previous_index,
+            vertex_index,
+            next_index,
+            source,
+        });
+    }
+    None
+}
+
+fn remove_loop_vertex_and_merge_source(
+    points: &mut Vec<TerrainCdtVertex>,
+    edge_sources: &mut Vec<Option<TerrainCdtRoadBoundarySource>>,
+    vertex_index: usize,
+    source: TerrainCdtRoadBoundarySource,
+) {
+    if points.len() <= 3 || points.len() != edge_sources.len() {
+        return;
+    }
+    points.remove(vertex_index);
+    if vertex_index == 0 {
+        let last = edge_sources.len() - 1;
+        edge_sources[last] = Some(source);
+        edge_sources.remove(0);
+    } else {
+        edge_sources[vertex_index - 1] = Some(source);
+        edge_sources.remove(vertex_index);
+    }
+}
+
+fn source_owned_vertex_can_be_removed(
+    previous: TerrainCdtVertex,
+    vertex: TerrainCdtVertex,
+    next: TerrainCdtVertex,
+) -> bool {
+    let merged_len_m = edge_length_xz_m(previous, next);
+    if merged_len_m <= CDT_EPSILON_M {
+        return false;
+    }
+    let cross = cross_xz(
+        vertex.x - previous.x,
+        vertex.z - previous.z,
+        next.x - previous.x,
+        next.z - previous.z,
+    )
+    .abs();
+    if cross > CDT_EPSILON_M * merged_len_m.max(1.0) {
+        return false;
+    }
+    if !point_bounds_overlap_segment(vertex, previous, next) {
+        return false;
+    }
+    let t = clamp_unit(segment_parameter(previous, next, vertex.x, vertex.z));
+    same_height(
+        interpolated_segment_height(previous, next, t),
+        vertex.height_m,
+    )
+}
+
+fn mergeable_terrain_cdt_seam_source(
+    first: TerrainCdtRoadBoundarySource,
+    second: TerrainCdtRoadBoundarySource,
+) -> Option<TerrainCdtRoadBoundarySource> {
+    match (first, second) {
+        (
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: edge_idx_a,
+                edge_class: edge_class_a,
+                support_policy: support_policy_a,
+                source_band_index: source_band_index_a,
+                band_kind: band_kind_a,
+                role: role_a,
+                start_section_index: start_section_index_a,
+                end_section_index: end_section_index_a,
+                start_s_m: start_s_m_a,
+                end_s_m: end_s_m_a,
+            },
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: edge_idx_b,
+                edge_class: edge_class_b,
+                support_policy: support_policy_b,
+                source_band_index: source_band_index_b,
+                band_kind: band_kind_b,
+                role: role_b,
+                start_section_index: start_section_index_b,
+                end_section_index: end_section_index_b,
+                start_s_m: start_s_m_b,
+                end_s_m: end_s_m_b,
+            },
+        ) if edge_idx_a == edge_idx_b
+            && edge_class_a == edge_class_b
+            && support_policy_a == support_policy_b
+            && source_band_index_a == source_band_index_b
+            && band_kind_a == band_kind_b
+            && role_a == role_b =>
+        {
+            Some(TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx: edge_idx_a,
+                edge_class: edge_class_a,
+                support_policy: support_policy_a,
+                source_band_index: source_band_index_a,
+                band_kind: band_kind_a,
+                role: role_a,
+                start_section_index: start_section_index_a.min(start_section_index_b),
+                end_section_index: end_section_index_a.max(end_section_index_b),
+                start_s_m: start_s_m_a.min(start_s_m_b),
+                end_s_m: end_s_m_a.max(end_s_m_b),
+            })
+        }
+        (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id: node_id_a,
+                node_kind: node_kind_a,
+                owner_kind: owner_kind_a,
+                owner_index: owner_index_a,
+            },
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+                node_id: node_id_b,
+                node_kind: node_kind_b,
+                owner_kind: owner_kind_b,
+                owner_index: owner_index_b,
+            },
+        ) if node_id_a == node_id_b
+            && node_kind_a == node_kind_b
+            && owner_kind_a == owner_kind_b
+            && owner_index_a == owner_index_b =>
+        {
+            Some(first)
+        }
+        (
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: stable_piece_id_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a,
+            },
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: stable_piece_id_b,
+                local_loop_index: local_loop_index_b,
+                local_edge_index: local_edge_index_b,
+            },
+        ) if stable_piece_id_a == stable_piece_id_b && local_loop_index_a == local_loop_index_b => {
+            Some(TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: stable_piece_id_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a.min(local_edge_index_b),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn insert_seam_quality_sample(
+    samples: &mut Vec<TerrainCdtSeamQualitySample>,
+    sample: TerrainCdtSeamQualitySample,
+) {
+    if samples.len() >= MAX_SEAM_QUALITY_SAMPLES {
+        return;
+    }
+    samples.push(sample);
+}
+
+fn append_seam_quality_samples(
+    target: &mut Vec<TerrainCdtSeamQualitySample>,
+    samples: Vec<TerrainCdtSeamQualitySample>,
+) {
+    for sample in samples {
+        insert_seam_quality_sample(target, sample);
+    }
 }
 
 fn normalized_road_loop_source_edges(
@@ -1335,6 +1730,12 @@ fn edge_lies_on_patch_boundary(
         || (same_coord(a.x, patch.max_x) && same_coord(b.x, patch.max_x))
         || (same_coord(a.z, patch.min_z) && same_coord(b.z, patch.min_z))
         || (same_coord(a.z, patch.max_z) && same_coord(b.z, patch.max_z))
+}
+
+fn edge_length_xz_m(a: TerrainCdtVertex, b: TerrainCdtVertex) -> f64 {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    (dx * dx + dz * dz).sqrt()
 }
 
 fn simplified_loop(points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {
@@ -2394,6 +2795,120 @@ mod tests {
     }
 
     #[test]
+    fn cdt_merges_subbudget_same_authority_seam_fragments_before_triangulation() {
+        let source_a = test_span_boundary_source_range(
+            78,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            15,
+            16,
+            10.0,
+            10.004,
+        );
+        let source_b = test_span_boundary_source_range(
+            78,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            16,
+            17,
+            10.004,
+            12.0,
+        );
+        let source_c = test_span_boundary_source_range(
+            78,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            17,
+            18,
+            12.0,
+            14.0,
+        );
+        let road = vec![
+            TerrainCdtVertex::new(3.0, 0.12, 3.0),
+            TerrainCdtVertex::new(5.0, 0.12, 3.0),
+            TerrainCdtVertex::new(5.004, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 7.0),
+            TerrainCdtVertex::new(3.0, 0.12, 7.0),
+        ];
+        let source_edges = vec![
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[0],
+                end: road[1],
+                source: source_a,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[1],
+                end: road[2],
+                source: source_b,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[2],
+                end: road[3],
+                source: source_c,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[3],
+                end: road[4],
+                source: source_c,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[4],
+                end: road[5],
+                source: source_c,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: road[5],
+                end: road[0],
+                source: source_c,
+            },
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![TerrainCdtRoadLoop::new_with_source_edges(
+                78,
+                0,
+                road,
+                source_edges,
+            )],
+            Vec::new(),
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("source-compatible seam fragments should merge before Spade input");
+
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+        assert_eq!(mesh.stats.merged_subbudget_seam_edges, 1);
+        assert_eq!(mesh.stats.blocking_degenerate_seam_edges, 0);
+        assert_eq!(mesh.seam_quality_samples.len(), 1);
+        let sample = mesh.seam_quality_samples[0];
+        assert_eq!(
+            sample.kind,
+            TerrainCdtSeamQualityKind::MergedSubbudgetSeamEdge
+        );
+        assert!(sample.length_m > MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M as f32);
+        match sample.source {
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                edge_idx,
+                source_band_index,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+                ..
+            } => {
+                assert_eq!(edge_idx, 78);
+                assert_eq!(source_band_index, 5);
+                assert_eq!(start_section_index, 15);
+                assert_eq!(end_section_index, 17);
+                assert_eq!(start_s_m, 10.0);
+                assert_eq!(end_s_m, 12.0);
+            }
+            other => panic!("merged seam must preserve span authority, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn cdt_rejects_unsourced_road_boundary_constraints() {
         let source = test_node_boundary_source(91, TerrainCdtRoadBandKind::Sidewalk, 2);
         let road = vec![
@@ -3031,6 +3546,18 @@ mod tests {
         band_kind: TerrainCdtRoadBandKind,
         source_band_index: u32,
     ) -> TerrainCdtRoadBoundarySource {
+        test_span_boundary_source_range(edge_idx, band_kind, source_band_index, 3, 4, 12.0, 16.0)
+    }
+
+    fn test_span_boundary_source_range(
+        edge_idx: u64,
+        band_kind: TerrainCdtRoadBandKind,
+        source_band_index: u32,
+        start_section_index: u32,
+        end_section_index: u32,
+        start_s_m: f32,
+        end_s_m: f32,
+    ) -> TerrainCdtRoadBoundarySource {
         TerrainCdtRoadBoundarySource::SpanSupportBoundary {
             edge_idx,
             edge_class: TerrainCdtEdgeClass::Standard,
@@ -3042,10 +3569,10 @@ mod tests {
                 TerrainCdtRoadBandKind::CurbOrShoulder => TerrainCdtSpanRegionRole::CurbOrShoulder,
                 _ => TerrainCdtSpanRegionRole::NonRoad,
             },
-            start_section_index: 3,
-            end_section_index: 4,
-            start_s_m: 12.0,
-            end_s_m: 16.0,
+            start_section_index,
+            end_section_index,
+            start_s_m,
+            end_s_m,
         }
     }
 

@@ -745,15 +745,22 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		)
 		var cdt_retaining_wall_max_y_delta_m: float = float(patch_data.get("terrain_cdt_retaining_wall_max_y_delta_m", 0.0))
 		var cdt_retaining_wall_max_slope_ratio: float = float(patch_data.get("terrain_cdt_retaining_wall_max_slope_ratio", 0.0))
+		var cdt_accepted_seam_edges: int = int(patch_data.get("terrain_cdt_accepted_seam_edges", 0))
+		var cdt_merged_subbudget_seam_edges: int = int(patch_data.get("terrain_cdt_merged_subbudget_seam_edges", 0))
+		var cdt_omitted_near_seam_source_samples: int = int(patch_data.get("terrain_cdt_omitted_near_seam_source_samples", 0))
+		var cdt_retaining_wall_required_seam_edges: int = int(patch_data.get("terrain_cdt_retaining_wall_required_seam_edges", 0))
+		var cdt_retaining_wall_required_seam_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_required_seam_faces", 0))
+		var cdt_blocking_degenerate_seam_edges: int = int(patch_data.get("terrain_cdt_blocking_degenerate_seam_edges", 0))
 		var cdt_tie_in_widened_source_samples: int = int(patch_data.get("terrain_cdt_tie_in_widened_source_samples", 0))
 		var cdt_tie_in_widened_max_y_delta_m: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0))
 		var cdt_tie_in_widened_max_slope_ratio: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0))
 		var cdt_invalid_constraint_samples: String = _road_geometry_terrain_invalid_constraint_samples_label(patch_data)
 		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
 		var cdt_retaining_wall_samples: String = _road_geometry_terrain_retaining_wall_samples_label(patch_data)
+		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -801,6 +808,13 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_retaining_wall_faces,
 				cdt_retaining_wall_max_y_delta_m,
 				cdt_retaining_wall_max_slope_ratio,
+				cdt_accepted_seam_edges,
+				cdt_merged_subbudget_seam_edges,
+				cdt_omitted_near_seam_source_samples,
+				cdt_retaining_wall_required_seam_edges,
+				cdt_retaining_wall_required_seam_faces,
+				cdt_blocking_degenerate_seam_edges,
+				cdt_seam_quality_samples,
 				cdt_tie_in_widened_source_samples,
 				cdt_tie_in_widened_max_y_delta_m,
 				cdt_tie_in_widened_max_slope_ratio,
@@ -1804,6 +1818,62 @@ func _road_geometry_float_pair_at(
 	if index >= 0 and index < values.size():
 		return values[index]
 	return fallback
+
+func _road_geometry_terrain_seam_quality_samples_label(patch_data: Dictionary) -> String:
+	if not patch_data.has("terrain_cdt_seam_quality_sample_edges"):
+		return "[]"
+	var edges: PackedVector3Array = (
+		patch_data["terrain_cdt_seam_quality_sample_edges"] as PackedVector3Array
+	)
+	var metrics: PackedFloat32Array = (
+		patch_data.get("terrain_cdt_seam_quality_sample_metrics", PackedFloat32Array())
+		as PackedFloat32Array
+	)
+	var kinds: PackedInt32Array = (
+		patch_data.get("terrain_cdt_seam_quality_sample_kinds", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var sample_count: int = mini(int(edges.size() / 2), int(metrics.size() / 2))
+	sample_count = mini(sample_count, kinds.size())
+	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
+	if sample_count <= 0:
+		return "[]"
+	var parts: Array[String] = []
+	for index in range(sample_count):
+		var start: Vector3 = edges[index * 2]
+		var end: Vector3 = edges[index * 2 + 1]
+		var length_m: float = metrics[index * 2]
+		var y_delta_m: float = metrics[index * 2 + 1]
+		parts.append(
+			"{kind=%s,start=(%.3f,%.3f,%.3f),end=(%.3f,%.3f,%.3f),length=%.3f,y_delta=%.3f,sources=%s}"
+			% [
+				_road_geometry_cdt_seam_quality_kind_label(kinds[index]),
+				start.x,
+				start.y,
+				start.z,
+				end.x,
+				end.y,
+				end.z,
+				length_m,
+				y_delta_m,
+				_road_geometry_cdt_sample_sources_label(
+					patch_data,
+					"terrain_cdt_seam_quality",
+					index
+				),
+			]
+		)
+	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_cdt_seam_quality_kind_label(kind: int) -> String:
+	match kind:
+		0:
+			return "merged_subbudget"
+		1:
+			return "retaining_wall_required"
+		2:
+			return "blocking_degenerate"
+	return "unknown"
 
 func _road_geometry_terrain_tie_in_widened_samples_label(patch_data: Dictionary) -> String:
 	if not patch_data.has("terrain_cdt_tie_in_widened_sample_points"):

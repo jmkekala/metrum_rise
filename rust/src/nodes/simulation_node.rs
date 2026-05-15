@@ -641,6 +641,30 @@ impl SimulationNode {
                     f64::from(mesh.stats.retaining_wall_max_slope_ratio),
                 );
                 dict.set(
+                    "terrain_cdt_accepted_seam_edges",
+                    i64::try_from(mesh.stats.accepted_seam_edges).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_merged_subbudget_seam_edges",
+                    i64::try_from(mesh.stats.merged_subbudget_seam_edges).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_omitted_near_seam_source_samples",
+                    i64::try_from(mesh.stats.omitted_near_seam_source_samples).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_retaining_wall_required_seam_edges",
+                    i64::try_from(mesh.stats.retaining_wall_required_seam_edges).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_retaining_wall_required_seam_faces",
+                    i64::try_from(mesh.stats.retaining_wall_required_seam_faces).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_blocking_degenerate_seam_edges",
+                    i64::try_from(mesh.stats.blocking_degenerate_seam_edges).unwrap_or(0),
+                );
+                dict.set(
                     "terrain_cdt_tie_in_widened_source_samples",
                     i64::try_from(mesh.stats.tie_in_widened_source_samples).unwrap_or(0),
                 );
@@ -655,6 +679,7 @@ impl SimulationNode {
                 Self::append_cdt_road_seam_face_samples(dict, &mesh);
                 Self::append_cdt_retaining_wall_face_samples(dict, &mesh);
                 Self::append_cdt_tie_in_widened_samples(dict, &mesh);
+                Self::append_cdt_seam_quality_samples(dict, &mesh);
                 Self::append_cdt_invalid_constraint_samples(dict, &mesh);
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
@@ -690,6 +715,12 @@ impl SimulationNode {
         dict.set("terrain_cdt_retaining_wall_faces", 0i64);
         dict.set("terrain_cdt_retaining_wall_max_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_retaining_wall_max_slope_ratio", 0.0f64);
+        dict.set("terrain_cdt_accepted_seam_edges", 0i64);
+        dict.set("terrain_cdt_merged_subbudget_seam_edges", 0i64);
+        dict.set("terrain_cdt_omitted_near_seam_source_samples", 0i64);
+        dict.set("terrain_cdt_retaining_wall_required_seam_edges", 0i64);
+        dict.set("terrain_cdt_retaining_wall_required_seam_faces", 0i64);
+        dict.set("terrain_cdt_blocking_degenerate_seam_edges", 0i64);
         dict.set("terrain_cdt_tie_in_widened_source_samples", 0i64);
         dict.set("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0f64);
@@ -740,6 +771,19 @@ impl SimulationNode {
             PackedFloat32Array::new(),
         );
         Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_tie_in_widened");
+        dict.set(
+            "terrain_cdt_seam_quality_sample_edges",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_seam_quality_sample_metrics",
+            PackedFloat32Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_seam_quality_sample_kinds",
+            PackedInt32Array::new(),
+        );
+        Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_seam_quality");
         dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
             PackedVector3Array::new(),
@@ -1261,6 +1305,38 @@ impl SimulationNode {
             "terrain_cdt_invalid_constraint",
             &source_export,
         );
+    }
+
+    fn append_cdt_seam_quality_samples(
+        dict: &mut VarDictionary,
+        mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
+    ) {
+        let mut edges = Vec::with_capacity(mesh.seam_quality_samples.len() * 2);
+        let mut metrics = Vec::with_capacity(mesh.seam_quality_samples.len() * 2);
+        let mut kinds = Vec::with_capacity(mesh.seam_quality_samples.len());
+        let mut source_export =
+            TerrainCdtSourceExport::with_sample_capacity(mesh.seam_quality_samples.len());
+        for sample in &mesh.seam_quality_samples {
+            edges.push(Self::terrain_cdt_vertex_to_vector3(sample.start));
+            edges.push(Self::terrain_cdt_vertex_to_vector3(sample.end));
+            metrics.push(sample.length_m);
+            metrics.push(sample.height_delta_m);
+            kinds.push(sample.kind.debug_code());
+            source_export.push_sources(&[sample.source]);
+        }
+        dict.set(
+            "terrain_cdt_seam_quality_sample_edges",
+            PackedVector3Array::from_iter(edges),
+        );
+        dict.set(
+            "terrain_cdt_seam_quality_sample_metrics",
+            PackedFloat32Array::from_iter(metrics),
+        );
+        dict.set(
+            "terrain_cdt_seam_quality_sample_kinds",
+            PackedInt32Array::from_iter(kinds),
+        );
+        Self::append_cdt_sample_source_export(dict, "terrain_cdt_seam_quality", &source_export);
     }
 
     fn terrain_cdt_vertex_to_vector3(vertex: TerrainCdtVertex) -> Vector3 {

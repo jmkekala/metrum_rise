@@ -562,6 +562,14 @@ fn assert_surface_terrain_cdt_contract(
             .all(|sources| !sources.is_empty()),
         "{case_name}: retaining-wall emitted faces must not be anonymous"
     );
+    assert_eq!(
+        mesh.stats.blocking_degenerate_seam_edges, 0,
+        "{case_name}: production CDT input must not pass unresolved sub-budget seam fragments to Spade"
+    );
+    assert_eq!(
+        mesh.stats.omitted_near_seam_source_samples, mesh.stats.tie_in_widened_source_samples,
+        "{case_name}: omitted near-seam terrain samples must stay visible as tie-in diagnostics"
+    );
     assert!(
         mesh.emitted_faces.iter().all(|face| {
             face.kind != TerrainCdtTieInKind::RetainingWall || !face.sources.is_empty()
@@ -6444,6 +6452,10 @@ fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
         mesh.stats.invalid_constraint_edges, 0,
         "elevated 3-way terrain CDT must not receive invalid road constraints"
     );
+    assert_eq!(
+        mesh.stats.blocking_degenerate_seam_edges, 0,
+        "elevated 3-way terrain CDT must merge or diagnose sub-budget seam fragments before triangulation"
+    );
     assert!(
         mesh.stats.retaining_wall_faces > 0,
         "elevated 3-way terrain tie-in must retain sourced wall faces instead of losing the clip loop"
@@ -6551,6 +6563,11 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
         mesh.stats.invalid_constraint_edges, 0,
         "current elevated 3-way terrain CDT must not receive invalid road constraints"
     );
+    assert_eq!(
+        mesh.stats.blocking_degenerate_seam_edges, 0,
+        "current elevated 3-way terrain CDT must not pass unresolved sub-budget seam edges into Spade; samples={:?}",
+        mesh.seam_quality_samples
+    );
     assert_cdt_mesh_stays_outside_clip_polygons(
         "current elevated 3-way terrain patch unioned footprint",
         &mesh,
@@ -6620,6 +6637,11 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
     assert_eq!(
         edit_mesh.stats.invalid_constraint_edges, 0,
         "add_road elevated 3-way terrain CDT must not receive invalid road constraints"
+    );
+    assert_eq!(
+        edit_mesh.stats.blocking_degenerate_seam_edges, 0,
+        "add_road elevated 3-way terrain CDT must not pass unresolved sub-budget seam edges into Spade; samples={:?}",
+        edit_mesh.seam_quality_samples
     );
     assert_cdt_mesh_stays_outside_clip_polygons(
         "add_road current elevated 3-way terrain patch unioned footprint",
