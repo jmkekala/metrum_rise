@@ -199,6 +199,8 @@ Remaining ROAD-01 gap:
   may canonicalize only through the owning source rail key, while noncanonical residual vertices
   become blocking boolean-ownership diagnostics. Node raised-step face export now consumes only
   exact canonical arrangement-key support and does not synthesize faces from overlay-sibling edges.
+  `JunctionN` final owned asphalt / curb raised-step edges are now materialized after boolean
+  ownership from exact owner-pair source polyline authority before height validation / CDT export.
   Runtime mesh payloads expose those faces as `raised_step_*` buffers instead of curb-specific
   vertical-face buckets.
   `surface::joins` is now the side-join adapter boundary and routes generated bands through

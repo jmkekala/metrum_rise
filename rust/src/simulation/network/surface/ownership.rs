@@ -2157,7 +2157,9 @@ fn owned_edge_lies_on_rail_constraint(
             || (constraint.source_boundary_index.is_some()
                 && piece_kind != RoadSurfaceVisualNodePieceKind::Terminal))
     {
-        return false;
+        return piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+            && rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+            && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
     }
     matches!(
         piece_kind,
@@ -3792,6 +3794,73 @@ mod tests {
                 && edge.start == NodeOwnedRegionArrangementKey::from_point(start)
                 && edge.end == NodeOwnedRegionArrangementKey::from_point(end)
         }));
+    }
+
+    #[test]
+    fn junctionn_materializes_final_step_edge_from_exact_owner_pair_polyline_authority() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(3.0, 0.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [3.0, 0.0], [0.0, -1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [0.0, 1.0]],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 41,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![
+                start,
+                RoadVec2::new(1.0, 0.000001),
+                RoadVec2::new(2.0, -0.000001),
+                end,
+            ],
+        }];
+        let footprint_shapes = Vec::new();
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &footprint_shapes,
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        );
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(start)
+                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                        && constraint.owner == Some(carriageway)
+                        && constraint.opposite_owner == Some(curb)
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::RaisedStepContact { .. }
+                        )
+                }),
+                "JunctionN final asphalt-curb edge must materialize from exact source-pair polyline authority"
+            );
+        }
+
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            42,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &regions,
+            &footprint_shapes,
+        );
+        assert!(arrangement.diagnostics().is_empty());
     }
 
     #[test]

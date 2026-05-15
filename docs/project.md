@@ -173,9 +173,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   final owned-region rings no longer use projected-key or overlay-neighbor repair; owner-pair
   contacts must stay exact-source authorized, backend drift may canonicalize only through the
   owning source rail key, and node raised-step face export emits generic owner-pair faces only
-  from exact canonical arrangement-key support instead of overlay-sibling edge matching. The
-  render mesh payload now exposes those faces as `raised_step_*` buffers rather than curb-specific
-  vertical buckets. Post-boolean `node_non_road`
+  from exact canonical arrangement-key support instead of overlay-sibling edge matching. `JunctionN`
+  final owned asphalt / curb step edges now materialize after boolean ownership from exact
+  owner-pair source polyline authority before height validation / CDT export. The render mesh
+  payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
+  buckets. Post-boolean `node_non_road`
   subdivision now requires every final curb /
   shoulder and sidewalk owned region to carry explicit profile seam-rail evidence, and
   carrier-only leftovers are reported as deterministic boolean-ownership residual diagnostics.
