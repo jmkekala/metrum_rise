@@ -13,7 +13,7 @@ use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::{IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::i_float::int::point::IntPoint;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
@@ -22,6 +22,7 @@ const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 type NodeIntContour = Vec<IntPoint>;
 type NodeIntShape = Vec<NodeIntContour>;
 type NodeIntShapes = Vec<NodeIntShape>;
+type TerrainClipSourceVertexKey = (i64, i64, i64);
 
 #[derive(Clone, Copy)]
 struct NodeIntGridOrigin {
@@ -433,6 +434,7 @@ impl RoadSurfaceSystem {
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut loops = Vec::new();
+        let mut missing_source_count = 0usize;
         for (shape_index, shape) in shapes.iter().enumerate() {
             let Some(boundary_loop) =
                 Self::terrain_clip_boundary_loop_from_overlay_shape_with_source_edges(
@@ -441,9 +443,19 @@ impl RoadSurfaceSystem {
                     source_edges,
                 )
             else {
+                missing_source_count += 1;
                 continue;
             };
             loops.push(boundary_loop);
+        }
+        if missing_source_count > 0 {
+            crate::debug_log!(
+                "road",
+                "terrain_clip_union_blocked_missing_source_owner missing_shapes={} total_shapes={}",
+                missing_source_count,
+                shapes.len()
+            );
+            return Vec::new();
         }
         Self::sort_terrain_clip_loops(&mut loops);
         loops
@@ -566,6 +578,13 @@ impl RoadSurfaceSystem {
                         Self::terrain_clip_dust_connector_points_from_source_edges(
                             &contour,
                             index,
+                            source_edges,
+                        )
+                    })
+                    .or_else(|| {
+                        Self::terrain_clip_source_chain_points_from_source_edges(
+                            start,
+                            end,
                             source_edges,
                         )
                     })
@@ -765,6 +784,207 @@ impl RoadSurfaceSystem {
             }
         }
         Self::terrain_clip_points_from_interval_coverage(start, end, samples)
+    }
+
+    fn terrain_clip_source_chain_points_from_source_edges(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<Vec<Vector3>> {
+        if Self::overlay_point_key(start) == Self::overlay_point_key(end) {
+            return None;
+        }
+
+        let start_keys =
+            Self::terrain_clip_source_endpoint_keys_at_overlay_point(start, source_edges);
+        let end_keys = Self::terrain_clip_source_endpoint_keys_at_overlay_point(end, source_edges);
+        if start_keys.is_empty() || end_keys.is_empty() {
+            return None;
+        }
+
+        let segment_length_m = overlay_segment_length_m(start, end);
+        let max_chain_length_m = terrain_clip_max_source_chain_length_m(segment_length_m);
+        let mut best: Option<(f64, usize, Vec<Vector3>)> = None;
+        for (&source_index, source_start_keys) in &start_keys {
+            let Some(source_end_keys) = end_keys.get(&source_index) else {
+                continue;
+            };
+            let source_chain_edges = source_edges
+                .iter()
+                .copied()
+                .filter(|edge| edge.source_index == source_index)
+                .collect::<Vec<_>>();
+            if source_chain_edges.len() < 2 {
+                continue;
+            }
+
+            for &start_key in source_start_keys {
+                for &end_key in source_end_keys {
+                    if start_key == end_key {
+                        continue;
+                    }
+                    let Some((cost, path_keys)) = Self::terrain_clip_shortest_source_key_path(
+                        start_key,
+                        end_key,
+                        &source_chain_edges,
+                    ) else {
+                        continue;
+                    };
+                    if cost > max_chain_length_m {
+                        continue;
+                    }
+                    let mut points = path_keys
+                        .into_iter()
+                        .filter_map(|key| {
+                            Self::terrain_clip_source_point_for_vertex_key(key, source_edges)
+                        })
+                        .collect::<Vec<_>>();
+                    Self::raise_terrain_clip_points_to_highest_source_heights(
+                        &mut points,
+                        source_edges,
+                    );
+                    Self::dedup_terrain_clip_segment_points(&mut points);
+                    if points.len() < 2 {
+                        continue;
+                    }
+                    if best
+                        .as_ref()
+                        .is_none_or(|(best_cost, best_source_index, best_points)| {
+                            cost < *best_cost
+                                || (cost == *best_cost
+                                    && (source_index, points.len())
+                                        < (*best_source_index, best_points.len()))
+                        })
+                    {
+                        best = Some((cost, source_index, points));
+                    }
+                }
+            }
+        }
+
+        best.map(|(_, _, points)| points)
+    }
+
+    fn terrain_clip_source_endpoint_keys_at_overlay_point(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> BTreeMap<usize, BTreeSet<TerrainClipSourceVertexKey>> {
+        let point_key = Self::overlay_point_key(point);
+        let mut keys_by_source = BTreeMap::new();
+        for &source_edge in source_edges {
+            for source_point in [source_edge.start, source_edge.end] {
+                let source_overlay_key =
+                    Self::overlay_point_key([f64::from(source_point.x), f64::from(source_point.z)]);
+                if source_overlay_key != point_key {
+                    continue;
+                }
+                keys_by_source
+                    .entry(source_edge.source_index)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(Self::terrain_clip_source_vertex_key(source_point));
+            }
+        }
+        keys_by_source
+    }
+
+    fn terrain_clip_shortest_source_key_path(
+        start_key: TerrainClipSourceVertexKey,
+        end_key: TerrainClipSourceVertexKey,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<(f64, Vec<TerrainClipSourceVertexKey>)> {
+        let mut adjacency =
+            BTreeMap::<TerrainClipSourceVertexKey, Vec<(TerrainClipSourceVertexKey, f64)>>::new();
+        for &source_edge in source_edges {
+            let start = Self::terrain_clip_source_vertex_key(source_edge.start);
+            let end = Self::terrain_clip_source_vertex_key(source_edge.end);
+            if start == end {
+                continue;
+            }
+            let cost = source_edge_xz_length_m(source_edge);
+            adjacency.entry(start).or_default().push((end, cost));
+            adjacency.entry(end).or_default().push((start, cost));
+        }
+        if !adjacency.contains_key(&start_key) || !adjacency.contains_key(&end_key) {
+            return None;
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_by(|a, b| a.0.cmp(&b.0));
+            neighbors.dedup_by(|a, b| a.0 == b.0);
+        }
+
+        let mut distances = BTreeMap::from([(start_key, 0.0)]);
+        let mut previous =
+            BTreeMap::<TerrainClipSourceVertexKey, TerrainClipSourceVertexKey>::new();
+        let mut visited = BTreeSet::new();
+        loop {
+            let current = distances
+                .iter()
+                .filter(|(key, _)| !visited.contains(*key))
+                .min_by(|(a_key, a_cost), (b_key, b_cost)| {
+                    (*a_cost)
+                        .partial_cmp(*b_cost)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a_key.cmp(b_key))
+                })
+                .map(|(&key, &cost)| (key, cost))?;
+            let (current_key, current_cost) = current;
+            if current_key == end_key {
+                break;
+            }
+            visited.insert(current_key);
+            for &(next_key, edge_cost) in adjacency.get(&current_key)? {
+                if visited.contains(&next_key) {
+                    continue;
+                }
+                let next_cost = current_cost + edge_cost;
+                if distances
+                    .get(&next_key)
+                    .is_none_or(|existing| next_cost < *existing)
+                {
+                    distances.insert(next_key, next_cost);
+                    previous.insert(next_key, current_key);
+                }
+            }
+        }
+
+        let total_cost = *distances.get(&end_key)?;
+        let mut keys = vec![end_key];
+        let mut cursor = end_key;
+        while cursor != start_key {
+            cursor = *previous.get(&cursor)?;
+            keys.push(cursor);
+        }
+        keys.reverse();
+        Some((total_cost, keys))
+    }
+
+    fn terrain_clip_source_vertex_key(point: Vector3) -> TerrainClipSourceVertexKey {
+        Self::terrain_clip_source_point_group_key(point)
+    }
+
+    fn terrain_clip_source_point_for_vertex_key(
+        key: TerrainClipSourceVertexKey,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<Vector3> {
+        source_edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end])
+            .find(|point| Self::terrain_clip_source_vertex_key(*point) == key)
+    }
+
+    fn raise_terrain_clip_points_to_highest_source_heights(
+        points: &mut [Vector3],
+        source_edges: &[TerrainClipSourceEdge],
+    ) {
+        for point in points {
+            let overlay_point = [f64::from(point.x), f64::from(point.z)];
+            if let Some(height) = Self::terrain_clip_overlay_point_height_from_source_edges(
+                overlay_point,
+                source_edges,
+            ) {
+                point.y = point.y.max(height);
+            }
+        }
     }
 
     fn terrain_clip_points_from_interval_coverage<I>(
@@ -1482,6 +1702,18 @@ fn interpolate_height_f64(start_y: f32, end_y: f32, t: f64) -> f32 {
 fn overlay_segment_length_m(start: NodeOverlayPoint, end: NodeOverlayPoint) -> f64 {
     let dx = end[0] - start[0];
     let dz = end[1] - start[1];
+    (dx * dx + dz * dz).sqrt()
+}
+
+fn terrain_clip_max_source_chain_length_m(segment_length_m: f64) -> f64 {
+    // Dust connectors run before source-chain stitching. This cap only rejects the long
+    // alternate side of a closed source loop; valid split chains remain source-authorized.
+    segment_length_m * 4.0 + f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * 8.0
+}
+
+fn source_edge_xz_length_m(edge: TerrainClipSourceEdge) -> f64 {
+    let dx = f64::from(edge.end.x - edge.start.x);
+    let dz = f64::from(edge.end.z - edge.start.z);
     (dx * dx + dz * dz).sqrt()
 }
 

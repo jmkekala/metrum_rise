@@ -660,10 +660,11 @@ fn assert_cdt_mesh_stays_outside_clip_polygons(
     mesh: &TerrainCdtMesh,
     clip_polygons: &[RoadSurfaceVisualPolygon],
 ) {
-    for triangle in mesh
+    for (triangle_index, triangle) in mesh
         .triangles
         .iter()
         .chain(mesh.retaining_wall_triangles.iter())
+        .enumerate()
     {
         let center = {
             let a = mesh.vertices[triangle[0]];
@@ -674,16 +675,38 @@ fn assert_cdt_mesh_stays_outside_clip_polygons(
                 ((a.z + b.z + c.z) / 3.0) as f32,
             )
         };
-        assert!(
-            clip_polygons
-                .iter()
-                .all(|polygon| !RoadSurfaceSystem::polygon_contains_point_xz(
-                    &polygon.points_world,
-                    center
-                )),
-            "{case_name}: accepted terrain triangle centroid leaked inside road-owned footprint"
-        );
+        if let Some((polygon_index, polygon)) = clip_polygons
+            .iter()
+            .enumerate()
+            .find(|(_, polygon)| polygon_strictly_contains_point_xz(&polygon.points_world, center))
+        {
+            panic!(
+                "{case_name}: accepted terrain triangle centroid leaked inside road-owned footprint; triangle_index={triangle_index} center=({:.3},{:.3}) polygon_index={polygon_index} polygon_area_m2={:.3}",
+                center.x,
+                center.y,
+                RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
+            );
+        }
     }
+}
+
+fn polygon_strictly_contains_point_xz(points_world: &[Vector3], point: Vector2) -> bool {
+    if points_world.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for index in 0..points_world.len() {
+        let start = points_world[index];
+        let end = points_world[(index + 1) % points_world.len()];
+        if (start.z > point.y) != (end.z > point.y) {
+            let edge_x_at_point_z =
+                (end.x - start.x) * (point.y - start.z) / (end.z - start.z) + start.x;
+            if point.x < edge_x_at_point_z {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 fn compile_committed_preview_reference(
@@ -4847,6 +4870,101 @@ fn surface_terrain_cdt_authored_piece_matrix_preserves_owned_sources() {
 }
 
 #[test]
+fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain() {
+    let p0 = Vector3::new(0.0, 10.0, 0.0);
+    let p1 = Vector3::new(0.45, 10.8, 0.18);
+    let p2 = Vector3::new(1.0, 11.4, 0.0);
+    let p3 = Vector3::new(1.0, 11.4, 0.5);
+    let p4 = Vector3::new(0.0, 10.0, 0.5);
+    let source_loop = RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p1),
+            terrain_clip_source_edge_for_test(p1, p2),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p4),
+            terrain_clip_source_edge_for_test(p4, p0),
+        ],
+        points_world: vec![p0, p2, p3, p4],
+    };
+    let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[source_loop]);
+
+    assert_eq!(
+        unioned.len(),
+        1,
+        "unioned terrain clip contour must not drop a source-owned segment that spans adjacent boundary edges"
+    );
+    let points = &unioned[0].points_world;
+    assert!(
+        points
+            .iter()
+            .any(|point| (point.x - p1.x).abs() <= SAMPLE_EPSILON_M
+                && (point.z - p1.z).abs() <= SAMPLE_EPSILON_M),
+        "source-owned split vertex must be stitched back into the unioned cutter"
+    );
+    assert_eq!(
+        unioned[0].source_edges.len(),
+        points.len(),
+        "every emitted clip segment must keep an owner-backed source edge"
+    );
+    assert!(
+        unioned[0]
+            .source_edges
+            .iter()
+            .any(|edge| (edge.start.x - p0.x).abs() <= SAMPLE_EPSILON_M
+                && (edge.end.x - p1.x).abs() <= SAMPLE_EPSILON_M),
+        "first split subsegment must preserve its original source edge"
+    );
+    assert!(
+        unioned[0]
+            .source_edges
+            .iter()
+            .any(|edge| (edge.start.x - p1.x).abs() <= SAMPLE_EPSILON_M
+                && (edge.end.x - p2.x).abs() <= SAMPLE_EPSILON_M),
+        "second split subsegment must preserve its original source edge"
+    );
+}
+
+#[test]
+fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
+    let y = 4.0;
+    let valid = [
+        Vector3::new(0.0, y, 0.0),
+        Vector3::new(1.0, y, 0.0),
+        Vector3::new(1.0, y, 1.0),
+        Vector3::new(0.0, y, 1.0),
+    ];
+    let unowned = [
+        Vector3::new(3.0, y, 0.0),
+        Vector3::new(4.0, y, 0.0),
+        Vector3::new(4.0, y, 1.0),
+        Vector3::new(3.0, y, 1.0),
+    ];
+    let raw_clip_sources = vec![
+        RoadSurfaceTerrainClipLoop {
+            source_edges: valid
+                .iter()
+                .zip(valid.iter().cycle().skip(1))
+                .take(valid.len())
+                .map(|(&start, &end)| terrain_clip_source_edge_for_test(start, end))
+                .collect(),
+            points_world: valid.to_vec(),
+        },
+        RoadSurfaceTerrainClipLoop {
+            source_edges: Vec::new(),
+            points_world: unowned.to_vec(),
+        },
+    ];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    assert!(
+        unioned.is_empty(),
+        "terrain clip union must block the whole export instead of silently dropping an unowned cutter shape"
+    );
+}
+
+#[test]
 fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
     let y = 12.0;
     let points = vec![
@@ -6250,6 +6368,90 @@ fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
             && !dump.contains("shared_source_height_conflict"),
         "elevated JunctionN must not compile through hidden height-conflict diagnostics: {dump}"
     );
+
+    let patch_bounds = (-330.0, -330.0, 180.0, 180.0);
+    let raw_boundary_loops = surface
+        .compiled_visual_span_pieces()
+        .values()
+        .filter(|piece| piece.edge_class == EdgeClass::Standard)
+        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned())
+        .chain(
+            surface
+                .compiled_visual_node_pieces()
+                .values()
+                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned()),
+        )
+        .collect::<Vec<_>>();
+    assert!(
+        raw_boundary_loops.len() >= 4,
+        "logged elevated 3-way patch must include all span and JunctionN footprint contributors"
+    );
+    let raw_clip_polygons = raw_boundary_loops
+        .iter()
+        .filter_map(|boundary_loop| {
+            RoadSurfaceSystem::make_boundary_loop_polygon(boundary_loop.points_world.clone())
+        })
+        .collect::<Vec<_>>();
+    let raw_area_m2 = raw_clip_polygons
+        .iter()
+        .map(|polygon| RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs())
+        .sum::<f32>();
+    let (road_loops, clip_polygons, source_count) = surface
+        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
+            &graph,
+            patch_bounds.0,
+            patch_bounds.1,
+            patch_bounds.2,
+            patch_bounds.3,
+        );
+    let union_area_m2 = clip_polygons
+        .iter()
+        .map(|polygon| RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs())
+        .sum::<f32>();
+    assert_eq!(source_count, raw_boundary_loops.len());
+    assert!(
+        union_area_m2 > 900.0,
+        "elevated 3-way terrain clip area collapsed after union; union_area_m2={union_area_m2:.3} raw_area_m2={raw_area_m2:.3}"
+    );
+    assert!(
+        road_loops
+            .iter()
+            .flat_map(|road_loop| road_loop.source_edges.iter())
+            .all(|edge| !matches!(
+                edge.source,
+                TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. }
+            )),
+        "elevated 3-way CDT road loops must keep real span/node footprint source ownership"
+    );
+    let mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
+        &terrain,
+        road_loops,
+        patch_bounds.0,
+        patch_bounds.1,
+        patch_bounds.2,
+        patch_bounds.3,
+        8.0,
+    ))
+    .expect("elevated 3-way production terrain CDT input should build");
+    assert_eq!(
+        mesh.stats.invalid_constraint_edges, 0,
+        "elevated 3-way terrain CDT must not receive invalid road constraints"
+    );
+    assert!(
+        mesh.stats.retaining_wall_faces > 0,
+        "elevated 3-way terrain tie-in must retain sourced wall faces instead of losing the clip loop"
+    );
+    assert_cdt_mesh_stays_outside_clip_polygons(
+        "logged elevated 3-way terrain patch unioned footprint",
+        &mesh,
+        &clip_polygons,
+    );
+    assert_cdt_mesh_stays_outside_clip_polygons(
+        "logged elevated 3-way terrain patch",
+        &mesh,
+        &raw_clip_polygons,
+    );
+    assert_cdt_mesh_sources_are_structured("logged elevated 3-way terrain patch", &mesh);
 }
 
 #[test]
