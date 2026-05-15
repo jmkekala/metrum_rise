@@ -652,7 +652,7 @@ impl RoadSurfaceSystem {
                 if emitted.insert(dedup_key) {
                     faces.push((
                         face,
-                        RoadSurfaceVerticalFaceSource {
+                        RoadSurfaceVerticalFaceSource::CanonicalStep {
                             explicit_vertical_step_index: step_index,
                             segment,
                         },
@@ -725,7 +725,7 @@ impl RoadSurfaceSystem {
             }
             faces.push((
                 face,
-                RoadSurfaceVerticalFaceSource {
+                RoadSurfaceVerticalFaceSource::CanonicalStep {
                     explicit_vertical_step_index: step_index,
                     segment,
                 },
@@ -1624,7 +1624,7 @@ fn push_missing_raised_step_faces_from_owned_region_boundaries(
                 };
                 faces.push((
                     face,
-                    RoadSurfaceVerticalFaceSource {
+                    RoadSurfaceVerticalFaceSource::CanonicalStep {
                         explicit_vertical_step_index: step_index,
                         segment,
                     },
@@ -1698,10 +1698,7 @@ fn push_missing_raised_step_faces_from_top_owner_boundaries(
                 };
                 faces.push((
                     face,
-                    RoadSurfaceVerticalFaceSource {
-                        explicit_vertical_step_index: usize::MAX,
-                        segment,
-                    },
+                    RoadSurfaceVerticalFaceSource::FinalOwnedBoundary { segment },
                 ));
             }
         }
@@ -1824,7 +1821,7 @@ fn retain_raised_step_faces_with_top_support(
 ) {
     faces.retain(|(polygon, source)| {
         let Some((lower_owner, raised_owner)) =
-            canonical_vertical_step_lower_and_raised_owners(source.segment)
+            canonical_vertical_step_lower_and_raised_owners(source.segment())
         else {
             return false;
         };
@@ -1842,7 +1839,7 @@ fn orient_raised_step_faces_to_lower_owner_support(
 ) {
     for (polygon, source) in faces {
         let Some((lower_owner, _)) =
-            canonical_vertical_step_lower_and_raised_owners(source.segment)
+            canonical_vertical_step_lower_and_raised_owners(source.segment())
         else {
             continue;
         };
@@ -2103,12 +2100,7 @@ impl RoadSurfaceSystem {
         faces.sort_by(
             |(left_polygon, left_source), (right_polygon, right_source)| {
                 Self::visual_polygon_ordering(left_polygon, right_polygon)
-                    .then(
-                        left_source
-                            .explicit_vertical_step_index
-                            .cmp(&right_source.explicit_vertical_step_index),
-                    )
-                    .then(left_source.segment.cmp(&right_source.segment))
+                    .then(left_source.sort_key().cmp(&right_source.sort_key()))
             },
         );
     }

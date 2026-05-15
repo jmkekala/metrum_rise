@@ -1024,7 +1024,7 @@ fn assert_canonical_explicit_vertical_steps_have_faces(piece: &RoadSurfaceVisual
     let face_source_segments = piece
         .raised_step_face_sources
         .iter()
-        .map(|source| source.segment)
+        .map(|source| source.segment())
         .collect::<BTreeSet<_>>();
 
     for (step_index, segment) in piece.explicit_vertical_step_segments.iter().enumerate() {

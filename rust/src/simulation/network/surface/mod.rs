@@ -147,9 +147,48 @@ pub(crate) struct RoadSurfaceEarthworkRenderFace {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RoadSurfaceVerticalFaceSource {
-    explicit_vertical_step_index: usize,
-    segment: arrangement::NodeExplicitVerticalStepSegment,
+enum RoadSurfaceVerticalFaceSource {
+    CanonicalStep {
+        explicit_vertical_step_index: usize,
+        segment: arrangement::NodeExplicitVerticalStepSegment,
+    },
+    FinalOwnedBoundary {
+        segment: arrangement::NodeExplicitVerticalStepSegment,
+    },
+}
+
+impl RoadSurfaceVerticalFaceSource {
+    fn explicit_vertical_step_index(self) -> Option<usize> {
+        match self {
+            Self::CanonicalStep {
+                explicit_vertical_step_index,
+                ..
+            } => Some(explicit_vertical_step_index),
+            Self::FinalOwnedBoundary { .. } => None,
+        }
+    }
+
+    fn segment(self) -> arrangement::NodeExplicitVerticalStepSegment {
+        match self {
+            Self::CanonicalStep { segment, .. } | Self::FinalOwnedBoundary { segment } => segment,
+        }
+    }
+
+    fn sort_key(
+        self,
+    ) -> (
+        u8,
+        arrangement::NodeExplicitVerticalStepSegment,
+        Option<usize>,
+    ) {
+        match self {
+            Self::CanonicalStep {
+                explicit_vertical_step_index,
+                segment,
+            } => (0, segment, Some(explicit_vertical_step_index)),
+            Self::FinalOwnedBoundary { segment } => (1, segment, None),
+        }
+    }
 }
 
 /// Explicit visual node piece compiled from the solved roadbed.
