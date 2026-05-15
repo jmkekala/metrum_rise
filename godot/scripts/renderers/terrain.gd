@@ -728,6 +728,10 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_accepted_faces: int = int(patch_data.get("terrain_cdt_accepted_faces", 0))
 		var cdt_rejected_road_faces: int = int(patch_data.get("terrain_cdt_rejected_road_faces", 0))
 		var cdt_emitted_faces: int = int(patch_data.get("terrain_cdt_emitted_faces", 0))
+		var cdt_terrain_face_sources: String = _road_geometry_cdt_face_sources_summary_label(
+			patch_data,
+			"terrain_mesh"
+		)
 		var cdt_max_face_y_delta_m: float = float(patch_data.get("terrain_cdt_max_face_y_delta_m", 0.0))
 		var cdt_max_face_slope_ratio: float = float(patch_data.get("terrain_cdt_max_face_slope_ratio", 0.0))
 		var cdt_road_seam_faces: int = int(patch_data.get("terrain_cdt_road_seam_faces", 0))
@@ -735,6 +739,10 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
 		var cdt_retaining_wall_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_faces", 0))
 		var cdt_retaining_wall_emitted_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_emitted_faces", 0))
+		var cdt_retaining_wall_face_sources: String = _road_geometry_cdt_face_sources_summary_label(
+			patch_data,
+			"terrain_retaining_wall_mesh"
+		)
 		var cdt_retaining_wall_max_y_delta_m: float = float(patch_data.get("terrain_cdt_retaining_wall_max_y_delta_m", 0.0))
 		var cdt_retaining_wall_max_slope_ratio: float = float(patch_data.get("terrain_cdt_retaining_wall_max_slope_ratio", 0.0))
 		var cdt_tie_in_widened_source_samples: int = int(patch_data.get("terrain_cdt_tie_in_widened_source_samples", 0))
@@ -745,7 +753,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_retaining_wall_samples: String = _road_geometry_terrain_retaining_wall_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -783,6 +791,8 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_rejected_road_faces,
 				cdt_emitted_faces,
 				cdt_retaining_wall_emitted_faces,
+				cdt_terrain_face_sources,
+				cdt_retaining_wall_face_sources,
 				cdt_max_face_y_delta_m,
 				cdt_max_face_slope_ratio,
 				cdt_road_seam_faces,
@@ -1551,6 +1561,116 @@ func _road_geometry_cdt_sample_sources_label(
 			)
 		)
 	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefix: String) -> String:
+	var counts: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_counts", PackedInt32Array())
+		as PackedInt32Array
+	)
+	if counts.is_empty():
+		return "{faces=0,unsourced=0,source_rows=0,span=0,node=0,synthetic=0,samples=[]}"
+	var kind_codes: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_kind_codes", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var primary_ids: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_primary_ids", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var node_kind_codes: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_node_kind_codes", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var edge_class_codes: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_edge_class_codes", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var owner_kinds: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_owner_kinds", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var owner_indices: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_owner_indices", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var support_policies: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_support_policies", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var roles: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_roles", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var section_ranges: PackedInt32Array = (
+		patch_data.get(prefix + "_face_source_section_ranges", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var s_ranges: PackedFloat32Array = (
+		patch_data.get(prefix + "_face_source_s_ranges", PackedFloat32Array())
+		as PackedFloat32Array
+	)
+	var unsourced_count := 0
+	var source_rows := 0
+	var span_source_rows := 0
+	var node_source_rows := 0
+	var synthetic_source_rows := 0
+	var row_cursor := 0
+	var first_unsourced_face := -1
+	var samples: Array[String] = []
+	for face_index in range(counts.size()):
+		var source_count: int = maxi(0, counts[face_index])
+		if source_count <= 0:
+			unsourced_count += 1
+			if first_unsourced_face < 0:
+				first_unsourced_face = face_index
+			continue
+		source_rows += source_count
+		var source_parts: Array[String] = []
+		for local_index in range(source_count):
+			var row: int = row_cursor + local_index
+			var source_kind_code: int = _road_geometry_int_at(kind_codes, row, -1)
+			if source_kind_code == 0:
+				span_source_rows += 1
+			elif source_kind_code == 1:
+				node_source_rows += 1
+			elif source_kind_code == 2:
+				synthetic_source_rows += 1
+			if samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
+				source_parts.append(
+					_road_geometry_cdt_source_row_label(
+						source_kind_code,
+						_road_geometry_int_at(primary_ids, row, -1),
+						_road_geometry_int_at(node_kind_codes, row, -1),
+						_road_geometry_int_at(edge_class_codes, row, -1),
+						_road_geometry_int_at(owner_kinds, row, -1),
+						_road_geometry_int_at(owner_indices, row, -1),
+						_road_geometry_int_at(support_policies, row, -1),
+						_road_geometry_int_at(roles, row, -1),
+						_road_geometry_int_pair_at(section_ranges, row, 0, -1),
+						_road_geometry_int_pair_at(section_ranges, row, 1, -1),
+						_road_geometry_float_pair_at(s_ranges, row, 0, -1.0),
+						_road_geometry_float_pair_at(s_ranges, row, 1, -1.0)
+					)
+				)
+		if not source_parts.is_empty() and samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
+			samples.append(
+				"{face=%d,sources=[%s]}" % [face_index, ", ".join(source_parts)]
+			)
+		row_cursor += source_count
+	if samples.is_empty() and first_unsourced_face >= 0:
+		samples.append("{face=%d,sources=[]}" % [first_unsourced_face])
+	return (
+		"{faces=%d,unsourced=%d,source_rows=%d,span=%d,node=%d,synthetic=%d,samples=%s}"
+		% [
+			counts.size(),
+			unsourced_count,
+			source_rows,
+			span_source_rows,
+			node_source_rows,
+			synthetic_source_rows,
+			"[" + ", ".join(samples) + "]",
+		]
+	)
 
 func _road_geometry_cdt_source_row_label(
 	source_kind_code: int,
