@@ -32,7 +32,7 @@ pub(super) const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
 // Visual span/node ownership handoff guards.
 const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
-const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
+pub(super) const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
 const VISUAL_CONFLICT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VISUAL_CONFLICT_SIN_EPSILON: f32 = 1.0e-3;
 

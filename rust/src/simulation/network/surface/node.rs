@@ -12,6 +12,7 @@ use super::{
         NodeExplicitVerticalStepSegment,
     },
     backend::{RoadVec2, road_vec2_to_overlay_point},
+    edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
     validation::NodeValidationReport,
 };
@@ -23,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VERTICAL_STEP_MIN_SPAN_M: f32 = 1.0e-6;
+const VISUAL_DOMINANT_HANDOFF_REJECTION_RATIO: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ArrangementFaceBoundaryInterval {
@@ -131,7 +133,7 @@ impl RoadSurfaceSystem {
             CompiledNodeKind::PassThrough => None,
             CompiledNodeKind::Bend => self.build_bend_visual_node_piece(terrain, valid, &incidents),
             CompiledNodeKind::JunctionN => {
-                self.build_junction_visual_node_piece(terrain, valid, &incidents)
+                self.build_junction_visual_node_piece(graph, terrain, valid, &incidents)
             }
         }
     }
@@ -170,11 +172,18 @@ impl RoadSurfaceSystem {
 
     fn build_junction_visual_node_piece(
         &self,
+        graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
         incidents: &[IncidentSurfaceEdge],
     ) -> Option<RoadSurfaceVisualNodePiece> {
         if incidents.len() < 3 {
+            return None;
+        }
+        if incidents
+            .iter()
+            .any(|incident| self.incident_edge_visual_handoff_is_overconstrained(graph, *incident))
+        {
             return None;
         }
         let Some(mouths) = self.build_ordered_piece_mouths(incidents) else {
@@ -1079,6 +1088,68 @@ impl RoadSurfaceSystem {
                 .then(a.side.cmp(&b.side))
         });
         Some(mouths)
+    }
+
+    fn incident_edge_visual_handoff_is_overconstrained(
+        &self,
+        graph: &RegionGraph,
+        incident: IncidentSurfaceEdge,
+    ) -> bool {
+        if incident.edge_idx >= graph.edge_count() {
+            return true;
+        }
+        let edge = graph.edge(incident.edge_idx);
+        let Some(piece) = self.compiled_visual_span_pieces.get(&incident.edge_idx) else {
+            return true;
+        };
+        let Some(sections) = self.compiled_sections.get(&incident.edge_idx) else {
+            return true;
+        };
+        let Some(total_length_m) = sections.last().map(|section| section.s_m) else {
+            return true;
+        };
+        if total_length_m <= SAMPLE_EPSILON_M {
+            return true;
+        }
+        let has_current_mouth_profile = match incident.side {
+            IncidentEdgeSide::Start => piece.start_mouth_profile.is_some(),
+            IncidentEdgeSide::End => piece.end_mouth_profile.is_some(),
+        };
+        if !has_current_mouth_profile {
+            return true;
+        }
+
+        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.start_node),
+        );
+        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.end_node),
+        );
+        let Some((start_handoff_s_m, end_handoff_s_m)) = self
+            .visual_surface_handoff_range_for_edge(
+                graph,
+                incident.edge_idx,
+                edge,
+                total_length_m,
+                start_kind,
+                end_kind,
+            )
+        else {
+            return true;
+        };
+        let actual_handoff_m = match incident.side {
+            IncidentEdgeSide::Start => start_handoff_s_m,
+            IncidentEdgeSide::End => total_length_m - end_handoff_s_m,
+        };
+        let opposite_handoff_m = match incident.side {
+            IncidentEdgeSide::Start => total_length_m - end_handoff_s_m,
+            IncidentEdgeSide::End => start_handoff_s_m,
+        };
+        let span_remaining_m = end_handoff_s_m - start_handoff_s_m;
+        span_remaining_m <= VISUAL_MIN_SPAN_LENGTH_M + SAMPLE_EPSILON_M
+            && actual_handoff_m > opposite_handoff_m * VISUAL_DOMINANT_HANDOFF_REJECTION_RATIO
     }
 
     fn build_incident_mouth_paths(
