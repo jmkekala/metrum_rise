@@ -53,6 +53,8 @@ const TERRAIN_BORDER_CONTOUR_MINOR_COLOR := Color(0.13, 0.19, 0.16)
 const TERRAIN_BORDER_CONTOUR_MAJOR_COLOR := Color(0.10, 0.16, 0.14)
 const TERRAIN_BORDER_CONTOUR_MINOR_STRENGTH := 0.14
 const TERRAIN_BORDER_CONTOUR_MAJOR_STRENGTH := 0.28
+const RETAINING_WALL_COLOR := Color(0.54, 0.54, 0.50)
+const RETAINING_WALL_ROUGHNESS := 0.88
 const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
@@ -90,6 +92,7 @@ var border_skirt_instance: MeshInstance3D
 var border_bottom_cap_instance: MeshInstance3D
 var border_skirt_material: ShaderMaterial
 var border_bottom_cap_material: StandardMaterial3D
+var retaining_wall_material: StandardMaterial3D
 var _resident_patch_bounds_valid: bool = false
 var _resident_min_patch_x: int = 0
 var _resident_max_patch_x: int = -1
@@ -428,6 +431,14 @@ func _create_patch(key: Vector2i) -> void:
 		0.0,
 		world_origin_z + world_size_z * 0.5
 	)
+	var retaining_wall_node: MeshInstance3D = MeshInstance3D.new()
+	retaining_wall_node.name = "RetainingWalls"
+	retaining_wall_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	retaining_wall_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
+	retaining_wall_node.mesh = _retaining_wall_patch_mesh(patch_data)
+	retaining_wall_node.visible = _patch_has_retaining_wall_mesh(patch_data)
+	retaining_wall_node.material_override = _retaining_wall_material()
+	patch_node.add_child(retaining_wall_node)
 
 	var material: ShaderMaterial = ShaderMaterial.new()
 	material.shader = TERRAIN_SHADER
@@ -481,6 +492,7 @@ func _create_patch(key: Vector2i) -> void:
 
 	patches[key] = {
 		"node": patch_node,
+		"retaining_wall_node": retaining_wall_node,
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
@@ -555,6 +567,10 @@ func _upload_patch(key: Vector2i) -> void:
 		int(patch.get("lod_step", 1)),
 		int(patch.get("subdivision_factor", 1))
 	)
+	var retaining_wall_node: MeshInstance3D = patch.get("retaining_wall_node", null) as MeshInstance3D
+	if retaining_wall_node != null:
+		retaining_wall_node.mesh = _retaining_wall_patch_mesh(patch_data)
+		retaining_wall_node.visible = _patch_has_retaining_wall_mesh(patch_data)
 	patch_node.position = Vector3(
 		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
 		0.0,
@@ -699,6 +715,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		)
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
+		var retaining_wall_baked_vertex_count: int = _road_geometry_retaining_wall_baked_vertex_count(patch_data)
 		var cdt_status: String = str(patch_data.get("terrain_cdt_status", "none"))
 		var cdt_error: String = str(patch_data.get("terrain_cdt_error", "none"))
 		var cdt_input_vertices: int = int(patch_data.get("terrain_cdt_input_vertices", 0))
@@ -712,17 +729,21 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_max_face_y_delta_m: float = float(patch_data.get("terrain_cdt_max_face_y_delta_m", 0.0))
 		var cdt_max_face_slope_ratio: float = float(patch_data.get("terrain_cdt_max_face_slope_ratio", 0.0))
 		var cdt_road_seam_faces: int = int(patch_data.get("terrain_cdt_road_seam_faces", 0))
-		var cdt_road_seam_steep_faces: int = int(patch_data.get("terrain_cdt_road_seam_steep_faces", 0))
 		var cdt_road_seam_max_y_delta_m: float = float(patch_data.get("terrain_cdt_road_seam_max_y_delta_m", 0.0))
 		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
+		var cdt_retaining_wall_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_faces", 0))
+		var cdt_retaining_wall_emitted_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_emitted_faces", 0))
+		var cdt_retaining_wall_max_y_delta_m: float = float(patch_data.get("terrain_cdt_retaining_wall_max_y_delta_m", 0.0))
+		var cdt_retaining_wall_max_slope_ratio: float = float(patch_data.get("terrain_cdt_retaining_wall_max_slope_ratio", 0.0))
 		var cdt_tie_in_widened_source_samples: int = int(patch_data.get("terrain_cdt_tie_in_widened_source_samples", 0))
 		var cdt_tie_in_widened_max_y_delta_m: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0))
 		var cdt_tie_in_widened_max_slope_ratio: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0))
 		var cdt_invalid_constraint_samples: String = _road_geometry_terrain_invalid_constraint_samples_label(patch_data)
 		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
+		var cdt_retaining_wall_samples: String = _road_geometry_terrain_retaining_wall_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -746,6 +767,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				baked_vertex_count,
+				retaining_wall_baked_vertex_count,
 				cdt_status,
 				cdt_error,
 				cdt_input_vertices,
@@ -756,17 +778,21 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_accepted_faces,
 				cdt_rejected_road_faces,
 				cdt_emitted_faces,
+				cdt_retaining_wall_emitted_faces,
 				cdt_max_face_y_delta_m,
 				cdt_max_face_slope_ratio,
 				cdt_road_seam_faces,
-				cdt_road_seam_steep_faces,
 				cdt_road_seam_max_y_delta_m,
 				cdt_road_seam_max_slope_ratio,
+				cdt_retaining_wall_faces,
+				cdt_retaining_wall_max_y_delta_m,
+				cdt_retaining_wall_max_slope_ratio,
 				cdt_tie_in_widened_source_samples,
 				cdt_tie_in_widened_max_y_delta_m,
 				cdt_tie_in_widened_max_slope_ratio,
 				cdt_invalid_constraint_samples,
 				cdt_road_seam_samples,
+				cdt_retaining_wall_samples,
 				cdt_tie_in_widened_samples,
 			]
 		)
@@ -822,6 +848,12 @@ func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
 	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
 	return vertices.size() >= 3
 
+func _patch_has_retaining_wall_mesh(patch_data: Dictionary) -> bool:
+	if not patch_data.has("terrain_retaining_wall_mesh_vertices"):
+		return false
+	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
+	return vertices.size() >= 3
+
 func _baked_terrain_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
 	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
 	var normals: PackedVector3Array = patch_data["terrain_mesh_normals"] as PackedVector3Array
@@ -838,6 +870,38 @@ func _baked_terrain_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
+
+func _retaining_wall_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
+	var mesh: ArrayMesh = ArrayMesh.new()
+	if not _patch_has_retaining_wall_mesh(patch_data):
+		return mesh
+	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
+	var normals: PackedVector3Array = (
+		patch_data.get("terrain_retaining_wall_mesh_normals", PackedVector3Array())
+		as PackedVector3Array
+	)
+	var uvs: PackedVector2Array = (
+		patch_data.get("terrain_retaining_wall_mesh_uvs", PackedVector2Array())
+		as PackedVector2Array
+	)
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if normals.size() == vertices.size():
+		arrays[Mesh.ARRAY_NORMAL] = normals
+	if uvs.size() == vertices.size():
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _retaining_wall_material() -> StandardMaterial3D:
+	if retaining_wall_material == null:
+		retaining_wall_material = StandardMaterial3D.new()
+		retaining_wall_material.albedo_color = RETAINING_WALL_COLOR
+		retaining_wall_material.roughness = RETAINING_WALL_ROUGHNESS
+		retaining_wall_material.metallic = 0.0
+		retaining_wall_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return retaining_wall_material
 
 func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
 	var counts := patch_data["road_clip_polygon_counts"] as PackedInt32Array
@@ -1271,6 +1335,81 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 		patch_data.get("terrain_cdt_road_seam_sample_vertices", PackedVector3Array())
 		as PackedVector3Array
 	)
+	var kinds: PackedInt32Array = (
+		patch_data.get("terrain_cdt_road_seam_sample_kinds", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var sample_count: int = mini(
+		centroids.size(),
+		mini(int(bounds.size() / 2), int(metrics.size() / 2))
+	)
+	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
+	if sample_count <= 0:
+		return "[]"
+	var parts: Array[String] = []
+	for index in range(sample_count):
+		var centroid: Vector3 = centroids[index]
+		var bounds_min: Vector3 = bounds[index * 2]
+		var bounds_max: Vector3 = bounds[index * 2 + 1]
+		var y_delta_m: float = metrics[index * 2]
+		var slope_ratio: float = metrics[index * 2 + 1]
+		var kind_label := "terrain"
+		if kinds.size() > index:
+			kind_label = _road_geometry_terrain_tie_in_kind_label(kinds[index])
+		var vertices_label := ""
+		if vertices.size() >= (index + 1) * 3:
+			var v0: Vector3 = vertices[index * 3]
+			var v1: Vector3 = vertices[index * 3 + 1]
+			var v2: Vector3 = vertices[index * 3 + 2]
+			vertices_label = ",verts=[(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f)]" % [
+				v0.x,
+				v0.y,
+				v0.z,
+				v1.x,
+				v1.y,
+				v1.z,
+				v2.x,
+				v2.y,
+				v2.z,
+			]
+		parts.append(
+			"{kind=%s,centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f%s}"
+			% [
+				kind_label,
+				centroid.x,
+				centroid.y,
+				centroid.z,
+				bounds_min.x,
+				bounds_min.y,
+				bounds_min.z,
+				bounds_max.x,
+				bounds_max.y,
+				bounds_max.z,
+				y_delta_m,
+				slope_ratio,
+				vertices_label,
+			]
+		)
+	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_terrain_retaining_wall_samples_label(patch_data: Dictionary) -> String:
+	if not patch_data.has("terrain_cdt_retaining_wall_sample_centroids"):
+		return "[]"
+	var centroids: PackedVector3Array = (
+		patch_data["terrain_cdt_retaining_wall_sample_centroids"] as PackedVector3Array
+	)
+	var bounds: PackedVector3Array = (
+		patch_data.get("terrain_cdt_retaining_wall_sample_bounds", PackedVector3Array())
+		as PackedVector3Array
+	)
+	var metrics: PackedFloat32Array = (
+		patch_data.get("terrain_cdt_retaining_wall_sample_metrics", PackedFloat32Array())
+		as PackedFloat32Array
+	)
+	var vertices: PackedVector3Array = (
+		patch_data.get("terrain_cdt_retaining_wall_sample_vertices", PackedVector3Array())
+		as PackedVector3Array
+	)
 	var sample_count: int = mini(
 		centroids.size(),
 		mini(int(bounds.size() / 2), int(metrics.size() / 2))
@@ -1319,6 +1458,11 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 			]
 		)
 	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_terrain_tie_in_kind_label(kind: int) -> String:
+	if kind == 1:
+		return "retaining_wall"
+	return "terrain"
 
 func _road_geometry_terrain_tie_in_widened_samples_label(patch_data: Dictionary) -> String:
 	if not patch_data.has("terrain_cdt_tie_in_widened_sample_points"):
@@ -1407,6 +1551,12 @@ func _road_geometry_baked_vertex_count(patch_data: Dictionary) -> int:
 	if not _patch_has_baked_terrain_mesh(patch_data):
 		return 0
 	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
+	return vertices.size()
+
+func _road_geometry_retaining_wall_baked_vertex_count(patch_data: Dictionary) -> int:
+	if not _patch_has_retaining_wall_mesh(patch_data):
+		return 0
+	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
 	return vertices.size()
 
 func _road_geometry_polygon_area(points: PackedVector2Array) -> float:

@@ -123,9 +123,11 @@ impl TerrainCdtInput {
 pub(crate) struct TerrainCdtMesh {
     pub(crate) vertices: Vec<TerrainCdtVertex>,
     pub(crate) triangles: Vec<[usize; 3]>,
+    pub(crate) retaining_wall_triangles: Vec<[usize; 3]>,
     pub(crate) stats: TerrainCdtStats,
     pub(crate) invalid_constraint_samples: Vec<TerrainCdtInvalidConstraintSample>,
     pub(crate) road_seam_face_samples: Vec<TerrainCdtFaceSample>,
+    pub(crate) retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) tie_in_widened_samples: Vec<TerrainCdtTieInSample>,
 }
 
@@ -141,16 +143,34 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) max_face_y_delta_m: f32,
     pub(crate) max_face_slope_ratio: f32,
     pub(crate) road_seam_faces: usize,
-    pub(crate) road_seam_steep_faces: usize,
     pub(crate) road_seam_max_y_delta_m: f32,
     pub(crate) road_seam_max_slope_ratio: f32,
+    pub(crate) retaining_wall_faces: usize,
+    pub(crate) retaining_wall_max_y_delta_m: f32,
+    pub(crate) retaining_wall_max_slope_ratio: f32,
     pub(crate) tie_in_widened_source_samples: usize,
     pub(crate) tie_in_widened_max_y_delta_m: f32,
     pub(crate) tie_in_widened_max_slope_ratio: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerrainCdtTieInKind {
+    OrdinaryTerrain,
+    RetainingWall,
+}
+
+impl TerrainCdtTieInKind {
+    pub(crate) fn debug_code(self) -> i32 {
+        match self {
+            Self::OrdinaryTerrain => 0,
+            Self::RetainingWall => 1,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TerrainCdtFaceSample {
+    pub(crate) kind: TerrainCdtTieInKind,
     pub(crate) vertices: [TerrainCdtVertex; 3],
     pub(crate) centroid: TerrainCdtVertex,
     pub(crate) min_x: f64,
@@ -260,17 +280,21 @@ pub(crate) fn build_road_touched_terrain_patch(
             max_face_y_delta_m: diagnostics.max_face_y_delta_m,
             max_face_slope_ratio: diagnostics.max_face_slope_ratio,
             road_seam_faces: diagnostics.road_seam_faces,
-            road_seam_steep_faces: diagnostics.road_seam_steep_faces,
             road_seam_max_y_delta_m: diagnostics.road_seam_max_y_delta_m,
             road_seam_max_slope_ratio: diagnostics.road_seam_max_slope_ratio,
+            retaining_wall_faces: diagnostics.retaining_wall_faces,
+            retaining_wall_max_y_delta_m: diagnostics.retaining_wall_max_y_delta_m,
+            retaining_wall_max_slope_ratio: diagnostics.retaining_wall_max_slope_ratio,
             tie_in_widened_source_samples: canonical.tie_in_widened_source_samples,
             tie_in_widened_max_y_delta_m: canonical.tie_in_widened_max_y_delta_m,
             tie_in_widened_max_slope_ratio: canonical.tie_in_widened_max_slope_ratio,
         },
         vertices: canonical.vertices,
-        triangles,
+        triangles: diagnostics.terrain_triangles,
+        retaining_wall_triangles: diagnostics.retaining_wall_triangles,
         invalid_constraint_samples,
         road_seam_face_samples: diagnostics.road_seam_face_samples,
+        retaining_wall_face_samples: diagnostics.retaining_wall_face_samples,
         tie_in_widened_samples: canonical.tie_in_widened_samples,
     })
 }
@@ -283,13 +307,18 @@ struct TerrainCdtRoadConstraintSource {
 }
 
 struct TerrainCdtDiagnostics {
+    terrain_triangles: Vec<[usize; 3]>,
+    retaining_wall_triangles: Vec<[usize; 3]>,
     max_face_y_delta_m: f32,
     max_face_slope_ratio: f32,
     road_seam_faces: usize,
-    road_seam_steep_faces: usize,
     road_seam_max_y_delta_m: f32,
     road_seam_max_slope_ratio: f32,
+    retaining_wall_faces: usize,
+    retaining_wall_max_y_delta_m: f32,
+    retaining_wall_max_slope_ratio: f32,
     road_seam_face_samples: Vec<TerrainCdtFaceSample>,
+    retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
 }
 
 struct CanonicalTerrainCdtInput {
@@ -376,7 +405,7 @@ fn canonicalize_input(
             continue;
         }
         if let Some(tie_in_sample) =
-            oversteep_tie_in_sample_against_any_road_loop(sample, &road_loops)
+            widening_tie_in_sample_against_any_road_loop(sample, &road_loops)
         {
             tie_in_widened_source_samples += 1;
             tie_in_widened_max_y_delta_m =
@@ -1085,13 +1114,18 @@ fn terrain_face_diagnostics(
         .map(|edge| normalize_edge(edge[0], edge[1]))
         .collect::<HashSet<_>>();
     let mut diagnostics = TerrainCdtDiagnostics {
+        terrain_triangles: Vec::new(),
+        retaining_wall_triangles: Vec::new(),
         max_face_y_delta_m: 0.0,
         max_face_slope_ratio: 0.0,
         road_seam_faces: 0,
-        road_seam_steep_faces: 0,
         road_seam_max_y_delta_m: 0.0,
         road_seam_max_slope_ratio: 0.0,
+        retaining_wall_faces: 0,
+        retaining_wall_max_y_delta_m: 0.0,
+        retaining_wall_max_slope_ratio: 0.0,
         road_seam_face_samples: Vec::new(),
+        retaining_wall_face_samples: Vec::new(),
     };
 
     for triangle in triangles {
@@ -1100,15 +1134,31 @@ fn terrain_face_diagnostics(
             vertices[triangle[1]],
             vertices[triangle[2]],
         ];
-        let metrics = terrain_face_sample(points);
+        let touches_road_seam = triangle_edges(triangle)
+            .iter()
+            .any(|edge| road_edge_set.contains(edge));
+        let kind = classify_terrain_tie_in_face(points, touches_road_seam);
+        let metrics = terrain_face_sample(points, kind);
         diagnostics.max_face_y_delta_m = diagnostics.max_face_y_delta_m.max(metrics.max_y_delta_m);
         diagnostics.max_face_slope_ratio = diagnostics
             .max_face_slope_ratio
             .max(metrics.max_slope_ratio);
 
-        let touches_road_seam = triangle_edges(triangle)
-            .iter()
-            .any(|edge| road_edge_set.contains(edge));
+        match kind {
+            TerrainCdtTieInKind::OrdinaryTerrain => diagnostics.terrain_triangles.push(*triangle),
+            TerrainCdtTieInKind::RetainingWall => {
+                diagnostics.retaining_wall_triangles.push(*triangle);
+                diagnostics.retaining_wall_faces += 1;
+                diagnostics.retaining_wall_max_y_delta_m = diagnostics
+                    .retaining_wall_max_y_delta_m
+                    .max(metrics.max_y_delta_m);
+                diagnostics.retaining_wall_max_slope_ratio = diagnostics
+                    .retaining_wall_max_slope_ratio
+                    .max(metrics.max_slope_ratio);
+                insert_road_seam_face_sample(&mut diagnostics.retaining_wall_face_samples, metrics);
+            }
+        }
+
         if !touches_road_seam {
             continue;
         }
@@ -1120,22 +1170,34 @@ fn terrain_face_diagnostics(
         diagnostics.road_seam_max_slope_ratio = diagnostics
             .road_seam_max_slope_ratio
             .max(metrics.max_slope_ratio);
-        if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
-            diagnostics.road_seam_steep_faces += 1;
-        }
         insert_road_seam_face_sample(&mut diagnostics.road_seam_face_samples, metrics);
     }
 
     diagnostics
 }
 
-fn oversteep_tie_in_sample_against_any_road_loop(
+fn classify_terrain_tie_in_face(
+    points: [TerrainCdtVertex; 3],
+    touches_road_seam: bool,
+) -> TerrainCdtTieInKind {
+    if !touches_road_seam {
+        return TerrainCdtTieInKind::OrdinaryTerrain;
+    }
+    let metrics = terrain_face_sample(points, TerrainCdtTieInKind::OrdinaryTerrain);
+    if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
+        TerrainCdtTieInKind::RetainingWall
+    } else {
+        TerrainCdtTieInKind::OrdinaryTerrain
+    }
+}
+
+fn widening_tie_in_sample_against_any_road_loop(
     sample: TerrainCdtVertex,
     road_loops: &[Vec<TerrainCdtVertex>],
 ) -> Option<TerrainCdtTieInSample> {
     road_loops
         .iter()
-        .filter_map(|road_loop| oversteep_tie_in_sample(sample, road_loop))
+        .filter_map(|road_loop| widening_tie_in_sample(sample, road_loop))
         .max_by(|a, b| {
             a.slope_ratio
                 .total_cmp(&b.slope_ratio)
@@ -1144,7 +1206,7 @@ fn oversteep_tie_in_sample_against_any_road_loop(
         })
 }
 
-fn oversteep_tie_in_sample(
+fn widening_tie_in_sample(
     sample: TerrainCdtVertex,
     road_loop: &[TerrainCdtVertex],
 ) -> Option<TerrainCdtTieInSample> {
@@ -1224,7 +1286,10 @@ fn triangle_edges(triangle: &[usize; 3]) -> [(usize, usize); 3] {
     ]
 }
 
-fn terrain_face_sample(points: [TerrainCdtVertex; 3]) -> TerrainCdtFaceSample {
+fn terrain_face_sample(
+    points: [TerrainCdtVertex; 3],
+    kind: TerrainCdtTieInKind,
+) -> TerrainCdtFaceSample {
     let mut min_x = points[0].x;
     let mut min_z = points[0].z;
     let mut max_x = points[0].x;
@@ -1251,6 +1316,7 @@ fn terrain_face_sample(points: [TerrainCdtVertex; 3]) -> TerrainCdtFaceSample {
     }
 
     TerrainCdtFaceSample {
+        kind,
         vertices: points,
         centroid: centroid(points),
         min_x,
@@ -1463,7 +1529,8 @@ mod tests {
                 .all(|sample| sample.required_distance_m > sample.distance_m)
         );
         assert!(mesh.stats.road_seam_faces > 0);
-        assert_eq!(mesh.stats.road_seam_steep_faces, 0);
+        assert_eq!(mesh.stats.retaining_wall_faces, 0);
+        assert!(mesh.retaining_wall_triangles.is_empty());
         assert!(mesh.stats.road_seam_max_y_delta_m >= 0.12);
         assert!(
             mesh.stats.road_seam_max_slope_ratio <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO + 0.0001,
@@ -1474,6 +1541,61 @@ mod tests {
         assert!(
             mesh.road_seam_face_samples[0].max_slope_ratio
                 >= mesh.stats.road_seam_max_slope_ratio - 0.0001
+        );
+    }
+
+    #[test]
+    fn cdt_classifies_overbudget_road_seam_faces_as_retaining_walls() {
+        let road = vec![
+            TerrainCdtVertex::new(4.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 6.0),
+            TerrainCdtVertex::new(4.0, 4.0, 6.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![TerrainCdtRoadLoop::new(5, 0, road.clone())],
+            Vec::new(),
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("Spade should classify over-budget road seam tie-ins");
+
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+        assert!(mesh.stats.road_seam_faces > 0);
+        assert!(mesh.stats.retaining_wall_faces > 0);
+        assert_eq!(
+            mesh.stats.accepted_faces,
+            mesh.triangles.len() + mesh.retaining_wall_triangles.len()
+        );
+        assert_eq!(
+            mesh.stats.retaining_wall_faces,
+            mesh.retaining_wall_triangles.len()
+        );
+        assert!(
+            mesh.stats.retaining_wall_max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO,
+            "retaining wall classification must be driven by the documented slope budget"
+        );
+        assert!(
+            mesh.road_seam_face_samples
+                .iter()
+                .any(|sample| sample.kind == TerrainCdtTieInKind::RetainingWall)
+        );
+        assert!(
+            mesh.retaining_wall_face_samples
+                .iter()
+                .all(|sample| sample.kind == TerrainCdtTieInKind::RetainingWall)
+        );
+        assert!(
+            mesh.retaining_wall_triangles.iter().all(|triangle| {
+                let center = centroid([
+                    mesh.vertices[triangle[0]],
+                    mesh.vertices[triangle[1]],
+                    mesh.vertices[triangle[2]],
+                ]);
+                !point_in_polygon(center, &road)
+            }),
+            "retaining walls are explicit terrain tie-ins, not emitted road-footprint faces"
         );
     }
 

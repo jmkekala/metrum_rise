@@ -167,11 +167,11 @@ Live behavior:
   of overlapping road-owned top surfaces, and bridge / tunnel structural earthworks are selected
   from class-owned endpoint ranges so bridge midspans stay unflattened while tunnel portals still
   stamp. Road-touched terrain CDT now also reports source samples omitted to widen over-steep
-  cut / fill tie-ins, with exact source / seam sample diagnostics, and marks any remaining
-  over-steep seam output as `terrain_cdt_status=oversteep`. The remaining blocker is
-  retaining / wall variants and material classification for tie-ins that cannot stay legal as
-  ordinary terrain; boolean ownership and height-field validation must keep rejecting real band
-  residuals instead of silently patching them.
+  cut / fill tie-ins, with exact source / seam sample diagnostics, and classifies any remaining
+  over-budget road-seam CDT faces as explicit retaining-wall tie-in geometry exported separately
+  from ordinary terrain. The remaining blocker is broader DEM validation plus any richer closure
+  variants needed beyond the retaining-wall path; boolean ownership and height-field validation
+  must keep rejecting real band residuals instead of silently patching them.
 - `Span` output now uses the same resolved-region staging shape as node output: section samples
   first produce role-tagged asphalt, curb / shoulder, and non-road top regions plus generic
   owner-pair raised-step constraints, then render polygons, query support, terrain clip loops,
@@ -209,9 +209,10 @@ Remaining ROAD-01 gap:
   regions to carry explicit profile seam rails, and missing evidence is reported as a structured
   boolean-ownership residual. Road-touched terrain support now uses the lower road-owned
   top-surface envelope for overlapping grounded support checks, and bridge / tunnel earthwork
-  ranges are class-aware so structural stamps stay limited to abutments and visible portals. The
-  remaining work is broader DEM validation of road-to-terrain tie-in steepness plus retaining /
-  wall and material variants. Hand-built miter caps, miter guards, or adjacent-mouth connector
+  ranges are class-aware so structural stamps stay limited to abutments and visible portals.
+  Road-touched terrain CDT classifies over-budget road-seam faces as explicit retaining-wall
+  geometry. The remaining work is broader DEM validation plus any closure variants required by
+  extreme authored terrain. Hand-built miter caps, miter guards, or adjacent-mouth connector
   patches are not the Bend / JunctionN ownership strategy; they are the failure mode this rework is
   replacing.
 
