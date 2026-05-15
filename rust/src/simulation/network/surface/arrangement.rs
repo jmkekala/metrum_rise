@@ -427,8 +427,7 @@ impl NodeArrangement {
                 vertex.key == key
                     && vertex.height_key != height_key
                     && (vertex.height_field_id == height_field_id
-                        || owners_overlap(&vertex.owners, owners)
-                        || owners_share_non_curb_band_kind(&vertex.owners, owners))
+                        || owners_overlap(&vertex.owners, owners))
             })
             .map(|vertex| vertex.height_key)
     }
@@ -976,6 +975,13 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
     ) -> Option<NodeBandOwner> {
+        if self.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+            && let Some(opposite_owner) = edge.opposite_owner
+            && edge.owner != opposite_owner
+            && edge.owner.kind == opposite_owner.kind
+        {
+            return Some(opposite_owner);
+        }
         if !edge.is_material_transition || edge.constrains_shared_height {
             return None;
         }
@@ -983,7 +989,11 @@ impl NodeArrangement {
         let mut candidates = BTreeSet::new();
         if let Some(opposite_owner) = edge.opposite_owner {
             if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
-                && self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
+                && (self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
+                    || self.edge_has_owner_pair_endpoint_source_constraints_for_opposite(
+                        edge,
+                        opposite_owner,
+                    ))
             {
                 return Some(opposite_owner);
             }
@@ -1073,6 +1083,34 @@ impl NodeArrangement {
         owners
     }
 
+    fn edge_has_owner_pair_endpoint_source_constraints_for_opposite(
+        &self,
+        edge: &NodeArrangementEdge,
+        opposite_owner: NodeBandOwner,
+    ) -> bool {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        self.regions.iter().any(|region| {
+            let has_start = region.seam_constraints.iter().any(|constraint| {
+                seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
+                    && constraint.is_material_transition
+                    && !constraint.constrains_shared_height
+                    && seam_constraint_covers_key(constraint, start)
+            });
+            let has_end = region.seam_constraints.iter().any(|constraint| {
+                seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
+                    && constraint.is_material_transition
+                    && !constraint.constrains_shared_height
+                    && seam_constraint_covers_key(constraint, end)
+            });
+            has_start && has_end
+        })
+    }
+
     fn edge_has_applicable_material_source_constraint(&self, edge: &NodeArrangementEdge) -> bool {
         let Some(opposite_owner) = edge.opposite_owner else {
             return false;
@@ -1138,6 +1176,15 @@ fn seam_constraint_covers_edge(
     let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
     point_key_lies_on_segment(edge_start, constraint_start, constraint_end)
         && point_key_lies_on_segment(edge_end, constraint_start, constraint_end)
+}
+
+fn seam_constraint_covers_key(
+    constraint: &NodeRegionSeamConstraint,
+    key: NodeArrangementKey,
+) -> bool {
+    let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
+    let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
+    point_key_lies_on_segment(key, constraint_start, constraint_end)
 }
 
 impl NodeArrangementVertexId {
@@ -1460,13 +1507,6 @@ fn owners_share_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner.kind == b_owner.kind))
 }
 
-fn owners_share_non_curb_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
-    a.iter().any(|a_owner| {
-        a_owner.kind != RoadSurfaceBandKind::CurbOrShoulder
-            && b.iter().any(|b_owner| a_owner.kind == b_owner.kind)
-    })
-}
-
 fn owners_require_explicit_boundary_seam(a: NodeBandOwner, b: NodeBandOwner) -> bool {
     a.kind() != b.kind()
 }
@@ -1477,6 +1517,9 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
 }
 
 pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
+    if a != b && a.kind == b.kind {
+        return explicit_vertical_step_band_kind_rank(a.kind).is_some();
+    }
     let Some(a_rank) = explicit_vertical_step_band_kind_rank(a.kind) else {
         return false;
     };
@@ -1671,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_arrangement_vertex_key_rejects_same_band_height_conflict_across_sources() {
+    fn duplicate_arrangement_vertex_key_keeps_distinct_same_material_owner_contexts() {
         let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
         let point = RoadVec2::new(0.0, 0.0);
 
@@ -1685,18 +1728,18 @@ mod tests {
             )
             .expect("first sidewalk vertex should insert");
 
-        let result = arrangement.insert_vertex(
-            point,
-            2.0,
-            [owner(RoadSurfaceBandKind::Sidewalk, 1)],
-            height_field_id(RoadSurfaceBandKind::Sidewalk, 1),
-            [seam_source(1)],
-        );
+        let second = arrangement
+            .insert_vertex(
+                point,
+                2.0,
+                [owner(RoadSurfaceBandKind::Sidewalk, 1)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 1),
+                [seam_source(1)],
+            )
+            .expect("same material point contact keeps distinct owner-height context");
 
-        assert!(matches!(
-            result,
-            Err(NodeArrangementError::DuplicateVertexHeightConflict { .. })
-        ));
+        assert_ne!(second, NodeArrangementVertexId(0));
+        assert_eq!(arrangement.vertices().len(), 2);
     }
 
     #[test]
@@ -2594,6 +2637,7 @@ mod tests {
             point_xz: RoadVec2::new(x, z),
             height_m,
             height_field_id: height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
+            height_authority: None,
         }
     }
 }

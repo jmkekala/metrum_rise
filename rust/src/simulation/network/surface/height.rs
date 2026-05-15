@@ -26,7 +26,8 @@ use std::collections::BTreeMap;
 const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 2;
+const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 8192;
+const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = 0.01;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 type NodeHeightSourcePointKey = (i64, i64);
@@ -53,6 +54,7 @@ pub(crate) struct NodeHeightedVertex {
     pub(crate) point_xz: RoadVec2,
     pub(crate) height_m: f64,
     pub(crate) height_field_id: NodeBandHeightFieldId,
+    pub(crate) height_authority: Option<NodeHeightAuthoritySource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +114,8 @@ pub(crate) enum NodeHeightFieldError {
         owner: NodeBandOwner,
         opposite_owner: Option<NodeBandOwner>,
         height_field_id: Option<NodeBandHeightFieldId>,
+        incoming_owner: NodeBandOwner,
+        incoming_height_field_id: Option<NodeBandHeightFieldId>,
         constraint_index: Option<usize>,
         existing_authority: Option<NodeHeightAuthoritySource>,
         incoming_authority: Option<NodeHeightAuthoritySource>,
@@ -158,6 +162,8 @@ struct ExplicitSeamHeightKey {
     constraint_index: usize,
     owner: Option<NodeBandOwner>,
     opposite_owner: Option<NodeBandOwner>,
+    start: NodeHeightPointKey,
+    end: NodeHeightPointKey,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -165,6 +171,7 @@ struct NodeResolvedHeightAuthorityKey {
     point: NodeHeightPointKey,
     owner: NodeBandOwner,
     height_field_id: NodeBandHeightFieldId,
+    claim_priority: NodeGeneratedContourClaimPriority,
 }
 
 struct NodeResolvedHeightAuthorityMap {
@@ -265,7 +272,11 @@ impl NodeHeightPatchAuthority {
         }
     }
 
-    fn rank_for_owner(self, owner: NodeBandOwner) -> Option<u8> {
+    fn rank_for_owned_region(
+        self,
+        owner: NodeBandOwner,
+        claim_priority: NodeGeneratedContourClaimPriority,
+    ) -> Option<u8> {
         if let Some(authority_owner) = self.owner
             && authority_owner != owner
         {
@@ -274,7 +285,15 @@ impl NodeHeightPatchAuthority {
         Some(match self.role {
             NodeHeightPatchAuthorityRole::SourceInterval => 1,
             NodeHeightPatchAuthorityRole::TerminalCap => 2,
-            NodeHeightPatchAuthorityRole::GeneratedContour { .. } => 3,
+            NodeHeightPatchAuthorityRole::GeneratedContour {
+                claim_priority: authority_claim_priority,
+                ..
+            } => {
+                if authority_claim_priority != claim_priority {
+                    return None;
+                }
+                3
+            }
         })
     }
 
@@ -332,6 +351,11 @@ impl NodeHeightSolution {
             if !region.shape.is_empty() {
                 regions.push(region);
             }
+        }
+        if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
+            apply_junctionn_same_owner_height_field_vertex_unification(&mut regions);
+            apply_junctionn_same_material_shared_edge_height_tiebreak(&mut regions);
+            apply_junctionn_same_material_vertex_height_tiebreak(&mut regions);
         }
         validate_explicit_material_seam_heights(&regions)?;
         validate_shared_source_height_agreement(&regions)?;
@@ -444,14 +468,24 @@ impl NodeBandHeightField {
     fn evaluate_authorized_height(
         &self,
         owner: NodeBandOwner,
+        claim_priority: NodeGeneratedContourClaimPriority,
         point_xz: RoadVec2,
     ) -> Result<NodeEvaluatedHeight, NodeHeightFieldError> {
         let mut candidates = Vec::new();
         let mut outside_error = None;
         for patch in &self.patches {
-            let Some(authority_rank) = patch.authority.rank_for_owner(owner) else {
+            let Some(authority_rank) = patch.authority.rank_for_owned_region(owner, claim_priority)
+            else {
                 continue;
             };
+            if let Some(height_m) = patch.source_handoff_height_at(point_xz) {
+                candidates.push(NodeAuthorizedHeightCandidate {
+                    authority_rank: 4,
+                    authority: patch.authority.source(),
+                    height_m,
+                });
+                continue;
+            }
             match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => {
                     candidates.push(NodeAuthorizedHeightCandidate {
@@ -625,12 +659,26 @@ impl NodeBandHeightPatch {
         }
     }
 
+    fn source_handoff_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
+        if self.authority.role != NodeHeightPatchAuthorityRole::SourceInterval {
+            return None;
+        }
+        self.contour_edges
+            .as_ref()
+            .and_then(|edges| terminal_edge_height_at(point_xz, edges))
+    }
+
     fn evaluate_surface_height(
         &self,
         id: NodeBandHeightFieldId,
         source_kind: RoadSurfaceBandKind,
         point_xz: RoadVec2,
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
+        if let Some(edges) = &self.contour_edges
+            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
+        {
+            return Ok(NodeHeightPatchEvaluation::Inside(height_m));
+        }
         let mut triangle_outside_error = None;
         if let Some(triangles) = &self.triangles {
             match self.evaluate_triangle_surface_height(id, source_kind, point_xz, triangles)? {
@@ -641,11 +689,6 @@ impl NodeBandHeightPatch {
                     triangle_outside_error = Some(error);
                 }
             }
-        }
-        if let Some(edges) = &self.contour_edges
-            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
-        {
-            return Ok(NodeHeightPatchEvaluation::Inside(height_m));
         }
         Ok(NodeHeightPatchEvaluation::Outside(
             triangle_outside_error.unwrap_or_else(|| {
@@ -854,8 +897,19 @@ impl NodeResolvedHeightAuthorityMap {
                 .flat_map(|contour| contour.iter().copied())
             {
                 let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-                let height = field.evaluate_authorized_height(region.owner, point_xz)?;
-                map.insert(region.owner, field.id, point_xz, height, region.kind)?;
+                let height = field.evaluate_authorized_height(
+                    region.owner,
+                    region.claim_priority,
+                    point_xz,
+                )?;
+                map.insert(
+                    region.owner,
+                    field.id,
+                    region.claim_priority,
+                    point_xz,
+                    height,
+                    region.kind,
+                )?;
             }
         }
         Ok(map)
@@ -865,6 +919,7 @@ impl NodeResolvedHeightAuthorityMap {
         &mut self,
         owner: NodeBandOwner,
         height_field_id: NodeBandHeightFieldId,
+        claim_priority: NodeGeneratedContourClaimPriority,
         point_xz: RoadVec2,
         height: NodeEvaluatedHeight,
         kind: RoadSurfaceBandKind,
@@ -874,6 +929,7 @@ impl NodeResolvedHeightAuthorityMap {
             point,
             owner,
             height_field_id,
+            claim_priority,
         };
         let height_mm = quantize_m(height.height_m);
         if let Some(existing) = self.heights_by_key.get(&key) {
@@ -886,6 +942,8 @@ impl NodeResolvedHeightAuthorityMap {
                     owner,
                     opposite_owner: None,
                     height_field_id: Some(height_field_id),
+                    incoming_owner: owner,
+                    incoming_height_field_id: Some(height_field_id),
                     constraint_index: None,
                     existing_authority: Some(existing.authority),
                     incoming_authority: Some(height.authority),
@@ -910,6 +968,7 @@ impl NodeResolvedHeightAuthorityMap {
         &self,
         owner: NodeBandOwner,
         height_field_id: NodeBandHeightFieldId,
+        claim_priority: NodeGeneratedContourClaimPriority,
         point: NodeOverlayPoint,
     ) -> Option<NodeResolvedHeightAuthority> {
         let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
@@ -917,6 +976,7 @@ impl NodeResolvedHeightAuthorityMap {
             point: NodeHeightPointKey::from_point(point_xz),
             owner,
             height_field_id,
+            claim_priority,
         };
         self.heights_by_key.get(&key).copied()
     }
@@ -1008,8 +1068,12 @@ fn heighted_vertex(
     resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
     let (point_xz, height_m) = if let Some(resolved_authority) = resolved_authority {
-        let Some(authority) = resolved_authority.height_for_vertex(region.owner, field.id, point)
-        else {
+        let Some(authority) = resolved_authority.height_for_vertex(
+            region.owner,
+            field.id,
+            region.claim_priority,
+            point,
+        ) else {
             let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
             let key = NodeHeightPointKey::from_point(point_xz);
             return Err(NodeHeightFieldError::VertexOutsideHeightField {
@@ -1033,7 +1097,453 @@ fn heighted_vertex(
         point_xz,
         height_m,
         height_field_id: field.id,
+        height_authority: resolved_authority.and_then(|authority_map| {
+            authority_map
+                .height_for_vertex(region.owner, field.id, region.claim_priority, point)
+                .map(|authority| authority.authority)
+        }),
     })
+}
+
+#[derive(Clone, Copy)]
+struct SameMaterialVertexHeightCandidate {
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    height_m: f64,
+    height_authority: Option<NodeHeightAuthoritySource>,
+    has_explicit_shared_material_seam: bool,
+}
+
+fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [NodeHeightedRegion]) {
+    let mut heights_by_key =
+        BTreeMap::<NodeHeightVertexContextKey, SameMaterialVertexHeightCandidate>::new();
+    let mut distinct_heights_by_key = BTreeMap::<NodeHeightVertexContextKey, Vec<i64>>::new();
+
+    for region in regions.iter() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            let key = NodeHeightVertexContextKey {
+                point: NodeHeightPointKey::from_point(vertex.point_xz),
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+            };
+            heights_by_key
+                .entry(key.clone())
+                .and_modify(|selected| {
+                    let candidate = SameMaterialVertexHeightCandidate {
+                        owner: region.owner,
+                        height_field_id: vertex.height_field_id,
+                        height_m: vertex.height_m,
+                        height_authority: vertex.height_authority,
+                        has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
+                            vertex,
+                            &region.seam_constraints,
+                        ),
+                    };
+                    if same_material_vertex_height_candidate_key(candidate)
+                        < same_material_vertex_height_candidate_key(*selected)
+                    {
+                        *selected = candidate;
+                    }
+                })
+                .or_insert(SameMaterialVertexHeightCandidate {
+                    owner: region.owner,
+                    height_field_id: vertex.height_field_id,
+                    height_m: vertex.height_m,
+                    height_authority: vertex.height_authority,
+                    has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
+                        vertex,
+                        &region.seam_constraints,
+                    ),
+                });
+            let heights = distinct_heights_by_key.entry(key).or_default();
+            let height_mm = quantize_m(vertex.height_m);
+            if !heights.contains(&height_mm) {
+                heights.push(height_mm);
+            }
+        }
+    }
+
+    for region in regions {
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            let key = NodeHeightVertexContextKey {
+                point: NodeHeightPointKey::from_point(vertex.point_xz),
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+            };
+            if distinct_heights_by_key
+                .get(&key)
+                .is_none_or(|heights| heights.len() < 2)
+            {
+                continue;
+            }
+            if let Some(selected) = heights_by_key.get(&key) {
+                vertex.height_m = selected.height_m;
+            }
+        }
+    }
+}
+
+fn apply_junctionn_same_material_shared_edge_height_tiebreak(regions: &mut [NodeHeightedRegion]) {
+    let mut candidates_by_edge =
+        BTreeMap::<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>>::new();
+
+    for region in regions.iter() {
+        for contour in &region.shape {
+            if contour.len() < 2 {
+                continue;
+            }
+            for index in 0..contour.len() {
+                let start = &contour[index];
+                let end = &contour[(index + 1) % contour.len()];
+                let Some((key, candidate)) = SameMaterialSharedEdgeCandidate::new(
+                    region.kind,
+                    region.owner,
+                    &region.seam_constraints,
+                    start,
+                    end,
+                ) else {
+                    continue;
+                };
+                let candidates = candidates_by_edge.entry(key).or_default();
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+
+    let mut selected_by_vertex =
+        BTreeMap::<SameMaterialSharedVertexKey, SameMaterialVertexHeightCandidate>::new();
+    let mut affected_contexts_by_vertex =
+        BTreeMap::<SameMaterialSharedVertexKey, Vec<SameMaterialSharedVertexContext>>::new();
+
+    for (edge, candidates) in candidates_by_edge {
+        if candidates.len() < 2 {
+            continue;
+        }
+        if !same_material_shared_edge_candidates_are_canonical_drift(&candidates) {
+            continue;
+        }
+        for endpoint in [edge.start, edge.end] {
+            let selected = candidates
+                .iter()
+                .copied()
+                .map(|candidate| candidate.endpoint_candidate(endpoint))
+                .min_by_key(|candidate| same_material_vertex_height_candidate_key(*candidate))
+                .expect("shared edge with candidates has an endpoint candidate");
+            let vertex_key = SameMaterialSharedVertexKey {
+                kind: edge.kind,
+                point: endpoint,
+            };
+            selected_by_vertex
+                .entry(vertex_key)
+                .and_modify(|existing| {
+                    if same_material_vertex_height_candidate_key(selected)
+                        < same_material_vertex_height_candidate_key(*existing)
+                    {
+                        *existing = selected;
+                    }
+                })
+                .or_insert(selected);
+            let contexts = affected_contexts_by_vertex.entry(vertex_key).or_default();
+            for candidate in &candidates {
+                let context = SameMaterialSharedVertexContext {
+                    owner: candidate.owner,
+                    height_field_id: candidate.height_field_id,
+                };
+                if !contexts.contains(&context) {
+                    contexts.push(context);
+                }
+            }
+        }
+    }
+
+    for region in regions {
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            let key = SameMaterialSharedVertexKey {
+                kind: region.kind,
+                point: NodeHeightPointKey::from_point(vertex.point_xz),
+            };
+            let Some(contexts) = affected_contexts_by_vertex.get(&key) else {
+                continue;
+            };
+            let context = SameMaterialSharedVertexContext {
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+            };
+            if !contexts.contains(&context) {
+                continue;
+            }
+            if let Some(selected) = selected_by_vertex.get(&key) {
+                vertex.height_m = selected.height_m;
+            }
+        }
+    }
+}
+
+fn same_material_shared_edge_candidates_are_canonical_drift(
+    candidates: &[SameMaterialSharedEdgeCandidate],
+) -> bool {
+    let mut start_min = f64::INFINITY;
+    let mut start_max = f64::NEG_INFINITY;
+    let mut end_min = f64::INFINITY;
+    let mut end_max = f64::NEG_INFINITY;
+    for candidate in candidates {
+        start_min = start_min.min(candidate.start_height_m);
+        start_max = start_max.max(candidate.start_height_m);
+        end_min = end_min.min(candidate.end_height_m);
+        end_max = end_max.max(candidate.end_height_m);
+    }
+    start_max - start_min <= SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M
+        && end_max - end_min <= SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialSharedEdgeKey {
+    kind: RoadSurfaceBandKind,
+    start: NodeHeightPointKey,
+    end: NodeHeightPointKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SameMaterialSharedEdgeCandidate {
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    start: NodeHeightPointKey,
+    start_height_m: f64,
+    start_height_authority: Option<NodeHeightAuthoritySource>,
+    start_has_explicit_shared_material_seam: bool,
+    end: NodeHeightPointKey,
+    end_height_m: f64,
+    end_height_authority: Option<NodeHeightAuthoritySource>,
+    end_has_explicit_shared_material_seam: bool,
+}
+
+impl SameMaterialSharedEdgeCandidate {
+    fn new(
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        seam_constraints: &[NodeRegionSeamConstraint],
+        start: &NodeHeightedVertex,
+        end: &NodeHeightedVertex,
+    ) -> Option<(SameMaterialSharedEdgeKey, Self)> {
+        let mut start_key = NodeHeightPointKey::from_point(start.point_xz);
+        let mut end_key = NodeHeightPointKey::from_point(end.point_xz);
+        if start_key == end_key {
+            return None;
+        }
+        let mut start_height_m = start.height_m;
+        let mut end_height_m = end.height_m;
+        let mut start_height_authority = start.height_authority;
+        let mut end_height_authority = end.height_authority;
+        let mut start_has_explicit_shared_material_seam =
+            vertex_has_explicit_shared_material_seam(start, seam_constraints);
+        let mut end_has_explicit_shared_material_seam =
+            vertex_has_explicit_shared_material_seam(end, seam_constraints);
+        if end_key < start_key {
+            std::mem::swap(&mut start_key, &mut end_key);
+            std::mem::swap(&mut start_height_m, &mut end_height_m);
+            std::mem::swap(&mut start_height_authority, &mut end_height_authority);
+            std::mem::swap(
+                &mut start_has_explicit_shared_material_seam,
+                &mut end_has_explicit_shared_material_seam,
+            );
+        }
+        Some((
+            SameMaterialSharedEdgeKey {
+                kind,
+                start: start_key,
+                end: end_key,
+            },
+            Self {
+                owner,
+                height_field_id: start.height_field_id,
+                start: start_key,
+                start_height_m,
+                start_height_authority,
+                start_has_explicit_shared_material_seam,
+                end: end_key,
+                end_height_m,
+                end_height_authority,
+                end_has_explicit_shared_material_seam,
+            },
+        ))
+    }
+
+    fn endpoint_candidate(self, point: NodeHeightPointKey) -> SameMaterialVertexHeightCandidate {
+        let (height_m, height_authority, has_explicit_shared_material_seam) = if point == self.start
+        {
+            (
+                self.start_height_m,
+                self.start_height_authority,
+                self.start_has_explicit_shared_material_seam,
+            )
+        } else {
+            debug_assert_eq!(point, self.end);
+            (
+                self.end_height_m,
+                self.end_height_authority,
+                self.end_has_explicit_shared_material_seam,
+            )
+        };
+        SameMaterialVertexHeightCandidate {
+            owner: self.owner,
+            height_field_id: self.height_field_id,
+            height_m,
+            height_authority,
+            has_explicit_shared_material_seam,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialSharedVertexKey {
+    kind: RoadSurfaceBandKind,
+    point: NodeHeightPointKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SameMaterialSharedVertexContext {
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+}
+
+fn apply_junctionn_same_material_vertex_height_tiebreak(regions: &mut [NodeHeightedRegion]) {
+    let mut contexts_by_key =
+        BTreeMap::<SameMaterialVertexHeightTieKey, Vec<SameMaterialVertexHeightContext>>::new();
+    let mut selected_by_key =
+        BTreeMap::<SameMaterialVertexHeightTieKey, SameMaterialVertexHeightCandidate>::new();
+
+    for region in regions.iter() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            let key = same_material_vertex_height_tie_key_from_parts(
+                region.kind,
+                &region.seam_constraints,
+                vertex,
+            );
+            let candidate = SameMaterialVertexHeightCandidate {
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+                height_m: vertex.height_m,
+                height_authority: vertex.height_authority,
+                has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
+                    vertex,
+                    &region.seam_constraints,
+                ),
+            };
+            let contexts = contexts_by_key.entry(key.clone()).or_default();
+            let context = SameMaterialVertexHeightContext::from_candidate(candidate);
+            if !contexts.contains(&context) {
+                contexts.push(context);
+                contexts.sort_unstable();
+            }
+            selected_by_key
+                .entry(key)
+                .and_modify(|selected| {
+                    if same_material_vertex_height_candidate_key(candidate)
+                        < same_material_vertex_height_candidate_key(*selected)
+                    {
+                        *selected = candidate;
+                    }
+                })
+                .or_insert(candidate);
+        }
+    }
+
+    for region in regions {
+        let kind = region.kind;
+        let seam_constraints = &region.seam_constraints;
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            let key =
+                same_material_vertex_height_tie_key_from_parts(kind, seam_constraints, vertex);
+            if contexts_by_key
+                .get(&key)
+                .is_none_or(|contexts| contexts.len() < 2)
+            {
+                continue;
+            }
+            if let Some(selected) = selected_by_key.get(&key) {
+                vertex.height_m = selected.height_m;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialVertexHeightContext {
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    height_mm: i64,
+}
+
+impl SameMaterialVertexHeightContext {
+    fn from_candidate(candidate: SameMaterialVertexHeightCandidate) -> Self {
+        Self {
+            owner: candidate.owner,
+            height_field_id: candidate.height_field_id,
+            height_mm: quantize_m(candidate.height_m),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialVertexHeightTieKey {
+    kind: RoadSurfaceBandKind,
+    point: NodeHeightPointKey,
+    explicit_seams: Vec<ExplicitSeamHeightKey>,
+}
+
+fn same_material_vertex_height_tie_key_from_parts(
+    kind: RoadSurfaceBandKind,
+    seam_constraints: &[NodeRegionSeamConstraint],
+    vertex: &NodeHeightedVertex,
+) -> SameMaterialVertexHeightTieKey {
+    let point = NodeHeightPointKey::from_point(vertex.point_xz);
+    let mut explicit_seams =
+        material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
+            .into_iter()
+            .map(|constraint| ExplicitSeamHeightKey::new(point, constraint))
+            .collect::<Vec<_>>();
+    explicit_seams.sort_unstable();
+    explicit_seams.dedup();
+    SameMaterialVertexHeightTieKey {
+        kind,
+        point,
+        explicit_seams,
+    }
+}
+
+fn same_material_vertex_height_candidate_key(
+    candidate: SameMaterialVertexHeightCandidate,
+) -> (bool, bool, usize, usize, usize) {
+    (
+        !candidate.has_explicit_shared_material_seam,
+        candidate.height_authority != Some(NodeHeightAuthoritySource::SourceInterval),
+        candidate.height_field_id.mouth_order_index(),
+        candidate.height_field_id.band_index(),
+        candidate.owner.owner_index(),
+    )
+}
+
+fn vertex_has_explicit_shared_material_seam(
+    vertex: &NodeHeightedVertex,
+    seam_constraints: &[NodeRegionSeamConstraint],
+) -> bool {
+    material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
+        .into_iter()
+        .any(|constraint| constraint.is_material_transition)
 }
 
 fn validate_explicit_material_seam_heights(
@@ -1066,6 +1576,8 @@ fn validate_explicit_material_seam_heights(
                             owner: owner.unwrap_or(existing.owner),
                             opposite_owner,
                             height_field_id: Some(existing.height_field_id),
+                            incoming_owner: region.owner,
+                            incoming_height_field_id: Some(vertex.height_field_id),
                             constraint_index: Some(constraint.constraint_index),
                             existing_authority: None,
                             incoming_authority: None,
@@ -1091,11 +1603,20 @@ impl ExplicitSeamHeightKey {
     fn new(point: NodeHeightPointKey, constraint: &NodeRegionSeamConstraint) -> Self {
         let (owner, opposite_owner) =
             canonical_explicit_seam_owner_pair(constraint.owner, constraint.opposite_owner);
+        let start = NodeHeightPointKey::from_point(constraint.start_xz);
+        let end = NodeHeightPointKey::from_point(constraint.end_xz);
+        let (start, end) = if end < start {
+            (end, start)
+        } else {
+            (start, end)
+        };
         Self {
             point,
             constraint_index: constraint.constraint_index,
             owner,
             opposite_owner,
+            start,
+            end,
         }
     }
 }
@@ -1128,9 +1649,14 @@ fn material_height_constraints_for_vertex<'a>(
             !constraint.is_material_transition,
             seam_source_priority(&constraint.seam_source),
             constraint.constraint_index,
+            NodeHeightPointKey::from_point(constraint.start_xz),
+            NodeHeightPointKey::from_point(constraint.end_xz),
         )
     });
-    matches.dedup_by_key(|constraint| constraint.constraint_index);
+    matches.dedup_by_key(|constraint| {
+        let point = NodeHeightPointKey::from_point(point_xz);
+        ExplicitSeamHeightKey::new(point, constraint)
+    });
     matches
 }
 
@@ -1192,6 +1718,8 @@ fn validate_shared_source_height_agreement(
                     owner: existing.owner,
                     opposite_owner: None,
                     height_field_id: Some(existing.height_field_id),
+                    incoming_owner: region.owner,
+                    incoming_height_field_id: Some(vertex.height_field_id),
                     constraint_index: None,
                     existing_authority: None,
                     incoming_authority: None,
@@ -2000,7 +2528,11 @@ mod tests {
             Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
         ));
         let height = field
-            .evaluate_authorized_height(owner, RoadVec2::new(5.0, 1.0))
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 1.0),
+            )
             .expect("owner-generated carrier is explicit height authority for JunctionN");
         assert!((height.height_m - 1.0).abs() <= 1.0e-6);
         assert_eq!(
@@ -2010,6 +2542,145 @@ mod tests {
                 claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
             }
         );
+    }
+
+    #[test]
+    fn junctionn_canonical_height_authority_scopes_generated_carriers_to_owned_region_claim() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        );
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
+        for (height_m, purpose, claim_priority) in [
+            (
+                1.0,
+                NodeGeneratedContourPurpose::NonRoadBand,
+                NodeGeneratedContourClaimPriority::MouthBand,
+            ),
+            (
+                2.0,
+                NodeGeneratedContourPurpose::JunctionSideJoin,
+                NodeGeneratedContourClaimPriority::SideJoin,
+            ),
+        ] {
+            field
+                .patches
+                .push(NodeBandHeightPatch::from_heighted_contour(
+                    &[
+                        RoadVec3::new(0.0, height_m, 0.0),
+                        RoadVec3::new(10.0, height_m, 0.0),
+                        RoadVec3::new(10.0, height_m, 2.0),
+                        RoadVec3::new(0.0, height_m, 2.0),
+                    ],
+                    NodeHeightPatchAuthority {
+                        owner: Some(owner),
+                        role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                            purpose,
+                            claim_priority,
+                        },
+                    },
+                ));
+        }
+
+        let mouth_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::MouthBand,
+                RoadVec2::new(5.0, 1.0),
+            )
+            .expect("mouth-owned region should use mouth-band generated carrier");
+        assert_eq!(
+            mouth_height.authority,
+            NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            }
+        );
+        assert!((mouth_height.height_m - 1.0).abs() <= 1.0e-6);
+
+        let side_join_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 1.0),
+            )
+            .expect("side-join-owned region should use side-join generated carrier");
+        assert_eq!(
+            side_join_height.authority,
+            NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            }
+        );
+        assert!((side_join_height.height_m - 2.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn side_join_height_authority_reuses_source_rail_at_handoff_vertices() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        );
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+        field
+            .patches
+            .push(NodeBandHeightPatch::from_heighted_contour(
+                &[
+                    RoadVec3::new(0.0, 2.0, 0.0),
+                    RoadVec3::new(10.0, 2.0, 0.0),
+                    RoadVec3::new(10.0, 2.0, 2.0),
+                    RoadVec3::new(0.0, 2.0, 2.0),
+                ],
+                NodeHeightPatchAuthority {
+                    owner: Some(owner),
+                    role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    },
+                },
+            ));
+
+        let handoff_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 0.0),
+            )
+            .expect("side-join vertex on source rail should reuse source rail height");
+        assert_eq!(
+            handoff_height.authority,
+            NodeHeightAuthoritySource::SourceInterval
+        );
+        assert!((handoff_height.height_m - 0.5).abs() <= 1.0e-6);
+
+        let drifted_handoff_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 0.00005),
+            )
+            .expect("overlay-drifted side-join vertex on source rail should still reuse the rail");
+        assert_eq!(
+            drifted_handoff_height.authority,
+            NodeHeightAuthoritySource::SourceInterval
+        );
+        assert!((drifted_handoff_height.height_m - 0.5).abs() <= 1.0e-6);
+
+        let interior_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 1.0),
+            )
+            .expect("side-join interior should still use generated contour authority");
+        assert_eq!(
+            interior_height.authority,
+            NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            }
+        );
+        assert!((interior_height.height_m - 2.0).abs() <= 1.0e-6);
     }
 
     #[test]
@@ -2041,7 +2712,11 @@ mod tests {
         }
 
         assert!(matches!(
-            field.evaluate_authorized_height(owner, RoadVec2::new(5.0, 1.0)),
+            field.evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 1.0)
+            ),
             Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
         ));
     }
@@ -2224,6 +2899,83 @@ mod tests {
 
         assert_eq!(regions[0].shape[0][0].height_m, 0.0);
         assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+    }
+
+    #[test]
+    fn junctionn_same_material_shared_vertices_use_deterministic_sample_owner_height() {
+        let mut regions = vec![
+            manual_heighted_region(
+                RoadSurfaceBandKind::Carriageway,
+                9,
+                0.0,
+                vec![manual_heighted_vertex(-1.0, 0.0, 2.0)],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::Carriageway,
+                14,
+                0.0,
+                vec![manual_heighted_vertex(-1.0, 0.0, 1.0)],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                0.0,
+                vec![manual_heighted_vertex(-1.0, 0.0, 0.25)],
+            ),
+        ];
+
+        apply_junctionn_same_material_vertex_height_tiebreak(&mut regions);
+
+        assert_eq!(regions[0].shape[0][0].height_m, 2.0);
+        assert_eq!(
+            regions[1].shape[0][0].height_m, 2.0,
+            "same-material carriageway samples should use the deterministic lower source key"
+        );
+        assert_eq!(
+            regions[2].shape[0][0].height_m, 0.25,
+            "different materials must not be pulled into the same-material tie-break"
+        );
+    }
+
+    #[test]
+    fn junctionn_same_material_tiebreak_preserves_explicit_cross_material_seam_height() {
+        let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+        let other_sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 5);
+        let seam = manual_owned_pair_seam_constraint(77, curb_owner, sidewalk_owner, true);
+        let mut regions = vec![
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk_owner.owner_index(),
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+                vec![seam.clone()],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::Sidewalk,
+                other_sidewalk_owner.owner_index(),
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 2.0)],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb_owner.owner_index(),
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+                vec![seam],
+            ),
+        ];
+
+        apply_junctionn_same_material_vertex_height_tiebreak(&mut regions);
+
+        assert_eq!(
+            regions[0].shape[0][0].height_m, 1.0,
+            "explicit curb/sidewalk seam containment must outrank same-material tie-breaks"
+        );
+        assert_eq!(regions[1].shape[0][0].height_m, 2.0);
+        assert_eq!(regions[2].shape[0][0].height_m, 1.0);
+        validate_explicit_material_seam_heights(&regions)
+            .expect("preserved seam heights should still validate");
     }
 
     #[test]
@@ -2536,6 +3288,7 @@ mod tests {
             point_xz: RoadVec2::new(x, z),
             height_m,
             height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
+            height_authority: None,
         }
     }
 }

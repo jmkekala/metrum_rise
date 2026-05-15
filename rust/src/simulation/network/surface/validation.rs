@@ -110,6 +110,8 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         owner: NodeBandOwner,
         opposite_owner: Option<NodeBandOwner>,
         height_field_id: Option<NodeBandHeightFieldId>,
+        incoming_owner: NodeBandOwner,
+        incoming_height_field_id: Option<NodeBandHeightFieldId>,
         constraint_index: Option<usize>,
         existing_authority: Option<NodeHeightAuthoritySource>,
         incoming_authority: Option<NodeHeightAuthoritySource>,
@@ -596,7 +598,9 @@ impl NodeValidationReport {
         }
 
         for (edge, region_indices) in exposed_edges {
-            if region_indices.len() > 2 {
+            if region_indices.len() > 2
+                && !duplicate_exposed_edge_has_explicit_owner_context(solution, &region_indices)
+            {
                 diagnostics.push(NodeGeometryDiagnostic {
                     node_id: solution.node_id,
                     piece_kind: solution.piece_kind,
@@ -1053,6 +1057,8 @@ impl NodeGeometryDiagnostic {
                 owner,
                 opposite_owner,
                 height_field_id,
+                incoming_owner,
+                incoming_height_field_id,
                 constraint_index,
                 existing_authority,
                 incoming_authority,
@@ -1065,6 +1071,8 @@ impl NodeGeometryDiagnostic {
                 owner: *owner,
                 opposite_owner: *opposite_owner,
                 height_field_id: *height_field_id,
+                incoming_owner: *incoming_owner,
+                incoming_height_field_id: *incoming_height_field_id,
                 constraint_index: *constraint_index,
                 existing_authority: *existing_authority,
                 incoming_authority: *incoming_authority,
@@ -1399,6 +1407,25 @@ impl NodeGeometryDiagnosticKind {
             }
             Self::BackendFailure { .. } => "backend_failure",
         }
+    }
+}
+
+fn duplicate_exposed_edge_has_explicit_owner_context(
+    solution: &NodeTriangulationSolution,
+    region_indices: &[usize],
+) -> bool {
+    let mut owners = BTreeSet::new();
+    for region_index in region_indices {
+        let Some(region) = solution.regions.get(*region_index) else {
+            return false;
+        };
+        owners.insert(region.owner);
+    }
+    match owners.into_iter().collect::<Vec<_>>().as_slice() {
+        [] => false,
+        [_] => true,
+        [left, right] => owners_form_explicit_vertical_step_pair(*left, *right),
+        _ => false,
     }
 }
 
@@ -2552,6 +2579,8 @@ mod tests {
                 owner,
                 opposite_owner: Some(opposite_owner),
                 height_field_id: Some(height_field_id),
+                incoming_owner: owner,
+                incoming_height_field_id: Some(height_field_id),
                 constraint_index: Some(9),
                 existing_authority: Some(NodeHeightAuthoritySource::SourceInterval),
                 incoming_authority: Some(NodeHeightAuthoritySource::TerminalCap),
@@ -2573,6 +2602,8 @@ mod tests {
                 owner: mapped_owner,
                 opposite_owner: Some(mapped_opposite_owner),
                 height_field_id: Some(id),
+                incoming_owner: mapped_incoming_owner,
+                incoming_height_field_id: Some(incoming_id),
                 constraint_index: Some(9),
                 existing_authority: Some(NodeHeightAuthoritySource::SourceInterval),
                 incoming_authority: Some(NodeHeightAuthoritySource::TerminalCap),
@@ -2581,6 +2612,8 @@ mod tests {
             } if mapped_owner == owner
                 && mapped_opposite_owner == opposite_owner
                 && id == height_field_id
+                && mapped_incoming_owner == owner
+                && incoming_id == height_field_id
         ));
         let dump = report.debug_dump();
         assert!(dump.contains("\"kind\":\"shared_source_height_conflict\""));

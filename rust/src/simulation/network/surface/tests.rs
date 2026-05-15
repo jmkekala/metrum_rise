@@ -1,7 +1,10 @@
 //! Unit tests for the road-surface compiler and ownership caches.
 
+use super::arrangement::{NodeArrangement, NodeArrangementError, NodeArrangementKey};
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
+use super::height::NodeHeightFieldError;
+use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
@@ -804,7 +807,7 @@ fn assert_raised_step_face_lower_edge_covers(
     );
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TestTopBoundaryEdge {
     kind: RoadSurfaceBandKind,
     owner_index: usize,
@@ -1166,24 +1169,18 @@ fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<Test
 }
 
 fn vertical_face_lower_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
-    if polygon.points_world.len() != 4 {
+    let [a, b, c, d] = polygon.points_world.as_slice() else {
         return None;
-    }
-    let lower_y = polygon
-        .points_world
-        .iter()
-        .map(|point| point.y)
-        .fold(f32::INFINITY, f32::min);
-    let lower_points = polygon
-        .points_world
-        .iter()
-        .copied()
-        .filter(|point| (point.y - lower_y).abs() <= SAMPLE_EPSILON_M)
-        .collect::<Vec<_>>();
-    if lower_points.len() != 2 {
-        return None;
-    }
-    Some([lower_points[0], lower_points[1]])
+    };
+    let first_edge = [*a, *d];
+    let second_edge = [*b, *c];
+    let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
+    let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
+    Some(if first_avg_y <= second_avg_y {
+        first_edge
+    } else {
+        second_edge
+    })
 }
 
 fn test_xz_key_lies_on_segment(point: (i64, i64), start: (i64, i64), end: (i64, i64)) -> bool {
@@ -1392,49 +1389,140 @@ fn vertical_face_visible_direction_for_test(polygon: &RoadSurfaceVisualPolygon) 
 }
 
 fn vertical_face_upper_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
-    if polygon.points_world.len() != 4 {
+    let [a, b, c, d] = polygon.points_world.as_slice() else {
         return None;
-    }
-    let upper_y = polygon
-        .points_world
-        .iter()
-        .map(|point| point.y)
-        .fold(f32::NEG_INFINITY, f32::max);
-    let upper_points = polygon
-        .points_world
-        .iter()
-        .copied()
-        .filter(|point| (point.y - upper_y).abs() <= SAMPLE_EPSILON_M)
-        .collect::<Vec<_>>();
-    if upper_points.len() != 2 {
-        return None;
-    }
-    Some([upper_points[0], upper_points[1]])
+    };
+    let first_edge = [*a, *d];
+    let second_edge = [*b, *c];
+    let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
+    let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
+    Some(if first_avg_y >= second_avg_y {
+        first_edge
+    } else {
+        second_edge
+    })
 }
 
 fn polygon_boundary_overlaps_edge_at_height_for_test(
     polygon: &RoadSurfaceVisualPolygon,
     edge: [Vector3; 2],
 ) -> bool {
+    if !polygon.triangles_world.is_empty() {
+        let mut triangle_edges = BTreeMap::<TestRenderEdgeKey, (usize, [Vector3; 2])>::new();
+        for triangle in &polygon.triangles_world {
+            for edge_index in 0..3 {
+                let start = triangle[edge_index];
+                let end = triangle[(edge_index + 1) % 3];
+                let Some(key) = TestRenderEdgeKey::normalized(start, end) else {
+                    continue;
+                };
+                triangle_edges
+                    .entry(key)
+                    .and_modify(|entry| entry.0 += 1)
+                    .or_insert((1, [start, end]));
+            }
+        }
+        return triangle_edges
+            .into_values()
+            .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
+            .any(|boundary_edge| test_boundary_edge_contains_edge_at_height(boundary_edge, edge));
+    }
+
     let points = &polygon.points_world;
     if points.len() < 2 {
         return false;
     }
-    let expected_y = (edge[0].y + edge[1].y) * 0.5;
-    let edge_start = test_xz_key(edge[0]);
-    let edge_end = test_xz_key(edge[1]);
     (0..points.len()).any(|index| {
         let start = points[index];
         let end = points[(index + 1) % points.len()];
-        (start.y - expected_y).abs() <= SAMPLE_EPSILON_M
-            && (end.y - expected_y).abs() <= SAMPLE_EPSILON_M
-            && test_xz_segments_overlap_with_length(
-                test_xz_key(start),
-                test_xz_key(end),
-                edge_start,
-                edge_end,
-            )
+        test_boundary_edge_contains_edge_at_height([start, end], edge)
     })
+}
+
+fn test_boundary_edge_contains_edge_at_height(
+    boundary_edge: [Vector3; 2],
+    edge: [Vector3; 2],
+) -> bool {
+    let boundary_start = TestRenderVertexKey::from_point(boundary_edge[0]);
+    let boundary_end = TestRenderVertexKey::from_point(boundary_edge[1]);
+    let edge_start = TestRenderVertexKey::from_point(edge[0]);
+    let edge_end = TestRenderVertexKey::from_point(edge[1]);
+    if !test_xz_segments_overlap_with_length(
+        (boundary_start.x_key, boundary_start.z_key),
+        (boundary_end.x_key, boundary_end.z_key),
+        (edge_start.x_key, edge_start.z_key),
+        (edge_end.x_key, edge_end.z_key),
+    ) {
+        return false;
+    }
+    let Some((start_numerator, start_denominator)) =
+        test_boundary_segment_parameter_xz(edge_start, boundary_start, boundary_end)
+    else {
+        return false;
+    };
+    let Some((end_numerator, end_denominator)) =
+        test_boundary_segment_parameter_xz(edge_end, boundary_start, boundary_end)
+    else {
+        return false;
+    };
+    if start_numerator < 0
+        || start_numerator > start_denominator
+        || end_numerator < 0
+        || end_numerator > end_denominator
+    {
+        return false;
+    }
+    (test_interpolated_height_mm(
+        boundary_start,
+        boundary_end,
+        start_numerator,
+        start_denominator,
+    ) - edge_start.y_mm)
+        .abs()
+        <= 1
+        && (test_interpolated_height_mm(
+            boundary_start,
+            boundary_end,
+            end_numerator,
+            end_denominator,
+        ) - edge_end.y_mm)
+            .abs()
+            <= 1
+}
+
+fn test_boundary_segment_parameter_xz(
+    point: TestRenderVertexKey,
+    start: TestRenderVertexKey,
+    end: TestRenderVertexKey,
+) -> Option<(i128, i128)> {
+    let dx = end.x_key - start.x_key;
+    let dz = end.z_key - start.z_key;
+    let px = point.x_key - start.x_key;
+    let pz = point.z_key - start.z_key;
+    let length_squared = i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz);
+    if length_squared == 0 || i128::from(dx) * i128::from(pz) - i128::from(dz) * i128::from(px) != 0
+    {
+        return None;
+    }
+    Some((
+        i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
+        length_squared,
+    ))
+}
+
+fn test_interpolated_height_mm(
+    start: TestRenderVertexKey,
+    end: TestRenderVertexKey,
+    numerator: i128,
+    denominator: i128,
+) -> i64 {
+    let value =
+        i128::from(start.y_mm) * denominator + i128::from(end.y_mm - start.y_mm) * numerator;
+    if value >= 0 {
+        ((value + denominator / 2) / denominator) as i64
+    } else {
+        -(((-value + denominator / 2) / denominator) as i64)
+    }
 }
 
 fn test_xz_segments_overlap_with_length(
@@ -1607,6 +1695,403 @@ fn assert_compiled_junction_piece(
     assert_node_top_covers_footprint(piece);
     assert_earthwork_faces_stay_outside_top_footprint(piece);
     piece
+}
+
+fn canonical_junction_pipeline_report(
+    surface: &RoadSurfaceSystem,
+    graph: &RegionGraph,
+    node_id: u32,
+) -> String {
+    let valid = graph.get_valid_node(node_id);
+    let incidents = surface.sorted_incident_surface_edges(graph, valid);
+    let Some(mouths) = surface.build_ordered_piece_mouths(&incidents) else {
+        return format!("node {node_id}: failed to build ordered mouths");
+    };
+    let input = match RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        node_id,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &mouths,
+    ) {
+        Ok(input) => input,
+        Err(error) => return format!("node {node_id}: input extraction failed: {error:?}"),
+    };
+    let rails = match RoadSurfaceSystem::build_node_rail_contours_from_input(&input) {
+        Ok(rails) => rails,
+        Err(error) => {
+            return NodeValidationReport::from_rail_generation_error(
+                node_id,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &error,
+            )
+            .debug_dump();
+        }
+    };
+    let ownership = match RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails) {
+        Ok(ownership) => ownership,
+        Err(error) => {
+            return NodeValidationReport::from_boolean_ownership_error(
+                node_id,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &error,
+            )
+            .debug_dump();
+        }
+    };
+    if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
+        &ownership.owned_region_arrangement,
+    ) {
+        return report.debug_dump();
+    }
+    let heights = match RoadSurfaceSystem::build_node_height_solution_from_ownership(
+        &input, &rails, &ownership,
+    ) {
+        Ok(heights) => heights,
+        Err(error) => {
+            if let NodeHeightFieldError::SharedSourceHeightConflict {
+                constraint_index: Some(constraint_index),
+                ..
+            } = &error
+            {
+                return format!(
+                    "{} {}",
+                    NodeValidationReport::from_height_field_error(
+                        node_id,
+                        RoadSurfaceVisualNodePieceKind::JunctionN,
+                        &error,
+                    )
+                    .debug_dump(),
+                    source_rail_debug_for_height_conflict(
+                        &input,
+                        rails.constraints.get(*constraint_index)
+                    )
+                );
+            }
+            return NodeValidationReport::from_height_field_error(
+                node_id,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &error,
+            )
+            .debug_dump();
+        }
+    };
+    let mut arrangement = match NodeArrangement::from_height_solution(&heights) {
+        Ok(arrangement) => arrangement,
+        Err(error) => {
+            if let NodeArrangementError::DuplicateVertexHeightConflict { key, .. } = &error {
+                return format!(
+                    "{} vertices_at_key={:?}",
+                    NodeValidationReport::from_arrangement_error(
+                        node_id,
+                        RoadSurfaceVisualNodePieceKind::JunctionN,
+                        &error,
+                    )
+                    .debug_dump(),
+                    height_solution_vertices_at_arrangement_key(&heights, *key)
+                );
+            }
+            return NodeValidationReport::from_arrangement_error(
+                node_id,
+                RoadSurfaceVisualNodePieceKind::JunctionN,
+                &error,
+            )
+            .debug_dump();
+        }
+    };
+    if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
+        return report.debug_dump();
+    }
+    let triangulation =
+        match RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement) {
+            Ok(triangulation) => triangulation,
+            Err(error) => {
+                return NodeValidationReport::from_triangulation_error(
+                    node_id,
+                    RoadSurfaceVisualNodePieceKind::JunctionN,
+                    &error,
+                )
+                .debug_dump();
+            }
+        };
+    match RoadSurfaceSystem::validate_node_triangulation_solution(&triangulation) {
+        Ok(report) => {
+            if !report.diagnostics.is_empty() {
+                return report.debug_dump();
+            }
+        }
+        Err(error) => {
+            if let Some(extra) =
+                triangulation_height_conflict_debug(&heights, &ownership, &error.report)
+            {
+                return format!("{} {extra}", error.report.debug_dump());
+            }
+            if let Some(extra) =
+                triangulation_duplicate_exposed_edge_debug(&triangulation, &error.report)
+            {
+                return format!("{} {extra}", error.report.debug_dump());
+            }
+            return error.report.debug_dump();
+        }
+    }
+    if let Err(error) = arrangement.attach_triangulation(&triangulation) {
+        return NodeValidationReport::from_arrangement_error(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &error,
+        )
+        .debug_dump();
+    }
+    "canonical JunctionN pipeline reached boundary export".to_string()
+}
+
+fn triangulation_height_conflict_debug(
+    heights: &super::height::NodeHeightSolution,
+    ownership: &super::ownership::NodeBooleanOwnership,
+    report: &NodeValidationReport,
+) -> Option<String> {
+    report.diagnostics.iter().find_map(|diagnostic| {
+        if let NodeGeometryDiagnosticKind::CrossRegionHeightConflict {
+            edge_start_x_key,
+            edge_start_z_key,
+            edge_end_x_key,
+            edge_end_z_key,
+            ..
+        } = diagnostic.kind
+        {
+            let start_key = arrangement_key_from_overlay_keys(edge_start_x_key, edge_start_z_key);
+            let end_key = arrangement_key_from_overlay_keys(edge_end_x_key, edge_end_z_key);
+            Some(format!(
+                "start_vertices={:?} end_vertices={:?} ownership={:?}",
+                height_solution_vertices_at_arrangement_key(heights, start_key),
+                height_solution_vertices_at_arrangement_key(heights, end_key),
+                owned_region_claims_for_height_conflict(ownership, diagnostic)
+            ))
+        } else {
+            None
+        }
+    })
+}
+
+fn triangulation_duplicate_exposed_edge_debug(
+    triangulation: &super::triangulation::NodeTriangulationSolution,
+    report: &NodeValidationReport,
+) -> Option<String> {
+    report.diagnostics.iter().find_map(|diagnostic| {
+        if let NodeGeometryDiagnosticKind::DuplicateExposedEdge {
+            start_x_mm,
+            start_z_mm,
+            end_x_mm,
+            end_z_mm,
+            ..
+        } = diagnostic.kind
+        {
+            Some(format!(
+                "duplicate_edge_regions={:?}",
+                triangulation_regions_for_exposed_edge(
+                    triangulation,
+                    (start_x_mm, start_z_mm),
+                    (end_x_mm, end_z_mm),
+                )
+            ))
+        } else {
+            None
+        }
+    })
+}
+
+fn triangulation_regions_for_exposed_edge(
+    triangulation: &super::triangulation::NodeTriangulationSolution,
+    start_mm: (i64, i64),
+    end_mm: (i64, i64),
+) -> Vec<String> {
+    let expected = normalized_test_mm_edge_key(start_mm, end_mm);
+    let mut matches = Vec::new();
+    for (region_index, region) in triangulation.regions.iter().enumerate() {
+        let mut edge_counts = BTreeMap::<((i64, i64), (i64, i64)), usize>::new();
+        for triangle in &region.triangles {
+            for edge_index in 0..3 {
+                let start = &region.vertices[triangle.vertices[edge_index]];
+                let end = &region.vertices[triangle.vertices[(edge_index + 1) % 3]];
+                *edge_counts
+                    .entry(normalized_test_world_mm_edge_key(
+                        start.point_world.x as f32,
+                        start.point_world.z as f32,
+                        end.point_world.x as f32,
+                        end.point_world.z as f32,
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        if let Some(count) = edge_counts.get(&expected).copied() {
+            matches.push(format!(
+                "region={} owner={:?} height_field={:?} local_count={}",
+                region_index, region.owner, region.height_field_id, count
+            ));
+        }
+    }
+    matches
+}
+
+fn normalized_test_world_mm_edge_key(
+    start_x: f32,
+    start_z: f32,
+    end_x: f32,
+    end_z: f32,
+) -> ((i64, i64), (i64, i64)) {
+    normalized_test_mm_edge_key(
+        (
+            (start_x * 1000.0).round() as i64,
+            (start_z * 1000.0).round() as i64,
+        ),
+        (
+            (end_x * 1000.0).round() as i64,
+            (end_z * 1000.0).round() as i64,
+        ),
+    )
+}
+
+fn normalized_test_mm_edge_key(start: (i64, i64), end: (i64, i64)) -> ((i64, i64), (i64, i64)) {
+    if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
+fn owned_region_claims_for_height_conflict(
+    ownership: &super::ownership::NodeBooleanOwnership,
+    diagnostic: &super::validation::NodeGeometryDiagnostic,
+) -> Vec<String> {
+    let NodeGeometryDiagnosticKind::CrossRegionHeightConflict {
+        existing_region_index,
+        incoming_region_index,
+        ..
+    } = diagnostic.kind
+    else {
+        return Vec::new();
+    };
+    [existing_region_index, incoming_region_index]
+        .into_iter()
+        .filter_map(|region_index| {
+            ownership.owned_regions.get(region_index).map(|region| {
+                format!(
+                    "region={} kind={:?} owner={:?} claim={:?} source_mouth={} source_band={:?} area={:.6}",
+                    region_index,
+                    region.kind,
+                    region.owner,
+                    region.claim_priority,
+                    region.source_mouth_order_index,
+                    region.source_band_index,
+                    region.area_m2
+                )
+            })
+        })
+        .collect()
+}
+
+fn arrangement_key_from_overlay_keys(x_key: i64, z_key: i64) -> NodeArrangementKey {
+    NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+        x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
+        z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
+    ))
+}
+
+fn source_rail_debug_for_height_conflict(
+    input: &super::input::NodeArrangementInput,
+    constraint: Option<&super::rails::NodeRailConstraint>,
+) -> String {
+    let Some(constraint) = constraint else {
+        return "rail_constraint=<missing>".to_string();
+    };
+    let mut parts = vec![format!("rail_constraint={constraint:?}")];
+    let Some(boundary_index) = constraint.source_boundary_index else {
+        return parts.join(" ");
+    };
+    let Some(mouth) = input
+        .mouths
+        .iter()
+        .find(|mouth| mouth.order_index == constraint.source_mouth_order_index)
+    else {
+        parts.push("mouth=<missing>".to_string());
+        return parts.join(" ");
+    };
+    if let Some(boundary_rail) = mouth.boundary_rails.get(boundary_index) {
+        parts.push(format!(
+            "boundary_path={}",
+            world_path_debug(&boundary_rail.path_world)
+        ));
+    }
+    if let Some(left_band) = boundary_index
+        .checked_sub(1)
+        .and_then(|index| mouth.band_intervals.get(index))
+    {
+        parts.push(format!(
+            "left_band={:?} start_path={} end_path={}",
+            left_band.band_kind,
+            world_path_debug(&left_band.start_path_world),
+            world_path_debug(&left_band.end_path_world)
+        ));
+    }
+    if let Some(right_band) = mouth.band_intervals.get(boundary_index) {
+        parts.push(format!(
+            "right_band={:?} start_path={} end_path={}",
+            right_band.band_kind,
+            world_path_debug(&right_band.start_path_world),
+            world_path_debug(&right_band.end_path_world)
+        ));
+    }
+    parts.join(" ")
+}
+
+fn world_path_debug(path: &[super::backend::RoadVec3]) -> String {
+    let points = path
+        .iter()
+        .map(|point| format!("({:.3},{:.3},{:.3})", point.x, point.y, point.z))
+        .collect::<Vec<_>>();
+    format!("[{}]", points.join(","))
+}
+
+fn height_solution_vertices_at_arrangement_key(
+    heights: &super::height::NodeHeightSolution,
+    key: NodeArrangementKey,
+) -> Vec<String> {
+    let mut matches = Vec::new();
+    for (region_index, region) in heights.regions.iter().enumerate() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            if NodeArrangementKey::from_point(vertex.point_xz) != key {
+                continue;
+            }
+            let touching_seams = region
+                .seam_constraints
+                .iter()
+                .filter(|constraint| {
+                    let start = NodeArrangementKey::from_point(constraint.start_xz);
+                    let end = NodeArrangementKey::from_point(constraint.end_xz);
+                    start == key || end == key
+                })
+                .map(|constraint| {
+                    format!(
+                        "#{} {:?} owner={:?} opposite={:?} shared={} material={}",
+                        constraint.constraint_index,
+                        constraint.seam_source,
+                        constraint.owner,
+                        constraint.opposite_owner,
+                        constraint.constrains_shared_height,
+                        constraint.is_material_transition
+                    )
+                })
+                .collect::<Vec<_>>();
+            matches.push(format!(
+                "region={} kind={:?} owner={:?} field={:?} height={:.3} seams={:?}",
+                region_index,
+                region.kind,
+                region.owner,
+                vertex.height_field_id,
+                vertex.height_m,
+                touching_seams
+            ));
+        }
+    }
+    matches
 }
 
 fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNodePiece) {
@@ -4211,6 +4696,12 @@ fn logged_flat_three_way_oblique_junction_compiles_side_join_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "logged flat three-way oblique JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
     assert_compiled_junction_piece(&surface, center);
 }
 
@@ -4373,7 +4864,7 @@ fn logged_flat_three_way_oblique_variant_compiles_with_explicit_vertical_steps()
 }
 
 #[test]
-fn logged_elevated_three_way_oblique_junction_rejects_contradictory_sidewalk_seam() {
+fn logged_elevated_three_way_oblique_junction_compiles_with_scoped_side_join_height_authority() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-5.708, 139.500, 43.670), NodeType::Junction);
@@ -4422,9 +4913,19 @@ fn logged_elevated_three_way_oblique_junction_rejects_contradictory_sidewalk_sea
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "logged elevated oblique JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+    let piece = assert_compiled_junction_piece(&surface, center);
+    assert_canonical_explicit_vertical_steps_have_faces(piece);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0, 1, 2]);
     assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "elevated oblique 3-way must not emit a JunctionN while its sidewalk seam has contradictory same-XZ heights"
+        !dump.contains("source_height_field_conflict")
+            && !dump.contains("shared_source_height_conflict"),
+        "elevated oblique JunctionN must not compile through hidden height-conflict diagnostics: {dump}"
     );
 }
 
@@ -4931,6 +5432,87 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
 }
 
 #[test]
+fn logged_regenerated_elevated_three_way_compiles_side_join_height_authority() {
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
+    let edge0_points = road_points_from_json(
+        r#"[[-11.903,142.295,-17.011],[-12.021,142.386,-17.571],[-12.165,142.477,-18.25],[-12.29,142.566,-18.841],[-12.438,142.65,-19.539],[-12.607,142.724,-20.34],[-12.797,142.785,-21.238],[-12.953,142.832,-21.974],[-13.063,142.87,-22.493],[-13.177,142.902,-23.035],[-13.296,142.933,-23.598],[-13.42,142.967,-24.183],[-13.548,143.005,-24.788],[-13.68,143.046,-25.414],[-13.817,143.087,-26.06],[-13.958,143.129,-26.725],[-14.102,143.17,-27.409],[-14.251,143.216,-28.111],[-14.403,143.272,-28.83],[-14.559,143.344,-29.568],[-14.718,143.437,-30.322],[-14.881,143.553,-31.092],[-15.047,143.687,-31.878],[-15.217,143.835,-32.679],[-15.389,143.989,-33.495],[-15.565,144.145,-34.326],[-15.744,144.299,-35.17],[-15.925,144.452,-36.027],[-16.109,144.607,-36.898],[-16.296,144.77,-37.78],[-16.485,144.95,-38.675],[-16.676,145.151,-39.58],[-16.87,145.372,-40.497],[-17.066,145.606,-41.424],[-17.264,145.835,-42.36],[-17.464,146.045,-43.306],[-17.565,146.226,-43.782],[-17.666,146.377,-44.26],[-17.768,146.507,-44.741],[-17.87,146.627,-45.223],[-17.972,146.747,-45.707],[-18.075,146.871,-46.194],[-18.178,147.0,-46.682],[-18.282,147.131,-47.172],[-18.386,147.262,-47.663],[-18.49,147.393,-48.156],[-18.595,147.523,-48.651],[-18.7,147.656,-49.147],[-18.805,147.794,-49.645],[-18.911,147.939,-50.144],[-19.016,148.092,-50.644],[-19.122,148.251,-51.146],[-19.229,148.415,-51.648],[-19.335,148.581,-52.152],[-19.442,148.748,-52.657],[-19.549,148.915,-53.163],[-19.656,149.083,-53.67],[-19.764,149.251,-54.178],[-19.871,149.419,-54.687],[-19.979,149.586,-55.196],[-20.087,149.752,-55.706],[-20.195,149.918,-56.217],[-20.303,150.085,-56.728],[-20.411,150.255,-57.24],[-20.52,150.429,-57.752],[-20.628,150.605,-58.264],[-20.737,150.775,-58.777],[-20.845,150.93,-59.29],[-20.954,151.065,-59.804],[-21.062,151.178,-60.317],[-21.126,151.278,-60.618]]"#,
+    );
+    let edge1_points = road_points_from_json(
+        r#"[[-21.126,151.278,-60.618],[-20.467,151.293,-60.757],[-19.675,151.303,-60.925],[-19.173,151.305,-61.031],[-18.603,151.298,-61.151],[-17.97,151.285,-61.285],[-17.274,151.268,-61.432],[-16.52,151.249,-61.592],[-15.708,151.23,-61.763],[-14.844,151.212,-61.946],[-13.928,151.196,-62.139],[-12.963,151.181,-62.343],[-12.464,151.169,-62.449],[-11.953,151.159,-62.556],[-11.432,151.151,-62.666],[-10.9,151.14,-62.779],[-10.359,151.126,-62.893],[-9.807,151.106,-63.009],[-9.246,151.08,-63.128],[-8.676,151.049,-63.248],[-8.097,151.013,-63.37],[-7.51,150.976,-63.494],[-6.915,150.937,-63.619],[-6.312,150.898,-63.747],[-5.702,150.858,-63.875],[-5.084,150.817,-64.006],[-4.46,150.775,-64.137],[-3.83,150.732,-64.27],[-3.193,150.688,-64.404],[-2.551,150.643,-64.54],[-1.903,150.596,-64.676],[-1.251,150.547,-64.814],[-0.593,150.496,-64.953],[0.068,150.442,-65.092],[0.734,150.384,-65.233],[1.404,150.323,-65.374],[2.076,150.259,-65.516],[2.752,150.195,-65.658],[3.431,150.129,-65.801],[4.112,150.064,-65.945],[4.795,149.997,-66.089],[5.479,149.93,-66.233],[6.165,149.862,-66.378],[6.852,149.792,-66.523],[7.54,149.722,-66.668],[8.228,149.651,-66.813],[8.916,149.582,-66.958],[9.603,149.514,-67.103],[10.29,149.45,-67.247],[10.976,149.39,-67.392],[11.661,149.332,-67.536],[12.344,149.276,-67.68],[13.024,149.22,-67.824],[13.703,149.164,-67.967],[14.379,149.108,-68.11],[15.052,149.052,-68.251],[15.721,148.995,-68.393],[16.387,148.937,-68.533],[17.049,148.879,-68.672],[17.706,148.82,-68.811],[18.359,148.762,-68.949],[19.006,148.708,-69.085],[19.649,148.659,-69.221],[20.285,148.618,-69.355],[20.916,148.583,-69.488],[21.54,148.554,-69.62],[22.157,148.528,-69.75],[22.767,148.502,-69.879],[23.37,148.476,-70.006],[23.966,148.447,-70.131],[24.553,148.418,-70.255],[25.131,148.388,-70.377],[25.701,148.359,-70.498],[26.262,148.331,-70.616],[26.814,148.303,-70.732],[27.356,148.276,-70.847],[27.887,148.25,-70.959],[28.409,148.223,-71.069],[28.919,148.194,-71.177],[29.419,148.164,-71.282],[30.383,148.132,-71.486],[31.299,148.1,-71.679],[32.164,148.068,-71.862],[32.975,148.039,-72.033],[33.729,148.013,-72.193],[34.425,147.989,-72.34],[35.059,147.966,-72.474],[35.628,147.943,-72.594],[36.13,147.92,-72.7],[36.922,147.895,-72.868],[37.581,147.869,-73.007]]"#,
+    );
+    let edge2_points = road_points_from_json(
+        r#"[[-21.126,151.278,-60.618],[-21.171,151.349,-60.831],[-21.279,151.427,-61.344],[-21.388,151.514,-61.858],[-21.497,151.61,-62.371],[-21.605,151.712,-62.884],[-21.714,151.817,-63.397],[-21.822,151.921,-63.91],[-21.93,152.024,-64.422],[-22.039,152.125,-64.934],[-22.147,152.226,-65.445],[-22.255,152.327,-65.955],[-22.363,152.429,-66.465],[-22.47,152.532,-66.975],[-22.578,152.638,-67.483],[-22.685,152.746,-67.991],[-22.792,152.854,-68.498],[-22.899,152.957,-69.004],[-23.006,153.049,-69.509],[-23.113,153.123,-70.013],[-23.219,153.178,-70.516],[-23.325,153.216,-71.017],[-23.431,153.243,-71.518],[-23.537,153.264,-72.017],[-23.642,153.285,-72.514],[-23.747,153.308,-73.011],[-23.851,153.333,-73.505],[-23.956,153.36,-73.998],[-24.06,153.388,-74.49],[-24.163,153.421,-74.98],[-24.318,153.458,-75.711],[-24.472,153.501,-76.438],[-24.675,153.549,-77.401],[-24.877,153.602,-78.356],[-25.077,153.659,-79.302],[-25.275,153.718,-80.238],[-25.471,153.778,-81.165],[-25.665,153.84,-82.081],[-25.857,153.902,-82.987],[-26.046,153.964,-83.881],[-26.233,154.025,-84.764],[-26.417,154.086,-85.634],[-26.598,154.145,-86.492],[-26.777,154.204,-87.336],[-26.952,154.262,-88.166],[-27.125,154.321,-88.982],[-27.294,154.38,-89.784],[-27.461,154.44,-90.57],[-27.623,154.5,-91.34],[-27.783,154.559,-92.094],[-27.939,154.617,-92.831],[-28.091,154.674,-93.551],[-28.24,154.729,-94.253],[-28.384,154.782,-94.937],[-28.525,154.833,-95.602],[-28.661,154.882,-96.247],[-28.794,154.928,-96.873],[-28.922,154.969,-97.479],[-29.045,155.007,-98.063],[-29.165,155.043,-98.627],[-29.279,155.084,-99.168],[-29.389,155.136,-99.687],[-29.494,155.202,-100.184],[-29.642,155.284,-100.885],[-29.822,155.38,-101.735],[-29.98,155.484,-102.484],[-30.117,155.593,-103.129],[-30.23,155.703,-103.666],[-30.439,155.813,-104.65]]"#,
+    );
+
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(edge0_points[0], NodeType::Junction);
+    let center = graph.add_node(*edge0_points.last().unwrap(), NodeType::Junction);
+    let east = graph.add_node(*edge1_points.last().unwrap(), NodeType::Junction);
+    let south = graph.add_node(*edge2_points.last().unwrap(), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        edge0_points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        edge1_points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        edge2_points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+    assert!(
+        graph.edge(0).end_clip > 0.0,
+        "regenerated elevated edge 0 must clip into the JunctionN; clip={:.3}",
+        graph.edge(0).end_clip
+    );
+    assert!(
+        graph.edge(1).start_clip > 0.0,
+        "regenerated elevated edge 1 must clip into the JunctionN; clip={:.3}",
+        graph.edge(1).start_clip
+    );
+    assert!(
+        graph.edge(2).start_clip > 0.0,
+        "regenerated elevated edge 2 must clip into the JunctionN; clip={:.3}",
+        graph.edge(2).start_clip
+    );
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "regenerated elevated JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+
+    let piece = assert_compiled_junction_piece(&surface, center);
+    assert_canonical_explicit_vertical_steps_have_faces(piece);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0, 1, 2]);
+    assert!(
+        !dump.contains("source_height_field_conflict")
+            && !dump.contains("shared_source_height_conflict"),
+        "elevated JunctionN must not compile through hidden height-conflict diagnostics: {dump}"
+    );
+}
+
+#[test]
 fn logged_flat_oblique_t_junction_compiles_with_explicit_curb_sidewalk_endpoint_authority() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
@@ -5076,6 +5658,12 @@ fn arbitrary_six_way_junction_compiles_with_explicit_height_carriers() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "arbitrary six-way JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
     assert_compiled_junction_piece(&surface, center);
 }
 
@@ -5251,6 +5839,12 @@ fn dirty_recompile_expanded_arbitrary_node_piece_compiles_with_explicit_height_c
     surface.mark_edge_dirty(&graph, new_edge);
     surface.compile_dirty(&graph, &terrain);
 
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "expanded arbitrary JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
     assert_compiled_junction_piece(&surface, center);
 }
 

@@ -1,8 +1,9 @@
 //! Spade-backed triangulation for canonical node-owned height regions.
 
 use super::arrangement::{
-    NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
-    NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
+    NodeArrangement, NodeArrangementKey, NodeArrangementVertex, NodeArrangementVertexId,
+    NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
+    owners_form_explicit_vertical_step_pair,
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
@@ -133,13 +134,113 @@ impl NodeTriangulationSolution {
             )?);
         }
 
+        let mut explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+        if arrangement.piece_kind() == RoadSurfaceVisualNodePieceKind::JunctionN {
+            explicit_vertical_step_segments
+                .extend(explicit_vertical_step_segments_from_triangulated_boundaries(&regions));
+            explicit_vertical_step_segments.sort_unstable();
+            explicit_vertical_step_segments.dedup();
+        }
+
         Ok(Self {
             node_id: arrangement.node_id(),
             piece_kind: arrangement.piece_kind(),
             regions,
-            explicit_vertical_step_segments: arrangement.explicit_vertical_step_segments(),
+            explicit_vertical_step_segments,
         })
     }
+}
+
+fn explicit_vertical_step_segments_from_triangulated_boundaries(
+    regions: &[NodeTriangulatedRegion],
+) -> Vec<NodeExplicitVerticalStepSegment> {
+    let mut boundary_edges_by_xz = BTreeMap::<
+        (NodeArrangementKey, NodeArrangementKey),
+        Vec<(NodeBandOwner, [usize; 2], usize)>,
+    >::new();
+    for (region_index, region) in regions.iter().enumerate() {
+        let mut edge_counts = BTreeMap::<(NodeArrangementKey, NodeArrangementKey), usize>::new();
+        for triangle in &region.triangles {
+            for edge_index in 0..3 {
+                let start_index = triangle.vertices[edge_index];
+                let end_index = triangle.vertices[(edge_index + 1) % 3];
+                let Some(start) = region.vertices.get(start_index) else {
+                    continue;
+                };
+                let Some(end) = region.vertices.get(end_index) else {
+                    continue;
+                };
+                let Some(key) = triangulated_edge_arrangement_key(start, end) else {
+                    continue;
+                };
+                *edge_counts.entry(key).or_default() += 1;
+            }
+        }
+        for triangle in &region.triangles {
+            for edge_index in 0..3 {
+                let start_index = triangle.vertices[edge_index];
+                let end_index = triangle.vertices[(edge_index + 1) % 3];
+                let Some(start) = region.vertices.get(start_index) else {
+                    continue;
+                };
+                let Some(end) = region.vertices.get(end_index) else {
+                    continue;
+                };
+                let Some(key) = triangulated_edge_arrangement_key(start, end) else {
+                    continue;
+                };
+                if edge_counts.get(&key).copied() != Some(1) {
+                    continue;
+                }
+                boundary_edges_by_xz.entry(key).or_default().push((
+                    region.owner,
+                    [start_index, end_index],
+                    region_index,
+                ));
+            }
+        }
+    }
+
+    let mut segments = BTreeSet::new();
+    for (key, edges) in boundary_edges_by_xz {
+        for (left_index, (left_owner, _, left_region_index)) in edges.iter().enumerate() {
+            for (right_owner, _, right_region_index) in edges.iter().skip(left_index + 1) {
+                if left_region_index == right_region_index
+                    || !owners_form_explicit_vertical_step_pair(*left_owner, *right_owner)
+                {
+                    continue;
+                }
+                if let Some(segment) =
+                    NodeExplicitVerticalStepSegment::new(key.0, key.1, *left_owner, *right_owner)
+                {
+                    segments.insert(segment);
+                }
+            }
+        }
+    }
+    segments.into_iter().collect()
+}
+
+fn triangulated_edge_arrangement_key(
+    start: &NodeTriangulatedVertex,
+    end: &NodeTriangulatedVertex,
+) -> Option<(NodeArrangementKey, NodeArrangementKey)> {
+    let start = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+        start.point_world.x,
+        start.point_world.z,
+    ));
+    let end = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+        end.point_world.x,
+        end.point_world.z,
+    ));
+    if start == end {
+        return None;
+    }
+    Some(if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    })
 }
 
 fn triangulate_arrangement_region(
@@ -784,6 +885,7 @@ mod tests {
             point_xz: super::super::backend::RoadVec2::new(x, z),
             height_m: 2.0,
             height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
+            height_authority: None,
         }
     }
 

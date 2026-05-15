@@ -632,8 +632,8 @@ fn domains_for_band_kind_matching(
         .collect::<Vec<_>>();
     domains.sort_by_key(|contour| {
         (
-            contour.purpose,
             contour.claim_priority,
+            contour.purpose,
             contour.source_mouth_order_index,
             contour.source_band_index,
         )
@@ -902,8 +902,8 @@ fn push_materialized_region_seam_constraint(
         ),
         owner: constraint_owner,
         opposite_owner: constraint_opposite_owner,
-        constrains_shared_height: materialized_constraint_kind_constrains_shared_height(
-            materialized_kind,
+        constrains_shared_height: materialized_constraint_constrains_shared_height(
+            constraint,
             owner,
             opposite_owner,
         ),
@@ -2162,6 +2162,20 @@ fn materialized_constraint_kind_constrains_shared_height(
     }
 }
 
+fn materialized_constraint_constrains_shared_height(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    let kind = materialized_constraint_kind_for_owned_edge(constraint, owner, opposite_owner);
+    if kind == NodeRailConstraintKind::RaisedStepContact
+        && !rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+    {
+        return false;
+    }
+    materialized_constraint_kind_constrains_shared_height(kind, owner, opposite_owner)
+}
+
 fn materialized_constraint_kind_is_material_transition(kind: NodeRailConstraintKind) -> bool {
     matches!(
         kind,
@@ -3363,6 +3377,53 @@ mod tests {
     }
 
     #[test]
+    fn side_join_non_road_authority_claims_before_mouth_band_carriers() {
+        let mut rails = contour_set();
+        let mut side_join = rails
+            .contours
+            .iter()
+            .find(|contour| {
+                contour.kind
+                    == (NodeGeneratedContourKind::Band {
+                        kind: RoadSurfaceBandKind::CurbOrShoulder,
+                    })
+                    && contour.purpose == NodeGeneratedContourPurpose::NonRoadBand
+            })
+            .cloned()
+            .expect("test rail set should include a curb/shoulder mouth carrier");
+        side_join.purpose = NodeGeneratedContourPurpose::JunctionSideJoin;
+        side_join.claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
+        let owner = side_join.owner.expect("band contour has an owner");
+        let source_mouth_order_index = side_join.source_mouth_order_index;
+        let source_band_index = side_join.source_band_index;
+        rails.contours.push(side_join);
+
+        let ownership =
+            NodeBooleanOwnership::from_rails(&rails).expect("side-join ownership remains valid");
+
+        assert!(
+            ownership.owned_regions.iter().any(|region| {
+                region.kind == RoadSurfaceBandKind::CurbOrShoulder
+                    && region.owner == owner
+                    && region.source_mouth_order_index == source_mouth_order_index
+                    && region.source_band_index == source_band_index
+                    && region.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+            }),
+            "overlapping side-join contours must own their final non-road region before ordinary mouth carriers"
+        );
+        assert!(
+            !ownership.owned_regions.iter().any(|region| {
+                region.kind == RoadSurfaceBandKind::CurbOrShoulder
+                    && region.owner == owner
+                    && region.source_mouth_order_index == source_mouth_order_index
+                    && region.source_band_index == source_band_index
+                    && region.claim_priority == NodeGeneratedContourClaimPriority::MouthBand
+            }),
+            "the same final region must not remain mouth-band-owned after side-join authority claims it"
+        );
+    }
+
+    #[test]
     fn contour_purpose_gates_junction_footprint_and_asphalt_authority() {
         let mut rails = contour_set();
         let baseline =
@@ -4148,6 +4209,64 @@ mod tests {
                         )
                 }),
                 "final owned edge must instantiate its exact owner pair from a same-kind source rail"
+            );
+        }
+    }
+
+    #[test]
+    fn reowned_raised_step_contact_does_not_inherit_source_pair_shared_height_contract() {
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
+        let source_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let final_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 2);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(0.0, 3.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [0.0, 3.0], [-1.0, 0.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Sidewalk,
+                final_sidewalk,
+                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 3.0]],
+            ),
+        ];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 35,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(curb),
+            opposite_owner: Some(source_sidewalk),
+            points_xz: vec![start, end],
+        }];
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &Vec::new(),
+            &rail_constraints,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        );
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(start)
+                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                        && ((constraint.owner == Some(curb)
+                            && constraint.opposite_owner == Some(final_sidewalk))
+                            || (constraint.owner == Some(final_sidewalk)
+                                && constraint.opposite_owner == Some(curb)))
+                        && !constraint.constrains_shared_height
+                        && constraint.is_material_transition
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::RaisedStepContact { .. }
+                        )
+                }),
+                "reowned side-join contact must authorize the exact final edge without forcing source-pair shared height"
             );
         }
     }
