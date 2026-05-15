@@ -320,14 +320,10 @@ impl RoadSurfaceSystem {
     ) -> Option<NodeOverlayShapes> {
         let mut contours = Vec::new();
         for polygon in polygons {
-            if polygon.triangles_world.is_empty() {
+            if polygon.points_world.len() >= 3 {
                 contours.push(Self::earthwork_overlay_contour_from_points(
                     &polygon.points_world,
                 ));
-                continue;
-            }
-            for triangle in &polygon.triangles_world {
-                contours.push(Self::earthwork_overlay_contour_from_points(triangle));
             }
         }
         Self::overlay_union_contours(&contours)
@@ -770,39 +766,16 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
         height_offset_m: f32,
     ) {
-        self.stamp_piece_surface_geometry_for_chunk(
-            road_surface_polygons,
-            chunk,
-            terrain,
-            height_offset_m,
-        );
-        self.stamp_piece_surface_geometry_for_chunk(
-            curb_surface_polygons,
-            chunk,
-            terrain,
-            height_offset_m,
-        );
-        self.stamp_piece_surface_geometry_for_chunk(
-            sidewalk_surface_polygons,
-            chunk,
-            terrain,
-            height_offset_m,
-        );
-    }
-
-    fn stamp_piece_surface_geometry_for_chunk(
-        &self,
-        polygons: &[RoadSurfaceVisualPolygon],
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-        height_offset_m: f32,
-    ) {
         let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
         let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
 
-        for polygon in polygons {
+        for polygon in road_surface_polygons
+            .iter()
+            .chain(curb_surface_polygons)
+            .chain(sidewalk_surface_polygons)
+        {
             Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                self.collect_profile_clearance_triangle_candidates(
+                self.collect_top_surface_support_triangle_candidates(
                     terrain,
                     chunk,
                     triangle,
@@ -818,7 +791,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn collect_profile_clearance_triangle_candidates(
+    fn collect_top_surface_support_triangle_candidates(
         &self,
         terrain: &TerrainSystem,
         chunk: SurfaceChunkKey,
@@ -880,7 +853,7 @@ impl RoadSurfaceSystem {
                     continue;
                 }
                 let Some((distance_squared, height_sample)) =
-                    Self::profile_clearance_candidate_from_triangle(
+                    Self::top_surface_support_candidate_from_triangle(
                         triangle,
                         point_xz,
                         height_offset_m,
@@ -891,16 +864,25 @@ impl RoadSurfaceSystem {
                 let entry = candidates
                     .entry((grid_x, grid_z))
                     .or_insert((distance_squared, height_sample));
-                if distance_squared < entry.0 - 0.0001
-                    || ((distance_squared - entry.0).abs() <= 0.0001 && height_sample > entry.1)
-                {
+                if Self::top_surface_support_candidate_replaces(
+                    *entry,
+                    (distance_squared, height_sample),
+                ) {
                     *entry = (distance_squared, height_sample);
                 }
             }
         }
     }
 
-    fn profile_clearance_candidate_from_triangle(
+    fn top_surface_support_candidate_replaces(existing: (f32, f32), candidate: (f32, f32)) -> bool {
+        let (existing_distance_squared, existing_height_sample) = existing;
+        let (candidate_distance_squared, candidate_height_sample) = candidate;
+        candidate_distance_squared < existing_distance_squared - 0.0001
+            || ((candidate_distance_squared - existing_distance_squared).abs() <= 0.0001
+                && candidate_height_sample < existing_height_sample)
+    }
+
+    fn top_surface_support_candidate_from_triangle(
         triangle: [Vector3; 3],
         point_xz: Vector2,
         height_offset_m: f32,
@@ -913,5 +895,49 @@ impl RoadSurfaceSystem {
             point_xz.distance_squared_to(sample_point_xz),
             clearance_sample,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn earthwork_support_candidates_use_lower_envelope_for_overlapping_top_surfaces() {
+        assert!(RoadSurfaceSystem::top_surface_support_candidate_replaces(
+            (0.0, 0.30),
+            (0.0, 0.10),
+        ));
+        assert!(!RoadSurfaceSystem::top_surface_support_candidate_replaces(
+            (0.0, 0.10),
+            (0.0, 0.30),
+        ));
+    }
+
+    #[test]
+    fn earthwork_support_candidates_keep_nearest_non_overlapping_surface() {
+        assert!(RoadSurfaceSystem::top_surface_support_candidate_replaces(
+            (0.50, 0.10),
+            (0.10, 0.30),
+        ));
+        assert!(!RoadSurfaceSystem::top_surface_support_candidate_replaces(
+            (0.10, 0.30),
+            (0.50, 0.10),
+        ));
+    }
+
+    #[test]
+    fn earthwork_hardcut_has_no_per_material_sequential_stamping_path() {
+        let source = include_str!("earthwork.rs");
+        for forbidden in [
+            concat!("stamp_piece_surface_", "geometry_for_chunk"),
+            concat!("profile_clearance_", "candidate_from_triangle"),
+            concat!("collect_profile_clearance_", "triangle_candidates"),
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "road-touched terrain support must use one canonical lower-envelope pass, not `{forbidden}`"
+            );
+        }
     }
 }

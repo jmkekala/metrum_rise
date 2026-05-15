@@ -166,9 +166,12 @@ Live behavior:
   polygons. Road-touched terrain hardening now keeps grounded road support below the lower envelope
   of overlapping road-owned top surfaces, and bridge / tunnel structural earthworks are selected
   from class-owned endpoint ranges so bridge midspans stay unflattened while tunnel portals still
-  stamp. The remaining blocker is broader DEM validation around road-touched tie-in steepness,
-  retaining / wall variants, and material classification; boolean ownership and height-field
-  validation must keep rejecting real band residuals instead of silently patching them.
+  stamp. Road-touched terrain CDT now also reports source samples omitted to widen over-steep
+  cut / fill tie-ins, with exact source / seam sample diagnostics, and marks any remaining
+  over-steep seam output as `terrain_cdt_status=oversteep`. The remaining blocker is
+  retaining / wall variants and material classification for tie-ins that cannot stay legal as
+  ordinary terrain; boolean ownership and height-field validation must keep rejecting real band
+  residuals instead of silently patching them.
 - `Span` output now uses the same resolved-region staging shape as node output: section samples
   first produce role-tagged asphalt, curb / shoulder, and non-road top regions plus generic
   owner-pair raised-step constraints, then render polygons, query support, terrain clip loops,

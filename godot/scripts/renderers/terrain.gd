@@ -715,10 +715,14 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_road_seam_steep_faces: int = int(patch_data.get("terrain_cdt_road_seam_steep_faces", 0))
 		var cdt_road_seam_max_y_delta_m: float = float(patch_data.get("terrain_cdt_road_seam_max_y_delta_m", 0.0))
 		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
+		var cdt_tie_in_widened_source_samples: int = int(patch_data.get("terrain_cdt_tie_in_widened_source_samples", 0))
+		var cdt_tie_in_widened_max_y_delta_m: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0))
+		var cdt_tie_in_widened_max_slope_ratio: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0))
 		var cdt_invalid_constraint_samples: String = _road_geometry_terrain_invalid_constraint_samples_label(patch_data)
 		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
+		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -758,8 +762,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_road_seam_steep_faces,
 				cdt_road_seam_max_y_delta_m,
 				cdt_road_seam_max_slope_ratio,
+				cdt_tie_in_widened_source_samples,
+				cdt_tie_in_widened_max_y_delta_m,
+				cdt_tie_in_widened_max_slope_ratio,
 				cdt_invalid_constraint_samples,
 				cdt_road_seam_samples,
+				cdt_tie_in_widened_samples,
 			]
 		)
 	return lines
@@ -1308,6 +1316,45 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 				y_delta_m,
 				slope_ratio,
 				vertices_label,
+			]
+		)
+	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_terrain_tie_in_widened_samples_label(patch_data: Dictionary) -> String:
+	if not patch_data.has("terrain_cdt_tie_in_widened_sample_points"):
+		return "[]"
+	var points: PackedVector3Array = (
+		patch_data["terrain_cdt_tie_in_widened_sample_points"] as PackedVector3Array
+	)
+	var metrics: PackedFloat32Array = (
+		patch_data.get("terrain_cdt_tie_in_widened_sample_metrics", PackedFloat32Array())
+		as PackedFloat32Array
+	)
+	var sample_count: int = mini(int(points.size() / 2), int(metrics.size() / 4))
+	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
+	if sample_count <= 0:
+		return "[]"
+	var parts: Array[String] = []
+	for index in range(sample_count):
+		var source: Vector3 = points[index * 2]
+		var seam: Vector3 = points[index * 2 + 1]
+		var distance_m: float = metrics[index * 4]
+		var required_distance_m: float = metrics[index * 4 + 1]
+		var y_delta_m: float = metrics[index * 4 + 2]
+		var slope_ratio: float = metrics[index * 4 + 3]
+		parts.append(
+			"{source=(%.3f,%.3f,%.3f),seam=(%.3f,%.3f,%.3f),distance=%.3f,required=%.3f,y_delta=%.3f,slope=%.3f}"
+			% [
+				source.x,
+				source.y,
+				source.z,
+				seam.x,
+				seam.y,
+				seam.z,
+				distance_m,
+				required_distance_m,
+				y_delta_m,
+				slope_ratio,
 			]
 		)
 	return "[" + ", ".join(parts) + "]"

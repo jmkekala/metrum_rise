@@ -184,8 +184,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Road-touched terrain support now uses the lower
   road-owned top-surface envelope when grounded support overlaps terminal caps or raised bands, and
   bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
-  visible tunnel portals still stamp. The remaining blocking work is broader DEM validation of
-  road-to-terrain tie-in steepness, followed by retaining, wall, and material variants.
+  visible tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
+  samples omitted to widen over-steep cut / fill tie-ins. The remaining blocking work is selecting
+  retaining, wall, and material variants when ordinary terrain tie-ins cannot stay legal.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

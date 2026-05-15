@@ -494,10 +494,12 @@ impl SimulationNode {
 
         match build_road_touched_terrain_patch(Self::terrain_cdt_input(patch, road_clip_polygons)) {
             Ok(mesh) => {
-                let cdt_status = if mesh.stats.invalid_constraint_edges == 0 {
-                    "ok"
-                } else {
+                let cdt_status = if mesh.stats.invalid_constraint_edges > 0 {
                     "conflicted"
+                } else if mesh.stats.road_seam_steep_faces > 0 {
+                    "oversteep"
+                } else {
+                    "ok"
                 };
                 dict.set("terrain_cdt_status", GString::from(cdt_status));
                 dict.set(
@@ -552,7 +554,20 @@ impl SimulationNode {
                     "terrain_cdt_road_seam_max_slope_ratio",
                     f64::from(mesh.stats.road_seam_max_slope_ratio),
                 );
+                dict.set(
+                    "terrain_cdt_tie_in_widened_source_samples",
+                    i64::try_from(mesh.stats.tie_in_widened_source_samples).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_tie_in_widened_max_y_delta_m",
+                    f64::from(mesh.stats.tie_in_widened_max_y_delta_m),
+                );
+                dict.set(
+                    "terrain_cdt_tie_in_widened_max_slope_ratio",
+                    f64::from(mesh.stats.tie_in_widened_max_slope_ratio),
+                );
                 Self::append_cdt_road_seam_face_samples(dict, &mesh);
+                Self::append_cdt_tie_in_widened_samples(dict, &mesh);
                 Self::append_cdt_invalid_constraint_samples(dict, &mesh);
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
@@ -579,6 +594,9 @@ impl SimulationNode {
         dict.set("terrain_cdt_road_seam_steep_faces", 0i64);
         dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
+        dict.set("terrain_cdt_tie_in_widened_source_samples", 0i64);
+        dict.set("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0f64);
+        dict.set("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0f64);
         dict.set(
             "terrain_cdt_road_seam_sample_centroids",
             PackedVector3Array::new(),
@@ -594,6 +612,14 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_road_seam_sample_vertices",
             PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_sample_points",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_sample_metrics",
+            PackedFloat32Array::new(),
         );
         dict.set(
             "terrain_cdt_invalid_constraint_sample_edges",
@@ -815,6 +841,30 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_road_seam_sample_vertices",
             PackedVector3Array::from_iter(vertices),
+        );
+    }
+
+    fn append_cdt_tie_in_widened_samples(
+        dict: &mut VarDictionary,
+        mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
+    ) {
+        let mut points = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 2);
+        let mut metrics = Vec::with_capacity(mesh.tie_in_widened_samples.len() * 4);
+        for sample in &mesh.tie_in_widened_samples {
+            points.push(Self::terrain_cdt_vertex_to_vector3(sample.source_sample));
+            points.push(Self::terrain_cdt_vertex_to_vector3(sample.seam_point));
+            metrics.push(sample.distance_m);
+            metrics.push(sample.required_distance_m);
+            metrics.push(sample.height_delta_m);
+            metrics.push(sample.slope_ratio);
+        }
+        dict.set(
+            "terrain_cdt_tie_in_widened_sample_points",
+            PackedVector3Array::from_iter(points),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_sample_metrics",
+            PackedFloat32Array::from_iter(metrics),
         );
     }
 
