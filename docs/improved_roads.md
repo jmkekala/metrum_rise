@@ -211,10 +211,11 @@ Remaining ROAD-01 gap:
   top-surface envelope for overlapping grounded support checks, and bridge / tunnel earthwork
   ranges are class-aware so structural stamps stay limited to abutments and visible portals.
   Road-touched terrain CDT classifies over-budget road-seam faces as explicit retaining-wall
-  geometry. The remaining work is broader DEM validation plus any closure variants required by
-  extreme authored terrain. Hand-built miter caps, miter guards, or adjacent-mouth connector
-  patches are not the Bend / JunctionN ownership strategy; they are the failure mode this rework is
-  replacing.
+  geometry, with synthetic DEM matrix coverage for ordinary supportive tie-ins, widened near-road
+  source samples, raised and lowered retaining-wall cuts, and mixed widening-plus-wall cases. The
+  remaining work is authored / extreme DEM validation plus any closure variants required by that
+  terrain. Hand-built miter caps, miter guards, or adjacent-mouth connector patches are not the
+  Bend / JunctionN ownership strategy; they are the failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 

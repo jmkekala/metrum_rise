@@ -61,8 +61,8 @@ Kind values:
 
 - **Observed in debug logs**: elevated four-way road tests can report clean terminal topology, clean mouth seams, and `cdt_invalid_constraints=0`, while still showing high terrain seam steepness such as `cdt_road_seam_max_slope > 1.0`.
 - **Scope**: this is not a curb / sidewalk ownership failure. The road-owned top surface and terminal sideskirts can be correct while the surrounding terrain tie-in is visually too abrupt.
-- **Current state**: road-touched terrain CDT keeps ordinary seam faces under the documented steepness limit by omitting source samples that would force an over-steep cut / fill tie-in, exports those widened source / seam sample decisions in terrain debug output, and classifies any remaining over-budget road-seam faces as explicit retaining-wall geometry.
-- **Proposed fix**: broaden the DEM validation matrix and add any remaining closure variant that real authored terrain needs after the retaining-wall path. The fix must keep the road-owned seam vertices exact and must not use terrain masking, closure carpets, z-bias, or tolerance-based hiding.
+- **Current state**: road-touched terrain CDT keeps ordinary seam faces under the documented steepness limit by omitting source samples that would force an over-steep cut / fill tie-in, exports those widened source / seam sample decisions in terrain debug output, classifies any remaining over-budget road-seam faces as explicit retaining-wall geometry, and has synthetic DEM matrix coverage for ordinary, widened, raised-wall, lowered-wall, and mixed widening-plus-wall cases.
+- **Proposed fix**: run authored / extreme DEM validation and add any remaining closure variant that real terrain needs after the retaining-wall path. The fix must keep the road-owned seam vertices exact and must not use terrain masking, closure carpets, z-bias, or tolerance-based hiding.
 
 ### `NET-01`
 

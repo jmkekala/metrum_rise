@@ -1600,6 +1600,55 @@ mod tests {
     }
 
     #[test]
+    fn road_touched_dem_validation_matrix_covers_retaining_wall_tie_ins() {
+        assert_road_touched_dem_tie_in_case(
+            "ordinary raised road on supportive DEM",
+            square_road_loop(3.0, 7.0, 0.20),
+            Vec::new(),
+            0,
+            false,
+        );
+        assert_road_touched_dem_tie_in_case(
+            "near-road DEM samples widen ordinary cut fill",
+            square_road_loop(3.0, 7.0, 0.12),
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 2.99),
+                TerrainCdtVertex::new(2.99, 0.0, 5.0),
+                TerrainCdtVertex::new(7.01, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 7.01),
+            ],
+            4,
+            false,
+        );
+        assert_road_touched_dem_tie_in_case(
+            "raised road above unavoidable cliff DEM",
+            square_road_loop(4.0, 6.0, 4.0),
+            Vec::new(),
+            0,
+            true,
+        );
+        assert_road_touched_dem_tie_in_case(
+            "lowered road below unavoidable cliff DEM",
+            square_road_loop(4.0, 6.0, -4.0),
+            Vec::new(),
+            0,
+            true,
+        );
+        assert_road_touched_dem_tie_in_case(
+            "near-road DEM widening still leaves explicit retaining wall",
+            square_road_loop(4.0, 6.0, 4.0),
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 3.99),
+                TerrainCdtVertex::new(3.99, 0.0, 5.0),
+                TerrainCdtVertex::new(6.01, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 6.01),
+            ],
+            4,
+            true,
+        );
+    }
+
+    #[test]
     fn road_loop_crossing_one_patch_edge_is_clipped_to_shared_boundary_vertices() {
         let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
         let road = road_loop_from_centerline(
@@ -2015,6 +2064,143 @@ mod tests {
             test_vertex(54.0, 20.0),
             test_vertex(54.0, 40.0),
             test_vertex(54.0, 54.0),
+        ]
+    }
+
+    fn assert_road_touched_dem_tie_in_case(
+        case_name: &str,
+        road: Vec<TerrainCdtVertex>,
+        source_samples: Vec<TerrainCdtVertex>,
+        expected_widened_source_samples: usize,
+        expect_retaining_wall: bool,
+    ) {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]);
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![TerrainCdtRoadLoop::new(17, 0, road.clone())],
+            source_samples.clone(),
+        ))
+        .unwrap_or_else(|_| panic!("{case_name}: terrain CDT should build"));
+
+        let mut reversed_samples = source_samples;
+        reversed_samples.reverse();
+        let reordered_mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![TerrainCdtRoadLoop::new(17, 0, road.clone())],
+            reversed_samples,
+        ))
+        .unwrap_or_else(|_| panic!("{case_name}: reordered terrain CDT should build"));
+
+        assert_eq!(
+            mesh.stats, reordered_mesh.stats,
+            "{case_name}: source sample order must not change CDT diagnostics"
+        );
+        assert_eq!(
+            canonical_triangle_set(&mesh.triangles),
+            canonical_triangle_set(&reordered_mesh.triangles),
+            "{case_name}: ordinary terrain triangles must be deterministic"
+        );
+        assert_eq!(
+            canonical_triangle_set(&mesh.retaining_wall_triangles),
+            canonical_triangle_set(&reordered_mesh.retaining_wall_triangles),
+            "{case_name}: retaining wall triangles must be deterministic"
+        );
+        assert_eq!(
+            mesh.stats.invalid_constraint_edges, 0,
+            "{case_name}: DEM tie-in must not invalidate exact road seam constraints"
+        );
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges, mesh.stats.road_constraint_edges,
+            "{case_name}: every road seam constraint must survive Spade insertion"
+        );
+        assert_eq!(
+            mesh.stats.accepted_faces,
+            mesh.triangles.len() + mesh.retaining_wall_triangles.len(),
+            "{case_name}: accepted faces must be fully classified"
+        );
+        assert_eq!(
+            mesh.stats.tie_in_widened_source_samples, expected_widened_source_samples,
+            "{case_name}: widened DEM source sample count changed"
+        );
+        if expected_widened_source_samples == 0 {
+            assert!(
+                mesh.tie_in_widened_samples.is_empty(),
+                "{case_name}: unexpected widened tie-in diagnostics"
+            );
+        } else {
+            assert_eq!(
+                mesh.tie_in_widened_samples.len(),
+                expected_widened_source_samples.min(MAX_TIE_IN_SAMPLE_DIAGNOSTICS),
+                "{case_name}: widened tie-in diagnostics should be capped deterministically"
+            );
+            assert!(
+                mesh.tie_in_widened_samples
+                    .iter()
+                    .all(|sample| sample.required_distance_m > sample.distance_m),
+                "{case_name}: widened samples must prove the ordinary tie-in would exceed budget"
+            );
+        }
+
+        if expect_retaining_wall {
+            assert!(
+                mesh.stats.retaining_wall_faces > 0,
+                "{case_name}: expected explicit retaining-wall faces"
+            );
+            assert_eq!(
+                mesh.stats.retaining_wall_faces,
+                mesh.retaining_wall_triangles.len(),
+                "{case_name}: retaining-wall face count must match emitted wall topology"
+            );
+            assert!(
+                mesh.stats.retaining_wall_max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO,
+                "{case_name}: retaining walls must be driven by the documented slope budget"
+            );
+            assert!(
+                mesh.retaining_wall_face_samples
+                    .iter()
+                    .all(|sample| sample.kind == TerrainCdtTieInKind::RetainingWall),
+                "{case_name}: retaining diagnostics must not be ordinary terrain samples"
+            );
+        } else {
+            assert_eq!(
+                mesh.stats.retaining_wall_faces, 0,
+                "{case_name}: ordinary DEM tie-ins must not emit retaining-wall faces"
+            );
+            assert!(
+                mesh.retaining_wall_triangles.is_empty(),
+                "{case_name}: ordinary DEM tie-ins must not emit retaining-wall topology"
+            );
+            assert!(
+                mesh.stats.road_seam_max_slope_ratio <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO + 0.0001,
+                "{case_name}: ordinary road seam faces exceeded the slope budget: {:?}",
+                mesh.stats
+            );
+        }
+
+        let road = ensure_ccw(simplified_loop(road));
+        for triangle in mesh
+            .triangles
+            .iter()
+            .chain(mesh.retaining_wall_triangles.iter())
+        {
+            let center = centroid([
+                mesh.vertices[triangle[0]],
+                mesh.vertices[triangle[1]],
+                mesh.vertices[triangle[2]],
+            ]);
+            assert!(
+                !point_in_polygon(center, &road),
+                "{case_name}: emitted terrain tie-in leaked into the road-owned footprint"
+            );
+        }
+    }
+
+    fn square_road_loop(min: f64, max: f64, height_m: f32) -> Vec<TerrainCdtVertex> {
+        vec![
+            TerrainCdtVertex::new(min, height_m, min),
+            TerrainCdtVertex::new(max, height_m, min),
+            TerrainCdtVertex::new(max, height_m, max),
+            TerrainCdtVertex::new(min, height_m, max),
         ]
     }
 

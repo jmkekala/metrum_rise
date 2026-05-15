@@ -186,9 +186,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
   visible tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
   samples omitted to widen over-steep cut / fill tie-ins, and over-budget road-seam faces are
-  exported as explicit retaining-wall tie-in geometry instead of ordinary terrain. The remaining
-  blocking work is broader DEM validation and any richer closure variants needed beyond the
-  retaining-wall path.
+  exported as explicit retaining-wall tie-in geometry instead of ordinary terrain. Synthetic DEM
+  validation now covers supportive ordinary tie-ins, near-road source-sample widening, raised and
+  lowered retaining-wall cuts, and mixed widening-plus-wall cases while preserving exact road seam
+  constraints. The remaining blocking work is authored / extreme DEM validation and any richer
+  closure variants needed beyond the retaining-wall path.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
