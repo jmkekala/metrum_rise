@@ -1445,6 +1445,7 @@ mod tests {
                 RoadSurfaceVisualNodePieceKind::Bend,
                 &owned_regions,
                 &Vec::new(),
+                &[],
             ),
             owned_regions,
         };
@@ -1475,6 +1476,7 @@ mod tests {
                 RoadSurfaceVisualNodePieceKind::Bend,
                 &owned_regions,
                 &Vec::new(),
+                &[],
             ),
             owned_regions,
         };

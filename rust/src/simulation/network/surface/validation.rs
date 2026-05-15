@@ -167,6 +167,18 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_z_mm: i64,
         reason: NodeSeamConstraintFailureReason,
     },
+    UnmaterializedRaisedStepAuthority {
+        region_index: usize,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        opposite_owner: RoadSurfaceBandKind,
+        opposite_owner_index: usize,
+        start_x_mm: i64,
+        start_z_mm: i64,
+        end_x_mm: i64,
+        end_z_mm: i64,
+        source_constraint_indices: Vec<usize>,
+    },
     BackendFailure {
         reason: &'static str,
     },
@@ -1176,49 +1188,77 @@ impl NodeGeometryDiagnostic {
         piece_kind: RoadSurfaceVisualNodePieceKind,
         diagnostic: &NodeOwnedRegionArrangementDiagnostic,
     ) -> Self {
-        let kind = match diagnostic {
+        let (backend, kind) = match diagnostic {
             NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
                 region_index,
                 owner,
                 opposite_owner,
                 start,
                 end,
-            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
-                region_index: *region_index,
-                owner: owner.kind(),
-                owner_index: owner.owner_index(),
-                opposite_owner: opposite_owner.kind(),
-                opposite_owner_index: opposite_owner.owner_index(),
-                start_x_mm: start.x_mm(),
-                start_z_mm: start.z_mm(),
-                end_x_mm: end.x_mm(),
-                end_z_mm: end.z_mm(),
-                reason: NodeSeamConstraintFailureReason::Missing,
-            },
+            } => (
+                NodeGeometryBackend::IOverlay,
+                NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                    region_index: *region_index,
+                    owner: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    opposite_owner: opposite_owner.kind(),
+                    opposite_owner_index: opposite_owner.owner_index(),
+                    start_x_mm: start.x_mm(),
+                    start_z_mm: start.z_mm(),
+                    end_x_mm: end.x_mm(),
+                    end_z_mm: end.z_mm(),
+                    reason: NodeSeamConstraintFailureReason::Missing,
+                },
+            ),
+            NodeOwnedRegionArrangementDiagnostic::UnmaterializedRaisedStepAuthority {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+                source_constraint_indices,
+            } => (
+                NodeGeometryBackend::CanonicalKeys,
+                NodeGeometryDiagnosticKind::UnmaterializedRaisedStepAuthority {
+                    region_index: *region_index,
+                    owner: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    opposite_owner: opposite_owner.kind(),
+                    opposite_owner_index: opposite_owner.owner_index(),
+                    start_x_mm: start.x_mm(),
+                    start_z_mm: start.z_mm(),
+                    end_x_mm: end.x_mm(),
+                    end_z_mm: end.z_mm(),
+                    source_constraint_indices: source_constraint_indices.clone(),
+                },
+            ),
             NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
                 region_index,
                 owner,
                 opposite_owner,
                 start,
                 end,
-            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
-                region_index: *region_index,
-                owner: owner.kind(),
-                owner_index: owner.owner_index(),
-                opposite_owner: opposite_owner.kind(),
-                opposite_owner_index: opposite_owner.owner_index(),
-                start_x_mm: start.x_mm(),
-                start_z_mm: start.z_mm(),
-                end_x_mm: end.x_mm(),
-                end_z_mm: end.z_mm(),
-                reason: NodeSeamConstraintFailureReason::Ambiguous,
-            },
+            } => (
+                NodeGeometryBackend::IOverlay,
+                NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                    region_index: *region_index,
+                    owner: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    opposite_owner: opposite_owner.kind(),
+                    opposite_owner_index: opposite_owner.owner_index(),
+                    start_x_mm: start.x_mm(),
+                    start_z_mm: start.z_mm(),
+                    end_x_mm: end.x_mm(),
+                    end_z_mm: end.z_mm(),
+                    reason: NodeSeamConstraintFailureReason::Ambiguous,
+                },
+            ),
         };
         Self {
             node_id,
             piece_kind,
             stage: NodeGeometryStage::BooleanOwnership,
-            backend: NodeGeometryBackend::IOverlay,
+            backend,
             kind,
         }
     }
@@ -1276,6 +1316,9 @@ impl NodeGeometryDiagnosticKind {
             Self::TriangleCoverageMismatch { .. } => "triangle_coverage_mismatch",
             Self::TriangleOverlap { .. } => "triangle_overlap",
             Self::SeamConstraintFailure { .. } => "seam_constraint_failure",
+            Self::UnmaterializedRaisedStepAuthority { .. } => {
+                "unmaterialized_raised_step_authority"
+            }
             Self::BackendFailure { .. } => "backend_failure",
         }
     }

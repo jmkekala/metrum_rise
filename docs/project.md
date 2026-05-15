@@ -175,7 +175,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   owning source rail key, and node raised-step face export emits generic owner-pair faces only
   from exact canonical arrangement-key support instead of overlay-sibling edge matching. `JunctionN`
   final owned asphalt / curb step edges now materialize after boolean ownership from exact
-  owner-pair source polyline authority before height validation / CDT export. The render mesh
+  owner-pair source polyline authority before height validation / CDT export; missed
+  source-authorized materialization now blocks with a canonical-keys diagnostic that names the
+  final edge and source constraint. The render mesh
   payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
   buckets. Post-boolean `node_non_road`
   subdivision now requires every final curb /

@@ -57,6 +57,14 @@ pub(crate) enum NodeOwnedRegionArrangementDiagnostic {
         start: NodeOwnedRegionArrangementKey,
         end: NodeOwnedRegionArrangementKey,
     },
+    UnmaterializedRaisedStepAuthority {
+        region_index: usize,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        start: NodeOwnedRegionArrangementKey,
+        end: NodeOwnedRegionArrangementKey,
+        source_constraint_indices: Vec<usize>,
+    },
     AmbiguousSeamConstraint {
         region_index: usize,
         owner: NodeBandOwner,
@@ -246,6 +254,7 @@ impl NodeBooleanOwnership {
             rails.piece_kind,
             &owned_regions,
             &footprint_shapes,
+            &rails.constraints,
         );
         Ok(Self {
             node_id: rails.node_id,
@@ -265,6 +274,7 @@ impl NodeOwnedRegionArrangement {
         piece_kind: RoadSurfaceVisualNodePieceKind,
         regions: &[NodeBooleanOwnedRegion],
         footprint_shapes: &NodeOverlayShapes,
+        rail_constraints: &[NodeRailConstraint],
     ) -> Self {
         let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
         let mut edges = Vec::new();
@@ -286,7 +296,34 @@ impl NodeOwnedRegionArrangement {
                     let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
                     let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
                     if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
-                        if source_constraints.is_empty() {
+                        let source_constraint_indices =
+                            junctionn_unmaterialized_raised_step_authority_indices_for_edge(
+                                piece_kind,
+                                edge_key.start,
+                                edge_key.end,
+                                rail_constraints,
+                                edge_ref.owner,
+                                opposite_owner,
+                            );
+                        if !source_constraint_indices.is_empty()
+                            && !source_constraints_materialize_raised_step_authority(
+                                &source_constraints,
+                                &source_constraint_indices,
+                                edge_ref.owner,
+                                opposite_owner,
+                            )
+                        {
+                            diagnostics.push(
+                                NodeOwnedRegionArrangementDiagnostic::UnmaterializedRaisedStepAuthority {
+                                    region_index: edge_ref.region_index,
+                                    owner: edge_ref.owner,
+                                    opposite_owner,
+                                    start,
+                                    end,
+                                    source_constraint_indices,
+                                },
+                            );
+                        } else if source_constraints.is_empty() {
                             diagnostics.push(
                                 NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
                                     region_index: edge_ref.region_index,
@@ -2305,6 +2342,64 @@ fn owned_boundary_requires_explicit_seam(
     owner.kind() != opposite_owner.kind()
 }
 
+fn junctionn_unmaterialized_raised_step_authority_indices_for_edge(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_constraints: &[NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN {
+        return Vec::new();
+    }
+    let mut source_constraint_indices = rail_constraints
+        .iter()
+        .filter(|constraint| constraint.kind == NodeRailConstraintKind::RaisedStepContact)
+        .filter(|constraint| !constraint_is_point_contact(constraint))
+        .filter(|constraint| {
+            rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+        })
+        .filter(|constraint| {
+            edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+        })
+        .map(|constraint| constraint.constraint_index)
+        .collect::<Vec<_>>();
+    source_constraint_indices.sort_unstable();
+    source_constraint_indices.dedup();
+    source_constraint_indices
+}
+
+fn source_constraints_materialize_raised_step_authority(
+    source_constraints: &[&NodeRegionSeamConstraint],
+    source_constraint_indices: &[usize],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    source_constraints.iter().any(|constraint| {
+        source_constraint_indices.contains(&constraint.constraint_index)
+            && constraint.is_material_transition
+            && seam_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+            && matches!(
+                constraint.seam_source,
+                NodeSeamSource::RaisedStepContact { .. }
+            )
+    })
+}
+
+fn seam_constraint_owner_pair_matches_edge(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (constraint.owner, constraint.opposite_owner),
+        (Some(left), Some(right))
+            if (left == owner && right == opposite_owner)
+                || (left == opposite_owner && right == owner)
+    )
+}
+
 fn owned_seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, bool, usize) {
     (
         !constraint.constrains_shared_height,
@@ -3451,6 +3546,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::JunctionN,
             &regions,
             &footprint_shapes,
+            &[],
         );
         assert!(arrangement.diagnostics().is_empty());
         assert!(arrangement.edges().iter().any(|edge| {
@@ -3544,6 +3640,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::Terminal,
             &regions,
             &footprint_shapes,
+            &rail_constraints,
         );
 
         assert!(arrangement.diagnostics().is_empty());
@@ -3786,6 +3883,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::Bend,
             &regions,
             &footprint_shapes,
+            &rail_constraints,
         );
         assert!(arrangement.diagnostics().is_empty());
         assert!(!arrangement.edges().iter().any(|edge| {
@@ -3859,8 +3957,88 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::JunctionN,
             &regions,
             &footprint_shapes,
+            &rail_constraints,
         );
         assert!(arrangement.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn junctionn_reports_unmaterialized_raised_step_authority_before_height_validation() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let start = RoadVec2::new(0.0, 0.0);
+        let end = RoadVec2::new(3.0, 0.0);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [3.0, 0.0], [0.0, -1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [0.0, 1.0]],
+            ),
+        ];
+        for region in &mut regions {
+            region.seam_constraints.push(NodeRegionSeamConstraint {
+                constraint_index: 7,
+                seam_source: NodeSeamSource::AsphaltBoundary {
+                    owner_index: region.owner.owner_index(),
+                },
+                owner: Some(carriageway),
+                opposite_owner: Some(curb),
+                constrains_shared_height: true,
+                is_material_transition: true,
+                start_xz: start,
+                end_xz: end,
+            });
+        }
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 41,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            points_xz: vec![
+                start,
+                RoadVec2::new(1.0, 0.000001),
+                RoadVec2::new(2.0, -0.000001),
+                end,
+            ],
+        }];
+
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            42,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &regions,
+            &Vec::new(),
+            &rail_constraints,
+        );
+
+        assert!(arrangement.diagnostics().iter().any(|diagnostic| matches!(
+            diagnostic,
+            NodeOwnedRegionArrangementDiagnostic::UnmaterializedRaisedStepAuthority {
+                region_index: 0,
+                owner,
+                opposite_owner,
+                start,
+                end,
+                source_constraint_indices,
+            } if *owner == carriageway
+                && *opposite_owner == curb
+                && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(0.0, 0.0))
+                && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(3.0, 0.0))
+                && source_constraint_indices.as_slice() == [41]
+        )));
+        let report = NodeValidationReport::from_owned_region_arrangement_diagnostics(&arrangement)
+            .expect("unmaterialized authority must block before height validation");
+        let dump = report.debug_dump();
+        assert!(dump.contains("\"kind\":\"unmaterialized_raised_step_authority\""));
+        assert!(dump.contains("\"backend\":\"canonical_keys\""));
+        assert!(dump.contains("source_constraint_indices: [41]"));
     }
 
     #[test]
@@ -4405,6 +4583,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::JunctionN,
             &regions,
             &Vec::new(),
+            &[],
         );
 
         assert!(arrangement.diagnostics().iter().any(|diagnostic| matches!(
@@ -4444,6 +4623,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::Bend,
             &regions,
             &Vec::new(),
+            &[],
         );
 
         assert!(arrangement.diagnostics().is_empty());

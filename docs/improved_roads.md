@@ -201,6 +201,9 @@ Remaining ROAD-01 gap:
   exact canonical arrangement-key support and does not synthesize faces from overlay-sibling edges.
   `JunctionN` final owned asphalt / curb raised-step edges are now materialized after boolean
   ownership from exact owner-pair source polyline authority before height validation / CDT export.
+  If that source-authorized materialization is missing, owned-region arrangement now emits a
+  blocking canonical-keys diagnostic naming the final edge and source constraint before height /
+  CDT export.
   Runtime mesh payloads expose those faces as `raised_step_*` buffers instead of curb-specific
   vertical-face buckets.
   `surface::joins` is now the side-join adapter boundary and routes generated bands through
