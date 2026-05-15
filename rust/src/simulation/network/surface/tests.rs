@@ -4933,6 +4933,51 @@ fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain()
 }
 
 #[test]
+fn terrain_clip_union_stitches_source_chain_across_same_xz_height_step() {
+    let p0 = Vector3::new(0.0, 10.0, 0.0);
+    let p1_low = Vector3::new(0.45, 10.8, 0.18);
+    let p1_high = Vector3::new(0.45, 11.0, 0.18);
+    let p2 = Vector3::new(1.0, 11.4, 0.0);
+    let p3 = Vector3::new(1.0, 11.4, 0.5);
+    let p4 = Vector3::new(0.0, 10.0, 0.5);
+    let source_loop = RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p1_low),
+            terrain_clip_source_edge_for_test(p1_high, p2),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p4),
+            terrain_clip_source_edge_for_test(p4, p0),
+        ],
+        points_world: vec![p0, p2, p3, p4],
+    };
+    let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[source_loop]);
+
+    assert_eq!(
+        unioned.len(),
+        1,
+        "same-XZ source chain height steps must not drop the road-owned terrain clip loop"
+    );
+    let stitched = unioned[0]
+        .points_world
+        .iter()
+        .find(|point| {
+            (point.x - p1_low.x).abs() <= SAMPLE_EPSILON_M
+                && (point.z - p1_low.z).abs() <= SAMPLE_EPSILON_M
+        })
+        .copied()
+        .expect("source chain split vertex should survive terrain clip union");
+    assert!(
+        stitched.y >= p1_high.y - SAMPLE_EPSILON_M,
+        "shared XZ source chain vertex should use the highest visible road height"
+    );
+    assert_eq!(
+        unioned[0].source_edges.len(),
+        unioned[0].points_world.len(),
+        "every stitched segment must keep owner-backed source provenance"
+    );
+}
+
+#[test]
 fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
     let y = 4.0;
     let valid = [

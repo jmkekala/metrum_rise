@@ -741,6 +741,13 @@ fn canonicalize_input(
             continue;
         }
         let points = ensure_ccw(points);
+        let points = split_road_loop_segments_at_source_vertices(points, &original_source_edges);
+        if points.len() < 3 {
+            continue;
+        }
+        if signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+            continue;
+        }
         let seam_quality =
             harden_terrain_cdt_road_loop_seams(points, &original_source_edges, input.patch);
         let points = seam_quality.points;
@@ -890,6 +897,88 @@ fn push_road_loop_constraints(
         }
     }
     missing_road_boundary_sources
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainCdtSourceVertexSplit {
+    t: f64,
+    vertex: TerrainCdtVertex,
+}
+
+fn split_road_loop_segments_at_source_vertices(
+    points: Vec<TerrainCdtVertex>,
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+) -> Vec<TerrainCdtVertex> {
+    if points.len() < 2 || source_edges.is_empty() {
+        return points;
+    }
+
+    let mut split_points = Vec::with_capacity(points.len() + source_edges.len());
+    for index in 0..points.len() {
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        if split_points
+            .last()
+            .is_none_or(|last: &TerrainCdtVertex| !same_xz(*last, start))
+        {
+            split_points.push(start);
+        }
+
+        let mut splits = source_edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end])
+            .filter(|candidate| !same_xz(*candidate, start) && !same_xz(*candidate, end))
+            .filter_map(|candidate| {
+                source_sample_parameter_on_road_constraint(start, end, candidate).and_then(|t| {
+                    (t > CDT_EPSILON_M && t < 1.0 - CDT_EPSILON_M).then_some(
+                        TerrainCdtSourceVertexSplit {
+                            t,
+                            vertex: candidate,
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        sort_dedup_source_vertex_splits(&mut splits);
+        for split in splits {
+            if split_points
+                .last()
+                .is_some_and(|last: &TerrainCdtVertex| same_xz(*last, split.vertex))
+            {
+                continue;
+            }
+            split_points.push(split.vertex);
+        }
+    }
+
+    simplified_loop(split_points)
+}
+
+fn sort_dedup_source_vertex_splits(splits: &mut Vec<TerrainCdtSourceVertexSplit>) {
+    splits.sort_by(|a, b| {
+        a.t.total_cmp(&b.t)
+            .then_with(|| quantized_coord(a.vertex.x).cmp(&quantized_coord(b.vertex.x)))
+            .then_with(|| quantized_coord(a.vertex.z).cmp(&quantized_coord(b.vertex.z)))
+            .then_with(|| {
+                quantized_coord(f64::from(a.vertex.height_m))
+                    .cmp(&quantized_coord(f64::from(b.vertex.height_m)))
+            })
+    });
+
+    let mut deduped = Vec::with_capacity(splits.len());
+    for split in splits.iter().copied() {
+        if let Some(last) = deduped.last_mut() {
+            let last: &mut TerrainCdtSourceVertexSplit = last;
+            if same_xz(split.vertex, last.vertex) {
+                if split.vertex.height_m > last.vertex.height_m {
+                    last.vertex.height_m = split.vertex.height_m;
+                }
+                continue;
+            }
+        }
+        deduped.push(split);
+    }
+    *splits = deduped;
 }
 
 fn harden_terrain_cdt_road_loop_seams(
@@ -2906,6 +2995,101 @@ mod tests {
             }
             other => panic!("merged seam must preserve span authority, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cdt_splits_loop_segments_through_source_vertices_before_source_mapping() {
+        let source_a = test_span_boundary_source_range(
+            92,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            15,
+            16,
+            10.0,
+            11.0,
+        );
+        let source_b = test_span_boundary_source_range(
+            92,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            16,
+            17,
+            11.0,
+            12.0,
+        );
+        let source_c = test_span_boundary_source_range(
+            92,
+            TerrainCdtRoadBandKind::Sidewalk,
+            5,
+            17,
+            18,
+            12.0,
+            13.0,
+        );
+        let p0 = TerrainCdtVertex::new(3.0, 1.0, 3.0);
+        let p1 = TerrainCdtVertex::new(5.0, 1.0, 3.0);
+        let p2 = TerrainCdtVertex::new(7.0, 1.0, 3.0);
+        let p3 = TerrainCdtVertex::new(7.0, 1.0, 7.0);
+        let p4 = TerrainCdtVertex::new(3.0, 1.0, 7.0);
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![TerrainCdtRoadLoop::new_with_source_edges(
+                92,
+                0,
+                vec![p0, p2, p3, p4],
+                vec![
+                    TerrainCdtRoadLoopSourceEdge {
+                        start: p0,
+                        end: p1,
+                        source: source_a,
+                    },
+                    TerrainCdtRoadLoopSourceEdge {
+                        start: p1,
+                        end: p2,
+                        source: source_b,
+                    },
+                    TerrainCdtRoadLoopSourceEdge {
+                        start: p2,
+                        end: p3,
+                        source: source_c,
+                    },
+                    TerrainCdtRoadLoopSourceEdge {
+                        start: p3,
+                        end: p4,
+                        source: source_c,
+                    },
+                    TerrainCdtRoadLoopSourceEdge {
+                        start: p4,
+                        end: p0,
+                        source: source_c,
+                    },
+                ],
+            )],
+            Vec::new(),
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("CDT road loops must split through source vertices before mapping sources");
+
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+        assert!(
+            mesh.stats.road_constraint_edges >= 5,
+            "the p0..p2 boundary segment must be split through p1"
+        );
+        assert!(
+            mesh.emitted_faces
+                .iter()
+                .flat_map(|face| face.sources.iter())
+                .any(|source| *source == source_a),
+            "first split road boundary source must survive CDT output"
+        );
+        assert!(
+            mesh.emitted_faces
+                .iter()
+                .flat_map(|face| face.sources.iter())
+                .any(|source| *source == source_b),
+            "second split road boundary source must survive CDT output"
+        );
     }
 
     #[test]
