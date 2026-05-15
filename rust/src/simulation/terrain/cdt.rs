@@ -281,13 +281,23 @@ impl TerrainCdtInput {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TerrainCdtMesh {
     pub(crate) vertices: Vec<TerrainCdtVertex>,
+    pub(crate) emitted_faces: Vec<TerrainCdtEmittedFace>,
     pub(crate) triangles: Vec<[usize; 3]>,
+    pub(crate) terrain_triangle_sources: Vec<Vec<TerrainCdtRoadBoundarySource>>,
     pub(crate) retaining_wall_triangles: Vec<[usize; 3]>,
+    pub(crate) retaining_wall_triangle_sources: Vec<Vec<TerrainCdtRoadBoundarySource>>,
     pub(crate) stats: TerrainCdtStats,
     pub(crate) invalid_constraint_samples: Vec<TerrainCdtInvalidConstraintSample>,
     pub(crate) road_seam_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) tie_in_widened_samples: Vec<TerrainCdtTieInSample>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerrainCdtEmittedFace {
+    pub(crate) triangle: [usize; 3],
+    pub(crate) kind: TerrainCdtTieInKind,
+    pub(crate) sources: Vec<TerrainCdtRoadBoundarySource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -430,6 +440,22 @@ pub(crate) fn build_road_touched_terrain_patch(
         &triangles,
         &canonical.road_constraint_sources,
     );
+    let mut terrain_triangles = Vec::new();
+    let mut terrain_triangle_sources = Vec::new();
+    let mut retaining_wall_triangles = Vec::new();
+    let mut retaining_wall_triangle_sources = Vec::new();
+    for face in &diagnostics.emitted_faces {
+        match face.kind {
+            TerrainCdtTieInKind::OrdinaryTerrain => {
+                terrain_triangles.push(face.triangle);
+                terrain_triangle_sources.push(face.sources.clone());
+            }
+            TerrainCdtTieInKind::RetainingWall => {
+                retaining_wall_triangles.push(face.triangle);
+                retaining_wall_triangle_sources.push(face.sources.clone());
+            }
+        }
+    }
 
     Ok(TerrainCdtMesh {
         stats: TerrainCdtStats {
@@ -453,8 +479,11 @@ pub(crate) fn build_road_touched_terrain_patch(
             tie_in_widened_max_slope_ratio: canonical.tie_in_widened_max_slope_ratio,
         },
         vertices: canonical.vertices,
-        triangles: diagnostics.terrain_triangles,
-        retaining_wall_triangles: diagnostics.retaining_wall_triangles,
+        emitted_faces: diagnostics.emitted_faces,
+        triangles: terrain_triangles,
+        terrain_triangle_sources,
+        retaining_wall_triangles,
+        retaining_wall_triangle_sources,
         invalid_constraint_samples,
         road_seam_face_samples: diagnostics.road_seam_face_samples,
         retaining_wall_face_samples: diagnostics.retaining_wall_face_samples,
@@ -471,8 +500,7 @@ struct TerrainCdtRoadConstraintSource {
 }
 
 struct TerrainCdtDiagnostics {
-    terrain_triangles: Vec<[usize; 3]>,
-    retaining_wall_triangles: Vec<[usize; 3]>,
+    emitted_faces: Vec<TerrainCdtEmittedFace>,
     max_face_y_delta_m: f32,
     max_face_slope_ratio: f32,
     road_seam_faces: usize,
@@ -1394,8 +1422,7 @@ fn terrain_face_diagnostics(
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
 ) -> TerrainCdtDiagnostics {
     let mut diagnostics = TerrainCdtDiagnostics {
-        terrain_triangles: Vec::new(),
-        retaining_wall_triangles: Vec::new(),
+        emitted_faces: Vec::new(),
         max_face_y_delta_m: 0.0,
         max_face_slope_ratio: 0.0,
         road_seam_faces: 0,
@@ -1418,15 +1445,19 @@ fn terrain_face_diagnostics(
         let touches_road_seam = !sources.is_empty();
         let kind = classify_terrain_tie_in_face(points, touches_road_seam);
         let metrics = terrain_face_sample(points, kind, sources);
+        diagnostics.emitted_faces.push(TerrainCdtEmittedFace {
+            triangle: *triangle,
+            kind,
+            sources: metrics.sources.clone(),
+        });
         diagnostics.max_face_y_delta_m = diagnostics.max_face_y_delta_m.max(metrics.max_y_delta_m);
         diagnostics.max_face_slope_ratio = diagnostics
             .max_face_slope_ratio
             .max(metrics.max_slope_ratio);
 
         match kind {
-            TerrainCdtTieInKind::OrdinaryTerrain => diagnostics.terrain_triangles.push(*triangle),
+            TerrainCdtTieInKind::OrdinaryTerrain => {}
             TerrainCdtTieInKind::RetainingWall => {
-                diagnostics.retaining_wall_triangles.push(*triangle);
                 diagnostics.retaining_wall_faces += 1;
                 diagnostics.retaining_wall_max_y_delta_m = diagnostics
                     .retaining_wall_max_y_delta_m
@@ -2128,6 +2159,108 @@ mod tests {
                 .iter()
                 .all(|sample| sample.sources.contains(&source)),
             "retaining wall diagnostics must preserve the same boundary source"
+        );
+    }
+
+    #[test]
+    fn cdt_emitted_retaining_wall_faces_preserve_boundary_sources() {
+        let source = test_node_boundary_source(43, TerrainCdtRoadBandKind::Sidewalk, 4);
+        let road = vec![
+            TerrainCdtVertex::new(4.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 6.0),
+            TerrainCdtVertex::new(4.0, 4.0, 6.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![sourced_road_loop(43, 0, road, source)],
+            Vec::new(),
+        );
+
+        let mesh =
+            build_road_touched_terrain_patch(input).expect("sourced road loop should triangulate");
+
+        assert_eq!(mesh.emitted_faces.len(), mesh.stats.accepted_faces);
+        assert_eq!(
+            mesh.retaining_wall_triangle_sources.len(),
+            mesh.retaining_wall_triangles.len()
+        );
+        assert!(
+            !mesh.retaining_wall_triangles.is_empty(),
+            "raised seam should emit explicit retaining-wall tie-in faces"
+        );
+        assert!(
+            mesh.retaining_wall_triangle_sources
+                .iter()
+                .all(|sources| sources.contains(&source)),
+            "emitted retaining-wall faces must carry their road boundary source"
+        );
+        assert!(
+            mesh.emitted_faces
+                .iter()
+                .filter(|face| face.kind == TerrainCdtTieInKind::RetainingWall)
+                .all(|face| face.sources.contains(&source)),
+            "the first-class emitted-face model must preserve retaining-wall provenance"
+        );
+    }
+
+    #[test]
+    fn cdt_emitted_road_seam_terrain_faces_preserve_boundary_sources() {
+        let source = test_node_boundary_source(44, TerrainCdtRoadBandKind::CurbOrShoulder, 5);
+        let road = vec![
+            TerrainCdtVertex::new(3.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 7.0),
+            TerrainCdtVertex::new(3.0, 0.12, 7.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![sourced_road_loop(44, 0, road, source)],
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 2.99),
+                TerrainCdtVertex::new(2.99, 0.0, 5.0),
+                TerrainCdtVertex::new(7.01, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 7.01),
+            ],
+        );
+
+        let mesh =
+            build_road_touched_terrain_patch(input).expect("sourced road loop should triangulate");
+
+        assert_eq!(mesh.terrain_triangle_sources.len(), mesh.triangles.len());
+        assert!(mesh.retaining_wall_triangles.is_empty());
+        assert!(
+            mesh.terrain_triangle_sources
+                .iter()
+                .any(|sources| sources.contains(&source)),
+            "accepted road-seam terrain faces must carry their road boundary source"
+        );
+        assert!(
+            mesh.emitted_faces.iter().any(|face| {
+                face.kind == TerrainCdtTieInKind::OrdinaryTerrain && face.sources.contains(&source)
+            }),
+            "the first-class emitted-face model must preserve ordinary seam provenance"
+        );
+    }
+
+    #[test]
+    fn cdt_emitted_non_road_terrain_faces_may_be_source_empty() {
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("plain terrain patch should triangulate without road sources");
+
+        assert!(!mesh.triangles.is_empty());
+        assert_eq!(mesh.terrain_triangle_sources.len(), mesh.triangles.len());
+        assert!(mesh.terrain_triangle_sources.iter().all(Vec::is_empty));
+        assert!(
+            mesh.emitted_faces
+                .iter()
+                .all(|face| face.sources.is_empty())
         );
     }
 

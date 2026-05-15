@@ -96,8 +96,8 @@ use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtError, TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadLoop, TerrainCdtVertex,
-    build_road_touched_terrain_patch,
+    TerrainCdtError, TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadBoundarySource,
+    TerrainCdtRoadLoop, TerrainCdtVertex, build_road_touched_terrain_patch,
 };
 use crate::simulation::water::WaterSystem;
 
@@ -697,6 +697,8 @@ impl SimulationNode {
         dict.set("terrain_mesh_vertices", PackedVector3Array::new());
         dict.set("terrain_mesh_normals", PackedVector3Array::new());
         dict.set("terrain_mesh_uvs", PackedVector2Array::new());
+        dict.set("terrain_mesh_face_source_counts", PackedInt32Array::new());
+        dict.set("terrain_mesh_face_sources", PackedStringArray::new());
         dict.set(
             "terrain_retaining_wall_mesh_vertices",
             PackedVector3Array::new(),
@@ -706,6 +708,14 @@ impl SimulationNode {
             PackedVector3Array::new(),
         );
         dict.set("terrain_retaining_wall_mesh_uvs", PackedVector2Array::new());
+        dict.set(
+            "terrain_retaining_wall_mesh_face_source_counts",
+            PackedInt32Array::new(),
+        );
+        dict.set(
+            "terrain_retaining_wall_mesh_face_sources",
+            PackedStringArray::new(),
+        );
     }
 
     fn terrain_cdt_input(
@@ -799,14 +809,26 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
     ) {
-        let (vertices, normals, uvs, emitted_faces) =
-            Self::terrain_cdt_triangle_buffers(patch, &mesh.vertices, &mesh.triangles);
-        let (retaining_vertices, retaining_normals, retaining_uvs, retaining_emitted_faces) =
+        let (vertices, normals, uvs, source_counts, sources, emitted_faces) =
             Self::terrain_cdt_triangle_buffers(
                 patch,
                 &mesh.vertices,
-                &mesh.retaining_wall_triangles,
+                &mesh.triangles,
+                &mesh.terrain_triangle_sources,
             );
+        let (
+            retaining_vertices,
+            retaining_normals,
+            retaining_uvs,
+            retaining_source_counts,
+            retaining_sources,
+            retaining_emitted_faces,
+        ) = Self::terrain_cdt_triangle_buffers(
+            patch,
+            &mesh.vertices,
+            &mesh.retaining_wall_triangles,
+            &mesh.retaining_wall_triangle_sources,
+        );
 
         dict.set(
             "terrain_cdt_emitted_faces",
@@ -826,6 +848,14 @@ impl SimulationNode {
         );
         dict.set("terrain_mesh_uvs", PackedVector2Array::from_iter(uvs));
         dict.set(
+            "terrain_mesh_face_source_counts",
+            PackedInt32Array::from_iter(source_counts),
+        );
+        dict.set(
+            "terrain_mesh_face_sources",
+            PackedStringArray::from_iter(sources),
+        );
+        dict.set(
             "terrain_retaining_wall_mesh_vertices",
             PackedVector3Array::from_iter(retaining_vertices),
         );
@@ -837,21 +867,44 @@ impl SimulationNode {
             "terrain_retaining_wall_mesh_uvs",
             PackedVector2Array::from_iter(retaining_uvs),
         );
+        dict.set(
+            "terrain_retaining_wall_mesh_face_source_counts",
+            PackedInt32Array::from_iter(retaining_source_counts),
+        );
+        dict.set(
+            "terrain_retaining_wall_mesh_face_sources",
+            PackedStringArray::from_iter(retaining_sources),
+        );
     }
 
     fn terrain_cdt_triangle_buffers(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         vertices_source: &[TerrainCdtVertex],
         triangles: &[[usize; 3]],
-    ) -> (Vec<Vector3>, Vec<Vector3>, Vec<Vector2>, usize) {
+        triangle_sources: &[Vec<TerrainCdtRoadBoundarySource>],
+    ) -> (
+        Vec<Vector3>,
+        Vec<Vector3>,
+        Vec<Vector2>,
+        Vec<i32>,
+        Vec<GString>,
+        usize,
+    ) {
+        debug_assert_eq!(
+            triangles.len(),
+            triangle_sources.len(),
+            "CDT triangle source sidecars must match the emitted triangle bucket"
+        );
         let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
         let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
         let mut vertices = Vec::with_capacity(triangles.len() * 3);
         let mut normals = Vec::with_capacity(triangles.len() * 3);
         let mut uvs = Vec::with_capacity(triangles.len() * 3);
+        let mut source_counts = Vec::with_capacity(triangles.len());
+        let mut sources = Vec::new();
         let mut emitted_faces = 0usize;
 
-        for triangle in triangles {
+        for (triangle_index, triangle) in triangles.iter().enumerate() {
             let mut points = [
                 Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[0]]),
                 Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[1]]),
@@ -867,6 +920,14 @@ impl SimulationNode {
             }
             let normal = raw_normal.normalized();
             emitted_faces += 1;
+            let face_sources = triangle_sources
+                .get(triangle_index)
+                .map_or(&[][..], Vec::as_slice);
+            source_counts.push(i32::try_from(face_sources.len()).unwrap_or(i32::MAX));
+            sources.extend(face_sources.iter().copied().map(|source| {
+                let label = source.debug_label();
+                GString::from(label.as_str())
+            }));
             for point in points {
                 vertices.push(Vector3::new(
                     point.x - center_x,
@@ -883,7 +944,14 @@ impl SimulationNode {
             }
         }
 
-        (vertices, normals, uvs, emitted_faces)
+        (
+            vertices,
+            normals,
+            uvs,
+            source_counts,
+            sources,
+            emitted_faces,
+        )
     }
 
     fn append_cdt_road_seam_face_samples(
