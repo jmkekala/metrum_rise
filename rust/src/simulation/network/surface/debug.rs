@@ -3,14 +3,16 @@
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
-    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceVerticalFaceSource,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -494,6 +496,9 @@ impl RoadSurfaceSystem {
             dump.push_str("      \"span_ownership\": ");
             Self::append_span_ownership_debug_literal(dump, piece);
             dump.push_str(",\n");
+            dump.push_str("      \"span_earthwork_support\": ");
+            Self::append_span_earthwork_support_debug_literal(dump, piece);
+            dump.push_str(",\n");
             dump.push_str("      \"span_raised_step_face_sources\": ");
             Self::append_span_raised_step_sources_debug_literal(dump, piece);
             dump.push_str(",\n");
@@ -505,6 +510,9 @@ impl RoadSurfaceSystem {
             dump.push('\n');
         } else {
             dump.push_str("      \"span_ownership\": {\"owned_region_count\":0,\"regions\":[]},\n");
+            dump.push_str(
+                "      \"span_earthwork_support\": {\"support_region_count\":0,\"regions\":[]},\n",
+            );
             dump.push_str("      \"span_raised_step_face_sources\": [],\n");
             dump.push_str("      \"terrain_clip_source_edges\": [],\n");
             dump.push_str(
@@ -668,6 +676,75 @@ impl RoadSurfaceSystem {
         dump.push_str("]}");
     }
 
+    fn append_span_earthwork_support_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"support_region_count\":{},\"edge_class\":\"{:?}\",\"support_policy\":\"{}\"",
+            piece.span_earthwork_support_regions.len(),
+            piece.edge_class,
+            Self::span_earthwork_support_policy_debug_name(piece.edge_class)
+        );
+        for role in [
+            RoadSurfaceSpanRegionRole::Asphalt,
+            RoadSurfaceSpanRegionRole::CurbOrShoulder,
+            RoadSurfaceSpanRegionRole::NonRoad,
+        ] {
+            let count = piece
+                .span_earthwork_support_regions
+                .iter()
+                .filter(|region| region.role == role)
+                .count();
+            let _ = write!(
+                dump,
+                ",\"{}\":{}",
+                Self::span_region_role_debug_name(role),
+                count
+            );
+        }
+        for kind in Self::debug_band_kind_order() {
+            let count = piece
+                .span_earthwork_support_regions
+                .iter()
+                .filter(|region| region.owner.kind == kind)
+                .count();
+            let _ = write!(dump, ",\"band_{:?}\":{}", kind, count);
+        }
+        dump.push_str(",\"regions\":[");
+        for (region_index, region) in piece.span_earthwork_support_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(
+                dump,
+                "{{\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"point_count\":{},\"height_min_m\":",
+                region.edge_idx,
+                Self::span_region_role_debug_name(region.role),
+                region.owner.source_band_index,
+                region.owner.kind,
+                region.start_section_index,
+                region.end_section_index,
+                region.start_s_m,
+                region.end_s_m,
+                region.polygon.points_world.len(),
+            );
+            Self::append_optional_f32_precise_literal(
+                dump,
+                Self::debug_polygon_height_range(&region.polygon).map(|(min_y, _)| min_y),
+            );
+            dump.push_str(",\"height_max_m\":");
+            Self::append_optional_f32_precise_literal(
+                dump,
+                Self::debug_polygon_height_range(&region.polygon).map(|(_, max_y)| max_y),
+            );
+            dump.push('}');
+        }
+        dump.push_str("]}");
+    }
+
     fn append_span_raised_step_sources_debug_literal(
         dump: &mut String,
         piece: &RoadSurfaceVisualSpanPiece,
@@ -731,18 +808,18 @@ impl RoadSurfaceSystem {
         dump: &mut String,
         piece: &RoadSurfaceVisualSpanPiece,
     ) {
-        let road_projection_matches = Self::span_region_projection_matches(
-            piece,
+        let road_projection_matches = Self::span_region_projection_matches_from_regions(
+            &piece.span_owned_regions,
             RoadSurfaceSpanRegionRole::Asphalt,
             &piece.road_surface_polygons,
         );
-        let curb_projection_matches = Self::span_region_projection_matches(
-            piece,
+        let curb_projection_matches = Self::span_region_projection_matches_from_regions(
+            &piece.span_owned_regions,
             RoadSurfaceSpanRegionRole::CurbOrShoulder,
             &piece.curb_surface_polygons,
         );
-        let sidewalk_projection_matches = Self::span_region_projection_matches(
-            piece,
+        let sidewalk_projection_matches = Self::span_region_projection_matches_from_regions(
+            &piece.span_owned_regions,
             RoadSurfaceSpanRegionRole::NonRoad,
             &piece.sidewalk_surface_polygons,
         );
@@ -750,7 +827,7 @@ impl RoadSurfaceSystem {
             piece.raised_step_face_polygons.len() == piece.span_raised_step_sources.len();
         let _ = write!(
             dump,
-            "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{}}}",
+            "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{},\"earthwork_support_region_count\":{}}}",
             road_projection_matches,
             curb_projection_matches,
             sidewalk_projection_matches,
@@ -760,7 +837,8 @@ impl RoadSurfaceSystem {
                 .terrain_clip_boundary_loops
                 .iter()
                 .map(|boundary_loop| boundary_loop.source_edges.len())
-                .sum::<usize>()
+                .sum::<usize>(),
+            piece.span_earthwork_support_regions.len()
         );
     }
 
@@ -772,13 +850,12 @@ impl RoadSurfaceSystem {
         );
     }
 
-    fn span_region_projection_matches(
-        piece: &RoadSurfaceVisualSpanPiece,
+    fn span_region_projection_matches_from_regions(
+        regions: &[RoadSurfaceSpanOwnedRegion],
         role: RoadSurfaceSpanRegionRole,
         projected: &[RoadSurfaceVisualPolygon],
     ) -> bool {
-        let mut expected: Vec<RoadSurfaceVisualPolygon> = piece
-            .span_owned_regions
+        let mut expected: Vec<RoadSurfaceVisualPolygon> = regions
             .iter()
             .filter(|region| region.role == role)
             .map(|region| region.polygon.clone())
@@ -804,6 +881,14 @@ impl RoadSurfaceSystem {
             RoadSurfaceSpanRegionRole::Asphalt => "asphalt",
             RoadSurfaceSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
             RoadSurfaceSpanRegionRole::NonRoad => "non_road",
+        }
+    }
+
+    fn span_earthwork_support_policy_debug_name(edge_class: EdgeClass) -> &'static str {
+        match edge_class {
+            EdgeClass::Standard => "standard_full_grounded_span",
+            EdgeClass::Bridge => "bridge_endpoint_abutments",
+            EdgeClass::Tunnel => "tunnel_visible_portals",
         }
     }
 

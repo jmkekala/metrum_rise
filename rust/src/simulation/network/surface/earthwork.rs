@@ -2,9 +2,9 @@
 
 use super::{
     ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSection, RoadSurfaceSpanOwnedRegion,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -513,10 +513,8 @@ impl RoadSurfaceSystem {
         }
 
         let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
-        self.stamp_piece_top_surface_clearance_for_chunk(
-            &piece.clearance_road_surface_polygons,
-            &piece.clearance_curb_surface_polygons,
-            &piece.clearance_sidewalk_surface_polygons,
+        self.stamp_span_top_surface_support_for_chunk(
+            &piece.span_earthwork_support_regions,
             chunk,
             terrain,
             height_offset_m,
@@ -775,6 +773,34 @@ impl RoadSurfaceSystem {
             .chain(sidewalk_surface_polygons)
         {
             Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                self.collect_top_surface_support_triangle_candidates(
+                    terrain,
+                    chunk,
+                    triangle,
+                    conservative_margin_m,
+                    height_offset_m,
+                    &mut candidates,
+                );
+            });
+        }
+
+        for ((grid_x, grid_z), (_, height_sample)) in candidates {
+            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
+        }
+    }
+
+    fn stamp_span_top_surface_support_for_chunk(
+        &self,
+        regions: &[RoadSurfaceSpanOwnedRegion],
+        chunk: SurfaceChunkKey,
+        terrain: &mut TerrainSystem,
+        height_offset_m: f32,
+    ) {
+        let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
+        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
+
+        for region in regions {
+            Self::visit_visual_polygon_triangles(&region.polygon, &mut |triangle| {
                 self.collect_top_surface_support_triangle_candidates(
                     terrain,
                     chunk,

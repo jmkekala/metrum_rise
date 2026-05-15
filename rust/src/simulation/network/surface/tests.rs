@@ -4052,6 +4052,37 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         }),
         "span owned regions must preserve edge, section interval, and solved section authority"
     );
+    assert!(!span_piece.span_earthwork_support_regions.is_empty());
+    assert_eq!(
+        span_piece.span_earthwork_support_regions.len(),
+        span_piece.span_owned_regions.len(),
+        "grounded standard span support regions should cover the same solved band-owned footprint as the visible span"
+    );
+    for role in [
+        RoadSurfaceSpanRegionRole::Asphalt,
+        RoadSurfaceSpanRegionRole::CurbOrShoulder,
+        RoadSurfaceSpanRegionRole::NonRoad,
+    ] {
+        assert!(
+            span_piece
+                .span_earthwork_support_regions
+                .iter()
+                .any(|region| region.role == role),
+            "span earthwork support regions must retain role/material provenance for {role:?}"
+        );
+    }
+    assert!(
+        span_piece
+            .span_earthwork_support_regions
+            .iter()
+            .all(|region| {
+                region.edge_idx == edge_idx
+                    && region.end_section_index == region.start_section_index + 1
+                    && region.end_s_m > region.start_s_m
+                    && RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world)
+            }),
+        "span earthwork support regions must preserve edge, section interval, source band, and top-surface geometry"
+    );
     assert_eq!(
         span_piece.span_raised_step_sources.len(),
         span_piece.raised_step_face_polygons.len()
@@ -6710,7 +6741,7 @@ fn bridge_earthworks_do_not_flatten_under_the_span() {
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(-24.0, 6.0, 0.0), NodeType::Junction);
     let end = graph.add_node(Vector3::new(24.0, 6.0, 0.0), NodeType::Junction);
-    graph.add_edge(test_edge(
+    let edge_idx = graph.add_edge(test_edge(
         start,
         end,
         vec![
@@ -6726,6 +6757,18 @@ fn bridge_earthworks_do_not_flatten_under_the_span() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.rebuild_all_earthworks(&graph, &mut terrain);
+    let span_piece = surface
+        .compiled_visual_span_pieces()
+        .get(&edge_idx)
+        .expect("bridge span should compile");
+    assert!(!span_piece.span_earthwork_support_regions.is_empty());
+    assert!(
+        span_piece
+            .span_earthwork_support_regions
+            .iter()
+            .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+        "bridge support regions must stay at endpoint abutments instead of owning midspan terrain"
+    );
 
     let span_center = terrain.sample_visual_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
     let abutment = terrain.sample_visual_height_world(-20.0, 0.0) * crate::config::HEIGHT_SCALE;
@@ -6739,7 +6782,7 @@ fn tunnel_earthworks_only_stamp_portals() {
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
     let end = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
-    graph.add_edge(test_edge(
+    let edge_idx = graph.add_edge(test_edge(
         start,
         end,
         vec![
@@ -6756,6 +6799,18 @@ fn tunnel_earthworks_only_stamp_portals() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.rebuild_all_earthworks(&graph, &mut terrain);
+    let span_piece = surface
+        .compiled_visual_span_pieces()
+        .get(&edge_idx)
+        .expect("tunnel span should compile");
+    assert!(!span_piece.span_earthwork_support_regions.is_empty());
+    assert!(
+        span_piece
+            .span_earthwork_support_regions
+            .iter()
+            .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+        "tunnel support regions must stay at visible portals instead of owning buried midspan terrain"
+    );
 
     let center = terrain.sample_visual_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
     let portal = terrain.sample_visual_height_world(-20.0, 0.0) * crate::config::HEIGHT_SCALE;
@@ -7130,6 +7185,9 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"owned_region_count\""));
     assert!(dump.contains("\"source_band_index\""));
     assert!(dump.contains("\"start_section_index\""));
+    assert!(dump.contains("\"span_earthwork_support\""));
+    assert!(dump.contains("\"support_region_count\""));
+    assert!(dump.contains("\"support_policy\""));
     assert!(dump.contains("\"span_raised_step_face_sources\""));
     assert!(dump.contains("\"lower_owner\""));
     assert!(dump.contains("\"raised_owner\""));
@@ -7138,6 +7196,7 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"road_projection_matches\":true"));
     assert!(dump.contains("\"curb_projection_matches\":true"));
     assert!(dump.contains("\"sidewalk_projection_matches\":true"));
+    assert!(dump.contains("\"earthwork_support_region_count\""));
     assert!(dump.contains("\"raised_step_source_count_matches\":true"));
     assert!(dump.contains("\"source_center_y_m\""));
     assert!(dump.contains("\"visual_center_y_m\""));
