@@ -2528,6 +2528,104 @@ mod tests {
     }
 
     #[test]
+    fn authored_steep_dem_matrix_preserves_sourced_road_touched_contract() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0, 0.0, 0.0, 0.0]);
+        let cases = vec![
+            (
+                "road crossing a steep hillside",
+                road_loop_from_centerline_with_heights(
+                    TerrainCdtVertex::new(5.0, authored_cross_slope_height(5.0, 20.0), 20.0),
+                    TerrainCdtVertex::new(35.0, authored_cross_slope_height(35.0, 20.0), 20.0),
+                    6.0,
+                ),
+                authored_dem_samples(patch, 4.0, authored_cross_slope_height),
+                false,
+            ),
+            (
+                "road running along a cross-slope",
+                road_loop_from_centerline_with_heights(
+                    TerrainCdtVertex::new(20.0, authored_along_slope_height(20.0, 5.0), 5.0),
+                    TerrainCdtVertex::new(20.0, authored_along_slope_height(20.0, 35.0), 35.0),
+                    6.0,
+                ),
+                authored_dem_samples(patch, 4.0, authored_along_slope_height),
+                false,
+            ),
+            (
+                "road crossing an authored ridge and valley",
+                road_loop_from_centerline_with_heights(
+                    TerrainCdtVertex::new(6.0, 0.0, 10.0),
+                    TerrainCdtVertex::new(34.0, 0.0, 30.0),
+                    6.0,
+                ),
+                authored_dem_samples(patch, 4.0, authored_ridge_valley_height),
+                false,
+            ),
+        ];
+
+        for (case_name, road, source_samples, expect_retaining_wall) in cases {
+            let source = test_span_boundary_source(200, TerrainCdtRoadBandKind::Sidewalk, 4);
+            let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+                patch,
+                vec![sourced_road_loop(200, 0, road.clone(), source)],
+                source_samples,
+            ))
+            .unwrap_or_else(|_| panic!("{case_name}: terrain CDT should build"));
+
+            assert_sourced_road_touched_mesh_contract(case_name, &mesh, patch, &[road], source);
+            if expect_retaining_wall {
+                assert!(
+                    mesh.stats.retaining_wall_faces > 0,
+                    "{case_name}: authored extreme DEM should expose retaining-wall tie-in faces"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sourced_patch_edge_matrix_preserves_sources_after_clipping() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let source = test_span_boundary_source(201, TerrainCdtRoadBandKind::CurbOrShoulder, 2);
+        let cases = [
+            (
+                "road footprint crossing one patch edge",
+                road_loop_from_centerline(
+                    TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+                    TerrainCdtVertex::new(20.0, 0.0, 20.0),
+                    6.0,
+                ),
+            ),
+            (
+                "road footprint crossing two patch edges",
+                road_loop_from_centerline(
+                    TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+                    TerrainCdtVertex::new(50.0, 0.0, 20.0),
+                    6.0,
+                ),
+            ),
+            (
+                "road footprint crossing a patch corner",
+                road_loop_from_centerline(
+                    TerrainCdtVertex::new(-10.0, 0.0, -10.0),
+                    TerrainCdtVertex::new(20.0, 0.0, 20.0),
+                    6.0,
+                ),
+            ),
+        ];
+
+        for (case_name, road) in cases {
+            let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+                patch,
+                vec![sourced_road_loop(201, 0, road.clone(), source)],
+                piece_source_samples(),
+            ))
+            .unwrap_or_else(|_| panic!("{case_name}: clipped terrain CDT should build"));
+
+            assert_sourced_road_touched_mesh_contract(case_name, &mesh, patch, &[road], source);
+        }
+    }
+
+    #[test]
     fn road_loop_crossing_one_patch_edge_is_clipped_to_shared_boundary_vertices() {
         let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
         let road = road_loop_from_centerline(
@@ -2928,6 +3026,29 @@ mod tests {
         }
     }
 
+    fn test_span_boundary_source(
+        edge_idx: u64,
+        band_kind: TerrainCdtRoadBandKind,
+        source_band_index: u32,
+    ) -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+            edge_idx,
+            edge_class: TerrainCdtEdgeClass::Standard,
+            support_policy: TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan,
+            source_band_index,
+            band_kind,
+            role: match band_kind {
+                TerrainCdtRoadBandKind::Carriageway => TerrainCdtSpanRegionRole::Asphalt,
+                TerrainCdtRoadBandKind::CurbOrShoulder => TerrainCdtSpanRegionRole::CurbOrShoulder,
+                _ => TerrainCdtSpanRegionRole::NonRoad,
+            },
+            start_section_index: 3,
+            end_section_index: 4,
+            start_s_m: 12.0,
+            end_s_m: 16.0,
+        }
+    }
+
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
         road_loop_from_centerline(
             TerrainCdtVertex::new(8.0, 0.0, 12.0),
@@ -2966,6 +3087,45 @@ mod tests {
             TerrainCdtVertex::new(
                 start.x - normal_x * half_width,
                 0.0,
+                start.z - normal_z * half_width,
+            ),
+        ];
+        if signed_area(&road) < 0.0 {
+            road.reverse();
+        }
+        road
+    }
+
+    fn road_loop_from_centerline_with_heights(
+        start: TerrainCdtVertex,
+        end: TerrainCdtVertex,
+        width: f64,
+    ) -> Vec<TerrainCdtVertex> {
+        let dx = end.x - start.x;
+        let dz = end.z - start.z;
+        let length = (dx * dx + dz * dz).sqrt();
+        let normal_x = -dz / length;
+        let normal_z = dx / length;
+        let half_width = width * 0.5;
+        let mut road = vec![
+            TerrainCdtVertex::new(
+                start.x + normal_x * half_width,
+                start.height_m,
+                start.z + normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                end.x + normal_x * half_width,
+                end.height_m,
+                end.z + normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                end.x - normal_x * half_width,
+                end.height_m,
+                end.z - normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                start.x - normal_x * half_width,
+                start.height_m,
                 start.z - normal_z * half_width,
             ),
         ];
@@ -3139,6 +3299,224 @@ mod tests {
                 "{case_name}: emitted terrain tie-in leaked into the road-owned footprint"
             );
         }
+    }
+
+    fn assert_sourced_road_touched_mesh_contract(
+        case_name: &str,
+        mesh: &TerrainCdtMesh,
+        patch: TerrainCdtPatch,
+        road_loops: &[Vec<TerrainCdtVertex>],
+        expected_source: TerrainCdtRoadBoundarySource,
+    ) {
+        assert!(
+            !mesh.emitted_faces.is_empty(),
+            "{case_name}: terrain CDT should emit accepted terrain topology"
+        );
+        assert_eq!(
+            mesh.stats.invalid_constraint_edges, 0,
+            "{case_name}: authored DEM must not create invalid road constraints"
+        );
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges, mesh.stats.road_constraint_edges,
+            "{case_name}: road seam constraints must survive triangulation"
+        );
+        assert_eq!(
+            mesh.stats.accepted_faces,
+            mesh.triangles.len() + mesh.retaining_wall_triangles.len(),
+            "{case_name}: every accepted face must be projected into one emitted bucket"
+        );
+        assert_eq!(
+            mesh.emitted_faces.len(),
+            mesh.stats.accepted_faces,
+            "{case_name}: first-class emitted faces must cover every accepted face"
+        );
+        assert_eq!(
+            mesh.terrain_triangle_sources.len(),
+            mesh.triangles.len(),
+            "{case_name}: terrain triangle source sidecars must match terrain triangles"
+        );
+        assert_eq!(
+            mesh.retaining_wall_triangle_sources.len(),
+            mesh.retaining_wall_triangles.len(),
+            "{case_name}: retaining-wall source sidecars must match retaining-wall triangles"
+        );
+        assert!(
+            mesh.stats.road_seam_faces > 0,
+            "{case_name}: road-touched terrain should report sourced road-seam faces"
+        );
+        assert!(
+            mesh.road_seam_face_samples
+                .iter()
+                .all(|sample| sample.sources.contains(&expected_source)),
+            "{case_name}: road-seam diagnostics must name the source owner"
+        );
+        assert!(
+            mesh.retaining_wall_face_samples
+                .iter()
+                .all(|sample| sample.kind == TerrainCdtTieInKind::RetainingWall
+                    && sample.sources.contains(&expected_source)),
+            "{case_name}: retaining-wall diagnostics must name the source owner"
+        );
+        assert!(
+            mesh.retaining_wall_triangle_sources
+                .iter()
+                .all(|sources| sources.contains(&expected_source)),
+            "{case_name}: emitted retaining-wall faces must carry structured source provenance"
+        );
+        assert!(
+            mesh.emitted_faces.iter().all(|face| {
+                if face.kind == TerrainCdtTieInKind::RetainingWall {
+                    face.sources.contains(&expected_source)
+                } else {
+                    true
+                }
+            }),
+            "{case_name}: first-class retaining-wall faces must not be anonymous"
+        );
+
+        for source in mesh
+            .emitted_faces
+            .iter()
+            .flat_map(|face| face.sources.iter().copied())
+            .chain(
+                mesh.road_seam_face_samples
+                    .iter()
+                    .flat_map(|sample| sample.sources.iter().copied()),
+            )
+            .chain(
+                mesh.retaining_wall_face_samples
+                    .iter()
+                    .flat_map(|sample| sample.sources.iter().copied()),
+            )
+        {
+            assert_source_exports_structured_provenance(case_name, source);
+        }
+
+        let clipped_roads = road_loops
+            .iter()
+            .filter_map(|road| {
+                let clipped = ensure_ccw(simplified_loop(clip_loop_to_patch(road.clone(), patch)));
+                (clipped.len() >= 3).then_some(clipped)
+            })
+            .collect::<Vec<_>>();
+        for triangle in mesh
+            .triangles
+            .iter()
+            .chain(mesh.retaining_wall_triangles.iter())
+        {
+            let center = centroid([
+                mesh.vertices[triangle[0]],
+                mesh.vertices[triangle[1]],
+                mesh.vertices[triangle[2]],
+            ]);
+            assert!(
+                clipped_roads
+                    .iter()
+                    .all(|road| !point_in_polygon(center, road)),
+                "{case_name}: emitted terrain tie-in leaked into a road-owned footprint"
+            );
+        }
+    }
+
+    fn assert_source_exports_structured_provenance(
+        case_name: &str,
+        source: TerrainCdtRoadBoundarySource,
+    ) {
+        assert!(
+            !source.debug_label().is_empty(),
+            "{case_name}: source should retain a human debug label"
+        );
+        match source {
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                support_policy,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+                ..
+            } => {
+                assert_eq!(
+                    source.source_kind_code(),
+                    0,
+                    "{case_name}: span support source kind code changed"
+                );
+                assert!(source.primary_id_code() >= 0);
+                assert!(source.edge_class_code() >= 0);
+                assert!(source.owner_kind_code() >= 0);
+                assert!(source.owner_index_code() >= 0);
+                assert!(source.role_code() >= 0);
+                assert!(source.support_policy_code() >= 0);
+                assert_eq!(
+                    support_policy,
+                    TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+                );
+                assert!(end_section_index >= start_section_index);
+                assert!(end_s_m >= start_s_m);
+                assert_eq!(
+                    source.section_range_codes(),
+                    [
+                        i32::try_from(start_section_index).unwrap(),
+                        i32::try_from(end_section_index).unwrap()
+                    ]
+                );
+                assert_eq!(source.s_range_values(), [start_s_m, end_s_m]);
+            }
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary { owner_index, .. } => {
+                assert_eq!(
+                    source.source_kind_code(),
+                    1,
+                    "{case_name}: node footprint source kind code changed"
+                );
+                assert!(source.primary_id_code() >= 0);
+                assert!(source.node_kind_code() >= 0);
+                assert!(source.owner_kind_code() >= 0);
+                assert_eq!(
+                    source.owner_index_code(),
+                    i32::try_from(owner_index).unwrap()
+                );
+                assert_eq!(source.support_policy_code(), -1);
+                assert_eq!(source.role_code(), -1);
+                assert_eq!(source.section_range_codes(), [-1, -1]);
+                assert_eq!(source.s_range_values(), [-1.0, -1.0]);
+            }
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => {
+                panic!("{case_name}: source-preserving validation must not use synthetic sources")
+            }
+        }
+    }
+
+    fn authored_dem_samples(
+        patch: TerrainCdtPatch,
+        step_m: f64,
+        height_at: fn(f64, f64) -> f32,
+    ) -> Vec<TerrainCdtVertex> {
+        let mut samples = Vec::new();
+        let mut z = patch.min_z;
+        while z <= patch.max_z + CDT_EPSILON_M {
+            let mut x = patch.min_x;
+            while x <= patch.max_x + CDT_EPSILON_M {
+                samples.push(TerrainCdtVertex::new(x, height_at(x, z), z));
+                x += step_m;
+            }
+            z += step_m;
+        }
+        samples
+    }
+
+    fn authored_cross_slope_height(x: f64, z: f64) -> f32 {
+        (x * 0.16 + z * 0.02 - 3.6) as f32
+    }
+
+    fn authored_along_slope_height(x: f64, _z: f64) -> f32 {
+        ((x - 20.0) * 0.22) as f32
+    }
+
+    fn authored_ridge_valley_height(x: f64, z: f64) -> f32 {
+        let ridge_dx = x - 20.0;
+        let valley_dz = z - 25.0;
+        let ridge = 3.5 * (-(ridge_dx * ridge_dx) / (2.0 * 5.0 * 5.0)).exp();
+        let valley = -2.2 * (-(valley_dz * valley_dz) / (2.0 * 7.0 * 7.0)).exp();
+        (ridge + valley) as f32
     }
 
     fn square_road_loop(min: f64, max: f64, height_m: f32) -> Vec<TerrainCdtVertex> {
