@@ -2,10 +2,11 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
-    NodeExplicitVerticalStepSegment, owners_form_explicit_vertical_step_pair,
+    NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment,
+    owners_form_explicit_vertical_step_pair,
 };
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-use super::height::NodeHeightFieldError;
+use super::height::{NodeHeightAuthoritySource, NodeHeightFieldError};
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
 };
@@ -89,6 +90,32 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         existing_height_mm: i64,
         incoming_height_mm: i64,
     },
+    SourceHeightFieldConflict {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        owner: Option<NodeBandOwner>,
+        existing_authority: NodeHeightAuthoritySource,
+        incoming_authority: NodeHeightAuthoritySource,
+        x_mm: i64,
+        z_mm: i64,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
+    SharedSourceHeightConflict {
+        x_mm: i64,
+        z_mm: i64,
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        opposite_owner: Option<NodeBandOwner>,
+        height_field_id: Option<NodeBandHeightFieldId>,
+        constraint_index: Option<usize>,
+        existing_authority: Option<NodeHeightAuthoritySource>,
+        incoming_authority: Option<NodeHeightAuthoritySource>,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
     CrossRegionHeightConflict {
         edge_start_x_key: i64,
         edge_start_z_key: i64,
@@ -123,6 +150,8 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         band_index: Option<usize>,
         kind: Option<RoadSurfaceBandKind>,
         source_kind: Option<RoadSurfaceBandKind>,
+        height_field_id: Option<NodeBandHeightFieldId>,
+        owner: Option<NodeBandOwner>,
         point_x_mm: Option<i64>,
         point_z_mm: Option<i64>,
         axis: Option<&'static str>,
@@ -880,6 +909,8 @@ impl NodeGeometryDiagnostic {
                     band_index: None,
                     kind: None,
                     source_kind: None,
+                    height_field_id: None,
+                    owner: None,
                     point_x_mm: None,
                     point_z_mm: None,
                     axis: None,
@@ -895,6 +926,8 @@ impl NodeGeometryDiagnostic {
                 band_index: Some(*band_index),
                 kind: None,
                 source_kind: None,
+                height_field_id: None,
+                owner: None,
                 point_x_mm: None,
                 point_z_mm: None,
                 axis: None,
@@ -909,6 +942,8 @@ impl NodeGeometryDiagnostic {
                 band_index: None,
                 kind: Some(*kind),
                 source_kind: None,
+                height_field_id: None,
+                owner: None,
                 point_x_mm: None,
                 point_z_mm: None,
                 axis: None,
@@ -923,6 +958,8 @@ impl NodeGeometryDiagnostic {
                 band_index: Some(*band_index),
                 kind: None,
                 source_kind: None,
+                height_field_id: None,
+                owner: None,
                 point_x_mm: None,
                 point_z_mm: None,
                 axis: None,
@@ -939,6 +976,8 @@ impl NodeGeometryDiagnostic {
                 band_index: Some(*band_index),
                 kind: Some(*region_kind),
                 source_kind: Some(*source_kind),
+                height_field_id: None,
+                owner: None,
                 point_x_mm: None,
                 point_z_mm: None,
                 axis: None,
@@ -948,6 +987,8 @@ impl NodeGeometryDiagnostic {
                 mouth_order_index,
                 band_index,
                 source_kind,
+                height_field_id,
+                owner,
                 point_x_mm,
                 point_z_mm,
                 axis,
@@ -958,6 +999,8 @@ impl NodeGeometryDiagnostic {
                 band_index: Some(*band_index),
                 kind: None,
                 source_kind: Some(*source_kind),
+                height_field_id: Some(*height_field_id),
+                owner: *owner,
                 point_x_mm: Some(*point_x_mm),
                 point_z_mm: Some(*point_z_mm),
                 axis: Some(*axis),
@@ -970,6 +1013,8 @@ impl NodeGeometryDiagnostic {
                     band_index: error.source_band_index,
                     kind: error.band_kind,
                     source_kind: error.band_kind,
+                    height_field_id: None,
+                    owner: None,
                     point_x_mm: None,
                     point_z_mm: None,
                     axis: None,
@@ -977,21 +1022,52 @@ impl NodeGeometryDiagnostic {
                 }
             }
             NodeHeightFieldError::SourceHeightFieldConflict {
+                mouth_order_index,
+                band_index,
+                source_kind,
+                height_field_id,
+                owner,
+                existing_authority,
+                incoming_authority,
                 point_x_mm,
                 point_z_mm,
                 existing_height_mm,
                 incoming_height_mm,
-                ..
-            }
-            | NodeHeightFieldError::SharedSourceHeightConflict {
-                point_x_mm,
-                point_z_mm,
-                existing_height_mm,
-                incoming_height_mm,
-                ..
-            } => NodeGeometryDiagnosticKind::HeightConflict {
+            } => NodeGeometryDiagnosticKind::SourceHeightFieldConflict {
+                mouth_order_index: *mouth_order_index,
+                band_index: *band_index,
+                source_kind: *source_kind,
+                height_field_id: *height_field_id,
+                owner: *owner,
+                existing_authority: *existing_authority,
+                incoming_authority: *incoming_authority,
                 x_mm: *point_x_mm,
                 z_mm: *point_z_mm,
+                existing_height_mm: *existing_height_mm,
+                incoming_height_mm: *incoming_height_mm,
+            },
+            NodeHeightFieldError::SharedSourceHeightConflict {
+                point_x_mm,
+                point_z_mm,
+                kind,
+                owner,
+                opposite_owner,
+                height_field_id,
+                constraint_index,
+                existing_authority,
+                incoming_authority,
+                existing_height_mm,
+                incoming_height_mm,
+            } => NodeGeometryDiagnosticKind::SharedSourceHeightConflict {
+                x_mm: *point_x_mm,
+                z_mm: *point_z_mm,
+                kind: *kind,
+                owner: *owner,
+                opposite_owner: *opposite_owner,
+                height_field_id: *height_field_id,
+                constraint_index: *constraint_index,
+                existing_authority: *existing_authority,
+                incoming_authority: *incoming_authority,
                 existing_height_mm: *existing_height_mm,
                 incoming_height_mm: *incoming_height_mm,
             },
@@ -1309,6 +1385,8 @@ impl NodeGeometryDiagnosticKind {
             Self::HeightConflict { .. } | Self::CrossRegionHeightConflict { .. } => {
                 "height_conflict"
             }
+            Self::SourceHeightFieldConflict { .. } => "source_height_field_conflict",
+            Self::SharedSourceHeightConflict { .. } => "shared_source_height_conflict",
             Self::HeightFieldFailure { .. } => "height_field_failure",
             Self::OpenBoundary { .. } => "open_boundary",
             Self::DuplicateExposedEdge { .. } => "duplicate_exposed_edge",
@@ -1936,7 +2014,9 @@ mod tests {
     use crate::simulation::network::surface::ownership::{
         NodeBooleanOwnership, NodeOwnedRegionArrangementDiagnostic, NodeOwnedRegionArrangementKey,
     };
-    use crate::simulation::network::surface::rails::NodeRailContourSet;
+    use crate::simulation::network::surface::rails::{
+        NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailContourSet,
+    };
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     };
@@ -2356,6 +2436,156 @@ mod tests {
             key_edge([0.0, 0.0], [3.0, 0.0]),
             key_edge([1.0, 0.0], [2.0, 0.0])
         ));
+    }
+
+    #[test]
+    fn maps_vertex_outside_height_field_to_source_rich_blocking_debug_record() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 4);
+        let height_field_id = NodeBandHeightFieldId::new(2, 3, RoadSurfaceBandKind::Sidewalk);
+        let report = NodeValidationReport::from_height_field_error(
+            11,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index: 2,
+                band_index: 3,
+                source_kind: RoadSurfaceBandKind::Sidewalk,
+                height_field_id,
+                owner: Some(owner),
+                point_x_mm: 12_345,
+                point_z_mm: -6_789,
+                axis: "canonical_authority",
+                raw_parameter: f64::NAN,
+            },
+        );
+
+        assert!(report.has_blocking_diagnostics());
+        let diagnostic = &report.diagnostics[0];
+        assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+        assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+        assert!(matches!(
+            diagnostic.kind,
+            NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "vertex_outside_height_field",
+                mouth_order_index: Some(2),
+                band_index: Some(3),
+                source_kind: Some(RoadSurfaceBandKind::Sidewalk),
+                height_field_id: Some(id),
+                owner: Some(mapped_owner),
+                point_x_mm: Some(12_345),
+                point_z_mm: Some(-6_789),
+                axis: Some("canonical_authority"),
+                ..
+            } if id == height_field_id && mapped_owner == owner
+        ));
+        let dump = report.debug_dump();
+        assert!(dump.contains("\"kind\":\"height_field_failure\""));
+        assert!(dump.contains("height_field_id"));
+        assert!(dump.contains("owner"));
+    }
+
+    #[test]
+    fn maps_source_height_conflict_to_source_rich_blocking_debug_record() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 7);
+        let height_field_id = NodeBandHeightFieldId::new(1, 2, RoadSurfaceBandKind::CurbOrShoulder);
+        let incoming_authority = NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        };
+        let report = NodeValidationReport::from_height_field_error(
+            12,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &NodeHeightFieldError::SourceHeightFieldConflict {
+                mouth_order_index: 1,
+                band_index: 2,
+                source_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                height_field_id,
+                owner: Some(owner),
+                existing_authority: NodeHeightAuthoritySource::SourceInterval,
+                incoming_authority,
+                point_x_mm: 3_000,
+                point_z_mm: 4_000,
+                existing_height_mm: 120,
+                incoming_height_mm: 180,
+            },
+        );
+
+        assert!(report.has_blocking_diagnostics());
+        let diagnostic = &report.diagnostics[0];
+        assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+        assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+        assert!(matches!(
+            diagnostic.kind,
+            NodeGeometryDiagnosticKind::SourceHeightFieldConflict {
+                mouth_order_index: 1,
+                band_index: 2,
+                source_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                height_field_id: id,
+                owner: Some(mapped_owner),
+                existing_authority: NodeHeightAuthoritySource::SourceInterval,
+                incoming_authority: mapped_incoming,
+                x_mm: 3_000,
+                z_mm: 4_000,
+                existing_height_mm: 120,
+                incoming_height_mm: 180,
+            } if id == height_field_id
+                && mapped_owner == owner
+                && mapped_incoming == incoming_authority
+        ));
+        let dump = report.debug_dump();
+        assert!(dump.contains("\"kind\":\"source_height_field_conflict\""));
+        assert!(dump.contains("JunctionSideJoin"));
+        assert!(dump.contains("height_field_id"));
+    }
+
+    #[test]
+    fn maps_shared_source_height_conflict_to_owner_pair_blocking_debug_record() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 3);
+        let height_field_id = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::Carriageway);
+        let report = NodeValidationReport::from_height_field_error(
+            13,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &NodeHeightFieldError::SharedSourceHeightConflict {
+                point_x_mm: -2_000,
+                point_z_mm: 8_000,
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner,
+                opposite_owner: Some(opposite_owner),
+                height_field_id: Some(height_field_id),
+                constraint_index: Some(9),
+                existing_authority: Some(NodeHeightAuthoritySource::SourceInterval),
+                incoming_authority: Some(NodeHeightAuthoritySource::TerminalCap),
+                existing_height_mm: 0,
+                incoming_height_mm: 125,
+            },
+        );
+
+        assert!(report.has_blocking_diagnostics());
+        let diagnostic = &report.diagnostics[0];
+        assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+        assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+        assert!(matches!(
+            diagnostic.kind,
+            NodeGeometryDiagnosticKind::SharedSourceHeightConflict {
+                x_mm: -2_000,
+                z_mm: 8_000,
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner: mapped_owner,
+                opposite_owner: Some(mapped_opposite_owner),
+                height_field_id: Some(id),
+                constraint_index: Some(9),
+                existing_authority: Some(NodeHeightAuthoritySource::SourceInterval),
+                incoming_authority: Some(NodeHeightAuthoritySource::TerminalCap),
+                existing_height_mm: 0,
+                incoming_height_mm: 125,
+            } if mapped_owner == owner
+                && mapped_opposite_owner == opposite_owner
+                && id == height_field_id
+        ));
+        let dump = report.debug_dump();
+        assert!(dump.contains("\"kind\":\"shared_source_height_conflict\""));
+        assert!(dump.contains("opposite_owner"));
+        assert!(dump.contains("constraint_index"));
     }
 
     #[test]

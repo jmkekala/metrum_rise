@@ -85,6 +85,8 @@ pub(crate) enum NodeHeightFieldError {
         mouth_order_index: usize,
         band_index: usize,
         source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        owner: Option<NodeBandOwner>,
         point_x_mm: i64,
         point_z_mm: i64,
         axis: &'static str,
@@ -93,6 +95,11 @@ pub(crate) enum NodeHeightFieldError {
     SourceHeightFieldConflict {
         mouth_order_index: usize,
         band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        owner: Option<NodeBandOwner>,
+        existing_authority: NodeHeightAuthoritySource,
+        incoming_authority: NodeHeightAuthoritySource,
         point_x_mm: i64,
         point_z_mm: i64,
         existing_height_mm: i64,
@@ -102,13 +109,27 @@ pub(crate) enum NodeHeightFieldError {
         point_x_mm: i64,
         point_z_mm: i64,
         kind: RoadSurfaceBandKind,
-        owner_index: usize,
+        owner: NodeBandOwner,
+        opposite_owner: Option<NodeBandOwner>,
+        height_field_id: Option<NodeBandHeightFieldId>,
         constraint_index: Option<usize>,
+        existing_authority: Option<NodeHeightAuthoritySource>,
+        incoming_authority: Option<NodeHeightAuthoritySource>,
         existing_height_mm: i64,
         incoming_height_mm: i64,
     },
     TerminalCapGeneration {
         error: TerminalCapGenerationError,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NodeHeightAuthoritySource {
+    SourceInterval,
+    TerminalCap,
+    GeneratedContour {
+        purpose: NodeGeneratedContourPurpose,
+        claim_priority: NodeGeneratedContourClaimPriority,
     },
 }
 
@@ -154,6 +175,7 @@ struct NodeResolvedHeightAuthorityMap {
 struct NodeResolvedHeightAuthority {
     point_xz: RoadVec2,
     height_m: f64,
+    authority: NodeHeightAuthoritySource,
 }
 
 struct NodeBandHeightField {
@@ -200,9 +222,17 @@ struct NodeBandHeightEdge {
     end_height_m: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
 struct NodeAuthorizedHeightCandidate {
     authority_rank: u8,
+    authority: NodeHeightAuthoritySource,
     height_m: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NodeEvaluatedHeight {
+    height_m: f64,
+    authority: NodeHeightAuthoritySource,
 }
 
 enum NodeHeightPatchEvaluation {
@@ -246,6 +276,22 @@ impl NodeHeightPatchAuthority {
             NodeHeightPatchAuthorityRole::TerminalCap => 2,
             NodeHeightPatchAuthorityRole::GeneratedContour { .. } => 3,
         })
+    }
+
+    fn source(self) -> NodeHeightAuthoritySource {
+        match self.role {
+            NodeHeightPatchAuthorityRole::SourceInterval => {
+                NodeHeightAuthoritySource::SourceInterval
+            }
+            NodeHeightPatchAuthorityRole::TerminalCap => NodeHeightAuthoritySource::TerminalCap,
+            NodeHeightPatchAuthorityRole::GeneratedContour {
+                purpose,
+                claim_priority,
+            } => NodeHeightAuthoritySource::GeneratedContour {
+                purpose,
+                claim_priority,
+            },
+        }
     }
 }
 
@@ -360,47 +406,10 @@ impl NodeBandHeightField {
         let mut outside_error = None;
         for patch in &self.patches {
             match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
-                NodeHeightPatchEvaluation::Inside(height_m) => candidates.push(height_m),
-                NodeHeightPatchEvaluation::Outside(error) => {
-                    if outside_error.is_none() {
-                        outside_error = Some(error);
-                    }
-                }
-            }
-        }
-        if candidates.is_empty() {
-            return Err(outside_error.unwrap_or_else(|| {
-                let key = NodeHeightPointKey::from_point(point_xz);
-                NodeHeightFieldError::VertexOutsideHeightField {
-                    mouth_order_index: self.id.mouth_order_index(),
-                    band_index: self.id.band_index(),
-                    source_kind: self.kind,
-                    point_x_mm: key.x_mm(),
-                    point_z_mm: key.z_mm(),
-                    axis: "patch",
-                    raw_parameter: f64::NAN,
-                }
-            }));
-        }
-
-        self.agreed_height(point_xz, candidates)
-    }
-
-    fn evaluate_authorized_height(
-        &self,
-        owner: NodeBandOwner,
-        point_xz: RoadVec2,
-    ) -> Result<f64, NodeHeightFieldError> {
-        let mut candidates = Vec::new();
-        let mut outside_error = None;
-        for patch in &self.patches {
-            let Some(authority_rank) = patch.authority.rank_for_owner(owner) else {
-                continue;
-            };
-            match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => {
                     candidates.push(NodeAuthorizedHeightCandidate {
-                        authority_rank,
+                        authority_rank: 0,
+                        authority: patch.authority.source(),
                         height_m,
                     });
                 }
@@ -418,12 +427,62 @@ impl NodeBandHeightField {
                     mouth_order_index: self.id.mouth_order_index(),
                     band_index: self.id.band_index(),
                     source_kind: self.kind,
+                    height_field_id: self.id,
+                    owner: None,
                     point_x_mm: key.x_mm(),
                     point_z_mm: key.z_mm(),
-                    axis: "canonical_authority",
+                    axis: "patch",
                     raw_parameter: f64::NAN,
                 }
             }));
+        }
+
+        self.agreed_height(point_xz, None, candidates)
+            .map(|height| height.height_m)
+    }
+
+    fn evaluate_authorized_height(
+        &self,
+        owner: NodeBandOwner,
+        point_xz: RoadVec2,
+    ) -> Result<NodeEvaluatedHeight, NodeHeightFieldError> {
+        let mut candidates = Vec::new();
+        let mut outside_error = None;
+        for patch in &self.patches {
+            let Some(authority_rank) = patch.authority.rank_for_owner(owner) else {
+                continue;
+            };
+            match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
+                NodeHeightPatchEvaluation::Inside(height_m) => {
+                    candidates.push(NodeAuthorizedHeightCandidate {
+                        authority_rank,
+                        authority: patch.authority.source(),
+                        height_m,
+                    });
+                }
+                NodeHeightPatchEvaluation::Outside(error) => {
+                    if outside_error.is_none() {
+                        outside_error = Some(owner_scoped_outside_height_error(error, owner));
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            if let Some(error) = outside_error {
+                return Err(error);
+            }
+            let key = NodeHeightPointKey::from_point(point_xz);
+            return Err(NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
+                source_kind: self.kind,
+                height_field_id: self.id,
+                owner: Some(owner),
+                point_x_mm: key.x_mm(),
+                point_z_mm: key.z_mm(),
+                axis: "canonical_authority",
+                raw_parameter: f64::NAN,
+            });
         }
 
         let best_rank = candidates
@@ -434,36 +493,43 @@ impl NodeBandHeightField {
         let heights_m = candidates
             .into_iter()
             .filter(|candidate| candidate.authority_rank == best_rank)
-            .map(|candidate| candidate.height_m)
             .collect();
-        self.agreed_height(point_xz, heights_m)
+        self.agreed_height(point_xz, Some(owner), heights_m)
     }
 
     fn agreed_height(
         &self,
         point_xz: RoadVec2,
-        heights_m: Vec<f64>,
-    ) -> Result<f64, NodeHeightFieldError> {
-        let Some(first_height_m) = heights_m.first().copied() else {
+        owner: Option<NodeBandOwner>,
+        candidates: Vec<NodeAuthorizedHeightCandidate>,
+    ) -> Result<NodeEvaluatedHeight, NodeHeightFieldError> {
+        let Some(first_candidate) = candidates.first().copied() else {
             let key = NodeHeightPointKey::from_point(point_xz);
             return Err(NodeHeightFieldError::VertexOutsideHeightField {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
                 source_kind: self.kind,
+                height_field_id: self.id,
+                owner,
                 point_x_mm: key.x_mm(),
                 point_z_mm: key.z_mm(),
                 axis: "patch",
                 raw_parameter: f64::NAN,
             });
         };
-        let first_height_mm = quantize_m(first_height_m);
-        for height_m in heights_m.iter().copied().skip(1) {
-            let height_mm = quantize_m(height_m);
+        let first_height_mm = quantize_m(first_candidate.height_m);
+        for candidate in candidates.iter().copied().skip(1) {
+            let height_mm = quantize_m(candidate.height_m);
             if height_mm != first_height_mm {
                 let key = NodeHeightPointKey::from_point(point_xz);
                 return Err(NodeHeightFieldError::SourceHeightFieldConflict {
                     mouth_order_index: self.id.mouth_order_index(),
                     band_index: self.id.band_index(),
+                    source_kind: self.kind,
+                    height_field_id: self.id,
+                    owner,
+                    existing_authority: first_candidate.authority,
+                    incoming_authority: candidate.authority,
                     point_x_mm: key.x_mm(),
                     point_z_mm: key.z_mm(),
                     existing_height_mm: first_height_mm,
@@ -471,7 +537,40 @@ impl NodeBandHeightField {
                 });
             }
         }
-        Ok(first_height_m)
+        Ok(NodeEvaluatedHeight {
+            height_m: first_candidate.height_m,
+            authority: first_candidate.authority,
+        })
+    }
+}
+
+fn owner_scoped_outside_height_error(
+    error: NodeHeightFieldError,
+    owner: NodeBandOwner,
+) -> NodeHeightFieldError {
+    match error {
+        NodeHeightFieldError::VertexOutsideHeightField {
+            mouth_order_index,
+            band_index,
+            source_kind,
+            height_field_id,
+            owner: error_owner,
+            point_x_mm,
+            point_z_mm,
+            axis,
+            raw_parameter,
+        } => NodeHeightFieldError::VertexOutsideHeightField {
+            mouth_order_index,
+            band_index,
+            source_kind,
+            height_field_id,
+            owner: error_owner.or(Some(owner)),
+            point_x_mm,
+            point_z_mm,
+            axis,
+            raw_parameter,
+        },
+        other => other,
     }
 }
 
@@ -582,6 +681,11 @@ impl NodeBandHeightPatch {
                 return Err(NodeHeightFieldError::SourceHeightFieldConflict {
                     mouth_order_index: id.mouth_order_index(),
                     band_index: id.band_index(),
+                    source_kind,
+                    height_field_id: id,
+                    owner: self.authority.owner,
+                    existing_authority: self.authority.source(),
+                    incoming_authority: self.authority.source(),
                     point_x_mm: key.x_mm(),
                     point_z_mm: key.z_mm(),
                     existing_height_mm: first_height_mm,
@@ -605,6 +709,8 @@ impl NodeBandHeightPatch {
             mouth_order_index: id.mouth_order_index(),
             band_index: id.band_index(),
             source_kind,
+            height_field_id: id,
+            owner: self.authority.owner,
             point_x_mm: key.x_mm(),
             point_z_mm: key.z_mm(),
             axis,
@@ -748,8 +854,8 @@ impl NodeResolvedHeightAuthorityMap {
                 .flat_map(|contour| contour.iter().copied())
             {
                 let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-                let height_m = field.evaluate_authorized_height(region.owner, point_xz)?;
-                map.insert(region.owner, field.id, point_xz, height_m, region.kind)?;
+                let height = field.evaluate_authorized_height(region.owner, point_xz)?;
+                map.insert(region.owner, field.id, point_xz, height, region.kind)?;
             }
         }
         Ok(map)
@@ -760,7 +866,7 @@ impl NodeResolvedHeightAuthorityMap {
         owner: NodeBandOwner,
         height_field_id: NodeBandHeightFieldId,
         point_xz: RoadVec2,
-        height_m: f64,
+        height: NodeEvaluatedHeight,
         kind: RoadSurfaceBandKind,
     ) -> Result<(), NodeHeightFieldError> {
         let point = NodeHeightPointKey::from_point(point_xz);
@@ -769,7 +875,7 @@ impl NodeResolvedHeightAuthorityMap {
             owner,
             height_field_id,
         };
-        let height_mm = quantize_m(height_m);
+        let height_mm = quantize_m(height.height_m);
         if let Some(existing) = self.heights_by_key.get(&key) {
             let existing_height_mm = quantize_m(existing.height_m);
             if existing_height_mm != height_mm {
@@ -777,16 +883,26 @@ impl NodeResolvedHeightAuthorityMap {
                     point_x_mm: point.x_mm(),
                     point_z_mm: point.z_mm(),
                     kind,
-                    owner_index: owner.owner_index(),
+                    owner,
+                    opposite_owner: None,
+                    height_field_id: Some(height_field_id),
                     constraint_index: None,
+                    existing_authority: Some(existing.authority),
+                    incoming_authority: Some(height.authority),
                     existing_height_mm,
                     incoming_height_mm: height_mm,
                 });
             }
             return Ok(());
         }
-        self.heights_by_key
-            .insert(key, NodeResolvedHeightAuthority { point_xz, height_m });
+        self.heights_by_key.insert(
+            key,
+            NodeResolvedHeightAuthority {
+                point_xz,
+                height_m: height.height_m,
+                authority: height.authority,
+            },
+        );
         Ok(())
     }
 
@@ -900,6 +1016,8 @@ fn heighted_vertex(
                 mouth_order_index: field.id.mouth_order_index(),
                 band_index: field.id.band_index(),
                 source_kind: field.kind,
+                height_field_id: field.id,
+                owner: Some(region.owner),
                 point_x_mm: key.x_mm(),
                 point_z_mm: key.z_mm(),
                 axis: "canonical_authority",
@@ -930,15 +1048,27 @@ fn validate_explicit_material_seam_heights(
                 let point = NodeHeightPointKey::from_point(vertex.point_xz);
                 let key = ExplicitSeamHeightKey::new(point, constraint);
                 let height_mm = quantize_m(vertex.height_m);
-                if let Some(existing) = shared_heights.insert(key, ExplicitSeamHeight { height_mm })
-                {
+                let incoming = ExplicitSeamHeight {
+                    height_mm,
+                    owner: region.owner,
+                    height_field_id: vertex.height_field_id,
+                };
+                if let Some(existing) = shared_heights.insert(key, incoming) {
                     if existing.height_mm != height_mm {
+                        let (owner, opposite_owner) = canonical_explicit_seam_owner_pair(
+                            constraint.owner,
+                            constraint.opposite_owner,
+                        );
                         return Err(NodeHeightFieldError::SharedSourceHeightConflict {
                             point_x_mm: point.x_mm(),
                             point_z_mm: point.z_mm(),
                             kind: region.kind,
-                            owner_index: region.owner.owner_index(),
+                            owner: owner.unwrap_or(existing.owner),
+                            opposite_owner,
+                            height_field_id: Some(existing.height_field_id),
                             constraint_index: Some(constraint.constraint_index),
+                            existing_authority: None,
+                            incoming_authority: None,
                             existing_height_mm: existing.height_mm,
                             incoming_height_mm: height_mm,
                         });
@@ -953,6 +1083,8 @@ fn validate_explicit_material_seam_heights(
 #[derive(Clone, Copy, Debug)]
 struct ExplicitSeamHeight {
     height_mm: i64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
 }
 
 impl ExplicitSeamHeightKey {
@@ -1035,7 +1167,7 @@ fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2)
 fn validate_shared_source_height_agreement(
     regions: &[NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
-    let mut heights = BTreeMap::<NodeHeightVertexContextKey, i64>::new();
+    let mut heights = BTreeMap::<NodeHeightVertexContextKey, SharedSourceHeight>::new();
     for region in regions {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             let point = NodeHeightPointKey::from_point(vertex.point_xz);
@@ -1045,22 +1177,38 @@ fn validate_shared_source_height_agreement(
                 height_field_id: vertex.height_field_id,
             };
             let height_mm = quantize_m(vertex.height_m);
-            if let Some(existing_height_mm) = heights.insert(key, height_mm)
-                && existing_height_mm != height_mm
+            let incoming = SharedSourceHeight {
+                height_mm,
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+            };
+            if let Some(existing) = heights.insert(key, incoming)
+                && existing.height_mm != height_mm
             {
                 return Err(NodeHeightFieldError::SharedSourceHeightConflict {
                     point_x_mm: point.x_mm(),
                     point_z_mm: point.z_mm(),
                     kind: region.kind,
-                    owner_index: region.owner.owner_index(),
+                    owner: existing.owner,
+                    opposite_owner: None,
+                    height_field_id: Some(existing.height_field_id),
                     constraint_index: None,
-                    existing_height_mm,
+                    existing_authority: None,
+                    incoming_authority: None,
+                    existing_height_mm: existing.height_mm,
                     incoming_height_mm: height_mm,
                 });
             }
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SharedSourceHeight {
+    height_mm: i64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
 }
 
 fn quantize_source_height_m(value_m: f64) -> f64 {
@@ -1854,7 +2002,14 @@ mod tests {
         let height = field
             .evaluate_authorized_height(owner, RoadVec2::new(5.0, 1.0))
             .expect("owner-generated carrier is explicit height authority for JunctionN");
-        assert!((height - 1.0).abs() <= 1.0e-6);
+        assert!((height.height_m - 1.0).abs() <= 1.0e-6);
+        assert_eq!(
+            height.authority,
+            NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            }
+        );
     }
 
     #[test]
