@@ -529,13 +529,8 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([Vector3; 3]),
     {
-        for polygon in piece
-            .road_surface_polygons
-            .iter()
-            .chain(&piece.curb_surface_polygons)
-            .chain(&piece.sidewalk_surface_polygons)
-        {
-            Self::visit_visual_polygon_triangles(polygon, visitor);
+        for region in &piece.span_owned_regions {
+            Self::visit_visual_polygon_triangles(&region.polygon, visitor);
         }
     }
 

@@ -191,6 +191,45 @@ impl RoadSurfaceVerticalFaceSource {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoadSurfaceSpanRegionRole {
+    Asphalt,
+    CurbOrShoulder,
+    NonRoad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RoadSurfaceSpanBandOwner {
+    source_band_index: usize,
+    kind: RoadSurfaceBandKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RoadSurfaceSpanOwnedRegion {
+    edge_idx: usize,
+    owner: RoadSurfaceSpanBandOwner,
+    role: RoadSurfaceSpanRegionRole,
+    start_section_index: usize,
+    end_section_index: usize,
+    start_s_m: f32,
+    end_s_m: f32,
+    polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoadSurfaceSpanRaisedStepSource {
+    lower_owner: RoadSurfaceSpanBandOwner,
+    raised_owner: RoadSurfaceSpanBandOwner,
+    start_section_index: usize,
+    end_section_index: usize,
+    start_s_m: f32,
+    end_s_m: f32,
+    start_lower_world: Vector3,
+    start_raised_world: Vector3,
+    end_lower_world: Vector3,
+    end_raised_world: Vector3,
+}
+
 /// Explicit visual node piece compiled from the solved roadbed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoadSurfaceVisualNodePiece {
@@ -231,8 +270,10 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit vertical faces at raised owner-pair material contacts.
     pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    span_raised_step_sources: Vec<RoadSurfaceSpanRaisedStepSource>,
     /// Explicit sidewalk-owned polygons for the span piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    span_owned_regions: Vec<RoadSurfaceSpanOwnedRegion>,
     edge_class: EdgeClass,
     start_mouth_profile: Option<IncidentMouthProfile>,
     end_mouth_profile: Option<IncidentMouthProfile>,

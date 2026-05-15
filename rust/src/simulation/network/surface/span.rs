@@ -2,10 +2,11 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
-    terrain_clip_edge_kind_for_band,
+    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
+    RoadSurfaceSpanRaisedStepSource, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
+    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
+    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M,
+    WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2, terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
@@ -14,29 +15,9 @@ use godot::prelude::Vector3;
 // Avoid resolved region construction between adjacent bands whose widths have collapsed together.
 const SPAN_REGION_MIN_BAND_WIDTH_M: f32 = 0.05;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct SpanBandOwner {
-    source_band_index: usize,
-    kind: RoadSurfaceBandKind,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SpanResolvedRegionRole {
-    Asphalt,
-    CurbOrShoulder,
-    NonRoad,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct SpanResolvedRegion {
-    owner: SpanBandOwner,
-    role: SpanResolvedRegionRole,
-    polygon: RoadSurfaceVisualPolygon,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 struct SpanResolvedRegionSet {
-    regions: Vec<SpanResolvedRegion>,
+    regions: Vec<RoadSurfaceSpanOwnedRegion>,
     raised_step_constraints: Vec<SpanRaisedStepConstraint>,
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
@@ -44,8 +25,12 @@ struct SpanResolvedRegionSet {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpanRaisedStepConstraint {
-    lower_owner: SpanBandOwner,
-    raised_owner: SpanBandOwner,
+    lower_owner: RoadSurfaceSpanBandOwner,
+    raised_owner: RoadSurfaceSpanBandOwner,
+    start_section_index: usize,
+    end_section_index: usize,
+    start_s_m: f32,
+    end_s_m: f32,
     start: SpanRaisedStepSample,
     end: SpanRaisedStepSample,
 }
@@ -59,12 +44,12 @@ struct SpanRaisedStepSample {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpanResolvedRaisedStepSample {
-    lower_owner: SpanBandOwner,
-    raised_owner: SpanBandOwner,
+    lower_owner: RoadSurfaceSpanBandOwner,
+    raised_owner: RoadSurfaceSpanBandOwner,
     sample: SpanRaisedStepSample,
 }
 
-impl SpanResolvedRegionRole {
+impl RoadSurfaceSpanRegionRole {
     fn from_band_pair(start_kind: RoadSurfaceBandKind, end_kind: RoadSurfaceBandKind) -> Self {
         match (start_kind, end_kind) {
             (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::Carriageway) => Self::Asphalt,
@@ -91,11 +76,16 @@ impl RoadSurfaceSystem {
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
         let mut visible_regions = self.resolve_span_regions_for_ranges(sections, &visible_ranges);
+        Self::sort_span_owned_regions(&mut visible_regions.regions);
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::span_surface_polygons_from_regions(&visible_regions.regions);
-        let mut raised_step_face_polygons = Self::span_raised_step_face_polygons_from_constraints(
-            &visible_regions.raised_step_constraints,
-        );
+        let mut raised_step_faces =
+            Self::span_raised_step_faces_from_constraints(&visible_regions.raised_step_constraints);
+        Self::sort_span_raised_step_faces(&mut raised_step_faces);
+        let (raised_step_face_polygons, span_raised_step_sources): (
+            Vec<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceSpanRaisedStepSource>,
+        ) = raised_step_faces.into_iter().unzip();
 
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
@@ -106,7 +96,6 @@ impl RoadSurfaceSystem {
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_visual_polygons(&mut raised_step_face_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         let outer_boundary_loops = std::mem::take(&mut visible_regions.outer_boundary_loops);
         if outer_boundary_loops.is_empty() {
@@ -118,6 +107,7 @@ impl RoadSurfaceSystem {
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
         let mut clearance_regions =
             self.resolve_span_regions_for_ranges(sections, &earthwork_ranges);
+        Self::sort_span_owned_regions(&mut clearance_regions.regions);
         let (
             mut clearance_road_surface_polygons,
             mut clearance_curb_surface_polygons,
@@ -145,7 +135,9 @@ impl RoadSurfaceSystem {
             road_surface_polygons,
             curb_surface_polygons,
             raised_step_face_polygons,
+            span_raised_step_sources,
             sidewalk_surface_polygons,
+            span_owned_regions: visible_regions.regions,
             edge_class: edge.class,
             start_mouth_profile,
             end_mouth_profile,
@@ -163,11 +155,11 @@ impl RoadSurfaceSystem {
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
     ) -> SpanResolvedRegionSet {
+        let (outer_boundary_loops, terrain_clip_boundary_loops) =
+            Self::build_span_boundary_loops(sections, ranges);
         let mut resolved = SpanResolvedRegionSet {
-            outer_boundary_loops: Self::build_span_outer_boundary_loops(sections, ranges),
-            terrain_clip_boundary_loops: Self::build_span_terrain_clip_boundary_loops(
-                sections, ranges,
-            ),
+            outer_boundary_loops,
+            terrain_clip_boundary_loops,
             ..SpanResolvedRegionSet::default()
         };
 
@@ -175,7 +167,9 @@ impl RoadSurfaceSystem {
             if end_index <= start_index {
                 continue;
             }
-            for pair in sections[start_index..=end_index].windows(2) {
+            for (segment_offset, pair) in sections[start_index..=end_index].windows(2).enumerate() {
+                let start_section_index = start_index + segment_offset;
+                let end_section_index = start_section_index + 1;
                 if pair[0].bands.len() != pair[1].bands.len() {
                     continue;
                 }
@@ -215,17 +209,26 @@ impl RoadSurfaceSystem {
                         continue;
                     };
 
-                    resolved.regions.push(SpanResolvedRegion {
-                        owner: SpanBandOwner {
+                    resolved.regions.push(RoadSurfaceSpanOwnedRegion {
+                        edge_idx: pair[0].edge_idx,
+                        owner: RoadSurfaceSpanBandOwner {
                             source_band_index: band_index,
                             kind: band_a.kind,
                         },
-                        role: SpanResolvedRegionRole::from_band_pair(band_a.kind, band_b.kind),
+                        role: RoadSurfaceSpanRegionRole::from_band_pair(band_a.kind, band_b.kind),
+                        start_section_index,
+                        end_section_index,
+                        start_s_m: pair[0].s_m,
+                        end_s_m: pair[1].s_m,
                         polygon,
                     });
                 }
                 resolved.raised_step_constraints.extend(
-                    Self::span_raised_step_constraints_for_resolved_segment(pair),
+                    Self::span_raised_step_constraints_for_resolved_segment(
+                        pair,
+                        start_section_index,
+                        end_section_index,
+                    ),
                 );
             }
         }
@@ -234,7 +237,7 @@ impl RoadSurfaceSystem {
     }
 
     fn span_surface_polygons_from_regions(
-        regions: &[SpanResolvedRegion],
+        regions: &[RoadSurfaceSpanOwnedRegion],
     ) -> (
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
@@ -246,13 +249,13 @@ impl RoadSurfaceSystem {
 
         for region in regions {
             match region.role {
-                SpanResolvedRegionRole::Asphalt => {
+                RoadSurfaceSpanRegionRole::Asphalt => {
                     road_surface_polygons.push(region.polygon.clone());
                 }
-                SpanResolvedRegionRole::CurbOrShoulder => {
+                RoadSurfaceSpanRegionRole::CurbOrShoulder => {
                     curb_surface_polygons.push(region.polygon.clone());
                 }
-                SpanResolvedRegionRole::NonRoad => {
+                RoadSurfaceSpanRegionRole::NonRoad => {
                     sidewalk_surface_polygons.push(region.polygon.clone());
                 }
             }
@@ -265,8 +268,69 @@ impl RoadSurfaceSystem {
         )
     }
 
+    fn sort_span_owned_regions(regions: &mut [RoadSurfaceSpanOwnedRegion]) {
+        regions.sort_by(|a, b| {
+            a.edge_idx
+                .cmp(&b.edge_idx)
+                .then(a.start_section_index.cmp(&b.start_section_index))
+                .then(a.end_section_index.cmp(&b.end_section_index))
+                .then(a.start_s_m.total_cmp(&b.start_s_m))
+                .then(a.end_s_m.total_cmp(&b.end_s_m))
+                .then(
+                    Self::span_region_role_sort_key(a.role)
+                        .cmp(&Self::span_region_role_sort_key(b.role)),
+                )
+                .then(
+                    Self::band_kind_sort_key(a.owner.kind)
+                        .cmp(&Self::band_kind_sort_key(b.owner.kind)),
+                )
+                .then(a.owner.source_band_index.cmp(&b.owner.source_band_index))
+                .then_with(|| Self::visual_polygon_ordering(&a.polygon, &b.polygon))
+        });
+    }
+
+    fn sort_span_raised_step_faces(
+        faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)],
+    ) {
+        faces.sort_by(|(polygon_a, source_a), (polygon_b, source_b)| {
+            Self::span_band_owner_ordering(source_a.lower_owner, source_b.lower_owner)
+                .then(Self::span_band_owner_ordering(
+                    source_a.raised_owner,
+                    source_b.raised_owner,
+                ))
+                .then(
+                    source_a
+                        .start_section_index
+                        .cmp(&source_b.start_section_index),
+                )
+                .then(source_a.end_section_index.cmp(&source_b.end_section_index))
+                .then(source_a.start_s_m.total_cmp(&source_b.start_s_m))
+                .then(source_a.end_s_m.total_cmp(&source_b.end_s_m))
+                .then_with(|| Self::visual_polygon_ordering(polygon_a, polygon_b))
+        });
+    }
+
+    fn span_region_role_sort_key(role: RoadSurfaceSpanRegionRole) -> u8 {
+        match role {
+            RoadSurfaceSpanRegionRole::Asphalt => 0,
+            RoadSurfaceSpanRegionRole::CurbOrShoulder => 1,
+            RoadSurfaceSpanRegionRole::NonRoad => 2,
+        }
+    }
+
+    fn span_band_owner_ordering(
+        a: RoadSurfaceSpanBandOwner,
+        b: RoadSurfaceSpanBandOwner,
+    ) -> std::cmp::Ordering {
+        Self::band_kind_sort_key(a.kind)
+            .cmp(&Self::band_kind_sort_key(b.kind))
+            .then(a.source_band_index.cmp(&b.source_band_index))
+    }
+
     fn span_raised_step_constraints_for_resolved_segment(
         pair: &[RoadSurfaceSection],
+        start_section_index: usize,
+        end_section_index: usize,
     ) -> Vec<SpanRaisedStepConstraint> {
         if pair.len() != 2 || pair[0].bands.len() != pair[1].bands.len() {
             return Vec::new();
@@ -286,6 +350,10 @@ impl RoadSurfaceSystem {
             constraints.push(SpanRaisedStepConstraint {
                 lower_owner: start.lower_owner,
                 raised_owner: start.raised_owner,
+                start_section_index,
+                end_section_index,
+                start_s_m: pair[0].s_m,
+                end_s_m: pair[1].s_m,
                 start: start.sample,
                 end: end.sample,
             });
@@ -315,11 +383,11 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let left_owner = SpanBandOwner {
+        let left_owner = RoadSurfaceSpanBandOwner {
             source_band_index: lower_index,
             kind: left.kind,
         };
-        let right_owner = SpanBandOwner {
+        let right_owner = RoadSurfaceSpanBandOwner {
             source_band_index: upper_index,
             kind: right.kind,
         };
@@ -362,18 +430,18 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn span_raised_step_face_polygons_from_constraints(
+    fn span_raised_step_faces_from_constraints(
         constraints: &[SpanRaisedStepConstraint],
-    ) -> Vec<RoadSurfaceVisualPolygon> {
+    ) -> Vec<(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)> {
         constraints
             .iter()
-            .filter_map(Self::span_raised_step_face_polygon_from_constraint)
+            .filter_map(Self::span_raised_step_face_from_constraint)
             .collect()
     }
 
-    fn span_raised_step_face_polygon_from_constraint(
+    fn span_raised_step_face_from_constraint(
         constraint: &SpanRaisedStepConstraint,
-    ) -> Option<RoadSurfaceVisualPolygon> {
+    ) -> Option<(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)> {
         let mut points = [
             constraint.start.raised_world,
             constraint.start.lower_world,
@@ -386,47 +454,31 @@ impl RoadSurfaceSystem {
             points = [points[3], points[2], points[1], points[0]];
         }
 
-        Self::make_vertical_quad_polygon(points)
+        let polygon = Self::make_vertical_quad_polygon(points)?;
+        let source = RoadSurfaceSpanRaisedStepSource {
+            lower_owner: constraint.lower_owner,
+            raised_owner: constraint.raised_owner,
+            start_section_index: constraint.start_section_index,
+            end_section_index: constraint.end_section_index,
+            start_s_m: constraint.start_s_m,
+            end_s_m: constraint.end_s_m,
+            start_lower_world: constraint.start.lower_world,
+            start_raised_world: constraint.start.raised_world,
+            end_lower_world: constraint.end.lower_world,
+            end_raised_world: constraint.end.raised_world,
+        };
+        Some((polygon, source))
     }
 
-    fn build_span_outer_boundary_loops(
+    fn build_span_boundary_loops(
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut loops = Vec::new();
-        for &(start_index, end_index) in ranges {
-            if end_index <= start_index {
-                continue;
-            }
-            let mut left_points = Vec::new();
-            let mut right_points = Vec::new();
-            for section in &sections[start_index..=end_index] {
-                let Some((left_point, right_point)) = Self::section_outer_boundary_pair(section)
-                else {
-                    continue;
-                };
-                left_points.push(left_point);
-                right_points.push(right_point);
-            }
-            if left_points.len() < 2 || right_points.len() < 2 {
-                continue;
-            }
-            right_points.reverse();
-            let mut loop_points = left_points;
-            loop_points.extend(right_points);
-            if let Some(loop_polygon) = Self::make_visual_polygon(loop_points) {
-                loops.push(loop_polygon);
-            }
-        }
-        Self::sort_visual_polygons(&mut loops);
-        loops
-    }
-
-    fn build_span_terrain_clip_boundary_loops(
-        sections: &[RoadSurfaceSection],
-        ranges: &[(usize, usize)],
-    ) -> Vec<RoadSurfaceTerrainClipLoop> {
-        let mut loops = Vec::new();
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceTerrainClipLoop>,
+    ) {
+        let mut outer_boundary_loops = Vec::new();
+        let mut terrain_clip_boundary_loops = Vec::new();
         for &(start_index, end_index) in ranges {
             if end_index <= start_index {
                 continue;
@@ -461,6 +513,7 @@ impl RoadSurfaceSystem {
             let Some(loop_polygon) = Self::make_boundary_loop_polygon(loop_points) else {
                 continue;
             };
+            outer_boundary_loops.push(loop_polygon.clone());
 
             let mut source_edges =
                 Vec::with_capacity(left_points.len() + right_points.len().saturating_sub(2) + 2);
@@ -494,13 +547,14 @@ impl RoadSurfaceSystem {
                 &mut source_edges,
                 &loop_polygon.points_world,
             );
-            loops.push(RoadSurfaceTerrainClipLoop {
+            terrain_clip_boundary_loops.push(RoadSurfaceTerrainClipLoop {
                 points_world: loop_polygon.points_world,
                 source_edges,
             });
         }
-        Self::sort_terrain_clip_loops(&mut loops);
-        loops
+        Self::sort_visual_polygons(&mut outer_boundary_loops);
+        Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
+        (outer_boundary_loops, terrain_clip_boundary_loops)
     }
 
     fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {

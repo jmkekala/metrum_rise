@@ -3,8 +3,9 @@
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVerticalFaceSource,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
+    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
 };
@@ -488,7 +489,28 @@ impl RoadSurfaceSystem {
         }
 
         let _ = writeln!(dump);
-        let _ = writeln!(dump, "      ]");
+        let _ = writeln!(dump, "      ],");
+        if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) {
+            dump.push_str("      \"span_ownership\": ");
+            Self::append_span_ownership_debug_literal(dump, piece);
+            dump.push_str(",\n");
+            dump.push_str("      \"span_raised_step_face_sources\": ");
+            Self::append_span_raised_step_sources_debug_literal(dump, piece);
+            dump.push_str(",\n");
+            dump.push_str("      \"terrain_clip_source_edges\": ");
+            Self::append_span_terrain_clip_source_edges_debug_literal(dump, piece);
+            dump.push_str(",\n");
+            dump.push_str("      \"span_projection_diagnostics\": ");
+            Self::append_span_projection_diagnostics_debug_literal(dump, piece);
+            dump.push('\n');
+        } else {
+            dump.push_str("      \"span_ownership\": {\"owned_region_count\":0,\"regions\":[]},\n");
+            dump.push_str("      \"span_raised_step_face_sources\": [],\n");
+            dump.push_str("      \"terrain_clip_source_edges\": [],\n");
+            dump.push_str(
+                "      \"span_projection_diagnostics\": {\"span_piece_compiled\":false}\n",
+            );
+        }
         let _ = write!(dump, "    }}");
     }
 
@@ -580,6 +602,209 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump);
         let _ = writeln!(dump, "          ]");
         let _ = write!(dump, "        }}");
+    }
+
+    fn append_span_ownership_debug_literal(dump: &mut String, piece: &RoadSurfaceVisualSpanPiece) {
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"owned_region_count\":{}",
+            piece.span_owned_regions.len()
+        );
+        for role in [
+            RoadSurfaceSpanRegionRole::Asphalt,
+            RoadSurfaceSpanRegionRole::CurbOrShoulder,
+            RoadSurfaceSpanRegionRole::NonRoad,
+        ] {
+            let count = piece
+                .span_owned_regions
+                .iter()
+                .filter(|region| region.role == role)
+                .count();
+            let _ = write!(
+                dump,
+                ",\"{}\":{}",
+                Self::span_region_role_debug_name(role),
+                count
+            );
+        }
+        for kind in Self::debug_band_kind_order() {
+            let count = piece
+                .span_owned_regions
+                .iter()
+                .filter(|region| region.owner.kind == kind)
+                .count();
+            let _ = write!(dump, ",\"band_{:?}\":{}", kind, count);
+        }
+        dump.push_str(",\"regions\":[");
+        for (region_index, region) in piece.span_owned_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(
+                dump,
+                "{{\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"point_count\":{},\"height_min_m\":",
+                region.edge_idx,
+                Self::span_region_role_debug_name(region.role),
+                region.owner.source_band_index,
+                region.owner.kind,
+                region.start_section_index,
+                region.end_section_index,
+                region.start_s_m,
+                region.end_s_m,
+                region.polygon.points_world.len(),
+            );
+            Self::append_optional_f32_precise_literal(
+                dump,
+                Self::debug_polygon_height_range(&region.polygon).map(|(min_y, _)| min_y),
+            );
+            dump.push_str(",\"height_max_m\":");
+            Self::append_optional_f32_precise_literal(
+                dump,
+                Self::debug_polygon_height_range(&region.polygon).map(|(_, max_y)| max_y),
+            );
+            dump.push('}');
+        }
+        dump.push_str("]}");
+    }
+
+    fn append_span_raised_step_sources_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        dump.push('[');
+        for (source_index, source) in piece.span_raised_step_sources.iter().copied().enumerate() {
+            if source_index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(dump, "{{\"face_index\":{},\"lower_owner\":", source_index);
+            Self::append_span_band_owner_debug_literal(dump, source.lower_owner);
+            dump.push_str(",\"raised_owner\":");
+            Self::append_span_band_owner_debug_literal(dump, source.raised_owner);
+            let _ = write!(
+                dump,
+                ",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"start_lower_world\":",
+                source.start_section_index,
+                source.end_section_index,
+                source.start_s_m,
+                source.end_s_m,
+            );
+            Self::append_vector3_precise_literal(dump, source.start_lower_world);
+            dump.push_str(",\"start_raised_world\":");
+            Self::append_vector3_precise_literal(dump, source.start_raised_world);
+            dump.push_str(",\"end_lower_world\":");
+            Self::append_vector3_precise_literal(dump, source.end_lower_world);
+            dump.push_str(",\"end_raised_world\":");
+            Self::append_vector3_precise_literal(dump, source.end_raised_world);
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    fn append_span_terrain_clip_source_edges_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        dump.push('[');
+        let mut first_edge = true;
+        for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate() {
+            for (edge_index, edge) in boundary_loop.source_edges.iter().enumerate() {
+                if !first_edge {
+                    dump.push_str(", ");
+                }
+                first_edge = false;
+                let _ = write!(
+                    dump,
+                    "{{\"loop_index\":{},\"edge_index\":{},\"kind\":\"{:?}\",\"start\":",
+                    loop_index, edge_index, edge.kind
+                );
+                Self::append_vector3_precise_literal(dump, edge.start);
+                dump.push_str(",\"end\":");
+                Self::append_vector3_precise_literal(dump, edge.end);
+                dump.push('}');
+            }
+        }
+        dump.push(']');
+    }
+
+    fn append_span_projection_diagnostics_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        let road_projection_matches = Self::span_region_projection_matches(
+            piece,
+            RoadSurfaceSpanRegionRole::Asphalt,
+            &piece.road_surface_polygons,
+        );
+        let curb_projection_matches = Self::span_region_projection_matches(
+            piece,
+            RoadSurfaceSpanRegionRole::CurbOrShoulder,
+            &piece.curb_surface_polygons,
+        );
+        let sidewalk_projection_matches = Self::span_region_projection_matches(
+            piece,
+            RoadSurfaceSpanRegionRole::NonRoad,
+            &piece.sidewalk_surface_polygons,
+        );
+        let raised_step_source_count_matches =
+            piece.raised_step_face_polygons.len() == piece.span_raised_step_sources.len();
+        let _ = write!(
+            dump,
+            "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{}}}",
+            road_projection_matches,
+            curb_projection_matches,
+            sidewalk_projection_matches,
+            raised_step_source_count_matches,
+            piece.terrain_clip_boundary_loops.len(),
+            piece
+                .terrain_clip_boundary_loops
+                .iter()
+                .map(|boundary_loop| boundary_loop.source_edges.len())
+                .sum::<usize>()
+        );
+    }
+
+    fn append_span_band_owner_debug_literal(dump: &mut String, owner: RoadSurfaceSpanBandOwner) {
+        let _ = write!(
+            dump,
+            "{{\"source_band_index\":{},\"kind\":\"{:?}\"}}",
+            owner.source_band_index, owner.kind
+        );
+    }
+
+    fn span_region_projection_matches(
+        piece: &RoadSurfaceVisualSpanPiece,
+        role: RoadSurfaceSpanRegionRole,
+        projected: &[RoadSurfaceVisualPolygon],
+    ) -> bool {
+        let mut expected: Vec<RoadSurfaceVisualPolygon> = piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| region.role == role)
+            .map(|region| region.polygon.clone())
+            .collect();
+        let mut actual = projected.to_vec();
+        Self::sort_visual_polygons(&mut expected);
+        Self::sort_visual_polygons(&mut actual);
+        expected == actual
+    }
+
+    fn debug_polygon_height_range(polygon: &RoadSurfaceVisualPolygon) -> Option<(f32, f32)> {
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for point in &polygon.points_world {
+            min_y = min_y.min(point.y);
+            max_y = max_y.max(point.y);
+        }
+        min_y.is_finite().then_some((min_y, max_y))
+    }
+
+    fn span_region_role_debug_name(role: RoadSurfaceSpanRegionRole) -> &'static str {
+        match role {
+            RoadSurfaceSpanRegionRole::Asphalt => "asphalt",
+            RoadSurfaceSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
+            RoadSurfaceSpanRegionRole::NonRoad => "non_road",
+        }
     }
 
     fn append_node_geometry_debug_dump(

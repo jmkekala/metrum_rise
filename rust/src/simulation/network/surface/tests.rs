@@ -7,9 +7,10 @@ use super::height::NodeHeightFieldError;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceSection, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
+    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -43,7 +44,7 @@ fn span_raised_step_generation_uses_resolved_regions() {
     }
     assert!(
         span_source.contains("resolve_span_regions_for_ranges")
-            && span_source.contains("span_raised_step_face_polygons_from_constraints"),
+            && span_source.contains("span_raised_step_faces_from_constraints"),
         "span output must route through resolved regions and raised-step constraints"
     );
 }
@@ -4018,6 +4019,53 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     assert!(!span_piece.curb_surface_polygons.is_empty());
     assert!(!span_piece.raised_step_face_polygons.is_empty());
     assert!(!span_piece.sidewalk_surface_polygons.is_empty());
+    assert!(!span_piece.span_owned_regions.is_empty());
+    assert_eq!(
+        span_piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| region.role == RoadSurfaceSpanRegionRole::Asphalt)
+            .count(),
+        span_piece.road_surface_polygons.len()
+    );
+    assert_eq!(
+        span_piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| region.role == RoadSurfaceSpanRegionRole::CurbOrShoulder)
+            .count(),
+        span_piece.curb_surface_polygons.len()
+    );
+    assert_eq!(
+        span_piece
+            .span_owned_regions
+            .iter()
+            .filter(|region| region.role == RoadSurfaceSpanRegionRole::NonRoad)
+            .count(),
+        span_piece.sidewalk_surface_polygons.len()
+    );
+    assert!(
+        span_piece.span_owned_regions.iter().all(|region| {
+            region.edge_idx == edge_idx
+                && region.end_section_index == region.start_section_index + 1
+                && region.end_s_m > region.start_s_m
+        }),
+        "span owned regions must preserve edge, section interval, and solved section authority"
+    );
+    assert_eq!(
+        span_piece.span_raised_step_sources.len(),
+        span_piece.raised_step_face_polygons.len()
+    );
+    assert!(
+        span_piece.span_raised_step_sources.iter().all(|source| {
+            source.lower_owner.kind != source.raised_owner.kind
+                && source.end_section_index == source.start_section_index + 1
+                && source.end_s_m > source.start_s_m
+                && source.start_raised_world.y > source.start_lower_world.y
+                && source.end_raised_world.y > source.end_lower_world.y
+        }),
+        "span raised-step faces must carry owner-pair and solved section provenance"
+    );
     assert!(
         span_piece
             .road_surface_polygons
@@ -7078,6 +7126,19 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"edge_idx\": 0"));
     assert!(dump.contains("\"physical_geometry_world\""));
     assert!(dump.contains("\"sections\""));
+    assert!(dump.contains("\"span_ownership\""));
+    assert!(dump.contains("\"owned_region_count\""));
+    assert!(dump.contains("\"source_band_index\""));
+    assert!(dump.contains("\"start_section_index\""));
+    assert!(dump.contains("\"span_raised_step_face_sources\""));
+    assert!(dump.contains("\"lower_owner\""));
+    assert!(dump.contains("\"raised_owner\""));
+    assert!(dump.contains("\"terrain_clip_source_edges\""));
+    assert!(dump.contains("\"span_projection_diagnostics\""));
+    assert!(dump.contains("\"road_projection_matches\":true"));
+    assert!(dump.contains("\"curb_projection_matches\":true"));
+    assert!(dump.contains("\"sidewalk_projection_matches\":true"));
+    assert!(dump.contains("\"raised_step_source_count_matches\":true"));
     assert!(dump.contains("\"source_center_y_m\""));
     assert!(dump.contains("\"visual_center_y_m\""));
     assert!(dump.contains("\"left_outer_margin\""));
