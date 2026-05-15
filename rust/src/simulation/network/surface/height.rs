@@ -9,7 +9,10 @@ use super::backend::{
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
-use super::rails::{NodeGeneratedContour, NodeGeneratedContourKind, NodeRailContourSet};
+use super::rails::{
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+    NodeGeneratedContourPurpose, NodeRailContourSet,
+};
 use super::terminal::{
     NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
 };
@@ -136,6 +139,23 @@ struct ExplicitSeamHeightKey {
     opposite_owner: Option<NodeBandOwner>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct NodeResolvedHeightAuthorityKey {
+    point: NodeHeightPointKey,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+}
+
+struct NodeResolvedHeightAuthorityMap {
+    heights_by_key: BTreeMap<NodeResolvedHeightAuthorityKey, NodeResolvedHeightAuthority>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NodeResolvedHeightAuthority {
+    point_xz: RoadVec2,
+    height_m: f64,
+}
+
 struct NodeBandHeightField {
     id: NodeBandHeightFieldId,
     kind: RoadSurfaceBandKind,
@@ -143,8 +163,25 @@ struct NodeBandHeightField {
 }
 
 struct NodeBandHeightPatch {
+    authority: NodeHeightPatchAuthority,
     triangles: Option<Vec<NodeBandHeightTriangle>>,
     contour_edges: Option<Vec<NodeBandHeightEdge>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NodeHeightPatchAuthority {
+    owner: Option<NodeBandOwner>,
+    role: NodeHeightPatchAuthorityRole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NodeHeightPatchAuthorityRole {
+    SourceInterval,
+    TerminalCap,
+    GeneratedContour {
+        purpose: NodeGeneratedContourPurpose,
+        claim_priority: NodeGeneratedContourClaimPriority,
+    },
 }
 
 struct NodeBandHeightTriangle {
@@ -163,20 +200,53 @@ struct NodeBandHeightEdge {
     end_height_m: f64,
 }
 
-struct NodeRegionScopedHeightCandidate {
-    patch_index: usize,
-    height_m: f64,
-}
-
-struct NodeRegionScopedEdgeProjection {
-    patch_index: usize,
-    distance_sq_m2: f64,
+struct NodeAuthorizedHeightCandidate {
+    authority_rank: u8,
     height_m: f64,
 }
 
 enum NodeHeightPatchEvaluation {
     Inside(f64),
     Outside(NodeHeightFieldError),
+}
+
+impl NodeHeightPatchAuthority {
+    fn source_interval() -> Self {
+        Self {
+            owner: None,
+            role: NodeHeightPatchAuthorityRole::SourceInterval,
+        }
+    }
+
+    fn terminal_cap() -> Self {
+        Self {
+            owner: None,
+            role: NodeHeightPatchAuthorityRole::TerminalCap,
+        }
+    }
+
+    fn generated_contour(contour: &NodeGeneratedContour) -> Self {
+        Self {
+            owner: contour.owner,
+            role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                purpose: contour.purpose,
+                claim_priority: contour.claim_priority,
+            },
+        }
+    }
+
+    fn rank_for_owner(self, owner: NodeBandOwner) -> Option<u8> {
+        if let Some(authority_owner) = self.owner
+            && authority_owner != owner
+        {
+            return None;
+        }
+        Some(match self.role {
+            NodeHeightPatchAuthorityRole::SourceInterval => 1,
+            NodeHeightPatchAuthorityRole::TerminalCap => 2,
+            NodeHeightPatchAuthorityRole::GeneratedContour { .. } => 3,
+        })
+    }
 }
 
 impl RoadSurfaceSystem {
@@ -206,11 +276,13 @@ impl NodeHeightSolution {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input, rails)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
-        let use_region_scoped_height_carriers =
-            ownership.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN;
+        let resolved_authority = (ownership.piece_kind
+            == RoadSurfaceVisualNodePieceKind::JunctionN)
+            .then(|| NodeResolvedHeightAuthorityMap::from_ownership(ownership, &fields))
+            .transpose()?;
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(region, &fields, use_region_scoped_height_carriers)?;
+            let region = heighted_region(region, &fields, resolved_authority.as_ref())?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
@@ -271,9 +343,15 @@ impl NodeBandHeightField {
     fn extend_with_generated_contour(
         &mut self,
         contour: &NodeGeneratedContour,
+        allow_missing_height_points_backfill: bool,
     ) -> Result<(), NodeHeightFieldError> {
-        let patch = NodeBandHeightPatch::from_generated_contour(contour, self)?;
-        self.patches.push(patch);
+        if let Some(patch) = NodeBandHeightPatch::from_generated_contour(
+            contour,
+            self,
+            allow_missing_height_points_backfill,
+        )? {
+            self.patches.push(patch);
+        }
         Ok(())
     }
 
@@ -306,6 +384,59 @@ impl NodeBandHeightField {
         }
 
         self.agreed_height(point_xz, candidates)
+    }
+
+    fn evaluate_authorized_height(
+        &self,
+        owner: NodeBandOwner,
+        point_xz: RoadVec2,
+    ) -> Result<f64, NodeHeightFieldError> {
+        let mut candidates = Vec::new();
+        let mut outside_error = None;
+        for patch in &self.patches {
+            let Some(authority_rank) = patch.authority.rank_for_owner(owner) else {
+                continue;
+            };
+            match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
+                NodeHeightPatchEvaluation::Inside(height_m) => {
+                    candidates.push(NodeAuthorizedHeightCandidate {
+                        authority_rank,
+                        height_m,
+                    });
+                }
+                NodeHeightPatchEvaluation::Outside(error) => {
+                    if outside_error.is_none() {
+                        outside_error = Some(error);
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return Err(outside_error.unwrap_or_else(|| {
+                let key = NodeHeightPointKey::from_point(point_xz);
+                NodeHeightFieldError::VertexOutsideHeightField {
+                    mouth_order_index: self.id.mouth_order_index(),
+                    band_index: self.id.band_index(),
+                    source_kind: self.kind,
+                    point_x_mm: key.x_mm(),
+                    point_z_mm: key.z_mm(),
+                    axis: "canonical_authority",
+                    raw_parameter: f64::NAN,
+                }
+            }));
+        }
+
+        let best_rank = candidates
+            .iter()
+            .map(|candidate| candidate.authority_rank)
+            .max()
+            .expect("non-empty candidate set has a maximum rank");
+        let heights_m = candidates
+            .into_iter()
+            .filter(|candidate| candidate.authority_rank == best_rank)
+            .map(|candidate| candidate.height_m)
+            .collect();
+        self.agreed_height(point_xz, heights_m)
     }
 
     fn agreed_height(
@@ -342,59 +473,12 @@ impl NodeBandHeightField {
         }
         Ok(first_height_m)
     }
-
-    fn evaluate_region_scoped_height(
-        &self,
-        point_xz: RoadVec2,
-    ) -> Result<f64, NodeHeightFieldError> {
-        let mut candidates = Vec::new();
-        for (patch_index, patch) in self.patches.iter().enumerate() {
-            if let Some(height_m) = patch.region_scoped_height_at(point_xz) {
-                candidates.push(NodeRegionScopedHeightCandidate {
-                    patch_index,
-                    height_m,
-                });
-            }
-        }
-        if let Some(candidate) = candidates
-            .into_iter()
-            .max_by_key(|candidate| candidate.patch_index)
-        {
-            return Ok(candidate.height_m);
-        }
-
-        let projection = self
-            .patches
-            .iter()
-            .enumerate()
-            .filter_map(|(patch_index, patch)| {
-                patch.bounded_region_scoped_edge_height(point_xz, patch_index)
-            })
-            .min_by(|left, right| {
-                left.distance_sq_m2
-                    .total_cmp(&right.distance_sq_m2)
-                    .then_with(|| right.patch_index.cmp(&left.patch_index))
-            });
-        projection
-            .map(|projection| projection.height_m)
-            .ok_or_else(|| {
-                let key = NodeHeightPointKey::from_point(point_xz);
-                NodeHeightFieldError::VertexOutsideHeightField {
-                    mouth_order_index: self.id.mouth_order_index(),
-                    band_index: self.id.band_index(),
-                    source_kind: self.kind,
-                    point_x_mm: key.x_mm(),
-                    point_z_mm: key.z_mm(),
-                    axis: "region_scoped_carrier",
-                    raw_parameter: f64::NAN,
-                }
-            })
-    }
 }
 
 impl NodeBandHeightPatch {
     fn from_interval(interval: &NodeInputBandInterval) -> Self {
         Self {
+            authority: NodeHeightPatchAuthority::source_interval(),
             triangles: Some(interval_height_triangles(interval)),
             contour_edges: Some(interval_height_edges(interval)),
         }
@@ -402,6 +486,7 @@ impl NodeBandHeightPatch {
 
     fn from_terminal_cap_band(cap_band: &NodeTerminalCapBand) -> Self {
         Self {
+            authority: NodeHeightPatchAuthority::terminal_cap(),
             triangles: Some(terminal_cap_band_height_triangles(cap_band)),
             contour_edges: Some(terminal_cap_band_height_edges(cap_band)),
         }
@@ -410,9 +495,16 @@ impl NodeBandHeightPatch {
     fn from_generated_contour(
         contour: &NodeGeneratedContour,
         base: &NodeBandHeightField,
-    ) -> Result<Self, NodeHeightFieldError> {
+        allow_missing_height_points_backfill: bool,
+    ) -> Result<Option<Self>, NodeHeightFieldError> {
         if let Some(points_world) = &contour.height_points_world {
-            return Ok(Self::from_heighted_contour(points_world));
+            return Ok(Some(Self::from_heighted_contour(
+                points_world,
+                NodeHeightPatchAuthority::generated_contour(contour),
+            )));
+        }
+        if !allow_missing_height_points_backfill {
+            return Ok(None);
         }
         let mut points = Vec::with_capacity(contour.points_xz.len());
         for point_xz in &contour.points_xz {
@@ -420,11 +512,15 @@ impl NodeBandHeightPatch {
             let height_m = base.evaluate_height(point_xz)?;
             points.push(RoadVec3::new(point_xz.x, height_m, point_xz.y));
         }
-        Ok(Self::from_heighted_contour(&points))
+        Ok(Some(Self::from_heighted_contour(
+            &points,
+            NodeHeightPatchAuthority::generated_contour(contour),
+        )))
     }
 
-    fn from_heighted_contour(points: &[RoadVec3]) -> Self {
+    fn from_heighted_contour(points: &[RoadVec3], authority: NodeHeightPatchAuthority) -> Self {
         Self {
+            authority,
             triangles: Some(height_triangles_from_contour(points)),
             contour_edges: Some(height_edges_from_vertices(points)),
         }
@@ -457,56 +553,6 @@ impl NodeBandHeightPatch {
                 self.outside_field_error(id, source_kind, point_xz, "height_carrier", f64::NAN)
             }),
         ))
-    }
-
-    fn region_scoped_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
-        if let Some(edges) = &self.contour_edges
-            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
-        {
-            return Some(height_m);
-        }
-        self.triangles
-            .as_ref()?
-            .iter()
-            .find_map(|triangle| triangle.height_at(point_xz))
-    }
-
-    fn bounded_region_scoped_edge_height(
-        &self,
-        point_xz: RoadVec2,
-        patch_index: usize,
-    ) -> Option<NodeRegionScopedEdgeProjection> {
-        let projection_limit_sq_m2 = self.region_scoped_projection_limit_sq_m2()?;
-        self.contour_edges
-            .as_ref()?
-            .iter()
-            .filter_map(|edge| edge.project_height(point_xz))
-            .filter(|projection| projection.distance_sq_m2 <= projection_limit_sq_m2)
-            .min_by(|left, right| {
-                left.distance_sq_m2
-                    .total_cmp(&right.distance_sq_m2)
-                    .then_with(|| left.height_m.total_cmp(&right.height_m))
-            })
-            .map(|mut projection| {
-                projection.patch_index = patch_index;
-                projection
-            })
-    }
-
-    fn region_scoped_projection_limit_sq_m2(&self) -> Option<f64> {
-        let edges = self.contour_edges.as_ref()?;
-        let mut signed_area2 = 0.0f64;
-        let mut longest_edge_m = 0.0f64;
-        for edge in edges {
-            signed_area2 += edge.start_xz.x * edge.end_xz.y - edge.end_xz.x * edge.start_xz.y;
-            longest_edge_m = longest_edge_m.max((edge.end_xz - edge.start_xz).length());
-        }
-        let area_m2 = signed_area2.abs() * 0.5;
-        if area_m2 <= f64::EPSILON || longest_edge_m <= f64::EPSILON {
-            return None;
-        }
-        let local_band_width_m = area_m2 / longest_edge_m;
-        Some((local_band_width_m + 1.0e-6).powi(2))
     }
 
     fn evaluate_triangle_surface_height(
@@ -564,25 +610,6 @@ impl NodeBandHeightPatch {
             axis,
             raw_parameter,
         }
-    }
-}
-
-impl NodeBandHeightEdge {
-    fn project_height(&self, point_xz: RoadVec2) -> Option<NodeRegionScopedEdgeProjection> {
-        let edge = self.end_xz - self.start_xz;
-        let length_sq = edge.dot(edge);
-        if length_sq <= f64::EPSILON {
-            return None;
-        }
-        let raw_t = (point_xz - self.start_xz).dot(edge) / length_sq;
-        let t = raw_t.clamp(0.0, 1.0);
-        let projected = self.start_xz + edge * t;
-        let delta = point_xz - projected;
-        Some(NodeRegionScopedEdgeProjection {
-            patch_index: 0,
-            distance_sq_m2: delta.dot(delta),
-            height_m: self.start_height_m + (self.end_height_m - self.start_height_m) * t,
-        })
     }
 }
 
@@ -666,15 +693,18 @@ fn height_fields_by_source(
         }
     }
     if let Some(rails) = rails {
-        extend_height_fields_with_generated_contours(rails, &mut fields)?;
+        extend_height_fields_with_generated_contours(input.piece_kind, rails, &mut fields)?;
     }
     Ok(fields)
 }
 
 fn extend_height_fields_with_generated_contours(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
     rails: &NodeRailContourSet,
     fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
 ) -> Result<(), NodeHeightFieldError> {
+    let allow_missing_height_points_backfill =
+        piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN;
     for contour in &rails.contours {
         let NodeGeneratedContourKind::Band { kind } = contour.kind else {
             continue;
@@ -697,16 +727,107 @@ fn extend_height_fields_with_generated_contours(
                 source_kind: field.kind,
             });
         }
-        field.extend_with_generated_contour(contour)?;
+        field.extend_with_generated_contour(contour, allow_missing_height_points_backfill)?;
     }
     Ok(())
+}
+
+impl NodeResolvedHeightAuthorityMap {
+    fn from_ownership(
+        ownership: &NodeBooleanOwnership,
+        fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let mut map = Self {
+            heights_by_key: BTreeMap::new(),
+        };
+        for region in &ownership.owned_regions {
+            let field = height_field_for_region(region, fields)?;
+            for point in region
+                .shape
+                .iter()
+                .flat_map(|contour| contour.iter().copied())
+            {
+                let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+                let height_m = field.evaluate_authorized_height(region.owner, point_xz)?;
+                map.insert(region.owner, field.id, point_xz, height_m, region.kind)?;
+            }
+        }
+        Ok(map)
+    }
+
+    fn insert(
+        &mut self,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        point_xz: RoadVec2,
+        height_m: f64,
+        kind: RoadSurfaceBandKind,
+    ) -> Result<(), NodeHeightFieldError> {
+        let point = NodeHeightPointKey::from_point(point_xz);
+        let key = NodeResolvedHeightAuthorityKey {
+            point,
+            owner,
+            height_field_id,
+        };
+        let height_mm = quantize_m(height_m);
+        if let Some(existing) = self.heights_by_key.get(&key) {
+            let existing_height_mm = quantize_m(existing.height_m);
+            if existing_height_mm != height_mm {
+                return Err(NodeHeightFieldError::SharedSourceHeightConflict {
+                    point_x_mm: point.x_mm(),
+                    point_z_mm: point.z_mm(),
+                    kind,
+                    owner_index: owner.owner_index(),
+                    constraint_index: None,
+                    existing_height_mm,
+                    incoming_height_mm: height_mm,
+                });
+            }
+            return Ok(());
+        }
+        self.heights_by_key
+            .insert(key, NodeResolvedHeightAuthority { point_xz, height_m });
+        Ok(())
+    }
+
+    fn height_for_vertex(
+        &self,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        point: NodeOverlayPoint,
+    ) -> Option<NodeResolvedHeightAuthority> {
+        let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+        let key = NodeResolvedHeightAuthorityKey {
+            point: NodeHeightPointKey::from_point(point_xz),
+            owner,
+            height_field_id,
+        };
+        self.heights_by_key.get(&key).copied()
+    }
 }
 
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
-    use_region_scoped_height_carriers: bool,
+    resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedRegion, NodeHeightFieldError> {
+    let field = height_field_for_region(region, fields)?;
+    let shape = heighted_shape(&region.shape, region, field, resolved_authority)?;
+
+    Ok(NodeHeightedRegion {
+        kind: region.kind,
+        owner: region.owner,
+        height_field_id: field.id,
+        shape,
+        area_m2: region.area_m2,
+        seam_constraints: region.seam_constraints.clone(),
+    })
+}
+
+fn height_field_for_region<'a>(
+    region: &NodeBooleanOwnedRegion,
+    fields: &'a BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+) -> Result<&'a NodeBandHeightField, NodeHeightFieldError> {
     let band_index =
         region
             .source_band_index
@@ -732,26 +853,18 @@ fn heighted_region(
             source_kind: field.kind,
         });
     }
-    let shape = heighted_shape(&region.shape, field, use_region_scoped_height_carriers)?;
-
-    Ok(NodeHeightedRegion {
-        kind: region.kind,
-        owner: region.owner,
-        height_field_id: field.id,
-        shape,
-        area_m2: region.area_m2,
-        seam_constraints: region.seam_constraints.clone(),
-    })
+    Ok(field)
 }
 
 fn heighted_shape(
     shape: &NodeOverlayShape,
+    region: &NodeBooleanOwnedRegion,
     field: &NodeBandHeightField,
-    use_region_scoped_height_carriers: bool,
+    resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedShape, NodeHeightFieldError> {
     let mut heighted = Vec::with_capacity(shape.len());
     for contour in shape {
-        let contour = heighted_contour(contour, field, use_region_scoped_height_carriers)?;
+        let contour = heighted_contour(contour, region, field, resolved_authority)?;
         if contour.len() >= 3 {
             heighted.push(contour);
         }
@@ -761,26 +874,42 @@ fn heighted_shape(
 
 fn heighted_contour(
     contour: &NodeOverlayContour,
+    region: &NodeBooleanOwnedRegion,
     field: &NodeBandHeightField,
-    use_region_scoped_height_carriers: bool,
+    resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedContour, NodeHeightFieldError> {
     contour
         .iter()
         .copied()
-        .map(|point| heighted_vertex(point, field, use_region_scoped_height_carriers))
+        .map(|point| heighted_vertex(point, region, field, resolved_authority))
         .collect()
 }
 
 fn heighted_vertex(
     point: NodeOverlayPoint,
+    region: &NodeBooleanOwnedRegion,
     field: &NodeBandHeightField,
-    use_region_scoped_height_carriers: bool,
+    resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
-    let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-    let height_m = if use_region_scoped_height_carriers {
-        field.evaluate_region_scoped_height(point_xz)?
+    let (point_xz, height_m) = if let Some(resolved_authority) = resolved_authority {
+        let Some(authority) = resolved_authority.height_for_vertex(region.owner, field.id, point)
+        else {
+            let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+            let key = NodeHeightPointKey::from_point(point_xz);
+            return Err(NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index: field.id.mouth_order_index(),
+                band_index: field.id.band_index(),
+                source_kind: field.kind,
+                point_x_mm: key.x_mm(),
+                point_z_mm: key.z_mm(),
+                axis: "canonical_authority",
+                raw_parameter: f64::NAN,
+            });
+        };
+        (authority.point_xz, authority.height_m)
     } else {
-        field.evaluate_height(point_xz)?
+        let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+        (point_xz, field.evaluate_height(point_xz)?)
     };
     Ok(NodeHeightedVertex {
         point_xz,
@@ -1665,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn junctionn_region_scoped_height_carrier_extends_final_owned_vertex_from_source_edge() {
+    fn junctionn_canonical_height_authority_rejects_vertex_outside_explicit_carrier() {
         let mut input = conflicting_manual_input();
         input.piece_kind = RoadSurfaceVisualNodePieceKind::JunctionN;
         let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
@@ -1687,71 +1816,79 @@ mod tests {
             owned_regions,
         };
 
-        let solution = NodeHeightSolution::from_ownership_and_input(&input, &ownership)
-            .expect("JunctionN final owned region supplies the explicit scoped carrier");
-        let carriageway = solution
-            .regions
-            .iter()
-            .find(|region| region.kind == RoadSurfaceBandKind::Carriageway)
-            .expect("manual input has one carriageway region");
-        assert!(has_vertex_height(carriageway, 11.0, 1.0, 4.0));
-    }
-
-    #[test]
-    fn junctionn_region_scoped_height_carrier_rejects_far_outside_source_edge() {
-        let mut input = conflicting_manual_input();
-        input.piece_kind = RoadSurfaceVisualNodePieceKind::JunctionN;
-        let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
-        region.shape = vec![vec![[0.0, 0.0], [10.0, 0.0], [30.0, 1.0], [0.0, 2.0]]];
-        let owned_regions = vec![region];
-        let ownership = NodeBooleanOwnership {
-            node_id: 77,
-            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            footprint_shapes: Vec::new(),
-            asphalt_shapes: Vec::new(),
-            non_road_shapes: Vec::new(),
-            owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
-                77,
-                RoadSurfaceVisualNodePieceKind::JunctionN,
-                &owned_regions,
-                &Vec::new(),
-                &[],
-            ),
-            owned_regions,
-        };
-
         assert!(matches!(
             NodeHeightSolution::from_ownership_and_input(&input, &ownership),
-            Err(NodeHeightFieldError::VertexOutsideHeightField {
-                axis: "region_scoped_carrier",
-                ..
-            })
+            Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
         ));
     }
 
     #[test]
-    fn junctionn_region_scoped_height_carrier_uses_one_deterministic_source_patch() {
+    fn junctionn_canonical_height_authority_prefers_owner_generated_carrier_over_base_interval() {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
         );
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         field
             .patches
-            .push(NodeBandHeightPatch::from_heighted_contour(&[
-                RoadVec3::new(0.0, 1.0, 0.0),
-                RoadVec3::new(10.0, 1.0, 0.0),
-                RoadVec3::new(10.0, 1.0, 2.0),
-                RoadVec3::new(0.0, 1.0, 2.0),
-            ]));
+            .push(NodeBandHeightPatch::from_heighted_contour(
+                &[
+                    RoadVec3::new(0.0, 1.0, 0.0),
+                    RoadVec3::new(10.0, 1.0, 0.0),
+                    RoadVec3::new(10.0, 1.0, 2.0),
+                    RoadVec3::new(0.0, 1.0, 2.0),
+                ],
+                NodeHeightPatchAuthority {
+                    owner: Some(owner),
+                    role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    },
+                },
+            ));
 
         assert!(matches!(
             field.evaluate_height(RoadVec2::new(5.0, 1.0)),
             Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
         ));
         let height = field
-            .evaluate_region_scoped_height(RoadVec2::new(5.0, 1.0))
-            .expect("region-scoped carrier chooses one deterministic source patch");
+            .evaluate_authorized_height(owner, RoadVec2::new(5.0, 1.0))
+            .expect("owner-generated carrier is explicit height authority for JunctionN");
         assert!((height - 1.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn junctionn_canonical_height_authority_rejects_conflicting_owner_generated_carriers() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+        );
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let authority = NodeHeightPatchAuthority {
+            owner: Some(owner),
+            role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            },
+        };
+        for height_m in [1.0, 2.0] {
+            field
+                .patches
+                .push(NodeBandHeightPatch::from_heighted_contour(
+                    &[
+                        RoadVec3::new(0.0, height_m, 0.0),
+                        RoadVec3::new(10.0, height_m, 0.0),
+                        RoadVec3::new(10.0, height_m, 2.0),
+                        RoadVec3::new(0.0, height_m, 2.0),
+                    ],
+                    authority,
+                ));
+        }
+
+        assert!(matches!(
+            field.evaluate_authorized_height(owner, RoadVec2::new(5.0, 1.0)),
+            Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
+        ));
     }
 
     #[test]
@@ -1764,6 +1901,9 @@ mod tests {
             concat!("reheight_terminal_", "cap_band_from_base"),
             concat!("reheight_point_", "from_base"),
             concat!("from_terminal_cap_band_", "with_base"),
+            concat!("evaluate_region_", "scoped_height"),
+            concat!("bounded_region_", "scoped_edge_height"),
+            concat!("region_scoped_", "carrier"),
         ] {
             assert!(
                 !source.contains(forbidden),
