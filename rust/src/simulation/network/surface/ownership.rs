@@ -14,6 +14,11 @@ use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
+use super::segments::{
+    key_collinear_with_overlay_grid_segment, key_collinear_with_segment,
+    key_lies_exactly_on_segment, key_lies_on_segment, raw_tuple_key,
+    raw_tuple_segment_parameter_key,
+};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -2560,10 +2565,7 @@ fn segment_parameter_key(
     end: NodeOwnershipPointKey,
     point: NodeOwnershipPointKey,
 ) -> i128 {
-    SurfaceXzKey::from_raw_tuple(point).segment_parameter_key(
-        SurfaceXzKey::from_raw_tuple(start),
-        SurfaceXzKey::from_raw_tuple(end),
-    )
+    raw_tuple_segment_parameter_key(start, end, point)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -2877,9 +2879,10 @@ fn point_key_collinear_with_edge(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
 ) -> bool {
-    SurfaceXzKey::from_raw_tuple(point).collinear_with_segment(
-        SurfaceXzKey::from_raw_tuple(edge_start),
-        SurfaceXzKey::from_raw_tuple(edge_end),
+    key_collinear_with_segment(
+        raw_tuple_key(point),
+        raw_tuple_key(edge_start),
+        raw_tuple_key(edge_end),
     )
 }
 
@@ -2888,9 +2891,10 @@ fn point_key_collinear_with_edge_on_overlay_grid(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
 ) -> bool {
-    SurfaceXzKey::from_raw_tuple(point).collinear_with_overlay_grid_segment(
-        SurfaceXzKey::from_raw_tuple(edge_start),
-        SurfaceXzKey::from_raw_tuple(edge_end),
+    key_collinear_with_overlay_grid_segment(
+        raw_tuple_key(point),
+        raw_tuple_key(edge_start),
+        raw_tuple_key(edge_end),
     )
 }
 
@@ -2914,9 +2918,10 @@ fn point_key_lies_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    SurfaceXzKey::from_raw_tuple(point).lies_on_segment(
-        SurfaceXzKey::from_raw_tuple(start),
-        SurfaceXzKey::from_raw_tuple(end),
+    key_lies_on_segment(
+        raw_tuple_key(point),
+        raw_tuple_key(start),
+        raw_tuple_key(end),
     )
 }
 
@@ -2925,9 +2930,10 @@ fn point_key_lies_exactly_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_segment(
-        SurfaceXzKey::from_raw_tuple(start),
-        SurfaceXzKey::from_raw_tuple(end),
+    key_lies_exactly_on_segment(
+        raw_tuple_key(point),
+        raw_tuple_key(start),
+        raw_tuple_key(end),
     )
 }
 

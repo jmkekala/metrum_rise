@@ -13,6 +13,10 @@ use super::joins::{
     NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, side_join_bands_by_mouth,
 };
 use super::keys::{SURFACE_POLYLINE_POINT_EQUAL_EPS_M, SurfaceXzKey};
+use super::segments::{
+    raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment,
+    raw_tuple_segment_parameter_key as generated_segment_parameter_key,
+};
 use super::terminal::{
     NodeTerminalCapBand, TerminalCapBandRole, TerminalCapGenerationError,
     terminal_cap_bands_by_mouth,
@@ -1689,17 +1693,6 @@ fn owners_match_unordered(
         || (owner == Some(right) && opposite_owner == Some(left))
 }
 
-fn generated_point_key_lies_on_segment(
-    point: NodeRailPointKey,
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-) -> bool {
-    SurfaceXzKey::from_raw_tuple(point).lies_on_segment(
-        SurfaceXzKey::from_raw_tuple(start),
-        SurfaceXzKey::from_raw_tuple(end),
-    )
-}
-
 fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
     keys.dedup();
     loop {
@@ -1740,17 +1733,6 @@ fn generated_triangle_double_area(
     let ac_x = i128::from(c.0 - a.0);
     let ac_z = i128::from(c.1 - a.1);
     ab_x * ac_z - ab_z * ac_x
-}
-
-fn generated_segment_parameter_key(
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-    point: NodeRailPointKey,
-) -> i128 {
-    SurfaceXzKey::from_raw_tuple(point).segment_parameter_key(
-        SurfaceXzKey::from_raw_tuple(start),
-        SurfaceXzKey::from_raw_tuple(end),
-    )
 }
 
 fn quantized_proper_segment_intersection(

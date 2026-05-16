@@ -8,10 +8,16 @@ use super::{
     earthwork::{RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace},
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
     node_grade::NodeGradeVertexAuthority,
+    segments::{exact_line_parameter, interpolate_height_i64, interpolate_key},
     terrain_clip::RoadSurfaceTerrainClipLoop,
 };
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) use super::segments::{
+    arrangement_key_lies_on_segment,
+    arrangement_key_overlay_segment_parameter as arrangement_key_segment_parameter_xz,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct ArrangementBoundaryPointKey {
@@ -877,30 +883,13 @@ fn boundary_point_loop_has_repeated_xz(points: &[Vector3]) -> bool {
     false
 }
 
-pub(super) fn arrangement_key_lies_on_segment(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> bool {
-    arrangement_surface_key(point)
-        .lies_on_segment(arrangement_surface_key(start), arrangement_surface_key(end))
-}
-
-pub(super) fn arrangement_key_segment_parameter_xz(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> Option<ArrangementSegmentParameter> {
-    arrangement_surface_key(point)
-        .overlay_segment_parameter(arrangement_surface_key(start), arrangement_surface_key(end))
-}
-
 pub(super) fn boundary_segment_parameter_xz(
     point: ArrangementBoundaryPointKey,
     start: ArrangementBoundaryPointKey,
     end: ArrangementBoundaryPointKey,
 ) -> Option<ArrangementSegmentParameter> {
-    boundary_point_surface_key(point).exact_line_parameter(
+    exact_line_parameter(
+        boundary_point_surface_key(point),
         boundary_point_surface_key(start),
         boundary_point_surface_key(end),
     )
@@ -911,7 +900,7 @@ pub(super) fn interpolated_segment_height_mm(
     end: ArrangementBoundaryPointKey,
     parameter: ArrangementSegmentParameter,
 ) -> i64 {
-    parameter.interpolate_i64(start.y_mm, end.y_mm)
+    interpolate_height_i64(start.y_mm, end.y_mm, parameter)
 }
 
 pub(super) fn interpolated_segment_point_key(
@@ -919,7 +908,7 @@ pub(super) fn interpolated_segment_point_key(
     end: ArrangementBoundaryPointKey,
     parameter: ArrangementSegmentParameter,
 ) -> ArrangementBoundaryPointKey {
-    let point = SurfaceXzKey::interpolate(
+    let point = interpolate_key(
         boundary_point_surface_key(start),
         boundary_point_surface_key(end),
         parameter,
@@ -950,10 +939,6 @@ pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 
         .map(|(start, end)| Vector2::new(start.x - end.x, start.z - end.z).length())
         .sum::<f32>();
     RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
-}
-
-fn arrangement_surface_key(key: arrangement::NodeArrangementKey) -> SurfaceXzKey {
-    SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key())
 }
 
 fn boundary_point_surface_key(point: ArrangementBoundaryPointKey) -> SurfaceXzKey {

@@ -6,6 +6,7 @@ use super::{
     RoadSurfaceVisualPolygon, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
     earthwork::RoadSurfaceEarthworkFaceSource,
     keys::{SurfaceSegmentParameter, SurfaceXzKey, SurfaceXzSegmentKey},
+    segments::{exact_line_parameter, overlay_point_key},
 };
 use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1397,7 +1398,7 @@ impl RoadSurfaceSystem {
         let start_key = Self::terrain_clip_overlay_key(start);
         let end_key = Self::terrain_clip_overlay_key(end);
         let point_key = Self::terrain_clip_overlay_key(point);
-        point_key.exact_line_parameter(start_key, end_key)
+        exact_line_parameter(point_key, start_key, end_key)
     }
 
     fn overlay_numeric_dust_line_parameter(
@@ -1455,7 +1456,7 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_overlay_key(point: NodeOverlayPoint) -> SurfaceXzKey {
-        SurfaceXzKey::from_overlay_point(point)
+        overlay_point_key(point)
     }
 
     fn terrain_clip_world_key(point: Vector3) -> SurfaceXzKey {
@@ -1474,7 +1475,7 @@ fn overlay_segment_length_m(start: NodeOverlayPoint, end: NodeOverlayPoint) -> f
 }
 
 fn overlay_points_same_for_boundary(a: NodeOverlayPoint, b: NodeOverlayPoint) -> bool {
-    SurfaceXzKey::from_overlay_point(a) == SurfaceXzKey::from_overlay_point(b)
+    overlay_point_key(a) == overlay_point_key(b)
 }
 
 fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {

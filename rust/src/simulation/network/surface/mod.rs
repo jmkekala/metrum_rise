@@ -28,6 +28,7 @@ mod ownership;
 mod paths;
 mod query;
 mod rails;
+mod segments;
 mod span;
 mod system;
 mod terminal;
