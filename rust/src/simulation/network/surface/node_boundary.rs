@@ -59,7 +59,7 @@ struct NodeEarthworkBoundarySourceEdge {
     end_source: NodeFootprintBoundaryDirectSource,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NodeFootprintBoundaryDirectVertex {
     source: NodeFootprintBoundaryVertexSource,
     owner_kind: RoadSurfaceBandKind,
@@ -81,6 +81,12 @@ struct NodeFootprintBoundaryHeightCandidate {
     source: NodeFootprintBoundaryDirectVertex,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NodeFootprintBoundarySplitPoint {
+    point_key: ArrangementBoundaryPointKey,
+    source: Option<NodeFootprintBoundaryDirectVertex>,
+}
+
 pub(super) struct NodeFootprintBoundaryExportSources {
     source_edges: Vec<NodeEarthworkBoundarySourceEdge>,
     direct_vertex_sources: BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
@@ -91,7 +97,16 @@ pub(super) struct NodeFootprintBoundaryExportSources {
 pub(crate) enum NodeBoundaryExportError {
     EmptyOuterBoundary,
     MissingFootprintBoundaryHeight,
-    ConflictingFootprintBoundaryHeight { x_key: i64, z_key: i64 },
+    ConflictingFootprintBoundaryHeight {
+        x_key: i64,
+        z_key: i64,
+    },
+    ConflictingFootprintBoundarySplitHeight {
+        x_key: i64,
+        z_key: i64,
+        existing_y_mm: i64,
+        incoming_y_mm: i64,
+    },
     DegenerateOuterBoundaryLoop,
     MissingEarthworkBoundarySource,
     MissingNodeTopSurfaceGradeAuthority,
@@ -727,13 +742,36 @@ fn push_sourced_node_earthwork_boundary_segments(
     if start_key == end_key {
         return Ok(());
     }
-    let mut split_points = BTreeMap::<ArrangementSegmentParameter, Vector3>::new();
-    split_points.insert(ArrangementSegmentParameter::zero(), start);
-    split_points.insert(ArrangementSegmentParameter::one(), end);
+    let mut split_points =
+        BTreeMap::<ArrangementSegmentParameter, NodeFootprintBoundarySplitPoint>::new();
+    split_points.insert(
+        ArrangementSegmentParameter::zero(),
+        node_footprint_boundary_split_point_from_world(
+            start,
+            direct_vertex_sources,
+            triangle_sources,
+        ),
+    );
+    split_points.insert(
+        ArrangementSegmentParameter::one(),
+        node_footprint_boundary_split_point_from_world(
+            end,
+            direct_vertex_sources,
+            triangle_sources,
+        ),
+    );
     for source_edge in source_edges {
-        for (split_key, split_point_key) in [
-            (source_edge.start_key, source_edge.start_point_key),
-            (source_edge.end_key, source_edge.end_point_key),
+        for (split_key, split_point_key, split_source) in [
+            (
+                source_edge.start_key,
+                source_edge.start_point_key,
+                source_edge.start_source,
+            ),
+            (
+                source_edge.end_key,
+                source_edge.end_point_key,
+                source_edge.end_source,
+            ),
         ] {
             if !arrangement_key_lies_on_segment(split_key, start_key, end_key) {
                 continue;
@@ -748,22 +786,27 @@ fn push_sourced_node_earthwork_boundary_segments(
             {
                 continue;
             }
-            let split_point = arrangement_boundary_point_to_world(split_point_key);
-            split_points
-                .entry(parameter)
-                .and_modify(|point| {
-                    if split_point.y > point.y {
-                        *point = split_point;
-                    }
-                })
-                .or_insert(split_point);
+            insert_node_footprint_boundary_split_point(
+                &mut split_points,
+                parameter,
+                NodeFootprintBoundarySplitPoint {
+                    point_key: split_point_key,
+                    source: Some(NodeFootprintBoundaryDirectVertex {
+                        source: NodeFootprintBoundaryVertexSource::Direct(split_source),
+                        owner_kind: source_edge.owner_kind,
+                        owner_index: source_edge.owner_index,
+                    }),
+                },
+            )?;
         }
     }
 
     let ordered_points = split_points.into_iter().collect::<Vec<_>>();
     for pair in ordered_points.windows(2) {
-        let sub_start = pair[0].1;
-        let sub_end = pair[1].1;
+        let sub_start_split = pair[0].1;
+        let sub_end_split = pair[1].1;
+        let sub_start = sub_start_split.point_world();
+        let sub_end = sub_end_split.point_world();
         if Vector2::new(sub_end.x - sub_start.x, sub_end.z - sub_start.z).length_squared()
             <= super::SAMPLE_EPSILON_M * super::SAMPLE_EPSILON_M
         {
@@ -779,6 +822,8 @@ fn push_sourced_node_earthwork_boundary_segments(
             source_edges,
             direct_vertex_sources,
             triangle_sources,
+            sub_start_split.source,
+            sub_end_split.source,
         );
         let Some(source) = source else {
             return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
@@ -792,6 +837,88 @@ fn push_sourced_node_earthwork_boundary_segments(
     Ok(())
 }
 
+impl NodeFootprintBoundarySplitPoint {
+    fn point_world(self) -> Vector3 {
+        arrangement_boundary_point_to_world(self.point_key)
+    }
+}
+
+fn node_footprint_boundary_split_point_from_world(
+    point: Vector3,
+    direct_vertex_sources: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertex,
+    >,
+    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
+) -> NodeFootprintBoundarySplitPoint {
+    let point_key = ArrangementBoundaryPointKey::from_world(point);
+    NodeFootprintBoundarySplitPoint {
+        point_key,
+        source: node_footprint_boundary_vertex_source_at_point(
+            point_key,
+            direct_vertex_sources,
+            triangle_sources,
+        ),
+    }
+}
+
+fn insert_node_footprint_boundary_split_point(
+    split_points: &mut BTreeMap<ArrangementSegmentParameter, NodeFootprintBoundarySplitPoint>,
+    parameter: ArrangementSegmentParameter,
+    incoming: NodeFootprintBoundarySplitPoint,
+) -> Result<(), NodeBoundaryExportError> {
+    let Some(existing) = split_points.get_mut(&parameter) else {
+        split_points.insert(parameter, incoming);
+        return Ok(());
+    };
+    if existing.point_key.x_key != incoming.point_key.x_key
+        || existing.point_key.z_key != incoming.point_key.z_key
+    {
+        return Err(
+            NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
+                x_key: incoming.point_key.x_key,
+                z_key: incoming.point_key.z_key,
+                existing_y_mm: existing.point_key.y_mm,
+                incoming_y_mm: incoming.point_key.y_mm,
+            },
+        );
+    }
+    if existing.point_key.y_mm != incoming.point_key.y_mm {
+        let source_ordering =
+            node_footprint_split_source_ordering(incoming.source, existing.source);
+        if source_ordering.is_eq() {
+            return Err(
+                NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
+                    x_key: incoming.point_key.x_key,
+                    z_key: incoming.point_key.z_key,
+                    existing_y_mm: existing.point_key.y_mm,
+                    incoming_y_mm: incoming.point_key.y_mm,
+                },
+            );
+        }
+        if source_ordering.is_gt() {
+            *existing = incoming;
+        }
+        return Ok(());
+    }
+    if node_footprint_split_source_ordering(incoming.source, existing.source).is_gt() {
+        existing.source = incoming.source;
+    }
+    Ok(())
+}
+
+fn node_footprint_split_source_ordering(
+    a: Option<NodeFootprintBoundaryDirectVertex>,
+    b: Option<NodeFootprintBoundaryDirectVertex>,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => node_footprint_direct_vertex_ordering(a, b),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 fn node_earthwork_source_for_boundary_subsegment(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
@@ -803,6 +930,8 @@ fn node_earthwork_source_for_boundary_subsegment(
         NodeFootprintBoundaryDirectVertex,
     >,
     triangle_sources: &[NodeFootprintBoundaryTriangleSource],
+    start_split_source: Option<NodeFootprintBoundaryDirectVertex>,
+    end_split_source: Option<NodeFootprintBoundaryDirectVertex>,
 ) -> Option<RoadSurfaceEarthworkFaceSource> {
     source_edges
         .iter()
@@ -820,6 +949,37 @@ fn node_earthwork_source_for_boundary_subsegment(
                 triangle_sources,
             )
         })
+        .or_else(|| {
+            node_earthwork_source_for_split_boundary_segment(
+                node_id,
+                kind,
+                start_split_source?,
+                end_split_source?,
+            )
+        })
+}
+
+fn node_earthwork_source_for_split_boundary_segment(
+    node_id: u32,
+    kind: RoadSurfaceVisualNodePieceKind,
+    start: NodeFootprintBoundaryDirectVertex,
+    end: NodeFootprintBoundaryDirectVertex,
+) -> Option<RoadSurfaceEarthworkFaceSource> {
+    let owner = if node_footprint_direct_vertex_ordering(start, end).is_ge() {
+        start
+    } else {
+        end
+    };
+    Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+        node_id,
+        kind,
+        owner_kind: owner.owner_kind,
+        owner_index: owner.owner_index,
+        boundary_source: Some(NodeFootprintBoundarySegmentSource {
+            start: start.source,
+            end: end.source,
+        }),
+    })
 }
 
 fn node_earthwork_source_for_direct_boundary_segment(
@@ -1195,5 +1355,184 @@ mod tests {
                 .is_none(),
             "boundary source recovery must block height drift instead of picking nearest top"
         );
+    }
+
+    #[test]
+    fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
+        let first_mid_source = NodeFootprintBoundaryDirectSource {
+            top_surface_source_index: 3,
+            grade_authority_index: 31,
+        };
+        let second_mid_source = NodeFootprintBoundaryDirectSource {
+            top_surface_source_index: 4,
+            grade_authority_index: 40,
+        };
+        let source_edges = vec![
+            test_source_edge(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 0.0),
+                3,
+                30,
+                3,
+                31,
+            ),
+            test_source_edge(
+                Vector3::new(1.0, 1.0, 0.0),
+                Vector3::new(2.0, 2.0, 0.0),
+                4,
+                40,
+                4,
+                41,
+            ),
+        ];
+        let mut segments = Vec::new();
+
+        push_sourced_node_earthwork_boundary_segments(
+            11,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 0.0),
+            &source_edges,
+            &BTreeMap::new(),
+            &[],
+            &mut segments,
+        )
+        .expect("same-height duplicate split points should merge without height repair");
+
+        assert_eq!(segments.len(), 2);
+        assert!(matches!(
+            segments[0].source,
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    end: NodeFootprintBoundaryVertexSource::Direct(source),
+                    ..
+                }),
+                ..
+            } if source == first_mid_source
+        ));
+        assert!(matches!(
+            segments[1].source,
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: NodeFootprintBoundaryVertexSource::Direct(source),
+                    ..
+                }),
+                ..
+            } if source == second_mid_source
+        ));
+    }
+
+    #[test]
+    fn duplicate_split_point_conflicting_height_is_rejected() {
+        let parameter =
+            ArrangementSegmentParameter::new(1, 2).expect("test parameter should be canonical");
+        let mut split_points = BTreeMap::new();
+        insert_node_footprint_boundary_split_point(
+            &mut split_points,
+            parameter,
+            NodeFootprintBoundarySplitPoint {
+                point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.0)),
+                source: None,
+            },
+        )
+        .expect("first split point should insert");
+
+        let error = insert_node_footprint_boundary_split_point(
+            &mut split_points,
+            parameter,
+            NodeFootprintBoundarySplitPoint {
+                point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.0, 0.0)),
+                source: None,
+            },
+        )
+        .expect_err("duplicate split points with different heights must not pick max Y");
+
+        assert!(matches!(
+            error,
+            NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
+                x_key: 1_000_000,
+                z_key: 0,
+                existing_y_mm: 1000,
+                incoming_y_mm: 2000,
+            }
+        ));
+    }
+
+    #[test]
+    fn duplicate_split_point_height_uses_source_order_not_max_y() {
+        let parameter =
+            ArrangementSegmentParameter::new(1, 2).expect("test parameter should be canonical");
+        let lower_order_source = NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1,
+                grade_authority_index: 10,
+            }),
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        };
+        let higher_order_source = NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 2,
+                grade_authority_index: 20,
+            }),
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        };
+        let mut split_points = BTreeMap::new();
+        insert_node_footprint_boundary_split_point(
+            &mut split_points,
+            parameter,
+            NodeFootprintBoundarySplitPoint {
+                point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.0, 0.0)),
+                source: Some(lower_order_source),
+            },
+        )
+        .expect("first split point should insert");
+
+        insert_node_footprint_boundary_split_point(
+            &mut split_points,
+            parameter,
+            NodeFootprintBoundarySplitPoint {
+                point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.0)),
+                source: Some(higher_order_source),
+            },
+        )
+        .expect("explicit source ordering should resolve duplicate split point height");
+
+        let selected = split_points
+            .get(&parameter)
+            .expect("merged split point should remain");
+        assert_eq!(selected.point_key.y_mm, 1000);
+        assert_eq!(selected.source, Some(higher_order_source));
+    }
+
+    fn test_source_edge(
+        start: Vector3,
+        end: Vector3,
+        start_top_surface_source_index: usize,
+        start_grade_authority_index: usize,
+        end_top_surface_source_index: usize,
+        end_grade_authority_index: usize,
+    ) -> NodeEarthworkBoundarySourceEdge {
+        let start_point_key = ArrangementBoundaryPointKey::from_world(start);
+        let end_point_key = ArrangementBoundaryPointKey::from_world(end);
+        NodeEarthworkBoundarySourceEdge {
+            start_point_key,
+            end_point_key,
+            start_key: start_point_key.xz_key(),
+            end_key: end_point_key.xz_key(),
+            node_id: 11,
+            kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+            start_source: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: start_top_surface_source_index,
+                grade_authority_index: start_grade_authority_index,
+            },
+            end_source: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: end_top_surface_source_index,
+                grade_authority_index: end_grade_authority_index,
+            },
+        }
     }
 }
