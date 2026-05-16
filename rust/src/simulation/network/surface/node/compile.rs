@@ -261,6 +261,14 @@ impl RoadSurfaceSystem {
                     "missing_footprint_boundary_height",
                 )
             }
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { x_key, z_key } => {
+                let _ = (*x_key, *z_key);
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "conflicting_footprint_boundary_height",
+                )
+            }
             NodeBoundaryExportError::EmptyOuterBoundary => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),

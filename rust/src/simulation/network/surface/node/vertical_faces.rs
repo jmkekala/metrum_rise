@@ -264,7 +264,7 @@ fn vertical_face_dedup_key(
     )
 }
 
-fn canonical_vertical_step_lower_and_raised_owners(
+pub(super) fn canonical_vertical_step_lower_and_raised_owners(
     segment: NodeExplicitVerticalStepSegment,
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {
     let owner = segment.owner();
@@ -289,7 +289,7 @@ pub(super) fn dedup_raised_step_faces(
     });
 }
 
-pub(super) fn push_missing_raised_step_faces_from_owned_region_boundaries(
+pub(super) fn append_canonical_raised_step_faces_from_owned_region_boundaries(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     owned_regions: &[NodeOwnedRegion],
     explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
@@ -333,7 +333,7 @@ pub(super) fn push_missing_raised_step_faces_from_owned_region_boundaries(
     }
 }
 
-pub(super) fn push_missing_raised_step_faces_from_top_owner_boundaries(
+pub(super) fn append_final_owned_raised_step_faces_from_shared_top_boundaries(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     owned_regions: &[NodeOwnedRegion],
 ) {

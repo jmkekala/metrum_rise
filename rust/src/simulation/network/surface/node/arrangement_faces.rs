@@ -4,11 +4,11 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct ArrangementFaceBoundaryInterval {
-    owner: NodeBandOwner,
-    start: ArrangementSegmentParameter,
-    end: ArrangementSegmentParameter,
-    edge_start: ArrangementBoundaryPointKey,
-    edge_end: ArrangementBoundaryPointKey,
+    pub(super) owner: NodeBandOwner,
+    pub(super) start: ArrangementSegmentParameter,
+    pub(super) end: ArrangementSegmentParameter,
+    pub(super) edge_start: ArrangementBoundaryPointKey,
+    pub(super) edge_end: ArrangementBoundaryPointKey,
 }
 
 pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(

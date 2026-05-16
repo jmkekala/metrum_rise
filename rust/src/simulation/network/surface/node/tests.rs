@@ -1,6 +1,8 @@
 //! Node surface export tests.
 
+use super::super::NodeFootprintBoundaryVertexSource;
 use super::super::arrangement::{NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource};
+use super::super::backend::RoadVec2;
 use super::super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::super::node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::*;
@@ -161,6 +163,23 @@ fn heighted_vertex_with_grade_decision(
     }
 }
 
+fn footprint_shapes_from_points(points: &[RoadVec2]) -> NodeOverlayShapes {
+    vec![vec![
+        points
+            .iter()
+            .copied()
+            .map(backend::road_vec2_to_overlay_point)
+            .collect(),
+    ]]
+}
+
+fn footprint_loop_contains_xz(loop_points: &[Vector3], point_xz: RoadVec2) -> bool {
+    let key = NodeArrangementKey::from_point(point_xz);
+    loop_points
+        .iter()
+        .any(|point| ArrangementBoundaryPointKey::from_world(*point).xz_key() == key)
+}
+
 #[test]
 fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
     let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
@@ -207,7 +226,11 @@ fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
     arrangement
         .attach_triangulation(&triangulation)
         .expect("grade-authorized seam adoption should attach triangulation");
-    let footprint_shapes = Vec::new();
+    let footprint_shapes = footprint_shapes_from_points(&[
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(1.0, 0.0),
+        RoadVec2::new(0.0, 1.0),
+    ]);
     let regions =
         RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
             .expect("grade-authorized seam adoption should export node top provenance");
@@ -235,6 +258,270 @@ fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
             NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption
         );
     }
+}
+
+#[test]
+fn node_export_uses_boolean_footprint_boundary_vertices() {
+    let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
+    let height_field_id = height_field(owner);
+    let heights = NodeHeightSolution {
+        node_id: 83,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner,
+            height_field_id,
+            shape: vec![vec![
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(0.0, 0.0),
+                    2.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(1.0, 0.0),
+                    2.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(0.0, 1.0),
+                    2.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let mut arrangement =
+        NodeArrangement::from_height_solution(&heights).expect("test triangle should arrange");
+    let triangulation = RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+        .expect("test triangle should triangulate");
+    arrangement
+        .attach_triangulation(&triangulation)
+        .expect("test triangle should attach triangulation");
+    let footprint_shapes = footprint_shapes_from_points(&[
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(0.5, 0.0),
+        RoadVec2::new(1.0, 0.0),
+        RoadVec2::new(0.0, 1.0),
+    ]);
+
+    let regions =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
+            .expect("footprint export should use boolean footprint contour vertices");
+
+    assert!(
+        regions.outer_boundary_loops.iter().any(|polygon| {
+            footprint_loop_contains_xz(&polygon.points_world, RoadVec2::new(0.5, 0.0))
+        }),
+        "node footprint export must preserve final boolean footprint vertices instead of rebuilding from top triangles"
+    );
+}
+
+#[test]
+fn node_export_uses_surface_provenance_for_boolean_footprint_vertex_height() {
+    let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
+    let height_field_id = height_field(owner);
+    let heights = NodeHeightSolution {
+        node_id: 85,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner,
+            height_field_id,
+            shape: vec![vec![
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(0.0, 0.0),
+                    0.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(1.0, 0.0),
+                    1.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+                heighted_vertex_with_grade_decision(
+                    RoadVec2::new(0.0, 1.0),
+                    0.0,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ),
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let mut arrangement =
+        NodeArrangement::from_height_solution(&heights).expect("test triangle should arrange");
+    let triangulation = RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+        .expect("test triangle should triangulate");
+    arrangement
+        .attach_triangulation(&triangulation)
+        .expect("test triangle should attach triangulation");
+    let footprint_shapes = footprint_shapes_from_points(&[
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(0.5, 0.25),
+        RoadVec2::new(1.0, 0.0),
+        RoadVec2::new(0.0, 1.0),
+    ]);
+
+    let regions =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
+            .expect("footprint export should use visible top-surface provenance");
+
+    let boundary_point = regions
+        .outer_boundary_loops
+        .iter()
+        .flat_map(|polygon| polygon.points_world.iter())
+        .find(|point| (point.x - 0.5).abs() <= 1.0e-6 && (point.z - 0.25).abs() <= 1.0e-6)
+        .expect("boolean footprint vertex should be preserved");
+    assert!((boundary_point.y - 0.5).abs() <= 1.0e-6);
+
+    let has_surface_source = regions
+        .earthwork_boundary_segments
+        .iter()
+        .flatten()
+        .any(|segment| {
+            let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                boundary_source: Some(boundary_source),
+                ..
+            } = segment.source
+            else {
+                return false;
+            };
+            [boundary_source.start, boundary_source.end]
+                .into_iter()
+                .any(|source| {
+                    matches!(
+                        source,
+                        NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                            height_mm: 500,
+                            ..
+                        }
+                    )
+                })
+        });
+    assert!(
+        has_surface_source,
+        "boolean footprint vertices inside visible top triangles must export surface provenance"
+    );
+}
+
+#[test]
+fn node_export_rejects_conflicting_footprint_boundary_heights() {
+    let lower_owner = owner(RoadSurfaceBandKind::Carriageway, 0);
+    let raised_owner = owner(RoadSurfaceBandKind::Sidewalk, 1);
+    let lower_height = height_field(lower_owner);
+    let raised_height = height_field(raised_owner);
+    let mut arrangement = NodeArrangement::new(84, RoadSurfaceVisualNodePieceKind::JunctionN);
+    let lower_start = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 0.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower start vertex is valid");
+    let lower_end = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 0.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower end vertex is valid");
+    let lower_apex = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 1.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower apex vertex is valid");
+    let lower_region = arrangement.push_region(
+        lower_owner,
+        lower_height,
+        vec![lower_start, lower_end, lower_apex],
+        Vec::new(),
+        Vec::new(),
+        0.5,
+        Vec::new(),
+    );
+    arrangement.push_face(
+        lower_region,
+        lower_owner,
+        [lower_start, lower_end, lower_apex],
+    );
+
+    let raised_start = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 0.0),
+            0.1,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised start vertex is valid");
+    let raised_end = arrangement
+        .insert_vertex(
+            RoadVec2::new(-1.0, 0.0),
+            0.1,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised end vertex is valid");
+    let raised_apex = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, -1.0),
+            0.1,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised apex vertex is valid");
+    let raised_region = arrangement.push_region(
+        raised_owner,
+        raised_height,
+        vec![raised_start, raised_end, raised_apex],
+        Vec::new(),
+        Vec::new(),
+        0.5,
+        Vec::new(),
+    );
+    arrangement.push_face(
+        raised_region,
+        raised_owner,
+        [raised_start, raised_end, raised_apex],
+    );
+    let footprint_shapes = footprint_shapes_from_points(&[
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(1.0, 0.0),
+        RoadVec2::new(0.0, 1.0),
+    ]);
+
+    let error =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
+            .expect_err("footprint boundary height conflicts must not be resolved by max/min");
+
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+    ));
 }
 
 #[test]
