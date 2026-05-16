@@ -389,6 +389,7 @@ impl RoadSurfaceSystem {
         retain_raised_step_faces_with_top_support(&mut raised_step_faces, &owned_regions);
         orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
         dedup_raised_step_faces(&mut raised_step_faces);
+        orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()
@@ -2086,7 +2087,9 @@ fn orient_raised_step_faces_to_lower_owner_support(
         else {
             continue;
         };
-        let Some((lower_edge, _)) = vertical_face_support_edges(polygon) else {
+        let Some(lower_edge) =
+            vertical_face_support_edge_for_owner(polygon, owned_regions, lower_owner)
+        else {
             continue;
         };
         let Some(visible_dot) = vertical_face_visible_dot_to_supported_owner(
@@ -2120,6 +2123,29 @@ fn owned_region_has_top_boundary_edge(
         .any(|region| visual_polygon_boundary_overlaps_edge_at_height(&region.polygon, edge))
 }
 
+fn vertical_face_support_edge_for_owner(
+    polygon: &RoadSurfaceVisualPolygon,
+    owned_regions: &[NodeOwnedRegion],
+    owner: NodeBandOwner,
+) -> Option<[Vector3; 2]> {
+    vertical_face_side_edges(polygon).and_then(|edges| {
+        edges
+            .into_iter()
+            .find(|edge| owned_region_has_top_boundary_edge_xz(owned_regions, owner, *edge))
+    })
+}
+
+fn owned_region_has_top_boundary_edge_xz(
+    owned_regions: &[NodeOwnedRegion],
+    owner: NodeBandOwner,
+    edge: [Vector3; 2],
+) -> bool {
+    owned_regions
+        .iter()
+        .filter(|region| node_owned_region_matches_owner(region, owner))
+        .any(|region| visual_polygon_boundary_overlaps_edge_xz(&region.polygon, edge))
+}
+
 fn node_owned_region_matches_owner(region: &NodeOwnedRegion, owner: NodeBandOwner) -> bool {
     region.kind == owner.kind() && region.owner_index == owner.owner_index()
 }
@@ -2137,7 +2163,7 @@ fn vertical_face_visible_dot_to_supported_owner(
         .iter()
         .filter(|region| node_owned_region_matches_owner(region, owner))
     {
-        if !visual_polygon_boundary_overlaps_edge_at_height(&region.polygon, lower_edge) {
+        if !visual_polygon_boundary_overlaps_edge_xz(&region.polygon, lower_edge) {
             continue;
         }
         let Some(centroid) = visual_polygon_centroid(&region.polygon) else {
@@ -2182,14 +2208,17 @@ fn reversed_vertical_face_points(polygon: &RoadSurfaceVisualPolygon) -> Option<[
     Some([*d, *c, *b, *a])
 }
 
-fn vertical_face_support_edges(
-    polygon: &RoadSurfaceVisualPolygon,
-) -> Option<([Vector3; 2], [Vector3; 2])> {
+fn vertical_face_side_edges(polygon: &RoadSurfaceVisualPolygon) -> Option<[[Vector3; 2]; 2]> {
     let [a, b, c, d] = polygon.points_world.as_slice() else {
         return None;
     };
-    let first_edge = [*a, *d];
-    let second_edge = [*b, *c];
+    Some([[*a, *d], [*b, *c]])
+}
+
+fn vertical_face_support_edges(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Option<([Vector3; 2], [Vector3; 2])> {
+    let [first_edge, second_edge] = vertical_face_side_edges(polygon)?;
     let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
     let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
     if first_avg_y <= second_avg_y {
@@ -2238,6 +2267,75 @@ fn visual_polygon_boundary_overlaps_edge_at_height(
         let end = points[(index + 1) % points.len()];
         boundary_edge_contains_edge_at_height([start, end], edge)
     })
+}
+
+fn visual_polygon_boundary_overlaps_edge_xz(
+    polygon: &RoadSurfaceVisualPolygon,
+    edge: [Vector3; 2],
+) -> bool {
+    if !polygon.triangles_world.is_empty() {
+        let mut triangle_edges = BTreeMap::<
+            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+            (usize, [Vector3; 2]),
+        >::new();
+        for triangle in &polygon.triangles_world {
+            for edge_index in 0..3 {
+                let start = triangle[edge_index];
+                let end = triangle[(edge_index + 1) % 3];
+                if ArrangementBoundaryPointKey::from_world(start).xz_key()
+                    == ArrangementBoundaryPointKey::from_world(end).xz_key()
+                {
+                    continue;
+                }
+                triangle_edges
+                    .entry(normalized_arrangement_boundary_segment_key(start, end))
+                    .and_modify(|entry| entry.0 += 1)
+                    .or_insert((1, [start, end]));
+            }
+        }
+        return triangle_edges
+            .into_values()
+            .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
+            .any(|boundary_edge| boundary_edge_contains_edge_xz(boundary_edge, edge));
+    }
+
+    let points = &polygon.points_world;
+    if points.len() < 2 {
+        return false;
+    }
+    (0..points.len()).any(|index| {
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        boundary_edge_contains_edge_xz([start, end], edge)
+    })
+}
+
+fn boundary_edge_contains_edge_xz(boundary_edge: [Vector3; 2], edge: [Vector3; 2]) -> bool {
+    let boundary_start = ArrangementBoundaryPointKey::from_world(boundary_edge[0]);
+    let boundary_end = ArrangementBoundaryPointKey::from_world(boundary_edge[1]);
+    let edge_start = ArrangementBoundaryPointKey::from_world(edge[0]);
+    let edge_end = ArrangementBoundaryPointKey::from_world(edge[1]);
+    if !arrangement_segments_exact_overlap_with_length(
+        boundary_start.xz_key(),
+        boundary_end.xz_key(),
+        edge_start.xz_key(),
+        edge_end.xz_key(),
+    ) {
+        return false;
+    }
+    let Some(start_parameter) =
+        boundary_segment_parameter_xz(edge_start, boundary_start, boundary_end)
+    else {
+        return false;
+    };
+    let Some(end_parameter) = boundary_segment_parameter_xz(edge_end, boundary_start, boundary_end)
+    else {
+        return false;
+    };
+    start_parameter >= ArrangementSegmentParameter::zero()
+        && start_parameter <= ArrangementSegmentParameter::one()
+        && end_parameter >= ArrangementSegmentParameter::zero()
+        && end_parameter <= ArrangementSegmentParameter::one()
 }
 
 fn boundary_edge_contains_edge_at_height(boundary_edge: [Vector3; 2], edge: [Vector3; 2]) -> bool {

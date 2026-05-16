@@ -2200,13 +2200,15 @@ fn materialized_constraint_constrains_shared_height(
 }
 
 fn materialized_constraint_kind_is_material_transition(kind: NodeRailConstraintKind) -> bool {
-    matches!(
-        kind,
+    match kind {
         NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::RaisedStepContact
-            | NodeRailConstraintKind::BandBoundary { .. }
-    )
+        | NodeRailConstraintKind::RaisedStepContact
+        | NodeRailConstraintKind::BandBoundary { .. } => true,
+        NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
+            adjacent_kind != RoadSurfaceBandKind::Carriageway
+        }
+        _ => false,
+    }
 }
 
 fn owned_edge_lies_on_rail_constraint(
@@ -2657,13 +2659,15 @@ fn constraint_is_point_contact(constraint: &NodeRailConstraint) -> bool {
 }
 
 fn constraint_is_material_transition(constraint: &NodeRailConstraint) -> bool {
-    matches!(
-        constraint.kind,
+    match constraint.kind {
         NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::AsphaltBoundary { .. }
-            | NodeRailConstraintKind::RaisedStepContact
-            | NodeRailConstraintKind::BandBoundary { .. }
-    )
+        | NodeRailConstraintKind::RaisedStepContact
+        | NodeRailConstraintKind::BandBoundary { .. } => true,
+        NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
+            adjacent_kind != RoadSurfaceBandKind::Carriageway
+        }
+        _ => false,
+    }
 }
 
 fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandOwner) -> bool {

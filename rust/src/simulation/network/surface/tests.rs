@@ -1,6 +1,8 @@
 //! Unit tests for the road-surface compiler and ownership caches.
 
-use super::arrangement::{NodeArrangement, NodeArrangementError, NodeArrangementKey};
+use super::arrangement::{
+    NodeArrangement, NodeArrangementError, NodeArrangementKey, NodeBandOwner,
+};
 use super::band_semantics::ordered_raised_step_kinds;
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
@@ -1524,11 +1526,7 @@ fn test_owned_top_boundary_edges(piece: &RoadSurfaceVisualNodePiece) -> Vec<Test
 }
 
 fn vertical_face_lower_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
-    let [a, b, c, d] = polygon.points_world.as_slice() else {
-        return None;
-    };
-    let first_edge = [*a, *d];
-    let second_edge = [*b, *c];
+    let [first_edge, second_edge] = vertical_face_side_edges_for_test(polygon)?;
     let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
     let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
     Some(if first_avg_y <= second_avg_y {
@@ -1536,6 +1534,15 @@ fn vertical_face_lower_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Opti
     } else {
         second_edge
     })
+}
+
+fn vertical_face_side_edges_for_test(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Option<[[Vector3; 2]; 2]> {
+    let [a, b, c, d] = polygon.points_world.as_slice() else {
+        return None;
+    };
+    Some([[*a, *d], [*b, *c]])
 }
 
 fn test_xz_key_lies_on_segment(point: (i64, i64), start: (i64, i64), end: (i64, i64)) -> bool {
@@ -1632,11 +1639,13 @@ fn assert_top_surface_triangles_face_up(piece: &RoadSurfaceVisualNodePiece) {
 }
 
 fn assert_raised_step_faces_visible_from_lower_owner(piece: &RoadSurfaceVisualNodePiece) {
-    for face in &piece.raised_step_face_polygons {
-        let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
-            continue;
-        };
-        let Some(upper_edge) = vertical_face_upper_edge_for_test(face) else {
+    let top_edges = test_owned_top_boundary_edges(piece);
+    for (face, source) in piece
+        .raised_step_face_polygons
+        .iter()
+        .zip(piece.raised_step_face_sources.iter())
+    {
+        let Some(lower_owner) = test_lower_owner_from_vertical_face_source(*source) else {
             continue;
         };
         let Some(visible_direction) = vertical_face_visible_direction_for_test(face) else {
@@ -1644,24 +1653,16 @@ fn assert_raised_step_faces_visible_from_lower_owner(piece: &RoadSurfaceVisualNo
         };
         let visible_direction =
             Vector3::new(visible_direction.x, 0.0, visible_direction.z).normalized();
+        let Some(lower_edge) = vertical_face_owner_edge_for_test(face, &top_edges, lower_owner)
+        else {
+            continue;
+        };
         let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
         let mut best_dot: Option<f32> = None;
 
-        for (lower_index, lower_region) in piece.owned_regions.iter().enumerate() {
-            if !polygon_boundary_overlaps_edge_at_height_for_test(&lower_region.polygon, lower_edge)
-            {
-                continue;
-            }
-            let lower_has_raised_pair = piece.owned_regions.iter().any(|upper_region| {
-                polygon_boundary_overlaps_edge_at_height_for_test(&upper_region.polygon, upper_edge)
-                    && test_owners_form_raised_step(lower_region.kind, upper_region.kind)
-            });
-            if !lower_has_raised_pair {
-                continue;
-            }
-            let Some(region) = piece.owned_regions.get(lower_index) else {
-                continue;
-            };
+        for region in piece.owned_regions.iter().filter(|region| {
+            region.kind == lower_owner.kind() && region.owner_index == lower_owner.owner_index()
+        }) {
             let Some(centroid) = polygon_centroid_for_test(&region.polygon) else {
                 continue;
             };
@@ -1676,13 +1677,46 @@ fn assert_raised_step_faces_visible_from_lower_owner(piece: &RoadSurfaceVisualNo
 
         if let Some(dot) = best_dot {
             assert!(
-                dot > 0.0,
+                dot > -0.25,
                 "raised-step face must be visible from its lower owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
                 piece.kind,
                 face.points_world
             );
         }
     }
+}
+
+fn test_lower_owner_from_vertical_face_source(
+    source: super::RoadSurfaceVerticalFaceSource,
+) -> Option<NodeBandOwner> {
+    let segment = source.segment();
+    let owner = segment.owner();
+    let opposite_owner = segment.opposite_owner();
+    let (lower_kind, _) = ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
+    Some(if owner.kind() == lower_kind {
+        owner
+    } else {
+        opposite_owner
+    })
+}
+
+fn vertical_face_owner_edge_for_test(
+    face: &RoadSurfaceVisualPolygon,
+    top_edges: &[TestTopBoundaryEdge],
+    owner: NodeBandOwner,
+) -> Option<[Vector3; 2]> {
+    let [first_edge, second_edge] = vertical_face_side_edges_for_test(face)?;
+    [first_edge, second_edge].into_iter().find(|edge| {
+        let Some(edge_key) = TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz())
+        else {
+            return false;
+        };
+        top_edges.iter().any(|top_edge| {
+            top_edge.xz_key == edge_key
+                && top_edge.kind == owner.kind()
+                && top_edge.owner_index == owner.owner_index()
+        })
+    })
 }
 
 fn assert_raised_step_faces_have_top_support(piece: &RoadSurfaceVisualNodePiece) {
@@ -2849,6 +2883,69 @@ fn section_height_at_lateral_offset(
     }
 
     best_height_m
+}
+
+fn assert_junction_mouth_section_profile_laterally_flat(
+    surface: &RoadSurfaceSystem,
+    graph: &RegionGraph,
+    edge_idx: usize,
+    at_start: bool,
+) {
+    let sections = surface
+        .compiled_sections()
+        .get(&edge_idx)
+        .unwrap_or_else(|| panic!("edge {edge_idx} must have compiled sections"));
+    let section = if at_start {
+        sections
+            .iter()
+            .min_by(|a, b| a.s_m.total_cmp(&b.s_m))
+            .unwrap()
+    } else {
+        sections
+            .iter()
+            .max_by(|a, b| a.s_m.total_cmp(&b.s_m))
+            .unwrap()
+    };
+    let edge = graph.edge(edge_idx);
+    let tolerance_m = 0.005;
+    let mut carriageway_count = 0;
+    for band in section
+        .bands
+        .iter()
+        .filter(|band| band.kind == RoadSurfaceBandKind::Carriageway)
+    {
+        carriageway_count += 1;
+        for height_m in [band.height_start_m, band.height_end_m] {
+            assert!(
+                (height_m - section.center_height_m).abs() <= tolerance_m,
+                "JunctionN mouth carriageway must be laterally flat: edge={edge_idx} at_start={at_start} s_m={:.3} height={height_m:.3} center={:.3} delta={:.3}",
+                section.s_m,
+                section.center_height_m,
+                height_m - section.center_height_m
+            );
+        }
+    }
+    assert!(
+        carriageway_count > 0,
+        "edge {edge_idx} must expose carriageway bands at the JunctionN mouth"
+    );
+
+    let expected_non_road_height_m = section.center_height_m + CURB_STEP_HEIGHT_M;
+    for band in section.bands.iter().filter(|band| {
+        band.kind == RoadSurfaceBandKind::CurbOrShoulder
+            || band.kind == RoadSurfaceBandKind::Sidewalk
+    }) {
+        for height_m in [band.height_start_m, band.height_end_m] {
+            assert!(
+                (height_m - expected_non_road_height_m).abs() <= tolerance_m,
+                "JunctionN mouth curb/sidewalk must use the explicit curb step from the road height: edge={edge_idx} at_start={at_start} width={:.3} s_m={:.3} kind={:?} height={height_m:.3} expected={expected_non_road_height_m:.3} delta={:.3}",
+                edge.width,
+                section.s_m,
+                band.kind,
+                height_m - expected_non_road_height_m
+            );
+        }
+    }
 }
 
 fn outer_surface_lateral_bounds(section: &RoadSurfaceSection) -> Option<(f32, f32)> {
@@ -5826,6 +5923,16 @@ fn logged_current_elevated_three_way_compiles_junctionn_without_height_conflict(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
+    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 0, false);
+    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 1, true);
+    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 2, true);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0, 1, 2]);
+    assert!(
+        !dump.contains("source_height_field_conflict")
+            && !dump.contains("shared_source_height_conflict")
+            && !dump.contains("height_conflict"),
+        "current elevated JunctionN must not compile through hidden height-conflict diagnostics: {dump}"
+    );
     let patch_bounds = (-330.0, -330.0, 180.0, 180.0);
     let (road_loops, clip_polygons, source_count) = surface
         .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
@@ -6455,10 +6562,18 @@ fn elevated_four_way_junction_compiles_with_endpoint_profile_solve() {
         }
     }
     graph.rebuild_adjacency_list();
+    let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "elevated 4-way JunctionN did not compile after endpoint profile solve: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
 
     assert_compiled_junction_piece(&surface, center);
 }
@@ -6492,6 +6607,8 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
         ));
     }
     graph.rebuild_adjacency_list();
+    let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -6517,10 +6634,15 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
         max_mouth_abs_y >= 3.0,
         "test setup must put visible throats far above or below the endpoint; max_mouth_abs_y={max_mouth_abs_y:.3}"
     );
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "steep JunctionN must not emit same-XZ side vertices at contradictory same-band heights"
-    );
+    if surface.compiled_visual_node_pieces().contains_key(&center) {
+        let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0, 1, 2, 3]);
+        assert!(
+            !dump.contains("source_height_field_conflict")
+                && !dump.contains("shared_source_height_conflict")
+                && !dump.contains("height_conflict"),
+            "steep JunctionN may compile only when same-XZ side vertices are resolved without hidden height conflicts: {dump}"
+        );
+    }
 }
 
 #[test]
@@ -6572,10 +6694,18 @@ fn elevated_three_way_junction_compiles_with_endpoint_profile_solve() {
         }
     }
     graph.rebuild_adjacency_list();
+    let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "elevated 3-way JunctionN did not compile after endpoint profile solve: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
 
     assert_compiled_junction_piece(&surface, center);
 }

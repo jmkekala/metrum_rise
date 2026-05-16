@@ -360,19 +360,12 @@ impl RoadSurfaceSystem {
         &self,
         edge: &Edge,
         center: Vector3,
-        lateral_xz: Vector2,
+        _lateral_xz: Vector2,
         profile_plane: Option<JunctionEndpointProfilePlane>,
     ) -> Vec<RoadSurfaceBand> {
         let center_height_m =
             profile_plane.map_or(center.y, |plane| plane.height_at_xz(center.x, center.z));
-        let boundary_height_m = |lateral_m: f32, offset_m: f32| {
-            profile_plane.map_or(center_height_m, |plane| {
-                plane.height_at_xz(
-                    center.x + lateral_xz.x * lateral_m,
-                    center.z + lateral_xz.y * lateral_m,
-                )
-            }) + offset_m
-        };
+        let boundary_height_m = |_lateral_m: f32, offset_m: f32| center_height_m + offset_m;
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
             let half_width = edge.width.max(2.0) * 0.5;
             return vec![RoadSurfaceBand {
