@@ -128,7 +128,7 @@ pub(crate) enum NodeHeightFieldError {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum NodeHeightAuthoritySource {
     SourceInterval,
     TerminalCap,

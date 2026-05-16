@@ -2003,6 +2003,43 @@ fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece)
             .all(|region| RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world)),
         "owned node regions must be non-degenerate before triangulation"
     );
+    assert_node_top_surface_sources_have_grade_authority(piece);
+}
+
+fn assert_node_top_surface_sources_have_grade_authority(piece: &RoadSurfaceVisualNodePiece) {
+    assert_eq!(
+        piece.node_top_surface_sources.len(),
+        piece.owned_regions.len(),
+        "every emitted node top region must carry one provenance record"
+    );
+    assert!(
+        !piece.node_grade_authorities.is_empty(),
+        "node top provenance must reference a non-empty grade-authority table"
+    );
+    for source in &piece.node_top_surface_sources {
+        assert!(
+            !source.vertex_sources.is_empty(),
+            "node top provenance must name polygon vertex sources"
+        );
+        assert!(
+            !source.triangle_sources.is_empty(),
+            "node top provenance must name emitted triangle sources"
+        );
+        for grade_authority_index in
+            source
+                .vertex_sources
+                .iter()
+                .map(|source| source.grade_authority_index)
+                .chain(source.triangle_sources.iter().flat_map(|triangle| {
+                    triangle.iter().map(|source| source.grade_authority_index)
+                }))
+        {
+            assert!(
+                grade_authority_index < piece.node_grade_authorities.len(),
+                "node top provenance index {grade_authority_index} must reference an emitted grade-authority row"
+            );
+        }
+    }
 }
 
 fn assert_node_piece_has_curb_and_sidewalk_owners(piece: &RoadSurfaceVisualNodePiece) {

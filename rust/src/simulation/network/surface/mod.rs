@@ -51,7 +51,8 @@ pub(crate) use incident::{
     IncidentSurfaceEdge, OrderedIncidentPieceMouth,
 };
 pub(crate) use node_boundary::{
-    NodeOwnedRegion, NodeSurfaceRegionResult, RoadSurfaceVerticalFaceSource,
+    NodeOwnedRegion, NodeSurfaceRegionResult, NodeTopSurfacePolygonSource,
+    NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
 };
 pub(crate) use span::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,

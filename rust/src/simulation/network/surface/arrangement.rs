@@ -1265,6 +1265,12 @@ impl NodeArrangementEdgeId {
     }
 }
 
+impl NodeOwnedRegionId {
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl NodeArrangementVertex {
     pub(crate) fn key(&self) -> NodeArrangementKey {
         self.key
@@ -1332,6 +1338,10 @@ impl NodeArrangementEdge {
 }
 
 impl NodeArrangementFace {
+    pub(crate) fn region(&self) -> NodeOwnedRegionId {
+        self.region
+    }
+
     pub(crate) fn owner(&self) -> NodeBandOwner {
         self.owner
     }

@@ -413,32 +413,33 @@ impl RoadSurfaceSystem {
         });
     }
 
-    pub(crate) fn sort_node_owned_regions(regions: &mut [NodeOwnedRegion]) {
-        regions.sort_by(|a, b| {
-            Self::band_kind_sort_key(a.kind)
-                .cmp(&Self::band_kind_sort_key(b.kind))
-                .then(a.owner_index.cmp(&b.owner_index))
-                .then_with(|| {
-                    match (
-                        a.polygon.points_world.first(),
-                        b.polygon.points_world.first(),
-                    ) {
-                        (Some(point_a), Some(point_b)) => point_a
-                            .x
-                            .total_cmp(&point_b.x)
-                            .then(point_a.z.total_cmp(&point_b.z))
-                            .then(point_a.y.total_cmp(&point_b.y)),
-                        (None, Some(_)) => std::cmp::Ordering::Less,
-                        (Some(_), None) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
-                })
-                .then(
-                    a.polygon
-                        .points_world
-                        .len()
-                        .cmp(&b.polygon.points_world.len()),
-                )
-        });
+    pub(crate) fn node_owned_region_ordering(
+        a: &NodeOwnedRegion,
+        b: &NodeOwnedRegion,
+    ) -> std::cmp::Ordering {
+        Self::band_kind_sort_key(a.kind)
+            .cmp(&Self::band_kind_sort_key(b.kind))
+            .then(a.owner_index.cmp(&b.owner_index))
+            .then_with(|| {
+                match (
+                    a.polygon.points_world.first(),
+                    b.polygon.points_world.first(),
+                ) {
+                    (Some(point_a), Some(point_b)) => point_a
+                        .x
+                        .total_cmp(&point_b.x)
+                        .then(point_a.z.total_cmp(&point_b.z))
+                        .then(point_a.y.total_cmp(&point_b.y)),
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            })
+            .then(
+                a.polygon
+                    .points_world
+                    .len()
+                    .cmp(&b.polygon.points_world.len()),
+            )
     }
 }

@@ -14,7 +14,7 @@ const EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEI
 const JUNCTIONN_SAME_MATERIAL_SEAM_BLEND_LIMIT_M: f64 = 0.25;
 const JUNCTIONN_UNCONSTRAINED_SEAM_ADOPTION_LIMIT_M: f64 = 2.0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum NodeGradeCarrierDecision {
     SourceCarrier {
         authority: Option<NodeHeightAuthoritySource>,
@@ -27,7 +27,7 @@ pub(crate) enum NodeGradeCarrierDecision {
     ExplicitMaterialSeamAdoption,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct NodeGradeVertexAuthority {
     pub(crate) key: SurfaceXzKey,
     pub(crate) owner: NodeBandOwner,

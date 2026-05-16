@@ -15,6 +15,7 @@ pub(crate) enum NodeBoundaryExportError {
     MissingFootprintBoundaryHeight,
     DegenerateOuterBoundaryLoop,
     MissingEarthworkBoundarySource,
+    MissingNodeTopSurfaceGradeAuthority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +84,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
+    pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -96,6 +98,20 @@ pub(crate) struct NodeOwnedRegion {
     pub(crate) polygon: RoadSurfaceVisualPolygon,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct NodeTopSurfaceVertexSource {
+    pub(crate) grade_authority_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeTopSurfacePolygonSource {
+    pub(crate) kind: RoadSurfaceBandKind,
+    pub(crate) owner_index: usize,
+    pub(crate) height_field_id: arrangement::NodeBandHeightFieldId,
+    pub(crate) vertex_sources: Vec<NodeTopSurfaceVertexSource>,
+    pub(crate) triangle_sources: Vec<[NodeTopSurfaceVertexSource; 3]>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeSurfaceRegionResult {
     pub(crate) outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -107,6 +123,7 @@ pub(crate) struct NodeSurfaceRegionResult {
     pub(crate) sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
+    pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
 }
 

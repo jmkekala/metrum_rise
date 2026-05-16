@@ -2,11 +2,11 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
-    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceSection, RoadSurfaceSpanBandOwner,
-    RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
-    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    NodeOverlayShapes, NodeTopSurfacePolygonSource, RoadSurfaceBandKind,
+    RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceSection,
+    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
+    RoadSurfaceSystem, RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
     band_semantics::ordered_raised_step_kinds,
@@ -19,7 +19,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 #[derive(Default)]
@@ -1039,6 +1039,9 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"node_grade_authority\": ");
         Self::append_node_grade_authority_debug_literal(dump, piece);
         dump.push_str(",\n");
+        dump.push_str("      \"node_top_surface_provenance\": ");
+        Self::append_node_top_surface_provenance_debug_literal(dump, piece);
+        dump.push_str(",\n");
         dump.push_str("      \"seam_constraints\": ");
         self.append_node_seam_constraints_debug_literal(dump, graph, node_id);
         dump.push_str(",\n");
@@ -1197,6 +1200,80 @@ impl RoadSurfaceSystem {
                 "explicit_material_seam_adoption"
             }
         }
+    }
+
+    fn append_node_top_surface_provenance_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        dump.push('[');
+        for (source_index, source) in piece.node_top_surface_sources.iter().enumerate() {
+            if source_index > 0 {
+                dump.push_str(", ");
+            }
+            let missing_source_count = Self::node_top_surface_missing_source_count(
+                source,
+                piece.node_grade_authorities.len(),
+            );
+            let _ = write!(
+                dump,
+                "{{\"region\":{},\"kind\":\"{:?}\",\"owner_index\":{},\"height_field_id\":\"{:?}\",\"polygon_vertex_count\":{},\"triangle_count\":{},\"missing_source_count\":{},\"grade_authority_indices\":",
+                source_index,
+                source.kind,
+                source.owner_index,
+                source.height_field_id,
+                source.vertex_sources.len(),
+                source.triangle_sources.len(),
+                missing_source_count,
+            );
+            Self::append_node_top_surface_source_indices_debug_literal(dump, source);
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    fn append_node_top_surface_source_indices_debug_literal(
+        dump: &mut String,
+        source: &NodeTopSurfacePolygonSource,
+    ) {
+        let mut indices = BTreeSet::new();
+        indices.extend(
+            source
+                .vertex_sources
+                .iter()
+                .map(|source| source.grade_authority_index),
+        );
+        indices.extend(
+            source
+                .triangle_sources
+                .iter()
+                .flat_map(|triangle| triangle.iter().map(|source| source.grade_authority_index)),
+        );
+        dump.push('[');
+        for (index, grade_authority_index) in indices.into_iter().enumerate() {
+            if index > 0 {
+                dump.push(',');
+            }
+            let _ = write!(dump, "{grade_authority_index}");
+        }
+        dump.push(']');
+    }
+
+    fn node_top_surface_missing_source_count(
+        source: &NodeTopSurfacePolygonSource,
+        authority_count: usize,
+    ) -> usize {
+        source
+            .vertex_sources
+            .iter()
+            .map(|source| source.grade_authority_index)
+            .chain(
+                source.triangle_sources.iter().flat_map(|triangle| {
+                    triangle.iter().map(|source| source.grade_authority_index)
+                }),
+            )
+            .filter(|index| *index >= authority_count)
+            .count()
     }
 
     fn append_node_seam_constraints_debug_literal(
@@ -3153,6 +3230,7 @@ mod tests {
             sidewalk_surface_polygons: Vec::new(),
             explicit_vertical_step_segments: Vec::new(),
             node_grade_authorities: Vec::new(),
+            node_top_surface_sources: Vec::new(),
             owned_regions: Vec::new(),
             earthwork_surface_polygons: Vec::new(),
             earthwork_outer_boundary_loops: Vec::new(),

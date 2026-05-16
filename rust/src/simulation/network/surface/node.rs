@@ -4,11 +4,12 @@ use super::band_semantics::ordered_raised_step_kinds;
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, NodeOwnedRegion,
-    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
-    RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, OrderedIncidentPieceMouth,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M,
     arrangement::{
         NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
         NodeExplicitVerticalStepSegment,
@@ -237,6 +238,7 @@ impl RoadSurfaceSystem {
             node_regions.sidewalk_surface_polygons,
             node_regions.explicit_vertical_step_segments,
             node_regions.node_grade_authorities,
+            node_regions.node_top_surface_sources,
             node_regions.owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -345,42 +347,44 @@ impl RoadSurfaceSystem {
         arrangement: &NodeArrangement,
         _footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
-        let mut owned_regions = Vec::new();
-
-        for face in arrangement.faces() {
-            let owner = face.owner();
-            let Some(polygons) = Self::visual_polygons_from_arrangement_face(arrangement, face)
-            else {
-                continue;
-            };
-            for polygon in polygons {
-                if Self::signed_polygon_area_xz(&polygon.points_world).abs()
-                    <= NODE_OVERLAY_MIN_AREA_M2
-                {
-                    continue;
-                }
-                owned_regions.push(NodeOwnedRegion {
-                    kind: owner.kind(),
-                    owner_index: owner.owner_index(),
-                    polygon,
-                });
-            }
-        }
-        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut node_grade_authorities = arrangement
             .vertices()
             .iter()
             .map(|vertex| vertex.grade_authority())
             .collect::<Vec<_>>();
-        node_grade_authorities.sort_by_key(|authority| {
-            (
-                authority.key,
-                authority.owner,
-                authority.height_field_id,
-                authority.height_key,
-            )
-        });
+        node_grade_authorities.sort();
         node_grade_authorities.dedup();
+        let authority_indices = node_grade_authorities
+            .iter()
+            .enumerate()
+            .map(|(index, authority)| (*authority, index))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut owned_region_exports = Vec::new();
+
+        for face in arrangement.faces() {
+            let owner = face.owner();
+            let Some((polygon, source)) =
+                Self::visual_polygon_from_arrangement_face(arrangement, face, &authority_indices)?
+            else {
+                continue;
+            };
+            if Self::signed_polygon_area_xz(&polygon.points_world).abs() <= NODE_OVERLAY_MIN_AREA_M2
+            {
+                continue;
+            }
+            owned_region_exports.push((
+                NodeOwnedRegion {
+                    kind: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    polygon,
+                },
+                source,
+            ));
+        }
+        let (mut owned_regions, mut node_top_surface_sources): (Vec<_>, Vec<_>) =
+            owned_region_exports.into_iter().unzip();
+        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(
             arrangement,
             &explicit_vertical_step_segments,
@@ -442,7 +446,10 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
-        Self::sort_node_owned_regions(&mut owned_regions);
+        Self::sort_node_owned_regions_with_sources(
+            &mut owned_regions,
+            &mut node_top_surface_sources,
+        )?;
         Self::sort_raised_step_faces(&mut raised_step_faces);
 
         Ok(super::NodeSurfaceRegionResult {
@@ -455,8 +462,33 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             node_grade_authorities,
+            node_top_surface_sources,
             owned_regions,
         })
+    }
+
+    fn sort_node_owned_regions_with_sources(
+        owned_regions: &mut Vec<NodeOwnedRegion>,
+        node_top_surface_sources: &mut Vec<NodeTopSurfacePolygonSource>,
+    ) -> Result<(), NodeBoundaryExportError> {
+        if owned_regions.len() != node_top_surface_sources.len() {
+            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+        }
+        let mut paired = owned_regions
+            .drain(..)
+            .zip(node_top_surface_sources.drain(..))
+            .collect::<Vec<_>>();
+        paired.sort_by(|(region_a, source_a), (region_b, source_b)| {
+            Self::node_owned_region_ordering(region_a, region_b)
+                .then(source_a.height_field_id.cmp(&source_b.height_field_id))
+        });
+        owned_regions.reserve(paired.len());
+        node_top_surface_sources.reserve(paired.len());
+        for (region, source) in paired {
+            owned_regions.push(region);
+            node_top_surface_sources.push(source);
+        }
+        Ok(())
     }
 
     fn visible_top_overlay_shapes(
@@ -1223,26 +1255,69 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn visual_polygons_from_arrangement_face(
+    fn visual_polygon_from_arrangement_face(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
-    ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
-        let triangle = Self::arrangement_face_visual_triangle(arrangement, face)?;
-        Some(
-            [RoadSurfaceVisualPolygon {
+        authority_indices: &BTreeMap<super::node_grade::NodeGradeVertexAuthority, usize>,
+    ) -> Result<
+        Option<(RoadSurfaceVisualPolygon, NodeTopSurfacePolygonSource)>,
+        NodeBoundaryExportError,
+    > {
+        let Some((triangle, vertex_ids)) =
+            Self::arrangement_face_visual_triangle_with_vertices(arrangement, face)
+        else {
+            return Ok(None);
+        };
+        let Some(region) = arrangement.regions().get(face.region().index()) else {
+            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+        };
+        let mut vertex_sources = Vec::with_capacity(vertex_ids.len());
+        for vertex_id in vertex_ids {
+            let Some(vertex) = arrangement.vertices().get(vertex_id.index()) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            let Some(grade_authority_index) =
+                authority_indices.get(&vertex.grade_authority()).copied()
+            else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            vertex_sources.push(NodeTopSurfaceVertexSource {
+                grade_authority_index,
+            });
+        }
+        let triangle_sources = vec![[vertex_sources[0], vertex_sources[1], vertex_sources[2]]];
+        let source = NodeTopSurfacePolygonSource {
+            kind: face.owner().kind(),
+            owner_index: face.owner().owner_index(),
+            height_field_id: region.height_field_id(),
+            vertex_sources,
+            triangle_sources,
+        };
+        Ok(Some((
+            RoadSurfaceVisualPolygon {
                 points_world: triangle.to_vec(),
                 triangles_world: vec![triangle],
-            }]
-            .into_iter()
-            .collect(),
-        )
+            },
+            source,
+        )))
     }
 
     fn arrangement_face_visual_triangle(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
     ) -> Option<[Vector3; 3]> {
-        let vertices = face.vertices();
+        Self::arrangement_face_visual_triangle_with_vertices(arrangement, face)
+            .map(|(triangle, _)| triangle)
+    }
+
+    fn arrangement_face_visual_triangle_with_vertices(
+        arrangement: &NodeArrangement,
+        face: &super::arrangement::NodeArrangementFace,
+    ) -> Option<(
+        [Vector3; 3],
+        [super::arrangement::NodeArrangementVertexId; 3],
+    )> {
+        let mut vertices = face.vertices();
         let mut triangle = [
             Self::arrangement_vertex_world(arrangement, vertices[0])?,
             Self::arrangement_vertex_world(arrangement, vertices[1])?,
@@ -1258,8 +1333,9 @@ impl RoadSurfaceSystem {
         }
         if Self::signed_polygon_area_xz(&triangle) < 0.0 {
             triangle.swap(1, 2);
+            vertices.swap(1, 2);
         }
-        Some(triangle)
+        Some((triangle, vertices))
     }
 
     fn arrangement_vertex_world(
@@ -1333,6 +1409,13 @@ impl RoadSurfaceSystem {
                     arrangement.node_id(),
                     arrangement.piece_kind(),
                     "missing_earthwork_boundary_source",
+                )
+            }
+            NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority => {
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "missing_node_top_surface_grade_authority",
                 )
             }
         };
@@ -1568,6 +1651,7 @@ impl RoadSurfaceSystem {
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
         node_grade_authorities: Vec<super::node_grade::NodeGradeVertexAuthority>,
+        mut node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -1583,7 +1667,14 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_raised_step_faces(&mut raised_step_faces);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
-        Self::sort_node_owned_regions(&mut owned_regions);
+        if node_top_surface_sources.len() != owned_regions.len() {
+            return None;
+        }
+        Self::sort_node_owned_regions_with_sources(
+            &mut owned_regions,
+            &mut node_top_surface_sources,
+        )
+        .ok()?;
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
@@ -1605,6 +1696,7 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
             node_grade_authorities,
+            node_top_surface_sources,
             owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -3214,6 +3306,8 @@ mod tests {
     use super::super::arrangement::{
         NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource,
     };
+    use super::super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
+    use super::super::node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
     use super::*;
 
     fn owner(kind: RoadSurfaceBandKind, owner_index: usize) -> NodeBandOwner {
@@ -3348,6 +3442,105 @@ mod tests {
 
         let segments = arrangement.explicit_vertical_step_segments();
         (arrangement, segments)
+    }
+
+    fn heighted_vertex_with_grade_decision(
+        point_xz: RoadVec2,
+        height_m: f64,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        decision: NodeGradeCarrierDecision,
+    ) -> NodeHeightedVertex {
+        NodeHeightedVertex {
+            point_xz,
+            height_m,
+            height_field_id,
+            height_authority: None,
+            grade_authority: Some(NodeGradeVertexAuthority::new(
+                point_xz,
+                height_m,
+                owner,
+                height_field_id,
+                decision,
+            )),
+        }
+    }
+
+    #[test]
+    fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
+        let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
+        let height_field_id = height_field(owner);
+        let decision = NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption;
+        let heights = NodeHeightSolution {
+            node_id: 82,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner,
+                height_field_id,
+                shape: vec![vec![
+                    heighted_vertex_with_grade_decision(
+                        RoadVec2::new(0.0, 0.0),
+                        2.0,
+                        owner,
+                        height_field_id,
+                        decision,
+                    ),
+                    heighted_vertex_with_grade_decision(
+                        RoadVec2::new(1.0, 0.0),
+                        2.0,
+                        owner,
+                        height_field_id,
+                        decision,
+                    ),
+                    heighted_vertex_with_grade_decision(
+                        RoadVec2::new(0.0, 1.0),
+                        2.0,
+                        owner,
+                        height_field_id,
+                        decision,
+                    ),
+                ]],
+                area_m2: 0.5,
+                seam_constraints: Vec::new(),
+            }],
+        };
+        let mut arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("grade-authorized seam adoption should arrange");
+        let triangulation =
+            RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+                .expect("grade-authorized seam adoption should triangulate");
+        arrangement
+            .attach_triangulation(&triangulation)
+            .expect("grade-authorized seam adoption should attach triangulation");
+        let footprint_shapes = Vec::new();
+        let regions = RoadSurfaceSystem::node_surface_regions_from_arrangement(
+            &arrangement,
+            &footprint_shapes,
+        )
+        .expect("grade-authorized seam adoption should export node top provenance");
+
+        assert_eq!(regions.node_top_surface_sources.len(), 1);
+        let source = &regions.node_top_surface_sources[0];
+        assert_eq!(source.kind, RoadSurfaceBandKind::Carriageway);
+        assert_eq!(source.owner_index, owner.owner_index());
+        assert_eq!(source.height_field_id, height_field_id);
+        assert_eq!(source.vertex_sources.len(), 3);
+        assert_eq!(source.triangle_sources.len(), 1);
+        for grade_authority_index in
+            source
+                .vertex_sources
+                .iter()
+                .map(|source| source.grade_authority_index)
+                .chain(source.triangle_sources.iter().flat_map(|triangle| {
+                    triangle.iter().map(|source| source.grade_authority_index)
+                }))
+        {
+            assert_eq!(
+                regions.node_grade_authorities[grade_authority_index].decision,
+                NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption
+            );
+        }
     }
 
     #[test]
