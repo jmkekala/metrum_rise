@@ -167,6 +167,23 @@ impl SurfaceXzKey {
         ab_x * ac_z - ab_z * ac_x
     }
 
+    pub(crate) fn raw_tuple_triangle_area2(a: (i64, i64), b: (i64, i64), c: (i64, i64)) -> i128 {
+        Self::triangle_area2(
+            Self::from_raw_tuple(a),
+            Self::from_raw_tuple(b),
+            Self::from_raw_tuple(c),
+        )
+    }
+
+    pub(crate) fn raw_tuple_triangle_area_m2_abs(
+        a: (i64, i64),
+        b: (i64, i64),
+        c: (i64, i64),
+    ) -> f64 {
+        Self::raw_tuple_triangle_area2(a, b, c).unsigned_abs() as f64 * 0.5
+            / SURFACE_XZ_KEY_SCALE.powi(2)
+    }
+
     pub(crate) fn collinear_with_segment(self, start: Self, end: Self) -> bool {
         Self::triangle_area2(start, end, self) == 0
     }
@@ -513,6 +530,27 @@ mod tests {
         );
         assert_eq!(half.interpolate_i64(100, 103), 102);
         assert_eq!(half.interpolate_i64(-100, -103), -102);
+    }
+
+    #[test]
+    fn raw_tuple_triangle_area_preserves_signed_winding() {
+        assert_eq!(
+            SurfaceXzKey::raw_tuple_triangle_area2((0, 0), (2, 0), (0, 3)),
+            6
+        );
+        assert_eq!(
+            SurfaceXzKey::raw_tuple_triangle_area2((0, 0), (0, 3), (2, 0)),
+            -6
+        );
+    }
+
+    #[test]
+    fn raw_tuple_triangle_area_m2_abs_uses_canonical_scale() {
+        let one_meter = SurfaceXzKey::coordinate_key(1.0);
+        let area_m2 =
+            SurfaceXzKey::raw_tuple_triangle_area_m2_abs((0, 0), (one_meter, 0), (0, one_meter));
+
+        assert!((area_m2 - 0.5).abs() <= f64::EPSILON);
     }
 
     #[test]

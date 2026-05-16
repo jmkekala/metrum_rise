@@ -1,5 +1,6 @@
 //! Low-level polygon, triangle, and section-boundary geometry helpers.
 
+use super::backend::RoadVec3;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon,
     SAMPLE_EPSILON_M, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
@@ -314,6 +315,11 @@ impl RoadSurfaceSystem {
         projected_cross.abs() / max_edge_m.max(SAMPLE_EPSILON_M) >= SURFACE_MIN_TRIANGLE_ALTITUDE_M
     }
 
+    pub(super) fn road_triangle_double_area_xz_m2(triangle: [RoadVec3; 3]) -> f64 {
+        let [a, b, c] = triangle;
+        ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs()
+    }
+
     pub(super) fn triangle_barycentric_weights_xz(
         triangle: [Vector3; 3],
         point: Vector2,
@@ -459,5 +465,21 @@ impl RoadSurfaceSystem {
             height_m,
             section.center_xz.y + section.lateral_xz.y * lateral_offset_m,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn road_triangle_double_area_uses_xz_plane() {
+        let area = RoadSurfaceSystem::road_triangle_double_area_xz_m2([
+            RoadVec3::new(0.0, 8.0, 0.0),
+            RoadVec3::new(2.0, -4.0, 0.0),
+            RoadVec3::new(0.0, 2.0, 3.0),
+        ]);
+
+        assert_eq!(area, 6.0);
     }
 }

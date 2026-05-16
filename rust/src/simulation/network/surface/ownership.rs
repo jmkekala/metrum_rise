@@ -3,9 +3,7 @@
 use super::arrangement::{
     NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
 };
-use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
-};
+use super::backend::{RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point};
 use super::band_semantics::{
     raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
 };
@@ -1884,12 +1882,7 @@ fn ownership_triangle_area_m2(
     b: NodeOwnershipPointKey,
     c: NodeOwnershipPointKey,
 ) -> f64 {
-    let ab_x = i128::from(b.0 - a.0);
-    let ab_z = i128::from(b.1 - a.1);
-    let ac_x = i128::from(c.0 - a.0);
-    let ac_z = i128::from(c.1 - a.1);
-    let double_area = (ab_x * ac_z - ab_z * ac_x).unsigned_abs() as f64;
-    double_area * 0.5 / ROAD_OVERLAY_COORDINATE_SCALE.powi(2)
+    SurfaceXzKey::raw_tuple_triangle_area_m2_abs(a, b, c)
 }
 
 fn owned_region_global_points(

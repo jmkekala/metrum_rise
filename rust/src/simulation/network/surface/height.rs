@@ -1620,11 +1620,7 @@ fn height_triangle_area2(
     b: NodeHeightSourcePointKey,
     c: NodeHeightSourcePointKey,
 ) -> i128 {
-    SurfaceXzKey::triangle_area2(
-        SurfaceXzKey::from_raw_tuple(a),
-        SurfaceXzKey::from_raw_tuple(b),
-        SurfaceXzKey::from_raw_tuple(c),
-    )
+    SurfaceXzKey::raw_tuple_triangle_area2(a, b, c)
 }
 
 fn quantize_m(value: f64) -> i64 {

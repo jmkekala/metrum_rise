@@ -567,7 +567,7 @@ fn triangle_double_area_m2(
     let a = vertices[triangle.vertices[0]].point_world;
     let b = vertices[triangle.vertices[1]].point_world;
     let c = vertices[triangle.vertices[2]].point_world;
-    ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs()
+    RoadSurfaceSystem::road_triangle_double_area_xz_m2([a, b, c])
 }
 
 fn triangle_sort_key(

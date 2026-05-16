@@ -1728,11 +1728,7 @@ fn generated_triangle_double_area(
     b: NodeRailPointKey,
     c: NodeRailPointKey,
 ) -> i128 {
-    let ab_x = i128::from(b.0 - a.0);
-    let ab_z = i128::from(b.1 - a.1);
-    let ac_x = i128::from(c.0 - a.0);
-    let ac_z = i128::from(c.1 - a.1);
-    ab_x * ac_z - ab_z * ac_x
+    SurfaceXzKey::raw_tuple_triangle_area2(a, b, c)
 }
 
 fn quantized_proper_segment_intersection(
