@@ -6,6 +6,9 @@ use super::arrangement::{
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
 };
+use super::band_semantics::{
+    raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
+};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
@@ -3011,31 +3014,14 @@ fn road_point_key(point: RoadVec2) -> NodeOwnershipPointKey {
 }
 
 fn owners_form_raised_step_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
-    let Some(owner_rank) = raised_step_band_kind_rank(owner.kind()) else {
-        return false;
-    };
-    let Some(opposite_rank) = raised_step_band_kind_rank(opposite_owner.kind()) else {
-        return false;
-    };
-    owner_rank.abs_diff(opposite_rank) == 1
-}
-
-fn raised_step_contact_priority_for_owners(
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-) -> Option<usize> {
-    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
-    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
-    (owner_rank.abs_diff(opposite_rank) == 1).then_some(usize::from(owner_rank.min(opposite_rank)))
+    raised_step_kinds_can_contact(owner.kind(), opposite_owner.kind())
 }
 
 fn raised_step_contact_requires_exact_constraint_span(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
-    owner.kind() == RoadSurfaceBandKind::Footpath
-        || opposite_owner.kind() == RoadSurfaceBandKind::Footpath
-        || raised_step_contact_priority_for_owners(owner, opposite_owner) == Some(0)
+    raised_step_requires_exact_constraint_span(owner.kind(), opposite_owner.kind())
 }
 
 fn raised_step_contact_constrains_shared_height(
@@ -3044,18 +3030,6 @@ fn raised_step_contact_constrains_shared_height(
 ) -> bool {
     owners_form_raised_step_contact(owner, opposite_owner)
         && !raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
-}
-
-fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-    match kind {
-        RoadSurfaceBandKind::Carriageway => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Footpath => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Median
-        | RoadSurfaceBandKind::Parking
-        | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
-    }
 }
 
 fn band_kind(contour: &NodeGeneratedContour) -> Option<RoadSurfaceBandKind> {

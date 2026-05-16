@@ -1,5 +1,6 @@
 //! Source-authorized generated rail contact materialization.
 
+use super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};
 use super::*;
 
 fn insert_generated_material_point_constraint(
@@ -2533,25 +2534,7 @@ pub(super) fn raised_step_band_kinds_can_contact(
     left_kind: RoadSurfaceBandKind,
     right_kind: RoadSurfaceBandKind,
 ) -> bool {
-    let Some(left_rank) = raised_step_band_kind_rank(left_kind) else {
-        return false;
-    };
-    let Some(right_rank) = raised_step_band_kind_rank(right_kind) else {
-        return false;
-    };
-    left_rank.abs_diff(right_rank) == 1
-}
-
-fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-    match kind {
-        RoadSurfaceBandKind::Carriageway => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Footpath => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Median
-        | RoadSurfaceBandKind::Parking
-        | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
-    }
+    raised_step_kinds_can_contact(left_kind, right_kind)
 }
 
 pub(super) fn generated_raised_step_boundary_role_for_owner(
@@ -2559,8 +2542,8 @@ pub(super) fn generated_raised_step_boundary_role_for_owner(
     opposite_owner: NodeBandOwner,
 ) -> Option<GeneratedSameBandBoundaryRole> {
     GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
-    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
-    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
+    let owner_rank = raised_step_band_rank(owner.kind())?;
+    let opposite_rank = raised_step_band_rank(opposite_owner.kind())?;
     if opposite_rank < owner_rank {
         Some(GeneratedSameBandBoundaryRole::LowerSide)
     } else if opposite_rank > owner_rank {

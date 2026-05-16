@@ -9,6 +9,7 @@ use super::{
     RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
+    band_semantics::ordered_raised_step_kinds,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use crate::config;
@@ -1836,27 +1837,11 @@ impl RoadSurfaceSystem {
     ) -> Option<(NodeBandOwner, NodeBandOwner)> {
         let owner = segment.owner();
         let opposite_owner = segment.opposite_owner();
-        let owner_rank = Self::debug_raised_step_band_kind_rank(owner.kind())?;
-        let opposite_rank = Self::debug_raised_step_band_kind_rank(opposite_owner.kind())?;
-        if owner_rank == opposite_rank {
-            return None;
-        }
-        if owner_rank < opposite_rank {
+        let (lower_kind, _) = ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
+        if owner.kind() == lower_kind {
             Some((owner, opposite_owner))
         } else {
             Some((opposite_owner, owner))
-        }
-    }
-
-    fn debug_raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-        match kind {
-            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::Footpath => Some(0),
-            RoadSurfaceBandKind::CurbOrShoulder => Some(1),
-            RoadSurfaceBandKind::Sidewalk => Some(2),
-            RoadSurfaceBandKind::Median
-            | RoadSurfaceBandKind::Parking
-            | RoadSurfaceBandKind::CycleTrack
-            | RoadSurfaceBandKind::TramReservation => None,
         }
     }
 
@@ -1864,13 +1849,8 @@ impl RoadSurfaceSystem {
         lower_owner: DebugBoundaryOwner,
         raised_owner: DebugBoundaryOwner,
     ) -> bool {
-        let Some(lower_rank) = Self::debug_raised_step_band_kind_rank(lower_owner.kind) else {
-            return false;
-        };
-        let Some(raised_rank) = Self::debug_raised_step_band_kind_rank(raised_owner.kind) else {
-            return false;
-        };
-        lower_rank < raised_rank
+        ordered_raised_step_kinds(lower_owner.kind, raised_owner.kind)
+            == Some((lower_owner.kind, raised_owner.kind))
     }
 
     fn debug_top_matches_form_raised_step_owner_pair(

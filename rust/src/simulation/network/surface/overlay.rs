@@ -1,5 +1,6 @@
 //! Deterministic overlay boolean geometry helpers for road surfaces.
 
+use super::band_semantics::band_kind_sort_key;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2,
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
@@ -370,15 +371,6 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
-        match kind {
-            RoadSurfaceBandKind::Carriageway => 0,
-            RoadSurfaceBandKind::CurbOrShoulder => 1,
-            RoadSurfaceBandKind::Sidewalk => 2,
-            RoadSurfaceBandKind::Footpath => 3,
-            RoadSurfaceBandKind::Median => 4,
-            RoadSurfaceBandKind::Parking => 5,
-            RoadSurfaceBandKind::CycleTrack => 6,
-            RoadSurfaceBandKind::TramReservation => 7,
-        }
+        band_kind_sort_key(kind)
     }
 }

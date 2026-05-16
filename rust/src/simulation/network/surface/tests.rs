@@ -1,6 +1,7 @@
 //! Unit tests for the road-surface compiler and ownership caches.
 
 use super::arrangement::{NodeArrangement, NodeArrangementError, NodeArrangementKey};
+use super::band_semantics::ordered_raised_step_kinds;
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
 use super::height::NodeHeightFieldError;
@@ -1447,30 +1448,11 @@ fn explicit_vertical_step_has_visible_top_support(
     })
 }
 
-fn test_raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-    match kind {
-        RoadSurfaceBandKind::Carriageway => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Footpath
-        | RoadSurfaceBandKind::Median
-        | RoadSurfaceBandKind::Parking
-        | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
-    }
-}
-
 fn test_owners_form_raised_step(
     lower_kind: RoadSurfaceBandKind,
     raised_kind: RoadSurfaceBandKind,
 ) -> bool {
-    let Some(lower_rank) = test_raised_step_band_kind_rank(lower_kind) else {
-        return false;
-    };
-    let Some(raised_rank) = test_raised_step_band_kind_rank(raised_kind) else {
-        return false;
-    };
-    lower_rank < raised_rank
+    ordered_raised_step_kinds(lower_kind, raised_kind) == Some((lower_kind, raised_kind))
 }
 
 fn test_top_edges_form_raised_step(

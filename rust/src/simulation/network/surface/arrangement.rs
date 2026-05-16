@@ -1,6 +1,7 @@
 //! Canonical node-arrangement identity and ownership data model.
 
 use super::backend::RoadVec2;
+use super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
@@ -1510,27 +1511,9 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
 
 pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
     if a != b && a.kind == b.kind {
-        return explicit_vertical_step_band_kind_rank(a.kind).is_some();
+        return raised_step_band_rank(a.kind).is_some();
     }
-    let Some(a_rank) = explicit_vertical_step_band_kind_rank(a.kind) else {
-        return false;
-    };
-    let Some(b_rank) = explicit_vertical_step_band_kind_rank(b.kind) else {
-        return false;
-    };
-    a_rank != b_rank
-}
-
-fn explicit_vertical_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-    match kind {
-        RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::Footpath => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Median
-        | RoadSurfaceBandKind::Parking
-        | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
-    }
+    ordered_raised_step_kinds(a.kind, b.kind).is_some()
 }
 
 fn owner_sets_match_edge(

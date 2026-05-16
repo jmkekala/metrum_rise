@@ -9,6 +9,7 @@ use spade::{ConstrainedDelaunayTriangulation, Point2};
 
 mod arrangement;
 mod backend;
+mod band_semantics;
 mod cache;
 mod debug;
 mod earthwork;

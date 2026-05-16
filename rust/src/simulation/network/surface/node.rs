@@ -1,5 +1,6 @@
 //! Explicit visual node-piece construction and incident-edge classification.
 
+use super::band_semantics::ordered_raised_step_kinds;
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, NodeOwnedRegion,
@@ -1812,27 +1813,11 @@ fn canonical_vertical_step_lower_and_raised_owners(
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {
     let owner = segment.owner();
     let opposite_owner = segment.opposite_owner();
-    let owner_rank = raised_step_band_kind_rank(owner.kind())?;
-    let opposite_rank = raised_step_band_kind_rank(opposite_owner.kind())?;
-    if owner_rank == opposite_rank {
-        return None;
-    }
-    if owner_rank < opposite_rank {
+    let (lower_kind, _) = ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
+    if owner.kind() == lower_kind {
         Some((owner, opposite_owner))
     } else {
         Some((opposite_owner, owner))
-    }
-}
-
-fn raised_step_band_kind_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
-    match kind {
-        RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::Footpath => Some(0),
-        RoadSurfaceBandKind::CurbOrShoulder => Some(1),
-        RoadSurfaceBandKind::Sidewalk => Some(2),
-        RoadSurfaceBandKind::Median
-        | RoadSurfaceBandKind::Parking
-        | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
     }
 }
 
