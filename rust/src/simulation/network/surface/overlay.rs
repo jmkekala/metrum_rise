@@ -363,13 +363,6 @@ impl RoadSurfaceSystem {
             .sum()
     }
 
-    pub(super) fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
-        (
-            (point[0] * NODE_OVERLAY_SCALE).round() as i64,
-            (point[1] * NODE_OVERLAY_SCALE).round() as i64,
-        )
-    }
-
     pub(super) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
         band_kind_sort_key(kind)
     }

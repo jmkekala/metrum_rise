@@ -2,16 +2,15 @@
 
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour,
-    NodeOverlayPoint, NodeOverlayPointKey, NodeOverlayShape, RoadSurfaceBandKind,
-    RoadSurfaceSystem, RoadSurfaceVisualPolygon, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualPolygon, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
     earthwork::RoadSurfaceEarthworkFaceSource,
+    keys::{SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-
-type TerrainClipSourceVertexKey = (i64, i64);
 
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 
@@ -107,6 +106,14 @@ struct TerrainClipSourceInterval {
     end_t: f64,
     start_y: f32,
     end_y: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum TerrainClipSegmentPointRecovery {
+    Degenerate,
+    Covered(Vec<Vector3>),
+    Partial,
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,43 +271,78 @@ impl RoadSurfaceSystem {
         for index in 0..contour.len() {
             let start = contour[index];
             let end = contour[(index + 1) % contour.len()];
-            let Some(segment_points) =
-                Self::terrain_clip_segment_points_from_source_edges(start, end, source_edges)
-                    .or_else(|| {
-                        Self::terrain_clip_dust_connector_points_from_source_edges(
-                            &contour,
-                            index,
-                            source_edges,
-                        )
-                    })
-                    .or_else(|| {
+            let segment_points = match Self::terrain_clip_segment_points_from_source_edges(
+                start,
+                end,
+                source_edges,
+            ) {
+                TerrainClipSegmentPointRecovery::Degenerate => continue,
+                TerrainClipSegmentPointRecovery::Covered(points) => points,
+                TerrainClipSegmentPointRecovery::Partial => {
+                    let context = format!(
+                        "partial_coverage {}",
+                        Self::terrain_clip_missing_source_context_label(start, end, source_edges)
+                    );
+                    crate::debug_log!(
+                        "road",
+                        "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                        shape_index,
+                        start[0],
+                        start[1],
+                        end[0],
+                        end[1],
+                        context
+                    );
+                    return Err(
+                        RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                            shape_index,
+                            start,
+                            end,
+                            context,
+                        },
+                    );
+                }
+                TerrainClipSegmentPointRecovery::Missing => {
+                    if let Some(points) = Self::terrain_clip_dust_connector_points_from_source_edges(
+                        &contour,
+                        index,
+                        source_edges,
+                    ) {
+                        points
+                    } else if let Some(points) =
                         Self::terrain_clip_source_chain_points_from_source_edges(
                             start,
                             end,
                             source_edges,
                         )
-                    })
-            else {
-                let context =
-                    Self::terrain_clip_missing_source_context_label(start, end, source_edges);
-                crate::debug_log!(
-                    "road",
-                    "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
-                    shape_index,
-                    start[0],
-                    start[1],
-                    end[0],
-                    end[1],
-                    context
-                );
-                return Err(
-                    RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
-                        shape_index,
-                        start,
-                        end,
-                        context,
-                    },
-                );
+                    {
+                        points
+                    } else {
+                        let context = Self::terrain_clip_missing_source_context_label(
+                            start,
+                            end,
+                            source_edges,
+                        );
+                        crate::debug_log!(
+                            "road",
+                            "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                            shape_index,
+                            start[0],
+                            start[1],
+                            end[0],
+                            end[1],
+                            context
+                        );
+                        return Err(
+                            RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                                shape_index,
+                                start,
+                                end,
+                                context,
+                            },
+                        );
+                    }
+                }
             };
             if let Err((missing_start, missing_end)) =
                 Self::append_terrain_clip_sourced_segment_points(
@@ -401,9 +443,7 @@ impl RoadSurfaceSystem {
                     source_edge.end,
                     &boundary_loop.points_world,
                 );
-                if Self::overlay_point_key([f64::from(start.x), f64::from(start.z)])
-                    == Self::overlay_point_key([f64::from(end.x), f64::from(end.z)])
-                {
+                if Self::terrain_clip_world_key(start) == Self::terrain_clip_world_key(end) {
                     continue;
                 }
                 edges.push(TerrainClipSourceEdge {
@@ -421,12 +461,12 @@ impl RoadSurfaceSystem {
         Self::canonicalize_terrain_clip_source_endpoint_groups(&mut edges);
 
         edges.sort_by_key(|edge| {
-            let start_key =
-                Self::overlay_point_key([f64::from(edge.start.x), f64::from(edge.start.z)]);
-            let end_key = Self::overlay_point_key([f64::from(edge.end.x), f64::from(edge.end.z)]);
+            let start_key = Self::terrain_clip_world_key(edge.start);
+            let end_key = Self::terrain_clip_world_key(edge.end);
+            let edge_key = SurfaceXzSegmentKey::new(start_key, end_key);
             (
-                start_key.min(end_key),
-                start_key.max(end_key),
+                edge_key.start(),
+                edge_key.end(),
                 terrain_clip_edge_kind_priority(edge.kind),
                 Self::overlay_height_key(edge.start.y),
                 Self::overlay_height_key(edge.end.y),
@@ -494,8 +534,8 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_source_point_group_key(point: Vector3) -> (i64, i64, i64) {
-        let key = Self::overlay_point_key([f64::from(point.x), f64::from(point.z)]);
-        (key.0, key.1, Self::overlay_height_key(point.y))
+        let key = Self::terrain_clip_world_key(point);
+        (key.x_key(), key.z_key(), Self::overlay_height_key(point.y))
     }
 
     fn terrain_clip_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Vector3 {
@@ -516,7 +556,11 @@ impl RoadSurfaceSystem {
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<TerrainClipSegmentHeights> {
-        let points = Self::terrain_clip_segment_points_from_source_edges(start, end, source_edges)?;
+        let TerrainClipSegmentPointRecovery::Covered(points) =
+            Self::terrain_clip_segment_points_from_source_edges(start, end, source_edges)
+        else {
+            return None;
+        };
         Some(TerrainClipSegmentHeights {
             start_y: points.first()?.y,
             end_y: points.last()?.y,
@@ -527,9 +571,9 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<Vector3>> {
-        if Self::overlay_point_key(start) == Self::overlay_point_key(end) {
-            return None;
+    ) -> TerrainClipSegmentPointRecovery {
+        if Self::terrain_clip_overlay_key(start) == Self::terrain_clip_overlay_key(end) {
+            return TerrainClipSegmentPointRecovery::Degenerate;
         }
 
         let mut samples = Vec::new();
@@ -548,12 +592,12 @@ impl RoadSurfaceSystem {
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<Vec<Vector3>> {
-        if Self::overlay_point_key(start) == Self::overlay_point_key(end) {
+        if Self::terrain_clip_overlay_key(start) == Self::terrain_clip_overlay_key(end) {
             return None;
         }
 
-        let start_key = Self::overlay_point_key(start);
-        let end_key = Self::overlay_point_key(end);
+        let start_key = Self::terrain_clip_overlay_key(start);
+        let end_key = Self::terrain_clip_overlay_key(end);
         let source_indices = source_edges
             .iter()
             .map(|edge| edge.source_index)
@@ -617,7 +661,7 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_source_loop_positions_at_key(
-        key: NodeOverlayPointKey,
+        key: SurfaceXzKey,
         source_edges: &[TerrainClipSourceEdge],
     ) -> BTreeSet<usize> {
         let mut positions = BTreeSet::new();
@@ -625,17 +669,11 @@ impl RoadSurfaceSystem {
             return positions;
         }
         for (position, source_edge) in source_edges.iter().copied().enumerate() {
-            let start_key = Self::overlay_point_key([
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ]);
+            let start_key = Self::terrain_clip_world_key(source_edge.start);
             if start_key == key {
                 positions.insert(position);
             }
-            let end_key = Self::overlay_point_key([
-                f64::from(source_edge.end.x),
-                f64::from(source_edge.end.z),
-            ]);
+            let end_key = Self::terrain_clip_world_key(source_edge.end);
             if end_key == key {
                 positions.insert((position + 1) % source_edges.len());
             }
@@ -647,7 +685,7 @@ impl RoadSurfaceSystem {
         source_edges: &[TerrainClipSourceEdge],
         start_position: usize,
         end_position: usize,
-    ) -> Option<Vec<TerrainClipSourceVertexKey>> {
+    ) -> Option<Vec<SurfaceXzKey>> {
         if source_edges.is_empty() || start_position >= source_edges.len() {
             return None;
         }
@@ -672,23 +710,19 @@ impl RoadSurfaceSystem {
     fn terrain_clip_source_loop_vertex_key(
         source_edges: &[TerrainClipSourceEdge],
         position: usize,
-    ) -> Option<TerrainClipSourceVertexKey> {
+    ) -> Option<SurfaceXzKey> {
         let source_edge = source_edges.get(position % source_edges.len())?;
-        Some(Self::terrain_clip_source_vertex_key(source_edge.start))
-    }
-
-    fn terrain_clip_source_vertex_key(point: Vector3) -> TerrainClipSourceVertexKey {
-        Self::overlay_point_key([f64::from(point.x), f64::from(point.z)])
+        Some(Self::terrain_clip_world_key(source_edge.start))
     }
 
     fn terrain_clip_source_point_for_vertex_key(
-        key: TerrainClipSourceVertexKey,
+        key: SurfaceXzKey,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<Vector3> {
         source_edges
             .iter()
             .flat_map(|edge| [edge.start, edge.end])
-            .filter(|point| Self::terrain_clip_source_vertex_key(*point) == key)
+            .filter(|point| Self::terrain_clip_world_key(*point) == key)
             .max_by(|a, b| a.y.total_cmp(&b.y))
     }
 
@@ -711,13 +745,13 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
         intervals: I,
-    ) -> Option<Vec<Vector3>>
+    ) -> TerrainClipSegmentPointRecovery
     where
         I: IntoIterator<Item = TerrainClipSourceInterval>,
     {
         let intervals = intervals.into_iter().collect::<Vec<_>>();
         if intervals.is_empty() {
-            return None;
+            return TerrainClipSegmentPointRecovery::Missing;
         }
 
         let mut breakpoints = Self::terrain_clip_interval_breakpoints(&intervals);
@@ -740,17 +774,23 @@ impl RoadSurfaceSystem {
                 .filter(|interval| Self::terrain_clip_interval_covers(*interval, start_t, end_t))
                 .collect::<Vec<_>>();
             if covering.is_empty() {
-                return None;
+                return TerrainClipSegmentPointRecovery::Partial;
             }
             covered_any = true;
 
-            let start_y = Self::terrain_clip_highest_source_height_at_t(&covering, start_t)?;
-            let end_y = Self::terrain_clip_highest_source_height_at_t(&covering, end_t)?;
+            let Some(start_y) = Self::terrain_clip_highest_source_height_at_t(&covering, start_t)
+            else {
+                return TerrainClipSegmentPointRecovery::Partial;
+            };
+            let Some(end_y) = Self::terrain_clip_highest_source_height_at_t(&covering, end_t)
+            else {
+                return TerrainClipSegmentPointRecovery::Partial;
+            };
             Self::merge_terrain_clip_height(&mut heights[index], start_y);
             Self::merge_terrain_clip_height(&mut heights[index + 1], end_y);
         }
         if !covered_any {
-            return None;
+            return TerrainClipSegmentPointRecovery::Missing;
         }
 
         let mut points = Vec::new();
@@ -762,7 +802,11 @@ impl RoadSurfaceSystem {
             points.push(Vector3::new(point[0] as f32, height, point[1] as f32));
         }
         Self::dedup_terrain_clip_segment_points(&mut points);
-        (points.len() >= 2).then_some(points)
+        if points.len() >= 2 {
+            TerrainClipSegmentPointRecovery::Covered(points)
+        } else {
+            TerrainClipSegmentPointRecovery::Degenerate
+        }
     }
 
     fn terrain_clip_interval_breakpoints(intervals: &[TerrainClipSourceInterval]) -> Vec<f64> {
@@ -1125,20 +1169,14 @@ impl RoadSurfaceSystem {
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<TerrainClipSourceEdge> {
-        let start_key = Self::overlay_point_key(start);
-        let end_key = Self::overlay_point_key(end);
+        let start_key = Self::terrain_clip_overlay_key(start);
+        let end_key = Self::terrain_clip_overlay_key(end);
         let mut candidates = source_edges
             .iter()
             .copied()
             .filter(|source_edge| {
-                let source_start_key = Self::overlay_point_key([
-                    f64::from(source_edge.start.x),
-                    f64::from(source_edge.start.z),
-                ]);
-                let source_end_key = Self::overlay_point_key([
-                    f64::from(source_edge.end.x),
-                    f64::from(source_edge.end.z),
-                ]);
+                let source_start_key = Self::terrain_clip_world_key(source_edge.start);
+                let source_end_key = Self::terrain_clip_world_key(source_edge.end);
                 (source_start_key == start_key && source_end_key == end_key)
                     || (source_start_key == end_key && source_end_key == start_key)
             })
@@ -1160,16 +1198,7 @@ impl RoadSurfaceSystem {
         ));
         endpoint_edges.sort_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b));
         endpoint_edges.dedup_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b).is_eq());
-        endpoint_edges.into_iter().next().or_else(|| {
-            let connector_length_m = overlay_segment_length_m(start, end);
-            if connector_length_m > f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) {
-                return None;
-            }
-            source_edges
-                .iter()
-                .copied()
-                .min_by(|a, b| Self::terrain_clip_source_edge_ordering(*a, *b))
-        })
+        endpoint_edges.into_iter().next()
     }
 
     fn terrain_clip_source_edges_at_overlay_point(
@@ -1201,8 +1230,7 @@ impl RoadSurfaceSystem {
     }
 
     fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {
-        Self::overlay_point_key([f64::from(a.x), f64::from(a.z)])
-            == Self::overlay_point_key([f64::from(b.x), f64::from(b.z)])
+        Self::terrain_clip_world_key(a) == Self::terrain_clip_world_key(b)
     }
 
     fn terrain_clip_connector_is_numeric_dust(
@@ -1248,15 +1276,10 @@ impl RoadSurfaceSystem {
         point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipEndpointSample> {
-        let point_key = Self::overlay_point_key(point);
+        let point_key = Self::terrain_clip_overlay_key(point);
         let mut samples = Vec::new();
         for &source_edge in source_edges {
-            let source_start = [
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ];
-            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
-            if Self::overlay_point_key(source_start) == point_key {
+            if Self::terrain_clip_world_key(source_edge.start) == point_key {
                 samples.push(TerrainClipEndpointSample {
                     kind: source_edge.kind,
                     source_index: source_edge.source_index,
@@ -1264,7 +1287,7 @@ impl RoadSurfaceSystem {
                     y: source_edge.start.y,
                 });
             }
-            if Self::overlay_point_key(source_end) == point_key {
+            if Self::terrain_clip_world_key(source_edge.end) == point_key {
                 samples.push(TerrainClipEndpointSample {
                     kind: source_edge.kind,
                     source_index: source_edge.source_index,
@@ -1388,13 +1411,13 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
     ) -> Option<OverlaySegmentParameter> {
-        let start_key = Self::overlay_point_key(start);
-        let end_key = Self::overlay_point_key(end);
-        let point_key = Self::overlay_point_key(point);
-        let dx = end_key.0 - start_key.0;
-        let dz = end_key.1 - start_key.1;
-        let px = point_key.0 - start_key.0;
-        let pz = point_key.1 - start_key.1;
+        let start_key = Self::terrain_clip_overlay_key(start);
+        let end_key = Self::terrain_clip_overlay_key(end);
+        let point_key = Self::terrain_clip_overlay_key(point);
+        let dx = end_key.x_key() - start_key.x_key();
+        let dz = end_key.z_key() - start_key.z_key();
+        let px = point_key.x_key() - start_key.x_key();
+        let pz = point_key.z_key() - start_key.z_key();
         let length_squared = i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz);
         if length_squared == 0
             || i128::from(dx) * i128::from(pz) - i128::from(dz) * i128::from(px) != 0
@@ -1460,6 +1483,14 @@ impl RoadSurfaceSystem {
     fn overlay_heights_equal(a: f32, b: f32) -> bool {
         Self::overlay_height_key(a) == Self::overlay_height_key(b)
     }
+
+    fn terrain_clip_overlay_key(point: NodeOverlayPoint) -> SurfaceXzKey {
+        SurfaceXzKey::from_overlay_point(point)
+    }
+
+    fn terrain_clip_world_key(point: Vector3) -> SurfaceXzKey {
+        SurfaceXzKey::from_godot_world_xz(point)
+    }
 }
 
 fn interpolate_height_f64(start_y: f32, end_y: f32, t: f64) -> f32 {
@@ -1473,7 +1504,7 @@ fn overlay_segment_length_m(start: NodeOverlayPoint, end: NodeOverlayPoint) -> f
 }
 
 fn overlay_points_same_for_boundary(a: NodeOverlayPoint, b: NodeOverlayPoint) -> bool {
-    RoadSurfaceSystem::overlay_point_key(a) == RoadSurfaceSystem::overlay_point_key(b)
+    SurfaceXzKey::from_overlay_point(a) == SurfaceXzKey::from_overlay_point(b)
 }
 
 fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {

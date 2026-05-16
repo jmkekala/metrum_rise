@@ -1,5 +1,6 @@
 //! Terrain clip and road-touched CDT stage contract tests.
 
+use super::super::keys::SurfaceXzKey;
 use super::*;
 
 #[test]
@@ -431,6 +432,75 @@ fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
                 | Err(RoadSurfaceTerrainClipExportError::MissingOutputBoundaryOwner { .. })
         ),
         "terrain clip union must return a blocking source-ownership error instead of silently dropping an unowned cutter shape"
+    );
+}
+
+#[test]
+fn terrain_clip_union_blocks_partially_covered_source_segment() {
+    let y = 5.0;
+    let p0 = Vector3::new(0.0, y, 0.0);
+    let p1 = Vector3::new(1.0, y, 0.0);
+    let p2 = Vector3::new(1.0, y, 1.0);
+    let p3 = Vector3::new(0.0, y, 1.0);
+    let mid = Vector3::new(0.5, y, 0.0);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, mid),
+            terrain_clip_source_edge_for_test(p1, p2),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p0),
+        ],
+        points_world: vec![p0, p1, p2, p3],
+    }];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    let Err(RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner { context, .. }) = unioned
+    else {
+        panic!(
+            "partially covered terrain clip segment must be a blocking source-coverage error, got {unioned:?}"
+        );
+    };
+    assert!(
+        context.contains("partial_coverage"),
+        "partial source coverage should be diagnosed distinctly from ordinary missing ownership: {context}"
+    );
+}
+
+#[test]
+fn terrain_clip_union_skips_same_key_dust_only_when_degenerate() {
+    let y = 6.0;
+    let p0 = Vector3::new(0.0, y, 0.0);
+    let p0_same_key = Vector3::new(0.0000002, y + 0.25, 0.0000002);
+    let p1 = Vector3::new(1.0, y, 0.0);
+    let p2 = Vector3::new(1.0, y, 1.0);
+    let p3 = Vector3::new(0.0, y, 1.0);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p0_same_key),
+            terrain_clip_source_edge_for_test(p0_same_key, p1),
+            terrain_clip_source_edge_for_test(p1, p2),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p0),
+        ],
+        points_world: vec![p0, p0_same_key, p1, p2, p3],
+    }];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources)
+            .expect(
+                "same-key degenerate dust should be skipped without losing the sourced clip loop",
+            );
+
+    assert_eq!(unioned.len(), 1);
+    assert!(
+        unioned[0]
+            .source_edges
+            .iter()
+            .all(|edge| SurfaceXzKey::from_godot_world_xz(edge.start)
+                != SurfaceXzKey::from_godot_world_xz(edge.end)),
+        "same-key dust may be skipped only as a degenerate segment, never emitted as a sourced edge"
     );
 }
 
