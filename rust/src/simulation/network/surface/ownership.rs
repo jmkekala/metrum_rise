@@ -1,14 +1,12 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
-use super::arrangement::{
-    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous,
-};
+use super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};
 use super::backend::RoadVec2;
 use super::band_semantics::{
     raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
 };
 use super::keys::{SurfaceXzKey, SurfaceXzSegmentKey};
-use super::rails::{NodeGeneratedContourClaimPriority, NodeRailConstraint, NodeRailContourSet};
+use super::rails::{NodeGeneratedContourClaimPriority, NodeRailContourSet};
 use super::segments::{
     key_collinear_with_overlay_grid_segment, key_collinear_with_segment, raw_tuple_key,
     raw_tuple_key_lies_exactly_on_segment, raw_tuple_key_lies_on_segment,
@@ -20,6 +18,7 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod boundaries;
 mod domains;
 mod rings;
 mod seams;
@@ -39,18 +38,12 @@ use rings::{
 };
 use rings::{
     canonical_points_for_rail_set, canonicalize_owned_region_rings,
-    clean_canonical_owned_region_shapes, noded_owned_region_edge_points,
-    owned_region_global_points,
+    clean_canonical_owned_region_shapes,
 };
 
 #[cfg(test)]
 use seams::{canonicalize_seam_constraints, owned_shape_is_discardable_numeric_dust};
-use seams::{
-    junctionn_unmaterialized_raised_step_authority_indices_for_edge,
-    materialize_noded_region_seam_constraints, owned_boundary_requires_explicit_seam,
-    owned_source_constraints_for_edge, seam_constraints_for_shape,
-    source_constraints_materialize_raised_step_authority,
-};
+use seams::{materialize_noded_region_seam_constraints, seam_constraints_for_shape};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
@@ -290,113 +283,6 @@ impl NodeBooleanOwnership {
 }
 
 impl NodeOwnedRegionArrangement {
-    pub(crate) fn from_owned_regions(
-        node_id: u32,
-        piece_kind: RoadSurfaceVisualNodePieceKind,
-        regions: &[NodeBooleanOwnedRegion],
-        footprint_shapes: &NodeOverlayShapes,
-        rail_constraints: &[NodeRailConstraint],
-    ) -> Self {
-        let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
-        let mut edges = Vec::new();
-        let mut diagnostics = Vec::new();
-
-        for (edge_key, refs) in boundary_refs.edges {
-            let refs = canonical_owned_region_edge_refs(&refs);
-            for edge_ref in &refs {
-                let Some(region) = regions.get(edge_ref.region_index) else {
-                    continue;
-                };
-                let opposite_owner = opposite_owner_for_ref(&refs, *edge_ref);
-                let source_constraints = owned_source_constraints_for_edge(
-                    edge_key.start,
-                    edge_key.end,
-                    &region.seam_constraints,
-                );
-                if let Some(opposite_owner) = opposite_owner {
-                    let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
-                    let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
-                    if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
-                        let source_constraint_indices =
-                            junctionn_unmaterialized_raised_step_authority_indices_for_edge(
-                                piece_kind,
-                                edge_key.start,
-                                edge_key.end,
-                                rail_constraints,
-                                edge_ref.owner,
-                                opposite_owner,
-                            );
-                        if !source_constraint_indices.is_empty()
-                            && !source_constraints_materialize_raised_step_authority(
-                                &source_constraints,
-                                &source_constraint_indices,
-                                edge_ref.owner,
-                                opposite_owner,
-                            )
-                        {
-                            diagnostics.push(
-                                NodeOwnedRegionArrangementDiagnostic::UnmaterializedRaisedStepAuthority {
-                                    region_index: edge_ref.region_index,
-                                    owner: edge_ref.owner,
-                                    opposite_owner,
-                                    start,
-                                    end,
-                                    source_constraint_indices,
-                                },
-                            );
-                        } else if source_constraints.is_empty() {
-                            diagnostics.push(
-                                NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
-                                    region_index: edge_ref.region_index,
-                                    owner: edge_ref.owner,
-                                    opposite_owner,
-                                    start,
-                                    end,
-                                },
-                            );
-                        } else if seam_constraints_are_ambiguous(&source_constraints) {
-                            diagnostics.push(
-                                NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
-                                    region_index: edge_ref.region_index,
-                                    owner: edge_ref.owner,
-                                    opposite_owner,
-                                    start,
-                                    end,
-                                },
-                            );
-                        }
-                    }
-                }
-                let seam_source = source_constraints
-                    .first()
-                    .map(|constraint| constraint.seam_source.clone())
-                    .unwrap_or_else(|| NodeSeamSource::for_owner(edge_ref.owner));
-                let source_constraint_indices = canonical_source_indices(
-                    source_constraints
-                        .iter()
-                        .map(|constraint| constraint.constraint_index),
-                );
-                edges.push(NodeOwnedRegionArrangementEdge {
-                    region_index: edge_ref.region_index,
-                    owner: edge_ref.owner,
-                    opposite_owner,
-                    start: NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start),
-                    end: NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end),
-                    seam_source,
-                    source_constraint_indices,
-                });
-            }
-        }
-
-        Self {
-            node_id,
-            piece_kind,
-            region_count: regions.len(),
-            edges,
-            diagnostics,
-        }
-    }
-
     pub(crate) fn node_id(&self) -> u32 {
         self.node_id
     }
@@ -440,70 +326,6 @@ impl NodeOwnedRegionArrangementKey {
     }
 }
 
-struct OwnedRegionBoundaryRefs {
-    edges: BTreeMap<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>,
-}
-
-fn owned_region_boundary_refs(
-    regions: &[NodeBooleanOwnedRegion],
-    footprint_shapes: &NodeOverlayShapes,
-) -> OwnedRegionBoundaryRefs {
-    let global_points = owned_region_global_points(regions, footprint_shapes);
-    let mut edges = BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>::new();
-    for (region_index, region) in regions.iter().enumerate() {
-        for contour in &region.shape {
-            if contour.len() < 2 {
-                continue;
-            }
-            for edge_index in 0..contour.len() {
-                let start = ownership_key_from_overlay_point(contour[edge_index]);
-                let end =
-                    ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
-                if start == end {
-                    continue;
-                }
-                let points = noded_owned_region_edge_points(start, end, &global_points);
-                for segment in points.windows(2) {
-                    if segment[0] == segment[1] {
-                        continue;
-                    }
-                    let edge_ref = OwnedRegionEdgeRef {
-                        region_index,
-                        owner: region.owner,
-                    };
-                    edges
-                        .entry(OwnedRegionEdgeKey::new(segment[0], segment[1]))
-                        .or_default()
-                        .push(edge_ref);
-                }
-            }
-        }
-    }
-
-    OwnedRegionBoundaryRefs { edges }
-}
-
-fn canonical_owned_region_edge_refs(refs: &[OwnedRegionEdgeRef]) -> Vec<OwnedRegionEdgeRef> {
-    let mut refs = refs.to_vec();
-    refs.sort_unstable();
-    refs.dedup();
-    refs
-}
-
-fn opposite_owner_for_ref(
-    refs: &[OwnedRegionEdgeRef],
-    edge_ref: OwnedRegionEdgeRef,
-) -> Option<NodeBandOwner> {
-    let mut owners = refs
-        .iter()
-        .map(|edge_ref| edge_ref.owner)
-        .filter(|owner| *owner != edge_ref.owner)
-        .collect::<Vec<_>>();
-    owners.sort_unstable();
-    owners.dedup();
-    owners.into_iter().next()
-}
-
 fn canonical_source_indices(sources: impl IntoIterator<Item = usize>) -> Vec<usize> {
     let mut sources = sources.into_iter().collect::<Vec<_>>();
     sources.sort_unstable();
@@ -536,12 +358,6 @@ impl OwnedRegionEdgeKey {
             end: segment.end().raw_tuple(),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct OwnedRegionEdgeRef {
-    region_index: usize,
-    owner: NodeBandOwner,
 }
 
 fn road_point_from_key(point: NodeOwnershipPointKey) -> RoadVec2 {
@@ -640,7 +456,7 @@ mod tests {
     use crate::simulation::network::surface::input::NodeArrangementInput;
     use crate::simulation::network::surface::rails::{
         NodeGeneratedContour, NodeGeneratedContourKind, NodeGeneratedContourPurpose,
-        NodeRailConstraintKind, NodeRailContourSet,
+        NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
     };
     use crate::simulation::network::surface::validation::NodeValidationReport;
     use crate::simulation::network::surface::{

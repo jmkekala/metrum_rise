@@ -7,9 +7,11 @@ use super::super::{
     NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
+use super::boundaries::{
+    canonical_owned_region_edge_refs, opposite_owner_for_ref, owned_region_boundary_refs,
+};
 use super::{
-    NodeBooleanOwnedRegion, NodeOwnershipPointKey, canonical_owned_region_edge_refs,
-    canonical_source_indices, opposite_owner_for_ref, owned_region_boundary_refs,
+    NodeBooleanOwnedRegion, NodeOwnershipPointKey, canonical_source_indices,
     owners_form_raised_step_contact, ownership_key_from_overlay_point,
     ownership_key_from_road_point, point_key_collinear_with_edge,
     point_key_collinear_with_edge_on_overlay_grid, point_key_lies_on_segment,
