@@ -17,6 +17,7 @@ mod edge;
 mod geometry;
 mod height;
 mod incident;
+mod indices;
 mod input;
 mod joins;
 mod keys;

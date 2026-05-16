@@ -116,6 +116,28 @@ fn manual_region_with_kind(
     height_field_id: NodeBandHeightFieldId,
     vertices: Vec<RoadVec3>,
 ) -> NodeTriangulatedRegion {
+    manual_region_with_constraints_and_triangles(
+        kind,
+        owner_index,
+        height_field_id,
+        vertices,
+        vec![[0, 1], [1, 2], [0, 2]],
+        vec![NodeTriangulatedTriangle {
+            vertices: [0, 1, 2],
+        }],
+        0.5,
+    )
+}
+
+fn manual_region_with_constraints_and_triangles(
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    height_field_id: NodeBandHeightFieldId,
+    vertices: Vec<RoadVec3>,
+    boundary_constraints: Vec<[usize; 2]>,
+    triangles: Vec<NodeTriangulatedTriangle>,
+    area_m2: f32,
+) -> NodeTriangulatedRegion {
     NodeTriangulatedRegion {
         kind,
         owner: NodeBandOwner::new(kind, owner_index),
@@ -134,12 +156,123 @@ fn manual_region_with_kind(
                 ),
             })
             .collect(),
-        boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
-        triangles: vec![NodeTriangulatedTriangle {
+        boundary_constraints,
+        triangles,
+        area_m2,
+    }
+}
+
+fn split_bridge_region(
+    owner_index: usize,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeTriangulatedRegion {
+    manual_region_with_constraints_and_triangles(
+        RoadSurfaceBandKind::Carriageway,
+        owner_index,
+        height_field_id,
+        vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(0.5, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+            RoadVec3::new(0.5, 0.0, 1.0),
+            RoadVec3::new(1.0, 0.0, 1.0),
+        ],
+        vec![[0, 1], [1, 2], [2, 5], [3, 5], [0, 3]],
+        vec![
+            NodeTriangulatedTriangle {
+                vertices: [0, 1, 3],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [1, 4, 3],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [1, 2, 4],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [2, 5, 4],
+            },
+        ],
+        1.0,
+    )
+}
+
+fn long_bridge_region(
+    owner_index: usize,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeTriangulatedRegion {
+    manual_region_with_constraints_and_triangles(
+        RoadSurfaceBandKind::Carriageway,
+        owner_index,
+        height_field_id,
+        vec![
+            RoadVec3::new(-1.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+        ],
+        vec![[0, 1], [1, 2], [0, 2]],
+        vec![NodeTriangulatedTriangle {
             vertices: [0, 1, 2],
         }],
-        area_m2: 0.5,
-    }
+        1.5,
+    )
+}
+
+fn gapped_bridge_region(
+    owner_index: usize,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeTriangulatedRegion {
+    manual_region_with_constraints_and_triangles(
+        RoadSurfaceBandKind::Carriageway,
+        owner_index,
+        height_field_id,
+        vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(0.4, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+            RoadVec3::new(0.4, 0.0, 1.0),
+            RoadVec3::new(0.6, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(0.6, 0.0, 1.0),
+            RoadVec3::new(1.0, 0.0, 1.0),
+        ],
+        vec![
+            [0, 1],
+            [1, 3],
+            [2, 3],
+            [0, 2],
+            [4, 5],
+            [5, 7],
+            [6, 7],
+            [4, 6],
+        ],
+        vec![
+            NodeTriangulatedTriangle {
+                vertices: [0, 1, 2],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [1, 3, 2],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [4, 5, 6],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [5, 7, 6],
+            },
+        ],
+        0.8,
+    )
+}
+
+fn report_has_cross_region_height_conflict(report: &NodeValidationReport) -> bool {
+    report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.stage == NodeGeometryStage::Validation
+            && diagnostic.backend == NodeGeometryBackend::Spade
+            && matches!(
+                diagnostic.kind,
+                NodeGeometryDiagnosticKind::CrossRegionHeightConflict { .. }
+            )
+    })
 }
 
 fn key_point(x: f64, z: f64) -> NodeValidationPointKey {
@@ -391,6 +524,213 @@ fn accepts_explicit_step_across_same_height_asphalt_owner_handoff() {
 
     NodeValidationReport::from_triangulation_solution(&solution)
         .expect("same-height asphalt owner handoff should carry the explicit curb step authority");
+}
+
+#[test]
+fn accepts_same_height_handoff_with_complete_split_bridge_edge_coverage() {
+    let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let mouth_asphalt_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let joined_asphalt_field = NodeBandHeightFieldId::new(1, 0, RoadSurfaceBandKind::Carriageway);
+    let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+    let start = NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0));
+    let end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    let asphalt_handoff =
+        NodeExplicitVerticalStepSegment::new(start, end, mouth_asphalt_owner, joined_asphalt_owner)
+            .expect("non-degenerate asphalt handoff segment");
+    let curb_step =
+        NodeExplicitVerticalStepSegment::new(start, end, joined_asphalt_owner, curb_owner)
+            .expect("non-degenerate curb step segment");
+    let solution = NodeTriangulationSolution {
+        node_id: 103,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                mouth_asphalt_field,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(1.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, -1.0),
+                ],
+            ),
+            split_bridge_region(2, joined_asphalt_field),
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 0.0),
+                    RoadVec3::new(0.5, 0.12, -1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: vec![asphalt_handoff, curb_step],
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution)
+        .expect("split bridge edges fully covering the seam should carry handoff authority");
+}
+
+#[test]
+fn accepts_same_height_handoff_when_bridge_edge_contains_conflict_edge() {
+    let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let mouth_asphalt_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let joined_asphalt_field = NodeBandHeightFieldId::new(1, 0, RoadSurfaceBandKind::Carriageway);
+    let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+    let start = NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0));
+    let end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    let asphalt_handoff =
+        NodeExplicitVerticalStepSegment::new(start, end, mouth_asphalt_owner, joined_asphalt_owner)
+            .expect("non-degenerate asphalt handoff segment");
+    let curb_step =
+        NodeExplicitVerticalStepSegment::new(start, end, joined_asphalt_owner, curb_owner)
+            .expect("non-degenerate curb step segment");
+    let solution = NodeTriangulationSolution {
+        node_id: 106,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                mouth_asphalt_field,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(1.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, -1.0),
+                ],
+            ),
+            long_bridge_region(2, joined_asphalt_field),
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 0.0),
+                    RoadVec3::new(0.5, 0.12, -1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: vec![asphalt_handoff, curb_step],
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution)
+        .expect("a longer exact bridge edge may prove complete conflict-edge coverage");
+}
+
+#[test]
+fn rejects_same_height_handoff_with_bridge_endpoints_but_no_bridge_edge() {
+    let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let mouth_asphalt_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let joined_asphalt_field = NodeBandHeightFieldId::new(1, 0, RoadSurfaceBandKind::Carriageway);
+    let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+    let start = NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0));
+    let end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    let asphalt_handoff =
+        NodeExplicitVerticalStepSegment::new(start, end, mouth_asphalt_owner, joined_asphalt_owner)
+            .expect("non-degenerate asphalt handoff segment");
+    let curb_step =
+        NodeExplicitVerticalStepSegment::new(start, end, joined_asphalt_owner, curb_owner)
+            .expect("non-degenerate curb step segment");
+    let endpoint_only_bridge = manual_region_with_constraints_and_triangles(
+        RoadSurfaceBandKind::Carriageway,
+        2,
+        joined_asphalt_field,
+        vec![RoadVec3::new(0.0, 0.0, 0.0), RoadVec3::new(1.0, 0.0, 0.0)],
+        Vec::new(),
+        Vec::new(),
+        0.0,
+    );
+    let solution = NodeTriangulationSolution {
+        node_id: 104,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                mouth_asphalt_field,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(1.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, -1.0),
+                ],
+            ),
+            endpoint_only_bridge,
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 0.0),
+                    RoadVec3::new(0.5, 0.12, -1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: vec![asphalt_handoff, curb_step],
+    };
+
+    let error = NodeValidationReport::from_triangulation_solution(&solution)
+        .expect_err("endpoint-only bridge ownership must not authorize a height conflict");
+    assert!(report_has_cross_region_height_conflict(&error.report));
+}
+
+#[test]
+fn rejects_same_height_handoff_with_gapped_split_bridge_edge_coverage() {
+    let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let mouth_asphalt_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let joined_asphalt_field = NodeBandHeightFieldId::new(1, 0, RoadSurfaceBandKind::Carriageway);
+    let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+    let start = NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0));
+    let end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    let asphalt_handoff =
+        NodeExplicitVerticalStepSegment::new(start, end, mouth_asphalt_owner, joined_asphalt_owner)
+            .expect("non-degenerate asphalt handoff segment");
+    let curb_step =
+        NodeExplicitVerticalStepSegment::new(start, end, joined_asphalt_owner, curb_owner)
+            .expect("non-degenerate curb step segment");
+    let solution = NodeTriangulationSolution {
+        node_id: 105,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                mouth_asphalt_field,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(1.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, -1.0),
+                ],
+            ),
+            gapped_bridge_region(2, joined_asphalt_field),
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 0.0),
+                    RoadVec3::new(0.5, 0.12, -1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: vec![asphalt_handoff, curb_step],
+    };
+
+    let error = NodeValidationReport::from_triangulation_solution(&solution)
+        .expect_err("gapped bridge ownership must not authorize a full-edge height conflict");
+    assert!(report_has_cross_region_height_conflict(&error.report));
 }
 
 #[test]

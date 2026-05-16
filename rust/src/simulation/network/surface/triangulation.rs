@@ -6,6 +6,7 @@ use super::arrangement::{
     owners_form_explicit_vertical_step_pair,
 };
 use super::backend::RoadVec3;
+use super::indices::normalized_vertex_edge;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::node_grade::NodeGradeVertexAuthority;
 use super::{
@@ -375,7 +376,7 @@ fn push_arrangement_constraint_loop(
         .collect::<Result<Vec<_>, _>>()?;
     for index in 0..indices.len() {
         let constraint =
-            normalized_constraint(indices[index], indices[(index + 1) % indices.len()]);
+            normalized_vertex_edge(indices[index], indices[(index + 1) % indices.len()]);
         if constraint[0] != constraint[1] {
             constraints.insert(constraint);
         }
@@ -579,10 +580,6 @@ fn triangle_sort_key(
         .map(|index| NodeTriangulationPointKey::from_world(vertices[index].point_world));
     keys.sort();
     keys
-}
-
-fn normalized_constraint(a: usize, b: usize) -> [usize; 2] {
-    if a < b { [a, b] } else { [b, a] }
 }
 
 fn quantize_m(value: f64) -> i64 {

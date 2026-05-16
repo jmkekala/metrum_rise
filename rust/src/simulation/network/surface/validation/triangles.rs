@@ -3,23 +3,23 @@
 use super::super::arrangement::{
     NodeBandOwner, NodeExplicitVerticalStepSegment, owners_form_explicit_vertical_step_pair,
 };
+use super::super::indices::normalized_vertex_edge;
+use super::super::segments;
 use super::super::triangulation::{
     NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulationSolution,
 };
 use super::super::{NodeOverlayContour, RoadSurfaceSystem};
 use super::boundaries::{
-    duplicate_exposed_edge_has_explicit_owner_context, duplicate_exposed_edge_is_canonical_drift,
-    edge_lies_on_boundary_constraint, min_distance_to_boundary_mm, validate_region,
+    diagnostic_min_distance_to_boundary_mm,
+    edge_lies_on_explicit_boundary_constraint_or_backend_epsilon,
 };
 use super::report::{
     NodeExplicitStepSegmentDiagnostic, NodeGeometryBackend, NodeGeometryDiagnostic,
-    NodeGeometryDiagnosticKind, NodeGeometryStage, NodeInvalidConstraintReason,
-    NodeValidationError, NodeValidationReport, push_validation_diagnostic,
+    NodeGeometryDiagnosticKind, NodeInvalidConstraintReason, push_validation_diagnostic,
 };
 use super::{
     BoundarySegment, NodeValidationEdgeKey, NodeValidationPointKey,
-    VALIDATION_MIN_SEGMENT_LENGTH_M, edge_key_for_indices, normalized_constraint,
-    point_key_from_world, quantize_m,
+    VALIDATION_MIN_SEGMENT_LENGTH_M, edge_key_for_indices, point_key_from_world, quantize_m,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,33 +30,110 @@ struct HeightedTriangleEdge {
     end_height_mm: i64,
 }
 
-impl RoadSurfaceSystem {
-    pub(in crate::simulation::network::surface) fn validate_node_triangulation_solution(
-        solution: &NodeTriangulationSolution,
-    ) -> Result<NodeValidationReport, NodeValidationError> {
-        NodeValidationReport::from_triangulation_solution(solution)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HeightedOwnedCoverageEdge {
+    edge: NodeValidationEdgeKey,
+    heighted_edge: HeightedTriangleEdge,
+}
+
+#[derive(Default)]
+struct ValidationTriangleEdgeIndex {
+    by_edge: BTreeMap<NodeValidationEdgeKey, Vec<HeightedTriangleEdge>>,
+    by_owner_coverage: BTreeMap<NodeBandOwner, Vec<HeightedOwnedCoverageEdge>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct HeightedEdgeCoverageInterval {
+    start: super::super::keys::SurfaceSegmentParameter,
+    end: super::super::keys::SurfaceSegmentParameter,
+}
+
+impl ValidationTriangleEdgeIndex {
+    fn from_solution(solution: &NodeTriangulationSolution) -> Self {
+        let mut index = Self::default();
+        for (region_index, region) in solution.regions.iter().enumerate() {
+            for triangle in &region.triangles {
+                if !triangle_indices_valid(triangle, region.vertices.len()) {
+                    continue;
+                }
+                for edge in triangle_edges(triangle) {
+                    let (edge_key, heighted_edge) =
+                        heighted_triangle_edge_for_indices(region_index, region, edge);
+                    index
+                        .by_edge
+                        .entry(edge_key)
+                        .or_default()
+                        .push(heighted_edge);
+                    index
+                        .by_owner_coverage
+                        .entry(region.owner)
+                        .or_default()
+                        .push(HeightedOwnedCoverageEdge {
+                            edge: edge_key,
+                            heighted_edge,
+                        });
+                }
+            }
+            for edge in &region.boundary_constraints {
+                if !edge_indices_valid(*edge, region.vertices.len()) {
+                    continue;
+                }
+                let (edge_key, heighted_edge) =
+                    heighted_triangle_edge_for_indices(region_index, region, *edge);
+                index
+                    .by_owner_coverage
+                    .entry(region.owner)
+                    .or_default()
+                    .push(HeightedOwnedCoverageEdge {
+                        edge: edge_key,
+                        heighted_edge,
+                    });
+            }
+        }
+        index
+    }
+
+    fn owner_covers_edge_with_matching_heights(
+        &self,
+        owner: NodeBandOwner,
+        edge: NodeValidationEdgeKey,
+        target: HeightedTriangleEdge,
+    ) -> bool {
+        let Some(candidates) = self.by_owner_coverage.get(&owner) else {
+            return false;
+        };
+        let mut intervals = candidates
+            .iter()
+            .filter_map(|candidate| matching_coverage_interval(edge, target, *candidate))
+            .collect::<Vec<_>>();
+        if intervals.is_empty() {
+            return false;
+        }
+        intervals.sort_unstable();
+
+        let mut covered = super::super::keys::SurfaceSegmentParameter::zero();
+        let end = super::super::keys::SurfaceSegmentParameter::one();
+        for interval in intervals {
+            if interval.start > covered {
+                return false;
+            }
+            covered = covered.max(interval.end);
+            if covered >= end {
+                return true;
+            }
+        }
+        false
     }
 }
 
-fn validate_cross_region_triangle_edge_heights(
+pub(super) fn validate_cross_region_triangle_edge_heights(
     solution: &NodeTriangulationSolution,
     diagnostics: &mut Vec<NodeGeometryDiagnostic>,
 ) {
-    let mut edges = BTreeMap::<NodeValidationEdgeKey, Vec<HeightedTriangleEdge>>::new();
-    for (region_index, region) in solution.regions.iter().enumerate() {
-        for triangle in &region.triangles {
-            if !triangle_indices_valid(triangle, region.vertices.len()) {
-                continue;
-            }
-            for edge in triangle_edges(triangle) {
-                let (edge_key, heighted_edge) =
-                    heighted_triangle_edge_for_indices(region_index, region, edge);
-                edges.entry(edge_key).or_default().push(heighted_edge);
-            }
-        }
-    }
+    let edge_index = ValidationTriangleEdgeIndex::from_solution(solution);
 
-    for (edge_key, mut heighted_edges) in edges {
+    for (edge_key, heighted_edges) in &edge_index.by_edge {
+        let mut heighted_edges = heighted_edges.clone();
         heighted_edges.sort_unstable();
         heighted_edges.dedup();
         'edge: for left_index in 0..heighted_edges.len() {
@@ -67,12 +144,16 @@ fn validate_cross_region_triangle_edge_heights(
                     || (left.start_height_mm == right.start_height_mm
                         && left.end_height_mm == right.end_height_mm)
                     || cross_region_edges_form_explicit_vertical_step(
-                        solution, edge_key, left, right,
+                        solution,
+                        &edge_index,
+                        *edge_key,
+                        left,
+                        right,
                     )
                 {
                     continue;
                 }
-                push_triangle_edge_height_conflict(solution, diagnostics, edge_key, left, right);
+                push_triangle_edge_height_conflict(solution, diagnostics, *edge_key, left, right);
                 break 'edge;
             }
         }
@@ -119,8 +200,68 @@ fn heighted_triangle_edge_for_indices(
     }
 }
 
+fn matching_coverage_interval(
+    edge: NodeValidationEdgeKey,
+    target: HeightedTriangleEdge,
+    candidate: HeightedOwnedCoverageEdge,
+) -> Option<HeightedEdgeCoverageInterval> {
+    let edge_start = edge.start.surface_key();
+    let edge_end = edge.end.surface_key();
+    let candidate_start = candidate.edge.start.surface_key();
+    let candidate_end = candidate.edge.end.surface_key();
+
+    let candidate_start_parameter =
+        segments::exact_line_parameter(candidate_start, edge_start, edge_end)?;
+    let candidate_end_parameter =
+        segments::exact_line_parameter(candidate_end, edge_start, edge_end)?;
+    let (candidate_interval_start, candidate_interval_end) =
+        if candidate_start_parameter <= candidate_end_parameter {
+            (candidate_start_parameter, candidate_end_parameter)
+        } else {
+            (candidate_end_parameter, candidate_start_parameter)
+        };
+    let start = candidate_interval_start.max(super::super::keys::SurfaceSegmentParameter::zero());
+    let end = candidate_interval_end.min(super::super::keys::SurfaceSegmentParameter::one());
+    if start >= end {
+        return None;
+    }
+
+    let start_height_mm =
+        heighted_candidate_edge_height_at_target_parameter(edge, candidate, start)?;
+    let end_height_mm = heighted_candidate_edge_height_at_target_parameter(edge, candidate, end)?;
+    let expected_start_height_mm =
+        segments::interpolate_height_i64(target.start_height_mm, target.end_height_mm, start);
+    let expected_end_height_mm =
+        segments::interpolate_height_i64(target.start_height_mm, target.end_height_mm, end);
+    (start_height_mm == expected_start_height_mm && end_height_mm == expected_end_height_mm)
+        .then_some(HeightedEdgeCoverageInterval { start, end })
+}
+
+fn heighted_candidate_edge_height_at_target_parameter(
+    edge: NodeValidationEdgeKey,
+    candidate: HeightedOwnedCoverageEdge,
+    parameter: super::super::keys::SurfaceSegmentParameter,
+) -> Option<i64> {
+    let target_start = edge.start.surface_key();
+    let target_end = edge.end.surface_key();
+    let point = segments::interpolate_key(target_start, target_end, parameter);
+    let candidate_start = candidate.edge.start.surface_key();
+    let candidate_end = candidate.edge.end.surface_key();
+    if !segments::key_lies_exactly_on_segment(point, candidate_start, candidate_end) {
+        return None;
+    }
+    let candidate_parameter =
+        segments::exact_line_parameter(point, candidate_start, candidate_end)?;
+    Some(segments::interpolate_height_i64(
+        candidate.heighted_edge.start_height_mm,
+        candidate.heighted_edge.end_height_mm,
+        candidate_parameter,
+    ))
+}
+
 fn cross_region_edges_form_explicit_vertical_step(
     solution: &NodeTriangulationSolution,
+    edge_index: &ValidationTriangleEdgeIndex,
     edge: NodeValidationEdgeKey,
     left: HeightedTriangleEdge,
     right: HeightedTriangleEdge,
@@ -151,6 +292,7 @@ fn cross_region_edges_form_explicit_vertical_step(
     }
     cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
         solution,
+        edge_index,
         edge,
         left_region.owner,
         left,
@@ -161,6 +303,7 @@ fn cross_region_edges_form_explicit_vertical_step(
 
 fn cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
     solution: &NodeTriangulationSolution,
+    edge_index: &ValidationTriangleEdgeIndex,
     edge: NodeValidationEdgeKey,
     left_owner: NodeBandOwner,
     left: HeightedTriangleEdge,
@@ -175,6 +318,7 @@ fn cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
         .any(|step_segment| {
             if explicit_vertical_step_handoff_authorizes_owner(
                 solution,
+                edge_index,
                 edge,
                 step_segment,
                 left_owner,
@@ -185,6 +329,7 @@ fn cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
             }
             explicit_vertical_step_handoff_authorizes_owner(
                 solution,
+                edge_index,
                 edge,
                 step_segment,
                 right_owner,
@@ -196,6 +341,7 @@ fn cross_region_edges_form_same_height_owner_handoff_explicit_vertical_step(
 
 fn explicit_vertical_step_handoff_authorizes_owner(
     solution: &NodeTriangulationSolution,
+    edge_index: &ValidationTriangleEdgeIndex,
     edge: NodeValidationEdgeKey,
     step_segment: NodeExplicitVerticalStepSegment,
     missing_owner: NodeBandOwner,
@@ -219,16 +365,7 @@ fn explicit_vertical_step_handoff_authorizes_owner(
     {
         return false;
     }
-    heighted_triangle_edge_for_owner_on_validation_edge(solution, bridge_owner, edge).is_some_and(
-        |bridge_edge| {
-            bridge_edge.start_height_mm == missing_edge.start_height_mm
-                && bridge_edge.end_height_mm == missing_edge.end_height_mm
-        },
-    ) || heighted_region_endpoint_pair_for_owner_on_validation_edge(solution, bridge_owner, edge)
-        .is_some_and(|bridge_edge| {
-            bridge_edge.start_height_mm == missing_edge.start_height_mm
-                && bridge_edge.end_height_mm == missing_edge.end_height_mm
-        })
+    edge_index.owner_covers_edge_with_matching_heights(bridge_owner, edge, missing_edge)
 }
 
 fn explicit_step_segment_bridge_owner(
@@ -242,62 +379,6 @@ fn explicit_step_segment_bridge_owner(
     } else {
         None
     }
-}
-
-fn heighted_triangle_edge_for_owner_on_validation_edge(
-    solution: &NodeTriangulationSolution,
-    owner: NodeBandOwner,
-    edge: NodeValidationEdgeKey,
-) -> Option<HeightedTriangleEdge> {
-    for (region_index, region) in solution.regions.iter().enumerate() {
-        if region.owner != owner {
-            continue;
-        }
-        for triangle in &region.triangles {
-            if !triangle_indices_valid(triangle, region.vertices.len()) {
-                continue;
-            }
-            for triangle_edge in triangle_edges(triangle) {
-                let (candidate, heighted_edge) =
-                    heighted_triangle_edge_for_indices(region_index, region, triangle_edge);
-                if candidate == edge {
-                    return Some(heighted_edge);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn heighted_region_endpoint_pair_for_owner_on_validation_edge(
-    solution: &NodeTriangulationSolution,
-    owner: NodeBandOwner,
-    edge: NodeValidationEdgeKey,
-) -> Option<HeightedTriangleEdge> {
-    for (region_index, region) in solution.regions.iter().enumerate() {
-        if region.owner != owner {
-            continue;
-        }
-        let mut start_heights = BTreeSet::new();
-        let mut end_heights = BTreeSet::new();
-        for vertex in &region.vertices {
-            let key = point_key_from_world(vertex.point_world);
-            if key == edge.start {
-                start_heights.insert(quantize_m(vertex.point_world.y));
-            }
-            if key == edge.end {
-                end_heights.insert(quantize_m(vertex.point_world.y));
-            }
-        }
-        if start_heights.len() == 1 && end_heights.len() == 1 {
-            return Some(HeightedTriangleEdge {
-                region_index,
-                start_height_mm: *start_heights.iter().next()?,
-                end_height_mm: *end_heights.iter().next()?,
-            });
-        }
-    }
-    None
 }
 
 fn edge_lies_on_explicit_vertical_step(
@@ -324,12 +405,9 @@ fn point_lies_on_validation_segment(
     start: NodeValidationPointKey,
     end: NodeValidationPointKey,
 ) -> bool {
-    if point == start || point == end {
-        return true;
-    }
     point
         .surface_key()
-        .lies_on_open_segment(start.surface_key(), end.surface_key())
+        .lies_exactly_on_segment(start.surface_key(), end.surface_key())
 }
 
 fn push_triangle_edge_height_conflict(
@@ -457,64 +535,6 @@ fn explicit_step_segment_diagnostic(
     }
 }
 
-impl NodeValidationReport {
-    pub(crate) fn from_triangulation_solution(
-        solution: &NodeTriangulationSolution,
-    ) -> Result<Self, NodeValidationError> {
-        let mut diagnostics = Vec::new();
-        let mut exposed_edges = BTreeMap::<NodeValidationEdgeKey, Vec<usize>>::new();
-        let mut triangle_count = 0usize;
-        let mut exposed_edge_count = 0usize;
-
-        for (region_index, region) in solution.regions.iter().enumerate() {
-            let region_exposed_edges =
-                validate_region(solution, region_index, region, &mut diagnostics);
-            triangle_count += region.triangles.len();
-            exposed_edge_count += region_exposed_edges.len();
-            for edge in region_exposed_edges {
-                exposed_edges.entry(edge).or_default().push(region_index);
-            }
-        }
-
-        for (edge, region_indices) in exposed_edges {
-            if region_indices.len() > 2
-                && !duplicate_exposed_edge_has_explicit_owner_context(solution, &region_indices)
-                && !duplicate_exposed_edge_is_canonical_drift(solution, edge, &region_indices)
-            {
-                diagnostics.push(NodeGeometryDiagnostic {
-                    node_id: solution.node_id,
-                    piece_kind: solution.piece_kind,
-                    stage: NodeGeometryStage::Validation,
-                    backend: NodeGeometryBackend::Parry2d,
-                    kind: NodeGeometryDiagnosticKind::DuplicateExposedEdge {
-                        region_index: None,
-                        start_x_mm: edge.start.x_mm(),
-                        start_z_mm: edge.start.z_mm(),
-                        end_x_mm: edge.end.x_mm(),
-                        end_z_mm: edge.end.z_mm(),
-                        count: region_indices.len(),
-                    },
-                });
-            }
-        }
-        validate_cross_region_triangle_edge_heights(solution, &mut diagnostics);
-
-        let report = Self {
-            node_id: solution.node_id,
-            piece_kind: solution.piece_kind,
-            region_count: solution.regions.len(),
-            triangle_count,
-            exposed_edge_count,
-            diagnostics,
-        };
-        if report.diagnostics.is_empty() {
-            Ok(report)
-        } else {
-            Err(NodeValidationError { report })
-        }
-    }
-}
-
 pub(super) fn validate_triangles(
     solution: &NodeTriangulationSolution,
     region_index: usize,
@@ -571,14 +591,22 @@ pub(super) fn validate_triangles(
         let edge_key = edge_key_for_indices(region, edge);
         exposed_edges.push(edge_key);
         if boundary_edges.contains(&edge)
-            || edge_lies_on_boundary_constraint(region, edge, boundary_segments)
+            || edge_lies_on_explicit_boundary_constraint_or_backend_epsilon(
+                region,
+                edge,
+                boundary_segments,
+            )
         {
             continue;
         }
-        let start_distance_mm =
-            min_distance_to_boundary_mm(region.vertices[edge[0]].point_world, boundary_segments);
-        let end_distance_mm =
-            min_distance_to_boundary_mm(region.vertices[edge[1]].point_world, boundary_segments);
+        let start_distance_mm = diagnostic_min_distance_to_boundary_mm(
+            region.vertices[edge[0]].point_world,
+            boundary_segments,
+        );
+        let end_distance_mm = diagnostic_min_distance_to_boundary_mm(
+            region.vertices[edge[1]].point_world,
+            boundary_segments,
+        );
         for (vertex_index, distance_mm) in
             [(edge[0], start_distance_mm), (edge[1], end_distance_mm)]
         {
@@ -688,9 +716,9 @@ pub(super) fn validate_triangle_area_coverage(
 
 fn triangle_edges(triangle: &NodeTriangulatedTriangle) -> [[usize; 2]; 3] {
     [
-        normalized_constraint(triangle.vertices[0], triangle.vertices[1]),
-        normalized_constraint(triangle.vertices[1], triangle.vertices[2]),
-        normalized_constraint(triangle.vertices[2], triangle.vertices[0]),
+        normalized_vertex_edge(triangle.vertices[0], triangle.vertices[1]),
+        normalized_vertex_edge(triangle.vertices[1], triangle.vertices[2]),
+        normalized_vertex_edge(triangle.vertices[2], triangle.vertices[0]),
     ]
 }
 
@@ -699,6 +727,10 @@ fn triangle_indices_valid(triangle: &NodeTriangulatedTriangle, vertex_count: usi
         && triangle.vertices[0] != triangle.vertices[1]
         && triangle.vertices[1] != triangle.vertices[2]
         && triangle.vertices[2] != triangle.vertices[0]
+}
+
+fn edge_indices_valid(edge: [usize; 2], vertex_count: usize) -> bool {
+    edge[0] < vertex_count && edge[1] < vertex_count && edge[0] != edge[1]
 }
 
 fn triangle_contour(

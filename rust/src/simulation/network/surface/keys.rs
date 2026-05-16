@@ -208,6 +208,7 @@ impl SurfaceXzKey {
         self.inside_segment_bounds(start, end, true)
     }
 
+    #[cfg(test)]
     pub(crate) fn lies_on_open_segment(self, start: Self, end: Self) -> bool {
         if self == start || self == end || start == end {
             return false;

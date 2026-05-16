@@ -4,6 +4,7 @@ mod boundaries;
 mod crossings;
 mod mapping;
 mod report;
+mod solution;
 #[cfg(test)]
 mod tests;
 mod triangles;
@@ -54,10 +55,6 @@ fn edge_key_for_indices(
 
 fn point_key_from_world(point: super::backend::RoadVec3) -> NodeValidationPointKey {
     NodeValidationPointKey::from_surface_key(SurfaceXzKey::from_world_xz(point))
-}
-
-fn normalized_constraint(a: usize, b: usize) -> [usize; 2] {
-    if a < b { [a, b] } else { [b, a] }
 }
 
 fn quantize_m(value: f64) -> i64 {
