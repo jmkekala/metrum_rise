@@ -17,6 +17,10 @@ use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeGeneratedContourPurpose, NodeRailContourSet,
 };
+use super::segments::{
+    key_lies_exactly_on_segment, raw_tuple_key_lies_exactly_on_segment,
+    raw_tuple_quantization_cell_intersects_segment,
+};
 use super::terminal::{
     NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
 };
@@ -1488,9 +1492,10 @@ fn height_polygon_contains_point_xz(vertices: &[(RoadVec2, f64)], point: RoadVec
     for index in 0..vertices.len() {
         let start = vertices[index].0;
         let end = vertices[(index + 1) % vertices.len()].0;
-        if SurfaceXzKey::from_raw_tuple(point_key).lies_exactly_on_segment(
-            SurfaceXzKey::from_raw_tuple(height_source_point_key(start)),
-            SurfaceXzKey::from_raw_tuple(height_source_point_key(end)),
+        if raw_tuple_key_lies_exactly_on_segment(
+            point_key,
+            height_source_point_key(start),
+            height_source_point_key(end),
         ) {
             return true;
         }
@@ -1556,14 +1561,14 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
     for edge in edges {
         let start = height_source_point_key(edge.start_xz);
         let end = height_source_point_key(edge.end_xz);
-        if SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_segment(
-            SurfaceXzKey::from_raw_tuple(start),
-            SurfaceXzKey::from_raw_tuple(end),
-        ) || SurfaceXzKey::from_raw_tuple(point).quantization_cell_intersects_segment(
-            SurfaceXzKey::from_raw_tuple(start),
-            SurfaceXzKey::from_raw_tuple(end),
-            HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS,
-        ) {
+        if raw_tuple_key_lies_exactly_on_segment(point, start, end)
+            || raw_tuple_quantization_cell_intersects_segment(
+                point,
+                start,
+                end,
+                HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS,
+            )
+        {
             let dx = end.0 - start.0;
             let dz = end.1 - start.1;
             let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
@@ -1585,9 +1590,7 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
         let point = NodeHeightPointKey::from_point(point_xz);
         let start = NodeHeightPointKey::from_point(edge.start_xz);
         let end = NodeHeightPointKey::from_point(edge.end_xz);
-        if !point
-            .surface_key()
-            .lies_exactly_on_segment(start.surface_key(), end.surface_key())
+        if !key_lies_exactly_on_segment(point.surface_key(), start.surface_key(), end.surface_key())
         {
             continue;
         }

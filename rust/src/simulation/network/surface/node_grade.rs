@@ -7,6 +7,7 @@ use super::arrangement::{
 use super::backend::RoadVec2;
 use super::height::{NodeHeightAuthoritySource, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SURFACE_CANONICAL_HEIGHT_EPS_M, SurfaceHeightMmKey, SurfaceXzKey};
+use super::segments::road_xz_lies_exactly_on_segment;
 use std::collections::BTreeMap;
 
 const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
@@ -842,10 +843,7 @@ fn apply_junctionn_explicit_material_seam_height_to_unconstrained_same_material_
 }
 
 fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
-    SurfaceXzKey::from_road_xz(point).lies_exactly_on_segment(
-        SurfaceXzKey::from_road_xz(start),
-        SurfaceXzKey::from_road_xz(end),
-    )
+    road_xz_lies_exactly_on_segment(point, start, end)
 }
 
 fn set_vertex_grade_height(

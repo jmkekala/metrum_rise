@@ -15,7 +15,7 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) use super::segments::{
-    arrangement_key_lies_on_segment,
+    arrangement_key_lies_exactly_on_segment, arrangement_key_lies_on_segment,
     arrangement_key_overlay_segment_parameter as arrangement_key_segment_parameter_xz,
 };
 

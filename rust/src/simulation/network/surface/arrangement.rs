@@ -5,6 +5,7 @@ use super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
 use super::node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
+use super::segments::arrangement_key_lies_on_segment;
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -234,8 +235,7 @@ impl NodeArrangementKey {
     }
 
     fn lies_on_segment(self, start: Self, end: Self) -> bool {
-        self.surface_key()
-            .lies_on_segment(start.surface_key(), end.surface_key())
+        arrangement_key_lies_on_segment(self, start, end)
     }
 }
 

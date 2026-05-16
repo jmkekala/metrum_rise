@@ -15,8 +15,8 @@ use super::rails::{
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
 use super::segments::{
-    key_collinear_with_overlay_grid_segment, key_collinear_with_segment,
-    key_lies_exactly_on_segment, key_lies_on_segment, raw_tuple_key,
+    key_collinear_with_overlay_grid_segment, key_collinear_with_segment, raw_tuple_key,
+    raw_tuple_key_lies_exactly_on_segment, raw_tuple_key_lies_on_segment,
     raw_tuple_segment_parameter_key,
 };
 use super::{
@@ -2905,11 +2905,7 @@ fn point_key_lies_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    key_lies_on_segment(
-        raw_tuple_key(point),
-        raw_tuple_key(start),
-        raw_tuple_key(end),
-    )
+    raw_tuple_key_lies_on_segment(point, start, end)
 }
 
 fn point_key_lies_exactly_on_segment(
@@ -2917,11 +2913,7 @@ fn point_key_lies_exactly_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    key_lies_exactly_on_segment(
-        raw_tuple_key(point),
-        raw_tuple_key(start),
-        raw_tuple_key(end),
-    )
+    raw_tuple_key_lies_exactly_on_segment(point, start, end)
 }
 
 fn seam_source_from_constraint(

@@ -19,10 +19,11 @@ use super::{
     keys::surface_overlay_grid_collinearity_error_bound,
     node_boundary::{
         ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
-        arrangement_boundary_point_to_world, arrangement_key_lies_on_segment,
-        boundary_points_numeric_area_budget_m2, boundary_segment_parameter_xz,
-        interpolate_missing_footprint_boundary_heights, interpolated_segment_height_mm,
-        interpolated_segment_point_key, node_earthwork_boundary_segments_from_footprint_loops,
+        arrangement_boundary_point_to_world, arrangement_key_lies_exactly_on_segment,
+        arrangement_key_lies_on_segment, boundary_points_numeric_area_budget_m2,
+        boundary_segment_parameter_xz, interpolate_missing_footprint_boundary_heights,
+        interpolated_segment_height_mm, interpolated_segment_point_key,
+        node_earthwork_boundary_segments_from_footprint_loops,
         remove_unsupported_numeric_boundary_vertices,
     },
     terrain_clip_edge_kind_for_band,
@@ -2174,29 +2175,6 @@ fn arrangement_segments_exact_overlap_with_length(
     let b0 = coordinate(b_start);
     let b1 = coordinate(b_end);
     a0.min(a1).max(b0.min(b1)) < a0.max(a1).min(b0.max(b1))
-}
-
-fn arrangement_key_lies_exactly_on_segment(
-    point: NodeArrangementKey,
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.x_key() - start.x_key());
-    let dz = i128::from(end.z_key() - start.z_key());
-    let px = i128::from(point.x_key() - start.x_key());
-    let pz = i128::from(point.z_key() - start.z_key());
-    if px * dz - pz * dx != 0 {
-        return false;
-    }
-    let dot = px * dx + pz * dz;
-    let len_squared = dx * dx + dz * dz;
-    dot >= 0 && dot <= len_squared
 }
 
 impl RoadSurfaceSystem {
