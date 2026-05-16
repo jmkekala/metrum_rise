@@ -1,18 +1,16 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
 use super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};
-use super::band_semantics::{
-    raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
-};
 use super::rails::{NodeGeneratedContourClaimPriority, NodeRailContourSet};
 use super::{
     NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
-use std::collections::{BTreeMap, BTreeSet};
 
 mod boundaries;
+mod contact_semantics;
 mod domains;
+mod rail_authority;
 mod rings;
 mod seams;
 mod topology_keys;
@@ -24,19 +22,11 @@ use domains::{
     split_non_road_regions, validate_non_road_regions_have_explicit_profile_seam_rails,
 };
 
-use rings::{
-    canonical_points_for_rail_set, canonicalize_owned_region_rings,
-    clean_canonical_owned_region_shapes,
-};
+use rings::{canonicalize_owned_region_rings, clean_canonical_owned_region_shapes};
+
+use rail_authority::canonical_points_for_rail_set;
 
 use seams::{materialize_noded_region_seam_constraints, seam_constraints_for_shape};
-use topology_keys::{
-    NodeOwnershipPointKey, OwnedRegionEdgeKey, canonical_source_indices, overlay_point_from_key,
-    ownership_key_from_overlay_point, ownership_key_from_road_point, ownership_mm_key,
-    point_key_collinear_with_edge, point_key_collinear_with_edge_on_overlay_grid,
-    point_key_lies_exactly_on_segment, point_key_lies_on_segment, road_point_from_key,
-    segment_parameter_key,
-};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
@@ -148,17 +138,6 @@ pub(crate) enum NodeBooleanOwnershipError {
         canonical_x_key: i64,
         canonical_z_key: i64,
     },
-}
-
-struct NodeRailCanonicalPointSet {
-    all_points: Vec<NodeOwnershipPointKey>,
-    points_by_owner: BTreeMap<NodeBandOwner, Vec<NodeOwnershipPointKey>>,
-    segments_by_owner: BTreeMap<NodeBandOwner, Vec<OwnedRegionEdgeKey>>,
-    canonical_points_by_mm_key_by_owner:
-        BTreeMap<NodeBandOwner, BTreeMap<NodeOwnershipPointKey, BTreeSet<NodeOwnershipPointKey>>>,
-    height_points_by_source:
-        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeOwnershipPointKey>>,
-    paths_by_owner: BTreeMap<NodeBandOwner, Vec<Vec<NodeOwnershipPointKey>>>,
 }
 
 impl RoadSurfaceSystem {
@@ -295,25 +274,6 @@ impl NodeOwnedRegionArrangement {
     pub(crate) fn diagnostics(&self) -> &[NodeOwnedRegionArrangementDiagnostic] {
         &self.diagnostics
     }
-}
-
-fn owners_form_raised_step_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
-    raised_step_kinds_can_contact(owner.kind(), opposite_owner.kind())
-}
-
-fn raised_step_contact_requires_exact_constraint_span(
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-) -> bool {
-    raised_step_requires_exact_constraint_span(owner.kind(), opposite_owner.kind())
-}
-
-fn raised_step_contact_constrains_shared_height(
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-) -> bool {
-    owners_form_raised_step_contact(owner, opposite_owner)
-        && !raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
 }
 
 #[cfg(test)]

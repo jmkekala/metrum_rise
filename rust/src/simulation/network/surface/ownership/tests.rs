@@ -1,11 +1,18 @@
 //! Tests for node boolean ownership.
 
-use super::rings::{
-    canonical_points_by_mm_key_by_owner, canonicalize_final_owned_region_boundary_edges,
-    canonicalize_owned_region_rings_with_rail_point_set, constraint_authority_owners,
+use super::rail_authority::{
+    NodeRailCanonicalPointSet, canonical_points_by_mm_key_by_owner, constraint_authority_owners,
     insert_open_source_segments, validate_owned_region_vertices_against_source_authority,
 };
+use super::rings::{
+    canonicalize_final_owned_region_boundary_edges,
+    canonicalize_owned_region_rings_with_rail_point_set,
+};
 use super::seams::{canonicalize_seam_constraints, owned_shape_is_discardable_numeric_dust};
+use super::topology_keys::{
+    NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
+    ownership_key_from_overlay_point, ownership_key_from_road_point,
+};
 use super::*;
 use crate::simulation::network::surface::backend::{RoadVec2, road_points_to_polyline};
 use crate::simulation::network::surface::input::NodeArrangementInput;
@@ -19,6 +26,7 @@ use crate::simulation::network::surface::{
     OrderedIncidentPieceMouth,
 };
 use godot::prelude::{Vector2, Vector3};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
     IncidentMouthBand {

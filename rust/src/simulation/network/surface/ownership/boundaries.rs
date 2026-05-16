@@ -9,10 +9,12 @@ use super::seams::{
     owned_boundary_requires_explicit_seam, owned_source_constraints_for_edge,
     source_constraints_materialize_raised_step_authority,
 };
+use super::topology_keys::{
+    OwnedRegionEdgeKey, canonical_source_indices, ownership_key_from_overlay_point,
+};
 use super::{
     NodeBooleanOwnedRegion, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
-    NodeOwnedRegionArrangementEdge, NodeOwnedRegionArrangementKey, OwnedRegionEdgeKey,
-    canonical_source_indices, ownership_key_from_overlay_point,
+    NodeOwnedRegionArrangementEdge, NodeOwnedRegionArrangementKey,
 };
 use std::collections::BTreeMap;
 
