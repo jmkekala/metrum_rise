@@ -130,8 +130,8 @@ impl RoadSurfaceEarthworkFaceSource {
                         .sort_key()
                         .cmp(&support_policy_b.sort_key()),
                 )
-                .then(span_band_owner_ordering(owner_a, owner_b))
-                .then(span_region_role_sort_key(role_a).cmp(&span_region_role_sort_key(role_b)))
+                .then(owner_a.sort_key().cmp(&owner_b.sort_key()))
+                .then(role_a.sort_key().cmp(&role_b.sort_key()))
                 .then(start_section_index_a.cmp(&start_section_index_b))
                 .then(end_section_index_a.cmp(&end_section_index_b))
                 .then(start_s_m_a.total_cmp(&start_s_m_b))
@@ -153,10 +153,7 @@ impl RoadSurfaceEarthworkFaceSource {
                 },
             ) => node_id_a
                 .cmp(&node_id_b)
-                .then(
-                    visual_node_piece_kind_sort_key(kind_a)
-                        .cmp(&visual_node_piece_kind_sort_key(kind_b)),
-                )
+                .then(kind_a.sort_key().cmp(&kind_b.sort_key()))
                 .then(band_kind_sort_key(owner_kind_a).cmp(&band_kind_sort_key(owner_kind_b)))
                 .then(owner_index_a.cmp(&owner_index_b))
                 .then(boundary_source_a.cmp(&boundary_source_b)),
@@ -175,31 +172,6 @@ fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
         EdgeClass::Standard => 0,
         EdgeClass::Bridge => 1,
         EdgeClass::Tunnel => 2,
-    }
-}
-
-fn span_region_role_sort_key(role: RoadSurfaceSpanRegionRole) -> u8 {
-    match role {
-        RoadSurfaceSpanRegionRole::Asphalt => 0,
-        RoadSurfaceSpanRegionRole::CurbOrShoulder => 1,
-        RoadSurfaceSpanRegionRole::NonRoad => 2,
-    }
-}
-
-fn span_band_owner_ordering(
-    a: RoadSurfaceSpanBandOwner,
-    b: RoadSurfaceSpanBandOwner,
-) -> std::cmp::Ordering {
-    band_kind_sort_key(a.kind)
-        .cmp(&band_kind_sort_key(b.kind))
-        .then(a.source_band_index.cmp(&b.source_band_index))
-}
-
-fn visual_node_piece_kind_sort_key(kind: RoadSurfaceVisualNodePieceKind) -> u8 {
-    match kind {
-        RoadSurfaceVisualNodePieceKind::Terminal => 0,
-        RoadSurfaceVisualNodePieceKind::Bend => 1,
-        RoadSurfaceVisualNodePieceKind::JunctionN => 2,
     }
 }
 

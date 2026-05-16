@@ -6,7 +6,7 @@ use super::{
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
     RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
-    terrain_clip_edge_kind_for_band,
+    band_semantics::band_kind_sort_key, terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
@@ -132,6 +132,20 @@ impl RoadSurfaceSpanRegionRole {
             }
             _ => Self::NonRoad,
         }
+    }
+
+    pub(crate) fn sort_key(self) -> u8 {
+        match self {
+            Self::Asphalt => 0,
+            Self::CurbOrShoulder => 1,
+            Self::NonRoad => 2,
+        }
+    }
+}
+
+impl RoadSurfaceSpanBandOwner {
+    pub(crate) fn sort_key(self) -> (u8, usize) {
+        (band_kind_sort_key(self.kind), self.source_band_index)
     }
 }
 
@@ -349,15 +363,8 @@ impl RoadSurfaceSystem {
                 .then(a.end_section_index.cmp(&b.end_section_index))
                 .then(a.start_s_m.total_cmp(&b.start_s_m))
                 .then(a.end_s_m.total_cmp(&b.end_s_m))
-                .then(
-                    Self::span_region_role_sort_key(a.role)
-                        .cmp(&Self::span_region_role_sort_key(b.role)),
-                )
-                .then(
-                    Self::band_kind_sort_key(a.owner.kind)
-                        .cmp(&Self::band_kind_sort_key(b.owner.kind)),
-                )
-                .then(a.owner.source_band_index.cmp(&b.owner.source_band_index))
+                .then(a.role.sort_key().cmp(&b.role.sort_key()))
+                .then(a.owner.sort_key().cmp(&b.owner.sort_key()))
                 .then_with(|| Self::visual_polygon_ordering(&a.polygon, &b.polygon))
         });
     }
@@ -366,11 +373,16 @@ impl RoadSurfaceSystem {
         faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)],
     ) {
         faces.sort_by(|(polygon_a, source_a), (polygon_b, source_b)| {
-            Self::span_band_owner_ordering(source_a.lower_owner, source_b.lower_owner)
-                .then(Self::span_band_owner_ordering(
-                    source_a.raised_owner,
-                    source_b.raised_owner,
-                ))
+            source_a
+                .lower_owner
+                .sort_key()
+                .cmp(&source_b.lower_owner.sort_key())
+                .then(
+                    source_a
+                        .raised_owner
+                        .sort_key()
+                        .cmp(&source_b.raised_owner.sort_key()),
+                )
                 .then(
                     source_a
                         .start_section_index
@@ -381,23 +393,6 @@ impl RoadSurfaceSystem {
                 .then(source_a.end_s_m.total_cmp(&source_b.end_s_m))
                 .then_with(|| Self::visual_polygon_ordering(polygon_a, polygon_b))
         });
-    }
-
-    fn span_region_role_sort_key(role: RoadSurfaceSpanRegionRole) -> u8 {
-        match role {
-            RoadSurfaceSpanRegionRole::Asphalt => 0,
-            RoadSurfaceSpanRegionRole::CurbOrShoulder => 1,
-            RoadSurfaceSpanRegionRole::NonRoad => 2,
-        }
-    }
-
-    fn span_band_owner_ordering(
-        a: RoadSurfaceSpanBandOwner,
-        b: RoadSurfaceSpanBandOwner,
-    ) -> std::cmp::Ordering {
-        Self::band_kind_sort_key(a.kind)
-            .cmp(&Self::band_kind_sort_key(b.kind))
-            .then(a.source_band_index.cmp(&b.source_band_index))
     }
 
     fn span_raised_step_constraints_for_resolved_segment(

@@ -785,9 +785,7 @@ fn node_earthwork_source_edge_ordering(
 ) -> std::cmp::Ordering {
     a.node_id
         .cmp(&b.node_id)
-        .then(
-            visual_node_piece_kind_order_key(a.kind).cmp(&visual_node_piece_kind_order_key(b.kind)),
-        )
+        .then(a.kind.sort_key().cmp(&b.kind.sort_key()))
         .then(band_kind_sort_key(a.owner_kind).cmp(&band_kind_sort_key(b.owner_kind)))
         .then(a.owner_index.cmp(&b.owner_index))
         .then(a.start_source.cmp(&b.start_source))
@@ -943,14 +941,6 @@ pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 
 
 fn boundary_point_surface_key(point: ArrangementBoundaryPointKey) -> SurfaceXzKey {
     SurfaceXzKey::from_raw_keys(point.x_key, point.z_key)
-}
-
-fn visual_node_piece_kind_order_key(kind: RoadSurfaceVisualNodePieceKind) -> u8 {
-    match kind {
-        RoadSurfaceVisualNodePieceKind::Terminal => 0,
-        RoadSurfaceVisualNodePieceKind::Bend => 1,
-        RoadSurfaceVisualNodePieceKind::JunctionN => 2,
-    }
 }
 
 fn arrangement_key_distance_m(

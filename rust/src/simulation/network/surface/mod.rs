@@ -155,6 +155,16 @@ pub enum RoadSurfaceVisualNodePieceKind {
     JunctionN,
 }
 
+impl RoadSurfaceVisualNodePieceKind {
+    pub(crate) fn sort_key(self) -> u8 {
+        match self {
+            Self::Terminal => 0,
+            Self::Bend => 1,
+            Self::JunctionN => 2,
+        }
+    }
+}
+
 /// One explicit polygon owned by the visual road carrier.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoadSurfaceVisualPolygon {
