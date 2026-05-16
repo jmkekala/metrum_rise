@@ -3731,6 +3731,7 @@ mod tests {
             node_kind: TerrainCdtNodePieceKind::JunctionN,
             owner_kind: TerrainCdtRoadBandKind::CurbOrShoulder,
             owner_index: 3,
+            boundary_source: None,
         }
     }
 }

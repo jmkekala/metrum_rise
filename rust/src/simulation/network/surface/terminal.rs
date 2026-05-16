@@ -1,8 +1,8 @@
 //! Canonical terminal-cap adapter for one-mouth visual node ownership.
 
 use super::backend::{
-    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, quantize_road_vec2_to_overlay_grid,
-    road_points_to_polyline,
+    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
+    quantize_road_vec3_xz_to_overlay_grid, road_points_to_polyline, road_vec3_xz as xz,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::keys::SurfaceXzKey;
@@ -664,19 +664,14 @@ fn canonicalize_terminal_cap_bands(
 
 fn quantize_terminal_cap_band_xz(cap_band: &mut NodeTerminalCapBand) {
     for point in &mut cap_band.inner_path_world {
-        *point = quantize_road_vec3_xz(*point);
+        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
     }
     for point in &mut cap_band.outer_path_world {
-        *point = quantize_road_vec3_xz(*point);
+        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
     }
     for point in &mut cap_band.contour_world {
-        *point = quantize_road_vec3_xz(*point);
+        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
     }
-}
-
-fn quantize_road_vec3_xz(point: RoadVec3) -> RoadVec3 {
-    let point_xz = quantize_road_vec2_to_overlay_grid(xz(point));
-    RoadVec3::new(point_xz.x, point.y, point_xz.y)
 }
 
 fn terminal_cap_contour_world(
@@ -802,10 +797,6 @@ fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
 fn normalized_terminal_cap_direction(direction: RoadVec2) -> Option<RoadVec2> {
     let length = direction.length();
     (length > TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M).then_some(direction / length)
-}
-
-fn xz(point: RoadVec3) -> RoadVec2 {
-    RoadVec2::new(point.x, point.z)
 }
 
 #[cfg(test)]

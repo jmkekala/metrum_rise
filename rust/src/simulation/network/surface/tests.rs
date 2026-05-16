@@ -625,11 +625,19 @@ fn assert_surface_cdt_boundary_source(case_name: &str, source: TerrainCdtRoadBou
             );
             assert_eq!(source.s_range_values(), [start_s_m, end_s_m]);
         }
-        TerrainCdtRoadBoundarySource::NodeFootprintBoundary { owner_index, .. } => {
+        TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            owner_index,
+            boundary_source,
+            ..
+        } => {
             assert_eq!(source.source_kind_code(), 1);
             assert!(source.primary_id_code() >= 0);
             assert!(source.node_kind_code() >= 0);
             assert!(source.owner_kind_code() >= 0);
+            assert!(
+                boundary_source.is_some(),
+                "{case_name}: production node CDT source must preserve endpoint boundary provenance"
+            );
             assert_eq!(
                 source.owner_index_code(),
                 i32::try_from(owner_index).unwrap()

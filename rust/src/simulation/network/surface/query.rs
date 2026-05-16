@@ -10,9 +10,11 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
-    TerrainCdtRoadBandKind, TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop,
-    TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole, TerrainCdtVertex,
+    TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass,
+    TerrainCdtNodeFootprintBoundaryDirectSource, TerrainCdtNodeFootprintBoundarySegmentSource,
+    TerrainCdtNodeFootprintBoundaryVertexSource, TerrainCdtNodePieceKind, TerrainCdtRoadBandKind,
+    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtRoadLoopSourceEdge,
+    TerrainCdtSpanRegionRole, TerrainCdtVertex,
 };
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
@@ -235,13 +237,70 @@ impl RoadSurfaceSystem {
                 kind,
                 owner_kind,
                 owner_index,
-                ..
+                boundary_source,
             } => TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
                 node_id,
                 node_kind: Self::terrain_cdt_node_piece_kind(kind),
                 owner_kind: Self::terrain_cdt_band_kind(owner_kind),
                 owner_index: u32::try_from(owner_index).unwrap_or(u32::MAX),
+                boundary_source: boundary_source
+                    .map(Self::terrain_cdt_node_footprint_boundary_segment_source),
             },
+        }
+    }
+
+    fn terrain_cdt_node_footprint_boundary_segment_source(
+        source: super::NodeFootprintBoundarySegmentSource,
+    ) -> TerrainCdtNodeFootprintBoundarySegmentSource {
+        TerrainCdtNodeFootprintBoundarySegmentSource {
+            start: Self::terrain_cdt_node_footprint_boundary_vertex_source(source.start),
+            end: Self::terrain_cdt_node_footprint_boundary_vertex_source(source.end),
+        }
+    }
+
+    fn terrain_cdt_node_footprint_boundary_vertex_source(
+        source: super::NodeFootprintBoundaryVertexSource,
+    ) -> TerrainCdtNodeFootprintBoundaryVertexSource {
+        match source {
+            super::NodeFootprintBoundaryVertexSource::Direct(direct) => {
+                TerrainCdtNodeFootprintBoundaryVertexSource::Direct(
+                    Self::terrain_cdt_node_footprint_boundary_direct_source(direct),
+                )
+            }
+            super::NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start,
+                owning_segment_end,
+                height_mm,
+            } => TerrainCdtNodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start: Self::terrain_cdt_node_footprint_boundary_direct_source(
+                    owning_segment_start,
+                ),
+                owning_segment_end: Self::terrain_cdt_node_footprint_boundary_direct_source(
+                    owning_segment_end,
+                ),
+                height_mm,
+            },
+            super::NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                top_surface_source_index,
+                grade_authority_indices,
+                height_mm,
+            } => TerrainCdtNodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                top_surface_source_index: u64::try_from(top_surface_source_index)
+                    .unwrap_or(u64::MAX),
+                grade_authority_indices: grade_authority_indices
+                    .map(|index| u64::try_from(index).unwrap_or(u64::MAX)),
+                height_mm,
+            },
+        }
+    }
+
+    fn terrain_cdt_node_footprint_boundary_direct_source(
+        source: super::NodeFootprintBoundaryDirectSource,
+    ) -> TerrainCdtNodeFootprintBoundaryDirectSource {
+        TerrainCdtNodeFootprintBoundaryDirectSource {
+            top_surface_source_index: u64::try_from(source.top_surface_source_index)
+                .unwrap_or(u64::MAX),
+            grade_authority_index: u64::try_from(source.grade_authority_index).unwrap_or(u64::MAX),
         }
     }
 

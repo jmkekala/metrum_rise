@@ -1286,7 +1286,7 @@ impl RoadSurfaceSystem {
                     end_point_key,
                 )
             })
-            .min_by(|a, b| Self::node_earthwork_boundary_source_ordering(*a, *b))
+            .min_by(|a, b| a.source_ordering(*b))
             .or_else(|| {
                 Self::node_earthwork_source_for_direct_boundary_segment(
                     node_id,
@@ -1472,43 +1472,6 @@ impl RoadSurfaceSystem {
             .cmp(&Self::band_kind_sort_key(b.owner_kind))
             .then(a.owner_index.cmp(&b.owner_index))
             .then(a.source.cmp(&b.source))
-    }
-
-    fn node_earthwork_boundary_source_ordering(
-        a: RoadSurfaceEarthworkFaceSource,
-        b: RoadSurfaceEarthworkFaceSource,
-    ) -> std::cmp::Ordering {
-        match (a, b) {
-            (
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                    owner_kind: owner_kind_a,
-                    owner_index: owner_index_a,
-                    boundary_source: boundary_source_a,
-                    ..
-                },
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                    owner_kind: owner_kind_b,
-                    owner_index: owner_index_b,
-                    boundary_source: boundary_source_b,
-                    ..
-                },
-            ) => Self::band_kind_sort_key(owner_kind_a)
-                .cmp(&Self::band_kind_sort_key(owner_kind_b))
-                .then(owner_index_a.cmp(&owner_index_b))
-                .then(boundary_source_a.cmp(&boundary_source_b)),
-            (
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
-            ) => std::cmp::Ordering::Less,
-            (
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-            ) => std::cmp::Ordering::Greater,
-            (
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-            ) => std::cmp::Ordering::Equal,
-        }
     }
 
     fn visual_polygon_from_arrangement_face(

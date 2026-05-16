@@ -181,6 +181,33 @@ pub(crate) enum TerrainCdtNodePieceKind {
     JunctionN,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct TerrainCdtNodeFootprintBoundaryDirectSource {
+    pub(crate) top_surface_source_index: u64,
+    pub(crate) grade_authority_index: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum TerrainCdtNodeFootprintBoundaryVertexSource {
+    Direct(TerrainCdtNodeFootprintBoundaryDirectSource),
+    BoundaryInterpolation {
+        owning_segment_start: TerrainCdtNodeFootprintBoundaryDirectSource,
+        owning_segment_end: TerrainCdtNodeFootprintBoundaryDirectSource,
+        height_mm: i64,
+    },
+    SurfaceInterpolation {
+        top_surface_source_index: u64,
+        grade_authority_indices: [u64; 3],
+        height_mm: i64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct TerrainCdtNodeFootprintBoundarySegmentSource {
+    pub(crate) start: TerrainCdtNodeFootprintBoundaryVertexSource,
+    pub(crate) end: TerrainCdtNodeFootprintBoundaryVertexSource,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TerrainCdtRoadBoundarySource {
     SpanSupportBoundary {
@@ -200,6 +227,7 @@ pub(crate) enum TerrainCdtRoadBoundarySource {
         node_kind: TerrainCdtNodePieceKind,
         owner_kind: TerrainCdtRoadBandKind,
         owner_index: u32,
+        boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
     },
     SyntheticTestBoundary {
         stable_piece_id: u64,
@@ -339,12 +367,14 @@ impl TerrainCdtRoadBoundarySource {
                 node_kind,
                 owner_kind,
                 owner_index,
+                boundary_source,
             } => format!(
-                "node id={} kind={} owner_kind={} owner_index={}",
+                "node id={} kind={} owner_kind={} owner_index={} boundary_source={:?}",
                 node_id,
                 terrain_cdt_node_kind_label(node_kind),
                 terrain_cdt_band_kind_label(owner_kind),
-                owner_index
+                owner_index,
+                boundary_source
             ),
             Self::SyntheticTestBoundary {
                 stable_piece_id,
@@ -1241,17 +1271,20 @@ fn mergeable_terrain_cdt_seam_source(
                 node_kind: node_kind_a,
                 owner_kind: owner_kind_a,
                 owner_index: owner_index_a,
+                boundary_source: boundary_source_a,
             },
             TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
                 node_id: node_id_b,
                 node_kind: node_kind_b,
                 owner_kind: owner_kind_b,
                 owner_index: owner_index_b,
+                boundary_source: boundary_source_b,
             },
         ) if node_id_a == node_id_b
             && node_kind_a == node_kind_b
             && owner_kind_a == owner_kind_b
-            && owner_index_a == owner_index_b =>
+            && owner_index_a == owner_index_b
+            && boundary_source_a == boundary_source_b =>
         {
             Some(first)
         }
@@ -2459,12 +2492,14 @@ fn terrain_cdt_boundary_source_cmp(
                 node_kind: node_kind_a,
                 owner_kind: owner_kind_a,
                 owner_index: owner_index_a,
+                boundary_source: boundary_source_a,
             },
             TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
                 node_id: node_id_b,
                 node_kind: node_kind_b,
                 owner_kind: owner_kind_b,
                 owner_index: owner_index_b,
+                boundary_source: boundary_source_b,
             },
         ) => node_id_a
             .cmp(&node_id_b)
@@ -2476,7 +2511,8 @@ fn terrain_cdt_boundary_source_cmp(
                 terrain_cdt_band_kind_sort_key(owner_kind_a)
                     .cmp(&terrain_cdt_band_kind_sort_key(owner_kind_b)),
             )
-            .then(owner_index_a.cmp(&owner_index_b)),
+            .then(owner_index_a.cmp(&owner_index_b))
+            .then(boundary_source_a.cmp(&boundary_source_b)),
         (
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
                 stable_piece_id: stable_piece_id_a,
@@ -2756,6 +2792,35 @@ mod tests {
                 .iter()
                 .all(|sample| sample.sources.contains(&source)),
             "retaining wall diagnostics must preserve the same boundary source"
+        );
+    }
+
+    #[test]
+    fn node_boundary_sources_keep_endpoint_provenance_in_ordering_and_merge() {
+        let source_a = test_node_boundary_source_with_direct_provenance(
+            42,
+            TerrainCdtRoadBandKind::Sidewalk,
+            3,
+            30,
+            31,
+        );
+        let source_b = test_node_boundary_source_with_direct_provenance(
+            42,
+            TerrainCdtRoadBandKind::Sidewalk,
+            3,
+            30,
+            32,
+        );
+
+        assert!(terrain_cdt_boundary_source_cmp(source_a, source_b).is_lt());
+        assert_eq!(
+            mergeable_terrain_cdt_seam_source(source_a, source_a),
+            Some(source_a)
+        );
+        assert_eq!(
+            mergeable_terrain_cdt_seam_source(source_a, source_b),
+            None,
+            "node seam merging must not collapse distinct endpoint provenance"
         );
     }
 
@@ -3722,6 +3787,36 @@ mod tests {
             node_kind: TerrainCdtNodePieceKind::JunctionN,
             owner_kind,
             owner_index,
+            boundary_source: None,
+        }
+    }
+
+    fn test_node_boundary_source_with_direct_provenance(
+        node_id: u32,
+        owner_kind: TerrainCdtRoadBandKind,
+        owner_index: u32,
+        start_grade_authority_index: u64,
+        end_grade_authority_index: u64,
+    ) -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            node_id,
+            node_kind: TerrainCdtNodePieceKind::JunctionN,
+            owner_kind,
+            owner_index,
+            boundary_source: Some(TerrainCdtNodeFootprintBoundarySegmentSource {
+                start: TerrainCdtNodeFootprintBoundaryVertexSource::Direct(
+                    TerrainCdtNodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 7,
+                        grade_authority_index: start_grade_authority_index,
+                    },
+                ),
+                end: TerrainCdtNodeFootprintBoundaryVertexSource::Direct(
+                    TerrainCdtNodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 7,
+                        grade_authority_index: end_grade_authority_index,
+                    },
+                ),
+            }),
         }
     }
 

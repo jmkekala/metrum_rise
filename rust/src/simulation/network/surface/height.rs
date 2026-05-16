@@ -3,6 +3,7 @@
 use super::arrangement::{NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint};
 use super::backend::{
     RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
+    road_vec3_xz as xz,
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
@@ -1621,10 +1622,6 @@ fn height_triangle_area2(
         SurfaceXzKey::from_raw_tuple(b),
         SurfaceXzKey::from_raw_tuple(c),
     )
-}
-
-fn xz(point: RoadVec3) -> RoadVec2 {
-    RoadVec2::new(point.x, point.z)
 }
 
 fn quantize_m(value: f64) -> i64 {

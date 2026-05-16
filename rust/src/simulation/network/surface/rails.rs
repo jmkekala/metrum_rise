@@ -3,7 +3,7 @@
 use super::arrangement::NodeBandOwner;
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
-    road_points_to_polyline,
+    road_points_to_polyline, road_vec3_xz as xz,
 };
 use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
@@ -1987,10 +1987,6 @@ fn boundary_constraint_kind(role: NodeInputBoundaryRailRole) -> NodeRailConstrai
             }
         }
     }
-}
-
-fn xz(point: RoadVec3) -> RoadVec2 {
-    RoadVec2::new(point.x, point.z)
 }
 
 fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {

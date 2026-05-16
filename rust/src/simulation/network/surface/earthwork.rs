@@ -6,6 +6,7 @@ use super::{
     RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
     RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     backend,
+    band_semantics::band_kind_sort_key,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
     node_boundary::NodeFootprintBoundarySegmentSource,
 };
@@ -93,6 +94,113 @@ pub(crate) enum RoadSurfaceEarthworkFaceSource {
         owner_index: usize,
         boundary_source: Option<NodeFootprintBoundarySegmentSource>,
     },
+}
+
+impl RoadSurfaceEarthworkFaceSource {
+    pub(crate) fn source_ordering(self, other: Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (
+                Self::SpanSupportBoundary {
+                    edge_idx: edge_idx_a,
+                    edge_class: edge_class_a,
+                    support_policy: support_policy_a,
+                    owner: owner_a,
+                    role: role_a,
+                    start_section_index: start_section_index_a,
+                    end_section_index: end_section_index_a,
+                    start_s_m: start_s_m_a,
+                    end_s_m: end_s_m_a,
+                },
+                Self::SpanSupportBoundary {
+                    edge_idx: edge_idx_b,
+                    edge_class: edge_class_b,
+                    support_policy: support_policy_b,
+                    owner: owner_b,
+                    role: role_b,
+                    start_section_index: start_section_index_b,
+                    end_section_index: end_section_index_b,
+                    start_s_m: start_s_m_b,
+                    end_s_m: end_s_m_b,
+                },
+            ) => edge_idx_a
+                .cmp(&edge_idx_b)
+                .then(edge_class_sort_key(edge_class_a).cmp(&edge_class_sort_key(edge_class_b)))
+                .then(
+                    support_policy_a
+                        .sort_key()
+                        .cmp(&support_policy_b.sort_key()),
+                )
+                .then(span_band_owner_ordering(owner_a, owner_b))
+                .then(span_region_role_sort_key(role_a).cmp(&span_region_role_sort_key(role_b)))
+                .then(start_section_index_a.cmp(&start_section_index_b))
+                .then(end_section_index_a.cmp(&end_section_index_b))
+                .then(start_s_m_a.total_cmp(&start_s_m_b))
+                .then(end_s_m_a.total_cmp(&end_s_m_b)),
+            (
+                Self::NodeFootprintBoundary {
+                    node_id: node_id_a,
+                    kind: kind_a,
+                    owner_kind: owner_kind_a,
+                    owner_index: owner_index_a,
+                    boundary_source: boundary_source_a,
+                },
+                Self::NodeFootprintBoundary {
+                    node_id: node_id_b,
+                    kind: kind_b,
+                    owner_kind: owner_kind_b,
+                    owner_index: owner_index_b,
+                    boundary_source: boundary_source_b,
+                },
+            ) => node_id_a
+                .cmp(&node_id_b)
+                .then(
+                    visual_node_piece_kind_sort_key(kind_a)
+                        .cmp(&visual_node_piece_kind_sort_key(kind_b)),
+                )
+                .then(band_kind_sort_key(owner_kind_a).cmp(&band_kind_sort_key(owner_kind_b)))
+                .then(owner_index_a.cmp(&owner_index_b))
+                .then(boundary_source_a.cmp(&boundary_source_b)),
+            (Self::SpanSupportBoundary { .. }, Self::NodeFootprintBoundary { .. }) => {
+                std::cmp::Ordering::Less
+            }
+            (Self::NodeFootprintBoundary { .. }, Self::SpanSupportBoundary { .. }) => {
+                std::cmp::Ordering::Greater
+            }
+        }
+    }
+}
+
+fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
+    match edge_class {
+        EdgeClass::Standard => 0,
+        EdgeClass::Bridge => 1,
+        EdgeClass::Tunnel => 2,
+    }
+}
+
+fn span_region_role_sort_key(role: RoadSurfaceSpanRegionRole) -> u8 {
+    match role {
+        RoadSurfaceSpanRegionRole::Asphalt => 0,
+        RoadSurfaceSpanRegionRole::CurbOrShoulder => 1,
+        RoadSurfaceSpanRegionRole::NonRoad => 2,
+    }
+}
+
+fn span_band_owner_ordering(
+    a: RoadSurfaceSpanBandOwner,
+    b: RoadSurfaceSpanBandOwner,
+) -> std::cmp::Ordering {
+    band_kind_sort_key(a.kind)
+        .cmp(&band_kind_sort_key(b.kind))
+        .then(a.source_band_index.cmp(&b.source_band_index))
+}
+
+fn visual_node_piece_kind_sort_key(kind: RoadSurfaceVisualNodePieceKind) -> u8 {
+    match kind {
+        RoadSurfaceVisualNodePieceKind::Terminal => 0,
+        RoadSurfaceVisualNodePieceKind::Bend => 1,
+        RoadSurfaceVisualNodePieceKind::JunctionN => 2,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -774,7 +882,8 @@ impl RoadSurfaceSystem {
             if kind_order != std::cmp::Ordering::Equal {
                 return kind_order;
             }
-            Self::earthwork_face_source_ordering(a.source, b.source)
+            a.source
+                .source_ordering(b.source)
                 .then(
                     a.inner_start
                         .x
@@ -806,124 +915,6 @@ impl RoadSurfaceSystem {
         });
     }
 
-    fn earthwork_face_source_ordering(
-        a: RoadSurfaceEarthworkFaceSource,
-        b: RoadSurfaceEarthworkFaceSource,
-    ) -> std::cmp::Ordering {
-        match (a, b) {
-            (
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
-                    edge_idx: edge_idx_a,
-                    edge_class: edge_class_a,
-                    support_policy: support_policy_a,
-                    owner: owner_a,
-                    role: role_a,
-                    start_section_index: start_section_index_a,
-                    end_section_index: end_section_index_a,
-                    start_s_m: start_s_m_a,
-                    end_s_m: end_s_m_a,
-                },
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
-                    edge_idx: edge_idx_b,
-                    edge_class: edge_class_b,
-                    support_policy: support_policy_b,
-                    owner: owner_b,
-                    role: role_b,
-                    start_section_index: start_section_index_b,
-                    end_section_index: end_section_index_b,
-                    start_s_m: start_s_m_b,
-                    end_s_m: end_s_m_b,
-                },
-            ) => edge_idx_a
-                .cmp(&edge_idx_b)
-                .then(
-                    Self::edge_class_sort_key(edge_class_a)
-                        .cmp(&Self::edge_class_sort_key(edge_class_b)),
-                )
-                .then(
-                    support_policy_a
-                        .sort_key()
-                        .cmp(&support_policy_b.sort_key()),
-                )
-                .then(Self::earthwork_span_band_owner_ordering(owner_a, owner_b))
-                .then(
-                    Self::earthwork_span_region_role_sort_key(role_a)
-                        .cmp(&Self::earthwork_span_region_role_sort_key(role_b)),
-                )
-                .then(start_section_index_a.cmp(&start_section_index_b))
-                .then(end_section_index_a.cmp(&end_section_index_b))
-                .then(start_s_m_a.total_cmp(&start_s_m_b))
-                .then(end_s_m_a.total_cmp(&end_s_m_b)),
-            (
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                    node_id: node_id_a,
-                    kind: kind_a,
-                    owner_kind: owner_kind_a,
-                    owner_index: owner_index_a,
-                    boundary_source: boundary_source_a,
-                },
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                    node_id: node_id_b,
-                    kind: kind_b,
-                    owner_kind: owner_kind_b,
-                    owner_index: owner_index_b,
-                    boundary_source: boundary_source_b,
-                },
-            ) => node_id_a
-                .cmp(&node_id_b)
-                .then(
-                    Self::visual_node_piece_kind_sort_key(kind_a)
-                        .cmp(&Self::visual_node_piece_kind_sort_key(kind_b)),
-                )
-                .then(
-                    Self::band_kind_sort_key(owner_kind_a)
-                        .cmp(&Self::band_kind_sort_key(owner_kind_b)),
-                )
-                .then(owner_index_a.cmp(&owner_index_b))
-                .then(boundary_source_a.cmp(&boundary_source_b)),
-            (
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
-            ) => std::cmp::Ordering::Less,
-            (
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
-                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
-            ) => std::cmp::Ordering::Greater,
-        }
-    }
-
-    fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
-        match edge_class {
-            EdgeClass::Standard => 0,
-            EdgeClass::Bridge => 1,
-            EdgeClass::Tunnel => 2,
-        }
-    }
-
-    fn earthwork_span_region_role_sort_key(role: super::RoadSurfaceSpanRegionRole) -> u8 {
-        match role {
-            super::RoadSurfaceSpanRegionRole::Asphalt => 0,
-            super::RoadSurfaceSpanRegionRole::CurbOrShoulder => 1,
-            super::RoadSurfaceSpanRegionRole::NonRoad => 2,
-        }
-    }
-
-    fn earthwork_span_band_owner_ordering(
-        a: super::RoadSurfaceSpanBandOwner,
-        b: super::RoadSurfaceSpanBandOwner,
-    ) -> std::cmp::Ordering {
-        Self::band_kind_sort_key(a.kind)
-            .cmp(&Self::band_kind_sort_key(b.kind))
-            .then(a.source_band_index.cmp(&b.source_band_index))
-    }
-
-    fn visual_node_piece_kind_sort_key(kind: RoadSurfaceVisualNodePieceKind) -> u8 {
-        match kind {
-            RoadSurfaceVisualNodePieceKind::Terminal => 0,
-            RoadSurfaceVisualNodePieceKind::Bend => 1,
-            RoadSurfaceVisualNodePieceKind::JunctionN => 2,
-        }
-    }
     pub(super) fn earthwork_transition_point(
         &self,
         road_point: Vector3,
