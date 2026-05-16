@@ -1836,7 +1836,7 @@ fn cleaned_owned_contour(
     if contour.len() < 3 {
         return None;
     }
-    if signed_overlay_contour_area_m2(&contour) < 0.0 {
+    if RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0 {
         contour.reverse();
     }
     let shape = vec![contour.clone()];
@@ -1890,19 +1890,6 @@ fn ownership_triangle_area_m2(
     let ac_z = i128::from(c.1 - a.1);
     let double_area = (ab_x * ac_z - ab_z * ac_x).unsigned_abs() as f64;
     double_area * 0.5 / ROAD_OVERLAY_COORDINATE_SCALE.powi(2)
-}
-
-fn signed_overlay_contour_area_m2(contour: &NodeOverlayContour) -> f32 {
-    if contour.len() < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0;
-    for index in 0..contour.len() {
-        let start = contour[index];
-        let end = contour[(index + 1) % contour.len()];
-        area += start[0] * end[1] - end[0] * start[1];
-    }
-    (area * 0.5) as f32
 }
 
 fn owned_region_global_points(

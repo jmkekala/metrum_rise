@@ -1244,7 +1244,7 @@ impl RoadSurfaceSystem {
             return false;
         }
 
-        let area_m2 = overlay_contour_area_local(contour).abs();
+        let area_m2 = Self::overlay_contour_area_f64(contour).abs();
         let remove_start_delta = contour_area_delta_after_removing_vertex(contour, segment_index)
             .map(|area| (area - area_m2).abs());
         let remove_end_delta =
@@ -1488,8 +1488,8 @@ fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {
         remainder.extend_from_slice(&points[..=first]);
         remainder.extend_from_slice(&points[second + 1..]);
 
-        let cycle_area = overlay_contour_area_local(&cycle).abs();
-        let remainder_area = overlay_contour_area_local(&remainder).abs();
+        let cycle_area = RoadSurfaceSystem::overlay_contour_area_f64(&cycle).abs();
+        let remainder_area = RoadSurfaceSystem::overlay_contour_area_f64(&remainder).abs();
         if remainder.len() >= 3 && remainder_area >= cycle_area {
             *points = remainder;
         } else if cycle.len() >= 3 {
@@ -1514,19 +1514,6 @@ fn first_repeated_overlay_point_pair(points: &NodeOverlayContour) -> Option<(usi
     None
 }
 
-fn overlay_contour_area_local(contour: &NodeOverlayContour) -> f64 {
-    if contour.len() < 3 {
-        return 0.0;
-    }
-    let mut signed_area = 0.0;
-    for index in 0..contour.len() {
-        let current = contour[index];
-        let next = contour[(index + 1) % contour.len()];
-        signed_area += current[0] * next[1] - next[0] * current[1];
-    }
-    signed_area * 0.5
-}
-
 fn contour_area_delta_after_removing_vertex(
     contour: &NodeOverlayContour,
     index: usize,
@@ -1537,7 +1524,7 @@ fn contour_area_delta_after_removing_vertex(
     let mut reduced = Vec::with_capacity(contour.len() - 1);
     reduced.extend_from_slice(&contour[..index]);
     reduced.extend_from_slice(&contour[index + 1..]);
-    Some(overlay_contour_area_local(&reduced).abs())
+    Some(RoadSurfaceSystem::overlay_contour_area_f64(&reduced).abs())
 }
 
 fn interpolate_overlay_point(

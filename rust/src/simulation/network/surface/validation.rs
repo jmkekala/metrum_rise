@@ -2151,27 +2151,14 @@ fn triangle_contour(
             [point.x, point.z]
         })
         .collect::<Vec<_>>();
-    if signed_overlay_area_m2(&contour) < 0.0 {
+    if RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0 {
         contour.swap(1, 2);
     }
     contour
 }
 
 fn triangle_area_m2(region: &NodeTriangulatedRegion, triangle: &NodeTriangulatedTriangle) -> f32 {
-    signed_overlay_area_m2(&triangle_contour(region, triangle)).abs()
-}
-
-fn signed_overlay_area_m2(contour: &NodeOverlayContour) -> f32 {
-    if contour.len() < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0;
-    for index in 0..contour.len() {
-        let start = contour[index];
-        let end = contour[(index + 1) % contour.len()];
-        area += start[0] * end[1] - end[0] * start[1];
-    }
-    (area * 0.5) as f32
+    RoadSurfaceSystem::overlay_contour_area(&triangle_contour(region, triangle)).abs()
 }
 
 fn edge_key_for_indices(

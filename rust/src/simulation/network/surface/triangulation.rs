@@ -543,7 +543,7 @@ fn positive_triangle_contour(
         .iter()
         .map(|index| overlay_point_from_vertex(&vertices[*index]))
         .collect::<Vec<_>>();
-    if signed_overlay_area_m2(&contour) < 0.0 {
+    if RoadSurfaceSystem::overlay_contour_area(&contour) < 0.0 {
         contour.swap(1, 2);
     }
     contour
@@ -568,19 +568,6 @@ fn triangle_double_area_m2(
     let b = vertices[triangle.vertices[1]].point_world;
     let c = vertices[triangle.vertices[2]].point_world;
     ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs()
-}
-
-fn signed_overlay_area_m2(contour: &NodeOverlayContour) -> f32 {
-    if contour.len() < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0;
-    for index in 0..contour.len() {
-        let start = contour[index];
-        let end = contour[(index + 1) % contour.len()];
-        area += start[0] * end[1] - end[0] * start[1];
-    }
-    (area * 0.5) as f32
 }
 
 fn triangle_sort_key(

@@ -292,7 +292,8 @@ impl RoadSurfaceSystem {
         (min_x, min_z, points)
     }
 
-    pub(super) fn overlay_contour_area(contour: &NodeOverlayContour) -> f32 {
+    /// Computes signed contour area in square metres without narrowing to `f32`.
+    pub(super) fn overlay_contour_area_f64(contour: &NodeOverlayContour) -> f64 {
         if contour.len() < 3 {
             return 0.0;
         }
@@ -302,7 +303,11 @@ impl RoadSurfaceSystem {
             let next = contour[(index + 1) % contour.len()];
             signed_area += current[0] * next[1] - next[0] * current[1];
         }
-        (signed_area * 0.5) as f32
+        signed_area * 0.5
+    }
+
+    pub(super) fn overlay_contour_area(contour: &NodeOverlayContour) -> f32 {
+        Self::overlay_contour_area_f64(contour) as f32
     }
 
     pub(super) fn overlay_shape_area_m2(shape: &NodeOverlayShape) -> f32 {
@@ -365,5 +370,32 @@ impl RoadSurfaceSystem {
 
     pub(super) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
         band_kind_sort_key(kind)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_contour_area_preserves_signed_winding() {
+        let contour = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]];
+        let mut reversed = contour.clone();
+        reversed.reverse();
+
+        assert_eq!(RoadSurfaceSystem::overlay_contour_area_f64(&contour), 2.0);
+        assert_eq!(RoadSurfaceSystem::overlay_contour_area_f64(&reversed), -2.0);
+        assert_eq!(
+            RoadSurfaceSystem::overlay_contour_area(&contour),
+            RoadSurfaceSystem::overlay_contour_area_f64(&contour) as f32
+        );
+    }
+
+    #[test]
+    fn overlay_contour_area_rejects_degenerate_point_counts() {
+        let line = vec![[0.0, 0.0], [1.0, 0.0]];
+
+        assert_eq!(RoadSurfaceSystem::overlay_contour_area_f64(&line), 0.0);
+        assert_eq!(RoadSurfaceSystem::overlay_contour_area(&line), 0.0);
     }
 }
