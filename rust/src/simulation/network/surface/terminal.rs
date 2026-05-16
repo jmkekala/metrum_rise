@@ -5,7 +5,10 @@ use super::backend::{
     quantize_road_vec3_xz_to_overlay_grid, road_points_to_polyline, road_vec3_xz as xz,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
-use super::paths::reheight_road_points_from_world_path;
+use super::paths::{
+    cleaned_open_world_path_polyline, closed_world_contour_has_area,
+    reheight_road_points_from_world_path,
+};
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
@@ -690,7 +693,11 @@ fn clean_terminal_cap_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVe
     if path_world.len() < 2 {
         return None;
     }
-    let polyline = cleaned_open_world_path_polyline(&path_world)?;
+    let polyline = cleaned_open_world_path_polyline(
+        &path_world,
+        TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M,
+        false,
+    )?;
     if polyline.vertex_count() < 2 {
         return None;
     }
@@ -724,20 +731,12 @@ fn clean_terminal_cap_contour_world(contour_world: Vec<RoadVec3>) -> Option<Vec<
     (cleaned_world.len() >= 3).then_some(cleaned_world)
 }
 
-fn cleaned_open_world_path_polyline(path_world: &[RoadVec3]) -> Option<RoadPolyline> {
-    let raw = road_points_to_polyline(path_world.iter().copied().map(xz), false);
-    let cleaned =
-        RoadPolyline::create_from_remove_repeat(&raw, TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M);
-    (cleaned.vertex_count() >= 2).then_some(cleaned)
-}
-
 fn terminal_cap_band_has_quantized_area(cap_band: &NodeTerminalCapBand) -> bool {
-    let raw = road_points_to_polyline(cap_band.contour_world.iter().copied().map(xz), true);
-    let contour =
-        RoadPolyline::create_from_remove_repeat(&raw, TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M);
-    contour.vertex_count() >= 3
-        && contour.area().abs() > f64::from(NODE_OVERLAY_MIN_AREA_M2)
-        && !contour.scan_for_self_intersect()
+    closed_world_contour_has_area(
+        &cap_band.contour_world,
+        TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M,
+        f64::from(NODE_OVERLAY_MIN_AREA_M2),
+    )
 }
 
 fn normalized_terminal_cap_direction(direction: RoadVec2) -> Option<RoadVec2> {

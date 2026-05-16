@@ -1,9 +1,10 @@
 //! Shared world-path projection and height interpolation helpers.
 
 use super::{
-    backend::{RoadVec2, RoadVec3, road_vec3_xz},
+    backend::{RoadPolyline, RoadVec2, RoadVec3, road_points_to_polyline, road_vec3_xz},
     keys::SurfaceXzKey,
 };
+use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
 /// Recovers a deterministic world height for a quantized XZ point on a source path.
 pub(crate) fn height_on_world_path(
@@ -64,6 +65,48 @@ pub(crate) fn reheight_road_points_from_world_path(
         .collect::<Option<Vec<_>>>()?;
     remove_repeated_road_vec3_xz_points(&mut points);
     Some(points)
+}
+
+/// Cleans an open XZ path through the shared road-polyline representation.
+pub(crate) fn cleaned_open_road_polyline(
+    points_xz: impl IntoIterator<Item = RoadVec2>,
+    point_equal_eps_m: f64,
+    remove_redundant: bool,
+) -> Option<RoadPolyline> {
+    let raw = road_points_to_polyline(points_xz, false);
+    let mut cleaned = RoadPolyline::create_from_remove_repeat(&raw, point_equal_eps_m);
+    if remove_redundant {
+        if let Some(reduced) = cleaned.remove_redundant(point_equal_eps_m) {
+            cleaned = reduced;
+        }
+    }
+    (cleaned.vertex_count() >= 2).then_some(cleaned)
+}
+
+/// Cleans an open world path by applying XZ-only road-polyline cleanup.
+pub(crate) fn cleaned_open_world_path_polyline(
+    path_world: &[RoadVec3],
+    point_equal_eps_m: f64,
+    remove_redundant: bool,
+) -> Option<RoadPolyline> {
+    cleaned_open_road_polyline(
+        path_world.iter().copied().map(road_vec3_xz),
+        point_equal_eps_m,
+        remove_redundant,
+    )
+}
+
+/// Reports whether a closed world contour has stable positive area and no self-intersection.
+pub(crate) fn closed_world_contour_has_area(
+    contour_world: &[RoadVec3],
+    point_equal_eps_m: f64,
+    min_area_m2: f64,
+) -> bool {
+    let raw = road_points_to_polyline(contour_world.iter().copied().map(road_vec3_xz), true);
+    let contour = RoadPolyline::create_from_remove_repeat(&raw, point_equal_eps_m);
+    contour.vertex_count() >= 3
+        && contour.area().abs() > min_area_m2
+        && !contour.scan_for_self_intersect()
 }
 
 /// Removes consecutive and closing duplicate XZ keys while preserving the first height.
@@ -139,5 +182,48 @@ mod tests {
             points,
             vec![RoadVec3::new(0.0, 1.0, 0.0), RoadVec3::new(1.0, 2.0, 0.0)]
         );
+    }
+
+    #[test]
+    fn cleaned_open_world_path_removes_repeats_and_optionally_redundant_points() {
+        let path = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 1.0, 0.0),
+            RoadVec3::new(1.0, 2.0, 0.0),
+            RoadVec3::new(2.0, 3.0, 0.0),
+        ];
+
+        let repeated_only = cleaned_open_world_path_polyline(&path, 0.001, false)
+            .expect("repeated endpoint cleanup should preserve an open path");
+        let reduced = cleaned_open_world_path_polyline(&path, 0.001, true)
+            .expect("redundant collinear cleanup should preserve an open path");
+
+        assert_eq!(repeated_only.vertex_count(), 3);
+        assert_eq!(reduced.vertex_count(), 2);
+    }
+
+    #[test]
+    fn closed_world_contour_area_rejects_degenerate_and_self_intersecting_contours() {
+        let square = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 1.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+        ];
+        let line = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
+        ];
+        let bowtie = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 1.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+        ];
+
+        assert!(closed_world_contour_has_area(&square, 0.001, 0.001));
+        assert!(!closed_world_contour_has_area(&line, 0.001, 0.001));
+        assert!(!closed_world_contour_has_area(&bowtie, 0.001, 0.001));
     }
 }

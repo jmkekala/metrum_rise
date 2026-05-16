@@ -1,18 +1,20 @@
 //! Contour-adapter boundary for node side-join ownership candidates.
 
 use super::backend::{
-    RoadPolyline, RoadPolylineVertex, RoadVec2, RoadVec3, polyline_to_road_points,
-    quantize_road_vec3_xz_to_overlay_grid, road_points_to_polyline,
-    road_vec3_xz as xz_from_road_vec3,
+    RoadPolylineVertex, RoadVec2, RoadVec3, polyline_to_road_points,
+    quantize_road_vec3_xz_to_overlay_grid, road_vec3_xz as xz_from_road_vec3,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::keys::SurfaceXzKey;
-use super::paths::{reheight_road_points_from_world_path, remove_repeated_road_vec3_xz_points};
+use super::paths::{
+    cleaned_open_road_polyline, cleaned_open_world_path_polyline, closed_world_contour_has_area,
+    reheight_road_points_from_world_path, remove_repeated_road_vec3_xz_points,
+};
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::core::math::{
     LineLineIntr, Vector2 as CavalierVec2, bulge_from_angle, line_line_intr,
 };
-use cavalier_contours::polyline::{PlineCreation, PlineSource, seg_midpoint, seg_split_at_point};
+use cavalier_contours::polyline::{PlineSource, seg_midpoint, seg_split_at_point};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy)]
@@ -383,7 +385,11 @@ fn side_join_backend_cavalier_join_path_xz(
     join_point_xz: RoadVec2,
     end_xz: RoadVec2,
 ) -> Option<Vec<RoadVec2>> {
-    let mut polyline = cleaned_open_road_polyline([start_xz, join_point_xz, end_xz])?;
+    let mut polyline = cleaned_open_road_polyline(
+        [start_xz, join_point_xz, end_xz],
+        SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M,
+        true,
+    )?;
     if polyline.vertex_count() < 2 || polyline.scan_for_self_intersect() {
         return None;
     }
@@ -399,7 +405,7 @@ fn side_join_backend_cavalier_join_path_xz(
     }
     points[0] = start_xz;
     points[last_index] = end_xz;
-    polyline = cleaned_open_road_polyline(points)?;
+    polyline = cleaned_open_road_polyline(points, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M, true)?;
     if polyline.vertex_count() < 2 || polyline.scan_for_self_intersect() {
         return None;
     }
@@ -548,26 +554,11 @@ fn cavalier_vec2(point: RoadVec2) -> CavalierVec2<f64> {
     CavalierVec2::new(point.x, point.y)
 }
 
-fn cleaned_open_world_path_polyline(path_world: &[RoadVec3]) -> Option<RoadPolyline> {
-    cleaned_open_road_polyline(path_world.iter().copied().map(xz_from_road_vec3))
-}
-
 fn cleaned_open_road_points(
     points_xz: impl IntoIterator<Item = RoadVec2>,
 ) -> Option<Vec<RoadVec2>> {
-    cleaned_open_road_polyline(points_xz).map(|polyline| polyline_to_road_points(&polyline))
-}
-
-fn cleaned_open_road_polyline(
-    points_xz: impl IntoIterator<Item = RoadVec2>,
-) -> Option<RoadPolyline> {
-    let raw = road_points_to_polyline(points_xz, false);
-    let cleaned =
-        RoadPolyline::create_from_remove_repeat(&raw, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M);
-    let cleaned = cleaned
-        .remove_redundant(SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M)
-        .unwrap_or(cleaned);
-    (cleaned.vertex_count() >= 2).then_some(cleaned)
+    cleaned_open_road_polyline(points_xz, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M, true)
+        .map(|polyline| polyline_to_road_points(&polyline))
 }
 
 fn height_on_linear_height_path(
@@ -591,10 +582,8 @@ fn clean_side_join_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>
     if path_world.len() < 2 {
         return None;
     }
-    let mut polyline = cleaned_open_world_path_polyline(&path_world)?;
-    if let Some(cleaned) = polyline.remove_redundant(SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M) {
-        polyline = cleaned;
-    }
+    let polyline =
+        cleaned_open_world_path_polyline(&path_world, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M, true)?;
     if polyline.vertex_count() < 2 {
         return None;
     }
@@ -647,19 +636,11 @@ fn quantize_side_join_band_xz(join_band: &mut NodeInputSideJoinBand) {
 }
 
 fn side_join_band_has_quantized_area(join_band: &NodeInputSideJoinBand) -> bool {
-    let raw = road_points_to_polyline(
-        join_band
-            .contour_world
-            .iter()
-            .copied()
-            .map(xz_from_road_vec3),
-        true,
-    );
-    let contour =
-        RoadPolyline::create_from_remove_repeat(&raw, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M);
-    contour.vertex_count() >= 3
-        && contour.area().abs() > f64::from(NODE_OVERLAY_MIN_AREA_M2)
-        && !contour.scan_for_self_intersect()
+    closed_world_contour_has_area(
+        &join_band.contour_world,
+        SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M,
+        f64::from(NODE_OVERLAY_MIN_AREA_M2),
+    )
 }
 
 #[cfg(test)]
