@@ -22,6 +22,7 @@ mod joins;
 mod keys;
 mod node;
 mod node_boundary;
+mod node_grade;
 mod overlay;
 mod ownership;
 mod query;

@@ -881,6 +881,7 @@ mod tests {
             height_m: 2.0,
             height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
             height_authority: None,
+            grade_authority: None,
         }
     }
 

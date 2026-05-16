@@ -2589,6 +2589,7 @@ mod tests {
             height_m,
             height_field_id: height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
             height_authority: None,
+            grade_authority: None,
         }
     }
 }
