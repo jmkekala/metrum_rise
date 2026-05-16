@@ -7,6 +7,7 @@ use super::backend::{
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::keys::SurfaceXzKey;
+use super::paths::{reheight_road_points_from_world_path, remove_repeated_road_vec3_xz_points};
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::core::math::{
     LineLineIntr, Vector2 as CavalierVec2, bulge_from_angle, line_line_intr,
@@ -312,7 +313,7 @@ fn push_side_join_band(
 
     let mut contour_world = inner_path_world.clone();
     contour_world.extend(outer_path_world.iter().rev().copied());
-    remove_repeated_road_vec3_points(&mut contour_world);
+    remove_repeated_road_vec3_xz_points(&mut contour_world);
     join_bands.push(NodeInputSideJoinBand {
         source_band_index,
         band_kind,
@@ -598,52 +599,9 @@ fn clean_side_join_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>
         return None;
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let mut cleaned_world = points_xz
-        .into_iter()
-        .map(|point_xz| {
-            let height_m = height_on_world_path(point_xz, &path_world)?;
-            Some(RoadVec3::new(point_xz.x, height_m, point_xz.y))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    remove_repeated_road_vec3_points(&mut cleaned_world);
+    let cleaned_world =
+        reheight_road_points_from_world_path(points_xz, &path_world, SIDE_JOIN_HEIGHT_EDGE_EPS_M)?;
     (cleaned_world.len() >= 2).then_some(cleaned_world)
-}
-
-fn height_on_world_path(point_xz: RoadVec2, path_world: &[RoadVec3]) -> Option<f64> {
-    let key = SurfaceXzKey::from_road_xz(point_xz);
-    for point_world in path_world {
-        if SurfaceXzKey::from_road_xz(xz_from_road_vec3(*point_world)) == key {
-            return Some(point_world.y);
-        }
-    }
-    for segment in path_world.windows(2) {
-        if let Some(height_m) = height_on_world_segment(point_xz, segment[0], segment[1]) {
-            return Some(height_m);
-        }
-    }
-    None
-}
-
-fn height_on_world_segment(
-    point_xz: RoadVec2,
-    start_world: RoadVec3,
-    end_world: RoadVec3,
-) -> Option<f64> {
-    let start_xz = xz_from_road_vec3(start_world);
-    let end_xz = xz_from_road_vec3(end_world);
-    let axis = end_xz - start_xz;
-    let axis_len2 = axis.length_squared();
-    if axis_len2 <= f64::EPSILON {
-        return None;
-    }
-    let t = ((point_xz - start_xz).dot(axis) / axis_len2).clamp(0.0, 1.0);
-    let closest = start_xz + axis * t;
-    if closest.distance_squared(point_xz)
-        > SIDE_JOIN_HEIGHT_EDGE_EPS_M * SIDE_JOIN_HEIGHT_EDGE_EPS_M
-    {
-        return None;
-    }
-    Some(start_world.y + (end_world.y - start_world.y) * t)
 }
 
 fn endpoint_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Option<RoadVec3> {
@@ -702,21 +660,6 @@ fn side_join_band_has_quantized_area(join_band: &NodeInputSideJoinBand) -> bool 
     contour.vertex_count() >= 3
         && contour.area().abs() > f64::from(NODE_OVERLAY_MIN_AREA_M2)
         && !contour.scan_for_self_intersect()
-}
-
-fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
-    points.dedup_by(|a, b| {
-        SurfaceXzKey::from_road_xz(xz_from_road_vec3(*a))
-            == SurfaceXzKey::from_road_xz(xz_from_road_vec3(*b))
-    });
-    if points.len() > 1
-        && SurfaceXzKey::from_road_xz(xz_from_road_vec3(points[0]))
-            == SurfaceXzKey::from_road_xz(xz_from_road_vec3(
-                *points.last().expect("points are non-empty"),
-            ))
-    {
-        points.pop();
-    }
 }
 
 #[cfg(test)]

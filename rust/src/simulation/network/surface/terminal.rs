@@ -5,7 +5,7 @@ use super::backend::{
     quantize_road_vec3_xz_to_overlay_grid, road_points_to_polyline, road_vec3_xz as xz,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
-use super::keys::SurfaceXzKey;
+use super::paths::reheight_road_points_from_world_path;
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
@@ -695,14 +695,11 @@ fn clean_terminal_cap_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVe
         return None;
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let mut cleaned_world = points_xz
-        .into_iter()
-        .map(|point_xz| {
-            let height_m = height_on_world_path(point_xz, &path_world)?;
-            Some(RoadVec3::new(point_xz.x, height_m, point_xz.y))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    remove_repeated_road_vec3_points(&mut cleaned_world);
+    let cleaned_world = reheight_road_points_from_world_path(
+        points_xz,
+        &path_world,
+        TERMINAL_CAP_HEIGHT_EDGE_EPS_M,
+    )?;
     (cleaned_world.len() >= 2).then_some(cleaned_world)
 }
 
@@ -719,14 +716,11 @@ fn clean_terminal_cap_contour_world(contour_world: Vec<RoadVec3>) -> Option<Vec<
     {
         return None;
     }
-    let mut cleaned_world = polyline_to_road_points(&cleaned)
-        .into_iter()
-        .map(|point_xz| {
-            let height_m = height_on_world_path(point_xz, &contour_world)?;
-            Some(RoadVec3::new(point_xz.x, height_m, point_xz.y))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    remove_repeated_road_vec3_points(&mut cleaned_world);
+    let cleaned_world = reheight_road_points_from_world_path(
+        polyline_to_road_points(&cleaned),
+        &contour_world,
+        TERMINAL_CAP_HEIGHT_EDGE_EPS_M,
+    )?;
     (cleaned_world.len() >= 3).then_some(cleaned_world)
 }
 
@@ -737,43 +731,6 @@ fn cleaned_open_world_path_polyline(path_world: &[RoadVec3]) -> Option<RoadPolyl
     (cleaned.vertex_count() >= 2).then_some(cleaned)
 }
 
-fn height_on_world_path(point_xz: RoadVec2, path_world: &[RoadVec3]) -> Option<f64> {
-    let key = SurfaceXzKey::from_road_xz(point_xz);
-    for point_world in path_world {
-        if SurfaceXzKey::from_road_xz(xz(*point_world)) == key {
-            return Some(point_world.y);
-        }
-    }
-    for segment in path_world.windows(2) {
-        if let Some(height_m) = height_on_world_segment(point_xz, segment[0], segment[1]) {
-            return Some(height_m);
-        }
-    }
-    None
-}
-
-fn height_on_world_segment(
-    point_xz: RoadVec2,
-    start_world: RoadVec3,
-    end_world: RoadVec3,
-) -> Option<f64> {
-    let start_xz = xz(start_world);
-    let end_xz = xz(end_world);
-    let axis = end_xz - start_xz;
-    let axis_len2 = axis.length_squared();
-    if axis_len2 <= f64::EPSILON {
-        return None;
-    }
-    let t = ((point_xz - start_xz).dot(axis) / axis_len2).clamp(0.0, 1.0);
-    let closest = start_xz + axis * t;
-    if closest.distance_squared(point_xz)
-        > TERMINAL_CAP_HEIGHT_EDGE_EPS_M * TERMINAL_CAP_HEIGHT_EDGE_EPS_M
-    {
-        return None;
-    }
-    Some(start_world.y + (end_world.y - start_world.y) * t)
-}
-
 fn terminal_cap_band_has_quantized_area(cap_band: &NodeTerminalCapBand) -> bool {
     let raw = road_points_to_polyline(cap_band.contour_world.iter().copied().map(xz), true);
     let contour =
@@ -781,17 +738,6 @@ fn terminal_cap_band_has_quantized_area(cap_band: &NodeTerminalCapBand) -> bool 
     contour.vertex_count() >= 3
         && contour.area().abs() > f64::from(NODE_OVERLAY_MIN_AREA_M2)
         && !contour.scan_for_self_intersect()
-}
-
-fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
-    points
-        .dedup_by(|a, b| SurfaceXzKey::from_road_xz(xz(*a)) == SurfaceXzKey::from_road_xz(xz(*b)));
-    if points.len() > 1
-        && SurfaceXzKey::from_road_xz(xz(points[0]))
-            == SurfaceXzKey::from_road_xz(xz(*points.last().expect("points are non-empty")))
-    {
-        points.pop();
-    }
 }
 
 fn normalized_terminal_cap_direction(direction: RoadVec2) -> Option<RoadVec2> {

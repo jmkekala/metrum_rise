@@ -1,0 +1,143 @@
+//! Shared world-path projection and height interpolation helpers.
+
+use super::{
+    backend::{RoadVec2, RoadVec3, road_vec3_xz},
+    keys::SurfaceXzKey,
+};
+
+/// Recovers a deterministic world height for a quantized XZ point on a source path.
+pub(crate) fn height_on_world_path(
+    point_xz: RoadVec2,
+    path_world: &[RoadVec3],
+    edge_eps_m: f64,
+) -> Option<f64> {
+    let key = SurfaceXzKey::from_road_xz(point_xz);
+    for point_world in path_world {
+        if SurfaceXzKey::from_road_xz(road_vec3_xz(*point_world)) == key {
+            return Some(point_world.y);
+        }
+    }
+    for segment in path_world.windows(2) {
+        if let Some(height_m) =
+            height_on_world_segment(point_xz, segment[0], segment[1], edge_eps_m)
+        {
+            return Some(height_m);
+        }
+    }
+    None
+}
+
+/// Projects an XZ point onto a source segment and interpolates height when within tolerance.
+pub(crate) fn height_on_world_segment(
+    point_xz: RoadVec2,
+    start_world: RoadVec3,
+    end_world: RoadVec3,
+    edge_eps_m: f64,
+) -> Option<f64> {
+    let start_xz = road_vec3_xz(start_world);
+    let end_xz = road_vec3_xz(end_world);
+    let axis = end_xz - start_xz;
+    let axis_len2 = axis.length_squared();
+    if axis_len2 <= f64::EPSILON {
+        return None;
+    }
+    let t = ((point_xz - start_xz).dot(axis) / axis_len2).clamp(0.0, 1.0);
+    let closest = start_xz + axis * t;
+    if closest.distance_squared(point_xz) > edge_eps_m * edge_eps_m {
+        return None;
+    }
+    Some(start_world.y + (end_world.y - start_world.y) * t)
+}
+
+/// Rebuilds world points from cleaned XZ points by sampling heights on the original path.
+pub(crate) fn reheight_road_points_from_world_path(
+    points_xz: impl IntoIterator<Item = RoadVec2>,
+    source_path_world: &[RoadVec3],
+    edge_eps_m: f64,
+) -> Option<Vec<RoadVec3>> {
+    let mut points = points_xz
+        .into_iter()
+        .map(|point_xz| {
+            let height_m = height_on_world_path(point_xz, source_path_world, edge_eps_m)?;
+            Some(RoadVec3::new(point_xz.x, height_m, point_xz.y))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    remove_repeated_road_vec3_xz_points(&mut points);
+    Some(points)
+}
+
+/// Removes consecutive and closing duplicate XZ keys while preserving the first height.
+pub(crate) fn remove_repeated_road_vec3_xz_points(points: &mut Vec<RoadVec3>) {
+    points.dedup_by(|a, b| {
+        SurfaceXzKey::from_road_xz(road_vec3_xz(*a)) == SurfaceXzKey::from_road_xz(road_vec3_xz(*b))
+    });
+    if points.len() > 1
+        && SurfaceXzKey::from_road_xz(road_vec3_xz(points[0]))
+            == SurfaceXzKey::from_road_xz(road_vec3_xz(
+                *points.last().expect("points are non-empty"),
+            ))
+    {
+        points.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_quantized_endpoint_height_wins_before_segment_projection() {
+        let path = [
+            RoadVec3::new(0.0, 3.0, 0.0),
+            RoadVec3::new(1.0, 5.0, 0.0),
+            RoadVec3::new(2.0, 9.0, 0.0),
+        ];
+
+        let height = height_on_world_path(RoadVec2::new(1.0, 0.0), &path, 0.001)
+            .expect("endpoint key should be heighted directly");
+
+        assert_eq!(height, 5.0);
+    }
+
+    #[test]
+    fn midpoint_height_interpolates_from_source_segment() {
+        let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
+
+        let height = height_on_world_path(RoadVec2::new(1.0, 0.0), &path, 0.001)
+            .expect("midpoint should project onto source segment");
+
+        assert_eq!(height, 4.0);
+    }
+
+    #[test]
+    fn off_segment_point_outside_epsilon_has_no_height() {
+        let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
+
+        assert!(height_on_world_path(RoadVec2::new(1.0, 0.01), &path, 0.001).is_none());
+    }
+
+    #[test]
+    fn reheighted_points_drop_repeated_xz_keys() {
+        let path = [
+            RoadVec3::new(0.0, 1.0, 0.0),
+            RoadVec3::new(1.0, 2.0, 0.0),
+            RoadVec3::new(0.0, 3.0, 0.0),
+        ];
+
+        let points = reheight_road_points_from_world_path(
+            [
+                RoadVec2::new(0.0, 0.0),
+                RoadVec2::new(1.0, 0.0),
+                RoadVec2::new(0.0, 0.0),
+            ],
+            &path,
+            0.001,
+        )
+        .expect("source path should provide all requested heights");
+
+        assert_eq!(
+            points,
+            vec![RoadVec3::new(0.0, 1.0, 0.0), RoadVec3::new(1.0, 2.0, 0.0)]
+        );
+    }
+}

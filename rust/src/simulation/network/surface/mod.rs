@@ -25,6 +25,7 @@ mod node_boundary;
 mod node_grade;
 mod overlay;
 mod ownership;
+mod paths;
 mod query;
 mod rails;
 mod span;
