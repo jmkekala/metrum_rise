@@ -8,7 +8,9 @@ use super::rings::{
     canonicalize_final_owned_region_boundary_edges,
     canonicalize_owned_region_rings_with_rail_point_set,
 };
-use super::seams::{canonicalize_seam_constraints, owned_shape_is_discardable_numeric_dust};
+use super::seams::{
+    ConstraintOverlapMode, canonicalize_seam_constraints, owned_shape_is_discardable_numeric_dust,
+};
 use super::topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
     ownership_key_from_overlay_point, ownership_key_from_road_point,
@@ -520,7 +522,8 @@ fn materializes_seam_constraints_for_final_noded_owned_edges() {
         &mut regions,
         &footprint_shapes,
         &rail_canonical_points,
-    );
+    )
+    .expect("canonical boundary noding should succeed");
     materialize_noded_region_seam_constraints(
         &mut regions,
         &footprint_shapes,
@@ -605,7 +608,8 @@ fn source_local_owned_boundary_preserves_explicit_height_endpoint_authority() {
         paths_by_owner: BTreeMap::new(),
     };
 
-    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points);
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("canonical rail point adoption should succeed");
 
     let contour_keys = regions[0].shape[0]
         .iter()
@@ -618,6 +622,140 @@ fn source_local_owned_boundary_preserves_explicit_height_endpoint_authority() {
         validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
             .is_ok()
     );
+}
+
+#[test]
+fn duplicate_owner_source_candidate_cluster_uses_stable_representative() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let representative = (1_000_000, 0);
+    let duplicate_source = (1_000_019, 18);
+    let drifted_vertex = (1_000_006, -1);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(drifted_vertex),
+            overlay_point_from_key((0, 0)),
+            overlay_point_from_key((0, 1_000_000)),
+        ],
+    )];
+    let owner_points = vec![representative, duplicate_source];
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner: BTreeMap::new(),
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points)],
+        )),
+        height_points_by_source: BTreeMap::new(),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("duplicate source cluster should canonicalize to a stable representative");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&representative));
+    assert!(!contour_keys.contains(&drifted_vertex));
+    assert!(
+        validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
+            .is_ok()
+    );
+}
+
+#[test]
+fn ambiguous_owner_source_candidates_preserve_explicit_segment_point() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let first_candidate = (1_000_000, 0);
+    let second_candidate = (1_000_400, 0);
+    let segment_point = (1_000_200, 0);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(segment_point),
+            overlay_point_from_key((0, 0)),
+            overlay_point_from_key((2_000_000, 0)),
+        ],
+    )];
+    let owner_points = vec![first_candidate, second_candidate];
+    let mut segments_by_owner = BTreeMap::new();
+    insert_open_source_segments(
+        &mut segments_by_owner,
+        carriageway,
+        &[(0, 0), (2_000_000, 0)],
+    );
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner,
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points)],
+        )),
+        height_points_by_source: BTreeMap::new(),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("explicit source-segment point should not choose among ambiguous endpoints");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&segment_point));
+    assert!(
+        validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
+            .is_ok()
+    );
+}
+
+#[test]
+fn ambiguous_owner_canonical_source_candidates_are_blocking() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let first_candidate = (1_000_000, 0);
+    let second_candidate = (1_000_400, 0);
+    let drifted_vertex = (1_000_200, 0);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(drifted_vertex),
+            overlay_point_from_key((0, 0)),
+            overlay_point_from_key((0, 1_000_000)),
+        ],
+    )];
+    let owner_points = vec![first_candidate, second_candidate];
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner: BTreeMap::new(),
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points.clone())],
+        )),
+        height_points_by_source: BTreeMap::new(),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    let error =
+        canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+            .expect_err("ambiguous source candidates must not choose a lowest-key winner");
+
+    assert!(matches!(
+        error,
+        NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex {
+            owner,
+            point_x_key: 1_000_200,
+            point_z_key: 0,
+            ref candidates,
+        } if owner == carriageway
+            && candidates == &vec![first_candidate, second_candidate]
+    ));
 }
 
 #[test]
@@ -761,7 +899,8 @@ fn materializes_asymmetric_asphalt_curb_boundary_from_final_noded_edges() {
         &mut regions,
         &footprint_shapes,
         &rail_canonical_points,
-    );
+    )
+    .expect("canonical boundary noding should succeed");
     materialize_noded_region_seam_constraints(
         &mut regions,
         &footprint_shapes,
@@ -1238,7 +1377,8 @@ fn projected_material_boundary_canonicalizes_source_authorized_endpoint() {
     }];
     let rail_canonical_points = test_rail_canonical_points_from_constraints(&rail_constraints);
 
-    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points);
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("canonical rail point adoption should succeed");
 
     let curb_points = regions[1].shape[0]
         .iter()
@@ -1385,7 +1525,12 @@ fn asphalt_curb_shape_seams_use_exact_constraint_spans() {
         points_xz: vec![start, middle, end],
     }];
 
-    let seams = seam_constraints_for_shape(&shape, carriageway, &rail_constraints, false);
+    let seams = seam_constraints_for_shape(
+        &shape,
+        carriageway,
+        &rail_constraints,
+        ConstraintOverlapMode::ExactCanonical,
+    );
 
     assert!(
         !seams.iter().any(|constraint| {
@@ -1436,7 +1581,8 @@ fn canonicalizes_overlay_vertex_drift_to_unique_source_rail_key() {
     }];
 
     let rail_canonical_points = test_rail_canonical_points_from_constraints(&rail_constraints);
-    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points);
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("canonical rail point adoption should succeed");
 
     let contour = &regions[0].shape[0];
     assert!(
@@ -1495,7 +1641,8 @@ fn canonicalizes_closing_overlay_dust_to_source_rail_endpoint() {
     }];
 
     let rail_canonical_points = test_rail_canonical_points_from_constraints(&rail_constraints);
-    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points);
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("canonical rail point adoption should succeed");
 
     let contour = &regions[0].shape[0];
     let endpoint_key = ownership_key_from_road_point(endpoint);
@@ -1597,6 +1744,55 @@ fn owned_region_arrangement_reports_shared_edge_without_seam_constraint() {
             end,
         } if *owner == carriageway
             && *opposite_owner == sidewalk
+            && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 0.0))
+            && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 2.0))
+    )));
+}
+
+#[test]
+fn owned_region_arrangement_reports_ambiguous_multi_owner_edge() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 2);
+    let shared_right_contour = vec![[4.0, 0.0], [6.0, 0.0], [6.0, 2.0], [4.0, 2.0]];
+    let regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::Carriageway,
+            carriageway,
+            vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            shared_right_contour.clone(),
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb,
+            shared_right_contour,
+        ),
+    ];
+
+    let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+        45,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &regions,
+        &Vec::new(),
+        &[],
+    );
+
+    assert!(arrangement.diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic,
+        NodeOwnedRegionArrangementDiagnostic::AmbiguousOwnedBoundaryEdge {
+            region_index: 0,
+            owner,
+            opposite_owners,
+            start,
+            end,
+        } if *owner == carriageway
+            && opposite_owners.len() == 2
+            && opposite_owners.contains(&sidewalk)
+            && opposite_owners.contains(&curb)
             && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 0.0))
             && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 2.0))
     )));

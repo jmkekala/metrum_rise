@@ -9,6 +9,7 @@ use super::super::topology_keys::{
     point_key_collinear_with_edge, point_key_lies_on_segment, road_point_from_key,
     segment_parameter_key,
 };
+use super::ConstraintOverlapMode;
 use super::predicates::{
     canonicalize_seam_constraints, constraint_applies_to_owner,
     constraint_constrains_shared_height, constraint_is_material_transition,
@@ -85,7 +86,7 @@ pub(in crate::simulation::network::surface::ownership) fn seam_constraints_for_s
     shape: &NodeOverlayShape,
     owner: NodeBandOwner,
     rail_constraints: &[NodeRailConstraint],
-    allow_grid_bounded_constraint_overlap: bool,
+    overlap_mode: ConstraintOverlapMode,
 ) -> Vec<NodeRegionSeamConstraint> {
     let mut seams = Vec::new();
     for contour in shape {
@@ -111,12 +112,9 @@ pub(in crate::simulation::network::surface::ownership) fn seam_constraints_for_s
                         overlay_point_to_road(end),
                     );
                 }
-                for (overlap_start, overlap_end) in constraint_overlaps_shape_edge(
-                    start,
-                    end,
-                    constraint,
-                    allow_grid_bounded_constraint_overlap,
-                ) {
+                for (overlap_start, overlap_end) in
+                    constraint_overlaps_shape_edge(start, end, constraint, overlap_mode)
+                {
                     push_region_seam_constraint(
                         &mut seams,
                         constraint,
@@ -165,7 +163,7 @@ fn constraint_overlaps_shape_edge(
     edge_start: NodeOverlayPoint,
     edge_end: NodeOverlayPoint,
     constraint: &NodeRailConstraint,
-    allow_grid_bounded_constraint_overlap: bool,
+    overlap_mode: ConstraintOverlapMode,
 ) -> Vec<(NodeOwnershipPointKey, NodeOwnershipPointKey)> {
     let edge_start = ownership_key_from_overlay_point(edge_start);
     let edge_end = ownership_key_from_overlay_point(edge_end);
@@ -179,7 +177,7 @@ fn constraint_overlaps_shape_edge(
         if start == end {
             continue;
         }
-        if !allow_grid_bounded_constraint_overlap
+        if !overlap_mode.allows_grid_bounded_constraint_overlap()
             && (!point_key_collinear_with_edge(start, edge_start, edge_end)
                 || !point_key_collinear_with_edge(end, edge_start, edge_end))
         {

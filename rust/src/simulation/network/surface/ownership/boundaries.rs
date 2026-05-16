@@ -36,15 +36,37 @@ impl NodeOwnedRegionArrangement {
                 let Some(region) = regions.get(edge_ref.region_index) else {
                     continue;
                 };
-                let opposite_owner = opposite_owner_for_ref(&refs, *edge_ref);
+                let edge_neighbor = owned_region_edge_neighbor_for_ref(&refs, *edge_ref);
                 let source_constraints = owned_source_constraints_for_edge(
                     edge_key.start,
                     edge_key.end,
                     &region.seam_constraints,
                 );
+                let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
+                let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
+                if let OwnedRegionEdgeNeighbor::Ambiguous {
+                    opposite_owners, ..
+                } = &edge_neighbor
+                {
+                    diagnostics.push(
+                        NodeOwnedRegionArrangementDiagnostic::AmbiguousOwnedBoundaryEdge {
+                            region_index: edge_ref.region_index,
+                            owner: edge_ref.owner,
+                            opposite_owners: opposite_owners.clone(),
+                            start,
+                            end,
+                        },
+                    );
+                }
+                let opposite_owner = match edge_neighbor {
+                    OwnedRegionEdgeNeighbor::Unique { opposite_owner }
+                    | OwnedRegionEdgeNeighbor::EquivalentSameKind { opposite_owner, .. } => {
+                        Some(opposite_owner)
+                    }
+                    OwnedRegionEdgeNeighbor::Exposed
+                    | OwnedRegionEdgeNeighbor::Ambiguous { .. } => None,
+                };
                 if let Some(opposite_owner) = opposite_owner {
-                    let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
-                    let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
                     if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
                         let source_constraint_indices =
                             junctionn_unmaterialized_raised_step_authority_indices_for_edge(
@@ -179,10 +201,10 @@ pub(super) fn canonical_owned_region_edge_refs(
     refs
 }
 
-pub(super) fn opposite_owner_for_ref(
+pub(super) fn owned_region_edge_neighbor_for_ref(
     refs: &[OwnedRegionEdgeRef],
     edge_ref: OwnedRegionEdgeRef,
-) -> Option<NodeBandOwner> {
+) -> OwnedRegionEdgeNeighbor {
     let mut owners = refs
         .iter()
         .map(|edge_ref| edge_ref.owner)
@@ -190,11 +212,53 @@ pub(super) fn opposite_owner_for_ref(
         .collect::<Vec<_>>();
     owners.sort_unstable();
     owners.dedup();
-    owners.into_iter().next()
+    let material_owners = owners
+        .iter()
+        .copied()
+        .filter(|owner| owner.kind() != edge_ref.owner.kind())
+        .collect::<Vec<_>>();
+    let candidate_owners = if material_owners.is_empty() {
+        &owners
+    } else {
+        &material_owners
+    };
+    match candidate_owners.len() {
+        0 => OwnedRegionEdgeNeighbor::Exposed,
+        1 => OwnedRegionEdgeNeighbor::Unique {
+            opposite_owner: candidate_owners[0],
+        },
+        _ if candidate_owners
+            .iter()
+            .all(|owner| owner.kind() == candidate_owners[0].kind()) =>
+        {
+            OwnedRegionEdgeNeighbor::EquivalentSameKind {
+                opposite_owner: candidate_owners[0],
+                equivalent_owners: candidate_owners.clone(),
+            }
+        }
+        _ => OwnedRegionEdgeNeighbor::Ambiguous {
+            opposite_owners: candidate_owners.clone(),
+        },
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct OwnedRegionEdgeRef {
     pub(super) region_index: usize,
     pub(super) owner: NodeBandOwner,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum OwnedRegionEdgeNeighbor {
+    Exposed,
+    Unique {
+        opposite_owner: NodeBandOwner,
+    },
+    EquivalentSameKind {
+        opposite_owner: NodeBandOwner,
+        equivalent_owners: Vec<NodeBandOwner>,
+    },
+    Ambiguous {
+        opposite_owners: Vec<NodeBandOwner>,
+    },
 }

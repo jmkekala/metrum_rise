@@ -6,7 +6,8 @@ use super::super::super::rails::{NodeRailConstraint, NodeRailConstraintKind};
 use super::super::super::{NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::super::NodeBooleanOwnedRegion;
 use super::super::boundaries::{
-    canonical_owned_region_edge_refs, opposite_owner_for_ref, owned_region_boundary_refs,
+    OwnedRegionEdgeNeighbor, canonical_owned_region_edge_refs, owned_region_boundary_refs,
+    owned_region_edge_neighbor_for_ref,
 };
 use super::super::contact_semantics::{
     owners_form_raised_step_contact, raised_step_contact_constrains_shared_height,
@@ -21,6 +22,88 @@ use super::predicates::{
     constraint_is_point_contact, edge_lies_on_constraint_polyline_on_overlay_grid,
     edge_lies_on_single_constraint_segment,
 };
+
+struct OwnedEdgeSeamCandidate<'a> {
+    source: OwnedEdgeSeamCandidateSource<'a>,
+}
+
+enum OwnedEdgeSeamCandidateSource<'a> {
+    RailConstraint(&'a NodeRailConstraint),
+    EndpointPair {
+        constraint_index: usize,
+        kind: NodeRailConstraintKind,
+    },
+    SourceConstraint {
+        constraint_index: usize,
+        kind: NodeRailConstraintKind,
+    },
+}
+
+impl<'a> OwnedEdgeSeamCandidate<'a> {
+    fn rail_constraint(constraint: &'a NodeRailConstraint) -> Self {
+        Self {
+            source: OwnedEdgeSeamCandidateSource::RailConstraint(constraint),
+        }
+    }
+
+    fn endpoint_pair(constraint_index: usize, kind: NodeRailConstraintKind) -> Self {
+        Self {
+            source: OwnedEdgeSeamCandidateSource::EndpointPair {
+                constraint_index,
+                kind,
+            },
+        }
+    }
+
+    fn source_constraint(constraint_index: usize, kind: NodeRailConstraintKind) -> Self {
+        Self {
+            source: OwnedEdgeSeamCandidateSource::SourceConstraint {
+                constraint_index,
+                kind,
+            },
+        }
+    }
+
+    fn push_region_seam_constraint(
+        self,
+        seams: &mut Vec<NodeRegionSeamConstraint>,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        start_xz: RoadVec2,
+        end_xz: RoadVec2,
+    ) {
+        match self.source {
+            OwnedEdgeSeamCandidateSource::RailConstraint(constraint) => {
+                push_materialized_region_seam_constraint(
+                    seams,
+                    constraint,
+                    owner,
+                    opposite_owner,
+                    start_xz,
+                    end_xz,
+                );
+            }
+            OwnedEdgeSeamCandidateSource::EndpointPair {
+                constraint_index,
+                kind,
+            }
+            | OwnedEdgeSeamCandidateSource::SourceConstraint {
+                constraint_index,
+                kind,
+            } => {
+                push_materialized_endpoint_pair_region_seam_constraint(
+                    seams,
+                    constraint_index,
+                    kind,
+                    owner,
+                    opposite_owner,
+                    start_xz,
+                    end_xz,
+                );
+            }
+        }
+    }
+}
 
 fn push_materialized_region_seam_constraint(
     seams: &mut Vec<NodeRegionSeamConstraint>,
@@ -92,103 +175,37 @@ pub(in crate::simulation::network::surface::ownership) fn materialize_noded_regi
     for (edge_key, refs) in boundary_refs.edges {
         let refs = canonical_owned_region_edge_refs(&refs);
         for edge_ref in &refs {
-            let Some(opposite_owner) = opposite_owner_for_ref(&refs, *edge_ref) else {
-                continue;
+            let opposite_owner = match owned_region_edge_neighbor_for_ref(&refs, *edge_ref) {
+                OwnedRegionEdgeNeighbor::Unique { opposite_owner }
+                | OwnedRegionEdgeNeighbor::EquivalentSameKind { opposite_owner, .. } => {
+                    opposite_owner
+                }
+                OwnedRegionEdgeNeighbor::Ambiguous { .. } => {
+                    continue;
+                }
+                OwnedRegionEdgeNeighbor::Exposed => {
+                    continue;
+                }
             };
             let Some(region) = regions.get(edge_ref.region_index) else {
                 continue;
             };
-            let matching_constraints = rail_constraints
-                .iter()
-                .filter(|constraint| {
-                    rail_constraint_can_materialize_for_owned_edge(
-                        constraint,
-                        edge_ref.owner,
-                        opposite_owner,
-                    )
-                })
-                .filter(|constraint| {
-                    owned_edge_lies_on_rail_constraint(
-                        edge_key.start,
-                        edge_key.end,
-                        constraint,
-                        edge_ref.owner,
-                        opposite_owner,
-                        piece_kind,
-                    )
-                })
-                .collect::<Vec<_>>();
-            if matching_constraints.is_empty() {
-                let endpoint_pair_sources =
-                    materialized_endpoint_pair_constraint_indices_for_owned_edge(
-                        edge_key.start,
-                        edge_key.end,
-                        rail_constraints,
-                        edge_ref.owner,
-                        opposite_owner,
-                    );
-                if !endpoint_pair_sources.is_empty() {
-                    let Some(materialized_kind) =
-                        material_contact_kind_for_owned_edge(edge_ref.owner, opposite_owner)
-                    else {
-                        continue;
-                    };
-                    let start_xz = road_point_from_key(edge_key.start);
-                    let end_xz = road_point_from_key(edge_key.end);
-                    for constraint_index in endpoint_pair_sources {
-                        push_materialized_endpoint_pair_region_seam_constraint(
-                            &mut additions[edge_ref.region_index],
-                            constraint_index,
-                            materialized_kind,
-                            region.owner,
-                            opposite_owner,
-                            start_xz,
-                            end_xz,
-                        );
-                    }
-                    continue;
-                }
-                if let Some((constraint_index, materialized_kind)) =
-                    materialized_source_constraint_for_owned_step_edge(
-                        edge_key.start,
-                        edge_key.end,
-                        rail_constraints,
-                        edge_ref.owner,
-                        opposite_owner,
-                        piece_kind,
-                    )
-                {
-                    push_materialized_endpoint_pair_region_seam_constraint(
-                        &mut additions[edge_ref.region_index],
-                        constraint_index,
-                        materialized_kind,
-                        region.owner,
-                        opposite_owner,
-                        road_point_from_key(edge_key.start),
-                        road_point_from_key(edge_key.end),
-                    );
-                }
-            }
-            let has_exact_owner_pair_source = matching_constraints.iter().any(|constraint| {
-                rail_constraint_owner_pair_matches_edge(constraint, edge_ref.owner, opposite_owner)
-            });
-            for constraint in matching_constraints {
-                if has_exact_owner_pair_source
-                    && !rail_constraint_owner_pair_matches_edge(
-                        constraint,
-                        edge_ref.owner,
-                        opposite_owner,
-                    )
-                {
-                    continue;
-                }
-                push_materialized_region_seam_constraint(
+            let start_xz = road_point_from_key(edge_key.start);
+            let end_xz = road_point_from_key(edge_key.end);
+            for candidate in materialized_seam_candidates_for_owned_edge(
+                edge_key.start,
+                edge_key.end,
+                rail_constraints,
+                edge_ref.owner,
+                opposite_owner,
+                piece_kind,
+            ) {
+                candidate.push_region_seam_constraint(
                     &mut additions[edge_ref.region_index],
-                    constraint,
                     region.owner,
                     opposite_owner,
-                    road_point_from_key(edge_key.start),
-                    road_point_from_key(edge_key.end),
+                    start_xz,
+                    end_xz,
                 );
             }
         }
@@ -197,6 +214,97 @@ pub(in crate::simulation::network::surface::ownership) fn materialize_noded_regi
         region.seam_constraints.append(&mut seam_additions);
         canonicalize_seam_constraints(&mut region.seam_constraints);
     }
+}
+
+fn materialized_seam_candidates_for_owned_edge<'a>(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_constraints: &'a [NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> Vec<OwnedEdgeSeamCandidate<'a>> {
+    let matching_constraints = matching_rail_constraints_for_owned_edge(
+        start,
+        end,
+        rail_constraints,
+        owner,
+        opposite_owner,
+        piece_kind,
+    );
+    if !matching_constraints.is_empty() {
+        let has_exact_owner_pair_source = matching_constraints.iter().any(|constraint| {
+            rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+        });
+        return matching_constraints
+            .into_iter()
+            .filter(|constraint| {
+                !has_exact_owner_pair_source
+                    || rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+            })
+            .map(OwnedEdgeSeamCandidate::rail_constraint)
+            .collect();
+    }
+
+    if let Some(kind) = material_contact_kind_for_owned_edge(owner, opposite_owner) {
+        let endpoint_pair_sources = materialized_endpoint_pair_constraint_indices_for_owned_edge(
+            start,
+            end,
+            rail_constraints,
+            owner,
+            opposite_owner,
+        );
+        if !endpoint_pair_sources.is_empty() {
+            return endpoint_pair_sources
+                .into_iter()
+                .map(|constraint_index| {
+                    OwnedEdgeSeamCandidate::endpoint_pair(constraint_index, kind)
+                })
+                .collect();
+        }
+    }
+
+    materialized_source_constraint_for_owned_step_edge(
+        start,
+        end,
+        rail_constraints,
+        owner,
+        opposite_owner,
+        piece_kind,
+    )
+    .map(|(constraint_index, kind)| {
+        vec![OwnedEdgeSeamCandidate::source_constraint(
+            constraint_index,
+            kind,
+        )]
+    })
+    .unwrap_or_default()
+}
+
+fn matching_rail_constraints_for_owned_edge<'a>(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_constraints: &'a [NodeRailConstraint],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> Vec<&'a NodeRailConstraint> {
+    rail_constraints
+        .iter()
+        .filter(|constraint| {
+            rail_constraint_can_materialize_for_owned_edge(constraint, owner, opposite_owner)
+        })
+        .filter(|constraint| {
+            owned_edge_lies_on_rail_constraint(
+                start,
+                end,
+                constraint,
+                owner,
+                opposite_owner,
+                piece_kind,
+            )
+        })
+        .collect()
 }
 
 fn rail_constraint_owner_pair_matches_edge(

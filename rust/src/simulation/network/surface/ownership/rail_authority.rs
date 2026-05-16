@@ -10,6 +10,8 @@ use super::topology_keys::{
 use super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use std::collections::{BTreeMap, BTreeSet};
 
+const SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS: i64 = 32;
+
 pub(super) struct NodeRailCanonicalPointSet {
     pub(super) all_points: Vec<NodeOwnershipPointKey>,
     pub(super) points_by_owner: BTreeMap<NodeBandOwner, Vec<NodeOwnershipPointKey>>,
@@ -223,11 +225,11 @@ pub(super) fn validate_owned_region_vertices_against_source_authority(
                 if source_height_points.binary_search(&point).is_ok() {
                     continue;
                 }
-                if rail_points.owner_source_authorizes_point(region.owner, point) {
+                if rail_points.owner_source_authorizes_point(region.owner, point)? {
                     continue;
                 }
                 let Some(canonical) =
-                    rail_points.conflicting_canonical_point_for_owner(region.owner, point)
+                    rail_points.canonical_conflict_for_owner(region.owner, point)?
                 else {
                     continue;
                 };
@@ -249,39 +251,94 @@ impl NodeRailCanonicalPointSet {
         &self,
         owner: NodeBandOwner,
         point: NodeOwnershipPointKey,
-    ) -> bool {
-        if self
-            .canonical_point_for_owner(owner, point)
-            .is_some_and(|canonical| canonical != point)
+    ) -> Result<bool, NodeBooleanOwnershipError> {
+        if self.owner_source_points_authorize_point(owner, point)
+            || self.owner_source_segments_authorize_point(owner, point)
         {
-            return false;
+            return Ok(true);
         }
+        Ok(self.canonical_conflict_for_owner(owner, point)?.is_none())
+    }
+
+    fn owner_source_points_authorize_point(
+        &self,
+        owner: NodeBandOwner,
+        point: NodeOwnershipPointKey,
+    ) -> bool {
         self.points_by_owner
             .get(&owner)
             .is_some_and(|points| points.binary_search(&point).is_ok())
-            || self.segments_by_owner.get(&owner).is_some_and(|segments| {
-                segments
-                    .iter()
-                    .any(|segment| point_key_lies_on_segment(point, segment.start, segment.end))
-            })
     }
 
-    fn conflicting_canonical_point_for_owner(
+    fn owner_source_segments_authorize_point(
         &self,
         owner: NodeBandOwner,
         point: NodeOwnershipPointKey,
-    ) -> Option<NodeOwnershipPointKey> {
-        self.canonical_point_for_owner(owner, point)
-            .filter(|canonical| *canonical != point)
+    ) -> bool {
+        self.segments_by_owner.get(&owner).is_some_and(|segments| {
+            segments
+                .iter()
+                .any(|segment| point_key_lies_on_segment(point, segment.start, segment.end))
+        })
     }
 
-    pub(super) fn canonical_point_for_owner(
+    fn canonical_conflict_for_owner(
         &self,
         owner: NodeBandOwner,
         point: NodeOwnershipPointKey,
-    ) -> Option<NodeOwnershipPointKey> {
-        let candidates = self.canonical_candidates_for_owner(owner, point)?;
-        candidates.iter().copied().next()
+    ) -> Result<Option<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
+        let Some(canonical) = self.canonical_point_for_owner(owner, point)? else {
+            return Ok(None);
+        };
+        Ok((canonical != point).then_some(canonical))
+    }
+
+    pub(super) fn canonicalized_point_for_owner(
+        &self,
+        owner: NodeBandOwner,
+        point: NodeOwnershipPointKey,
+    ) -> Result<NodeOwnershipPointKey, NodeBooleanOwnershipError> {
+        if self.owner_source_points_authorize_point(owner, point) {
+            return Ok(point);
+        }
+        match self.canonical_point_for_owner(owner, point) {
+            Ok(Some(canonical)) => Ok(canonical),
+            Ok(None) => Ok(point),
+            Err(error) => {
+                if self.owner_source_segments_authorize_point(owner, point) {
+                    Ok(point)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn canonical_point_for_owner(
+        &self,
+        owner: NodeBandOwner,
+        point: NodeOwnershipPointKey,
+    ) -> Result<Option<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
+        let Some(candidates) = self.canonical_candidates_for_owner(owner, point) else {
+            return Ok(None);
+        };
+        if candidates.contains(&point) {
+            return Ok(Some(point));
+        }
+        if candidates.len() == 1 {
+            return Ok(candidates.iter().copied().next());
+        }
+        if canonical_candidates_form_source_duplicate_cluster(candidates) {
+            return Ok(candidates.iter().copied().next());
+        }
+        Err(
+            NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex {
+                owner,
+                point_x_key: point.0,
+                point_z_key: point.1,
+                candidates: candidates.iter().copied().collect(),
+            },
+        )
     }
 
     fn canonical_candidates_for_owner(
@@ -293,6 +350,26 @@ impl NodeRailCanonicalPointSet {
             .get(&owner)?
             .get(&ownership_mm_key(point))
     }
+}
+
+fn canonical_candidates_form_source_duplicate_cluster(
+    candidates: &BTreeSet<NodeOwnershipPointKey>,
+) -> bool {
+    // Coalesce duplicate source endpoints emitted by independent source rails after
+    // projection to the overlay grid. Wider same-mm ambiguity remains blocking.
+    let Some((first_x, first_z)) = candidates.first().copied() else {
+        return false;
+    };
+    let (mut min_x, mut max_x) = (first_x, first_x);
+    let (mut min_z, mut max_z) = (first_z, first_z);
+    for (x, z) in candidates.iter().copied() {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
+    }
+    max_x - min_x <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
+        && max_z - min_z <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
 }
 
 pub(super) fn constraint_authority_owners(constraint: &NodeRailConstraint) -> Vec<NodeBandOwner> {

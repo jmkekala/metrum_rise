@@ -4,12 +4,12 @@ use super::super::super::NodeOverlayContour;
 use super::super::super::NodeOverlayShapes;
 use super::super::super::arrangement::NodeBandOwner;
 use super::super::super::rails::NodeGeneratedContourClaimPriority;
-use super::super::NodeBooleanOwnedRegion;
 use super::super::rail_authority::NodeRailCanonicalPointSet;
 use super::super::topology_keys::{
     NodeOwnershipPointKey, overlay_point_from_key, ownership_key_from_overlay_point,
-    point_key_lies_exactly_on_segment, segment_parameter_key,
+    point_key_lies_exactly_on_segment, point_key_lies_on_segment, segment_parameter_key,
 };
+use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 
 pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_region_rings(
     regions: &mut [NodeBooleanOwnedRegion],
@@ -27,10 +27,11 @@ pub(in crate::simulation::network::surface::ownership) fn canonicalize_final_own
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_canonical_points: &NodeRailCanonicalPointSet,
-) {
-    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points);
+) -> Result<(), NodeBooleanOwnershipError> {
+    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points)?;
     node_owned_region_rings_to_global_points(regions, footprint_shapes);
-    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points);
+    canonicalize_owned_region_rings_with_rail_point_set(regions, rail_canonical_points)?;
+    Ok(())
 }
 
 fn node_owned_region_rings_to_global_points(
@@ -48,9 +49,9 @@ fn node_owned_region_rings_to_global_points(
 pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_region_rings_with_rail_point_set(
     regions: &mut [NodeBooleanOwnedRegion],
     rail_points: &NodeRailCanonicalPointSet,
-) {
+) -> Result<(), NodeBooleanOwnershipError> {
     if rail_points.all_points.is_empty() {
-        return;
+        return Ok(());
     }
 
     for region in regions {
@@ -73,16 +74,12 @@ pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_reg
             .map(Vec::as_slice)
             .unwrap_or(owner_points);
         let mut source_points = preserved_points.clone();
-        source_points.extend(authority_points.iter().copied().map(|point| {
-            rail_points
-                .canonical_point_for_owner(region.owner, point)
-                .unwrap_or(point)
-        }));
-        source_points.extend(rail_points.all_points.iter().copied().map(|point| {
-            rail_points
-                .canonical_point_for_owner(region.owner, point)
-                .unwrap_or(point)
-        }));
+        for point in authority_points.iter().copied() {
+            source_points.push(rail_points.canonicalized_point_for_owner(region.owner, point)?);
+        }
+        for point in rail_points.all_points.iter().copied() {
+            source_points.push(rail_points.canonicalized_point_for_owner(region.owner, point)?);
+        }
         source_points.sort_unstable();
         source_points.dedup();
         let owner_paths = if region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap {
@@ -101,11 +98,12 @@ pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_reg
                 region.owner,
                 &preserved_points,
                 rail_points,
-            );
+            )?;
             *contour =
                 noded_owned_region_contour_with_rail_paths(contour, &source_points, owner_paths);
         }
     }
+    Ok(())
 }
 
 fn canonicalize_owned_region_contour_to_owner_source_points(
@@ -113,15 +111,13 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     owner: NodeBandOwner,
     source_points: &[NodeOwnershipPointKey],
     rail_points: &NodeRailCanonicalPointSet,
-) {
+) -> Result<(), NodeBooleanOwnershipError> {
     for point in contour.iter_mut() {
         let key = ownership_key_from_overlay_point(*point);
         if source_points.binary_search(&key).is_ok() {
             continue;
         }
-        let Some(canonical) = rail_points.canonical_point_for_owner(owner, key) else {
-            continue;
-        };
+        let canonical = rail_points.canonicalized_point_for_owner(owner, key)?;
         if canonical == key {
             continue;
         }
@@ -134,6 +130,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     {
         contour.pop();
     }
+    Ok(())
 }
 
 pub(in crate::simulation::network::surface::ownership) fn owned_region_global_points(
@@ -269,15 +266,7 @@ fn rail_path_points_between(
                 }
                 let mut candidate = points[start_index..=end_index].to_vec();
                 dedup_consecutive_ownership_keys(&mut candidate);
-                if candidate.len() == 3
-                    && best
-                        .as_ref()
-                        .is_none_or(|best: &Vec<NodeOwnershipPointKey>| {
-                            candidate.len() > best.len()
-                        })
-                {
-                    best = Some(candidate);
-                }
+                retain_best_rail_path_candidate(&mut best, candidate);
             }
         }
         for end_index in points
@@ -292,21 +281,82 @@ fn rail_path_points_between(
                 let mut candidate = points[end_index..=start_index].to_vec();
                 candidate.reverse();
                 dedup_consecutive_ownership_keys(&mut candidate);
-                if candidate.len() == 3
-                    && best
-                        .as_ref()
-                        .is_none_or(|best: &Vec<NodeOwnershipPointKey>| {
-                            candidate.len() > best.len()
-                        })
-                {
-                    best = Some(candidate);
-                }
+                retain_best_rail_path_candidate(&mut best, candidate);
             }
         }
     }
     best
 }
 
+fn retain_best_rail_path_candidate(
+    best: &mut Option<Vec<NodeOwnershipPointKey>>,
+    candidate: Vec<NodeOwnershipPointKey>,
+) {
+    if !rail_path_candidate_can_node_owned_edge(&candidate) {
+        return;
+    }
+    let should_replace = best.as_ref().is_none_or(|best| {
+        candidate.len() > best.len() || (candidate.len() == best.len() && candidate < *best)
+    });
+    if should_replace {
+        *best = Some(candidate);
+    }
+}
+
+fn rail_path_candidate_can_node_owned_edge(candidate: &[NodeOwnershipPointKey]) -> bool {
+    if candidate.len() < 3 {
+        return false;
+    }
+    if candidate.len() == 3 {
+        return true;
+    }
+    let start = candidate[0];
+    let end = *candidate
+        .last()
+        .expect("candidate length was checked above");
+    candidate[1..candidate.len() - 1]
+        .iter()
+        .all(|point| point_key_lies_on_segment(*point, start, end))
+}
+
 fn dedup_consecutive_ownership_keys(points: &mut Vec<NodeOwnershipPointKey>) {
     points.dedup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rail_path_points_between_preserves_multiple_interior_source_vertices() {
+        let path = vec![(0, 0), (1, 0), (2, 0), (3, 0)];
+
+        assert_eq!(
+            rail_path_points_between((0, 0), (3, 0), &[path]),
+            Some(vec![(0, 0), (1, 0), (2, 0), (3, 0)])
+        );
+    }
+
+    #[test]
+    fn rail_path_points_between_prefers_longest_then_lexicographic_candidate() {
+        let short = vec![(0, 0), (2, 0), (4, 0)];
+        let long = vec![(0, 0), (1, 0), (2, 0), (4, 0)];
+        let lexicographic = vec![(0, 0), (1, -1), (2, 0), (4, 0)];
+
+        assert_eq!(
+            rail_path_points_between((0, 0), (4, 0), &[short, long, lexicographic]),
+            Some(vec![(0, 0), (1, 0), (2, 0), (4, 0)])
+        );
+    }
+
+    #[test]
+    fn rail_path_points_between_rejects_multi_point_detours_off_owned_edge() {
+        let detour = vec![(0, 0), (1, 1), (2, 0), (4, 0)];
+        let direct = vec![(0, 0), (2, 0), (4, 0)];
+
+        assert_eq!(
+            rail_path_points_between((0, 0), (4, 0), &[detour, direct]),
+            Some(vec![(0, 0), (2, 0), (4, 0)])
+        );
+    }
 }

@@ -211,6 +211,16 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_z_mm: i64,
         reason: NodeSeamConstraintFailureReason,
     },
+    AmbiguousOwnedBoundaryEdge {
+        region_index: usize,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        opposite_owners: Vec<(RoadSurfaceBandKind, usize)>,
+        start_x_mm: i64,
+        start_z_mm: i64,
+        end_x_mm: i64,
+        end_z_mm: i64,
+    },
     UnmaterializedRaisedStepAuthority {
         region_index: usize,
         owner: RoadSurfaceBandKind,
@@ -1030,6 +1040,11 @@ impl NodeGeometryDiagnostic {
                     reason: "noncanonical_owned_region_vertex",
                 }
             }
+            NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex { .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "ambiguous_canonical_owned_region_vertex",
+                }
+            }
             NodeBooleanOwnershipError::EmptyContourSet { .. }
             | NodeBooleanOwnershipError::EmptyFootprint { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
@@ -1506,6 +1521,28 @@ impl NodeGeometryDiagnostic {
                     reason: NodeSeamConstraintFailureReason::Ambiguous,
                 },
             ),
+            NodeOwnedRegionArrangementDiagnostic::AmbiguousOwnedBoundaryEdge {
+                region_index,
+                owner,
+                opposite_owners,
+                start,
+                end,
+            } => (
+                NodeGeometryBackend::CanonicalKeys,
+                NodeGeometryDiagnosticKind::AmbiguousOwnedBoundaryEdge {
+                    region_index: *region_index,
+                    owner: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    opposite_owners: opposite_owners
+                        .iter()
+                        .map(|owner| (owner.kind(), owner.owner_index()))
+                        .collect(),
+                    start_x_mm: start.x_mm(),
+                    start_z_mm: start.z_mm(),
+                    end_x_mm: end.x_mm(),
+                    end_z_mm: end.z_mm(),
+                },
+            ),
         };
         Self {
             node_id,
@@ -1573,6 +1610,7 @@ impl NodeGeometryDiagnosticKind {
             Self::TriangleCoverageMismatch { .. } => "triangle_coverage_mismatch",
             Self::TriangleOverlap { .. } => "triangle_overlap",
             Self::SeamConstraintFailure { .. } => "seam_constraint_failure",
+            Self::AmbiguousOwnedBoundaryEdge { .. } => "ambiguous_owned_boundary_edge",
             Self::UnmaterializedRaisedStepAuthority { .. } => {
                 "unmaterialized_raised_step_authority"
             }

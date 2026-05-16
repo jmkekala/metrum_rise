@@ -26,7 +26,10 @@ use rings::{canonicalize_owned_region_rings, clean_canonical_owned_region_shapes
 
 use rail_authority::canonical_points_for_rail_set;
 
-use seams::{materialize_noded_region_seam_constraints, seam_constraints_for_shape};
+use seams::{
+    ConstraintOverlapMode, materialize_noded_region_seam_constraints, seam_constraints_for_shape,
+};
+use topology_keys::NodeOwnershipPointKey;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
@@ -80,6 +83,13 @@ pub(crate) enum NodeOwnedRegionArrangementDiagnostic {
         region_index: usize,
         owner: NodeBandOwner,
         opposite_owner: NodeBandOwner,
+        start: NodeOwnedRegionArrangementKey,
+        end: NodeOwnedRegionArrangementKey,
+    },
+    AmbiguousOwnedBoundaryEdge {
+        region_index: usize,
+        owner: NodeBandOwner,
+        opposite_owners: Vec<NodeBandOwner>,
         start: NodeOwnedRegionArrangementKey,
         end: NodeOwnedRegionArrangementKey,
     },
@@ -138,6 +148,12 @@ pub(crate) enum NodeBooleanOwnershipError {
         canonical_x_key: i64,
         canonical_z_key: i64,
     },
+    AmbiguousCanonicalOwnedRegionVertex {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        candidates: Vec<NodeOwnershipPointKey>,
+    },
 }
 
 impl RoadSurfaceSystem {
@@ -185,8 +201,7 @@ impl NodeBooleanOwnership {
             overlay_difference(&footprint_shapes, &asphalt_shapes, "non_road_difference")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut non_road_shapes);
 
-        let allow_grid_bounded_constraint_overlap =
-            rails.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal;
+        let constraint_overlap_mode = ConstraintOverlapMode::for_piece_kind(rails.piece_kind);
         let mut owned_regions = Vec::new();
         let asphalt_owner_domains = asphalt_owner_domains(rails);
         let asphalt_result = owned_regions_from_domains(
@@ -194,7 +209,7 @@ impl NodeBooleanOwnership {
             &asphalt_owner_domains,
             &rails.constraints,
             ResidualKind::Asphalt,
-            allow_grid_bounded_constraint_overlap,
+            constraint_overlap_mode,
         )?;
         owned_regions.extend(asphalt_result.regions);
 
@@ -215,14 +230,14 @@ impl NodeBooleanOwnership {
             &footprint_shapes,
             &rails.constraints,
             &rail_canonical_points,
-            allow_grid_bounded_constraint_overlap,
+            constraint_overlap_mode,
         )?;
         for region in &mut owned_regions {
             region.seam_constraints = seam_constraints_for_shape(
                 &region.shape,
                 region.owner,
                 &rails.constraints,
-                allow_grid_bounded_constraint_overlap,
+                constraint_overlap_mode,
             );
         }
         materialize_noded_region_seam_constraints(

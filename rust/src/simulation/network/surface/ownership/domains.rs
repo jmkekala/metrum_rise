@@ -6,10 +6,8 @@ use super::super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
-use super::super::{
-    NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind,
-};
+use super::super::{NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem};
+use super::seams::ConstraintOverlapMode;
 use super::seams::{owned_shape_is_discardable_numeric_dust, seam_constraints_for_shape};
 use super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -86,7 +84,7 @@ fn split_non_road_regions_by_band_order(
             &kind_domains,
             &rails.constraints,
             ResidualKind::Band(kind),
-            rails.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal,
+            ConstraintOverlapMode::for_piece_kind(rails.piece_kind),
         )?;
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &kind_result.claimed_shapes, "claim_union")?;
@@ -105,7 +103,7 @@ pub(super) fn owned_regions_from_domains(
     domains: &[&NodeGeneratedContour],
     rail_constraints: &[NodeRailConstraint],
     residual_kind: ResidualKind,
-    allow_grid_bounded_constraint_overlap: bool,
+    overlap_mode: ConstraintOverlapMode,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     if target_shapes.is_empty() {
         return Ok(OwnedDomainResult {
@@ -143,12 +141,8 @@ pub(super) fn owned_regions_from_domains(
                 group_claimed_shapes.push(shape.clone());
                 continue;
             }
-            let seam_constraints = seam_constraints_for_shape(
-                shape,
-                group.owner,
-                rail_constraints,
-                allow_grid_bounded_constraint_overlap,
-            );
+            let seam_constraints =
+                seam_constraints_for_shape(shape, group.owner, rail_constraints, overlap_mode);
             if residual_kind.requires_explicit_profile_seam_rail()
                 && !region_has_explicit_profile_seam_rail(&seam_constraints, rail_constraints)
             {
