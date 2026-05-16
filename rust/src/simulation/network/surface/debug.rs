@@ -10,7 +10,9 @@ use super::{
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
     band_semantics::ordered_raised_step_kinds,
+    height::NodeHeightAuthoritySource,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
+    node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority},
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -1034,6 +1036,9 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"height_owner\": ");
         Self::append_node_height_owner_debug_literal(dump, piece);
         dump.push_str(",\n");
+        dump.push_str("      \"node_grade_authority\": ");
+        Self::append_node_grade_authority_debug_literal(dump, piece);
+        dump.push_str(",\n");
         dump.push_str("      \"seam_constraints\": ");
         self.append_node_seam_constraints_debug_literal(dump, graph, node_id);
         dump.push_str(",\n");
@@ -1129,6 +1134,69 @@ impl RoadSurfaceSystem {
             );
         }
         dump.push(']');
+    }
+
+    fn append_node_grade_authority_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        dump.push('[');
+        for (index, authority) in piece.node_grade_authorities.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_node_grade_authority_record_debug_literal(dump, *authority);
+        }
+        dump.push(']');
+    }
+
+    fn append_node_grade_authority_record_debug_literal(
+        dump: &mut String,
+        authority: NodeGradeVertexAuthority,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"x_key\":{},\"z_key\":{},\"x_mm\":{},\"z_mm\":{},\"owner_kind\":\"{:?}\",\"owner_index\":{},\"height_field_id\":\"{:?}\",\"height_mm\":{},\"decision\":\"{}\"",
+            authority.key.x_key(),
+            authority.key.z_key(),
+            authority.key.x_mm(),
+            authority.key.z_mm(),
+            authority.owner.kind(),
+            authority.owner.owner_index(),
+            authority.height_field_id,
+            authority.height_key.as_i64(),
+            Self::node_grade_decision_debug_name(authority.decision),
+        );
+        if let NodeGradeCarrierDecision::SourceCarrier { authority } = authority.decision {
+            dump.push_str(",\"source_authority\":");
+            Self::append_node_height_authority_debug_literal(dump, authority);
+        }
+        dump.push('}');
+    }
+
+    fn append_node_height_authority_debug_literal(
+        dump: &mut String,
+        authority: Option<NodeHeightAuthoritySource>,
+    ) {
+        if let Some(authority) = authority {
+            let _ = write!(dump, "\"{:?}\"", authority);
+        } else {
+            dump.push_str("null");
+        }
+    }
+
+    fn node_grade_decision_debug_name(decision: NodeGradeCarrierDecision) -> &'static str {
+        match decision {
+            NodeGradeCarrierDecision::SourceCarrier { .. } => "source_carrier",
+            NodeGradeCarrierDecision::SameOwnerCanonicalVertex => "same_owner_canonical_vertex",
+            NodeGradeCarrierDecision::SameMaterialSharedEdge => "same_material_shared_edge",
+            NodeGradeCarrierDecision::SameMaterialVertex => "same_material_vertex",
+            NodeGradeCarrierDecision::SameMaterialSeam => "same_material_seam",
+            NodeGradeCarrierDecision::ExplicitMaterialSeam => "explicit_material_seam",
+            NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption => {
+                "explicit_material_seam_adoption"
+            }
+        }
     }
 
     fn append_node_seam_constraints_debug_literal(
@@ -3084,6 +3152,7 @@ mod tests {
             raised_step_face_sources: Vec::new(),
             sidewalk_surface_polygons: Vec::new(),
             explicit_vertical_step_segments: Vec::new(),
+            node_grade_authorities: Vec::new(),
             owned_regions: Vec::new(),
             earthwork_surface_polygons: Vec::new(),
             earthwork_outer_boundary_loops: Vec::new(),

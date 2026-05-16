@@ -4,6 +4,7 @@ use super::backend::RoadVec2;
 use super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
+use super::node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -87,6 +88,7 @@ pub(crate) struct NodeArrangementVertex {
     owners: Vec<NodeBandOwner>,
     height_field_id: NodeBandHeightFieldId,
     seam_sources: Vec<NodeSeamSource>,
+    grade_authority: NodeGradeVertexAuthority,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -188,6 +190,14 @@ pub(crate) enum NodeArrangementError {
         key: NodeArrangementKey,
         existing_height_mm: i64,
         incoming_height_mm: i64,
+    },
+    MissingGradeAuthority {
+        region_index: usize,
+        contour_index: usize,
+        key: NodeArrangementKey,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        height_mm: i64,
     },
 }
 
@@ -369,6 +379,7 @@ impl NodeArrangement {
         &self.diagnostics
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_vertex(
         &mut self,
         point_xz: RoadVec2,
@@ -376,6 +387,35 @@ impl NodeArrangement {
         owners: impl IntoIterator<Item = NodeBandOwner>,
         height_field_id: NodeBandHeightFieldId,
         seam_sources: impl IntoIterator<Item = NodeSeamSource>,
+    ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
+        let key = NodeArrangementKey::from_point(point_xz);
+        let owners = canonical_non_empty_owners(key, owners)?;
+        let owner = owners[0];
+        let grade_authority = NodeGradeVertexAuthority::new(
+            point_xz,
+            height_m,
+            owner,
+            height_field_id,
+            NodeGradeCarrierDecision::SourceCarrier { authority: None },
+        );
+        self.insert_vertex_with_grade_authority(
+            point_xz,
+            height_m,
+            owners,
+            height_field_id,
+            seam_sources,
+            grade_authority,
+        )
+    }
+
+    fn insert_vertex_with_grade_authority(
+        &mut self,
+        point_xz: RoadVec2,
+        height_m: f64,
+        owners: impl IntoIterator<Item = NodeBandOwner>,
+        height_field_id: NodeBandHeightFieldId,
+        seam_sources: impl IntoIterator<Item = NodeSeamSource>,
+        grade_authority: NodeGradeVertexAuthority,
     ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
         let key = NodeArrangementKey::from_point(point_xz);
         let height_key = NodeArrangementHeightKey(quantize_height_m(height_m));
@@ -406,6 +446,8 @@ impl NodeArrangement {
                     incoming_height_mm: height_key.0,
                 });
             }
+            existing.grade_authority =
+                merged_node_grade_authority(existing.grade_authority, grade_authority);
             merge_sorted_unique(&mut existing.owners, owners);
             merge_sorted_unique(&mut existing.seam_sources, seam_sources);
             return Ok(existing_id);
@@ -420,6 +462,7 @@ impl NodeArrangement {
             owners,
             height_field_id,
             seam_sources,
+            grade_authority,
         ))
     }
 
@@ -451,6 +494,7 @@ impl NodeArrangement {
         owners: Vec<NodeBandOwner>,
         height_field_id: NodeBandHeightFieldId,
         seam_sources: Vec<NodeSeamSource>,
+        grade_authority: NodeGradeVertexAuthority,
     ) -> NodeArrangementVertexId {
         let id = NodeArrangementVertexId(self.vertices.len());
         self.vertices.push(NodeArrangementVertex {
@@ -462,6 +506,7 @@ impl NodeArrangement {
             owners,
             height_field_id,
             seam_sources,
+            grade_authority,
         });
         self.vertex_by_context_key.insert(context_key, id);
         id
@@ -760,12 +805,23 @@ impl NodeArrangement {
         contour
             .iter()
             .map(|vertex| {
-                self.insert_vertex(
+                let grade_authority = vertex.grade_authority.ok_or_else(|| {
+                    NodeArrangementError::MissingGradeAuthority {
+                        region_index,
+                        contour_index,
+                        key: NodeArrangementKey::from_point(vertex.point_xz),
+                        owner: region.owner,
+                        height_field_id: vertex.height_field_id,
+                        height_mm: quantize_height_m(vertex.height_m),
+                    }
+                })?;
+                self.insert_vertex_with_grade_authority(
                     vertex.point_xz,
                     vertex.height_m,
                     [region.owner],
                     vertex.height_field_id,
                     [seam_source_for_owner(region.owner)],
+                    grade_authority,
                 )
             })
             .collect()
@@ -783,12 +839,13 @@ impl NodeArrangement {
                 vertex_index,
             },
         )?;
-        self.insert_vertex(
+        self.insert_vertex_with_grade_authority(
             RoadVec2::new(vertex.point_world.x, vertex.point_world.z),
             vertex.point_world.y,
             [region.owner],
             vertex.height_field_id,
             [seam_source_for_owner(region.owner)],
+            vertex.grade_authority,
         )
     }
 
@@ -1232,6 +1289,10 @@ impl NodeArrangementVertex {
     pub(crate) fn owners(&self) -> &[NodeBandOwner] {
         &self.owners
     }
+
+    pub(crate) fn grade_authority(&self) -> NodeGradeVertexAuthority {
+        self.grade_authority
+    }
 }
 
 impl NodeOwnedRegion {
@@ -1485,6 +1546,29 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
 }
 
+fn merged_node_grade_authority(
+    existing: NodeGradeVertexAuthority,
+    incoming: NodeGradeVertexAuthority,
+) -> NodeGradeVertexAuthority {
+    if node_grade_decision_rank(incoming.decision) < node_grade_decision_rank(existing.decision) {
+        incoming
+    } else {
+        existing
+    }
+}
+
+fn node_grade_decision_rank(decision: NodeGradeCarrierDecision) -> u8 {
+    match decision {
+        NodeGradeCarrierDecision::ExplicitMaterialSeam => 0,
+        NodeGradeCarrierDecision::SameMaterialSeam => 1,
+        NodeGradeCarrierDecision::SameMaterialSharedEdge => 2,
+        NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption => 3,
+        NodeGradeCarrierDecision::SameMaterialVertex => 4,
+        NodeGradeCarrierDecision::SameOwnerCanonicalVertex => 5,
+        NodeGradeCarrierDecision::SourceCarrier { .. } => 6,
+    }
+}
+
 pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
     if a != b && a.kind == b.kind {
         return raised_step_band_rank(a.kind).is_some();
@@ -1633,6 +1717,97 @@ mod tests {
 
         assert_ne!(first, second);
         assert_eq!(arrangement.vertices().len(), 2);
+    }
+
+    #[test]
+    fn junctionn_arrangement_vertices_preserve_node_grade_authority() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let heights = two_region_height_solution(carriageway, sidewalk, Vec::new(), Vec::new());
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("heighted JunctionN should arrange with grade authority");
+
+        assert!(!arrangement.vertices().is_empty());
+        assert!(arrangement.vertices().iter().all(|vertex| {
+            matches!(
+                vertex.grade_authority().decision,
+                NodeGradeCarrierDecision::SourceCarrier { .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn arrangement_rejects_heighted_vertex_without_node_grade_authority() {
+        let owner = owner(RoadSurfaceBandKind::Sidewalk, 4);
+        let field = NodeBandHeightFieldId::new(0, 4, RoadSurfaceBandKind::Sidewalk);
+        let mut shape = vec![
+            height_vertex(0.0, 0.0, 1.0),
+            height_vertex(1.0, 0.0, 1.0),
+            height_vertex(0.0, 1.0, 1.0),
+        ];
+        for vertex in &mut shape {
+            vertex.height_field_id = field;
+        }
+        let heights = NodeHeightSolution {
+            node_id: 81,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                owner,
+                height_field_id: field,
+                shape: vec![shape],
+                area_m2: 0.5,
+                seam_constraints: Vec::new(),
+            }],
+        };
+
+        assert!(matches!(
+            NodeArrangement::from_height_solution(&heights),
+            Err(NodeArrangementError::MissingGradeAuthority {
+                owner: missing_owner,
+                height_field_id,
+                ..
+            }) if missing_owner == owner && height_field_id == field
+        ));
+    }
+
+    #[test]
+    fn arrangement_exports_explicit_material_seam_adoption_grade_decision() {
+        let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
+        let field = NodeBandHeightFieldId::new(0, 6, RoadSurfaceBandKind::Carriageway);
+        let mut heights = NodeHeightSolution {
+            node_id: 82,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner,
+                height_field_id: field,
+                shape: vec![vec![
+                    height_vertex(0.0, 0.0, 2.0),
+                    height_vertex(1.0, 0.0, 2.0),
+                    height_vertex(0.0, 1.0, 2.0),
+                ]],
+                area_m2: 0.5,
+                seam_constraints: Vec::new(),
+            }],
+        };
+        for vertex in heights.regions[0].shape[0].iter_mut() {
+            vertex.height_field_id = field;
+            vertex.grade_authority = Some(NodeGradeVertexAuthority::new(
+                vertex.point_xz,
+                vertex.height_m,
+                owner,
+                field,
+                NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption,
+            ));
+        }
+
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("grade-authorized seam adoption should arrange");
+        assert!(arrangement.vertices().iter().all(|vertex| {
+            vertex.grade_authority().decision
+                == NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption
+        }));
     }
 
     #[test]
@@ -2570,6 +2745,13 @@ mod tests {
             .into_iter()
             .map(|mut vertex| {
                 vertex.height_field_id = height_field_id;
+                vertex.grade_authority = Some(NodeGradeVertexAuthority::new(
+                    vertex.point_xz,
+                    vertex.height_m,
+                    owner,
+                    height_field_id,
+                    NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                ));
                 vertex
             })
             .collect();

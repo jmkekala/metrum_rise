@@ -236,6 +236,7 @@ impl RoadSurfaceSystem {
             node_regions.raised_step_faces,
             node_regions.sidewalk_surface_polygons,
             node_regions.explicit_vertical_step_segments,
+            node_regions.node_grade_authorities,
             node_regions.owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -366,6 +367,20 @@ impl RoadSurfaceSystem {
             }
         }
         let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+        let mut node_grade_authorities = arrangement
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.grade_authority())
+            .collect::<Vec<_>>();
+        node_grade_authorities.sort_by_key(|authority| {
+            (
+                authority.key,
+                authority.owner,
+                authority.height_field_id,
+                authority.height_key,
+            )
+        });
+        node_grade_authorities.dedup();
         let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(
             arrangement,
             &explicit_vertical_step_segments,
@@ -439,6 +454,7 @@ impl RoadSurfaceSystem {
             raised_step_faces,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
+            node_grade_authorities,
             owned_regions,
         })
     }
@@ -1551,6 +1567,7 @@ impl RoadSurfaceSystem {
         mut raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
+        node_grade_authorities: Vec<super::node_grade::NodeGradeVertexAuthority>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -1587,6 +1604,7 @@ impl RoadSurfaceSystem {
             raised_step_face_sources,
             sidewalk_surface_polygons,
             explicit_vertical_step_segments,
+            node_grade_authorities,
             owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,

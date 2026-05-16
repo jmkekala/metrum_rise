@@ -4,6 +4,7 @@ use super::{
     RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
     earthwork::{RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace},
+    node_grade::NodeGradeVertexAuthority,
     terrain_clip::RoadSurfaceTerrainClipLoop,
 };
 use godot::prelude::Vector3;
@@ -81,6 +82,7 @@ pub struct RoadSurfaceVisualNodePiece {
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
+    pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -104,6 +106,7 @@ pub(crate) struct NodeSurfaceRegionResult {
     pub(crate) raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     pub(crate) sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
+    pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
 }
 

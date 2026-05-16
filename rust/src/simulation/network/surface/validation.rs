@@ -58,6 +58,7 @@ pub(crate) struct NodeGeometryDiagnostic {
 pub(crate) enum NodeGeometryStage {
     ContourGeneration,
     BooleanOwnership,
+    NodeGrade,
     HeightEvaluation,
     Validation,
     CdtTriangulation,
@@ -160,6 +161,16 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         point_z_mm: Option<i64>,
         axis: Option<&'static str>,
         raw_parameter: Option<f64>,
+    },
+    MissingGradeAuthority {
+        region_index: usize,
+        contour_index: usize,
+        x_mm: i64,
+        z_mm: i64,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        height_field_id: NodeBandHeightFieldId,
+        height_mm: i64,
     },
     OpenBoundary {
         region_index: usize,
@@ -1322,6 +1333,26 @@ impl NodeGeometryDiagnostic {
                     reason: "empty_arrangement_owner_set",
                 },
             ),
+            NodeArrangementError::MissingGradeAuthority {
+                region_index,
+                contour_index,
+                key,
+                owner,
+                height_field_id,
+                height_mm,
+            } => (
+                NodeGeometryBackend::HeightCarrier,
+                NodeGeometryDiagnosticKind::MissingGradeAuthority {
+                    region_index: *region_index,
+                    contour_index: *contour_index,
+                    x_mm: key.x_mm(),
+                    z_mm: key.z_mm(),
+                    owner: owner.kind(),
+                    owner_index: owner.owner_index(),
+                    height_field_id: *height_field_id,
+                    height_mm: *height_mm,
+                },
+            ),
             NodeArrangementError::DegenerateRegionContour { region_index, .. } => (
                 NodeGeometryBackend::Parry2d,
                 NodeGeometryDiagnosticKind::InvalidConstraint {
@@ -1344,7 +1375,10 @@ impl NodeGeometryDiagnostic {
         Self {
             node_id,
             piece_kind,
-            stage: NodeGeometryStage::Validation,
+            stage: match error {
+                NodeArrangementError::MissingGradeAuthority { .. } => NodeGeometryStage::NodeGrade,
+                _ => NodeGeometryStage::Validation,
+            },
             backend,
             kind,
         }
@@ -1500,6 +1534,7 @@ impl NodeGeometryStage {
         match self {
             Self::ContourGeneration => "contour_generation",
             Self::BooleanOwnership => "boolean_ownership",
+            Self::NodeGrade => "node_grade",
             Self::HeightEvaluation => "height_evaluation",
             Self::Validation => "validation",
             Self::CdtTriangulation => "cdt_triangulation",
@@ -1531,6 +1566,7 @@ impl NodeGeometryDiagnosticKind {
             Self::SourceHeightFieldConflict { .. } => "source_height_field_conflict",
             Self::SharedSourceHeightConflict { .. } => "shared_source_height_conflict",
             Self::HeightFieldFailure { .. } => "height_field_failure",
+            Self::MissingGradeAuthority { .. } => "missing_grade_authority",
             Self::OpenBoundary { .. } => "open_boundary",
             Self::DuplicateExposedEdge { .. } => "duplicate_exposed_edge",
             Self::InvalidConstraint { .. } => "invalid_constraint",
@@ -2224,6 +2260,9 @@ mod tests {
     use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
     use crate::simulation::network::surface::height::NodeHeightSolution;
     use crate::simulation::network::surface::input::NodeArrangementInput;
+    use crate::simulation::network::surface::node_grade::{
+        NodeGradeCarrierDecision, NodeGradeVertexAuthority,
+    };
     use crate::simulation::network::surface::ownership::{
         NodeBooleanOwnership, NodeOwnedRegionArrangementDiagnostic, NodeOwnedRegionArrangementKey,
     };
@@ -2326,6 +2365,13 @@ mod tests {
                 .map(|point_world| NodeTriangulatedVertex {
                     point_world,
                     height_field_id,
+                    grade_authority: NodeGradeVertexAuthority::new(
+                        super::super::backend::RoadVec2::new(point_world.x, point_world.z),
+                        point_world.y,
+                        NodeBandOwner::new(kind, owner_index),
+                        height_field_id,
+                        NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                    ),
                 })
                 .collect(),
             boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
@@ -2760,6 +2806,42 @@ mod tests {
         assert!(dump.contains("\"kind\":\"height_field_failure\""));
         assert!(dump.contains("height_field_id"));
         assert!(dump.contains("owner"));
+    }
+
+    #[test]
+    fn maps_missing_grade_authority_to_blocking_node_grade_diagnostic() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 4);
+        let height_field_id = NodeBandHeightFieldId::new(2, 3, RoadSurfaceBandKind::Sidewalk);
+        let key = NodeArrangementKey::from_point(RoadVec2::new(12.345, -6.789));
+        let report = NodeValidationReport::from_arrangement_error(
+            11,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &NodeArrangementError::MissingGradeAuthority {
+                region_index: 5,
+                contour_index: 1,
+                key,
+                owner,
+                height_field_id,
+                height_mm: 1750,
+            },
+        );
+
+        assert!(report.has_blocking_diagnostics());
+        let diagnostic = &report.diagnostics[0];
+        assert_eq!(diagnostic.stage, NodeGeometryStage::NodeGrade);
+        assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+        assert!(matches!(
+            diagnostic.kind,
+            NodeGeometryDiagnosticKind::MissingGradeAuthority {
+                region_index: 5,
+                contour_index: 1,
+                owner: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 4,
+                height_field_id: id,
+                height_mm: 1750,
+                ..
+            } if id == height_field_id
+        ));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use super::arrangement::{
 };
 use super::backend::RoadVec3;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
+use super::node_grade::NodeGradeVertexAuthority;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -39,6 +40,7 @@ pub(crate) struct NodeTriangulatedRegion {
 pub(crate) struct NodeTriangulatedVertex {
     pub(crate) point_world: RoadVec3,
     pub(crate) height_field_id: NodeBandHeightFieldId,
+    pub(crate) grade_authority: NodeGradeVertexAuthority,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -409,6 +411,7 @@ fn insert_arrangement_vertex(
     vertices.push(NodeTriangulatedVertex {
         point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
         height_field_id: vertex.height_field_id(),
+        grade_authority: vertex.grade_authority(),
     });
     vertex_lookup.insert(point_key, (index, height_key));
     Ok(index)
@@ -876,12 +879,24 @@ mod tests {
     }
 
     fn flat_vertex(x: f64, z: f64) -> NodeHeightedVertex {
+        let point_xz = super::super::backend::RoadVec2::new(x, z);
+        let height_m = 2.0;
+        let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
         NodeHeightedVertex {
-            point_xz: super::super::backend::RoadVec2::new(x, z),
-            height_m: 2.0,
-            height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
+            point_xz,
+            height_m,
+            height_field_id,
             height_authority: None,
-            grade_authority: None,
+            grade_authority: Some(NodeGradeVertexAuthority::new(
+                point_xz,
+                height_m,
+                owner,
+                height_field_id,
+                super::super::node_grade::NodeGradeCarrierDecision::SourceCarrier {
+                    authority: None,
+                },
+            )),
         }
     }
 

@@ -7730,6 +7730,8 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"materialization_status\""));
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
+    assert!(dump.contains("\"node_grade_authority\""));
+    assert!(dump.contains("\"decision\":\"source_carrier\""));
     assert!(dump.contains("\"seam_constraints\""));
     assert!(dump.contains("\"material_footprint_coverage\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
