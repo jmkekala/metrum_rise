@@ -1,19 +1,12 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
 use super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};
-use super::backend::RoadVec2;
 use super::band_semantics::{
     raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
 };
-use super::keys::{SurfaceXzKey, SurfaceXzSegmentKey};
 use super::rails::{NodeGeneratedContourClaimPriority, NodeRailContourSet};
-use super::segments::{
-    key_collinear_with_overlay_grid_segment, key_collinear_with_segment, raw_tuple_key,
-    raw_tuple_key_lies_exactly_on_segment, raw_tuple_key_lies_on_segment,
-    raw_tuple_segment_parameter_key,
-};
 use super::{
-    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
+    NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +15,7 @@ mod boundaries;
 mod domains;
 mod rings;
 mod seams;
+mod topology_keys;
 
 use domains::{
     ResidualKind, asphalt_authority_domains, asphalt_owner_domains, overlay_contour_from_domain,
@@ -36,6 +30,13 @@ use rings::{
 };
 
 use seams::{materialize_noded_region_seam_constraints, seam_constraints_for_shape};
+use topology_keys::{
+    NodeOwnershipPointKey, OwnedRegionEdgeKey, canonical_source_indices, overlay_point_from_key,
+    ownership_key_from_overlay_point, ownership_key_from_road_point, ownership_mm_key,
+    point_key_collinear_with_edge, point_key_collinear_with_edge_on_overlay_grid,
+    point_key_lies_exactly_on_segment, point_key_lies_on_segment, road_point_from_key,
+    segment_parameter_key,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
@@ -294,132 +295,6 @@ impl NodeOwnedRegionArrangement {
     pub(crate) fn diagnostics(&self) -> &[NodeOwnedRegionArrangementDiagnostic] {
         &self.diagnostics
     }
-}
-
-impl NodeOwnedRegionArrangementKey {
-    #[cfg(test)]
-    pub(crate) fn from_point(point: RoadVec2) -> Self {
-        Self::from_ownership_key(ownership_key_from_road_point(point))
-    }
-
-    fn from_ownership_key(point: NodeOwnershipPointKey) -> Self {
-        Self {
-            x_key: point.0,
-            z_key: point.1,
-        }
-    }
-
-    pub(crate) fn x_mm(self) -> i64 {
-        ownership_coordinate_key_to_mm(self.x_key)
-    }
-
-    pub(crate) fn z_mm(self) -> i64 {
-        ownership_coordinate_key_to_mm(self.z_key)
-    }
-}
-
-fn canonical_source_indices(sources: impl IntoIterator<Item = usize>) -> Vec<usize> {
-    let mut sources = sources.into_iter().collect::<Vec<_>>();
-    sources.sort_unstable();
-    sources.dedup();
-    sources
-}
-
-fn segment_parameter_key(
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-    point: NodeOwnershipPointKey,
-) -> i128 {
-    raw_tuple_segment_parameter_key(start, end, point)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct OwnedRegionEdgeKey {
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-}
-
-impl OwnedRegionEdgeKey {
-    fn new(a: NodeOwnershipPointKey, b: NodeOwnershipPointKey) -> Self {
-        let segment = SurfaceXzSegmentKey::new(
-            SurfaceXzKey::from_raw_tuple(a),
-            SurfaceXzKey::from_raw_tuple(b),
-        );
-        Self {
-            start: segment.start().raw_tuple(),
-            end: segment.end().raw_tuple(),
-        }
-    }
-}
-
-fn road_point_from_key(point: NodeOwnershipPointKey) -> RoadVec2 {
-    SurfaceXzKey::from_raw_tuple(point).to_road_xz()
-}
-
-fn overlay_point_from_key(point: NodeOwnershipPointKey) -> NodeOverlayPoint {
-    let point = SurfaceXzKey::from_raw_tuple(point).to_road_xz();
-    [point.x, point.y]
-}
-
-fn ownership_mm_key(point: NodeOwnershipPointKey) -> NodeOwnershipPointKey {
-    (
-        ownership_coordinate_key_to_mm(point.0),
-        ownership_coordinate_key_to_mm(point.1),
-    )
-}
-
-fn point_key_collinear_with_edge(
-    point: NodeOwnershipPointKey,
-    edge_start: NodeOwnershipPointKey,
-    edge_end: NodeOwnershipPointKey,
-) -> bool {
-    key_collinear_with_segment(
-        raw_tuple_key(point),
-        raw_tuple_key(edge_start),
-        raw_tuple_key(edge_end),
-    )
-}
-
-fn point_key_collinear_with_edge_on_overlay_grid(
-    point: NodeOwnershipPointKey,
-    edge_start: NodeOwnershipPointKey,
-    edge_end: NodeOwnershipPointKey,
-) -> bool {
-    key_collinear_with_overlay_grid_segment(
-        raw_tuple_key(point),
-        raw_tuple_key(edge_start),
-        raw_tuple_key(edge_end),
-    )
-}
-
-fn point_key_lies_on_segment(
-    point: NodeOwnershipPointKey,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    raw_tuple_key_lies_on_segment(point, start, end)
-}
-
-fn point_key_lies_exactly_on_segment(
-    point: NodeOwnershipPointKey,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    raw_tuple_key_lies_exactly_on_segment(point, start, end)
-}
-
-pub(crate) type NodeOwnershipPointKey = (i64, i64);
-
-fn ownership_coordinate_key_to_mm(value: i64) -> i64 {
-    SurfaceXzKey::coordinate_key_to_mm(value)
-}
-
-fn ownership_key_from_overlay_point(point: NodeOverlayPoint) -> NodeOwnershipPointKey {
-    SurfaceXzKey::from_overlay_point(point).raw_tuple()
-}
-
-fn ownership_key_from_road_point(point: RoadVec2) -> NodeOwnershipPointKey {
-    SurfaceXzKey::from_road_xz(point).raw_tuple()
 }
 
 fn owners_form_raised_step_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {

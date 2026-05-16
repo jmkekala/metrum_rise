@@ -7,7 +7,7 @@ use super::rings::{
 };
 use super::seams::{canonicalize_seam_constraints, owned_shape_is_discardable_numeric_dust};
 use super::*;
-use crate::simulation::network::surface::backend::road_points_to_polyline;
+use crate::simulation::network::surface::backend::{RoadVec2, road_points_to_polyline};
 use crate::simulation::network::surface::input::NodeArrangementInput;
 use crate::simulation::network::surface::rails::{
     NodeGeneratedContour, NodeGeneratedContourKind, NodeGeneratedContourPurpose,
