@@ -2989,7 +2989,7 @@ impl RoadSurfaceSystem {
         let mut weighted_z = 0.0;
         let mut total_weight = 0.0;
         for contour in shape {
-            let area = Self::debug_overlay_contour_signed_area_m2(contour);
+            let area = Self::overlay_contour_area_f64(contour);
             let weight = area.abs();
             let (x, z) = Self::overlay_contour_average_xz(contour);
             weighted_x += x * weight;
@@ -3015,19 +3015,6 @@ impl RoadSurfaceSystem {
             z += point[1];
         }
         (x / contour.len() as f64, z / contour.len() as f64)
-    }
-
-    fn debug_overlay_contour_signed_area_m2(contour: &NodeOverlayContour) -> f64 {
-        if contour.len() < 3 {
-            return 0.0;
-        }
-        let mut signed_area = 0.0;
-        for index in 0..contour.len() {
-            let current = contour[index];
-            let next = contour[(index + 1) % contour.len()];
-            signed_area += current[0] * next[1] - next[0] * current[1];
-        }
-        signed_area * 0.5
     }
 
     fn overlay_shape_bounds_xz(shape: &NodeOverlayShape) -> (f64, f64, f64, f64) {

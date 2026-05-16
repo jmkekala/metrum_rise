@@ -2158,7 +2158,10 @@ fn triangle_contour(
 }
 
 fn triangle_area_m2(region: &NodeTriangulatedRegion, triangle: &NodeTriangulatedTriangle) -> f32 {
-    RoadSurfaceSystem::overlay_contour_area(&triangle_contour(region, triangle)).abs()
+    let points = triangle
+        .vertices
+        .map(|index| region.vertices[index].point_world);
+    (RoadSurfaceSystem::road_triangle_double_area_xz_m2(points) * 0.5) as f32
 }
 
 fn edge_key_for_indices(

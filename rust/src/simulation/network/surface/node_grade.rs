@@ -1,9 +1,7 @@
 //! Node-local grade-carrier decisions for canonical owned node vertices.
 
 use super::RoadSurfaceBandKind;
-use super::arrangement::{
-    NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, seam_source_priority,
-};
+use super::arrangement::{NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint};
 use super::backend::RoadVec2;
 use super::height::{NodeHeightAuthoritySource, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SURFACE_CANONICAL_HEIGHT_EPS_M, SurfaceHeightMmKey, SurfaceXzKey};
@@ -259,8 +257,7 @@ pub(crate) fn material_height_constraints_for_vertex(
         .collect::<Vec<_>>();
     matches.sort_by_key(|constraint| {
         (
-            !constraint.is_material_transition,
-            seam_source_priority(&constraint.seam_source),
+            constraint.priority_key(),
             constraint.constraint_index,
             SurfaceXzKey::from_road_xz(constraint.start_xz),
             SurfaceXzKey::from_road_xz(constraint.end_xz),

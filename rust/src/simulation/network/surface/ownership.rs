@@ -1,7 +1,7 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
 use super::arrangement::{
-    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
+    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous,
 };
 use super::backend::{RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point};
 use super::band_semantics::{
@@ -340,7 +340,7 @@ impl NodeOwnedRegionArrangement {
                                     end,
                                 },
                             );
-                        } else if owned_source_constraints_are_ambiguous(&source_constraints) {
+                        } else if seam_constraints_are_ambiguous(&source_constraints) {
                             diagnostics.push(
                                 NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
                                     region_index: edge_ref.region_index,
@@ -356,7 +356,7 @@ impl NodeOwnedRegionArrangement {
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
-                    .unwrap_or_else(|| seam_source_for_owner(edge_ref.owner));
+                    .unwrap_or_else(|| NodeSeamSource::for_owner(edge_ref.owner));
                 let source_constraint_indices = canonical_source_indices(
                     source_constraints
                         .iter()
@@ -2151,7 +2151,7 @@ fn seam_source_from_materialized_constraint_kind(
         },
         NodeRailConstraintKind::BandContour { .. }
         | NodeRailConstraintKind::SpanHandoff { .. }
-        | NodeRailConstraintKind::BandBoundary { .. } => seam_source_for_owner(owner),
+        | NodeRailConstraintKind::BandBoundary { .. } => NodeSeamSource::for_owner(owner),
     }
 }
 
@@ -2352,28 +2352,9 @@ fn owned_source_constraints_for_edge<'a>(
                 && point_key_lies_on_segment(end, constraint_start, constraint_end)
         })
         .collect::<Vec<_>>();
-    matches.sort_by_key(|constraint| {
-        (
-            !constraint.constrains_shared_height,
-            !constraint.is_material_transition,
-            seam_source_priority(&constraint.seam_source),
-            constraint.constraint_index,
-        )
-    });
+    matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
-}
-
-fn owned_source_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstraint]) -> bool {
-    let Some(first) = constraints.first() else {
-        return false;
-    };
-    let first_priority = owned_seam_constraint_priority(first);
-    constraints
-        .iter()
-        .skip(1)
-        .take_while(|constraint| owned_seam_constraint_priority(constraint) == first_priority)
-        .any(|constraint| constraint.seam_source != first.seam_source)
 }
 
 fn owned_boundary_requires_explicit_seam(
@@ -2438,14 +2419,6 @@ fn seam_constraint_owner_pair_matches_edge(
         (Some(left), Some(right))
             if (left == owner && right == opposite_owner)
                 || (left == opposite_owner && right == owner)
-    )
-}
-
-fn owned_seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, bool, usize) {
-    (
-        !constraint.constrains_shared_height,
-        !constraint.is_material_transition,
-        seam_source_priority(&constraint.seam_source),
     )
 }
 
@@ -2926,24 +2899,7 @@ fn seam_source_from_constraint(
         },
         NodeRailConstraintKind::BandContour { .. }
         | NodeRailConstraintKind::SpanHandoff { .. }
-        | NodeRailConstraintKind::BandBoundary { .. } => seam_source_for_owner(owner),
-    }
-}
-
-fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
-    match owner.kind() {
-        RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
-            owner_index: owner.owner_index(),
-        },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::RaisedStepContact {
-            owner_index: owner.owner_index(),
-        },
-        RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
-            owner_index: owner.owner_index(),
-        },
-        _ => NodeSeamSource::FootprintBoundary {
-            owner_index: owner.owner_index(),
-        },
+        | NodeRailConstraintKind::BandBoundary { .. } => NodeSeamSource::for_owner(owner),
     }
 }
 

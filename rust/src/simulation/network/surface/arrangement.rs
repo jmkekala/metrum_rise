@@ -67,6 +67,34 @@ pub(crate) enum NodeSeamSource {
     FootprintBoundary { owner_index: usize },
 }
 
+impl NodeSeamSource {
+    pub(crate) fn priority_key(self) -> usize {
+        match self {
+            NodeSeamSource::RaisedStepContact { .. } => 0,
+            NodeSeamSource::AsphaltBoundary { .. } => 1,
+            NodeSeamSource::SidewalkOuter { .. } => 2,
+            NodeSeamSource::FootprintBoundary { .. } => 3,
+        }
+    }
+
+    pub(crate) fn for_owner(owner: NodeBandOwner) -> Self {
+        match owner.kind {
+            RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
+                owner_index: owner.owner_index,
+            },
+            RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::RaisedStepContact {
+                owner_index: owner.owner_index,
+            },
+            RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
+                owner_index: owner.owner_index,
+            },
+            _ => NodeSeamSource::FootprintBoundary {
+                owner_index: owner.owner_index,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeRegionSeamConstraint {
     pub(crate) constraint_index: usize,
@@ -77,6 +105,16 @@ pub(crate) struct NodeRegionSeamConstraint {
     pub(crate) is_material_transition: bool,
     pub(crate) start_xz: RoadVec2,
     pub(crate) end_xz: RoadVec2,
+}
+
+impl NodeRegionSeamConstraint {
+    pub(crate) fn priority_key(&self) -> (bool, bool, usize) {
+        (
+            !self.constrains_shared_height,
+            !self.is_material_transition,
+            self.seam_source.priority_key(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -637,7 +675,7 @@ impl NodeArrangement {
                                     end: edge.key.end,
                                 },
                             );
-                        } else if source_constraints_are_ambiguous(&source_constraints) {
+                        } else if seam_constraints_are_ambiguous(&source_constraints) {
                             arrangement.diagnostics.push(
                                 NodeArrangementDiagnostic::AmbiguousSeamConstraint {
                                     region_index: pending.region_index,
@@ -653,7 +691,7 @@ impl NodeArrangement {
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
-                    .unwrap_or_else(|| seam_source_for_owner(pending.owner));
+                    .unwrap_or_else(|| NodeSeamSource::for_owner(pending.owner));
                 let constrains_shared_height = source_constraints
                     .first()
                     .is_some_and(|constraint| constraint.constrains_shared_height);
@@ -820,7 +858,7 @@ impl NodeArrangement {
                     vertex.height_m,
                     [region.owner],
                     vertex.height_field_id,
-                    [seam_source_for_owner(region.owner)],
+                    [NodeSeamSource::for_owner(region.owner)],
                     grade_authority,
                 )
             })
@@ -844,7 +882,7 @@ impl NodeArrangement {
             vertex.point_world.y,
             [region.owner],
             vertex.height_field_id,
-            [seam_source_for_owner(region.owner)],
+            [NodeSeamSource::for_owner(region.owner)],
             vertex.grade_authority,
         )
     }
@@ -1104,12 +1142,8 @@ impl NodeArrangement {
                     && seam_constraint_covers_edge(constraint, start, end)
             })
             .collect::<Vec<_>>();
-        constraints.sort_by_key(|constraint| {
-            (
-                seam_constraint_priority(constraint),
-                constraint.constraint_index,
-            )
-        });
+        constraints
+            .sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
         constraints.dedup_by_key(|constraint| constraint.constraint_index);
         constraints.into_iter().find_map(|constraint| {
             let opposite_owner =
@@ -1446,14 +1480,7 @@ fn source_constraints_for_edge<'a>(
         .iter()
         .filter(|constraint| seam_constraint_covers_edge(constraint, start, end))
         .collect::<Vec<_>>();
-    matches.sort_by_key(|constraint| {
-        (
-            !constraint.constrains_shared_height,
-            !constraint.is_material_transition,
-            seam_source_priority(&constraint.seam_source),
-            constraint.constraint_index,
-        )
-    });
+    matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
 }
@@ -1474,24 +1501,16 @@ fn seam_constraint_can_source_edge_owner_pair(
     }
 }
 
-fn source_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstraint]) -> bool {
+pub(crate) fn seam_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstraint]) -> bool {
     let Some(first) = constraints.first() else {
         return false;
     };
-    let first_priority = seam_constraint_priority(first);
+    let first_priority = first.priority_key();
     constraints
         .iter()
         .skip(1)
-        .take_while(|constraint| seam_constraint_priority(constraint) == first_priority)
+        .take_while(|constraint| constraint.priority_key() == first_priority)
         .any(|constraint| constraint.seam_source != first.seam_source)
-}
-
-fn seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, bool, usize) {
-    (
-        !constraint.constrains_shared_height,
-        !constraint.is_material_transition,
-        seam_source_priority(&constraint.seam_source),
-    )
 }
 
 fn owners_for_material_seam_constraint(
@@ -1502,32 +1521,6 @@ fn owners_for_material_seam_constraint(
         (Some(owner), Some(opposite_owner)) => vec![owner, opposite_owner],
         (Some(owner), None) | (None, Some(owner)) => vec![owner],
         (None, None) => vec![fallback_owner],
-    }
-}
-
-pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
-    match source {
-        NodeSeamSource::RaisedStepContact { .. } => 0,
-        NodeSeamSource::AsphaltBoundary { .. } => 1,
-        NodeSeamSource::SidewalkOuter { .. } => 2,
-        NodeSeamSource::FootprintBoundary { .. } => 3,
-    }
-}
-
-fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
-    match owner.kind {
-        RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
-            owner_index: owner.owner_index,
-        },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::RaisedStepContact {
-            owner_index: owner.owner_index,
-        },
-        RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
-            owner_index: owner.owner_index,
-        },
-        _ => NodeSeamSource::FootprintBoundary {
-            owner_index: owner.owner_index,
-        },
     }
 }
 
