@@ -1,10 +1,11 @@
 //! Contour-adapter boundary for node side-join ownership candidates.
 
 use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadPolyline, RoadPolylineVertex, RoadVec2, RoadVec3,
-    polyline_to_road_points, quantize_road_vec2_to_overlay_grid, road_points_to_polyline,
+    RoadPolyline, RoadPolylineVertex, RoadVec2, RoadVec3, polyline_to_road_points,
+    quantize_road_vec2_to_overlay_grid, road_points_to_polyline,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
+use super::keys::SurfaceXzKey;
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::core::math::{
     LineLineIntr, Vector2 as CavalierVec2, bulge_from_angle, line_line_intr,
@@ -389,8 +390,8 @@ fn side_join_backend_cavalier_join_path_xz(
         return None;
     }
     let last_index = points.len() - 1;
-    if quantized_xz_key(points[0]) != quantized_xz_key(start_xz)
-        || quantized_xz_key(points[last_index]) != quantized_xz_key(end_xz)
+    if SurfaceXzKey::from_road_xz(points[0]) != SurfaceXzKey::from_road_xz(start_xz)
+        || SurfaceXzKey::from_road_xz(points[last_index]) != SurfaceXzKey::from_road_xz(end_xz)
     {
         return None;
     }
@@ -608,9 +609,9 @@ fn clean_side_join_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>
 }
 
 fn height_on_world_path(point_xz: RoadVec2, path_world: &[RoadVec3]) -> Option<f64> {
-    let key = quantized_xz_key(point_xz);
+    let key = SurfaceXzKey::from_road_xz(point_xz);
     for point_world in path_world {
-        if quantized_xz_key(xz_from_road_vec3(*point_world)) == key {
+        if SurfaceXzKey::from_road_xz(xz_from_road_vec3(*point_world)) == key {
             return Some(point_world.y);
         }
     }
@@ -709,23 +710,17 @@ fn side_join_band_has_quantized_area(join_band: &NodeInputSideJoinBand) -> bool 
 
 fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
     points.dedup_by(|a, b| {
-        quantized_xz_key(xz_from_road_vec3(*a)) == quantized_xz_key(xz_from_road_vec3(*b))
+        SurfaceXzKey::from_road_xz(xz_from_road_vec3(*a))
+            == SurfaceXzKey::from_road_xz(xz_from_road_vec3(*b))
     });
     if points.len() > 1
-        && quantized_xz_key(xz_from_road_vec3(points[0]))
-            == quantized_xz_key(xz_from_road_vec3(
+        && SurfaceXzKey::from_road_xz(xz_from_road_vec3(points[0]))
+            == SurfaceXzKey::from_road_xz(xz_from_road_vec3(
                 *points.last().expect("points are non-empty"),
             ))
     {
         points.pop();
     }
-}
-
-fn quantized_xz_key(point: RoadVec2) -> (i64, i64) {
-    (
-        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
 }
 
 fn xz_from_road_vec3(point: RoadVec3) -> RoadVec2 {

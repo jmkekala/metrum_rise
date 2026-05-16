@@ -6,6 +6,7 @@ use super::{
     RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
     RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     backend,
+    keys::{SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -130,10 +131,18 @@ struct IndexedEarthworkBoundarySegment {
 
 impl EarthworkBoundaryPointKey {
     fn from_point(point: Vector3) -> Self {
+        Self::from_surface_key(SurfaceXzKey::from_godot_world_xz(point))
+    }
+
+    fn from_surface_key(key: SurfaceXzKey) -> Self {
         Self {
-            x_key: (f64::from(point.x) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            z_key: (f64::from(point.z) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            x_key: key.x_key(),
+            z_key: key.z_key(),
         }
+    }
+
+    fn surface_key(self) -> SurfaceXzKey {
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
     }
 }
 
@@ -142,16 +151,10 @@ impl EarthworkBoundaryEdgeKey {
         start: EarthworkBoundaryPointKey,
         end: EarthworkBoundaryPointKey,
     ) -> Option<Self> {
-        if start == end {
-            return None;
-        }
-        Some(if start <= end {
-            Self { start, end }
-        } else {
-            Self {
-                start: end,
-                end: start,
-            }
+        let segment = SurfaceXzSegmentKey::non_degenerate(start.surface_key(), end.surface_key())?;
+        Some(Self {
+            start: EarthworkBoundaryPointKey::from_surface_key(segment.start()),
+            end: EarthworkBoundaryPointKey::from_surface_key(segment.end()),
         })
     }
 }

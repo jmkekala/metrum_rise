@@ -9,6 +9,7 @@ use super::backend::{
 use super::band_semantics::{
     raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
 };
+use super::keys::{SurfaceXzKey, SurfaceXzSegmentKey};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
@@ -403,7 +404,7 @@ impl NodeOwnedRegionArrangement {
 impl NodeOwnedRegionArrangementKey {
     #[cfg(test)]
     pub(crate) fn from_point(point: RoadVec2) -> Self {
-        Self::from_ownership_key(road_point_key(point))
+        Self::from_ownership_key(ownership_key_from_road_point(point))
     }
 
     fn from_ownership_key(point: NodeOwnershipPointKey) -> Self {
@@ -757,13 +758,13 @@ fn shape_touches_protected_boundary_constraint(
 ) -> bool {
     for contour in shape {
         for &point in contour {
-            let point = overlay_point_key(point);
+            let point = ownership_key_from_overlay_point(point);
             if protected_constraints.iter().any(|constraint| {
                 constraint.points_xz.windows(2).any(|segment| {
                     point_key_lies_on_segment(
                         point,
-                        road_point_key(segment[0]),
-                        road_point_key(segment[1]),
+                        ownership_key_from_road_point(segment[0]),
+                        ownership_key_from_road_point(segment[1]),
                     )
                 })
             }) {
@@ -818,7 +819,7 @@ fn seam_constraints_for_shape(
         for edge_index in 0..contour.len() {
             let start = contour[edge_index];
             let end = contour[(edge_index + 1) % contour.len()];
-            if overlay_point_key(start) == overlay_point_key(end) {
+            if ownership_key_from_overlay_point(start) == ownership_key_from_overlay_point(end) {
                 continue;
             }
             for constraint in rail_constraints
@@ -949,15 +950,15 @@ fn constraint_overlaps_shape_edge(
     constraint: &NodeRailConstraint,
     allow_grid_bounded_constraint_overlap: bool,
 ) -> Vec<(NodeOwnershipPointKey, NodeOwnershipPointKey)> {
-    let edge_start = overlay_point_key(edge_start);
-    let edge_end = overlay_point_key(edge_end);
+    let edge_start = ownership_key_from_overlay_point(edge_start);
+    let edge_end = ownership_key_from_overlay_point(edge_end);
     if edge_start == edge_end || constraint.points_xz.len() < 2 {
         return Vec::new();
     }
     let mut overlaps = BTreeSet::new();
     for segment in constraint.points_xz.windows(2) {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         if start == end {
             continue;
         }
@@ -1021,8 +1022,9 @@ fn owned_region_boundary_refs(
                 continue;
             }
             for edge_index in 0..contour.len() {
-                let start = overlay_point_key(contour[edge_index]);
-                let end = overlay_point_key(contour[(edge_index + 1) % contour.len()]);
+                let start = ownership_key_from_overlay_point(contour[edge_index]);
+                let end =
+                    ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
                 if start == end {
                     continue;
                 }
@@ -1377,7 +1379,7 @@ fn canonical_points_for_rail_set(rails: &NodeRailContourSet) -> NodeRailCanonica
                 .iter()
                 .flat_map(|contour| contour.points_xz.iter().copied()),
         )
-        .map(road_point_key)
+        .map(ownership_key_from_road_point)
         .collect::<Vec<_>>();
     let mut points_by_owner = BTreeMap::<NodeBandOwner, Vec<NodeOwnershipPointKey>>::new();
     let mut segments_by_owner = BTreeMap::<NodeBandOwner, Vec<OwnedRegionEdgeKey>>::new();
@@ -1388,7 +1390,7 @@ fn canonical_points_for_rail_set(rails: &NodeRailContourSet) -> NodeRailCanonica
         let points = points
             .iter()
             .copied()
-            .map(road_point_key)
+            .map(ownership_key_from_road_point)
             .collect::<Vec<_>>();
         all_points.extend(points.iter().copied());
         height_points_by_source
@@ -1409,14 +1411,20 @@ fn canonical_points_for_rail_set(rails: &NodeRailContourSet) -> NodeRailCanonica
                 source_band_index,
             ))
             .or_default()
-            .extend(constraint.points_xz.iter().copied().map(road_point_key));
+            .extend(
+                constraint
+                    .points_xz
+                    .iter()
+                    .copied()
+                    .map(ownership_key_from_road_point),
+            );
     }
     for contour in &rails.contours {
         let path = contour
             .points_xz
             .iter()
             .copied()
-            .map(road_point_key)
+            .map(ownership_key_from_road_point)
             .collect::<Vec<_>>();
         if let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index)) =
             (contour.kind, contour.source_band_index)
@@ -1447,7 +1455,7 @@ fn canonical_points_for_rail_set(rails: &NodeRailContourSet) -> NodeRailCanonica
             .points_xz
             .iter()
             .copied()
-            .map(road_point_key)
+            .map(ownership_key_from_road_point)
             .collect::<Vec<_>>();
         for owner in constraint_authority_owners(constraint) {
             points_by_owner
@@ -1553,7 +1561,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     rail_points: &NodeRailCanonicalPointSet,
 ) {
     for point in contour.iter_mut() {
-        let key = overlay_point_key(*point);
+        let key = ownership_key_from_overlay_point(*point);
         if source_points.binary_search(&key).is_ok() {
             continue;
         }
@@ -1567,8 +1575,8 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     }
     dedup_consecutive_overlay_points(contour);
     if contour.len() >= 2
-        && overlay_point_key(contour[0])
-            == overlay_point_key(*contour.last().expect("contour has last"))
+        && ownership_key_from_overlay_point(contour[0])
+            == ownership_key_from_overlay_point(*contour.last().expect("contour has last"))
     {
         contour.pop();
     }
@@ -1643,7 +1651,11 @@ fn validate_owned_region_vertices_against_source_authority(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         for contour in &region.shape {
-            for point in contour.iter().copied().map(overlay_point_key) {
+            for point in contour
+                .iter()
+                .copied()
+                .map(ownership_key_from_overlay_point)
+            {
                 if source_height_points.binary_search(&point).is_ok() {
                     continue;
                 }
@@ -1783,7 +1795,9 @@ fn first_repeated_owned_contour_point_pair(contour: &NodeOverlayContour) -> Opti
             if first == 0 && second + 1 == contour.len() {
                 continue;
             }
-            if overlay_point_key(contour[first]) == overlay_point_key(contour[second]) {
+            if ownership_key_from_overlay_point(contour[first])
+                == ownership_key_from_overlay_point(contour[second])
+            {
                 return Some((first, second));
             }
         }
@@ -1807,8 +1821,10 @@ fn cleaned_owned_contour(
         remove_numeric_spike_vertices(&mut contour);
     }
     if contour.len() >= 2
-        && overlay_point_key(contour[0])
-            == overlay_point_key(*contour.last().expect("split contour has last point"))
+        && ownership_key_from_overlay_point(contour[0])
+            == ownership_key_from_overlay_point(
+                *contour.last().expect("split contour has last point"),
+            )
     {
         contour.pop();
     }
@@ -1840,9 +1856,9 @@ fn remove_numeric_spike_vertices(contour: &mut NodeOverlayContour) {
             } else {
                 index + 1
             };
-            let previous_key = overlay_point_key(contour[previous]);
-            let current_key = overlay_point_key(contour[index]);
-            let next_key = overlay_point_key(contour[next]);
+            let previous_key = ownership_key_from_overlay_point(contour[previous]);
+            let current_key = ownership_key_from_overlay_point(contour[index]);
+            let next_key = ownership_key_from_overlay_point(contour[next]);
             if previous_key == next_key
                 || ownership_triangle_area_m2(previous_key, current_key, next_key)
                     <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
@@ -1892,13 +1908,13 @@ fn owned_region_global_points(
         .iter()
         .flat_map(|region| region.shape.iter())
         .flat_map(|contour| contour.iter().copied())
-        .map(overlay_point_key)
+        .map(ownership_key_from_overlay_point)
         .chain(
             footprint_shapes
                 .iter()
                 .flat_map(|shape| shape.iter())
                 .flat_map(|contour| contour.iter().copied())
-                .map(overlay_point_key),
+                .map(ownership_key_from_overlay_point),
         )
         .collect::<Vec<_>>();
     global_points.sort_unstable();
@@ -1938,8 +1954,8 @@ fn noded_owned_region_contour_with_edge_points(
 
     let mut noded = Vec::with_capacity(contour.len());
     for edge_index in 0..contour.len() {
-        let start = overlay_point_key(contour[edge_index]);
-        let end = overlay_point_key(contour[(edge_index + 1) % contour.len()]);
+        let start = ownership_key_from_overlay_point(contour[edge_index]);
+        let end = ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
         if start == end {
             continue;
         }
@@ -1949,8 +1965,10 @@ fn noded_owned_region_contour_with_edge_points(
     }
     dedup_consecutive_overlay_points(&mut noded);
     if noded.len() >= 2
-        && overlay_point_key(noded[0])
-            == overlay_point_key(*noded.last().expect("noded contour has last point"))
+        && ownership_key_from_overlay_point(noded[0])
+            == ownership_key_from_overlay_point(
+                *noded.last().expect("noded contour has last point"),
+            )
     {
         noded.pop();
     }
@@ -1968,7 +1986,9 @@ fn noded_owned_region_edge_points_with_rail_paths(
 }
 
 fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
-    points.dedup_by(|a, b| overlay_point_key(*a) == overlay_point_key(*b));
+    points.dedup_by(|a, b| {
+        ownership_key_from_overlay_point(*a) == ownership_key_from_overlay_point(*b)
+    });
 }
 
 fn canonical_owned_region_edge_refs(refs: &[OwnedRegionEdgeRef]) -> Vec<OwnedRegionEdgeRef> {
@@ -2310,7 +2330,14 @@ fn exact_owner_pair_point_contact_constraint_index_at_key(
             rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
         })
         .filter(|constraint| constraint_is_point_contact(constraint))
-        .filter(|constraint| constraint.points_xz.first().copied().map(road_point_key) == Some(key))
+        .filter(|constraint| {
+            constraint
+                .points_xz
+                .first()
+                .copied()
+                .map(ownership_key_from_road_point)
+                == Some(key)
+        })
         .map(|constraint| constraint.constraint_index)
         .min()
 }
@@ -2332,8 +2359,8 @@ fn owned_source_constraints_for_edge<'a>(
     let mut matches = constraints
         .iter()
         .filter(|constraint| {
-            let constraint_start = road_point_key(constraint.start_xz);
-            let constraint_end = road_point_key(constraint.end_xz);
+            let constraint_start = ownership_key_from_road_point(constraint.start_xz);
+            let constraint_end = ownership_key_from_road_point(constraint.end_xz);
             point_key_lies_on_segment(start, constraint_start, constraint_end)
                 && point_key_lies_on_segment(end, constraint_start, constraint_end)
         })
@@ -2531,11 +2558,10 @@ fn segment_parameter_key(
     end: NodeOwnershipPointKey,
     point: NodeOwnershipPointKey,
 ) -> i128 {
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    px * dx + pz * dz
+    SurfaceXzKey::from_raw_tuple(point).segment_parameter_key(
+        SurfaceXzKey::from_raw_tuple(start),
+        SurfaceXzKey::from_raw_tuple(end),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -2546,10 +2572,13 @@ struct OwnedRegionEdgeKey {
 
 impl OwnedRegionEdgeKey {
     fn new(a: NodeOwnershipPointKey, b: NodeOwnershipPointKey) -> Self {
-        if a <= b {
-            Self { start: a, end: b }
-        } else {
-            Self { start: b, end: a }
+        let segment = SurfaceXzSegmentKey::new(
+            SurfaceXzKey::from_raw_tuple(a),
+            SurfaceXzKey::from_raw_tuple(b),
+        );
+        Self {
+            start: segment.start().raw_tuple(),
+            end: segment.end().raw_tuple(),
         }
     }
 }
@@ -2576,25 +2605,20 @@ fn seam_constraint_sort_key(
 ) {
     (
         constraint.constraint_index,
-        road_point_key(constraint.start_xz),
-        road_point_key(constraint.end_xz),
+        ownership_key_from_road_point(constraint.start_xz),
+        ownership_key_from_road_point(constraint.end_xz),
         constraint.owner,
         constraint.opposite_owner,
     )
 }
 
 fn road_point_from_key(point: NodeOwnershipPointKey) -> RoadVec2 {
-    RoadVec2::new(
-        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-    )
+    SurfaceXzKey::from_raw_tuple(point).to_road_xz()
 }
 
 fn overlay_point_from_key(point: NodeOwnershipPointKey) -> NodeOverlayPoint {
-    [
-        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-    ]
+    let point = SurfaceXzKey::from_raw_tuple(point).to_road_xz();
+    [point.x, point.y]
 }
 
 fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool {
@@ -2616,14 +2640,19 @@ fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool 
 }
 
 fn constraint_is_point_contact(constraint: &NodeRailConstraint) -> bool {
-    let Some(first) = constraint.points_xz.first().copied().map(road_point_key) else {
+    let Some(first) = constraint
+        .points_xz
+        .first()
+        .copied()
+        .map(ownership_key_from_road_point)
+    else {
         return false;
     };
     constraint
         .points_xz
         .iter()
         .copied()
-        .map(road_point_key)
+        .map(ownership_key_from_road_point)
         .all(|point| point == first)
 }
 
@@ -2667,11 +2696,11 @@ fn edge_lies_on_constraint(
     if constraint.points_xz.len() < 2 {
         return false;
     }
-    let edge_start = overlay_point_key(edge_start);
-    let edge_end = overlay_point_key(edge_end);
+    let edge_start = ownership_key_from_overlay_point(edge_start);
+    let edge_end = ownership_key_from_overlay_point(edge_end);
     constraint.points_xz.windows(2).any(|segment| {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         point_key_lies_on_segment(edge_start, start, end)
             && point_key_lies_on_segment(edge_end, start, end)
     }) || edge_lies_on_constraint_polyline(edge_start, edge_end, constraint)
@@ -2687,8 +2716,8 @@ fn shape_edge_carries_full_seam_constraint(
         return edge_lies_on_constraint(edge_start, edge_end, constraint);
     }
     edge_lies_on_single_constraint_segment(
-        overlay_point_key(edge_start),
-        overlay_point_key(edge_end),
+        ownership_key_from_overlay_point(edge_start),
+        ownership_key_from_overlay_point(edge_end),
         constraint,
     )
 }
@@ -2703,8 +2732,8 @@ fn edge_lies_on_single_constraint_segment(
     constraint: &NodeRailConstraint,
 ) -> bool {
     constraint.points_xz.windows(2).any(|segment| {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         point_key_lies_on_segment(edge_start, start, end)
             && point_key_lies_on_segment(edge_end, start, end)
     })
@@ -2755,8 +2784,8 @@ fn edge_lies_on_constraint_polyline_with_collinearity(
     }
     let mut intervals = Vec::new();
     for segment in constraint.points_xz.windows(2) {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         if start == end
             || !point_collinear_with_edge(start, edge_start, edge_end)
             || !point_collinear_with_edge(end, edge_start, edge_end)
@@ -2810,8 +2839,8 @@ fn constraint_path_contains_ordered_endpoints(
 ) -> bool {
     let mut first_seen = false;
     for segment in constraint.points_xz.windows(2) {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         if point_key_lies_on_segment(first, start, end) {
             first_seen = true;
         }
@@ -2844,11 +2873,10 @@ fn point_key_collinear_with_edge(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
 ) -> bool {
-    let dx = i128::from(edge_end.0 - edge_start.0);
-    let dz = i128::from(edge_end.1 - edge_start.1);
-    let px = i128::from(point.0 - edge_start.0);
-    let pz = i128::from(point.1 - edge_start.1);
-    px * dz - pz * dx == 0
+    SurfaceXzKey::from_raw_tuple(point).collinear_with_segment(
+        SurfaceXzKey::from_raw_tuple(edge_start),
+        SurfaceXzKey::from_raw_tuple(edge_end),
+    )
 }
 
 fn point_key_collinear_with_edge_on_overlay_grid(
@@ -2856,12 +2884,10 @@ fn point_key_collinear_with_edge_on_overlay_grid(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
 ) -> bool {
-    let dx = i128::from(edge_end.0 - edge_start.0);
-    let dz = i128::from(edge_end.1 - edge_start.1);
-    let px = i128::from(point.0 - edge_start.0);
-    let pz = i128::from(point.1 - edge_start.1);
-    let cross = px * dz - pz * dx;
-    cross == 0 || cross.abs() <= overlay_grid_collinearity_error_bound(dx, dz)
+    SurfaceXzKey::from_raw_tuple(point).collinear_with_overlay_grid_segment(
+        SurfaceXzKey::from_raw_tuple(edge_start),
+        SurfaceXzKey::from_raw_tuple(edge_end),
+    )
 }
 
 fn point_lies_on_point_constraint(
@@ -2871,10 +2897,10 @@ fn point_lies_on_point_constraint(
     if constraint.points_xz.len() < 2 {
         return false;
     }
-    let point = overlay_point_key(point);
+    let point = ownership_key_from_overlay_point(point);
     constraint.points_xz.windows(2).any(|segment| {
-        let start = road_point_key(segment[0]);
-        let end = road_point_key(segment[1]);
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
         start == end && point == start
     })
 }
@@ -2884,31 +2910,10 @@ fn point_key_lies_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    let cross = px * dz - pz * dx;
-    if cross != 0 && cross.abs() > overlay_grid_collinearity_error_bound(dx, dz) {
-        return false;
-    }
-    let inside_x = if start.0 == end.0 {
-        point.0 == start.0
-    } else {
-        point.0 >= start.0.min(end.0) && point.0 <= start.0.max(end.0)
-    };
-    let inside_z = if start.1 == end.1 {
-        point.1 == start.1
-    } else {
-        point.1 >= start.1.min(end.1) && point.1 <= start.1.max(end.1)
-    };
-    inside_x && inside_z
+    SurfaceXzKey::from_raw_tuple(point).lies_on_segment(
+        SurfaceXzKey::from_raw_tuple(start),
+        SurfaceXzKey::from_raw_tuple(end),
+    )
 }
 
 fn point_key_lies_exactly_on_segment(
@@ -2919,35 +2924,10 @@ fn point_key_lies_exactly_on_segment(
     if point == start || point == end {
         return true;
     }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    if px * dz - pz * dx != 0 {
-        return false;
-    }
-    let inside_x = if start.0 == end.0 {
-        point.0 == start.0
-    } else {
-        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
-    };
-    let inside_z = if start.1 == end.1 {
-        point.1 == start.1
-    } else {
-        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
-    };
-    inside_x && inside_z
-}
-
-fn overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
-    // Source contours and backend-owned shapes are both projected to the overlay integer grid.
-    // A point that is exactly on a source segment before projection can land within this
-    // determinant envelope after independent endpoint rounding; this is representation noding,
-    // not owner or height repair.
-    (dx.abs() + dz.abs()) * 2
+    SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_open_segment(
+        SurfaceXzKey::from_raw_tuple(start),
+        SurfaceXzKey::from_raw_tuple(end),
+    )
 }
 
 fn seam_source_from_constraint(
@@ -2989,28 +2969,17 @@ fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
 }
 
 pub(crate) type NodeOwnershipPointKey = (i64, i64);
-const NODE_OWNERSHIP_KEY_UNITS_PER_MM: i64 = 1000;
 
 fn ownership_coordinate_key_to_mm(value: i64) -> i64 {
-    if value >= 0 {
-        (value + NODE_OWNERSHIP_KEY_UNITS_PER_MM / 2) / NODE_OWNERSHIP_KEY_UNITS_PER_MM
-    } else {
-        (value - NODE_OWNERSHIP_KEY_UNITS_PER_MM / 2) / NODE_OWNERSHIP_KEY_UNITS_PER_MM
-    }
+    SurfaceXzKey::coordinate_key_to_mm(value)
 }
 
-fn overlay_point_key(point: NodeOverlayPoint) -> NodeOwnershipPointKey {
-    (
-        (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
+fn ownership_key_from_overlay_point(point: NodeOverlayPoint) -> NodeOwnershipPointKey {
+    SurfaceXzKey::from_overlay_point(point).raw_tuple()
 }
 
-fn road_point_key(point: RoadVec2) -> NodeOwnershipPointKey {
-    (
-        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
+fn ownership_key_from_road_point(point: RoadVec2) -> NodeOwnershipPointKey {
+    SurfaceXzKey::from_road_xz(point).raw_tuple()
 }
 
 fn owners_form_raised_step_contact(owner: NodeBandOwner, opposite_owner: NodeBandOwner) -> bool {
@@ -3220,7 +3189,7 @@ mod tests {
         let mut all_points = rail_constraints
             .iter()
             .flat_map(|constraint| constraint.points_xz.iter().copied())
-            .map(road_point_key)
+            .map(ownership_key_from_road_point)
             .collect::<Vec<_>>();
         all_points.sort_unstable();
         all_points.dedup();
@@ -3232,7 +3201,7 @@ mod tests {
                 .points_xz
                 .iter()
                 .copied()
-                .map(road_point_key)
+                .map(ownership_key_from_road_point)
                 .collect::<Vec<_>>();
             for owner in constraint_authority_owners(constraint) {
                 points_by_owner
@@ -3565,20 +3534,22 @@ mod tests {
         assert!(
             carriageway_contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == overlay_point_key([1.0, 0.0]))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_overlay_point([1.0, 0.0]))
         );
         assert!(
             carriageway_contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == overlay_point_key([3.0, 0.0]))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_overlay_point([3.0, 0.0]))
         );
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    let start = road_point_key(constraint.start_xz);
-                    let end = road_point_key(constraint.end_xz);
-                    start == road_point_key(RoadVec2::new(1.0, 0.0))
-                        && end == road_point_key(RoadVec2::new(3.0, 0.0))
+                    let start = ownership_key_from_road_point(constraint.start_xz);
+                    let end = ownership_key_from_road_point(constraint.end_xz);
+                    start == ownership_key_from_road_point(RoadVec2::new(1.0, 0.0))
+                        && end == ownership_key_from_road_point(RoadVec2::new(3.0, 0.0))
                         && constraint.is_material_transition
                         && !constraint.constrains_shared_height
                 }),
@@ -3653,9 +3624,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(1.0, 0.0))
-                        && road_point_key(constraint.end_xz)
-                            == road_point_key(RoadVec2::new(1.0, 1.0))
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(RoadVec2::new(1.0, 0.0))
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(RoadVec2::new(1.0, 1.0))
                         && constraint.owner == Some(curb)
                         && constraint.opposite_owner == Some(sidewalk)
                         && matches!(
@@ -3667,9 +3639,10 @@ mod tests {
             );
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(1.0, 1.0))
-                        && road_point_key(constraint.end_xz)
-                            == road_point_key(RoadVec2::new(1.0, 2.0))
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(RoadVec2::new(1.0, 1.0))
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(RoadVec2::new(1.0, 2.0))
                         && constraint.owner == Some(curb)
                         && constraint.opposite_owner == Some(sidewalk)
                         && matches!(
@@ -3730,7 +3703,7 @@ mod tests {
         let contour_keys = regions[0].shape[0]
             .iter()
             .copied()
-            .map(overlay_point_key)
+            .map(ownership_key_from_overlay_point)
             .collect::<BTreeSet<_>>();
         assert!(contour_keys.contains(&canonical_endpoint));
         assert!(contour_keys.contains(&local_endpoint));
@@ -3776,10 +3749,10 @@ mod tests {
                 canonical_x_key,
                 canonical_z_key,
             }) if owner == curb
-                && point_x_key == overlay_point_key(drifted_endpoint).0
-                && point_z_key == overlay_point_key(drifted_endpoint).1
-                && canonical_x_key == road_point_key(RoadVec2::new(1.0, 0.0)).0
-                && canonical_z_key == road_point_key(RoadVec2::new(1.0, 0.0)).1
+                && point_x_key == ownership_key_from_overlay_point(drifted_endpoint).0
+                && point_z_key == ownership_key_from_overlay_point(drifted_endpoint).1
+                && canonical_x_key == ownership_key_from_road_point(RoadVec2::new(1.0, 0.0)).0
+                && canonical_z_key == ownership_key_from_road_point(RoadVec2::new(1.0, 0.0)).1
         ));
     }
 
@@ -3822,8 +3795,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && ((constraint.owner == Some(carriageway)
                             && constraint.opposite_owner == Some(curb))
                             || (constraint.owner == Some(curb)
@@ -3894,12 +3869,14 @@ mod tests {
         assert!(
             carriageway_contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == road_point_key(first_split))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_road_point(first_split))
         );
         assert!(
             carriageway_contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == road_point_key(second_split))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_road_point(second_split))
         );
         for (subedge_start, subedge_end) in [
             (start, first_split),
@@ -3909,8 +3886,10 @@ mod tests {
             for region in &regions {
                 assert!(
                     region.seam_constraints.iter().any(|constraint| {
-                        road_point_key(constraint.start_xz) == road_point_key(subedge_start)
-                            && road_point_key(constraint.end_xz) == road_point_key(subedge_end)
+                        ownership_key_from_road_point(constraint.start_xz)
+                            == ownership_key_from_road_point(subedge_start)
+                            && ownership_key_from_road_point(constraint.end_xz)
+                                == ownership_key_from_road_point(subedge_end)
                             && constraint.owner == Some(carriageway)
                             && constraint.opposite_owner == Some(curb)
                             && matches!(
@@ -3984,8 +3963,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && constraint.owner == Some(carriageway)
                         && constraint.opposite_owner == Some(curb)
                         && matches!(
@@ -4125,8 +4106,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && ((constraint.owner == Some(carriageway)
                             && constraint.opposite_owner == Some(curb))
                             || (constraint.owner == Some(curb)
@@ -4181,8 +4164,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && ((constraint.owner == Some(carriageway)
                             && constraint.opposite_owner == Some(final_curb))
                             || (constraint.owner == Some(final_curb)
@@ -4237,8 +4222,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && ((constraint.owner == Some(curb)
                             && constraint.opposite_owner == Some(final_sidewalk))
                             || (constraint.owner == Some(final_sidewalk)
@@ -4296,8 +4283,10 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && ((constraint.owner == Some(carriageway)
                             && constraint.opposite_owner == Some(curb))
                             || (constraint.owner == Some(curb)
@@ -4350,10 +4339,10 @@ mod tests {
         let curb_points = regions[1].shape[0]
             .iter()
             .copied()
-            .map(overlay_point_key)
+            .map(ownership_key_from_overlay_point)
             .collect::<BTreeSet<_>>();
-        assert!(curb_points.contains(&road_point_key(source_start)));
-        assert!(!curb_points.contains(&overlay_point_key(drifted_start)));
+        assert!(curb_points.contains(&ownership_key_from_road_point(source_start)));
+        assert!(!curb_points.contains(&ownership_key_from_overlay_point(drifted_start)));
         assert!(
             validate_owned_region_vertices_against_source_authority(
                 &regions,
@@ -4405,8 +4394,10 @@ mod tests {
         for region in &regions {
             assert!(
                 !region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && constraint.owner == Some(carriageway)
                         && constraint.opposite_owner == Some(curb)
                         && matches!(
@@ -4458,8 +4449,10 @@ mod tests {
         for region in &regions {
             assert!(
                 !region.seam_constraints.iter().any(|constraint| {
-                    road_point_key(constraint.start_xz) == road_point_key(start)
-                        && road_point_key(constraint.end_xz) == road_point_key(end)
+                    ownership_key_from_road_point(constraint.start_xz)
+                        == ownership_key_from_road_point(start)
+                        && ownership_key_from_road_point(constraint.end_xz)
+                            == ownership_key_from_road_point(end)
                         && constraint.owner == Some(carriageway)
                         && constraint.opposite_owner == Some(curb)
                         && matches!(
@@ -4495,22 +4488,28 @@ mod tests {
 
         assert!(
             !seams.iter().any(|constraint| {
-                road_point_key(constraint.start_xz) == road_point_key(start)
-                    && road_point_key(constraint.end_xz) == road_point_key(end)
+                ownership_key_from_road_point(constraint.start_xz)
+                    == ownership_key_from_road_point(start)
+                    && ownership_key_from_road_point(constraint.end_xz)
+                        == ownership_key_from_road_point(end)
             }),
             "asphalt-curb seams must not carry a full edge just because a rail polyline covers it"
         );
         assert!(
             seams.iter().any(|constraint| {
-                road_point_key(constraint.start_xz) == road_point_key(start)
-                    && road_point_key(constraint.end_xz) == road_point_key(middle)
+                ownership_key_from_road_point(constraint.start_xz)
+                    == ownership_key_from_road_point(start)
+                    && ownership_key_from_road_point(constraint.end_xz)
+                        == ownership_key_from_road_point(middle)
             }),
             "first exact rail span should be preserved"
         );
         assert!(
             seams.iter().any(|constraint| {
-                road_point_key(constraint.start_xz) == road_point_key(middle)
-                    && road_point_key(constraint.end_xz) == road_point_key(end)
+                ownership_key_from_road_point(constraint.start_xz)
+                    == ownership_key_from_road_point(middle)
+                    && ownership_key_from_road_point(constraint.end_xz)
+                        == ownership_key_from_road_point(end)
             }),
             "second exact rail span should be preserved"
         );
@@ -4542,17 +4541,21 @@ mod tests {
         assert!(
             contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == road_point_key(RoadVec2::new(1.0, 0.0)))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_road_point(RoadVec2::new(1.0, 0.0)))
         );
         assert!(
             contour
                 .iter()
-                .any(|point| overlay_point_key(*point) == road_point_key(RoadVec2::new(1.0, 2.0)))
+                .any(|point| ownership_key_from_overlay_point(*point)
+                    == ownership_key_from_road_point(RoadVec2::new(1.0, 2.0)))
         );
         assert!(
             contour.iter().all(|point| {
-                overlay_point_key(*point) != overlay_point_key([1.000004, 0.0])
-                    && overlay_point_key(*point) != overlay_point_key([1.000004, 2.0])
+                ownership_key_from_overlay_point(*point)
+                    != ownership_key_from_overlay_point([1.000004, 0.0])
+                    && ownership_key_from_overlay_point(*point)
+                        != ownership_key_from_overlay_point([1.000004, 2.0])
             }),
             "owned region vertices must use the owner-authorized source rail keys, not backend drift"
         );
@@ -4597,12 +4600,12 @@ mod tests {
         canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points);
 
         let contour = &regions[0].shape[0];
-        let endpoint_key = road_point_key(endpoint);
-        assert_eq!(overlay_point_key(contour[0]), endpoint_key);
+        let endpoint_key = ownership_key_from_road_point(endpoint);
+        assert_eq!(ownership_key_from_overlay_point(contour[0]), endpoint_key);
         assert_eq!(
             contour
                 .iter()
-                .filter(|point| overlay_point_key(**point) == endpoint_key)
+                .filter(|point| ownership_key_from_overlay_point(**point) == endpoint_key)
                 .count(),
             1,
             "closing overlay dust must collapse onto the authorized source rail endpoint"
@@ -4652,9 +4655,9 @@ mod tests {
         for region in &regions {
             assert!(
                 region.seam_constraints.iter().any(|constraint| {
-                    let start = road_point_key(constraint.start_xz);
-                    let end = road_point_key(constraint.end_xz);
-                    start == road_point_key(RoadVec2::new(1.0, 1.0))
+                    let start = ownership_key_from_road_point(constraint.start_xz);
+                    let end = ownership_key_from_road_point(constraint.end_xz);
+                    start == ownership_key_from_road_point(RoadVec2::new(1.0, 1.0))
                         && end == start
                         && constraint.is_material_transition
                         && !constraint.constrains_shared_height

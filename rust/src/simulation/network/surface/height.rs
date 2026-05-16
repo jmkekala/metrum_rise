@@ -2094,10 +2094,9 @@ fn height_polygon_contains_point_xz(vertices: &[(RoadVec2, f64)], point: RoadVec
     for index in 0..vertices.len() {
         let start = vertices[index].0;
         let end = vertices[(index + 1) % vertices.len()].0;
-        if height_source_point_key_lies_on_segment(
-            point_key,
-            height_source_point_key(start),
-            height_source_point_key(end),
+        if SurfaceXzKey::from_raw_tuple(point_key).lies_exactly_on_segment(
+            SurfaceXzKey::from_raw_tuple(height_source_point_key(start)),
+            SurfaceXzKey::from_raw_tuple(height_source_point_key(end)),
         ) {
             return true;
         }
@@ -2163,9 +2162,14 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
     for edge in edges {
         let start = height_source_point_key(edge.start_xz);
         let end = height_source_point_key(edge.end_xz);
-        if height_source_point_key_lies_on_segment(point, start, end)
-            || height_source_point_key_quantization_cell_intersects_segment(point, start, end)
-        {
+        if SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_segment(
+            SurfaceXzKey::from_raw_tuple(start),
+            SurfaceXzKey::from_raw_tuple(end),
+        ) || SurfaceXzKey::from_raw_tuple(point).quantization_cell_intersects_segment(
+            SurfaceXzKey::from_raw_tuple(start),
+            SurfaceXzKey::from_raw_tuple(end),
+            HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS,
+        ) {
             let dx = end.0 - start.0;
             let dz = end.1 - start.1;
             let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
@@ -2187,7 +2191,10 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
         let point = NodeHeightPointKey::from_point(point_xz);
         let start = NodeHeightPointKey::from_point(edge.start_xz);
         let end = NodeHeightPointKey::from_point(edge.end_xz);
-        if !height_point_key_lies_on_segment(point, start, end) {
+        if !point
+            .surface_key()
+            .lies_exactly_on_segment(start.surface_key(), end.surface_key())
+        {
             continue;
         }
         let dx = end.x_key - start.x_key;
@@ -2208,8 +2215,7 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
 }
 
 fn height_source_point_key(point: RoadVec2) -> NodeHeightSourcePointKey {
-    let key = SurfaceXzKey::from_road_xz(point);
-    (key.x_key(), key.z_key())
+    SurfaceXzKey::from_road_xz(point).raw_tuple()
 }
 
 fn height_triangle_area2(
@@ -2217,128 +2223,11 @@ fn height_triangle_area2(
     b: NodeHeightSourcePointKey,
     c: NodeHeightSourcePointKey,
 ) -> i128 {
-    let ab_x = i128::from(b.0 - a.0);
-    let ab_z = i128::from(b.1 - a.1);
-    let ac_x = i128::from(c.0 - a.0);
-    let ac_z = i128::from(c.1 - a.1);
-    ab_x * ac_z - ab_z * ac_x
-}
-
-fn height_source_point_key_lies_on_segment(
-    point: NodeHeightSourcePointKey,
-    start: NodeHeightSourcePointKey,
-    end: NodeHeightSourcePointKey,
-) -> bool {
-    height_triangle_area2(start, end, point) == 0
-        && point.0 >= start.0.min(end.0)
-        && point.0 <= start.0.max(end.0)
-        && point.1 >= start.1.min(end.1)
-        && point.1 <= start.1.max(end.1)
-}
-
-fn height_source_point_key_quantization_cell_intersects_segment(
-    point: NodeHeightSourcePointKey,
-    start: NodeHeightSourcePointKey,
-    end: NodeHeightSourcePointKey,
-) -> bool {
-    if start == end {
-        return false;
-    }
-    let neighbor_radius_x2 = HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS * 2;
-    let min_x2 = i128::from(point.0) * 2 - neighbor_radius_x2;
-    let max_x2 = i128::from(point.0) * 2 + neighbor_radius_x2;
-    let min_z2 = i128::from(point.1) * 2 - neighbor_radius_x2;
-    let max_z2 = i128::from(point.1) * 2 + neighbor_radius_x2;
-    let segment_start = (i128::from(start.0) * 2, i128::from(start.1) * 2);
-    let segment_end = (i128::from(end.0) * 2, i128::from(end.1) * 2);
-    if height_doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
-        || height_doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
-    {
-        return true;
-    }
-    let lower_left = (min_x2, min_z2);
-    let lower_right = (max_x2, min_z2);
-    let upper_right = (max_x2, max_z2);
-    let upper_left = (min_x2, max_z2);
-    [
-        (lower_left, lower_right),
-        (lower_right, upper_right),
-        (upper_right, upper_left),
-        (upper_left, lower_left),
-    ]
-    .into_iter()
-    .any(|(edge_start, edge_end)| {
-        height_doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
-    })
-}
-
-fn height_doubled_point_inside_axis_aligned_box(
-    point: (i128, i128),
-    min_x: i128,
-    max_x: i128,
-    min_z: i128,
-    max_z: i128,
-) -> bool {
-    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
-}
-
-fn height_doubled_segments_intersect(
-    a: (i128, i128),
-    b: (i128, i128),
-    c: (i128, i128),
-    d: (i128, i128),
-) -> bool {
-    let ab_c = height_doubled_triangle_area2(a, b, c);
-    let ab_d = height_doubled_triangle_area2(a, b, d);
-    let cd_a = height_doubled_triangle_area2(c, d, a);
-    let cd_b = height_doubled_triangle_area2(c, d, b);
-    if ab_c == 0 && height_doubled_point_on_segment(c, a, b) {
-        return true;
-    }
-    if ab_d == 0 && height_doubled_point_on_segment(d, a, b) {
-        return true;
-    }
-    if cd_a == 0 && height_doubled_point_on_segment(a, c, d) {
-        return true;
-    }
-    if cd_b == 0 && height_doubled_point_on_segment(b, c, d) {
-        return true;
-    }
-    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
-}
-
-fn height_doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
-    let ab_x = b.0 - a.0;
-    let ab_z = b.1 - a.1;
-    let ac_x = c.0 - a.0;
-    let ac_z = c.1 - a.1;
-    ab_x * ac_z - ab_z * ac_x
-}
-
-fn height_doubled_point_on_segment(
-    point: (i128, i128),
-    start: (i128, i128),
-    end: (i128, i128),
-) -> bool {
-    point.0 >= start.0.min(end.0)
-        && point.0 <= start.0.max(end.0)
-        && point.1 >= start.1.min(end.1)
-        && point.1 <= start.1.max(end.1)
-}
-
-fn height_point_key_lies_on_segment(
-    point: NodeHeightPointKey,
-    start: NodeHeightPointKey,
-    end: NodeHeightPointKey,
-) -> bool {
-    let point = (point.x_key, point.z_key);
-    let start = (start.x_key, start.z_key);
-    let end = (end.x_key, end.z_key);
-    height_triangle_area2(start, end, point) == 0
-        && point.0 >= start.0.min(end.0)
-        && point.0 <= start.0.max(end.0)
-        && point.1 >= start.1.min(end.1)
-        && point.1 <= start.1.max(end.1)
+    SurfaceXzKey::triangle_area2(
+        SurfaceXzKey::from_raw_tuple(a),
+        SurfaceXzKey::from_raw_tuple(b),
+        SurfaceXzKey::from_raw_tuple(c),
+    )
 }
 
 fn xz(point: RoadVec3) -> RoadVec2 {
@@ -2364,6 +2253,10 @@ impl NodeHeightPointKey {
 
     fn z_mm(self) -> i64 {
         SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
+    }
+
+    fn surface_key(self) -> SurfaceXzKey {
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
     }
 }
 

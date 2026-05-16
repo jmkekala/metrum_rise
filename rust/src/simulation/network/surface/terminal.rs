@@ -1,10 +1,11 @@
 //! Canonical terminal-cap adapter for one-mouth visual node ownership.
 
 use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
-    quantize_road_vec2_to_overlay_grid, road_points_to_polyline,
+    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, quantize_road_vec2_to_overlay_grid,
+    road_points_to_polyline,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
+use super::keys::SurfaceXzKey;
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
@@ -742,9 +743,9 @@ fn cleaned_open_world_path_polyline(path_world: &[RoadVec3]) -> Option<RoadPolyl
 }
 
 fn height_on_world_path(point_xz: RoadVec2, path_world: &[RoadVec3]) -> Option<f64> {
-    let key = quantized_xz_key(point_xz);
+    let key = SurfaceXzKey::from_road_xz(point_xz);
     for point_world in path_world {
-        if quantized_xz_key(xz(*point_world)) == key {
+        if SurfaceXzKey::from_road_xz(xz(*point_world)) == key {
             return Some(point_world.y);
         }
     }
@@ -788,10 +789,11 @@ fn terminal_cap_band_has_quantized_area(cap_band: &NodeTerminalCapBand) -> bool 
 }
 
 fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
-    points.dedup_by(|a, b| quantized_xz_key(xz(*a)) == quantized_xz_key(xz(*b)));
+    points
+        .dedup_by(|a, b| SurfaceXzKey::from_road_xz(xz(*a)) == SurfaceXzKey::from_road_xz(xz(*b)));
     if points.len() > 1
-        && quantized_xz_key(xz(points[0]))
-            == quantized_xz_key(xz(*points.last().expect("points are non-empty")))
+        && SurfaceXzKey::from_road_xz(xz(points[0]))
+            == SurfaceXzKey::from_road_xz(xz(*points.last().expect("points are non-empty")))
     {
         points.pop();
     }
@@ -800,13 +802,6 @@ fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
 fn normalized_terminal_cap_direction(direction: RoadVec2) -> Option<RoadVec2> {
     let length = direction.length();
     (length > TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M).then_some(direction / length)
-}
-
-fn quantized_xz_key(point: RoadVec2) -> (i64, i64) {
-    (
-        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
 }
 
 fn xz(point: RoadVec3) -> RoadVec2 {

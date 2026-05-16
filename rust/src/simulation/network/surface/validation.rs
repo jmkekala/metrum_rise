@@ -8,6 +8,7 @@ use super::arrangement::{
 use super::height::{NodeHeightAuthoritySource, NodeHeightFieldError};
 use super::keys::{
     SURFACE_CANONICAL_HEIGHT_EPS_M, SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey,
+    SurfaceXzSegmentKey,
 };
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
@@ -581,32 +582,9 @@ fn point_lies_on_validation_segment(
     if point == start || point == end {
         return true;
     }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.x_key - start.x_key);
-    let dz = i128::from(end.z_key - start.z_key);
-    let px = i128::from(point.x_key - start.x_key);
-    let pz = i128::from(point.z_key - start.z_key);
-    let cross = px * dz - pz * dx;
-    if cross != 0 && cross.abs() > validation_overlay_grid_collinearity_error_bound(dx, dz) {
-        return false;
-    }
-    let inside_x = if start.x_key == end.x_key {
-        point.x_key == start.x_key
-    } else {
-        point.x_key > start.x_key.min(end.x_key) && point.x_key < start.x_key.max(end.x_key)
-    };
-    let inside_z = if start.z_key == end.z_key {
-        point.z_key == start.z_key
-    } else {
-        point.z_key > start.z_key.min(end.z_key) && point.z_key < start.z_key.max(end.z_key)
-    };
-    inside_x && inside_z
-}
-
-fn validation_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
-    (dx.abs() + dz.abs()) * 2
+    point
+        .surface_key()
+        .lies_on_open_segment(start.surface_key(), end.surface_key())
 }
 
 fn push_triangle_edge_height_conflict(
@@ -1848,11 +1826,7 @@ fn orientation(
     b: NodeValidationPointKey,
     c: NodeValidationPointKey,
 ) -> i128 {
-    let ab_x = i128::from(b.x_key) - i128::from(a.x_key);
-    let ab_z = i128::from(b.z_key) - i128::from(a.z_key);
-    let ac_x = i128::from(c.x_key) - i128::from(a.x_key);
-    let ac_z = i128::from(c.z_key) - i128::from(a.z_key);
-    ab_x * ac_z - ab_z * ac_x
+    SurfaceXzKey::triangle_area2(a.surface_key(), b.surface_key(), c.surface_key())
 }
 
 fn signs_differ(a: i128, b: i128) -> bool {
@@ -2175,11 +2149,7 @@ fn edge_key_for_indices(
 }
 
 fn point_key_from_world(point: super::backend::RoadVec3) -> NodeValidationPointKey {
-    let key = SurfaceXzKey::from_world_xz(point);
-    NodeValidationPointKey {
-        x_key: key.x_key(),
-        z_key: key.z_key(),
-    }
+    NodeValidationPointKey::from_surface_key(SurfaceXzKey::from_world_xz(point))
 }
 
 fn normalized_constraint(a: usize, b: usize) -> [usize; 2] {
@@ -2199,11 +2169,22 @@ fn validation_point_key_to_mm(value: i64) -> i64 {
 }
 
 impl NodeValidationPointKey {
+    fn from_surface_key(key: SurfaceXzKey) -> Self {
+        Self {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+        }
+    }
+
     fn from_arrangement_key(key: NodeArrangementKey) -> Self {
         Self {
             x_key: key.x_key(),
             z_key: key.z_key(),
         }
+    }
+
+    fn surface_key(self) -> SurfaceXzKey {
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
     }
 
     fn x_mm(self) -> i64 {
@@ -2217,10 +2198,10 @@ impl NodeValidationPointKey {
 
 impl NodeValidationEdgeKey {
     fn new(a: NodeValidationPointKey, b: NodeValidationPointKey) -> Self {
-        if a <= b {
-            Self { start: a, end: b }
-        } else {
-            Self { start: b, end: a }
+        let segment = SurfaceXzSegmentKey::new(a.surface_key(), b.surface_key());
+        Self {
+            start: NodeValidationPointKey::from_surface_key(segment.start()),
+            end: NodeValidationPointKey::from_surface_key(segment.end()),
         }
     }
 

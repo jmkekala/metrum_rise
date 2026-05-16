@@ -16,11 +16,24 @@ pub(crate) struct SurfaceXzKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct SurfaceXzSegmentKey {
+    start: SurfaceXzKey,
+    end: SurfaceXzKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct SurfaceHeightMmKey(i64);
 
 impl SurfaceXzKey {
     pub(crate) fn from_raw_keys(x_key: i64, z_key: i64) -> Self {
         Self { x_key, z_key }
+    }
+
+    pub(crate) fn from_raw_tuple(keys: (i64, i64)) -> Self {
+        Self {
+            x_key: keys.0,
+            z_key: keys.1,
+        }
     }
 
     pub(crate) fn from_road_xz(point: RoadVec2) -> Self {
@@ -67,6 +80,10 @@ impl SurfaceXzKey {
         self.z_key
     }
 
+    pub(crate) fn raw_tuple(self) -> (i64, i64) {
+        (self.x_key, self.z_key)
+    }
+
     pub(crate) fn x_mm(self) -> i64 {
         Self::coordinate_key_to_mm(self.x_key)
     }
@@ -81,6 +98,160 @@ impl SurfaceXzKey {
             self.z_key as f64 / SURFACE_XZ_KEY_SCALE,
         )
     }
+
+    pub(crate) fn segment_parameter_key(self, start: Self, end: Self) -> i128 {
+        let dx = i128::from(end.x_key - start.x_key);
+        let dz = i128::from(end.z_key - start.z_key);
+        let px = i128::from(self.x_key - start.x_key);
+        let pz = i128::from(self.z_key - start.z_key);
+        px * dx + pz * dz
+    }
+
+    pub(crate) fn triangle_area2(a: Self, b: Self, c: Self) -> i128 {
+        let ab_x = i128::from(b.x_key - a.x_key);
+        let ab_z = i128::from(b.z_key - a.z_key);
+        let ac_x = i128::from(c.x_key - a.x_key);
+        let ac_z = i128::from(c.z_key - a.z_key);
+        ab_x * ac_z - ab_z * ac_x
+    }
+
+    pub(crate) fn collinear_with_segment(self, start: Self, end: Self) -> bool {
+        Self::triangle_area2(start, end, self) == 0
+    }
+
+    pub(crate) fn collinear_with_overlay_grid_segment(self, start: Self, end: Self) -> bool {
+        let cross = Self::triangle_area2(start, end, self);
+        if cross == 0 {
+            return true;
+        }
+        let dx = i128::from(end.x_key - start.x_key);
+        let dz = i128::from(end.z_key - start.z_key);
+        cross.abs() <= surface_overlay_grid_collinearity_error_bound(dx, dz)
+    }
+
+    pub(crate) fn lies_on_segment(self, start: Self, end: Self) -> bool {
+        if self == start || self == end {
+            return true;
+        }
+        if start == end || !self.collinear_with_overlay_grid_segment(start, end) {
+            return false;
+        }
+        self.inside_segment_bounds(start, end, true)
+    }
+
+    pub(crate) fn lies_on_open_segment(self, start: Self, end: Self) -> bool {
+        if self == start || self == end || start == end {
+            return false;
+        }
+        self.collinear_with_overlay_grid_segment(start, end)
+            && self.inside_segment_bounds(start, end, false)
+    }
+
+    pub(crate) fn lies_exactly_on_segment(self, start: Self, end: Self) -> bool {
+        if self == start || self == end {
+            return true;
+        }
+        if start == end || !self.collinear_with_segment(start, end) {
+            return false;
+        }
+        self.inside_segment_bounds(start, end, true)
+    }
+
+    pub(crate) fn lies_exactly_on_open_segment(self, start: Self, end: Self) -> bool {
+        if self == start || self == end || start == end {
+            return false;
+        }
+        self.collinear_with_segment(start, end) && self.inside_segment_bounds(start, end, false)
+    }
+
+    pub(crate) fn quantization_cell_intersects_segment(
+        self,
+        start: Self,
+        end: Self,
+        neighbor_radius_units: i128,
+    ) -> bool {
+        if start == end {
+            return false;
+        }
+        let neighbor_radius_x2 = neighbor_radius_units * 2;
+        let min_x2 = i128::from(self.x_key) * 2 - neighbor_radius_x2;
+        let max_x2 = i128::from(self.x_key) * 2 + neighbor_radius_x2;
+        let min_z2 = i128::from(self.z_key) * 2 - neighbor_radius_x2;
+        let max_z2 = i128::from(self.z_key) * 2 + neighbor_radius_x2;
+        let segment_start = start.doubled();
+        let segment_end = end.doubled();
+        if doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
+            || doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
+        {
+            return true;
+        }
+        let lower_left = (min_x2, min_z2);
+        let lower_right = (max_x2, min_z2);
+        let upper_right = (max_x2, max_z2);
+        let upper_left = (min_x2, max_z2);
+        [
+            (lower_left, lower_right),
+            (lower_right, upper_right),
+            (upper_right, upper_left),
+            (upper_left, lower_left),
+        ]
+        .into_iter()
+        .any(|(edge_start, edge_end)| {
+            doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
+        })
+    }
+
+    fn inside_segment_bounds(self, start: Self, end: Self, include_endpoints: bool) -> bool {
+        let inside_x = if start.x_key == end.x_key {
+            self.x_key == start.x_key
+        } else if include_endpoints {
+            self.x_key >= start.x_key.min(end.x_key) && self.x_key <= start.x_key.max(end.x_key)
+        } else {
+            self.x_key > start.x_key.min(end.x_key) && self.x_key < start.x_key.max(end.x_key)
+        };
+        let inside_z = if start.z_key == end.z_key {
+            self.z_key == start.z_key
+        } else if include_endpoints {
+            self.z_key >= start.z_key.min(end.z_key) && self.z_key <= start.z_key.max(end.z_key)
+        } else {
+            self.z_key > start.z_key.min(end.z_key) && self.z_key < start.z_key.max(end.z_key)
+        };
+        inside_x && inside_z
+    }
+
+    fn doubled(self) -> (i128, i128) {
+        (i128::from(self.x_key) * 2, i128::from(self.z_key) * 2)
+    }
+}
+
+impl SurfaceXzSegmentKey {
+    pub(crate) fn new(a: SurfaceXzKey, b: SurfaceXzKey) -> Self {
+        if a <= b {
+            Self { start: a, end: b }
+        } else {
+            Self { start: b, end: a }
+        }
+    }
+
+    pub(crate) fn non_degenerate(a: SurfaceXzKey, b: SurfaceXzKey) -> Option<Self> {
+        (a != b).then(|| Self::new(a, b))
+    }
+
+    pub(crate) fn start(self) -> SurfaceXzKey {
+        self.start
+    }
+
+    pub(crate) fn end(self) -> SurfaceXzKey {
+        self.end
+    }
+}
+
+pub(crate) fn surface_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
+    // Source contours and backend-owned shapes are both projected to the overlay integer grid.
+    // A point that is exactly on a source segment before projection can land within this
+    // determinant envelope after independent endpoint rounding; this is representation noding,
+    // not owner or height repair.
+    (dx.abs() + dz.abs()) * 2
 }
 
 impl SurfaceHeightMmKey {
@@ -94,5 +265,109 @@ impl SurfaceHeightMmKey {
 
     pub(crate) fn as_i64(self) -> i64 {
         self.0
+    }
+}
+
+fn doubled_point_inside_axis_aligned_box(
+    point: (i128, i128),
+    min_x: i128,
+    max_x: i128,
+    min_z: i128,
+    max_z: i128,
+) -> bool {
+    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
+}
+
+fn doubled_segments_intersect(
+    a: (i128, i128),
+    b: (i128, i128),
+    c: (i128, i128),
+    d: (i128, i128),
+) -> bool {
+    let ab_c = doubled_triangle_area2(a, b, c);
+    let ab_d = doubled_triangle_area2(a, b, d);
+    let cd_a = doubled_triangle_area2(c, d, a);
+    let cd_b = doubled_triangle_area2(c, d, b);
+    if ab_c == 0 && doubled_point_on_segment(c, a, b) {
+        return true;
+    }
+    if ab_d == 0 && doubled_point_on_segment(d, a, b) {
+        return true;
+    }
+    if cd_a == 0 && doubled_point_on_segment(a, c, d) {
+        return true;
+    }
+    if cd_b == 0 && doubled_point_on_segment(b, c, d) {
+        return true;
+    }
+    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
+}
+
+fn doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
+    let ab_x = b.0 - a.0;
+    let ab_z = b.1 - a.1;
+    let ac_x = c.0 - a.0;
+    let ac_z = c.1 - a.1;
+    ab_x * ac_z - ab_z * ac_x
+}
+
+fn doubled_point_on_segment(point: (i128, i128), start: (i128, i128), end: (i128, i128)) -> bool {
+    point.0 >= start.0.min(end.0)
+        && point.0 <= start.0.max(end.0)
+        && point.1 >= start.1.min(end.1)
+        && point.1 <= start.1.max(end.1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn road_world_overlay_conversions_share_the_same_xz_key() {
+        let road = SurfaceXzKey::from_road_xz(RoadVec2::new(1.25, -3.5));
+        let world = SurfaceXzKey::from_world_xz(RoadVec3::new(1.25, 42.0, -3.5));
+        let overlay = SurfaceXzKey::from_overlay_point([1.25, -3.5]);
+
+        assert_eq!(road, world);
+        assert_eq!(road, overlay);
+        assert_eq!(road, SurfaceXzKey::from_raw_tuple(road.raw_tuple()));
+    }
+
+    #[test]
+    fn normalized_segment_key_is_direction_independent() {
+        let a = SurfaceXzKey::from_road_xz(RoadVec2::new(-1.0, 0.5));
+        let b = SurfaceXzKey::from_road_xz(RoadVec2::new(2.0, -0.5));
+
+        assert_eq!(
+            SurfaceXzSegmentKey::new(a, b),
+            SurfaceXzSegmentKey::new(b, a)
+        );
+        assert_eq!(SurfaceXzSegmentKey::non_degenerate(a, a), None);
+    }
+
+    #[test]
+    fn segment_predicates_separate_exact_and_overlay_grid_collinearity() {
+        let start = SurfaceXzKey::from_raw_keys(0, 0);
+        let end = SurfaceXzKey::from_raw_keys(10_000, 10_000);
+        let exact_middle = SurfaceXzKey::from_raw_keys(5_000, 5_000);
+        let near_middle = SurfaceXzKey::from_raw_keys(5_000, 5_001);
+
+        assert!(exact_middle.lies_on_segment(start, end));
+        assert!(exact_middle.lies_exactly_on_segment(start, end));
+        assert!(near_middle.lies_on_segment(start, end));
+        assert!(!near_middle.lies_exactly_on_segment(start, end));
+        assert!(!start.lies_on_open_segment(start, end));
+        assert!(exact_middle.lies_on_open_segment(start, end));
+    }
+
+    #[test]
+    fn quantization_cell_intersection_uses_doubled_integer_geometry() {
+        let point = SurfaceXzKey::from_raw_keys(5, 5);
+        let start = SurfaceXzKey::from_raw_keys(0, 0);
+        let end = SurfaceXzKey::from_raw_keys(10, 10);
+        let far = SurfaceXzKey::from_raw_keys(5, 9);
+
+        assert!(point.quantization_cell_intersects_segment(start, end, 1));
+        assert!(!far.quantization_cell_intersects_segment(start, end, 1));
     }
 }

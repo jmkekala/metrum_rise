@@ -3,7 +3,7 @@
 use super::backend::RoadVec2;
 use super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
-use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -193,7 +193,10 @@ pub(crate) enum NodeArrangementError {
 
 impl NodeArrangementKey {
     pub(crate) fn from_point(point: RoadVec2) -> Self {
-        let key = SurfaceXzKey::from_road_xz(point);
+        Self::from_surface_key(SurfaceXzKey::from_road_xz(point))
+    }
+
+    fn from_surface_key(key: SurfaceXzKey) -> Self {
         Self {
             x_key: key.x_key(),
             z_key: key.z_key(),
@@ -214,6 +217,15 @@ impl NodeArrangementKey {
 
     pub(crate) fn z_mm(self) -> i64 {
         SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
+    }
+
+    fn surface_key(self) -> SurfaceXzKey {
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
+    }
+
+    fn lies_on_segment(self, start: Self, end: Self) -> bool {
+        self.surface_key()
+            .lies_on_segment(start.surface_key(), end.surface_key())
     }
 }
 
@@ -1141,7 +1153,7 @@ fn seam_constraint_touches_key(
 ) -> bool {
     let start = NodeArrangementKey::from_point(constraint.start_xz);
     let end = NodeArrangementKey::from_point(constraint.end_xz);
-    point_key_lies_on_segment(key, start, end)
+    key.lies_on_segment(start, end)
 }
 
 fn seam_constraint_matches_owner_pair(
@@ -1171,8 +1183,8 @@ fn seam_constraint_covers_edge(
 ) -> bool {
     let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
     let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
-    point_key_lies_on_segment(edge_start, constraint_start, constraint_end)
-        && point_key_lies_on_segment(edge_end, constraint_start, constraint_end)
+    edge_start.lies_on_segment(constraint_start, constraint_end)
+        && edge_end.lies_on_segment(constraint_start, constraint_end)
 }
 
 fn seam_constraint_covers_key(
@@ -1181,7 +1193,7 @@ fn seam_constraint_covers_key(
 ) -> bool {
     let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
     let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
-    point_key_lies_on_segment(key, constraint_start, constraint_end)
+    key.lies_on_segment(constraint_start, constraint_end)
 }
 
 impl NodeArrangementVertexId {
@@ -1340,10 +1352,10 @@ fn loop_edges(
 
 impl NodeArrangementEdgeKey {
     fn new(a: NodeArrangementKey, b: NodeArrangementKey) -> Self {
-        if a <= b {
-            Self { start: a, end: b }
-        } else {
-            Self { start: b, end: a }
+        let segment = SurfaceXzSegmentKey::new(a.surface_key(), b.surface_key());
+        Self {
+            start: NodeArrangementKey::from_surface_key(segment.start()),
+            end: NodeArrangementKey::from_surface_key(segment.end()),
         }
     }
 }
@@ -1429,42 +1441,6 @@ pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
         NodeSeamSource::SidewalkOuter { .. } => 2,
         NodeSeamSource::FootprintBoundary { .. } => 3,
     }
-}
-
-fn point_key_lies_on_segment(
-    point: NodeArrangementKey,
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.x_key - start.x_key);
-    let dz = i128::from(end.z_key - start.z_key);
-    let px = i128::from(point.x_key - start.x_key);
-    let pz = i128::from(point.z_key - start.z_key);
-    let cross = px * dz - pz * dx;
-    if cross != 0 && cross.abs() > arrangement_overlay_grid_collinearity_error_bound(dx, dz) {
-        return false;
-    }
-    let inside_x = if start.x_key == end.x_key {
-        point.x_key == start.x_key
-    } else {
-        point.x_key >= start.x_key.min(end.x_key) && point.x_key <= start.x_key.max(end.x_key)
-    };
-    let inside_z = if start.z_key == end.z_key {
-        point.z_key == start.z_key
-    } else {
-        point.z_key >= start.z_key.min(end.z_key) && point.z_key <= start.z_key.max(end.z_key)
-    };
-    inside_x && inside_z
-}
-
-fn arrangement_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
-    (dx.abs() + dz.abs()) * 2
 }
 
 fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
