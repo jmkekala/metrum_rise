@@ -2,13 +2,14 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
-    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
+    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceSection, RoadSurfaceSpanBandOwner,
     RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
     RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
     RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
+    keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -17,6 +18,14 @@ use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+
+#[derive(Default)]
+pub(crate) struct RoadSurfaceDebugData {
+    pub(crate) section_lines: Vec<Vector3>,
+    pub(crate) band_lines: Vec<Vector3>,
+    pub(crate) piece_boundary_lines: Vec<Vector3>,
+    pub(crate) earthwork_chunk_lines: Vec<Vector3>,
+}
 
 const DEBUG_MAX_PROBLEM_SAMPLES: usize = 12;
 const DEBUG_VERTEX_MATCH_TOLERANCE_M: f32 = 0.004;
@@ -131,10 +140,11 @@ struct DebugCoverageStats {
 
 impl DebugRenderVertexKey {
     fn from_point(point: Vector3) -> Self {
+        let xz_key = SurfaceXzKey::from_godot_world_xz(point);
         Self {
-            x_key: (f64::from(point.x) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            y_mm: (f64::from(point.y) * 1000.0).round() as i64,
-            z_key: (f64::from(point.z) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            x_key: xz_key.x_key(),
+            y_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+            z_key: xz_key.z_key(),
         }
     }
 

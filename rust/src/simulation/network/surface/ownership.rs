@@ -2203,14 +2203,24 @@ fn owned_edge_lies_on_rail_constraint(
     if matches!(constraint.kind, NodeRailConstraintKind::BandContour { .. }) {
         return false;
     }
-    if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner)
-        && (!rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
+    let exact_owner_pair =
+        rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner);
+    if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner) {
+        if exact_owner_pair && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
+            return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+        }
+        if !exact_owner_pair
             || (constraint.source_boundary_index.is_some()
-                && piece_kind != RoadSurfaceVisualNodePieceKind::Terminal))
+                && piece_kind != RoadSurfaceVisualNodePieceKind::Terminal)
+        {
+            return false;
+        }
+    }
+    if constraint.kind == NodeRailConstraintKind::RaisedStepContact
+        && exact_owner_pair
+        && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
     {
-        return piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
-            && rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
-            && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+        return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
     }
     matches!(
         piece_kind,

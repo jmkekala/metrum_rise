@@ -5,7 +5,8 @@ use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
     owners_form_explicit_vertical_step_pair,
 };
-use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
+use super::backend::RoadVec3;
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -14,9 +15,6 @@ use super::{
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
-
-const NODE_TRIANGULATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const NODE_TRIANGULATION_HEIGHT_KEY_SCALE: f64 = 1000.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulationSolution {
@@ -598,26 +596,23 @@ fn normalized_constraint(a: usize, b: usize) -> [usize; 2] {
 }
 
 fn quantize_m(value: f64) -> i64 {
-    (value * NODE_TRIANGULATION_HEIGHT_KEY_SCALE).round() as i64
-}
-
-fn quantize_point(value: f64) -> i64 {
-    (value * NODE_TRIANGULATION_POINT_KEY_SCALE).round() as i64
+    SurfaceHeightMmKey::from_m_f64(value).as_i64()
 }
 
 impl NodeTriangulationPointKey {
     fn from_arrangement_vertex(vertex: &NodeArrangementVertex) -> Self {
-        let point = vertex.point_xz();
+        let key = SurfaceXzKey::from_road_xz(vertex.point_xz());
         Self {
-            x_mm: quantize_point(point.x),
-            z_mm: quantize_point(point.y),
+            x_mm: key.x_key(),
+            z_mm: key.z_key(),
         }
     }
 
     fn from_world(point: RoadVec3) -> Self {
+        let key = SurfaceXzKey::from_world_xz(point);
         Self {
-            x_mm: quantize_point(point.x),
-            z_mm: quantize_point(point.z),
+            x_mm: key.x_key(),
+            z_mm: key.z_key(),
         }
     }
 }

@@ -5,8 +5,10 @@ use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment,
     owners_form_explicit_vertical_step_pair,
 };
-use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 use super::height::{NodeHeightAuthoritySource, NodeHeightFieldError};
+use super::keys::{
+    SURFACE_CANONICAL_HEIGHT_EPS_M, SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey,
+};
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
 };
@@ -24,10 +26,8 @@ use parry2d::shape::Segment;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-const VALIDATION_KEY_SCALE: f64 = 1000.0;
-const VALIDATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
-const VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M: f64 = 0.01;
+const VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeValidationReport {
@@ -1622,8 +1622,8 @@ fn duplicate_exposed_edge_is_canonical_drift(
 }
 
 fn validation_edge_length_m(edge: NodeValidationEdgeKey) -> f64 {
-    let dx = (edge.end.x_key - edge.start.x_key) as f64 / VALIDATION_POINT_KEY_SCALE;
-    let dz = (edge.end.z_key - edge.start.z_key) as f64 / VALIDATION_POINT_KEY_SCALE;
+    let dx = (edge.end.x_key - edge.start.x_key) as f64 / SURFACE_XZ_KEY_SCALE;
+    let dz = (edge.end.z_key - edge.start.z_key) as f64 / SURFACE_XZ_KEY_SCALE;
     dx.hypot(dz)
 }
 
@@ -2175,9 +2175,10 @@ fn edge_key_for_indices(
 }
 
 fn point_key_from_world(point: super::backend::RoadVec3) -> NodeValidationPointKey {
+    let key = SurfaceXzKey::from_world_xz(point);
     NodeValidationPointKey {
-        x_key: quantize_point(point.x),
-        z_key: quantize_point(point.z),
+        x_key: key.x_key(),
+        z_key: key.z_key(),
     }
 }
 
@@ -2190,15 +2191,11 @@ fn shares_endpoint(a: [usize; 2], b: [usize; 2]) -> bool {
 }
 
 fn quantize_m(value: f64) -> i64 {
-    (value * VALIDATION_KEY_SCALE).round() as i64
-}
-
-fn quantize_point(value: f64) -> i64 {
-    (value * VALIDATION_POINT_KEY_SCALE).round() as i64
+    SurfaceHeightMmKey::from_m_f64(value).as_i64()
 }
 
 fn validation_point_key_to_mm(value: i64) -> i64 {
-    ((value as f64 / VALIDATION_POINT_KEY_SCALE) * VALIDATION_KEY_SCALE).round() as i64
+    SurfaceXzKey::coordinate_key_to_mm(value)
 }
 
 impl NodeValidationPointKey {
@@ -2359,9 +2356,10 @@ mod tests {
     }
 
     fn key_point(x: f64, z: f64) -> NodeValidationPointKey {
+        let key = SurfaceXzKey::from_road_xz(super::super::backend::RoadVec2::new(x, z));
         NodeValidationPointKey {
-            x_key: quantize_point(x),
-            z_key: quantize_point(z),
+            x_key: key.x_key(),
+            z_key: key.z_key(),
         }
     }
 

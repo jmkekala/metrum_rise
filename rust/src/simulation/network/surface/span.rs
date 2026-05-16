@@ -2,19 +2,85 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
-    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRaisedStepSource,
-    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
     terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
 // Avoid resolved region construction between adjacent bands whose widths have collapsed together.
 const SPAN_REGION_MIN_BAND_WIDTH_M: f32 = 0.05;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceSpanRegionRole {
+    Asphalt,
+    CurbOrShoulder,
+    NonRoad,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RoadSurfaceSpanBandOwner {
+    pub(crate) source_band_index: usize,
+    pub(crate) kind: RoadSurfaceBandKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RoadSurfaceSpanOwnedRegion {
+    pub(crate) edge_idx: usize,
+    pub(crate) owner: RoadSurfaceSpanBandOwner,
+    pub(crate) role: RoadSurfaceSpanRegionRole,
+    pub(crate) start_section_index: usize,
+    pub(crate) end_section_index: usize,
+    pub(crate) start_s_m: f32,
+    pub(crate) end_s_m: f32,
+    pub(crate) polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RoadSurfaceSpanRaisedStepSource {
+    pub(crate) lower_owner: RoadSurfaceSpanBandOwner,
+    pub(crate) raised_owner: RoadSurfaceSpanBandOwner,
+    pub(crate) start_section_index: usize,
+    pub(crate) end_section_index: usize,
+    pub(crate) start_s_m: f32,
+    pub(crate) end_s_m: f32,
+    pub(crate) start_lower_world: Vector3,
+    pub(crate) start_raised_world: Vector3,
+    pub(crate) end_lower_world: Vector3,
+    pub(crate) end_raised_world: Vector3,
+}
+
+/// Explicit visual span piece compiled from one edge corridor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoadSurfaceVisualSpanPiece {
+    /// Owning edge id.
+    pub edge_idx: usize,
+    /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
+    pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
+    /// Explicit asphalt-owned polygons for the span piece.
+    pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit curb / shoulder-owned polygons for the span piece.
+    pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit vertical faces at raised owner-pair material contacts.
+    pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) span_raised_step_sources: Vec<RoadSurfaceSpanRaisedStepSource>,
+    /// Explicit sidewalk-owned polygons for the span piece.
+    pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) span_owned_regions: Vec<RoadSurfaceSpanOwnedRegion>,
+    pub(crate) edge_class: EdgeClass,
+    pub(crate) start_mouth_profile: Option<IncidentMouthProfile>,
+    pub(crate) end_mouth_profile: Option<IncidentMouthProfile>,
+    pub(crate) span_earthwork_support_regions: Vec<RoadSurfaceSpanOwnedRegion>,
+    pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct SpanResolvedRegionSet {
@@ -22,6 +88,13 @@ struct SpanResolvedRegionSet {
     raised_step_constraints: Vec<SpanRaisedStepConstraint>,
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SpanRenderRegionBuckets {
+    road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,6 +135,20 @@ impl RoadSurfaceSpanRegionRole {
     }
 }
 
+impl SpanRenderRegionBuckets {
+    fn is_empty(&self) -> bool {
+        self.road_surface_polygons.is_empty()
+            && self.curb_surface_polygons.is_empty()
+            && self.sidewalk_surface_polygons.is_empty()
+    }
+
+    fn sort(&mut self) {
+        RoadSurfaceSystem::sort_visual_polygons(&mut self.road_surface_polygons);
+        RoadSurfaceSystem::sort_visual_polygons(&mut self.curb_surface_polygons);
+        RoadSurfaceSystem::sort_visual_polygons(&mut self.sidewalk_surface_polygons);
+    }
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_span_piece(
         &self,
@@ -79,8 +166,8 @@ impl RoadSurfaceSystem {
         let mut visible_regions =
             self.resolve_span_regions_for_ranges(sections, &visible_ranges, edge.class);
         Self::sort_span_owned_regions(&mut visible_regions.regions);
-        let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
-            Self::span_surface_polygons_from_regions(&visible_regions.regions);
+        let mut render_buckets =
+            Self::span_render_region_buckets_from_owned_regions(&visible_regions.regions);
         let mut raised_step_faces =
             Self::span_raised_step_faces_from_constraints(&visible_regions.raised_step_constraints);
         Self::sort_span_raised_step_faces(&mut raised_step_faces);
@@ -89,16 +176,11 @@ impl RoadSurfaceSystem {
             Vec<RoadSurfaceSpanRaisedStepSource>,
         ) = raised_step_faces.into_iter().unzip();
 
-        if road_surface_polygons.is_empty()
-            && curb_surface_polygons.is_empty()
-            && sidewalk_surface_polygons.is_empty()
-        {
+        if render_buckets.is_empty() {
             return None;
         }
 
-        Self::sort_visual_polygons(&mut road_surface_polygons);
-        Self::sort_visual_polygons(&mut curb_surface_polygons);
-        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        render_buckets.sort();
         let outer_boundary_loops = std::mem::take(&mut visible_regions.outer_boundary_loops);
         if outer_boundary_loops.is_empty() {
             return None;
@@ -132,11 +214,11 @@ impl RoadSurfaceSystem {
             edge_idx,
             outer_boundary_loops,
             terrain_clip_boundary_loops,
-            road_surface_polygons,
-            curb_surface_polygons,
+            road_surface_polygons: render_buckets.road_surface_polygons,
+            curb_surface_polygons: render_buckets.curb_surface_polygons,
             raised_step_face_polygons,
             span_raised_step_sources,
-            sidewalk_surface_polygons,
+            sidewalk_surface_polygons: render_buckets.sidewalk_surface_polygons,
             span_owned_regions: visible_regions.regions,
             edge_class: edge.class,
             start_mouth_profile,
@@ -235,36 +317,28 @@ impl RoadSurfaceSystem {
         resolved
     }
 
-    fn span_surface_polygons_from_regions(
+    fn span_render_region_buckets_from_owned_regions(
         regions: &[RoadSurfaceSpanOwnedRegion],
-    ) -> (
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-    ) {
-        let mut road_surface_polygons = Vec::new();
-        let mut curb_surface_polygons = Vec::new();
-        let mut sidewalk_surface_polygons = Vec::new();
+    ) -> SpanRenderRegionBuckets {
+        let mut buckets = SpanRenderRegionBuckets::default();
 
         for region in regions {
             match region.role {
                 RoadSurfaceSpanRegionRole::Asphalt => {
-                    road_surface_polygons.push(region.polygon.clone());
+                    buckets.road_surface_polygons.push(region.polygon.clone());
                 }
                 RoadSurfaceSpanRegionRole::CurbOrShoulder => {
-                    curb_surface_polygons.push(region.polygon.clone());
+                    buckets.curb_surface_polygons.push(region.polygon.clone());
                 }
                 RoadSurfaceSpanRegionRole::NonRoad => {
-                    sidewalk_surface_polygons.push(region.polygon.clone());
+                    buckets
+                        .sidewalk_surface_polygons
+                        .push(region.polygon.clone());
                 }
             }
         }
 
-        (
-            road_surface_polygons,
-            curb_surface_polygons,
-            sidewalk_surface_polygons,
-        )
+        buckets
     }
 
     fn sort_span_owned_regions(regions: &mut [RoadSurfaceSpanOwnedRegion]) {

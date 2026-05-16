@@ -15,6 +15,10 @@ use super::{
     backend::{RoadVec2, road_vec2_to_overlay_point},
     edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
+    node_boundary::{
+        NodeBoundaryExportError, interpolate_missing_footprint_boundary_heights,
+        remove_unsupported_numeric_boundary_vertices,
+    },
     terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
 };
@@ -110,14 +114,6 @@ impl PartialOrd for ArrangementSegmentParameter {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
-}
-
-#[derive(Debug)]
-enum NodeBoundaryExportError {
-    EmptyOuterBoundary,
-    MissingFootprintBoundaryHeight,
-    DegenerateOuterBoundaryLoop,
-    MissingEarthworkBoundarySource,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -489,7 +485,7 @@ impl RoadSurfaceSystem {
                         Self::arrangement_footprint_boundary_height_mm(arrangement, key),
                     ));
                 }
-                fill_missing_footprint_boundary_heights(&mut keyed_points)?;
+                interpolate_missing_footprint_boundary_heights(&mut keyed_points)?;
                 let mut points = keyed_points
                     .into_iter()
                     .map(|(key, height_mm)| {
@@ -500,7 +496,15 @@ impl RoadSurfaceSystem {
                     })
                     .collect::<Vec<_>>();
                 if clean_unsupported_numeric_vertices {
-                    remove_unsupported_numeric_boundary_vertices(&mut points, top_polygons);
+                    remove_unsupported_numeric_boundary_vertices(
+                        &mut points,
+                        |current_key, local_points| {
+                            visible_top_boundary_height_mm_at_key(top_polygons, current_key)
+                                .is_some()
+                                || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                                    > boundary_points_numeric_area_budget_m2(&local_points)
+                        },
+                    );
                 }
                 let points = Self::canonicalize_loop_points(points);
                 if points.len() < 3 {
@@ -2941,131 +2945,6 @@ fn append_boundary_loop_heights_at_key(
     }
 }
 
-fn remove_unsupported_numeric_boundary_vertices(
-    points: &mut Vec<Vector3>,
-    top_polygons: &[&RoadSurfaceVisualPolygon],
-) {
-    loop {
-        if points.len() < 4 {
-            return;
-        }
-        let mut removed = false;
-        for index in 0..points.len() {
-            let previous = if index == 0 {
-                points.len() - 1
-            } else {
-                index - 1
-            };
-            let next = if index + 1 == points.len() {
-                0
-            } else {
-                index + 1
-            };
-            let current_key = ArrangementBoundaryPointKey::from_world(points[index]).xz_key();
-            if visible_top_boundary_height_mm_at_key(top_polygons, current_key).is_some() {
-                continue;
-            }
-            let local_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(&[
-                points[previous],
-                points[index],
-                points[next],
-            ])
-            .abs();
-            if local_area_m2
-                > boundary_points_numeric_area_budget_m2(&[
-                    points[previous],
-                    points[index],
-                    points[next],
-                ])
-            {
-                continue;
-            }
-            points.remove(index);
-            removed = true;
-            break;
-        }
-        if !removed {
-            return;
-        }
-    }
-}
-
-fn fill_missing_footprint_boundary_heights(
-    vertices: &mut [(NodeArrangementKey, Option<i64>)],
-) -> Result<(), NodeBoundaryExportError> {
-    let Some(_first_missing_key) = vertices
-        .iter()
-        .find_map(|(key, height_mm)| height_mm.is_none().then_some(*key))
-    else {
-        return Ok(());
-    };
-    let Some(first_solved_index) = vertices
-        .iter()
-        .position(|(_, height_mm)| height_mm.is_some())
-    else {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-    };
-    if vertices
-        .iter()
-        .filter(|(_, height_mm)| height_mm.is_some())
-        .count()
-        < 2
-    {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-    }
-
-    let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
-    ordered_indices.extend(first_solved_index..vertices.len());
-    ordered_indices.extend(0..=first_solved_index);
-
-    let mut start_pos = 0;
-    while start_pos + 1 < ordered_indices.len() {
-        let start_index = ordered_indices[start_pos];
-        let Some(start_height_mm) = vertices[start_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-        let Some(end_pos) = (start_pos + 1..ordered_indices.len())
-            .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
-        else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-        if end_pos == start_pos + 1 {
-            start_pos = end_pos;
-            continue;
-        }
-
-        let end_index = ordered_indices[end_pos];
-        let Some(end_height_mm) = vertices[end_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-
-        let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
-        cumulative_lengths.push(0.0);
-        let mut total_length_m = 0.0;
-        for pair_pos in start_pos..end_pos {
-            total_length_m += arrangement_key_distance_m(
-                vertices[ordered_indices[pair_pos]].0,
-                vertices[ordered_indices[pair_pos + 1]].0,
-            );
-            cumulative_lengths.push(total_length_m);
-        }
-        if total_length_m <= f64::EPSILON {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        }
-
-        for run_offset in 1..cumulative_lengths.len() - 1 {
-            let index = ordered_indices[start_pos + run_offset];
-            let t = cumulative_lengths[run_offset] / total_length_m;
-            vertices[index].1 = Some(
-                (start_height_mm as f64 + (end_height_mm - start_height_mm) as f64 * t).round()
-                    as i64,
-            );
-        }
-        start_pos = end_pos;
-    }
-    Ok(())
-}
-
 fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vector3>> {
     let points = RoadSurfaceSystem::canonicalize_loop_points(points);
     if points.len() < 3 {
@@ -3144,12 +3023,6 @@ fn boundary_point_loop_has_repeated_xz(points: &[Vector3]) -> bool {
         }
     }
     false
-}
-
-fn arrangement_key_distance_m(start: NodeArrangementKey, end: NodeArrangementKey) -> f64 {
-    let dx = (end.x_key() - start.x_key()) as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-    let dz = (end.z_key() - start.z_key()) as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-    dx.hypot(dz)
 }
 
 fn boundary_segment_parameter_xz(

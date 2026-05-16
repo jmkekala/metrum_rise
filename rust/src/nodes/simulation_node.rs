@@ -216,6 +216,7 @@ struct RoadClipPolygonQuery {
     polygons: Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon>,
     cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
+    clip_error_label: Option<&'static str>,
 }
 
 impl SimulationNode {
@@ -473,6 +474,7 @@ impl SimulationNode {
             &road_clip_query.cdt_road_loops,
             road_clip_query.source_count > 0,
             true,
+            road_clip_query.clip_error_label,
         );
         dict
     }
@@ -506,7 +508,8 @@ impl SimulationNode {
                 max_x,
                 max_z,
             )
-            .0
+            .map(|(polygons, _)| polygons)
+            .unwrap_or_default()
     }
 
     fn road_clip_polygon_query_for_bounds(
@@ -516,7 +519,7 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> RoadClipPolygonQuery {
-        let (cdt_road_loops, polygons, source_count) = core
+        match core
             .transit_network
             .road_surface
             .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
@@ -525,11 +528,19 @@ impl SimulationNode {
                 min_z,
                 max_x,
                 max_z,
-            );
-        RoadClipPolygonQuery {
-            polygons,
-            cdt_road_loops,
-            source_count,
+            ) {
+            Ok((cdt_road_loops, polygons, source_count)) => RoadClipPolygonQuery {
+                polygons,
+                cdt_road_loops,
+                source_count,
+                clip_error_label: None,
+            },
+            Err(err) => RoadClipPolygonQuery {
+                polygons: Vec::new(),
+                cdt_road_loops: Vec::new(),
+                source_count: 1,
+                clip_error_label: Some(err.debug_label()),
+            },
         }
     }
 
@@ -563,9 +574,12 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         has_grounded_road_contributors: bool,
         requires_road_clip: bool,
+        clip_error_label: Option<&'static str>,
     ) {
         if road_loops.is_empty() {
-            if has_grounded_road_contributors || requires_road_clip {
+            if let Some(error_label) = clip_error_label {
+                Self::append_empty_cdt_failure(dict, error_label);
+            } else if has_grounded_road_contributors || requires_road_clip {
                 Self::append_empty_cdt_failure(dict, "missing_road_clip_polygons");
             }
             return;

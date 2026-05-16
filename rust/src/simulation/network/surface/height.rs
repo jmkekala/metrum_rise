@@ -4,10 +4,12 @@ use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, seam_source_priority,
 };
 use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
-    quantize_road_vec2_to_overlay_grid,
+    RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
+use super::keys::{
+    SURFACE_CANONICAL_HEIGHT_EPS_M, SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey,
+};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
@@ -23,12 +25,10 @@ use super::{
 use spade::{Point2, Triangulation};
 use std::collections::BTreeMap;
 
-const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
-const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
-const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const HEIGHT_SOURCE_KEY_SCALE: f64 = SURFACE_XZ_KEY_SCALE;
 const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 8192;
-const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = 0.01;
-const EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M: f64 = 0.01;
+const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
+const EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 type NodeHeightSourcePointKey = (i64, i64);
@@ -2208,10 +2208,8 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
 }
 
 fn height_source_point_key(point: RoadVec2) -> NodeHeightSourcePointKey {
-    (
-        (point.x * HEIGHT_SOURCE_KEY_SCALE).round() as i64,
-        (point.y * HEIGHT_SOURCE_KEY_SCALE).round() as i64,
-    )
+    let key = SurfaceXzKey::from_road_xz(point);
+    (key.x_key(), key.z_key())
 }
 
 fn height_triangle_area2(
@@ -2348,25 +2346,24 @@ fn xz(point: RoadVec3) -> RoadVec2 {
 }
 
 fn quantize_m(value: f64) -> i64 {
-    (value * HEIGHT_SHARED_KEY_SCALE).round() as i64
+    SurfaceHeightMmKey::from_m_f64(value).as_i64()
 }
 
 impl NodeHeightPointKey {
     fn from_point(point: RoadVec2) -> Self {
+        let key = SurfaceXzKey::from_road_xz(point);
         Self {
-            x_key: (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            z_key: (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            x_key: key.x_key(),
+            z_key: key.z_key(),
         }
     }
 
     fn x_mm(self) -> i64 {
-        ((self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_POINT_KEY_SCALE).round()
-            as i64
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).x_mm()
     }
 
     fn z_mm(self) -> i64 {
-        ((self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_POINT_KEY_SCALE).round()
-            as i64
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
     }
 }
 

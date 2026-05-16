@@ -1,14 +1,11 @@
 //! Canonical node-arrangement identity and ownership data model.
 
-use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2};
+use super::backend::RoadVec2;
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::{BTreeMap, BTreeSet};
-
-const NODE_ARRANGEMENT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const NODE_ARRANGEMENT_HEIGHT_SCALE: f64 = 1000.0;
-const NODE_ARRANGEMENT_MM_SCALE: f64 = 1000.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeArrangementVertexId(usize);
@@ -195,9 +192,10 @@ pub(crate) enum NodeArrangementError {
 
 impl NodeArrangementKey {
     pub(crate) fn from_point(point: RoadVec2) -> Self {
+        let key = SurfaceXzKey::from_road_xz(point);
         Self {
-            x_key: quantize_m(point.x),
-            z_key: quantize_m(point.y),
+            x_key: key.x_key(),
+            z_key: key.z_key(),
         }
     }
 
@@ -210,13 +208,11 @@ impl NodeArrangementKey {
     }
 
     pub(crate) fn x_mm(self) -> i64 {
-        ((self.x_key as f64 / NODE_ARRANGEMENT_KEY_SCALE) * NODE_ARRANGEMENT_MM_SCALE).round()
-            as i64
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).x_mm()
     }
 
     pub(crate) fn z_mm(self) -> i64 {
-        ((self.z_key as f64 / NODE_ARRANGEMENT_KEY_SCALE) * NODE_ARRANGEMENT_MM_SCALE).round()
-            as i64
+        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
     }
 }
 
@@ -1271,12 +1267,8 @@ impl NodeArrangementFace {
     }
 }
 
-fn quantize_m(value_m: f64) -> i64 {
-    (value_m * NODE_ARRANGEMENT_KEY_SCALE).round() as i64
-}
-
 fn quantize_height_m(value_m: f64) -> i64 {
-    (value_m * NODE_ARRANGEMENT_HEIGHT_SCALE).round() as i64
+    SurfaceHeightMmKey::from_m_f64(value_m).as_i64()
 }
 
 #[derive(Clone)]

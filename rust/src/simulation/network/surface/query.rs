@@ -2,9 +2,9 @@
 
 use super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;
 use super::{
-    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SurfaceChunkKey,
+    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipExportError,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
@@ -61,6 +61,7 @@ impl RoadSurfaceSystem {
         self.terrain_clip_polygons_and_source_count_for_world_bounds(
             graph, min_x, min_z, max_x, max_z,
         )
+        .expect("terrain clip export should preserve owned source coverage")
         .0
     }
 
@@ -71,14 +72,12 @@ impl RoadSurfaceSystem {
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> (Vec<RoadSurfaceVisualPolygon>, usize) {
+    ) -> Result<(Vec<RoadSurfaceVisualPolygon>, usize), RoadSurfaceTerrainClipExportError> {
         let boundary_loops =
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
         let source_count = boundary_loops.len();
-        (
-            Self::union_terrain_clip_boundary_loops(&boundary_loops),
-            source_count,
-        )
+        Self::union_terrain_clip_boundary_loops(&boundary_loops)
+            .map(|polygons| (polygons, source_count))
     }
 
     pub(crate) fn terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
@@ -88,30 +87,27 @@ impl RoadSurfaceSystem {
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> (
-        Vec<TerrainCdtRoadLoop>,
-        Vec<RoadSurfaceVisualPolygon>,
-        usize,
-    ) {
+    ) -> Result<
+        (
+            Vec<TerrainCdtRoadLoop>,
+            Vec<RoadSurfaceVisualPolygon>,
+            usize,
+        ),
+        RoadSurfaceTerrainClipExportError,
+    > {
         let boundary_loops =
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
         let source_count = boundary_loops.len();
-        let unioned_loops = Self::union_terrain_clip_boundary_loops_with_sources(&boundary_loops);
-        let mut polygons = unioned_loops
-            .iter()
-            .filter_map(|boundary_loop| {
-                Self::make_boundary_loop_polygon(boundary_loop.points_world.clone())
-            })
-            .collect::<Vec<_>>();
-        Self::sort_visual_polygons(&mut polygons);
-        let road_loops = unioned_loops
+        let export = Self::union_terrain_clip_boundary_export(&boundary_loops)?;
+        let road_loops = export
+            .loops
             .iter()
             .enumerate()
             .map(|(loop_index, boundary_loop)| {
                 Self::terrain_cdt_road_loop_from_terrain_clip_loop(loop_index, boundary_loop)
             })
             .collect::<Vec<_>>();
-        (road_loops, polygons, source_count)
+        Ok((road_loops, export.polygons, source_count))
     }
 
     fn terrain_clip_boundary_loops_for_world_bounds(

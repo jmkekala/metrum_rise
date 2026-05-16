@@ -1,8 +1,8 @@
 //! Edge input conditioning, preview compilation, and sampled cross-section generation.
 
 use super::{
-    CompiledNodeKind, IncidentEdgeSide, PreviewRoadSurfaceResult, RoadSurfaceBand,
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+    CompiledNodeKind, IncidentEdgeSide, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceSection,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, SAMPLE_EPSILON_M,
 };
 use crate::config;
 use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
@@ -36,6 +36,24 @@ const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
 pub(super) const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
 const VISUAL_CONFLICT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VISUAL_CONFLICT_SIN_EPSILON: f32 = 1.0e-3;
+
+/// Temporary preview compile output for one road-tool stroke.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewRoadSurfaceResult {
+    /// Edge class inferred from the preview stroke before temporary compilation.
+    pub edge_class: EdgeClass,
+    /// Prepared centerline points after the same grounding, simplification, and smoothing rules
+    /// used by committed placement.
+    pub prepared_points: Vec<Vector3>,
+    /// Compiled section cache for the temporary preview edge.
+    pub compiled_sections: Vec<RoadSurfaceSection>,
+    /// Explicit visual node pieces for the temporary preview edge endpoints.
+    pub compiled_visual_node_pieces: Vec<RoadSurfaceVisualNodePiece>,
+    /// Triangulated top-surface preview mesh vertices, lifted slightly for editor visibility.
+    pub surface_vertices: Vec<Vector3>,
+    /// Preview validity after grade and bridge / tunnel clearance checks.
+    pub is_valid: bool,
+}
 
 impl RoadSurfaceSystem {
     /// Grounds standard-road input to terrain and classifies bridge / tunnel previews using the

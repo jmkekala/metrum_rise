@@ -1,9 +1,8 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{
-    ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceEarthworkBoundarySegment,
-    RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSpanOwnedRegion,
+    ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSection,
+    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
     RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
     RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     backend,
@@ -32,6 +31,82 @@ const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 // Structural end caps that constrain bridge abutments and tunnel portal stamps.
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceEarthworkFaceKind {
+    Slope,
+    RetainingWall,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceEarthworkSupportPolicy {
+    StandardFullGroundedSpan,
+    BridgeEndpointAbutments,
+    TunnelVisiblePortals,
+}
+
+impl RoadSurfaceEarthworkSupportPolicy {
+    pub(crate) fn from_edge_class(edge_class: EdgeClass) -> Self {
+        match edge_class {
+            EdgeClass::Standard => Self::StandardFullGroundedSpan,
+            EdgeClass::Bridge => Self::BridgeEndpointAbutments,
+            EdgeClass::Tunnel => Self::TunnelVisiblePortals,
+        }
+    }
+
+    pub(crate) fn debug_name(self) -> &'static str {
+        match self {
+            Self::StandardFullGroundedSpan => "standard_full_grounded_span",
+            Self::BridgeEndpointAbutments => "bridge_endpoint_abutments",
+            Self::TunnelVisiblePortals => "tunnel_visible_portals",
+        }
+    }
+
+    pub(crate) fn sort_key(self) -> u8 {
+        match self {
+            Self::StandardFullGroundedSpan => 0,
+            Self::BridgeEndpointAbutments => 1,
+            Self::TunnelVisiblePortals => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RoadSurfaceEarthworkFaceSource {
+    SpanSupportBoundary {
+        edge_idx: usize,
+        edge_class: EdgeClass,
+        support_policy: RoadSurfaceEarthworkSupportPolicy,
+        owner: RoadSurfaceSpanBandOwner,
+        role: RoadSurfaceSpanRegionRole,
+        start_section_index: usize,
+        end_section_index: usize,
+        start_s_m: f32,
+        end_s_m: f32,
+    },
+    NodeFootprintBoundary {
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        owner_kind: RoadSurfaceBandKind,
+        owner_index: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RoadSurfaceEarthworkBoundarySegment {
+    pub(crate) inner_start: Vector3,
+    pub(crate) inner_end: Vector3,
+    pub(crate) source: RoadSurfaceEarthworkFaceSource,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RoadSurfaceEarthworkRenderFace {
+    pub(crate) kind: RoadSurfaceEarthworkFaceKind,
+    pub(crate) source: RoadSurfaceEarthworkFaceSource,
+    pub(crate) inner_start: Vector3,
+    pub(crate) inner_end: Vector3,
+    pub(crate) polygon: RoadSurfaceVisualPolygon,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct EarthworkBoundaryPointKey {
