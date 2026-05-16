@@ -45,6 +45,12 @@ pub(crate) fn quantize_road_vec3_xz_to_overlay_grid(point: RoadVec3) -> RoadVec3
     RoadVec3::new(point_xz.x, point.y, point_xz.y)
 }
 
+pub(crate) fn quantize_road_vec3_path_xz_to_overlay_grid(points: &mut [RoadVec3]) {
+    for point in points {
+        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
+    }
+}
+
 pub(crate) fn road_vec3_xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
 }

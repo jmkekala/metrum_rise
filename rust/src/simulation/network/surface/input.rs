@@ -2,7 +2,7 @@
 
 use super::backend::{
     RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road, godot_vec3_xz_to_road,
-    quantize_road_vec3_xz_to_overlay_grid,
+    quantize_road_vec3_path_xz_to_overlay_grid, quantize_road_vec3_xz_to_overlay_grid,
 };
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
@@ -470,9 +470,7 @@ fn quantize_boundary_rails_xz(rails: &mut [NodeInputBoundaryRail]) {
     for rail in rails {
         rail.mouth_world = quantize_road_vec3_xz_to_overlay_grid(rail.mouth_world);
         rail.endpoint_world = quantize_road_vec3_xz_to_overlay_grid(rail.endpoint_world);
-        for point in &mut rail.path_world {
-            *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-        }
+        quantize_road_vec3_path_xz_to_overlay_grid(&mut rail.path_world);
     }
 }
 
@@ -485,12 +483,8 @@ fn quantize_band_intervals_xz(intervals: &mut [NodeInputBandInterval]) {
             quantize_road_vec3_xz_to_overlay_grid(interval.endpoint_start_world);
         interval.endpoint_end_world =
             quantize_road_vec3_xz_to_overlay_grid(interval.endpoint_end_world);
-        for point in &mut interval.start_path_world {
-            *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-        }
-        for point in &mut interval.end_path_world {
-            *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-        }
+        quantize_road_vec3_path_xz_to_overlay_grid(&mut interval.start_path_world);
+        quantize_road_vec3_path_xz_to_overlay_grid(&mut interval.end_path_world);
     }
 }
 

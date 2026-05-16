@@ -2,7 +2,7 @@
 
 use super::backend::{
     RoadPolylineVertex, RoadVec2, RoadVec3, polyline_to_road_points,
-    quantize_road_vec3_xz_to_overlay_grid, road_vec3_xz as xz_from_road_vec3,
+    quantize_road_vec3_path_xz_to_overlay_grid, road_vec3_xz as xz_from_road_vec3,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::keys::SurfaceXzKey;
@@ -624,15 +624,9 @@ fn endpoint_layer_boundary_world(
 }
 
 fn quantize_side_join_band_xz(join_band: &mut NodeInputSideJoinBand) {
-    for point in &mut join_band.inner_path_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
-    for point in &mut join_band.outer_path_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
-    for point in &mut join_band.contour_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut join_band.inner_path_world);
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut join_band.outer_path_world);
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut join_band.contour_world);
 }
 
 fn side_join_band_has_quantized_area(join_band: &NodeInputSideJoinBand) -> bool {

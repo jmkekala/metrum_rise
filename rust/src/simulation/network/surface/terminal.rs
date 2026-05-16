@@ -2,7 +2,7 @@
 
 use super::backend::{
     RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
-    quantize_road_vec3_xz_to_overlay_grid, road_points_to_polyline, road_vec3_xz as xz,
+    quantize_road_vec3_path_xz_to_overlay_grid, road_points_to_polyline, road_vec3_xz as xz,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::paths::{
@@ -666,15 +666,9 @@ fn canonicalize_terminal_cap_bands(
 }
 
 fn quantize_terminal_cap_band_xz(cap_band: &mut NodeTerminalCapBand) {
-    for point in &mut cap_band.inner_path_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
-    for point in &mut cap_band.outer_path_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
-    for point in &mut cap_band.contour_world {
-        *point = quantize_road_vec3_xz_to_overlay_grid(*point);
-    }
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut cap_band.inner_path_world);
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut cap_band.outer_path_world);
+    quantize_road_vec3_path_xz_to_overlay_grid(&mut cap_band.contour_world);
 }
 
 fn terminal_cap_contour_world(
