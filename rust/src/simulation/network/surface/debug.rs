@@ -1,7 +1,8 @@
 //! Debug extraction helpers for compiled road-surface state.
 
 use super::{
-    IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
+    IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundarySegmentSource,
+    NodeFootprintBoundaryVertexSource, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, NodeTopSurfacePolygonSource, RoadSurfaceBandKind,
     RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceSection,
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
@@ -34,6 +35,7 @@ const DEBUG_MAX_PROBLEM_SAMPLES: usize = 12;
 const DEBUG_VERTEX_MATCH_TOLERANCE_M: f32 = 0.004;
 const DEBUG_VERTEX_NEAR_TOLERANCE_M: f32 = 0.002;
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct DebugTopVertex {
     material: &'static str,
@@ -899,14 +901,85 @@ impl RoadSurfaceSystem {
                 kind,
                 owner_kind,
                 owner_index,
+                boundary_source,
             } => {
                 let _ = write!(
                     dump,
-                    "{{\"source_kind\":\"node_footprint_boundary\",\"node_id\":{},\"node_kind\":\"{:?}\",\"owner_kind\":\"{:?}\",\"owner_index\":{}}}",
+                    "{{\"source_kind\":\"node_footprint_boundary\",\"node_id\":{},\"node_kind\":\"{:?}\",\"owner_kind\":\"{:?}\",\"owner_index\":{},\"boundary_source\":",
                     node_id, kind, owner_kind, owner_index
+                );
+                Self::append_node_footprint_boundary_segment_source_debug_literal(
+                    dump,
+                    boundary_source,
+                );
+                dump.push('}');
+            }
+        }
+    }
+
+    fn append_node_footprint_boundary_segment_source_debug_literal(
+        dump: &mut String,
+        source: Option<NodeFootprintBoundarySegmentSource>,
+    ) {
+        let Some(source) = source else {
+            dump.push_str("null");
+            return;
+        };
+        dump.push_str("{\"start\":");
+        Self::append_node_footprint_boundary_vertex_source_debug_literal(dump, source.start);
+        dump.push_str(",\"end\":");
+        Self::append_node_footprint_boundary_vertex_source_debug_literal(dump, source.end);
+        dump.push('}');
+    }
+
+    fn append_node_footprint_boundary_vertex_source_debug_literal(
+        dump: &mut String,
+        source: NodeFootprintBoundaryVertexSource,
+    ) {
+        match source {
+            NodeFootprintBoundaryVertexSource::Direct(direct) => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"direct_top_vertex\",\"top_surface_source_index\":{},\"grade_authority_index\":{}}}",
+                    direct.top_surface_source_index, direct.grade_authority_index
+                );
+            }
+            NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start,
+                owning_segment_end,
+                height_mm,
+            } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"boundary_interpolation\",\"height_mm\":{},\"owning_segment_start\":{{\"top_surface_source_index\":{},\"grade_authority_index\":{}}},\"owning_segment_end\":{{\"top_surface_source_index\":{},\"grade_authority_index\":{}}}}}",
+                    height_mm,
+                    owning_segment_start.top_surface_source_index,
+                    owning_segment_start.grade_authority_index,
+                    owning_segment_end.top_surface_source_index,
+                    owning_segment_end.grade_authority_index
+                );
+            }
+            NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                top_surface_source_index,
+                grade_authority_indices,
+                height_mm,
+            } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"surface_interpolation\",\"top_surface_source_index\":{},\"height_mm\":{},\"grade_authority_indices\":[{},{},{}]}}",
+                    top_surface_source_index,
+                    height_mm,
+                    grade_authority_indices[0],
+                    grade_authority_indices[1],
+                    grade_authority_indices[2]
                 );
             }
         }
+    }
+
+    fn append_node_boundary_key_debug_literal(dump: &mut String, point: Vector3) {
+        let key = NodeArrangementKey::from_point(backend::godot_vec3_xz_to_road(point));
+        let _ = write!(dump, "[{},{}]", key.x_key(), key.z_key());
     }
 
     fn append_span_projection_diagnostics_debug_literal(
@@ -2407,46 +2480,102 @@ impl RoadSurfaceSystem {
     fn append_outer_boundary_top_match_debug_literal(
         &self,
         dump: &mut String,
-        terrain: &TerrainSystem,
+        _terrain: &TerrainSystem,
         piece: &RoadSurfaceVisualNodePiece,
     ) {
-        let top_vertices = Self::debug_top_vertices(piece);
-        let mut stats = DebugMatchStats::default();
+        let mut edge_count = 0_usize;
+        let mut vertex_count = 0_usize;
+        let mut direct_source_count = 0_usize;
+        let mut boundary_interpolation_source_count = 0_usize;
+        let mut missing_source_count = 0_usize;
+        let mut non_node_source_count = 0_usize;
         let mut samples = Vec::new();
-        for (loop_index, boundary_loop) in piece.outer_boundary_loops.iter().enumerate() {
-            for (vertex_index, &point) in boundary_loop.points_world.iter().enumerate() {
-                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
+        for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate() {
+            for (edge_index, edge) in boundary_loop.source_edges.iter().enumerate() {
+                edge_count += 1;
+                let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    owner_kind,
+                    owner_index,
+                    boundary_source,
+                    ..
+                } = edge.source
+                else {
+                    non_node_source_count += 1;
                     continue;
                 };
-                Self::update_debug_match_stats(&mut stats, closest);
-                if Self::debug_match_is_problem(closest)
-                    && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
-                {
-                    let source_y_m =
-                        terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-                    let visual_y_m =
-                        terrain.sample_visual_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-                    let mut sample = String::new();
-                    let _ = write!(
-                        sample,
-                        "{{\"loop\":{},\"vertex\":{},\"boundary\":",
-                        loop_index, vertex_index
-                    );
-                    Self::append_vector3_literal(&mut sample, point);
-                    sample.push_str(",\"closest_material\":\"");
-                    sample.push_str(closest.material);
-                    sample.push_str("\",\"closest\":");
-                    Self::append_vector3_literal(&mut sample, closest.point);
-                    let _ = write!(
-                        sample,
-                        ",\"xz_error_m\":{:.4},\"y_delta_m\":{:.4},\"source_terrain_y_m\":{:.3},\"visual_terrain_y_m\":{:.3}}}",
-                        closest.xz_error_m, closest.y_delta_m, source_y_m, visual_y_m
-                    );
-                    samples.push(sample);
+                for (endpoint, point, source) in [
+                    (
+                        "start",
+                        edge.start,
+                        boundary_source.map(|source| source.start),
+                    ),
+                    ("end", edge.end, boundary_source.map(|source| source.end)),
+                ] {
+                    vertex_count += 1;
+                    match source {
+                        Some(NodeFootprintBoundaryVertexSource::Direct(_)) => {
+                            direct_source_count += 1;
+                        }
+                        Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                            ..
+                        }) => {
+                            boundary_interpolation_source_count += 1;
+                        }
+                        Some(NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                            ..
+                        }) => {
+                            boundary_interpolation_source_count += 1;
+                        }
+                        None => {
+                            missing_source_count += 1;
+                        }
+                    }
+                    if (source.is_none()
+                        || matches!(
+                            source,
+                            Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation { .. })
+                                | Some(
+                                    NodeFootprintBoundaryVertexSource::SurfaceInterpolation { .. }
+                                )
+                        ))
+                        && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
+                    {
+                        let mut sample = String::new();
+                        let _ = write!(
+                            sample,
+                            "{{\"loop\":{},\"edge\":{},\"endpoint\":\"{}\",\"owner_kind\":\"{:?}\",\"owner_index\":{},\"boundary\":",
+                            loop_index, edge_index, endpoint, owner_kind, owner_index
+                        );
+                        Self::append_vector3_literal(&mut sample, point);
+                        sample.push_str(",\"boundary_key\":");
+                        Self::append_node_boundary_key_debug_literal(&mut sample, point);
+                        sample.push_str(",\"source\":");
+                        if let Some(source) = source {
+                            Self::append_node_footprint_boundary_vertex_source_debug_literal(
+                                &mut sample,
+                                source,
+                            );
+                        } else {
+                            sample.push_str("null");
+                        }
+                        sample.push('}');
+                        samples.push(sample);
+                    }
                 }
             }
         }
-        Self::append_match_stats_with_samples_literal(dump, &stats, &samples);
+        let _ = write!(
+            dump,
+            "{{\"edge_count\":{},\"vertex_count\":{},\"direct_source_count\":{},\"boundary_interpolation_source_count\":{},\"missing_source_count\":{},\"non_node_source_count\":{},\"samples\":[",
+            edge_count,
+            vertex_count,
+            direct_source_count,
+            boundary_interpolation_source_count,
+            missing_source_count,
+            non_node_source_count
+        );
+        Self::append_raw_json_samples(dump, &samples);
+        dump.push_str("]}");
     }
 
     fn append_mouth_seam_debug_literal(
@@ -2541,16 +2670,17 @@ impl RoadSurfaceSystem {
     fn append_earthwork_face_top_match_debug_literal(
         &self,
         dump: &mut String,
-        terrain: &TerrainSystem,
+        _terrain: &TerrainSystem,
         piece: &RoadSurfaceVisualNodePiece,
     ) {
-        let top_vertices = Self::debug_top_vertices(piece);
-        let mut stats = DebugMatchStats::default();
         let mut samples = Vec::new();
         let mut slope_count = 0_usize;
         let mut retaining_wall_count = 0_usize;
         let mut span_support_source_count = 0_usize;
         let mut node_footprint_source_count = 0_usize;
+        let mut direct_source_count = 0_usize;
+        let mut boundary_interpolation_source_count = 0_usize;
+        let mut missing_source_count = 0_usize;
         for (face_index, face) in piece.render_earthwork_faces.iter().enumerate() {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => slope_count += 1,
@@ -2560,23 +2690,43 @@ impl RoadSurfaceSystem {
                 RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
                     span_support_source_count += 1
                 }
-                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. } => {
-                    node_footprint_source_count += 1
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    boundary_source, ..
+                } => {
+                    node_footprint_source_count += 1;
+                    for source in [
+                        boundary_source.map(|source| source.start),
+                        boundary_source.map(|source| source.end),
+                    ] {
+                        match source {
+                            Some(NodeFootprintBoundaryVertexSource::Direct(_)) => {
+                                direct_source_count += 1;
+                            }
+                            Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                                ..
+                            }) => {
+                                boundary_interpolation_source_count += 1;
+                            }
+                            Some(NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                                ..
+                            }) => {
+                                boundary_interpolation_source_count += 1;
+                            }
+                            None => {
+                                missing_source_count += 1;
+                            }
+                        }
+                    }
                 }
             }
-            let inner_start = face.inner_start;
-            let inner_end = face.inner_end;
-            let mut face_problem = false;
-            for point in [inner_start, inner_end] {
-                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
-                    continue;
-                };
-                Self::update_debug_match_stats(&mut stats, closest);
-                face_problem |= Self::debug_match_is_problem(closest);
-            }
-            if face_problem && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES {
-                let outer_end = face.polygon.points_world[2];
-                let outer_start = face.polygon.points_world[3];
+            if matches!(
+                face.source,
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    boundary_source: None,
+                    ..
+                }
+            ) && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
+            {
                 let mut sample = String::new();
                 let _ = write!(
                     sample,
@@ -2585,13 +2735,13 @@ impl RoadSurfaceSystem {
                 );
                 Self::append_earthwork_face_source_debug_literal(&mut sample, face.source);
                 sample.push_str(",\"inner_start\":");
-                Self::append_surface_sample_literal(&mut sample, terrain, inner_start);
+                Self::append_vector3_literal(&mut sample, face.inner_start);
+                sample.push_str(",\"inner_start_key\":");
+                Self::append_node_boundary_key_debug_literal(&mut sample, face.inner_start);
                 sample.push_str(",\"inner_end\":");
-                Self::append_surface_sample_literal(&mut sample, terrain, inner_end);
-                sample.push_str(",\"outer_end\":");
-                Self::append_surface_sample_literal(&mut sample, terrain, outer_end);
-                sample.push_str(",\"outer_start\":");
-                Self::append_surface_sample_literal(&mut sample, terrain, outer_start);
+                Self::append_vector3_literal(&mut sample, face.inner_end);
+                sample.push_str(",\"inner_end_key\":");
+                Self::append_node_boundary_key_debug_literal(&mut sample, face.inner_end);
                 sample.push('}');
                 samples.push(sample);
             }
@@ -2600,15 +2750,17 @@ impl RoadSurfaceSystem {
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"slope_count\":{},\"retaining_wall_count\":{},\"span_support_source_count\":{},\"node_footprint_source_count\":{},\"missing_source_count\":0,",
+            "\"face_count\":{},\"slope_count\":{},\"retaining_wall_count\":{},\"span_support_source_count\":{},\"node_footprint_source_count\":{},\"direct_source_count\":{},\"boundary_interpolation_source_count\":{},\"missing_source_count\":{},",
             piece.render_earthwork_faces.len(),
             slope_count,
             retaining_wall_count,
             span_support_source_count,
-            node_footprint_source_count
+            node_footprint_source_count,
+            direct_source_count,
+            boundary_interpolation_source_count,
+            missing_source_count
         );
-        Self::append_match_stats_fields(dump, &stats);
-        dump.push_str(",\"samples\":[");
+        dump.push_str("\"samples\":[");
         Self::append_raw_json_samples(dump, &samples);
         dump.push_str("]}");
     }
@@ -2705,6 +2857,7 @@ impl RoadSurfaceSystem {
         before.kind != after.kind
     }
 
+    #[cfg(test)]
     fn debug_top_vertices(piece: &RoadSurfaceVisualNodePiece) -> Vec<DebugTopVertex> {
         let mut vertices = Vec::new();
         for polygon in &piece.road_surface_polygons {
@@ -2894,6 +3047,7 @@ impl RoadSurfaceSystem {
         (min_x, min_z, max_x, max_z)
     }
 
+    #[cfg(test)]
     fn closest_debug_top_vertex(
         point: Vector3,
         top_vertices: &[DebugTopVertex],
@@ -3027,18 +3181,6 @@ impl RoadSurfaceSystem {
         closest.xz_error_m > DEBUG_VERTEX_NEAR_TOLERANCE_M
             || (closest.xz_error_m <= DEBUG_VERTEX_NEAR_TOLERANCE_M
                 && closest.y_delta_m.abs() > DEBUG_VERTEX_MATCH_TOLERANCE_M)
-    }
-
-    fn append_match_stats_with_samples_literal(
-        dump: &mut String,
-        stats: &DebugMatchStats,
-        samples: &[String],
-    ) {
-        dump.push('{');
-        Self::append_match_stats_fields(dump, stats);
-        dump.push_str(",\"samples\":[");
-        Self::append_raw_json_samples(dump, samples);
-        dump.push_str("]}");
     }
 
     fn append_match_stats_fields(dump: &mut String, stats: &DebugMatchStats) {

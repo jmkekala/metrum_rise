@@ -235,6 +235,7 @@ impl RoadSurfaceSystem {
                 kind,
                 owner_kind,
                 owner_index,
+                ..
             } => TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
                 node_id,
                 node_kind: Self::terrain_cdt_node_piece_kind(kind),

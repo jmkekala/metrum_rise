@@ -18,7 +18,9 @@ use super::{
     edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
     node_boundary::{
-        NodeBoundaryExportError, interpolate_missing_footprint_boundary_heights,
+        NodeBoundaryExportError, NodeFootprintBoundaryDirectSource,
+        NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource,
+        interpolate_missing_footprint_boundary_heights,
         remove_unsupported_numeric_boundary_vertices,
     },
     terrain_clip_edge_kind_for_band,
@@ -120,9 +122,32 @@ impl PartialOrd for ArrangementSegmentParameter {
 
 #[derive(Clone, Copy, Debug)]
 struct NodeEarthworkBoundarySourceEdge {
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
     start_key: NodeArrangementKey,
     end_key: NodeArrangementKey,
-    source: RoadSurfaceEarthworkFaceSource,
+    node_id: u32,
+    kind: RoadSurfaceVisualNodePieceKind,
+    owner_kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    start_source: NodeFootprintBoundaryDirectSource,
+    end_source: NodeFootprintBoundaryDirectSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NodeFootprintBoundaryDirectVertex {
+    source: NodeFootprintBoundaryVertexSource,
+    owner_kind: RoadSurfaceBandKind,
+    owner_index: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NodeFootprintBoundaryTriangleSource {
+    triangle: [Vector3; 3],
+    top_surface_source_index: usize,
+    grade_authority_indices: [usize; 3],
+    owner_kind: RoadSurfaceBandKind,
+    owner_index: usize,
 }
 
 impl RoadSurfaceSystem {
@@ -343,7 +368,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn node_surface_regions_from_arrangement(
+    pub(super) fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
         _footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
@@ -384,6 +409,10 @@ impl RoadSurfaceSystem {
         }
         let (mut owned_regions, mut node_top_surface_sources): (Vec<_>, Vec<_>) =
             owned_region_exports.into_iter().unzip();
+        Self::sort_node_owned_regions_with_sources(
+            &mut owned_regions,
+            &mut node_top_surface_sources,
+        )?;
         let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(
             arrangement,
@@ -434,6 +463,7 @@ impl RoadSurfaceSystem {
                 arrangement.piece_kind(),
                 &footprint_boundary_point_loops,
                 &owned_regions,
+                &node_top_surface_sources,
             )?;
         Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut earthwork_boundary_segments);
         let mut outer_boundary_loops =
@@ -446,10 +476,6 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
-        Self::sort_node_owned_regions_with_sources(
-            &mut owned_regions,
-            &mut node_top_surface_sources,
-        )?;
         Self::sort_raised_step_faces(&mut raised_step_faces);
 
         Ok(super::NodeSurfaceRegionResult {
@@ -992,15 +1018,25 @@ impl RoadSurfaceSystem {
         kind: RoadSurfaceVisualNodePieceKind,
         footprint_loops: &[Vec<Vector3>],
         owned_regions: &[NodeOwnedRegion],
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
     ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, NodeBoundaryExportError> {
         let source_edges = Self::node_earthwork_boundary_source_edges_from_owned_regions(
             node_id,
             kind,
             owned_regions,
-        );
+            node_top_surface_sources,
+        )?;
         if source_edges.is_empty() {
             return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
         }
+        let direct_vertex_sources = Self::node_footprint_boundary_direct_vertex_sources(
+            owned_regions,
+            node_top_surface_sources,
+        )?;
+        let triangle_sources = Self::node_footprint_boundary_triangle_sources(
+            owned_regions,
+            node_top_surface_sources,
+        )?;
 
         let mut loops = Vec::new();
         for footprint_loop in footprint_loops {
@@ -1013,7 +1049,8 @@ impl RoadSurfaceSystem {
                         points[index],
                         points[(index + 1) % points.len()],
                         &source_edges,
-                        owned_regions,
+                        &direct_vertex_sources,
+                        &triangle_sources,
                         &mut segments,
                     )?;
                 }
@@ -1032,40 +1069,143 @@ impl RoadSurfaceSystem {
         node_id: u32,
         kind: RoadSurfaceVisualNodePieceKind,
         owned_regions: &[NodeOwnedRegion],
-    ) -> Vec<NodeEarthworkBoundarySourceEdge> {
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+    ) -> Result<Vec<NodeEarthworkBoundarySourceEdge>, NodeBoundaryExportError> {
+        if owned_regions.len() != node_top_surface_sources.len() {
+            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+        }
         let mut source_edges = Vec::new();
-        for region in owned_regions {
+        for (region_index, region) in owned_regions.iter().enumerate() {
+            let Some(top_source) = node_top_surface_sources.get(region_index) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
             let points = &region.polygon.points_world;
             if points.len() < 3 {
                 continue;
             }
-            let source = RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                node_id,
-                kind,
-                owner_kind: region.kind,
-                owner_index: region.owner_index,
-            };
+            if top_source.vertex_sources.len() != points.len() {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            }
             for index in 0..points.len() {
-                let start_key = ArrangementBoundaryPointKey::from_world(points[index]).xz_key();
-                let end_key =
-                    ArrangementBoundaryPointKey::from_world(points[(index + 1) % points.len()])
-                        .xz_key();
+                let start_point_key = ArrangementBoundaryPointKey::from_world(points[index]);
+                let end_point_key =
+                    ArrangementBoundaryPointKey::from_world(points[(index + 1) % points.len()]);
+                let start_key = start_point_key.xz_key();
+                let end_key = end_point_key.xz_key();
                 if start_key == end_key {
                     continue;
                 }
                 source_edges.push(NodeEarthworkBoundarySourceEdge {
+                    start_point_key,
+                    end_point_key,
                     start_key,
                     end_key,
-                    source,
+                    node_id,
+                    kind,
+                    owner_kind: region.kind,
+                    owner_index: region.owner_index,
+                    start_source: NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: region_index,
+                        grade_authority_index: top_source.vertex_sources[index]
+                            .grade_authority_index,
+                    },
+                    end_source: NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: region_index,
+                        grade_authority_index: top_source.vertex_sources
+                            [(index + 1) % points.len()]
+                        .grade_authority_index,
+                    },
                 });
             }
         }
         source_edges.sort_by(|a, b| {
-            Self::node_earthwork_boundary_source_ordering(a.source, b.source)
+            Self::node_earthwork_source_edge_ordering(a, b)
                 .then(a.start_key.cmp(&b.start_key))
                 .then(a.end_key.cmp(&b.end_key))
         });
-        source_edges
+        Ok(source_edges)
+    }
+
+    fn node_footprint_boundary_direct_vertex_sources(
+        owned_regions: &[NodeOwnedRegion],
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+    ) -> Result<
+        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+        NodeBoundaryExportError,
+    > {
+        if owned_regions.len() != node_top_surface_sources.len() {
+            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+        }
+        let mut sources = BTreeMap::new();
+        for (region_index, region) in owned_regions.iter().enumerate() {
+            let Some(top_source) = node_top_surface_sources.get(region_index) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            if top_source.vertex_sources.len() != region.polygon.points_world.len() {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            }
+            for (point_index, point) in region.polygon.points_world.iter().copied().enumerate() {
+                let candidate = NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::Direct(
+                        NodeFootprintBoundaryDirectSource {
+                            top_surface_source_index: region_index,
+                            grade_authority_index: top_source.vertex_sources[point_index]
+                                .grade_authority_index,
+                        },
+                    ),
+                    owner_kind: region.kind,
+                    owner_index: region.owner_index,
+                };
+                sources
+                    .entry(ArrangementBoundaryPointKey::from_world(point))
+                    .and_modify(|current| {
+                        if Self::node_footprint_direct_vertex_ordering(candidate, *current).is_gt()
+                        {
+                            *current = candidate;
+                        }
+                    })
+                    .or_insert(candidate);
+            }
+        }
+        Ok(sources)
+    }
+
+    fn node_footprint_boundary_triangle_sources(
+        owned_regions: &[NodeOwnedRegion],
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+    ) -> Result<Vec<NodeFootprintBoundaryTriangleSource>, NodeBoundaryExportError> {
+        if owned_regions.len() != node_top_surface_sources.len() {
+            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+        }
+        let mut sources = Vec::new();
+        for (region_index, region) in owned_regions.iter().enumerate() {
+            let Some(top_source) = node_top_surface_sources.get(region_index) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            if top_source.triangle_sources.len() != region.polygon.triangles_world.len() {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            }
+            for (triangle_index, triangle) in
+                region.polygon.triangles_world.iter().copied().enumerate()
+            {
+                sources.push(NodeFootprintBoundaryTriangleSource {
+                    triangle,
+                    top_surface_source_index: region_index,
+                    grade_authority_indices: top_source.triangle_sources[triangle_index]
+                        .map(|source| source.grade_authority_index),
+                    owner_kind: region.kind,
+                    owner_index: region.owner_index,
+                });
+            }
+        }
+        sources.sort_by(|a, b| {
+            Self::band_kind_sort_key(a.owner_kind)
+                .cmp(&Self::band_kind_sort_key(b.owner_kind))
+                .then(a.owner_index.cmp(&b.owner_index))
+                .then(a.top_surface_source_index.cmp(&b.top_surface_source_index))
+                .then(a.grade_authority_indices.cmp(&b.grade_authority_indices))
+        });
+        Ok(sources)
     }
 
     fn push_sourced_node_earthwork_boundary_segments(
@@ -1074,7 +1214,11 @@ impl RoadSurfaceSystem {
         start: Vector3,
         end: Vector3,
         source_edges: &[NodeEarthworkBoundarySourceEdge],
-        owned_regions: &[NodeOwnedRegion],
+        direct_vertex_sources: &BTreeMap<
+            ArrangementBoundaryPointKey,
+            NodeFootprintBoundaryDirectVertex,
+        >,
+        triangle_sources: &[NodeFootprintBoundaryTriangleSource],
         segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
     ) -> Result<(), NodeBoundaryExportError> {
         let start_key = ArrangementBoundaryPointKey::from_world(start).xz_key();
@@ -1098,7 +1242,10 @@ impl RoadSurfaceSystem {
             end,
         );
         for source_edge in source_edges {
-            for split_key in [source_edge.start_key, source_edge.end_key] {
+            for (split_key, split_point_key) in [
+                (source_edge.start_key, source_edge.start_point_key),
+                (source_edge.end_key, source_edge.end_point_key),
+            ] {
                 if !arrangement_key_lies_on_segment(split_key, start_key, end_key) {
                     continue;
                 }
@@ -1120,10 +1267,15 @@ impl RoadSurfaceSystem {
                 {
                     continue;
                 }
-                split_points.entry(parameter).or_insert_with(|| {
-                    let t = parameter.numerator as f32 / parameter.denominator as f32;
-                    start + (end - start) * t
-                });
+                let split_point = arrangement_boundary_point_to_world(split_point_key);
+                split_points
+                    .entry(parameter)
+                    .and_modify(|point| {
+                        if split_point.y > point.y {
+                            *point = split_point;
+                        }
+                    })
+                    .or_insert(split_point);
             }
         }
 
@@ -1136,22 +1288,17 @@ impl RoadSurfaceSystem {
             {
                 continue;
             }
-            let sub_start_key = ArrangementBoundaryPointKey::from_world(sub_start).xz_key();
-            let sub_end_key = ArrangementBoundaryPointKey::from_world(sub_end).xz_key();
+            let sub_start_point_key = ArrangementBoundaryPointKey::from_world(sub_start);
+            let sub_end_point_key = ArrangementBoundaryPointKey::from_world(sub_end);
             let source = Self::node_earthwork_source_for_boundary_subsegment(
-                sub_start_key,
-                sub_end_key,
+                node_id,
+                kind,
+                sub_start_point_key,
+                sub_end_point_key,
                 source_edges,
-            )
-            .or_else(|| {
-                Self::node_earthwork_source_for_owned_boundary_subsegment(
-                    node_id,
-                    kind,
-                    sub_start,
-                    sub_end,
-                    owned_regions,
-                )
-            });
+                direct_vertex_sources,
+                triangle_sources,
+            );
             let Some(source) = source else {
                 return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
             };
@@ -1165,60 +1312,212 @@ impl RoadSurfaceSystem {
     }
 
     fn node_earthwork_source_for_boundary_subsegment(
-        start_key: NodeArrangementKey,
-        end_key: NodeArrangementKey,
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        start_point_key: ArrangementBoundaryPointKey,
+        end_point_key: ArrangementBoundaryPointKey,
         source_edges: &[NodeEarthworkBoundarySourceEdge],
+        direct_vertex_sources: &BTreeMap<
+            ArrangementBoundaryPointKey,
+            NodeFootprintBoundaryDirectVertex,
+        >,
+        triangle_sources: &[NodeFootprintBoundaryTriangleSource],
     ) -> Option<RoadSurfaceEarthworkFaceSource> {
         source_edges
             .iter()
-            .filter(|source_edge| {
-                arrangement_key_lies_on_segment(
-                    start_key,
-                    source_edge.start_key,
-                    source_edge.end_key,
-                ) && arrangement_key_lies_on_segment(
-                    end_key,
-                    source_edge.start_key,
-                    source_edge.end_key,
+            .filter_map(|source_edge| {
+                Self::node_earthwork_source_edge_for_subsegment(
+                    source_edge,
+                    start_point_key,
+                    end_point_key,
                 )
             })
-            .map(|source_edge| source_edge.source)
             .min_by(|a, b| Self::node_earthwork_boundary_source_ordering(*a, *b))
-    }
-
-    fn node_earthwork_source_for_owned_boundary_subsegment(
-        node_id: u32,
-        kind: RoadSurfaceVisualNodePieceKind,
-        start: Vector3,
-        end: Vector3,
-        owned_regions: &[NodeOwnedRegion],
-    ) -> Option<RoadSurfaceEarthworkFaceSource> {
-        let midpoint = (start + end) * 0.5;
-        let start_xz = Vector2::new(start.x, start.z);
-        let midpoint_xz = Vector2::new(midpoint.x, midpoint.z);
-        let end_xz = Vector2::new(end.x, end.z);
-        owned_regions
-            .iter()
-            .filter(|region| {
-                RoadSurfaceSystem::polygon_contains_point_xz(&region.polygon.points_world, start_xz)
-                    && RoadSurfaceSystem::polygon_contains_point_xz(
-                        &region.polygon.points_world,
-                        midpoint_xz,
-                    )
-                    && RoadSurfaceSystem::polygon_contains_point_xz(
-                        &region.polygon.points_world,
-                        end_xz,
-                    )
-            })
-            .map(
-                |region| RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            .or_else(|| {
+                Self::node_earthwork_source_for_direct_boundary_segment(
                     node_id,
                     kind,
-                    owner_kind: region.kind,
-                    owner_index: region.owner_index,
-                },
+                    start_point_key,
+                    end_point_key,
+                    direct_vertex_sources,
+                    triangle_sources,
+                )
+            })
+    }
+
+    fn node_earthwork_source_for_direct_boundary_segment(
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        start_point_key: ArrangementBoundaryPointKey,
+        end_point_key: ArrangementBoundaryPointKey,
+        direct_vertex_sources: &BTreeMap<
+            ArrangementBoundaryPointKey,
+            NodeFootprintBoundaryDirectVertex,
+        >,
+        triangle_sources: &[NodeFootprintBoundaryTriangleSource],
+    ) -> Option<RoadSurfaceEarthworkFaceSource> {
+        let start = Self::node_footprint_boundary_vertex_source_at_point(
+            start_point_key,
+            direct_vertex_sources,
+            triangle_sources,
+        )?;
+        let end = Self::node_footprint_boundary_vertex_source_at_point(
+            end_point_key,
+            direct_vertex_sources,
+            triangle_sources,
+        )?;
+        let owner = if Self::node_footprint_direct_vertex_ordering(start, end).is_ge() {
+            start
+        } else {
+            end
+        };
+        Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind: owner.owner_kind,
+            owner_index: owner.owner_index,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: start.source,
+                end: end.source,
+            }),
+        })
+    }
+
+    fn node_footprint_boundary_vertex_source_at_point(
+        point_key: ArrangementBoundaryPointKey,
+        direct_vertex_sources: &BTreeMap<
+            ArrangementBoundaryPointKey,
+            NodeFootprintBoundaryDirectVertex,
+        >,
+        triangle_sources: &[NodeFootprintBoundaryTriangleSource],
+    ) -> Option<NodeFootprintBoundaryDirectVertex> {
+        if let Some(source) = direct_vertex_sources.get(&point_key).copied() {
+            return Some(source);
+        }
+        let point_xz = Vector2::new(
+            (point_key.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+            (point_key.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+        );
+        triangle_sources
+            .iter()
+            .copied()
+            .filter_map(|source| {
+                let (wa, wb, wc) =
+                    Self::triangle_barycentric_weights_xz(source.triangle, point_xz)?;
+                let height_m = source.triangle[0].y * wa
+                    + source.triangle[1].y * wb
+                    + source.triangle[2].y * wc;
+                let height_mm = (height_m * 1000.0).round() as i64;
+                if (height_mm - point_key.y_mm).abs() > 1 {
+                    return None;
+                }
+                Some(NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+                        top_surface_source_index: source.top_surface_source_index,
+                        grade_authority_indices: source.grade_authority_indices,
+                        height_mm: point_key.y_mm,
+                    },
+                    owner_kind: source.owner_kind,
+                    owner_index: source.owner_index,
+                })
+            })
+            .max_by(|a, b| Self::node_footprint_direct_vertex_ordering(*a, *b))
+    }
+
+    fn node_earthwork_source_edge_for_subsegment(
+        source_edge: &NodeEarthworkBoundarySourceEdge,
+        start_point_key: ArrangementBoundaryPointKey,
+        end_point_key: ArrangementBoundaryPointKey,
+    ) -> Option<RoadSurfaceEarthworkFaceSource> {
+        if !arrangement_key_lies_on_segment(
+            start_point_key.xz_key(),
+            source_edge.start_key,
+            source_edge.end_key,
+        ) || !arrangement_key_lies_on_segment(
+            end_point_key.xz_key(),
+            source_edge.start_key,
+            source_edge.end_key,
+        ) {
+            return None;
+        }
+        Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id: source_edge.node_id,
+            kind: source_edge.kind,
+            owner_kind: source_edge.owner_kind,
+            owner_index: source_edge.owner_index,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: Self::node_footprint_boundary_vertex_source_for_edge_point(
+                    source_edge,
+                    start_point_key,
+                )?,
+                end: Self::node_footprint_boundary_vertex_source_for_edge_point(
+                    source_edge,
+                    end_point_key,
+                )?,
+            }),
+        })
+    }
+
+    fn node_footprint_boundary_vertex_source_for_edge_point(
+        source_edge: &NodeEarthworkBoundarySourceEdge,
+        point_key: ArrangementBoundaryPointKey,
+    ) -> Option<NodeFootprintBoundaryVertexSource> {
+        if point_key == source_edge.start_point_key {
+            return Some(NodeFootprintBoundaryVertexSource::Direct(
+                source_edge.start_source,
+            ));
+        }
+        if point_key == source_edge.end_point_key {
+            return Some(NodeFootprintBoundaryVertexSource::Direct(
+                source_edge.end_source,
+            ));
+        }
+        let parameter = boundary_segment_parameter_xz(
+            point_key,
+            source_edge.start_point_key,
+            source_edge.end_point_key,
+        )?;
+        let expected_height_mm = interpolated_segment_height_mm(
+            source_edge.start_point_key,
+            source_edge.end_point_key,
+            parameter,
+        );
+        if (expected_height_mm - point_key.y_mm).abs() > 1 {
+            return None;
+        }
+        Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start: source_edge.start_source,
+            owning_segment_end: source_edge.end_source,
+            height_mm: point_key.y_mm,
+        })
+    }
+
+    fn node_earthwork_source_edge_ordering(
+        a: &NodeEarthworkBoundarySourceEdge,
+        b: &NodeEarthworkBoundarySourceEdge,
+    ) -> std::cmp::Ordering {
+        a.node_id
+            .cmp(&b.node_id)
+            .then(
+                visual_node_piece_kind_order_key(a.kind)
+                    .cmp(&visual_node_piece_kind_order_key(b.kind)),
             )
-            .min_by(|a, b| Self::node_earthwork_boundary_source_ordering(*a, *b))
+            .then(
+                Self::band_kind_sort_key(a.owner_kind).cmp(&Self::band_kind_sort_key(b.owner_kind)),
+            )
+            .then(a.owner_index.cmp(&b.owner_index))
+            .then(a.start_source.cmp(&b.start_source))
+            .then(a.end_source.cmp(&b.end_source))
+    }
+
+    fn node_footprint_direct_vertex_ordering(
+        a: NodeFootprintBoundaryDirectVertex,
+        b: NodeFootprintBoundaryDirectVertex,
+    ) -> std::cmp::Ordering {
+        Self::band_kind_sort_key(a.owner_kind)
+            .cmp(&Self::band_kind_sort_key(b.owner_kind))
+            .then(a.owner_index.cmp(&b.owner_index))
+            .then(a.source.cmp(&b.source))
     }
 
     fn node_earthwork_boundary_source_ordering(
@@ -1230,16 +1529,19 @@ impl RoadSurfaceSystem {
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                     owner_kind: owner_kind_a,
                     owner_index: owner_index_a,
+                    boundary_source: boundary_source_a,
                     ..
                 },
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                     owner_kind: owner_kind_b,
                     owner_index: owner_index_b,
+                    boundary_source: boundary_source_b,
                     ..
                 },
             ) => Self::band_kind_sort_key(owner_kind_a)
                 .cmp(&Self::band_kind_sort_key(owner_kind_b))
-                .then(owner_index_a.cmp(&owner_index_b)),
+                .then(owner_index_a.cmp(&owner_index_b))
+                .then(boundary_source_a.cmp(&boundary_source_b)),
             (
                 RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
@@ -2825,6 +3127,14 @@ fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Ve
     )
 }
 
+fn visual_node_piece_kind_order_key(kind: RoadSurfaceVisualNodePieceKind) -> u8 {
+    match kind {
+        RoadSurfaceVisualNodePieceKind::Terminal => 0,
+        RoadSurfaceVisualNodePieceKind::Bend => 1,
+        RoadSurfaceVisualNodePieceKind::JunctionN => 2,
+    }
+}
+
 fn arrangement_owner_direction_for_segment(
     arrangement: &NodeArrangement,
     owner: NodeBandOwner,
@@ -3464,6 +3774,68 @@ mod tests {
                 decision,
             )),
         }
+    }
+
+    #[test]
+    fn boundary_only_vertex_source_records_explicit_interpolation() {
+        let start_source = NodeFootprintBoundaryDirectSource {
+            top_surface_source_index: 3,
+            grade_authority_index: 30,
+        };
+        let end_source = NodeFootprintBoundaryDirectSource {
+            top_surface_source_index: 3,
+            grade_authority_index: 31,
+        };
+        let start_point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 1.0, 0.0));
+        let end_point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 3.0, 0.0));
+        let source_edge = NodeEarthworkBoundarySourceEdge {
+            start_point_key,
+            end_point_key,
+            start_key: start_point_key.xz_key(),
+            end_key: end_point_key.xz_key(),
+            node_id: 11,
+            kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+            start_source,
+            end_source,
+        };
+
+        let direct = RoadSurfaceSystem::node_footprint_boundary_vertex_source_for_edge_point(
+            &source_edge,
+            start_point_key,
+        )
+        .expect("source edge endpoint should preserve direct top provenance");
+        assert_eq!(
+            direct,
+            NodeFootprintBoundaryVertexSource::Direct(start_source)
+        );
+
+        let midpoint_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.0, 0.0));
+        let interpolated = RoadSurfaceSystem::node_footprint_boundary_vertex_source_for_edge_point(
+            &source_edge,
+            midpoint_key,
+        )
+        .expect("boundary-only midpoint should be authorized by owning source edge");
+        assert_eq!(
+            interpolated,
+            NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start: start_source,
+                owning_segment_end: end_source,
+                height_mm: midpoint_key.y_mm,
+            }
+        );
+
+        let wrong_height_key =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.25, 0.0));
+        assert!(
+            RoadSurfaceSystem::node_footprint_boundary_vertex_source_for_edge_point(
+                &source_edge,
+                wrong_height_key,
+            )
+            .is_none(),
+            "boundary source recovery must block height drift instead of picking nearest top"
+        );
     }
 
     #[test]

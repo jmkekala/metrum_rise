@@ -103,6 +103,33 @@ pub(crate) struct NodeTopSurfaceVertexSource {
     pub(crate) grade_authority_index: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct NodeFootprintBoundaryDirectSource {
+    pub(crate) top_surface_source_index: usize,
+    pub(crate) grade_authority_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum NodeFootprintBoundaryVertexSource {
+    Direct(NodeFootprintBoundaryDirectSource),
+    BoundaryInterpolation {
+        owning_segment_start: NodeFootprintBoundaryDirectSource,
+        owning_segment_end: NodeFootprintBoundaryDirectSource,
+        height_mm: i64,
+    },
+    SurfaceInterpolation {
+        top_surface_source_index: usize,
+        grade_authority_indices: [usize; 3],
+        height_mm: i64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct NodeFootprintBoundarySegmentSource {
+    pub(crate) start: NodeFootprintBoundaryVertexSource,
+    pub(crate) end: NodeFootprintBoundaryVertexSource,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTopSurfacePolygonSource {
     pub(crate) kind: RoadSurfaceBandKind,

@@ -9,12 +9,12 @@ use super::edge::CURB_STEP_HEIGHT_M;
 use super::height::NodeHeightFieldError;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
-    PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
-    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    NodeFootprintBoundaryVertexSource, PreviewRoadSurfaceResult, RoadSurfaceBand,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource,
+    RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSpanRegionRole,
+    RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipExportError,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -273,6 +273,7 @@ fn terrain_clip_source_edge_for_test(
             kind: RoadSurfaceVisualNodePieceKind::Terminal,
             owner_kind: RoadSurfaceBandKind::Sidewalk,
             owner_index: 0,
+            boundary_source: None,
         },
     }
 }
@@ -975,6 +976,7 @@ fn assert_node_earthwork_faces_have_footprint_provenance(piece: &RoadSurfaceVisu
             kind,
             owner_kind,
             owner_index,
+            boundary_source,
         } = face.source
         else {
             panic!(
@@ -991,6 +993,58 @@ fn assert_node_earthwork_faces_have_footprint_provenance(piece: &RoadSurfaceVisu
                 .any(|region| region.kind == owner_kind && region.owner_index == owner_index),
             "node earthwork face owner must refer to a canonical owned top region"
         );
+        let boundary_source = boundary_source
+            .expect("node earthwork face must carry exact boundary endpoint provenance");
+        assert_node_footprint_boundary_vertex_source_is_valid(piece, boundary_source.start);
+        assert_node_footprint_boundary_vertex_source_is_valid(piece, boundary_source.end);
+    }
+}
+
+fn assert_node_footprint_boundary_vertex_source_is_valid(
+    piece: &RoadSurfaceVisualNodePiece,
+    source: NodeFootprintBoundaryVertexSource,
+) {
+    match source {
+        NodeFootprintBoundaryVertexSource::Direct(direct) => {
+            assert!(
+                direct.top_surface_source_index < piece.node_top_surface_sources.len(),
+                "direct boundary source must reference an emitted top surface source"
+            );
+            assert!(
+                direct.grade_authority_index < piece.node_grade_authorities.len(),
+                "direct boundary source must reference node grade authority"
+            );
+        }
+        NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start,
+            owning_segment_end,
+            ..
+        } => {
+            assert_node_footprint_boundary_vertex_source_is_valid(
+                piece,
+                NodeFootprintBoundaryVertexSource::Direct(owning_segment_start),
+            );
+            assert_node_footprint_boundary_vertex_source_is_valid(
+                piece,
+                NodeFootprintBoundaryVertexSource::Direct(owning_segment_end),
+            );
+        }
+        NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
+            top_surface_source_index,
+            grade_authority_indices,
+            ..
+        } => {
+            assert!(
+                top_surface_source_index < piece.node_top_surface_sources.len(),
+                "surface-interpolated boundary source must reference an emitted top surface source"
+            );
+            for grade_authority_index in grade_authority_indices {
+                assert!(
+                    grade_authority_index < piece.node_grade_authorities.len(),
+                    "surface-interpolated boundary source must reference node grade authority"
+                );
+            }
+        }
     }
 }
 
@@ -2004,6 +2058,7 @@ fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece)
         "owned node regions must be non-degenerate before triangulation"
     );
     assert_node_top_surface_sources_have_grade_authority(piece);
+    assert_node_terrain_clip_sources_have_footprint_provenance(piece);
 }
 
 fn assert_node_top_surface_sources_have_grade_authority(piece: &RoadSurfaceVisualNodePiece) {
@@ -2039,6 +2094,41 @@ fn assert_node_top_surface_sources_have_grade_authority(piece: &RoadSurfaceVisua
                 "node top provenance index {grade_authority_index} must reference an emitted grade-authority row"
             );
         }
+    }
+}
+
+fn assert_node_terrain_clip_sources_have_footprint_provenance(piece: &RoadSurfaceVisualNodePiece) {
+    for edge in piece
+        .terrain_clip_boundary_loops
+        .iter()
+        .flat_map(|boundary_loop| boundary_loop.source_edges.iter())
+    {
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind,
+            owner_index,
+            boundary_source,
+        } = edge.source
+        else {
+            panic!(
+                "node terrain clip edge must carry node footprint provenance, got {:?}",
+                edge.source
+            );
+        };
+        assert_eq!(node_id, piece.node_id);
+        assert_eq!(kind, piece.kind);
+        assert!(
+            piece
+                .owned_regions
+                .iter()
+                .any(|region| region.kind == owner_kind && region.owner_index == owner_index),
+            "node terrain clip edge owner must refer to a canonical owned top region"
+        );
+        let boundary_source =
+            boundary_source.expect("node terrain clip edge must carry exact endpoint provenance");
+        assert_node_footprint_boundary_vertex_source_is_valid(piece, boundary_source.start);
+        assert_node_footprint_boundary_vertex_source_is_valid(piece, boundary_source.end);
     }
 }
 
@@ -2267,6 +2357,12 @@ fn canonical_junction_pipeline_report(
             &error,
         )
         .debug_dump();
+    }
+    if let Err(error) = RoadSurfaceSystem::node_surface_regions_from_arrangement(
+        &arrangement,
+        &ownership.footprint_shapes,
+    ) {
+        return format!("boundary export failed: {error:?}");
     }
     "canonical JunctionN pipeline reached boundary export".to_string()
 }
@@ -7772,9 +7868,13 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"seam_constraints\""));
     assert!(dump.contains("\"material_footprint_coverage\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
+    assert!(dump.contains("\"direct_source_count\""));
+    assert!(dump.contains("\"top_surface_source_index\""));
+    assert!(dump.contains("\"grade_authority_index\""));
     assert!(dump.contains("\"mouth_seams\""));
     assert!(dump.contains("\"earthwork_face_sources\""));
     assert!(dump.contains("\"source_kind\":\"node_footprint_boundary\""));
+    assert!(dump.contains("\"boundary_source\""));
     assert!(dump.contains("\"node_footprint_source_count\""));
     assert!(dump.contains("\"missing_source_count\":0"));
     assert!(dump.contains("\"earthwork_face_top_match\""));

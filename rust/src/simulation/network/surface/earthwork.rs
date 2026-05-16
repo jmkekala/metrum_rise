@@ -7,6 +7,7 @@ use super::{
     RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     backend,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
+    node_boundary::NodeFootprintBoundarySegmentSource,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -90,6 +91,7 @@ pub(crate) enum RoadSurfaceEarthworkFaceSource {
         kind: RoadSurfaceVisualNodePieceKind,
         owner_kind: RoadSurfaceBandKind,
         owner_index: usize,
+        boundary_source: Option<NodeFootprintBoundarySegmentSource>,
     },
 }
 
@@ -858,12 +860,14 @@ impl RoadSurfaceSystem {
                     kind: kind_a,
                     owner_kind: owner_kind_a,
                     owner_index: owner_index_a,
+                    boundary_source: boundary_source_a,
                 },
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                     node_id: node_id_b,
                     kind: kind_b,
                     owner_kind: owner_kind_b,
                     owner_index: owner_index_b,
+                    boundary_source: boundary_source_b,
                 },
             ) => node_id_a
                 .cmp(&node_id_b)
@@ -875,7 +879,8 @@ impl RoadSurfaceSystem {
                     Self::band_kind_sort_key(owner_kind_a)
                         .cmp(&Self::band_kind_sort_key(owner_kind_b)),
                 )
-                .then(owner_index_a.cmp(&owner_index_b)),
+                .then(owner_index_a.cmp(&owner_index_b))
+                .then(boundary_source_a.cmp(&boundary_source_b)),
             (
                 RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. },
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. },
