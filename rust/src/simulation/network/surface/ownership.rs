@@ -2925,10 +2925,7 @@ fn point_key_lies_exactly_on_segment(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
 ) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_open_segment(
+    SurfaceXzKey::from_raw_tuple(point).lies_exactly_on_segment(
         SurfaceXzKey::from_raw_tuple(start),
         SurfaceXzKey::from_raw_tuple(end),
     )

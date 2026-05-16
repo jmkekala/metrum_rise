@@ -5,7 +5,7 @@ use super::{
     NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualPolygon, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
     earthwork::RoadSurfaceEarthworkFaceSource,
-    keys::{SurfaceXzKey, SurfaceXzSegmentKey},
+    keys::{SurfaceSegmentParameter, SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,24 +116,7 @@ enum TerrainClipSegmentPointRecovery {
     Missing,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct OverlaySegmentParameter {
-    numerator: i128,
-    denominator: i128,
-}
-
-impl OverlaySegmentParameter {
-    fn new(numerator: i128, denominator: i128) -> Option<Self> {
-        (denominator > 0).then_some(Self {
-            numerator,
-            denominator,
-        })
-    }
-
-    fn as_f64(self) -> f64 {
-        self.numerator as f64 / self.denominator as f64
-    }
-}
+type OverlaySegmentParameter = SurfaceSegmentParameter;
 
 pub(crate) fn terrain_clip_edge_kind_for_band(
     kind: RoadSurfaceBandKind,
@@ -1414,20 +1397,7 @@ impl RoadSurfaceSystem {
         let start_key = Self::terrain_clip_overlay_key(start);
         let end_key = Self::terrain_clip_overlay_key(end);
         let point_key = Self::terrain_clip_overlay_key(point);
-        let dx = end_key.x_key() - start_key.x_key();
-        let dz = end_key.z_key() - start_key.z_key();
-        let px = point_key.x_key() - start_key.x_key();
-        let pz = point_key.z_key() - start_key.z_key();
-        let length_squared = i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz);
-        if length_squared == 0
-            || i128::from(dx) * i128::from(pz) - i128::from(dz) * i128::from(px) != 0
-        {
-            return None;
-        }
-        OverlaySegmentParameter::new(
-            i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
-            length_squared,
-        )
+        point_key.exact_line_parameter(start_key, end_key)
     }
 
     fn overlay_numeric_dust_line_parameter(

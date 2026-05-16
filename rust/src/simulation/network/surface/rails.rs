@@ -1694,35 +1694,10 @@ fn generated_point_key_lies_on_segment(
     start: NodeRailPointKey,
     end: NodeRailPointKey,
 ) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    let cross = px * dz - pz * dx;
-    if cross != 0 && cross.abs() > generated_overlay_grid_collinearity_error_bound(dx, dz) {
-        return false;
-    }
-    let inside_x = if start.0 == end.0 {
-        point.0 == start.0
-    } else {
-        point.0 >= start.0.min(end.0) && point.0 <= start.0.max(end.0)
-    };
-    let inside_z = if start.1 == end.1 {
-        point.1 == start.1
-    } else {
-        point.1 >= start.1.min(end.1) && point.1 <= start.1.max(end.1)
-    };
-    inside_x && inside_z
-}
-
-fn generated_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
-    (dx.abs() + dz.abs()) * 2
+    SurfaceXzKey::from_raw_tuple(point).lies_on_segment(
+        SurfaceXzKey::from_raw_tuple(start),
+        SurfaceXzKey::from_raw_tuple(end),
+    )
 }
 
 fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
@@ -1772,11 +1747,10 @@ fn generated_segment_parameter_key(
     end: NodeRailPointKey,
     point: NodeRailPointKey,
 ) -> i128 {
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    px * dx + pz * dz
+    SurfaceXzKey::from_raw_tuple(point).segment_parameter_key(
+        SurfaceXzKey::from_raw_tuple(start),
+        SurfaceXzKey::from_raw_tuple(end),
+    )
 }
 
 fn quantized_proper_segment_intersection(

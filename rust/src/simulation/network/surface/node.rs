@@ -17,6 +17,7 @@ use super::{
     backend::{RoadVec2, road_vec2_to_overlay_point},
     edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
+    keys::{SurfaceSegmentParameter, SurfaceXzKey, surface_overlay_grid_collinearity_error_bound},
     node_boundary::{
         NodeBoundaryExportError, NodeFootprintBoundaryDirectSource,
         NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource,
@@ -52,11 +53,7 @@ struct ArrangementBoundaryPointKey {
     y_mm: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ArrangementSegmentParameter {
-    numerator: i128,
-    denominator: i128,
-}
+type ArrangementSegmentParameter = SurfaceSegmentParameter;
 
 impl ArrangementBoundaryPointKey {
     fn from_world(point: Vector3) -> Self {
@@ -74,49 +71,6 @@ impl ArrangementBoundaryPointKey {
             self.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
             self.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
         ))
-    }
-}
-
-impl ArrangementSegmentParameter {
-    fn zero() -> Self {
-        Self {
-            numerator: 0,
-            denominator: 1,
-        }
-    }
-
-    fn one() -> Self {
-        Self {
-            numerator: 1,
-            denominator: 1,
-        }
-    }
-
-    fn new(numerator: i128, denominator: i128) -> Option<Self> {
-        (denominator > 0).then_some(Self {
-            numerator,
-            denominator,
-        })
-    }
-
-    fn min(self, other: Self) -> Self {
-        if self <= other { self } else { other }
-    }
-
-    fn max(self, other: Self) -> Self {
-        if self >= other { self } else { other }
-    }
-}
-
-impl Ord for ArrangementSegmentParameter {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
-    }
-}
-
-impl PartialOrd for ArrangementSegmentParameter {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -3299,9 +3253,8 @@ fn arrangement_segments_overlap_with_length(
     let b_dx = i128::from(b_end.x_key() - b_start.x_key());
     let b_dz = i128::from(b_end.z_key() - b_start.z_key());
     let cross = a_dx * b_dz - a_dz * b_dx;
-    let collinearity_bound = arrangement_overlay_grid_collinearity_error_bound(a_dx, a_dz).max(
-        arrangement_overlay_grid_collinearity_error_bound(b_dx, b_dz),
-    );
+    let collinearity_bound = surface_overlay_grid_collinearity_error_bound(a_dx, a_dz)
+        .max(surface_overlay_grid_collinearity_error_bound(b_dx, b_dz));
     if cross != 0 && cross.abs() > collinearity_bound {
         return false;
     }
@@ -3349,33 +3302,8 @@ fn arrangement_key_lies_on_segment(
     start: NodeArrangementKey,
     end: NodeArrangementKey,
 ) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.x_key() - start.x_key());
-    let dz = i128::from(end.z_key() - start.z_key());
-    let px = i128::from(point.x_key() - start.x_key());
-    let pz = i128::from(point.z_key() - start.z_key());
-    let cross = px * dz - pz * dx;
-    if cross != 0 && cross.abs() > arrangement_overlay_grid_collinearity_error_bound(dx, dz) {
-        return false;
-    }
-    let inside_x = if start.x_key() == end.x_key() {
-        point.x_key() == start.x_key()
-    } else {
-        point.x_key() >= start.x_key().min(end.x_key())
-            && point.x_key() <= start.x_key().max(end.x_key())
-    };
-    let inside_z = if start.z_key() == end.z_key() {
-        point.z_key() == start.z_key()
-    } else {
-        point.z_key() >= start.z_key().min(end.z_key())
-            && point.z_key() <= start.z_key().max(end.z_key())
-    };
-    inside_x && inside_z
+    arrangement_surface_key(point)
+        .lies_on_segment(arrangement_surface_key(start), arrangement_surface_key(end))
 }
 
 fn arrangement_key_segment_parameter_xz(
@@ -3383,31 +3311,8 @@ fn arrangement_key_segment_parameter_xz(
     start: NodeArrangementKey,
     end: NodeArrangementKey,
 ) -> Option<ArrangementSegmentParameter> {
-    if !arrangement_key_lies_on_segment(point, start, end) || start == end {
-        return None;
-    }
-    let dx = end.x_key() - start.x_key();
-    let dz = end.z_key() - start.z_key();
-    let (mut numerator, mut denominator) = if dx.abs() >= dz.abs() {
-        (point.x_key() - start.x_key(), dx)
-    } else {
-        (point.z_key() - start.z_key(), dz)
-    };
-    if denominator == 0 {
-        return None;
-    }
-    if denominator < 0 {
-        numerator = -numerator;
-        denominator = -denominator;
-    }
-    Some(ArrangementSegmentParameter {
-        numerator: i128::from(numerator),
-        denominator: i128::from(denominator),
-    })
-}
-
-fn arrangement_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
-    (dx.abs() + dz.abs()) * 2
+    arrangement_surface_key(point)
+        .overlay_segment_parameter(arrangement_surface_key(start), arrangement_surface_key(end))
 }
 
 fn visible_top_boundary_height_mm_at_key(
@@ -3533,17 +3438,9 @@ fn boundary_segment_parameter_xz(
     start: ArrangementBoundaryPointKey,
     end: ArrangementBoundaryPointKey,
 ) -> Option<ArrangementSegmentParameter> {
-    let dx = end.x_key - start.x_key;
-    let dz = end.z_key - start.z_key;
-    let px = point.x_key - start.x_key;
-    let pz = point.z_key - start.z_key;
-    let length_squared = squared_key_length(dx, dz);
-    if length_squared == 0 || cross_key_delta(dx, dz, px, pz) != 0 {
-        return None;
-    }
-    ArrangementSegmentParameter::new(
-        i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
-        length_squared,
+    boundary_point_surface_key(point).exact_line_parameter(
+        boundary_point_surface_key(start),
+        boundary_point_surface_key(end),
     )
 }
 
@@ -3552,11 +3449,7 @@ fn interpolated_segment_height_mm(
     end: ArrangementBoundaryPointKey,
     parameter: ArrangementSegmentParameter,
 ) -> i64 {
-    round_div_i128(
-        i128::from(start.y_mm) * parameter.denominator
-            + i128::from(end.y_mm - start.y_mm) * parameter.numerator,
-        parameter.denominator,
-    )
+    parameter.interpolate_i64(start.y_mm, end.y_mm)
 }
 
 fn interpolated_segment_point_key(
@@ -3564,38 +3457,24 @@ fn interpolated_segment_point_key(
     end: ArrangementBoundaryPointKey,
     parameter: ArrangementSegmentParameter,
 ) -> ArrangementBoundaryPointKey {
+    let point = SurfaceXzKey::interpolate(
+        boundary_point_surface_key(start),
+        boundary_point_surface_key(end),
+        parameter,
+    );
     ArrangementBoundaryPointKey {
-        x_key: round_div_i128(
-            i128::from(start.x_key) * parameter.denominator
-                + i128::from(end.x_key - start.x_key) * parameter.numerator,
-            parameter.denominator,
-        ),
-        z_key: round_div_i128(
-            i128::from(start.z_key) * parameter.denominator
-                + i128::from(end.z_key - start.z_key) * parameter.numerator,
-            parameter.denominator,
-        ),
+        x_key: point.x_key(),
+        z_key: point.z_key(),
         y_mm: interpolated_segment_height_mm(start, end, parameter),
     }
 }
 
-fn cross_key_delta(ax: i64, az: i64, bx: i64, bz: i64) -> i128 {
-    i128::from(ax) * i128::from(bz) - i128::from(az) * i128::from(bx)
+fn arrangement_surface_key(key: NodeArrangementKey) -> SurfaceXzKey {
+    SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key())
 }
 
-fn squared_key_length(dx: i64, dz: i64) -> i128 {
-    i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz)
-}
-
-fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
-    debug_assert!(denominator > 0);
-    let half = denominator / 2;
-    let rounded = if numerator >= 0 {
-        (numerator + half) / denominator
-    } else {
-        (numerator - half) / denominator
-    };
-    rounded as i64
+fn boundary_point_surface_key(point: ArrangementBoundaryPointKey) -> SurfaceXzKey {
+    SurfaceXzKey::from_raw_keys(point.x_key, point.z_key)
 }
 
 fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {

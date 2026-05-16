@@ -21,6 +21,12 @@ pub(crate) struct SurfaceXzSegmentKey {
     end: SurfaceXzKey,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SurfaceSegmentParameter {
+    pub(crate) numerator: i128,
+    pub(crate) denominator: i128,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct SurfaceHeightMmKey(i64);
 
@@ -107,6 +113,52 @@ impl SurfaceXzKey {
         px * dx + pz * dz
     }
 
+    pub(crate) fn exact_line_parameter(
+        self,
+        start: Self,
+        end: Self,
+    ) -> Option<SurfaceSegmentParameter> {
+        let dx = i128::from(end.x_key - start.x_key);
+        let dz = i128::from(end.z_key - start.z_key);
+        let length_squared = dx * dx + dz * dz;
+        if length_squared == 0 || !self.collinear_with_segment(start, end) {
+            return None;
+        }
+        SurfaceSegmentParameter::new(self.segment_parameter_key(start, end), length_squared)
+    }
+
+    pub(crate) fn overlay_segment_parameter(
+        self,
+        start: Self,
+        end: Self,
+    ) -> Option<SurfaceSegmentParameter> {
+        if start == end || !self.lies_on_segment(start, end) {
+            return None;
+        }
+        let dx = end.x_key - start.x_key;
+        let dz = end.z_key - start.z_key;
+        let (mut numerator, mut denominator) = if dx.abs() >= dz.abs() {
+            (self.x_key - start.x_key, dx)
+        } else {
+            (self.z_key - start.z_key, dz)
+        };
+        if denominator == 0 {
+            return None;
+        }
+        if denominator < 0 {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        SurfaceSegmentParameter::new(i128::from(numerator), i128::from(denominator))
+    }
+
+    pub(crate) fn interpolate(start: Self, end: Self, parameter: SurfaceSegmentParameter) -> Self {
+        Self {
+            x_key: parameter.interpolate_i64(start.x_key, end.x_key),
+            z_key: parameter.interpolate_i64(start.z_key, end.z_key),
+        }
+    }
+
     pub(crate) fn triangle_area2(a: Self, b: Self, c: Self) -> i128 {
         let ab_x = i128::from(b.x_key - a.x_key);
         let ab_z = i128::from(b.z_key - a.z_key);
@@ -155,13 +207,6 @@ impl SurfaceXzKey {
             return false;
         }
         self.inside_segment_bounds(start, end, true)
-    }
-
-    pub(crate) fn lies_exactly_on_open_segment(self, start: Self, end: Self) -> bool {
-        if self == start || self == end || start == end {
-            return false;
-        }
-        self.collinear_with_segment(start, end) && self.inside_segment_bounds(start, end, false)
     }
 
     pub(crate) fn quantization_cell_intersects_segment(
@@ -246,12 +291,78 @@ impl SurfaceXzSegmentKey {
     }
 }
 
+impl SurfaceSegmentParameter {
+    pub(crate) fn zero() -> Self {
+        Self {
+            numerator: 0,
+            denominator: 1,
+        }
+    }
+
+    pub(crate) fn one() -> Self {
+        Self {
+            numerator: 1,
+            denominator: 1,
+        }
+    }
+
+    pub(crate) fn new(numerator: i128, denominator: i128) -> Option<Self> {
+        (denominator > 0).then_some(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub(crate) fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+
+    pub(crate) fn min(self, other: Self) -> Self {
+        if self <= other { self } else { other }
+    }
+
+    pub(crate) fn max(self, other: Self) -> Self {
+        if self >= other { self } else { other }
+    }
+
+    pub(crate) fn interpolate_i64(self, start: i64, end: i64) -> i64 {
+        round_div_i128(
+            i128::from(start) * self.denominator
+                + (i128::from(end) - i128::from(start)) * self.numerator,
+            self.denominator,
+        )
+    }
+}
+
+impl Ord for SurfaceSegmentParameter {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
+    }
+}
+
+impl PartialOrd for SurfaceSegmentParameter {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub(crate) fn surface_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
     // Source contours and backend-owned shapes are both projected to the overlay integer grid.
     // A point that is exactly on a source segment before projection can land within this
     // determinant envelope after independent endpoint rounding; this is representation noding,
     // not owner or height repair.
     (dx.abs() + dz.abs()) * 2
+}
+
+fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
+    debug_assert!(denominator > 0);
+    let half = denominator / 2;
+    let rounded = if numerator >= 0 {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
+    };
+    rounded as i64
 }
 
 impl SurfaceHeightMmKey {
@@ -358,6 +469,50 @@ mod tests {
         assert!(!near_middle.lies_exactly_on_segment(start, end));
         assert!(!start.lies_on_open_segment(start, end));
         assert!(exact_middle.lies_on_open_segment(start, end));
+    }
+
+    #[test]
+    fn segment_parameters_separate_exact_line_and_overlay_grid_membership() {
+        let start = SurfaceXzKey::from_raw_keys(0, 0);
+        let end = SurfaceXzKey::from_raw_keys(10, 10);
+        let exact_middle = SurfaceXzKey::from_raw_keys(5, 5);
+        let near_middle = SurfaceXzKey::from_raw_keys(5, 6);
+        let beyond_end = SurfaceXzKey::from_raw_keys(15, 15);
+
+        let exact_parameter = exact_middle
+            .exact_line_parameter(start, end)
+            .expect("exact midpoint should have a bounded parameter");
+        assert_eq!(exact_parameter.numerator, 100);
+        assert_eq!(exact_parameter.denominator, 200);
+        assert_eq!(exact_parameter.as_f64(), 0.5);
+        assert!(exact_parameter >= SurfaceSegmentParameter::zero());
+        assert!(exact_parameter <= SurfaceSegmentParameter::one());
+        assert!(near_middle.exact_line_parameter(start, end).is_none());
+
+        let overlay_parameter = near_middle
+            .overlay_segment_parameter(start, end)
+            .expect("overlay-grid tolerant midpoint should stay on the canonical segment");
+        assert_eq!(overlay_parameter.as_f64(), 0.5);
+
+        let unbounded_parameter = beyond_end
+            .exact_line_parameter(start, end)
+            .expect("collinear point beyond the endpoint should have a line parameter");
+        assert!(unbounded_parameter > SurfaceSegmentParameter::one());
+        assert!(beyond_end.overlay_segment_parameter(start, end).is_none());
+    }
+
+    #[test]
+    fn segment_interpolation_uses_canonical_integer_rounding() {
+        let start = SurfaceXzKey::from_raw_keys(0, 0);
+        let end = SurfaceXzKey::from_raw_keys(3, 9);
+        let half = SurfaceSegmentParameter::new(1, 2).expect("positive denominator is valid");
+
+        assert_eq!(
+            SurfaceXzKey::interpolate(start, end, half),
+            SurfaceXzKey::from_raw_keys(2, 5)
+        );
+        assert_eq!(half.interpolate_i64(100, 103), 102);
+        assert_eq!(half.interpolate_i64(-100, -103), -102);
     }
 
     #[test]
