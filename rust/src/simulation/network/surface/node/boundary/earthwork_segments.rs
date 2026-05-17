@@ -5,7 +5,9 @@ use super::sources::{
     node_footprint_boundary_vertex_source_for_edge_point,
 };
 use super::*;
-use crate::simulation::network::surface::RoadSurfaceEarthworkFaceSource;
+use crate::simulation::network::surface::{
+    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]

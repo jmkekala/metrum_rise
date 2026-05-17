@@ -1,14 +1,13 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{
-    ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSection,
-    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
-    backend,
+    ChunkCacheKind, NodeFootprintBoundarySegmentSource, NodeOverlayContour, NodeOverlayShapes,
+    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
     band_semantics::band_kind_sort_key,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
-    node::boundary::NodeFootprintBoundarySegmentSource,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};

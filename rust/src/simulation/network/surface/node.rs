@@ -27,7 +27,7 @@ use super::{
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
     NodeOverlayShape, NodeOverlayShapes, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_M, backend,
-    band_semantics, earthwork, indices, keys, paths, segments, terrain_clip,
+    band_semantics, indices, keys, paths, segments,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
@@ -51,6 +51,7 @@ mod incident;
 pub(crate) mod input;
 pub(crate) mod joins;
 pub(crate) mod ownership;
+mod piece;
 pub(crate) mod rails;
 pub(crate) mod terminal;
 #[cfg(test)]
@@ -59,8 +60,8 @@ pub(crate) mod triangulation;
 pub(crate) mod validation;
 mod vertical_faces;
 
-pub use boundary::RoadSurfaceVisualNodePiece;
-pub(crate) use boundary::{
+pub use piece::RoadSurfaceVisualNodePiece;
+pub(crate) use piece::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
     NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeSurfaceRegionResult,
     NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
