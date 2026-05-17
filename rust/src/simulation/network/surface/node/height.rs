@@ -90,6 +90,22 @@ pub(crate) enum NodeHeightFieldError {
         region_kind: RoadSurfaceBandKind,
         source_kind: RoadSurfaceBandKind,
     },
+    MissingGeneratedContourHeightPoints {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        purpose: NodeGeneratedContourPurpose,
+        claim_priority: NodeGeneratedContourClaimPriority,
+    },
+    InvalidHeightCarrierContour {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        authority: NodeHeightAuthoritySource,
+        reason: &'static str,
+    },
     VertexOutsideHeightField {
         mouth_order_index: usize,
         band_index: usize,
@@ -244,6 +260,27 @@ enum NodeHeightPatchEvaluation {
     Outside(NodeHeightFieldError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeightCarrierContourError {
+    TooFewVertices,
+    DegenerateContour,
+    CdtBuildFailed,
+    InvalidConstraint,
+    EmptyInteriorTriangulation,
+}
+
+impl HeightCarrierContourError {
+    fn diagnostic_reason(self) -> &'static str {
+        match self {
+            Self::TooFewVertices => "height_carrier_too_few_vertices",
+            Self::DegenerateContour => "height_carrier_degenerate_contour",
+            Self::CdtBuildFailed => "height_carrier_cdt_build_failed",
+            Self::InvalidConstraint => "height_carrier_invalid_constraint",
+            Self::EmptyInteriorTriangulation => "height_carrier_empty_interior_triangulation",
+        }
+    }
+}
+
 impl NodeHeightPatchAuthority {
     fn source_interval() -> Self {
         Self {
@@ -374,17 +411,24 @@ impl NodeBandHeightField {
         }
     }
 
-    fn from_terminal_cap_band(mouth_order_index: usize, cap_band: &NodeTerminalCapBand) -> Self {
+    fn from_terminal_cap_band(
+        mouth_order_index: usize,
+        cap_band: &NodeTerminalCapBand,
+    ) -> Result<Self, NodeHeightFieldError> {
         let id = NodeBandHeightFieldId::new(
             mouth_order_index,
             cap_band.source_band_index,
             cap_band.band_kind,
         );
-        Self {
+        Ok(Self {
             id,
             kind: cap_band.band_kind,
-            patches: vec![NodeBandHeightPatch::from_terminal_cap_band(cap_band)],
-        }
+            patches: vec![NodeBandHeightPatch::from_terminal_cap_band(
+                id,
+                cap_band.band_kind,
+                cap_band,
+            )?],
+        })
     }
 
     fn extend_with_terminal_cap_band(
@@ -401,22 +445,20 @@ impl NodeBandHeightField {
             });
         }
         self.patches
-            .push(NodeBandHeightPatch::from_terminal_cap_band(cap_band));
+            .push(NodeBandHeightPatch::from_terminal_cap_band(
+                self.id, self.kind, cap_band,
+            )?);
         Ok(())
     }
 
     fn extend_with_generated_contour(
         &mut self,
         contour: &NodeGeneratedContour,
-        allow_missing_height_points_backfill: bool,
     ) -> Result<(), NodeHeightFieldError> {
-        if let Some(patch) = NodeBandHeightPatch::from_generated_contour(
-            contour,
-            self,
-            allow_missing_height_points_backfill,
-        )? {
-            self.patches.push(patch);
-        }
+        self.patches
+            .push(NodeBandHeightPatch::from_generated_contour(
+                self.id, self.kind, contour,
+            )?);
         Ok(())
     }
 
@@ -612,46 +654,63 @@ impl NodeBandHeightPatch {
         }
     }
 
-    fn from_terminal_cap_band(cap_band: &NodeTerminalCapBand) -> Self {
-        Self {
-            authority: NodeHeightPatchAuthority::terminal_cap(),
-            triangles: Some(terminal_cap_band_height_triangles(cap_band)),
+    fn from_terminal_cap_band(
+        id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
+        cap_band: &NodeTerminalCapBand,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let authority = NodeHeightPatchAuthority::terminal_cap();
+        Ok(Self {
+            authority,
+            triangles: Some(terminal_cap_band_height_triangles(
+                id,
+                source_kind,
+                authority,
+                cap_band,
+            )?),
             contour_edges: Some(terminal_cap_band_height_edges(cap_band)),
-        }
+        })
     }
 
     fn from_generated_contour(
+        id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
         contour: &NodeGeneratedContour,
-        base: &NodeBandHeightField,
-        allow_missing_height_points_backfill: bool,
-    ) -> Result<Option<Self>, NodeHeightFieldError> {
-        if let Some(points_world) = &contour.height_points_world {
-            return Ok(Some(Self::from_heighted_contour(
-                points_world,
-                NodeHeightPatchAuthority::generated_contour(contour),
-            )));
-        }
-        if !allow_missing_height_points_backfill {
-            return Ok(None);
-        }
-        let mut points = Vec::with_capacity(contour.points_xz.len());
-        for point_xz in &contour.points_xz {
-            let point_xz = quantize_road_vec2_to_overlay_grid(*point_xz);
-            let height_m = base.evaluate_height(point_xz)?;
-            points.push(RoadVec3::new(point_xz.x, height_m, point_xz.y));
-        }
-        Ok(Some(Self::from_heighted_contour(
-            &points,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let Some(points_world) = &contour.height_points_world else {
+            return Err(NodeHeightFieldError::MissingGeneratedContourHeightPoints {
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
+                source_kind,
+                height_field_id: id,
+                purpose: contour.purpose,
+                claim_priority: contour.claim_priority,
+            });
+        };
+        Self::from_heighted_contour(
+            id,
+            source_kind,
+            points_world,
             NodeHeightPatchAuthority::generated_contour(contour),
-        )))
+        )
     }
 
-    fn from_heighted_contour(points: &[RoadVec3], authority: NodeHeightPatchAuthority) -> Self {
-        Self {
+    fn from_heighted_contour(
+        id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
+        points: &[RoadVec3],
+        authority: NodeHeightPatchAuthority,
+    ) -> Result<Self, NodeHeightFieldError> {
+        Ok(Self {
             authority,
-            triangles: Some(height_triangles_from_contour(points)),
+            triangles: Some(height_triangles_from_contour(
+                id,
+                source_kind,
+                authority,
+                points,
+            )?),
             contour_edges: Some(height_edges_from_vertices(points)),
-        }
+        })
     }
 
     fn source_handoff_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
@@ -824,7 +883,7 @@ fn height_fields_by_source(
             .get(mouth_index)
             .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
         for cap_band in terminal_cap_bands {
-            let field = NodeBandHeightField::from_terminal_cap_band(mouth.order_index, cap_band);
+            let field = NodeBandHeightField::from_terminal_cap_band(mouth.order_index, cap_band)?;
             let key = NodeSourceBandKey {
                 mouth_order_index: mouth.order_index,
                 band_index: cap_band.source_band_index,
@@ -837,18 +896,15 @@ fn height_fields_by_source(
         }
     }
     if let Some(rails) = rails {
-        extend_height_fields_with_generated_contours(input.piece_kind, rails, &mut fields)?;
+        extend_height_fields_with_generated_contours(rails, &mut fields)?;
     }
     Ok(fields)
 }
 
 fn extend_height_fields_with_generated_contours(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
     rails: &NodeRailContourSet,
     fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
 ) -> Result<(), NodeHeightFieldError> {
-    let allow_missing_height_points_backfill =
-        piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN;
     for contour in &rails.contours {
         let NodeGeneratedContourKind::Band { kind } = contour.kind else {
             continue;
@@ -871,7 +927,7 @@ fn extend_height_fields_with_generated_contours(
                 source_kind: field.kind,
             });
         }
-        field.extend_with_generated_contour(contour, allow_missing_height_points_backfill)?;
+        field.extend_with_generated_contour(contour)?;
     }
     Ok(())
 }
@@ -1280,13 +1336,16 @@ fn path_band_height_edges(
 }
 
 fn terminal_cap_band_height_triangles(
+    id: NodeBandHeightFieldId,
+    source_kind: RoadSurfaceBandKind,
+    authority: NodeHeightPatchAuthority,
     cap_band: &NodeTerminalCapBand,
-) -> Vec<NodeBandHeightTriangle> {
+) -> Result<Vec<NodeBandHeightTriangle>, NodeHeightFieldError> {
     if let Some(triangles) = terminal_material_band_height_triangles(&cap_band.contour_world) {
-        return triangles;
+        return Ok(triangles);
     }
 
-    height_triangles_from_contour(&cap_band.contour_world)
+    height_triangles_from_contour(id, source_kind, authority, &cap_band.contour_world)
 }
 
 fn terminal_material_band_height_triangles(
@@ -1307,7 +1366,7 @@ fn terminal_material_band_height_triangles(
         push_height_triangle(&mut triangles, inner_start, outer_end, outer_start);
     }
 
-    Some(triangles)
+    (!triangles.is_empty()).then_some(triangles)
 }
 
 fn push_height_triangle(
@@ -1346,21 +1405,36 @@ fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTria
     fan_height_triangles_from_vertices(&vertices)
 }
 
-fn height_triangles_from_contour(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
-    constrained_height_triangles_from_vertices(points)
-        .unwrap_or_else(|| height_triangles_from_vertices(points))
+fn height_triangles_from_contour(
+    id: NodeBandHeightFieldId,
+    source_kind: RoadSurfaceBandKind,
+    authority: NodeHeightPatchAuthority,
+    points: &[RoadVec3],
+) -> Result<Vec<NodeBandHeightTriangle>, NodeHeightFieldError> {
+    constrained_height_triangles_from_vertices(points).map_err(|error| {
+        NodeHeightFieldError::InvalidHeightCarrierContour {
+            mouth_order_index: id.mouth_order_index(),
+            band_index: id.band_index(),
+            source_kind,
+            height_field_id: id,
+            authority: authority.source(),
+            reason: error.diagnostic_reason(),
+        }
+    })
 }
 
 fn constrained_height_triangles_from_vertices(
     points: &[RoadVec3],
-) -> Option<Vec<NodeBandHeightTriangle>> {
+) -> Result<Vec<NodeBandHeightTriangle>, HeightCarrierContourError> {
     let vertices = canonical_height_vertices(points);
     if vertices.len() < 3 {
-        return None;
+        return Err(HeightCarrierContourError::TooFewVertices);
     }
     if vertices.len() == 3 {
         let triangles = fan_height_triangles_from_vertices(&vertices);
-        return (!triangles.is_empty()).then_some(triangles);
+        return (!triangles.is_empty())
+            .then_some(triangles)
+            .ok_or(HeightCarrierContourError::DegenerateContour);
     }
 
     let spade_vertices = vertices
@@ -1374,9 +1448,9 @@ fn constrained_height_triangles_from_vertices(
     let cdt = SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraints, |_| {
         invalid_constraints += 1;
     })
-    .ok()?;
+    .map_err(|_| HeightCarrierContourError::CdtBuildFailed)?;
     if invalid_constraints > 0 {
-        return None;
+        return Err(HeightCarrierContourError::InvalidConstraint);
     }
 
     let mut triangles = Vec::new();
@@ -1397,7 +1471,9 @@ fn constrained_height_triangles_from_vertices(
     }
     triangles.sort_by(|a, b| height_triangle_sort_key(a).cmp(&height_triangle_sort_key(b)));
     triangles.dedup_by_key(|triangle| height_triangle_sort_key(triangle));
-    (!triangles.is_empty()).then_some(triangles)
+    (!triangles.is_empty())
+        .then_some(triangles)
+        .ok_or(HeightCarrierContourError::EmptyInteriorTriangulation)
 }
 
 fn canonical_height_vertices(points: &[RoadVec3]) -> Vec<(RoadVec2, f64)> {
@@ -1637,6 +1713,7 @@ impl NodeHeightPointKey {
 mod tests {
     use super::super::arrangement::NodeSeamSource;
     use super::*;
+    use crate::simulation::network::surface::backend::road_points_to_polyline;
     use crate::simulation::network::surface::input::NodeInputMouth;
     use crate::simulation::network::surface::ownership::{
         NodeBooleanOwnership, NodeOwnedRegionArrangement,
@@ -1842,23 +1919,25 @@ mod tests {
             &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
         );
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
-        field
-            .patches
-            .push(NodeBandHeightPatch::from_heighted_contour(
-                &[
-                    RoadVec3::new(0.0, 1.0, 0.0),
-                    RoadVec3::new(10.0, 1.0, 0.0),
-                    RoadVec3::new(10.0, 1.0, 2.0),
-                    RoadVec3::new(0.0, 1.0, 2.0),
-                ],
-                NodeHeightPatchAuthority {
-                    owner: Some(owner),
-                    role: NodeHeightPatchAuthorityRole::GeneratedContour {
-                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
-                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
-                    },
+        let patch = NodeBandHeightPatch::from_heighted_contour(
+            field.id,
+            field.kind,
+            &[
+                RoadVec3::new(0.0, 1.0, 0.0),
+                RoadVec3::new(10.0, 1.0, 0.0),
+                RoadVec3::new(10.0, 1.0, 2.0),
+                RoadVec3::new(0.0, 1.0, 2.0),
+            ],
+            NodeHeightPatchAuthority {
+                owner: Some(owner),
+                role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
                 },
-            ));
+            },
+        )
+        .expect("test generated contour is a valid height carrier");
+        field.patches.push(patch);
 
         assert!(matches!(
             field.evaluate_height(RoadVec2::new(5.0, 1.0)),
@@ -1900,23 +1979,25 @@ mod tests {
                 NodeGeneratedContourClaimPriority::SideJoin,
             ),
         ] {
-            field
-                .patches
-                .push(NodeBandHeightPatch::from_heighted_contour(
-                    &[
-                        RoadVec3::new(0.0, height_m, 0.0),
-                        RoadVec3::new(10.0, height_m, 0.0),
-                        RoadVec3::new(10.0, height_m, 2.0),
-                        RoadVec3::new(0.0, height_m, 2.0),
-                    ],
-                    NodeHeightPatchAuthority {
-                        owner: Some(owner),
-                        role: NodeHeightPatchAuthorityRole::GeneratedContour {
-                            purpose,
-                            claim_priority,
-                        },
+            let patch = NodeBandHeightPatch::from_heighted_contour(
+                field.id,
+                field.kind,
+                &[
+                    RoadVec3::new(0.0, height_m, 0.0),
+                    RoadVec3::new(10.0, height_m, 0.0),
+                    RoadVec3::new(10.0, height_m, 2.0),
+                    RoadVec3::new(0.0, height_m, 2.0),
+                ],
+                NodeHeightPatchAuthority {
+                    owner: Some(owner),
+                    role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                        purpose,
+                        claim_priority,
                     },
-                ));
+                },
+            )
+            .expect("test generated contour is a valid height carrier");
+            field.patches.push(patch);
         }
 
         let mouth_height = field
@@ -1959,23 +2040,25 @@ mod tests {
             &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
         );
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
-        field
-            .patches
-            .push(NodeBandHeightPatch::from_heighted_contour(
-                &[
-                    RoadVec3::new(0.0, 2.0, 0.0),
-                    RoadVec3::new(10.0, 2.0, 0.0),
-                    RoadVec3::new(10.0, 2.0, 2.0),
-                    RoadVec3::new(0.0, 2.0, 2.0),
-                ],
-                NodeHeightPatchAuthority {
-                    owner: Some(owner),
-                    role: NodeHeightPatchAuthorityRole::GeneratedContour {
-                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
-                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
-                    },
+        let patch = NodeBandHeightPatch::from_heighted_contour(
+            field.id,
+            field.kind,
+            &[
+                RoadVec3::new(0.0, 2.0, 0.0),
+                RoadVec3::new(10.0, 2.0, 0.0),
+                RoadVec3::new(10.0, 2.0, 2.0),
+                RoadVec3::new(0.0, 2.0, 2.0),
+            ],
+            NodeHeightPatchAuthority {
+                owner: Some(owner),
+                role: NodeHeightPatchAuthorityRole::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
                 },
-            ));
+            },
+        )
+        .expect("test generated contour is a valid height carrier");
+        field.patches.push(patch);
 
         let handoff_height = field
             .evaluate_authorized_height(
@@ -2047,17 +2130,19 @@ mod tests {
             },
         };
         for height_m in [1.0, 2.0] {
-            field
-                .patches
-                .push(NodeBandHeightPatch::from_heighted_contour(
-                    &[
-                        RoadVec3::new(0.0, height_m, 0.0),
-                        RoadVec3::new(10.0, height_m, 0.0),
-                        RoadVec3::new(10.0, height_m, 2.0),
-                        RoadVec3::new(0.0, height_m, 2.0),
-                    ],
-                    authority,
-                ));
+            let patch = NodeBandHeightPatch::from_heighted_contour(
+                field.id,
+                field.kind,
+                &[
+                    RoadVec3::new(0.0, height_m, 0.0),
+                    RoadVec3::new(10.0, height_m, 0.0),
+                    RoadVec3::new(10.0, height_m, 2.0),
+                    RoadVec3::new(0.0, height_m, 2.0),
+                ],
+                authority,
+            )
+            .expect("test generated contour is a valid height carrier");
+            field.patches.push(patch);
         }
 
         assert!(matches!(
@@ -2084,12 +2169,86 @@ mod tests {
             concat!("bounded_region_", "scoped_edge_height"),
             concat!("region_scoped_", "carrier"),
             concat!("HEIGHT_SOURCE_EDGE_", "NEIGHBOR_UNITS"),
+            concat!("allow_missing_height_points_", "backfill"),
         ] {
             assert!(
                 !source.contains(forbidden),
                 "canonical arrangement vertices must be inside their explicit height carrier, not repaired by `{forbidden}`"
             );
         }
+    }
+
+    #[test]
+    fn generated_band_contour_requires_explicit_height_points() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        );
+        let contour = generated_band_contour(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            vec![
+                RoadVec2::new(0.0, 0.0),
+                RoadVec2::new(10.0, 0.0),
+                RoadVec2::new(10.0, 2.0),
+                RoadVec2::new(0.0, 2.0),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            field.extend_with_generated_contour(&contour),
+            Err(NodeHeightFieldError::MissingGeneratedContourHeightPoints {
+                mouth_order_index: 0,
+                band_index: 0,
+                source_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                height_field_id: field.id,
+                purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            })
+        );
+        assert_eq!(
+            field.patches.len(),
+            1,
+            "missing generated heights must not add a sampled fallback patch"
+        );
+    }
+
+    #[test]
+    fn generated_band_contour_rejects_invalid_height_carrier_contour() {
+        let mut field = NodeBandHeightField::from_interval(
+            0,
+            &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        );
+        let points_xz = vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+            RoadVec2::new(10.0, 0.0),
+        ];
+        let height_points_world = points_xz
+            .iter()
+            .map(|point| RoadVec3::new(point.x, 1.0, point.y))
+            .collect();
+        let contour = generated_band_contour(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            points_xz,
+            Some(height_points_world),
+        );
+
+        assert!(matches!(
+            field.extend_with_generated_contour(&contour),
+            Err(NodeHeightFieldError::InvalidHeightCarrierContour {
+                mouth_order_index: 0,
+                band_index: 0,
+                source_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                height_field_id,
+                authority: NodeHeightAuthoritySource::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                    claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                },
+                ..
+            }) if height_field_id == field.id
+        ));
     }
 
     fn terminal_cap_band_for_height_test(
@@ -2129,6 +2288,24 @@ mod tests {
         }
     }
 
+    fn generated_band_contour(
+        kind: RoadSurfaceBandKind,
+        points_xz: Vec<RoadVec2>,
+        height_points_world: Option<Vec<RoadVec3>>,
+    ) -> NodeGeneratedContour {
+        NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band { kind },
+            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+            source_mouth_order_index: 0,
+            source_band_index: Some(0),
+            owner: Some(NodeBandOwner::new(kind, 0)),
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            backend_polyline: road_points_to_polyline(points_xz.clone(), true),
+            points_xz,
+            height_points_world,
+        }
+    }
+
     #[test]
     fn terminal_material_band_height_field_keeps_curb_cap_inner_rail_raised() {
         let inner_start = RoadVec3::new(0.0, 0.12, -1.0);
@@ -2161,7 +2338,12 @@ mod tests {
                 outer_start,
             ],
         };
-        let patch = NodeBandHeightPatch::from_terminal_cap_band(&cap_band);
+        let patch = NodeBandHeightPatch::from_terminal_cap_band(
+            NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder),
+            RoadSurfaceBandKind::CurbOrShoulder,
+            &cap_band,
+        )
+        .expect("test terminal cap is a valid height carrier");
         let height = match patch
             .evaluate_surface_height(
                 NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder),
@@ -2187,7 +2369,8 @@ mod tests {
         let first_cap = terminal_cap_band_for_height_test(0.0, 0.12, TerminalCapBandRole::EndBand);
         let second_cap =
             terminal_cap_band_for_height_test(1.0, 0.32, TerminalCapBandRole::RightSide);
-        let mut field = NodeBandHeightField::from_terminal_cap_band(0, &first_cap);
+        let mut field = NodeBandHeightField::from_terminal_cap_band(0, &first_cap)
+            .expect("test terminal cap is a valid height carrier");
 
         field
             .extend_with_terminal_cap_band(0, &second_cap)
