@@ -188,7 +188,7 @@ impl RoadSurfaceSystem {
                     keyed_points.push((key, height_mm));
                 }
                 boundary_export_sources
-                    .interpolate_missing_footprint_boundary_heights(&mut keyed_points)?;
+                    .interpolate_missing_authorized_footprint_boundary_heights(&mut keyed_points)?;
                 let mut points = keyed_points
                     .into_iter()
                     .map(|(key, height_mm)| {
