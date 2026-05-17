@@ -247,13 +247,6 @@ struct GeneratedRaisedStepOwnerPair {
     opposite_owner: NodeBandOwner,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GeneratedPointContourLocation {
-    Outside,
-    Boundary,
-    Inside,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct GeneratedContourEdgeKey {
     start: NodeRailPointKey,
@@ -266,67 +259,6 @@ struct GeneratedContourDirectedEdge {
     end: NodeRailPointKey,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedSameBandContactConstraint {
-    kind: NodeRailConstraintKind,
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-    source_mouth_order_index: usize,
-    source_band_index: Option<usize>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedSameBandContactConstraintKey {
-    kind: NodeRailConstraintKind,
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedMaterialPointContactAuthority {
-    source_mouth_order_index: usize,
-    source_band_index: Option<usize>,
-    owner: Option<NodeBandOwner>,
-    opposite_owner: Option<NodeBandOwner>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedRaisedStepEndpointSource {
-    constraint_index: usize,
-    source_mouth_order_index: usize,
-    source_band_index: Option<usize>,
-    owners: [NodeBandOwner; 2],
-}
-
-#[derive(Clone, Copy)]
-struct RaisedStepSourceConstraint<'a> {
-    source: GeneratedRaisedStepEndpointSource,
-    constraint: &'a NodeRailConstraint,
-}
-
-struct RaisedStepSourceAuthority<'a> {
-    constraints: Vec<RaisedStepSourceConstraint<'a>>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SourceAuthorizedTargetGroupKey {
-    owner: NodeBandOwner,
-    kind: RoadSurfaceBandKind,
-    claim_priority: NodeGeneratedContourClaimPriority,
-}
-
-#[derive(Clone, Debug)]
-struct SourceAuthorizedTargetGroup {
-    key: SourceAuthorizedTargetGroupKey,
-    contour_indices: Vec<usize>,
-    shapes: NodeOverlayShapes,
-    shape_edges: Vec<GeneratedContourDirectedEdge>,
-}
-
 type NodeRailPointKey = (i64, i64);
 
 impl GeneratedContourEdgeKey {
@@ -335,19 +267,6 @@ impl GeneratedContourEdgeKey {
             Self { start: a, end: b }
         } else {
             Self { start: b, end: a }
-        }
-    }
-}
-
-impl GeneratedSameBandContactConstraint {
-    fn key(self) -> GeneratedSameBandContactConstraintKey {
-        let edge = GeneratedContourEdgeKey::new(self.start, self.end);
-        GeneratedSameBandContactConstraintKey {
-            kind: self.kind,
-            owner: self.owner,
-            opposite_owner: self.opposite_owner,
-            start: edge.start,
-            end: edge.end,
         }
     }
 }
