@@ -16,7 +16,7 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) use super::segments::{
-    arrangement_key_lies_exactly_on_segment, arrangement_key_lies_on_segment,
+    arrangement_key_lies_on_segment,
     arrangement_key_overlay_segment_parameter as arrangement_key_segment_parameter_xz,
 };
 
@@ -67,7 +67,7 @@ struct NodeFootprintBoundaryDirectVertex {
     owner_index: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NodeFootprintBoundaryHeightCandidate {
     height_mm: i64,
     source: NodeFootprintBoundaryDirectVertex,
@@ -82,6 +82,7 @@ struct NodeFootprintBoundarySplitPoint {
 pub(super) struct NodeFootprintBoundaryExportSources {
     source_edges: Vec<NodeEarthworkBoundarySourceEdge>,
     direct_vertex_sources: BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+    explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
 }
 
 #[derive(Debug)]
@@ -235,6 +236,7 @@ impl NodeFootprintBoundaryExportSources {
         kind: RoadSurfaceVisualNodePieceKind,
         owned_regions: &[NodeOwnedRegion],
         node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+        explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
     ) -> Result<Self, NodeBoundaryExportError> {
         Ok(Self {
             source_edges: node_earthwork_boundary_source_edges_from_owned_regions(
@@ -247,15 +249,15 @@ impl NodeFootprintBoundaryExportSources {
                 owned_regions,
                 node_top_surface_sources,
             )?,
+            explicit_vertical_step_segments: explicit_vertical_step_segments.to_vec(),
         })
     }
 
     pub(super) fn height_mm_at_key(
         &mut self,
         key: arrangement::NodeArrangementKey,
-        adjacent_keys: [arrangement::NodeArrangementKey; 2],
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
-        let Some(candidate) = self.height_candidate_at_boundary_vertex(key, adjacent_keys)? else {
+        let Some(candidate) = self.height_candidate_at_boundary_vertex(key)? else {
             return Ok(None);
         };
         self.insert_boundary_vertex_source(key, candidate.height_mm, candidate.source);
@@ -286,7 +288,6 @@ impl NodeFootprintBoundaryExportSources {
     fn height_candidate_at_boundary_vertex(
         &self,
         key: arrangement::NodeArrangementKey,
-        _adjacent_keys: [arrangement::NodeArrangementKey; 2],
     ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
         let edge_candidates = self
             .boundary_edge_height_candidates_at_key(key)
@@ -323,7 +324,13 @@ impl NodeFootprintBoundaryExportSources {
         heights.sort_unstable();
         heights.dedup();
         if heights.len() != 1 {
-            if let Some(candidate) = raised_step_footprint_height_candidate(&candidates, &heights) {
+            if let Some(candidate) = raised_step_footprint_height_candidate(
+                key,
+                &candidates,
+                &heights,
+                &self.explicit_vertical_step_segments,
+                &self.source_edges,
+            ) {
                 return Ok(Some(candidate));
             }
             return Err(
@@ -1186,43 +1193,185 @@ fn node_footprint_boundary_source_end_direct_source(
 }
 
 fn raised_step_footprint_height_candidate(
+    key: arrangement::NodeArrangementKey,
     candidates: &[NodeFootprintBoundaryHeightCandidate],
     heights: &[i64],
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
 ) -> Option<NodeFootprintBoundaryHeightCandidate> {
     // Terminal cap corners can put a lower material edge and its raised neighbor at one
-    // footprint key. Accept that only when the material ranks prove an adjacent raised-step
-    // transition; unrelated cross-material conflicts still reject above.
-    let [lower_height, raised_height] = heights else {
+    // footprint key. Accept that only when a materialized vertical-step segment or terminal
+    // boundary source-edge endpoints prove the ordered owner pair at that canonical key; unrelated
+    // cross-material conflicts still reject.
+    let [_, _] = heights else {
         return None;
     };
-    let lower_candidates = candidates
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == *lower_height)
-        .collect::<Vec<_>>();
-    let raised_candidates = candidates
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == *raised_height)
-        .collect::<Vec<_>>();
-    if lower_candidates.is_empty() || raised_candidates.is_empty() {
-        return None;
-    }
-    for lower in &lower_candidates {
-        for raised in &raised_candidates {
-            if !raised_step_kinds_can_contact(lower.source.owner_kind, raised.source.owner_kind) {
+
+    let mut raised_candidates = Vec::new();
+    let mut checked_pairs = 0usize;
+    for (left_index, left) in candidates.iter().copied().enumerate() {
+        for right in candidates.iter().copied().skip(left_index + 1) {
+            if left.height_mm == right.height_mm {
+                continue;
+            }
+            checked_pairs += 1;
+            let Some((lower, raised)) = ordered_raised_step_footprint_candidates(left, right)
+            else {
+                return None;
+            };
+            let explicit_step_authorized = explicit_vertical_step_authorizes_footprint_height_pair(
+                key,
+                lower.source,
+                raised.source,
+                explicit_vertical_step_segments,
+            );
+            let terminal_boundary_authorized =
+                terminal_boundary_source_edges_authorize_footprint_height_pair(
+                    key,
+                    lower,
+                    raised,
+                    source_edges,
+                );
+            if !explicit_step_authorized && !terminal_boundary_authorized {
                 return None;
             }
-            let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
-            let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
-            if lower_rank >= raised_rank {
-                return None;
+            if !raised_candidates
+                .iter()
+                .any(|candidate: &NodeFootprintBoundaryHeightCandidate| *candidate == raised)
+            {
+                raised_candidates.push(raised);
             }
         }
+    }
+    if checked_pairs == 0 || raised_candidates.is_empty() {
+        return None;
     }
     raised_candidates
         .into_iter()
         .max_by(|a, b| node_footprint_direct_vertex_ordering(a.source, b.source))
+}
+
+fn ordered_raised_step_footprint_candidates(
+    left: NodeFootprintBoundaryHeightCandidate,
+    right: NodeFootprintBoundaryHeightCandidate,
+) -> Option<(
+    NodeFootprintBoundaryHeightCandidate,
+    NodeFootprintBoundaryHeightCandidate,
+)> {
+    if !raised_step_kinds_can_contact(left.source.owner_kind, right.source.owner_kind) {
+        return None;
+    }
+    let left_rank = raised_step_band_rank(left.source.owner_kind)?;
+    let right_rank = raised_step_band_rank(right.source.owner_kind)?;
+    match left_rank.cmp(&right_rank) {
+        std::cmp::Ordering::Less => Some((left, right)),
+        std::cmp::Ordering::Greater => Some((right, left)),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+fn explicit_vertical_step_authorizes_footprint_height_pair(
+    key: arrangement::NodeArrangementKey,
+    lower: NodeFootprintBoundaryDirectVertex,
+    raised: NodeFootprintBoundaryDirectVertex,
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+) -> bool {
+    let lower_owner = arrangement::NodeBandOwner::new(lower.owner_kind, lower.owner_index);
+    let raised_owner = arrangement::NodeBandOwner::new(raised.owner_kind, raised.owner_index);
+    explicit_vertical_step_segments.iter().any(|segment| {
+        arrangement_key_lies_on_segment(key, segment.start(), segment.end())
+            && vertical_step_segment_authorizes_owner_pair(*segment, lower_owner, raised_owner)
+    })
+}
+
+fn vertical_step_segment_authorizes_owner_pair(
+    segment: arrangement::NodeExplicitVerticalStepSegment,
+    lower_owner: arrangement::NodeBandOwner,
+    raised_owner: arrangement::NodeBandOwner,
+) -> bool {
+    ((segment.owner() == lower_owner && segment.opposite_owner() == raised_owner)
+        || (segment.owner() == raised_owner && segment.opposite_owner() == lower_owner))
+        && raised_step_kinds_can_contact(lower_owner.kind(), raised_owner.kind())
+        && raised_step_band_rank(lower_owner.kind())
+            .zip(raised_step_band_rank(raised_owner.kind()))
+            .is_some_and(|(lower_rank, raised_rank)| lower_rank < raised_rank)
+}
+
+fn terminal_boundary_source_edges_authorize_footprint_height_pair(
+    key: arrangement::NodeArrangementKey,
+    lower: NodeFootprintBoundaryHeightCandidate,
+    raised: NodeFootprintBoundaryHeightCandidate,
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+) -> bool {
+    if !raised_step_kinds_can_contact(lower.source.owner_kind, raised.source.owner_kind) {
+        return false;
+    }
+    let Some(lower_rank) = raised_step_band_rank(lower.source.owner_kind) else {
+        return false;
+    };
+    let Some(raised_rank) = raised_step_band_rank(raised.source.owner_kind) else {
+        return false;
+    };
+    if lower_rank >= raised_rank {
+        return false;
+    }
+    source_edges.iter().any(|lower_edge| {
+        terminal_source_edge_endpoint_proves_candidate_at_key(lower_edge, key, lower)
+            && source_edges.iter().any(|raised_edge| {
+                terminal_source_edge_endpoint_proves_candidate_at_key(raised_edge, key, raised)
+            })
+    })
+}
+
+fn terminal_source_edge_endpoint_proves_candidate_at_key(
+    source_edge: &NodeEarthworkBoundarySourceEdge,
+    key: arrangement::NodeArrangementKey,
+    candidate: NodeFootprintBoundaryHeightCandidate,
+) -> bool {
+    if source_edge.kind != RoadSurfaceVisualNodePieceKind::Terminal
+        || source_edge.owner_kind != candidate.source.owner_kind
+        || source_edge.owner_index != candidate.source.owner_index
+    {
+        return false;
+    }
+    terminal_source_edge_endpoint_matches_candidate(
+        source_edge.start_key,
+        source_edge.start_point_key.y_mm,
+        source_edge.start_source,
+        source_edge,
+        key,
+        candidate,
+    ) || terminal_source_edge_endpoint_matches_candidate(
+        source_edge.end_key,
+        source_edge.end_point_key.y_mm,
+        source_edge.end_source,
+        source_edge,
+        key,
+        candidate,
+    )
+}
+
+fn terminal_source_edge_endpoint_matches_candidate(
+    endpoint_key: arrangement::NodeArrangementKey,
+    endpoint_height_mm: i64,
+    endpoint_source: NodeFootprintBoundaryDirectSource,
+    source_edge: &NodeEarthworkBoundarySourceEdge,
+    key: arrangement::NodeArrangementKey,
+    candidate: NodeFootprintBoundaryHeightCandidate,
+) -> bool {
+    if endpoint_height_mm != candidate.height_mm {
+        return false;
+    }
+    if endpoint_key == key {
+        return candidate.source.source
+            == NodeFootprintBoundaryVertexSource::Direct(endpoint_source);
+    }
+    arrangement_key_distance_m(endpoint_key, key) <= f64::from(WORLD_POINT_DEDUP_DISTANCE_M)
+        && candidate.source.source
+            == node_footprint_boundary_vertex_source_for_edge_parameter(
+                source_edge,
+                candidate.height_mm,
+            )
 }
 
 fn node_earthwork_source_edge_ordering(
@@ -1545,16 +1694,11 @@ mod tests {
         let mut sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
         };
 
         let height_mm = sources
-            .height_mm_at_key(
-                midpoint_key.xz_key(),
-                [
-                    ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 1.0)).xz_key(),
-                    ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, -1.0)).xz_key(),
-                ],
-            )
+            .height_mm_at_key(midpoint_key.xz_key())
             .expect("exact final-owned boundary source edge should provide height");
 
         assert_eq!(height_mm, Some(midpoint_key.y_mm));
@@ -1579,16 +1723,11 @@ mod tests {
         let mut sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
         };
 
         let height_mm = sources
-            .height_mm_at_key(
-                drifted_midpoint.xz_key(),
-                [
-                    ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 1.0)).xz_key(),
-                    ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, -1.0)).xz_key(),
-                ],
-            )
+            .height_mm_at_key(drifted_midpoint.xz_key())
             .expect("project-quantization drift near a final source edge should normalize");
 
         assert_eq!(height_mm, Some(1000));
@@ -1602,6 +1741,188 @@ mod tests {
             ),
             "canonical drift normalization must still record final-owned source-edge provenance"
         );
+    }
+
+    #[test]
+    fn raised_step_footprint_height_requires_explicit_step_authority() {
+        let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let step_start =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+        let step_end =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
+        let lower_edge = test_source_edge_for_owner(
+            RoadSurfaceBandKind::Carriageway,
+            0,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let raised_edge = test_source_edge_for_owner(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(-1.0, 0.12, 0.0),
+            4,
+            40,
+            4,
+            41,
+        );
+        let mut missing_authority = NodeFootprintBoundaryExportSources {
+            source_edges: vec![lower_edge, raised_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
+        };
+
+        let error = missing_authority
+            .height_mm_at_key(step_start)
+            .expect_err("material rank alone must not resolve same-XZ footprint height conflict");
+        assert!(matches!(
+            error,
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+        ));
+
+        let mut authorized = NodeFootprintBoundaryExportSources {
+            source_edges: vec![lower_edge, raised_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: vec![
+                arrangement::NodeExplicitVerticalStepSegment::new(
+                    step_start,
+                    step_end,
+                    lower_owner,
+                    raised_owner,
+                )
+                .expect("test step should be non-degenerate"),
+            ],
+        };
+
+        let height_mm = authorized
+            .height_mm_at_key(step_start)
+            .expect("explicit owner-pair step should authorize raised footprint corner height");
+        assert_eq!(height_mm, Some(120));
+    }
+
+    #[test]
+    fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
+        let step_start =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+        let lower_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::Carriageway,
+            0,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let raised_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(-1.0, 0.12, 0.0),
+            4,
+            40,
+            4,
+            41,
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![lower_edge, raised_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
+        };
+
+        let height_mm = sources
+            .height_mm_at_key(step_start)
+            .expect("terminal source-edge endpoints should authorize raised footprint corner");
+
+        assert_eq!(height_mm, Some(120));
+    }
+
+    #[test]
+    fn terminal_raised_step_footprint_height_accepts_endpoint_quantization_drift() {
+        let drifted_step_start =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(0.000001, 0.0, 0.0)).xz_key();
+        let lower_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::Carriageway,
+            0,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let raised_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(1.0, 0.12, 0.0),
+            4,
+            40,
+            4,
+            41,
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![lower_edge, raised_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
+        };
+
+        let height_mm = sources.height_mm_at_key(drifted_step_start).expect(
+            "terminal endpoint-scale quantization drift should preserve raised corner authority",
+        );
+
+        assert_eq!(height_mm, Some(120));
+    }
+
+    #[test]
+    fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
+        let step_midpoint =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.0)).xz_key();
+        let lower_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::Carriageway,
+            0,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let raised_edge = test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(1.0, 0.12, 0.0),
+            4,
+            40,
+            4,
+            41,
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![lower_edge, raised_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
+        };
+
+        let error = sources
+            .height_mm_at_key(step_midpoint)
+            .expect_err("terminal source-edge authority is limited to footprint corners");
+
+        assert!(matches!(
+            error,
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+        ));
     }
 
     #[test]
@@ -1634,6 +1955,7 @@ mod tests {
         let sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources,
+            explicit_vertical_step_segments: Vec::new(),
         };
         let supported_midpoint =
             ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0));
@@ -1682,6 +2004,7 @@ mod tests {
         let mut sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
         };
         let mut vertices = vec![
             (
@@ -1733,6 +2056,7 @@ mod tests {
         let mut sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources,
+            explicit_vertical_step_segments: Vec::new(),
         };
         let mut vertices = vec![
             (start_point_key.xz_key(), Some(start_point_key.y_mm)),
@@ -1767,6 +2091,7 @@ mod tests {
         let mut sources = NodeFootprintBoundaryExportSources {
             source_edges: vec![source_edge],
             direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
         };
         let mut vertices = vec![
             (
@@ -1950,6 +2275,52 @@ mod tests {
         end_top_surface_source_index: usize,
         end_grade_authority_index: usize,
     ) -> NodeEarthworkBoundarySourceEdge {
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            start,
+            end,
+            start_top_surface_source_index,
+            start_grade_authority_index,
+            end_top_surface_source_index,
+            end_grade_authority_index,
+        )
+    }
+
+    fn test_source_edge_for_owner(
+        owner_kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        start: Vector3,
+        end: Vector3,
+        start_top_surface_source_index: usize,
+        start_grade_authority_index: usize,
+        end_top_surface_source_index: usize,
+        end_grade_authority_index: usize,
+    ) -> NodeEarthworkBoundarySourceEdge {
+        test_source_edge_for_owner_and_kind(
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            owner_kind,
+            owner_index,
+            start,
+            end,
+            start_top_surface_source_index,
+            start_grade_authority_index,
+            end_top_surface_source_index,
+            end_grade_authority_index,
+        )
+    }
+
+    fn test_source_edge_for_owner_and_kind(
+        kind: RoadSurfaceVisualNodePieceKind,
+        owner_kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        start: Vector3,
+        end: Vector3,
+        start_top_surface_source_index: usize,
+        start_grade_authority_index: usize,
+        end_top_surface_source_index: usize,
+        end_grade_authority_index: usize,
+    ) -> NodeEarthworkBoundarySourceEdge {
         let start_point_key = ArrangementBoundaryPointKey::from_world(start);
         let end_point_key = ArrangementBoundaryPointKey::from_world(end);
         NodeEarthworkBoundarySourceEdge {
@@ -1958,9 +2329,9 @@ mod tests {
             start_key: start_point_key.xz_key(),
             end_key: end_point_key.xz_key(),
             node_id: 11,
-            kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            owner_kind: RoadSurfaceBandKind::Sidewalk,
-            owner_index: 5,
+            kind,
+            owner_kind,
+            owner_index,
             start_source: NodeFootprintBoundaryDirectSource {
                 top_surface_source_index: start_top_surface_source_index,
                 grade_authority_index: start_grade_authority_index,

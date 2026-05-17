@@ -1293,12 +1293,6 @@ impl NodeArrangementVertexId {
     }
 }
 
-impl NodeArrangementEdgeId {
-    pub(crate) fn index(self) -> usize {
-        self.0
-    }
-}
-
 impl NodeOwnedRegionId {
     pub(crate) fn index(self) -> usize {
         self.0
@@ -1348,22 +1342,8 @@ impl NodeOwnedRegion {
         &self.holes
     }
 
-    pub(crate) fn boundary_edges(&self) -> &[NodeArrangementEdgeId] {
-        &self.boundary_edges
-    }
-
     pub(crate) fn area_m2(&self) -> f32 {
         self.area_m2
-    }
-}
-
-impl NodeArrangementEdge {
-    pub(crate) fn start(&self) -> NodeArrangementVertexId {
-        self.start
-    }
-
-    pub(crate) fn end(&self) -> NodeArrangementVertexId {
-        self.end
     }
 }
 

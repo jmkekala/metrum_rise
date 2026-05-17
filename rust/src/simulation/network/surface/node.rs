@@ -11,17 +11,14 @@ use super::{
     RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     SAMPLE_EPSILON_M,
     arrangement::{
-        self, NodeArrangement, NodeArrangementFace, NodeArrangementKey, NodeBandOwner,
-        NodeExplicitVerticalStepSegment,
+        self, NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
     },
     backend,
     edge::VISUAL_MIN_SPAN_LENGTH_M,
     input::NodeInputExtractionError,
-    keys::surface_overlay_grid_collinearity_error_bound,
     node_boundary::{
         ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
         NodeFootprintBoundaryExportSources, arrangement_boundary_point_to_world,
-        arrangement_key_lies_exactly_on_segment, arrangement_key_lies_on_segment,
         boundary_points_numeric_area_budget_m2, boundary_segment_parameter_xz,
         interpolated_segment_height_mm, interpolated_segment_point_key,
         node_earthwork_boundary_segments_from_footprint_loops,

@@ -1,7 +1,6 @@
 //! Node surface export from canonical arrangement output.
 
 use super::arrangement_faces::*;
-use super::vertical_faces::*;
 use super::*;
 
 impl RoadSurfaceSystem {
@@ -50,13 +49,14 @@ impl RoadSurfaceSystem {
             &mut owned_regions,
             &mut node_top_surface_sources,
         )?;
+        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut boundary_export_sources = NodeFootprintBoundaryExportSources::from_owned_regions(
             arrangement.node_id(),
             arrangement.piece_kind(),
             &owned_regions,
             &node_top_surface_sources,
+            &explicit_vertical_step_segments,
         )?;
-        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(
             arrangement,
             &explicit_vertical_step_segments,
@@ -68,9 +68,6 @@ impl RoadSurfaceSystem {
 
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::visible_top_polygons_from_owned_regions(&owned_regions);
-        retain_raised_step_faces_with_top_support(&mut raised_step_faces, &owned_regions);
-        orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
-        dedup_raised_step_faces(&mut raised_step_faces);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()
@@ -153,25 +150,13 @@ impl RoadSurfaceSystem {
         for shape in footprint_shapes {
             for contour in shape {
                 let mut keyed_points = Vec::with_capacity(contour.len());
-                for (index, point) in contour.iter().enumerate() {
+                for point in contour {
                     let key = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
                         point[0], point[1],
                     ));
-                    let previous = contour[(index + contour.len() - 1) % contour.len()];
-                    let next = contour[(index + 1) % contour.len()];
-                    let adjacent_keys = [
-                        NodeArrangementKey::from_point(super::backend::RoadVec2::new(
-                            previous[0],
-                            previous[1],
-                        )),
-                        NodeArrangementKey::from_point(super::backend::RoadVec2::new(
-                            next[0], next[1],
-                        )),
-                    ];
                     let height_mm = Self::arrangement_footprint_boundary_height_mm(
                         boundary_export_sources,
                         key,
-                        adjacent_keys,
                     )?;
                     keyed_points.push((key, height_mm));
                 }
@@ -220,9 +205,8 @@ impl RoadSurfaceSystem {
     fn arrangement_footprint_boundary_height_mm(
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
         key: NodeArrangementKey,
-        adjacent_keys: [NodeArrangementKey; 2],
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
-        boundary_export_sources.height_mm_at_key(key, adjacent_keys)
+        boundary_export_sources.height_mm_at_key(key)
     }
 
     fn visible_top_polygons_from_owned_regions(
@@ -364,15 +348,7 @@ impl RoadSurfaceSystem {
         )))
     }
 
-    pub(super) fn arrangement_face_visual_triangle(
-        arrangement: &NodeArrangement,
-        face: &super::arrangement::NodeArrangementFace,
-    ) -> Option<[Vector3; 3]> {
-        Self::arrangement_face_visual_triangle_with_vertices(arrangement, face)
-            .map(|(triangle, _)| triangle)
-    }
-
-    fn arrangement_face_visual_triangle_with_vertices(
+    pub(super) fn arrangement_face_visual_triangle_with_vertices(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
     ) -> Option<(

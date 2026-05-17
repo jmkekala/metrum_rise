@@ -28,13 +28,12 @@ impl RoadSurfaceSystem {
                 raised_owner,
                 segment_key,
             );
+            let shared_intervals =
+                arrangement_shared_face_boundary_intervals(&lower_intervals, &raised_intervals);
             Self::push_arrangement_vertical_step_faces_from_intervals(
-                arrangement,
-                lower_owner,
                 segment_key,
                 segment_key,
-                &lower_intervals,
-                &raised_intervals,
+                shared_intervals,
                 step_index,
                 segment,
                 &mut emitted,
@@ -45,12 +44,14 @@ impl RoadSurfaceSystem {
     }
 
     fn push_arrangement_vertical_step_faces_from_intervals(
-        arrangement: &NodeArrangement,
-        lower_owner: NodeBandOwner,
         lower_segment_key: (NodeArrangementKey, NodeArrangementKey),
         raised_segment_key: (NodeArrangementKey, NodeArrangementKey),
-        lower_intervals: &[ArrangementFaceBoundaryInterval],
-        raised_intervals: &[ArrangementFaceBoundaryInterval],
+        shared_intervals: Vec<(
+            ArrangementFaceBoundaryInterval,
+            ArrangementFaceBoundaryInterval,
+            ArrangementSegmentParameter,
+            ArrangementSegmentParameter,
+        )>,
         step_index: usize,
         segment: NodeExplicitVerticalStepSegment,
         emitted: &mut BTreeSet<(
@@ -59,9 +60,7 @@ impl RoadSurfaceSystem {
         )>,
         faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     ) {
-        for (lower_interval, raised_interval, start_t, end_t) in
-            arrangement_shared_face_boundary_intervals(lower_intervals, raised_intervals)
-        {
+        for (lower_interval, raised_interval, start_t, end_t) in shared_intervals {
             let Some(lower_start) = arrangement_face_boundary_interval_point_at(
                 lower_segment_key,
                 lower_interval,
@@ -91,9 +90,8 @@ impl RoadSurfaceSystem {
                 continue;
             };
             let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_polygon(
-                arrangement,
-                lower_owner,
                 lower_segment_key,
+                lower_interval,
                 lower_start,
                 lower_end,
                 raised_start,
@@ -115,9 +113,8 @@ impl RoadSurfaceSystem {
     }
 
     fn arrangement_vertical_step_face_polygon(
-        arrangement: &NodeArrangement,
-        lower_owner: NodeBandOwner,
         segment_key: (NodeArrangementKey, NodeArrangementKey),
+        lower_interval: ArrangementFaceBoundaryInterval,
         lower_start: Vector3,
         lower_end: Vector3,
         raised_start: Vector3,
@@ -144,33 +141,13 @@ impl RoadSurfaceSystem {
             return None;
         }
         let dedup_key = vertical_face_dedup_key(lower_start, lower_end, raised_start, raised_end);
-        let mut points = [raised_start, lower_start, lower_end, raised_end];
-        if let Some(visible_dot) = arrangement_vertical_face_visible_dot_to_owner(
-            arrangement,
-            lower_owner,
-            segment_key,
-            points,
-        ) {
-            if visible_dot <= 0.0 {
-                points = [points[3], points[2], points[1], points[0]];
-            }
+        let lower_owner_on_right =
+            lower_interval_owner_lies_right_of_segment(segment_key, lower_interval)?;
+        let points = if lower_owner_on_right {
+            [raised_start, lower_start, lower_end, raised_end]
         } else {
-            let lower_owner_direction = arrangement_owner_direction_for_segment(
-                arrangement,
-                lower_owner,
-                segment_key,
-                lower_start,
-                lower_end,
-            )
-            .unwrap_or_else(|| {
-                let edge_direction = lower_end - lower_start;
-                Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
-            });
-            let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-            if face_normal.dot(lower_owner_direction) > 0.0 {
-                points = [points[3], points[2], points[1], points[0]];
-            }
-        }
+            [raised_end, lower_end, lower_start, raised_start]
+        };
         Self::make_vertical_quad_polygon(points).map(|face| (dedup_key, face))
     }
 
@@ -184,6 +161,19 @@ impl RoadSurfaceSystem {
             },
         );
     }
+}
+
+fn lower_interval_owner_lies_right_of_segment(
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+    lower_interval: ArrangementFaceBoundaryInterval,
+) -> Option<bool> {
+    let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
+    let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
+    let edge_start_t =
+        boundary_segment_parameter_xz(lower_interval.edge_start, segment_start, segment_end)?;
+    let edge_end_t =
+        boundary_segment_parameter_xz(lower_interval.edge_end, segment_start, segment_end)?;
+    Some(edge_end_t < edge_start_t)
 }
 
 fn vertical_face_dedup_key(
@@ -212,214 +202,4 @@ pub(super) fn canonical_vertical_step_lower_and_raised_owners(
     } else {
         Some((opposite_owner, owner))
     }
-}
-
-pub(super) fn dedup_raised_step_faces(
-    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-) {
-    let mut emitted = BTreeSet::new();
-    faces.retain(|(polygon, _)| {
-        let Some(key) = raised_step_face_span_key(polygon) else {
-            return true;
-        };
-        emitted.insert(key)
-    });
-}
-
-pub(super) fn retain_raised_step_faces_with_top_support(
-    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-    owned_regions: &[NodeOwnedRegion],
-) {
-    faces.retain(|(polygon, source)| {
-        let Some((lower_owner, raised_owner)) =
-            canonical_vertical_step_lower_and_raised_owners(source.segment())
-        else {
-            return false;
-        };
-        let Some((lower_edge, upper_edge)) = vertical_face_support_edges(polygon) else {
-            return false;
-        };
-        owned_region_has_top_boundary_edge(owned_regions, lower_owner, lower_edge)
-            && owned_region_has_top_boundary_edge(owned_regions, raised_owner, upper_edge)
-    });
-}
-
-pub(super) fn orient_raised_step_faces_to_lower_owner_support(
-    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-    owned_regions: &[NodeOwnedRegion],
-) {
-    for (polygon, source) in faces {
-        let Some((lower_owner, _)) =
-            canonical_vertical_step_lower_and_raised_owners(source.segment())
-        else {
-            continue;
-        };
-        let Some(lower_edge) =
-            vertical_face_support_edge_for_owner(polygon, owned_regions, lower_owner)
-        else {
-            continue;
-        };
-        let Some(visible_dot) = vertical_face_visible_dot_to_supported_owner(
-            polygon,
-            lower_edge,
-            owned_regions,
-            lower_owner,
-        ) else {
-            continue;
-        };
-        if visible_dot > 0.0 {
-            continue;
-        }
-        let Some(points) = reversed_vertical_face_points(polygon) else {
-            continue;
-        };
-        if let Some(oriented) = RoadSurfaceSystem::make_vertical_quad_polygon(points) {
-            *polygon = oriented;
-        }
-    }
-}
-
-fn owned_region_has_top_boundary_edge(
-    owned_regions: &[NodeOwnedRegion],
-    owner: NodeBandOwner,
-    edge: [Vector3; 2],
-) -> bool {
-    owned_regions
-        .iter()
-        .filter(|region| node_owned_region_matches_owner(region, owner))
-        .any(|region| visual_polygon_boundary_overlaps_edge_at_height(&region.polygon, edge))
-}
-
-fn vertical_face_support_edge_for_owner(
-    polygon: &RoadSurfaceVisualPolygon,
-    owned_regions: &[NodeOwnedRegion],
-    owner: NodeBandOwner,
-) -> Option<[Vector3; 2]> {
-    vertical_face_side_edges(polygon).and_then(|edges| {
-        edges
-            .into_iter()
-            .find(|edge| owned_region_has_top_boundary_edge_xz(owned_regions, owner, *edge))
-    })
-}
-
-fn owned_region_has_top_boundary_edge_xz(
-    owned_regions: &[NodeOwnedRegion],
-    owner: NodeBandOwner,
-    edge: [Vector3; 2],
-) -> bool {
-    owned_regions
-        .iter()
-        .filter(|region| node_owned_region_matches_owner(region, owner))
-        .any(|region| visual_polygon_boundary_overlaps_edge_xz(&region.polygon, edge))
-}
-
-fn vertical_face_visible_dot_to_supported_owner(
-    polygon: &RoadSurfaceVisualPolygon,
-    lower_edge: [Vector3; 2],
-    owned_regions: &[NodeOwnedRegion],
-    owner: NodeBandOwner,
-) -> Option<f32> {
-    let visible_direction = vertical_face_visible_direction(polygon)?;
-    let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
-    let mut best_dot: Option<f32> = None;
-    for region in owned_regions
-        .iter()
-        .filter(|region| node_owned_region_matches_owner(region, owner))
-    {
-        if !visual_polygon_boundary_overlaps_edge_xz(&region.polygon, lower_edge) {
-            continue;
-        }
-        let Some(centroid) = visual_polygon_centroid(&region.polygon) else {
-            continue;
-        };
-        let owner_direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
-        if owner_direction.length_squared() <= 1e-8 {
-            continue;
-        }
-        let dot = visible_direction.dot(owner_direction.normalized());
-        best_dot = Some(best_dot.map_or(dot, |current| current.max(dot)));
-    }
-    best_dot
-}
-
-fn vertical_face_visible_direction(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
-    let [upper_start, lower_start, lower_end, _upper_end] = polygon.points_world.as_slice() else {
-        return None;
-    };
-    let normal = (*lower_start - *upper_start).cross(*lower_end - *upper_start);
-    let visible_direction = Vector3::new(-normal.x, 0.0, -normal.z);
-    if visible_direction.length_squared() <= 1e-8 {
-        return None;
-    }
-    Some(visible_direction.normalized())
-}
-
-fn visual_polygon_centroid(polygon: &RoadSurfaceVisualPolygon) -> Option<Vector3> {
-    let mut sum = Vector3::ZERO;
-    let mut count = 0usize;
-    for point in &polygon.points_world {
-        sum += Vector3::new(point.x, 0.0, point.z);
-        count += 1;
-    }
-    (count > 0).then_some(sum / count as f32)
-}
-
-fn reversed_vertical_face_points(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 4]> {
-    let [a, b, c, d] = polygon.points_world.as_slice() else {
-        return None;
-    };
-    Some([*d, *c, *b, *a])
-}
-
-pub(super) fn vertical_face_side_edges(
-    polygon: &RoadSurfaceVisualPolygon,
-) -> Option<[[Vector3; 2]; 2]> {
-    let [a, b, c, d] = polygon.points_world.as_slice() else {
-        return None;
-    };
-    Some([[*a, *d], [*b, *c]])
-}
-
-fn vertical_face_support_edges(
-    polygon: &RoadSurfaceVisualPolygon,
-) -> Option<([Vector3; 2], [Vector3; 2])> {
-    let [first_edge, second_edge] = vertical_face_side_edges(polygon)?;
-    let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
-    let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
-    if first_avg_y <= second_avg_y {
-        Some((first_edge, second_edge))
-    } else {
-        Some((second_edge, first_edge))
-    }
-}
-
-fn raised_step_face_span_key(
-    polygon: &RoadSurfaceVisualPolygon,
-) -> Option<(
-    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-)> {
-    if polygon.points_world.len() != 4 {
-        return None;
-    }
-    let mut span_edges = Vec::new();
-    for index in 0..polygon.points_world.len() {
-        let start = polygon.points_world[index];
-        let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
-        if ArrangementBoundaryPointKey::from_world(start).xz_key()
-            != ArrangementBoundaryPointKey::from_world(end).xz_key()
-        {
-            span_edges.push((start, end, (start.y + end.y) * 0.5));
-        }
-    }
-    if span_edges.len() != 2 {
-        return None;
-    }
-    span_edges.sort_by(|a, b| a.2.total_cmp(&b.2));
-    Some(vertical_face_dedup_key(
-        span_edges[0].0,
-        span_edges[0].1,
-        span_edges[1].0,
-        span_edges[1].1,
-    ))
 }

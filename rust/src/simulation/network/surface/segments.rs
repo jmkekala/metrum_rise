@@ -177,19 +177,6 @@ pub(crate) fn arrangement_key_lies_on_segment(
     )
 }
 
-/// Returns whether a node arrangement key lies exactly on a node arrangement segment.
-pub(crate) fn arrangement_key_lies_exactly_on_segment(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> bool {
-    key_lies_exactly_on_segment(
-        arrangement_key(point),
-        arrangement_key(start),
-        arrangement_key(end),
-    )
-}
-
 /// Returns the overlay-grid tolerant segment parameter for node arrangement keys.
 pub(crate) fn arrangement_key_overlay_segment_parameter(
     point: arrangement::NodeArrangementKey,
