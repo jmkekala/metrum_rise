@@ -48,7 +48,7 @@ enum RegionSeamRebuild {
     Empty,
 }
 
-pub(in crate::simulation::network::surface::ownership) fn clean_canonical_owned_region_shapes(
+pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_owned_region_shapes(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],

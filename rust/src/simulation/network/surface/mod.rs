@@ -7,7 +7,6 @@
 use godot::prelude::{Vector2, Vector3};
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 
-mod arrangement;
 mod backend;
 mod band_semantics;
 mod cache;
@@ -15,31 +14,21 @@ mod debug;
 mod earthwork;
 mod edge;
 mod geometry;
-mod height;
 mod incident;
 mod indices;
-mod input;
-mod joins;
 mod keys;
 mod node;
-mod node_boundary;
-mod node_grade;
 mod overlay;
-mod ownership;
 mod paths;
 mod query;
-mod rails;
 mod segments;
 mod span;
 mod system;
-mod terminal;
 mod terrain_clip;
-mod triangulation;
-mod validation;
 
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
 pub use edge::PreviewRoadSurfaceResult;
-pub use node_boundary::RoadSurfaceVisualNodePiece;
+pub use node::RoadSurfaceVisualNodePiece;
 pub use span::RoadSurfaceVisualSpanPiece;
 pub use system::RoadSurfaceSystem;
 
@@ -53,11 +42,14 @@ pub(crate) use incident::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
     IncidentSurfaceEdge, OrderedIncidentPieceMouth,
 };
-pub(crate) use node_boundary::{
+pub(crate) use node::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
-    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeSurfaceRegionResult,
-    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
+    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeTopSurfacePolygonSource,
+    RoadSurfaceVerticalFaceSource,
 };
+pub(crate) use node::{arrangement, height};
+#[cfg(test)]
+pub(crate) use node::{input, ownership, rails, terminal, triangulation, validation};
 pub(crate) use span::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
 };

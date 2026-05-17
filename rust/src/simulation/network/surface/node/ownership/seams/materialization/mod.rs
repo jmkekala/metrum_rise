@@ -84,7 +84,7 @@ fn push_materialized_endpoint_pair_region_seam_constraint(
     });
 }
 
-pub(in crate::simulation::network::surface::ownership) fn materialize_noded_region_seam_constraints(
+pub(in crate::simulation::network::surface::node::ownership) fn materialize_noded_region_seam_constraints(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
@@ -427,7 +427,9 @@ fn materialized_edge_requires_exact_constraint_span(
         && raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
 }
 
-pub(in crate::simulation::network::surface::ownership) fn owned_source_constraints_for_edge<'a>(
+pub(in crate::simulation::network::surface::node::ownership) fn owned_source_constraints_for_edge<
+    'a,
+>(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     constraints: &'a [NodeRegionSeamConstraint],
@@ -446,14 +448,14 @@ pub(in crate::simulation::network::surface::ownership) fn owned_source_constrain
     matches
 }
 
-pub(in crate::simulation::network::surface::ownership) fn owned_boundary_requires_explicit_seam(
+pub(in crate::simulation::network::surface::node::ownership) fn owned_boundary_requires_explicit_seam(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
     owner.kind() != opposite_owner.kind()
 }
 
-pub(in crate::simulation::network::surface::ownership) fn junctionn_unmaterialized_raised_step_authority_indices_for_edge(
+pub(in crate::simulation::network::surface::node::ownership) fn junctionn_unmaterialized_raised_step_authority_indices_for_edge(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
@@ -481,7 +483,7 @@ pub(in crate::simulation::network::surface::ownership) fn junctionn_unmaterializ
     source_constraint_indices
 }
 
-pub(in crate::simulation::network::surface::ownership) fn source_constraints_materialize_raised_step_authority(
+pub(in crate::simulation::network::surface::node::ownership) fn source_constraints_materialize_raised_step_authority(
     source_constraints: &[&NodeRegionSeamConstraint],
     source_constraint_indices: &[usize],
     owner: NodeBandOwner,

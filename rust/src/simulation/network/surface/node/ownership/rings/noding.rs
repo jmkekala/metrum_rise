@@ -11,7 +11,7 @@ use super::super::topology_keys::{
 };
 use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 
-pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_region_rings(
+pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
 ) {
@@ -23,7 +23,7 @@ pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_reg
     }
 }
 
-pub(in crate::simulation::network::surface::ownership) fn canonicalize_final_owned_region_boundary_edges(
+pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_final_owned_region_boundary_edges(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_canonical_points: &NodeRailCanonicalPointSet,
@@ -46,7 +46,7 @@ fn node_owned_region_rings_to_global_points(
     }
 }
 
-pub(in crate::simulation::network::surface::ownership) fn canonicalize_owned_region_rings_with_rail_point_set(
+pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings_with_rail_point_set(
     regions: &mut [NodeBooleanOwnedRegion],
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
@@ -133,7 +133,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     Ok(())
 }
 
-pub(in crate::simulation::network::surface::ownership) fn owned_region_global_points(
+pub(in crate::simulation::network::surface::node::ownership) fn owned_region_global_points(
     regions: &[NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
 ) -> Vec<NodeOwnershipPointKey> {
@@ -224,7 +224,7 @@ pub(super) fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) 
     });
 }
 
-pub(in crate::simulation::network::surface::ownership) fn noded_owned_region_edge_points(
+pub(in crate::simulation::network::surface::node::ownership) fn noded_owned_region_edge_points(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     global_points: &[NodeOwnershipPointKey],

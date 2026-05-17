@@ -18,7 +18,7 @@ use super::predicates::{
 };
 use std::collections::BTreeSet;
 
-pub(in crate::simulation::network::surface::ownership) fn owned_shape_is_discardable_numeric_dust(
+pub(in crate::simulation::network::surface::node::ownership) fn owned_shape_is_discardable_numeric_dust(
     shape: &NodeOverlayShape,
     area_m2: f32,
     owner: NodeBandOwner,
@@ -82,7 +82,7 @@ fn protected_constraints_for_owner(
         .collect()
 }
 
-pub(in crate::simulation::network::surface::ownership) fn seam_constraints_for_shape(
+pub(in crate::simulation::network::surface::node::ownership) fn seam_constraints_for_shape(
     shape: &NodeOverlayShape,
     owner: NodeBandOwner,
     rail_constraints: &[NodeRailConstraint],

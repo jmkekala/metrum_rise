@@ -2,9 +2,9 @@
 
 use super::backend::RoadVec2;
 use super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
+use super::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
-use super::node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::segments::arrangement_key_lies_on_segment;
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};

@@ -13,7 +13,7 @@ use super::{
     band_semantics::ordered_raised_step_kinds,
     height::NodeHeightAuthoritySource,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
-    node_grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority},
+    node::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority},
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};

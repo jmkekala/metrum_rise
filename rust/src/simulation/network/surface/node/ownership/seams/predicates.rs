@@ -10,7 +10,7 @@ use super::super::topology_keys::{
     point_key_lies_on_segment, segment_parameter_key,
 };
 
-pub(in crate::simulation::network::surface::ownership) fn canonicalize_seam_constraints(
+pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_seam_constraints(
     seams: &mut Vec<NodeRegionSeamConstraint>,
 ) {
     seams.sort_by(|a, b| seam_constraint_sort_key(a).cmp(&seam_constraint_sort_key(b)));

@@ -6,9 +6,9 @@ use super::arrangement::{
     owners_form_explicit_vertical_step_pair,
 };
 use super::backend::RoadVec3;
+use super::grade::NodeGradeVertexAuthority;
 use super::indices::normalized_vertex_edge;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
-use super::node_grade::NodeGradeVertexAuthority;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -108,7 +108,7 @@ struct NodeTriangulationPointKey {
 struct NodeTriangulationHeightKey(i64);
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_triangulation_from_arrangement(
+    pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement(
         arrangement: &NodeArrangement,
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
         NodeTriangulationSolution::from_arrangement(arrangement)
@@ -877,9 +877,7 @@ mod tests {
                 height_m,
                 owner,
                 height_field_id,
-                super::super::node_grade::NodeGradeCarrierDecision::SourceCarrier {
-                    authority: None,
-                },
+                super::super::grade::NodeGradeCarrierDecision::SourceCarrier { authority: None },
             )),
         }
     }

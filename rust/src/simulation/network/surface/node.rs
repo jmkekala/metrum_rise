@@ -1,22 +1,10 @@
 //! Explicit visual node-piece construction and incident-edge classification.
 
-use super::band_semantics::ordered_raised_step_kinds;
-use super::{
-    CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayShapes, NodeOwnedRegion, NodeSurfaceRegionResult,
-    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, OrderedIncidentPieceMouth,
-    RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
+use self::{
     arrangement::{
-        self, NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
+        NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
     },
-    backend,
-    edge::VISUAL_MIN_SPAN_LENGTH_M,
-    input::NodeInputExtractionError,
-    node_boundary::{
+    boundary::{
         ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
         NodeFootprintBoundaryExportSources, arrangement_boundary_point_to_world,
         boundary_points_numeric_area_budget_m2, boundary_segment_parameter_xz,
@@ -24,8 +12,22 @@ use super::{
         node_earthwork_boundary_segments_from_footprint_loops,
         remove_subbudget_unsupported_numeric_boundary_vertices,
     },
-    node_grade, terrain_clip_edge_kind_for_band,
+    input::NodeInputExtractionError,
     validation::NodeValidationReport,
+};
+use super::{
+    CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
+    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
+    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    band_semantics::ordered_raised_step_kinds, edge::VISUAL_MIN_SPAN_LENGTH_M,
+    terrain_clip_edge_kind_for_band,
+};
+pub(super) use super::{
+    IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
+    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_M, backend,
+    band_semantics, earthwork, indices, keys, paths, segments, terrain_clip,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
@@ -37,11 +39,29 @@ const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VERTICAL_STEP_MIN_SPAN_M: f32 = 1.0e-6;
 const VISUAL_DOMINANT_HANDOFF_REJECTION_RATIO: f32 = 3.0;
 
+pub(crate) mod arrangement;
 mod arrangement_faces;
+pub(crate) mod boundary;
 mod boundary_edges;
 mod compile;
 mod export;
+pub(crate) mod grade;
+pub(crate) mod height;
 mod incident;
+pub(crate) mod input;
+pub(crate) mod joins;
+pub(crate) mod ownership;
+pub(crate) mod rails;
+pub(crate) mod terminal;
 #[cfg(test)]
 mod tests;
+pub(crate) mod triangulation;
+pub(crate) mod validation;
 mod vertical_faces;
+
+pub use boundary::RoadSurfaceVisualNodePiece;
+pub(crate) use boundary::{
+    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
+    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeSurfaceRegionResult,
+    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
+};

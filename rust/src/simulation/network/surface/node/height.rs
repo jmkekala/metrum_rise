@@ -5,13 +5,13 @@ use super::backend::{
     RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
     road_vec3_xz as xz,
 };
-use super::input::{NodeArrangementInput, NodeInputBandInterval};
-use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
-use super::node_grade::{
+use super::grade::{
     NodeGradeCarrierDecision, NodeGradeExplicitSeamHeightKey, NodeGradeVertexAuthority,
     apply_junctionn_node_grade_carrier, canonical_explicit_seam_owner_pair,
     material_height_constraints_for_vertex,
 };
+use super::input::{NodeArrangementInput, NodeInputBandInterval};
+use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
@@ -312,7 +312,7 @@ impl NodeHeightPatchAuthority {
 }
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_height_solution_from_ownership(
+    pub(in crate::simulation::network::surface) fn build_node_height_solution_from_ownership(
         input: &NodeArrangementInput,
         rails: &NodeRailContourSet,
         ownership: &NodeBooleanOwnership,

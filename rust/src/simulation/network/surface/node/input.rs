@@ -121,7 +121,7 @@ pub(crate) enum NodeInputExtractionError {
 }
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_arrangement_input_from_mouths(
+    pub(in crate::simulation::network::surface) fn build_node_arrangement_input_from_mouths(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
         mouths: &[OrderedIncidentPieceMouth],

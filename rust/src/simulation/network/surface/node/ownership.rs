@@ -157,7 +157,7 @@ pub(crate) enum NodeBooleanOwnershipError {
 }
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_boolean_ownership_from_rails(
+    pub(in crate::simulation::network::surface) fn build_node_boolean_ownership_from_rails(
         rails: &NodeRailContourSet,
     ) -> Result<NodeBooleanOwnership, NodeBooleanOwnershipError> {
         NodeBooleanOwnership::from_rails(rails)

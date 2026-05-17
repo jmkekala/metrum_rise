@@ -8,7 +8,7 @@ use super::{
     backend,
     band_semantics::band_kind_sort_key,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
-    node_boundary::NodeFootprintBoundarySegmentSource,
+    node::boundary::NodeFootprintBoundarySegmentSource,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};

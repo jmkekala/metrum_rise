@@ -354,7 +354,7 @@ impl GeneratedRaisedStepOwnerPair {
 }
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_rail_contours_from_input(
+    pub(in crate::simulation::network::surface) fn build_node_rail_contours_from_input(
         input: &NodeArrangementInput,
     ) -> Result<NodeRailContourSet, NodeRailGenerationError> {
         NodeRailContourSet::from_input(input)
