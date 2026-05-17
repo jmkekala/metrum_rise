@@ -1345,10 +1345,6 @@ impl NodeOwnedRegion {
     pub(crate) fn area_m2(&self) -> f32 {
         self.area_m2
     }
-
-    pub(crate) fn seam_constraints(&self) -> &[NodeRegionSeamConstraint] {
-        &self.seam_constraints
-    }
 }
 
 impl NodeArrangementFace {
