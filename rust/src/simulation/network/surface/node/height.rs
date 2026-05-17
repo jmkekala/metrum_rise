@@ -90,6 +90,13 @@ pub(crate) enum NodeHeightFieldError {
         region_kind: RoadSurfaceBandKind,
         source_kind: RoadSurfaceBandKind,
     },
+    InvalidSourceBandHeightCarrier {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        reason: &'static str,
+    },
     MissingGeneratedContourHeightPoints {
         mouth_order_index: usize,
         band_index: usize,
@@ -401,14 +408,17 @@ impl NodeHeightSolution {
 }
 
 impl NodeBandHeightField {
-    fn from_interval(mouth_order_index: usize, interval: &NodeInputBandInterval) -> Self {
+    fn from_interval(
+        mouth_order_index: usize,
+        interval: &NodeInputBandInterval,
+    ) -> Result<Self, NodeHeightFieldError> {
         let id =
             NodeBandHeightFieldId::new(mouth_order_index, interval.band_index, interval.band_kind);
-        Self {
+        Ok(Self {
             id,
             kind: interval.band_kind,
-            patches: vec![NodeBandHeightPatch::from_interval(interval)],
-        }
+            patches: vec![NodeBandHeightPatch::from_interval(id, interval)?],
+        })
     }
 
     fn from_terminal_cap_band(
@@ -646,12 +656,16 @@ fn owner_scoped_outside_height_error(
 }
 
 impl NodeBandHeightPatch {
-    fn from_interval(interval: &NodeInputBandInterval) -> Self {
-        Self {
+    fn from_interval(
+        id: NodeBandHeightFieldId,
+        interval: &NodeInputBandInterval,
+    ) -> Result<Self, NodeHeightFieldError> {
+        let (triangles, contour_edges) = interval_height_carrier(id, interval)?;
+        Ok(Self {
             authority: NodeHeightPatchAuthority::source_interval(),
-            triangles: Some(interval_height_triangles(interval)),
-            contour_edges: Some(interval_height_edges(interval)),
-        }
+            triangles: Some(triangles),
+            contour_edges: Some(contour_edges),
+        })
     }
 
     fn from_terminal_cap_band(
@@ -867,7 +881,7 @@ fn height_fields_by_source(
     let mut fields = BTreeMap::new();
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
-            let field = NodeBandHeightField::from_interval(mouth.order_index, interval);
+            let field = NodeBandHeightField::from_interval(mouth.order_index, interval)?;
             let key = NodeSourceBandKey {
                 mouth_order_index: mouth.order_index,
                 band_index: interval.band_index,
@@ -1272,32 +1286,142 @@ fn quantize_source_height_m(value_m: f64) -> f64 {
     (value_m * HEIGHT_SOURCE_KEY_SCALE).round() / HEIGHT_SOURCE_KEY_SCALE
 }
 
-fn interval_height_triangles(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightTriangle> {
-    if let Some(triangles) =
-        path_band_height_triangles(&interval.start_path_world, &interval.end_path_world)
-    {
-        return triangles;
+fn interval_height_carrier(
+    id: NodeBandHeightFieldId,
+    interval: &NodeInputBandInterval,
+) -> Result<(Vec<NodeBandHeightTriangle>, Vec<NodeBandHeightEdge>), NodeHeightFieldError> {
+    if interval.start_path_world.is_empty() && interval.end_path_world.is_empty() {
+        let points = [
+            interval.mouth_start_world,
+            interval.mouth_end_world,
+            interval.endpoint_end_world,
+            interval.endpoint_start_world,
+        ];
+        return Ok((
+            height_triangles_from_vertices(&points),
+            height_edges_from_vertices(&points),
+        ));
     }
-    height_triangles_from_vertices(&[
-        interval.mouth_start_world,
-        interval.mouth_end_world,
-        interval.endpoint_end_world,
-        interval.endpoint_start_world,
-    ])
+    let (start_path_world, end_path_world) = explicit_source_band_height_paths(id, interval)?;
+    if start_path_world.len() < 2 {
+        return Err(invalid_source_band_height_carrier_error(
+            id,
+            interval.band_kind,
+            "too_few_source_band_path_points",
+        ));
+    }
+    let triangles =
+        path_band_height_triangles(&start_path_world, &end_path_world).ok_or_else(|| {
+            invalid_source_band_height_carrier_error(
+                id,
+                interval.band_kind,
+                "degenerate_source_band_height_triangles",
+            )
+        })?;
+    let contour_edges =
+        path_band_height_edges(&start_path_world, &end_path_world).ok_or_else(|| {
+            invalid_source_band_height_carrier_error(
+                id,
+                interval.band_kind,
+                "degenerate_source_band_height_edges",
+            )
+        })?;
+    Ok((triangles, contour_edges))
 }
 
-fn interval_height_edges(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightEdge> {
-    if let Some(edges) =
-        path_band_height_edges(&interval.start_path_world, &interval.end_path_world)
-    {
-        return edges;
+fn explicit_source_band_height_paths(
+    id: NodeBandHeightFieldId,
+    interval: &NodeInputBandInterval,
+) -> Result<(Vec<RoadVec3>, Vec<RoadVec3>), NodeHeightFieldError> {
+    if interval.start_path_world.len() == interval.end_path_world.len() {
+        return Ok((
+            interval.start_path_world.clone(),
+            interval.end_path_world.clone(),
+        ));
     }
-    height_edges_from_vertices(&[
-        interval.mouth_start_world,
-        interval.mouth_end_world,
-        interval.endpoint_end_world,
-        interval.endpoint_start_world,
-    ])
+    if interval.start_path_world.len() > 2
+        && source_height_path_is_endpoint_chord(
+            &interval.end_path_world,
+            interval.mouth_end_world,
+            interval.endpoint_end_world,
+        )
+    {
+        return Ok((
+            interval.start_path_world.clone(),
+            subdivided_height_chord(
+                interval.mouth_end_world,
+                interval.endpoint_end_world,
+                interval.start_path_world.len(),
+            ),
+        ));
+    }
+    if interval.end_path_world.len() > 2
+        && source_height_path_is_endpoint_chord(
+            &interval.start_path_world,
+            interval.mouth_start_world,
+            interval.endpoint_start_world,
+        )
+    {
+        return Ok((
+            subdivided_height_chord(
+                interval.mouth_start_world,
+                interval.endpoint_start_world,
+                interval.end_path_world.len(),
+            ),
+            interval.end_path_world.clone(),
+        ));
+    }
+    Err(invalid_source_band_height_carrier_error(
+        id,
+        interval.band_kind,
+        "mismatched_source_band_path_lengths",
+    ))
+}
+
+fn source_height_path_is_endpoint_chord(
+    path_world: &[RoadVec3],
+    mouth_world: RoadVec3,
+    endpoint_world: RoadVec3,
+) -> bool {
+    path_world.len() == 2
+        && source_height_points_match(path_world[0], mouth_world)
+        && source_height_points_match(path_world[1], endpoint_world)
+}
+
+fn source_height_points_match(a: RoadVec3, b: RoadVec3) -> bool {
+    SurfaceXzKey::from_world_xz(a) == SurfaceXzKey::from_world_xz(b)
+        && SurfaceHeightMmKey::from_m_f64(a.y) == SurfaceHeightMmKey::from_m_f64(b.y)
+}
+
+fn subdivided_height_chord(start: RoadVec3, end: RoadVec3, point_count: usize) -> Vec<RoadVec3> {
+    if point_count < 2 {
+        return vec![start, end];
+    }
+    let denominator = (point_count - 1) as f64;
+    (0..point_count)
+        .map(|index| {
+            let t = index as f64 / denominator;
+            RoadVec3::new(
+                start.x + (end.x - start.x) * t,
+                start.y + (end.y - start.y) * t,
+                start.z + (end.z - start.z) * t,
+            )
+        })
+        .collect()
+}
+
+fn invalid_source_band_height_carrier_error(
+    id: NodeBandHeightFieldId,
+    source_kind: RoadSurfaceBandKind,
+    reason: &'static str,
+) -> NodeHeightFieldError {
+    NodeHeightFieldError::InvalidSourceBandHeightCarrier {
+        mouth_order_index: id.mouth_order_index(),
+        band_index: id.band_index(),
+        source_kind,
+        height_field_id: id,
+        reason,
+    }
 }
 
 fn path_band_height_triangles(
@@ -1851,6 +1975,54 @@ mod tests {
     }
 
     #[test]
+    fn source_band_height_carrier_rejects_mismatched_sampled_paths() {
+        let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
+        interval.start_path_world = vec![
+            interval.mouth_start_world,
+            RoadVec3::new(5.0, 6.0, 0.0),
+            interval.endpoint_start_world,
+        ];
+        interval.end_path_world = vec![
+            interval.mouth_end_world,
+            RoadVec3::new(7.5, 4.0, 2.0),
+            RoadVec3::new(2.5, 2.0, 2.0),
+            interval.endpoint_end_world,
+        ];
+
+        let result = NodeBandHeightField::from_interval(0, &interval);
+
+        assert!(matches!(
+            result,
+            Err(NodeHeightFieldError::InvalidSourceBandHeightCarrier {
+                reason: "mismatched_source_band_path_lengths",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn source_band_height_carrier_uses_explicit_outer_chord_for_one_sided_sampled_path() {
+        let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
+        interval.start_path_world = vec![
+            interval.mouth_start_world,
+            RoadVec3::new(5.0, 6.0, 0.0),
+            interval.endpoint_start_world,
+        ];
+        interval.end_path_world = vec![interval.mouth_end_world, interval.endpoint_end_world];
+        let field = NodeBandHeightField::from_interval(0, &interval)
+            .expect("one explicit source rail plus endpoint chord is a valid carrier");
+
+        let height_m = field
+            .evaluate_height(RoadVec2::new(5.0, 1.0))
+            .expect("canonical point inside explicit source carrier should evaluate");
+
+        assert_eq!(
+            SurfaceHeightMmKey::from_m_f64(height_m),
+            SurfaceHeightMmKey::from_m_f64(4.5)
+        );
+    }
+
+    #[test]
     fn rejects_owned_region_vertex_outside_explicit_height_carrier() {
         let input = conflicting_manual_input();
         let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0);
@@ -1917,7 +2089,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let patch = NodeBandHeightPatch::from_heighted_contour(
             field.id,
@@ -1965,7 +2138,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
         for (height_m, purpose, claim_priority) in [
             (
@@ -2038,7 +2212,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
         let patch = NodeBandHeightPatch::from_heighted_contour(
             field.id,
@@ -2120,7 +2295,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let authority = NodeHeightPatchAuthority {
             owner: Some(owner),
@@ -2183,7 +2359,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let contour = generated_band_contour(
             RoadSurfaceBandKind::CurbOrShoulder,
             vec![
@@ -2218,7 +2395,8 @@ mod tests {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
-        );
+        )
+        .expect("manual interval is a valid source height carrier");
         let points_xz = vec![
             RoadVec2::new(0.0, 0.0),
             RoadVec2::new(10.0, 2.0),

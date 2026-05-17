@@ -99,8 +99,12 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
                 &preserved_points,
                 rail_points,
             )?;
-            *contour =
-                noded_owned_region_contour_with_rail_paths(contour, &source_points, owner_paths);
+            *contour = noded_owned_region_contour_with_rail_paths(
+                contour,
+                &source_points,
+                owner_paths,
+                region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap,
+            );
         }
     }
     Ok(())
@@ -168,9 +172,16 @@ fn noded_owned_region_contour_with_rail_paths(
     contour: &NodeOverlayContour,
     global_points: &[NodeOwnershipPointKey],
     rail_paths: &[Vec<NodeOwnershipPointKey>],
+    require_rail_path: bool,
 ) -> NodeOverlayContour {
     noded_owned_region_contour_with_edge_points(contour, |start, end| {
-        noded_owned_region_edge_points_with_rail_paths(start, end, global_points, rail_paths)
+        noded_owned_region_edge_points_with_rail_paths(
+            start,
+            end,
+            global_points,
+            rail_paths,
+            require_rail_path,
+        )
     })
 }
 
@@ -213,9 +224,15 @@ fn noded_owned_region_edge_points_with_rail_paths(
     end: NodeOwnershipPointKey,
     global_points: &[NodeOwnershipPointKey],
     rail_paths: &[Vec<NodeOwnershipPointKey>],
+    require_rail_path: bool,
 ) -> Vec<NodeOwnershipPointKey> {
-    rail_path_points_between(start, end, rail_paths)
-        .unwrap_or_else(|| noded_owned_region_edge_points(start, end, global_points))
+    if let Some(points) = rail_path_points_between(start, end, rail_paths) {
+        return points;
+    }
+    if require_rail_path {
+        return vec![start, end];
+    }
+    noded_owned_region_edge_points(start, end, global_points)
 }
 
 pub(super) fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
@@ -357,6 +374,38 @@ mod tests {
         assert_eq!(
             rail_path_points_between((0, 0), (4, 0), &[detour, direct]),
             Some(vec![(0, 0), (2, 0), (4, 0)])
+        );
+    }
+
+    #[test]
+    fn strict_rail_path_noding_does_not_use_global_points_as_join_or_cap_fallback() {
+        let global_points = vec![(2, 0)];
+
+        assert_eq!(
+            noded_owned_region_edge_points_with_rail_paths(
+                (0, 0),
+                (4, 0),
+                &global_points,
+                &[],
+                true
+            ),
+            vec![(0, 0), (4, 0)]
+        );
+    }
+
+    #[test]
+    fn non_strict_rail_path_noding_still_uses_canonical_global_points() {
+        let global_points = vec![(2, 0)];
+
+        assert_eq!(
+            noded_owned_region_edge_points_with_rail_paths(
+                (0, 0),
+                (4, 0),
+                &global_points,
+                &[],
+                false
+            ),
+            vec![(0, 0), (2, 0), (4, 0)]
         );
     }
 }

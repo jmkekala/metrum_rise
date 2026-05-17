@@ -1,4 +1,4 @@
-//! Shared world-path projection and height interpolation helpers.
+//! Shared world-path canonical height interpolation helpers.
 
 use super::{
     backend::{RoadPolyline, RoadVec2, RoadVec3, road_points_to_polyline, road_vec3_xz},
@@ -28,29 +28,22 @@ pub(crate) fn height_on_world_path(
     None
 }
 
-/// Projects an XZ point onto a source segment and interpolates height when within tolerance.
+/// Interpolates height for an XZ key with canonical source-segment support.
 pub(crate) fn height_on_world_segment(
     point_xz: RoadVec2,
     start_world: RoadVec3,
     end_world: RoadVec3,
-    edge_eps_m: f64,
+    _edge_eps_m: f64,
 ) -> Option<f64> {
-    let start_xz = road_vec3_xz(start_world);
-    let end_xz = road_vec3_xz(end_world);
-    let axis = end_xz - start_xz;
-    let axis_len2 = axis.length_squared();
-    if axis_len2 <= f64::EPSILON {
-        return None;
-    }
-    let t = ((point_xz - start_xz).dot(axis) / axis_len2).clamp(0.0, 1.0);
-    let closest = start_xz + axis * t;
-    if closest.distance_squared(point_xz) > edge_eps_m * edge_eps_m {
-        return None;
-    }
+    let point = SurfaceXzKey::from_road_xz(point_xz);
+    let start = SurfaceXzKey::from_road_xz(road_vec3_xz(start_world));
+    let end = SurfaceXzKey::from_road_xz(road_vec3_xz(end_world));
+    let parameter = point.overlay_segment_parameter(start, end)?;
+    let t = parameter.as_f64();
     Some(start_world.y + (end_world.y - start_world.y) * t)
 }
 
-/// Rebuilds world points from cleaned XZ points by sampling heights on the original path.
+/// Rebuilds world points from cleaned XZ points with canonical source-path height support.
 pub(crate) fn reheight_road_points_from_world_path(
     points_xz: impl IntoIterator<Item = RoadVec2>,
     source_path_world: &[RoadVec3],
@@ -157,6 +150,13 @@ mod tests {
         let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
 
         assert!(height_on_world_path(RoadVec2::new(1.0, 0.01), &path, 0.001).is_none());
+    }
+
+    #[test]
+    fn off_segment_point_inside_old_epsilon_has_no_height() {
+        let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
+
+        assert!(height_on_world_path(RoadVec2::new(1.0, 0.0005), &path, 0.001).is_none());
     }
 
     #[test]

@@ -154,6 +154,9 @@ impl NodeGeometryDiagnostic {
                     reason: "empty_input",
                 }
             }
+            NodeRailGenerationError::InvalidHeightCarrier { reason, .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure { reason }
+            }
             NodeRailGenerationError::NonCanonicalGeneratedContactEndpoint { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
                     reason: "noncanonical_generated_contact_endpoint",
@@ -320,6 +323,25 @@ impl NodeGeometryDiagnostic {
                 kind: Some(*region_kind),
                 source_kind: Some(*source_kind),
                 height_field_id: None,
+                owner: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: None,
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::InvalidSourceBandHeightCarrier {
+                mouth_order_index,
+                band_index,
+                source_kind,
+                height_field_id,
+                reason,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason,
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: Some(*source_kind),
+                height_field_id: Some(*height_field_id),
                 owner: None,
                 point_x_mm: None,
                 point_z_mm: None,

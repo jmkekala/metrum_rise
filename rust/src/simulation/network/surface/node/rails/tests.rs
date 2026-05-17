@@ -522,6 +522,54 @@ fn generated_contact_rejects_non_exact_owner_pair_authority() {
 }
 
 #[test]
+fn sampled_band_domain_paths_reject_mismatched_height_carrier_lengths() {
+    let mouth = OrderedIncidentPieceMouth {
+        profile: profile(10.0),
+        endpoint_profile: profile(0.0),
+        boundary_paths_world: Vec::new(),
+        band_start_paths_world: vec![
+            Vec::new(),
+            vec![
+                Vector3::new(10.0, 4.1, -2.0),
+                Vector3::new(5.0, 4.2, -2.0),
+                Vector3::new(0.0, 4.1, -2.0),
+            ],
+        ],
+        band_end_paths_world: vec![
+            Vec::new(),
+            vec![
+                Vector3::new(10.0, 4.2, 0.0),
+                Vector3::new(7.5, 4.2, 0.0),
+                Vector3::new(2.5, 4.2, 0.0),
+                Vector3::new(0.0, 4.2, 0.0),
+            ],
+        ],
+        uses_sampled_band_domain_paths: true,
+        direction_angle_ccw: 0.0,
+        direction_xz: Vector2::RIGHT,
+        edge_idx: 7,
+        side: IncidentEdgeSide::Start,
+    };
+    let input = NodeArrangementInput::from_ordered_mouths(
+        42,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &[mouth],
+    )
+    .expect("test mouth should produce canonical input");
+
+    let error = NodeRailContourSet::from_input(&input)
+        .expect_err("mismatched sampled carriers must fail before ownership");
+
+    assert!(matches!(
+        error,
+        NodeRailGenerationError::InvalidHeightCarrier {
+            reason: "mismatched_path_height_carrier_lengths",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn bend_side_join_point_contact_reowns_exact_source_rail_by_band_kind() {
     let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let actual_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);

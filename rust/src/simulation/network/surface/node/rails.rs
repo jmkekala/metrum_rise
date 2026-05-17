@@ -203,6 +203,12 @@ pub(crate) enum NodeRailGenerationError {
         path_length_m: f64,
         vertex_count: usize,
     },
+    InvalidHeightCarrier {
+        kind: NodeGeneratedContourKind,
+        mouth_order_index: usize,
+        band_index: Option<usize>,
+        reason: &'static str,
+    },
     NonCanonicalGeneratedContactEndpoint {
         kind: NodeRailConstraintKind,
         mouth_order_index: usize,
@@ -638,28 +644,45 @@ fn push_band_contour(
     };
     let purpose = band_contour_purpose(piece_kind, interval.band_kind);
     let last_band_index = mouth.band_intervals.len().saturating_sub(1);
-    if mouth.uses_sampled_band_domain_paths
-        && interval
-            .start_path_world
-            .len()
-            .min(interval.end_path_world.len())
-            > 2
-    {
-        return push_path_band_contour(
-            kind,
-            purpose,
-            mouth.order_index,
-            Some(interval.band_index),
-            Some(owner),
-            NodeGeneratedContourClaimPriority::MouthBand,
-            NodeRailConstraintKind::BandContour {
-                kind: interval.band_kind,
-            },
-            &interval.start_path_world,
-            &interval.end_path_world,
-            contours,
-            constraints,
-        );
+    if mouth.uses_sampled_band_domain_paths {
+        let uses_paired_sampled_paths =
+            interval.start_path_world.len() > 2 || interval.end_path_world.len() > 2;
+        let uses_explicit_outer_chord = interval.band_index == 0
+            && interval.start_path_world.len() > 2
+            && interval.end_path_world.len() == 2
+            || interval.band_index == last_band_index
+                && interval.start_path_world.len() == 2
+                && interval.end_path_world.len() > 2;
+        if uses_paired_sampled_paths
+            && interval.start_path_world.len() != interval.end_path_world.len()
+            && !uses_explicit_outer_chord
+        {
+            return Err(NodeRailGenerationError::InvalidHeightCarrier {
+                kind,
+                mouth_order_index: mouth.order_index,
+                band_index: Some(interval.band_index),
+                reason: "mismatched_path_height_carrier_lengths",
+            });
+        }
+        if uses_paired_sampled_paths
+            && interval.start_path_world.len() == interval.end_path_world.len()
+        {
+            return push_path_band_contour(
+                kind,
+                purpose,
+                mouth.order_index,
+                Some(interval.band_index),
+                Some(owner),
+                NodeGeneratedContourClaimPriority::MouthBand,
+                NodeRailConstraintKind::BandContour {
+                    kind: interval.band_kind,
+                },
+                &interval.start_path_world,
+                &interval.end_path_world,
+                contours,
+                constraints,
+            );
+        }
     }
     if interval.band_index == 0 && interval.start_path_world.len() > 2 {
         let inner_path = subdivided_world_chord(
@@ -792,6 +815,13 @@ fn push_path_strip_contours(
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
+    validate_paired_path_band_height_carrier(
+        kind,
+        mouth_order_index,
+        band_index,
+        start_path_world,
+        end_path_world,
+    )?;
     let mut first_error = None;
     let mut pushed = false;
     for points_world in path_strip_contours_world(start_path_world, end_path_world) {
@@ -873,9 +903,19 @@ fn push_generated_contour_with_purpose(
 ) -> Result<(), NodeRailGenerationError> {
     let contour = cleaned_closed_contour(kind, mouth_order_index, band_index, points)?;
     let points_xz = polyline_to_road_points(&contour);
-    let height_points_world = height_points_world
-        .as_deref()
-        .and_then(|points_world| align_height_points_to_contour(&points_xz, points_world));
+    let height_points_world = match height_points_world.as_deref() {
+        Some(points_world) => Some(
+            align_height_points_to_contour(&points_xz, points_world).ok_or(
+                NodeRailGenerationError::InvalidHeightCarrier {
+                    kind,
+                    mouth_order_index,
+                    band_index,
+                    reason: "height_points_do_not_match_contour",
+                },
+            )?,
+        ),
+        None => None,
+    };
     contours.push(NodeGeneratedContour {
         kind,
         purpose,
@@ -924,6 +964,13 @@ fn push_path_band_contour(
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
+    validate_paired_path_band_height_carrier(
+        kind,
+        mouth_order_index,
+        band_index,
+        start_path_world,
+        end_path_world,
+    )?;
     let mut points_world = Vec::with_capacity(start_path_world.len() + end_path_world.len());
     append_world_path_points(&mut points_world, start_path_world.iter());
     append_world_path_points(&mut points_world, end_path_world.iter().rev());
@@ -948,7 +995,7 @@ fn path_strip_contours_world(
     start_path_world: &[RoadVec3],
     end_path_world: &[RoadVec3],
 ) -> Vec<Vec<RoadVec3>> {
-    let point_count = start_path_world.len().min(end_path_world.len());
+    let point_count = start_path_world.len();
     if point_count < 2 {
         return Vec::new();
     }
@@ -963,6 +1010,32 @@ fn path_strip_contours_world(
         strips.push(points);
     }
     strips
+}
+
+fn validate_paired_path_band_height_carrier(
+    kind: NodeGeneratedContourKind,
+    mouth_order_index: usize,
+    band_index: Option<usize>,
+    start_path_world: &[RoadVec3],
+    end_path_world: &[RoadVec3],
+) -> Result<(), NodeRailGenerationError> {
+    if start_path_world.len() != end_path_world.len() {
+        return Err(NodeRailGenerationError::InvalidHeightCarrier {
+            kind,
+            mouth_order_index,
+            band_index,
+            reason: "mismatched_path_height_carrier_lengths",
+        });
+    }
+    if start_path_world.len() < 2 {
+        return Err(NodeRailGenerationError::InvalidHeightCarrier {
+            kind,
+            mouth_order_index,
+            band_index,
+            reason: "too_few_path_height_carrier_points",
+        });
+    }
+    Ok(())
 }
 
 fn subdivided_world_chord(start: RoadVec3, end: RoadVec3, point_count: usize) -> Vec<RoadVec3> {
