@@ -6,7 +6,6 @@ use godot::prelude::Vector3;
 
 pub(crate) const SURFACE_XZ_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 pub(crate) const SURFACE_MM_PER_M: f64 = 1000.0;
-pub(crate) const SURFACE_CANONICAL_HEIGHT_EPS_M: f64 = 0.01;
 pub(crate) const SURFACE_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]

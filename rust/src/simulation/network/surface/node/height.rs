@@ -525,6 +525,9 @@ impl NodeBandHeightField {
             else {
                 continue;
             };
+            // Source-edge handoff is the one allowed priority exception: a generated contour may
+            // terminate on an existing source rail, but only at exact source-edge support or within
+            // the project point-dedup envelope checked by height_key_has_source_edge_support.
             if let Some(height_m) = patch.source_handoff_height_at(point_xz) {
                 candidates.push(NodeAuthorizedHeightCandidate {
                     authority_rank: 4,
@@ -731,6 +734,9 @@ impl NodeBandHeightPatch {
         if self.authority.role != NodeHeightPatchAuthorityRole::SourceInterval {
             return None;
         }
+        // This is not a search for the nearest source height. It only preserves a source rail
+        // height at canonical handoff vertices that lie on the source interval contour edge, with
+        // the same point-dedup drift allowed by topology construction.
         self.contour_edges
             .as_ref()
             .and_then(|edges| terminal_edge_height_at(point_xz, edges))
@@ -1790,6 +1796,9 @@ fn height_key_has_source_edge_support(
     start: NodeHeightSourcePointKey,
     end: NodeHeightSourcePointKey,
 ) -> bool {
+    // Exact segment membership is the normal contract. The cell-intersection branch is limited to
+    // WORLD_POINT_DEDUP_DISTANCE_M so independently quantized copies of the same handoff vertex can
+    // agree with their source rail without becoming a general near-edge fallback.
     raw_tuple_key_lies_exactly_on_segment(point, start, end)
         || raw_tuple_quantization_cell_intersects_segment(
             point,
@@ -2272,6 +2281,22 @@ mod tests {
             ),
             "near-edge vertices outside the project dedup envelope must not inherit source-rail height"
         );
+
+        let near_generated_height = field
+            .evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, 0.0002),
+            )
+            .expect("inside generated contour but outside source-edge dedup should evaluate generated carrier");
+        assert_eq!(
+            near_generated_height.authority,
+            NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            }
+        );
+        assert!((near_generated_height.height_m - 2.0).abs() <= 1.0e-6);
 
         let interior_height = field
             .evaluate_authorized_height(

@@ -2,8 +2,8 @@
 
 use super::super::RoadSurfaceSystem;
 use super::super::arrangement::owners_form_explicit_vertical_step_pair;
-use super::super::keys::SURFACE_XZ_KEY_SCALE;
 use super::super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
+use super::NodeValidationEdgeKey;
 use super::boundaries::validate_boundary_constraints;
 use super::crossings::validate_constraint_crossings;
 use super::report::{
@@ -13,10 +13,6 @@ use super::report::{
 use super::triangles::{
     validate_cross_region_triangle_edge_heights, validate_triangle_area_coverage,
     validate_triangles,
-};
-use super::{
-    NodeValidationEdgeKey, NodeValidationPointKey,
-    VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M, point_key_from_world, quantize_m,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,7 +46,6 @@ impl NodeValidationReport {
         for (edge, region_indices) in exposed_edges {
             if region_indices.len() > 2
                 && !duplicate_exposed_edge_has_explicit_owner_context(solution, &region_indices)
-                && !duplicate_exposed_edge_is_canonical_drift(solution, edge, &region_indices)
             {
                 diagnostics.push(NodeGeometryDiagnostic {
                     node_id: solution.node_id,
@@ -130,48 +125,4 @@ fn duplicate_exposed_edge_has_explicit_owner_context(
         }
     }
     true
-}
-
-fn duplicate_exposed_edge_is_canonical_drift(
-    solution: &NodeTriangulationSolution,
-    edge: NodeValidationEdgeKey,
-    region_indices: &[usize],
-) -> bool {
-    if validation_edge_length_m(edge) > VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M {
-        return false;
-    }
-
-    let mut start_heights = BTreeSet::new();
-    let mut end_heights = BTreeSet::new();
-    for region_index in region_indices {
-        let Some(region) = solution.regions.get(*region_index) else {
-            return false;
-        };
-        let Some(start_height_mm) = region_height_mm_at_key(region, edge.start) else {
-            return false;
-        };
-        let Some(end_height_mm) = region_height_mm_at_key(region, edge.end) else {
-            return false;
-        };
-        start_heights.insert(start_height_mm);
-        end_heights.insert(end_height_mm);
-    }
-
-    start_heights.len() == 1 && end_heights.len() == 1
-}
-
-fn validation_edge_length_m(edge: NodeValidationEdgeKey) -> f64 {
-    let dx = (edge.end.x_key - edge.start.x_key) as f64 / SURFACE_XZ_KEY_SCALE;
-    let dz = (edge.end.z_key - edge.start.z_key) as f64 / SURFACE_XZ_KEY_SCALE;
-    dx.hypot(dz)
-}
-
-fn region_height_mm_at_key(
-    region: &NodeTriangulatedRegion,
-    point: NodeValidationPointKey,
-) -> Option<i64> {
-    region.vertices.iter().find_map(|vertex| {
-        (point_key_from_world(vertex.point_world) == point)
-            .then(|| quantize_m(vertex.point_world.y))
-    })
 }

@@ -10,9 +10,7 @@ mod tests;
 mod triangles;
 
 use super::arrangement::NodeArrangementKey;
-use super::keys::{
-    SURFACE_CANONICAL_HEIGHT_EPS_M, SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey,
-};
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
 use super::triangulation::NodeTriangulatedRegion;
 use parry2d::shape::Segment;
 
@@ -21,7 +19,6 @@ pub(crate) use report::NodeValidationReport;
 pub(crate) use report::{NodeGeometryDiagnostic, NodeGeometryDiagnosticKind};
 
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
-const VALIDATION_DUPLICATE_EXPOSED_EDGE_CANONICAL_DRIFT_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeValidationPointKey {
