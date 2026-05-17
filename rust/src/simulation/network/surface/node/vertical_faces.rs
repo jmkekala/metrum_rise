@@ -289,50 +289,6 @@ pub(super) fn dedup_raised_step_faces(
     });
 }
 
-pub(super) fn append_canonical_raised_step_faces_from_owned_region_boundaries(
-    faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-    owned_regions: &[NodeOwnedRegion],
-    explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
-) {
-    for (step_index, segment) in explicit_vertical_step_segments.iter().copied().enumerate() {
-        let Some((lower_owner, raised_owner)) =
-            canonical_vertical_step_lower_and_raised_owners(segment)
-        else {
-            continue;
-        };
-        for lower_edge in owned_region_boundary_edges_for_owner(owned_regions, lower_owner) {
-            if !world_edge_lies_on_explicit_vertical_step_segment(lower_edge, segment) {
-                continue;
-            }
-            for raised_edge in owned_region_boundary_edges_for_owner(owned_regions, raised_owner) {
-                let Some(raised_edge) = clip_edge_to_reference_xz(raised_edge, lower_edge) else {
-                    continue;
-                };
-                if (raised_edge[0].y - lower_edge[0].y <= SAMPLE_EPSILON_M)
-                    && (raised_edge[1].y - lower_edge[1].y <= SAMPLE_EPSILON_M)
-                {
-                    continue;
-                }
-                let Some(face) = RoadSurfaceSystem::make_vertical_quad_polygon([
-                    raised_edge[0],
-                    lower_edge[0],
-                    lower_edge[1],
-                    raised_edge[1],
-                ]) else {
-                    continue;
-                };
-                faces.push((
-                    face,
-                    RoadSurfaceVerticalFaceSource::CanonicalStep {
-                        explicit_vertical_step_index: step_index,
-                        segment,
-                    },
-                ));
-            }
-        }
-    }
-}
-
 pub(super) fn retain_raised_step_faces_with_top_support(
     faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     owned_regions: &[NodeOwnedRegion],

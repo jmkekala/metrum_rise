@@ -68,13 +68,6 @@ impl RoadSurfaceSystem {
 
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::visible_top_polygons_from_owned_regions(&owned_regions);
-        // This is an explicit export pass, not a repair pass: it only emits faces backed by
-        // materialized vertical-step authority.
-        append_canonical_raised_step_faces_from_owned_region_boundaries(
-            &mut raised_step_faces,
-            &owned_regions,
-            &explicit_vertical_step_segments,
-        );
         retain_raised_step_faces_with_top_support(&mut raised_step_faces, &owned_regions);
         orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
         dedup_raised_step_faces(&mut raised_step_faces);
