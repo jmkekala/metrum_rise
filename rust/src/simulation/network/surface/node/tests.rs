@@ -181,10 +181,10 @@ fn footprint_loop_contains_xz(loop_points: &[Vector3], point_xz: RoadVec2) -> bo
 }
 
 #[test]
-fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
+fn node_top_surface_sources_preserve_explicit_material_seam_authority() {
     let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
     let height_field_id = height_field(owner);
-    let decision = NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption;
+    let decision = NodeGradeCarrierDecision::ExplicitMaterialSeam;
     let heights = NodeHeightSolution {
         node_id: 82,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -220,12 +220,12 @@ fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
         }],
     };
     let mut arrangement = NodeArrangement::from_height_solution(&heights)
-        .expect("grade-authorized seam adoption should arrange");
+        .expect("grade-authorized explicit seam should arrange");
     let triangulation = RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
-        .expect("grade-authorized seam adoption should triangulate");
+        .expect("grade-authorized explicit seam should triangulate");
     arrangement
         .attach_triangulation(&triangulation)
-        .expect("grade-authorized seam adoption should attach triangulation");
+        .expect("grade-authorized explicit seam should attach triangulation");
     let footprint_shapes = footprint_shapes_from_points(&[
         RoadVec2::new(0.0, 0.0),
         RoadVec2::new(1.0, 0.0),
@@ -233,7 +233,7 @@ fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
     ]);
     let regions =
         RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
-            .expect("grade-authorized seam adoption should export node top provenance");
+            .expect("grade-authorized explicit seam should export node top provenance");
 
     assert_eq!(regions.node_top_surface_sources.len(), 1);
     let source = &regions.node_top_surface_sources[0];
@@ -255,7 +255,7 @@ fn node_top_surface_sources_preserve_explicit_material_seam_adoption() {
     {
         assert_eq!(
             regions.node_grade_authorities[grade_authority_index].decision,
-            NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption
+            NodeGradeCarrierDecision::ExplicitMaterialSeam
         );
     }
 }

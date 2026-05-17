@@ -3,15 +3,12 @@
 use super::RoadSurfaceBandKind;
 use super::arrangement::{NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint};
 use super::backend::RoadVec2;
-use super::height::{NodeHeightAuthoritySource, NodeHeightedRegion, NodeHeightedVertex};
-use super::keys::{SURFACE_CANONICAL_HEIGHT_EPS_M, SurfaceHeightMmKey, SurfaceXzKey};
+use super::height::{
+    NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightedRegion, NodeHeightedVertex,
+};
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::segments::road_xz_lies_exactly_on_segment;
 use std::collections::BTreeMap;
-
-const SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
-const EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M: f64 = SURFACE_CANONICAL_HEIGHT_EPS_M;
-const JUNCTIONN_SAME_MATERIAL_SEAM_BLEND_LIMIT_M: f64 = 0.25;
-const JUNCTIONN_UNCONSTRAINED_SEAM_ADOPTION_LIMIT_M: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum NodeGradeCarrierDecision {
@@ -23,7 +20,6 @@ pub(crate) enum NodeGradeCarrierDecision {
     SameMaterialVertex,
     SameMaterialSeam,
     ExplicitMaterialSeam,
-    ExplicitMaterialSeamAdoption,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -235,13 +231,15 @@ impl SameMaterialVertexHeightContext {
     }
 }
 
-pub(crate) fn apply_junctionn_node_grade_carrier(regions: &mut [NodeHeightedRegion]) {
+pub(crate) fn apply_junctionn_node_grade_carrier(
+    regions: &mut [NodeHeightedRegion],
+) -> Result<(), NodeHeightFieldError> {
     apply_junctionn_same_owner_height_field_vertex_unification(regions);
-    apply_junctionn_same_material_shared_edge_height_tiebreak(regions);
-    apply_junctionn_same_material_vertex_height_tiebreak(regions);
+    apply_junctionn_same_material_shared_edge_height_tiebreak(regions)?;
+    apply_junctionn_same_material_vertex_height_tiebreak(regions)?;
     apply_junctionn_same_material_seam_height_unification(regions);
     apply_junctionn_explicit_material_seam_height_unification(regions);
-    apply_junctionn_explicit_material_seam_height_to_unconstrained_same_material_vertices(regions);
+    Ok(())
 }
 
 pub(crate) fn material_height_constraints_for_vertex(
@@ -285,7 +283,7 @@ pub(crate) fn canonical_explicit_seam_owner_pair(
 fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [NodeHeightedRegion]) {
     let mut heights_by_key =
         BTreeMap::<NodeGradeVertexContextKey, SameMaterialVertexHeightCandidate>::new();
-    let mut distinct_heights_by_key = BTreeMap::<NodeGradeVertexContextKey, Vec<i64>>::new();
+    let mut samples_by_key = BTreeMap::<NodeGradeVertexContextKey, (usize, Vec<i64>)>::new();
 
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
@@ -323,7 +321,8 @@ fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [Nod
                         &region.seam_constraints,
                     ),
                 });
-            let heights = distinct_heights_by_key.entry(key).or_default();
+            let (sample_count, heights) = samples_by_key.entry(key).or_default();
+            *sample_count += 1;
             let height_mm = SurfaceHeightMmKey::from_m_f64(vertex.height_m).as_i64();
             if !heights.contains(&height_mm) {
                 heights.push(height_mm);
@@ -343,10 +342,10 @@ fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [Nod
                 owner,
                 height_field_id: vertex.height_field_id,
             };
-            if distinct_heights_by_key
-                .get(&key)
-                .is_none_or(|heights| heights.len() < 2)
-            {
+            let Some((sample_count, heights)) = samples_by_key.get(&key) else {
+                continue;
+            };
+            if *sample_count < 2 || heights.len() != 1 {
                 continue;
             }
             if let Some(selected) = heights_by_key.get(&key) {
@@ -361,7 +360,9 @@ fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [Nod
     }
 }
 
-fn apply_junctionn_same_material_shared_edge_height_tiebreak(regions: &mut [NodeHeightedRegion]) {
+fn apply_junctionn_same_material_shared_edge_height_tiebreak(
+    regions: &mut [NodeHeightedRegion],
+) -> Result<(), NodeHeightFieldError> {
     let mut candidates_by_edge =
         BTreeMap::<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>>::new();
 
@@ -399,9 +400,22 @@ fn apply_junctionn_same_material_shared_edge_height_tiebreak(regions: &mut [Node
         if candidates.len() < 2 {
             continue;
         }
-        if !same_material_shared_edge_candidates_are_canonical_drift(&candidates) {
-            continue;
-        }
+        reject_same_material_height_conflict(
+            edge.kind,
+            edge.start,
+            candidates
+                .iter()
+                .copied()
+                .map(|candidate| candidate.endpoint_candidate(edge.start)),
+        )?;
+        reject_same_material_height_conflict(
+            edge.kind,
+            edge.end,
+            candidates
+                .iter()
+                .copied()
+                .map(|candidate| candidate.endpoint_candidate(edge.end)),
+        )?;
         for endpoint in [edge.start, edge.end] {
             let selected = candidates
                 .iter()
@@ -468,28 +482,16 @@ fn apply_junctionn_same_material_shared_edge_height_tiebreak(regions: &mut [Node
             }
         }
     }
+    Ok(())
 }
 
-fn same_material_shared_edge_candidates_are_canonical_drift(
-    candidates: &[SameMaterialSharedEdgeCandidate],
-) -> bool {
-    let mut start_min = f64::INFINITY;
-    let mut start_max = f64::NEG_INFINITY;
-    let mut end_min = f64::INFINITY;
-    let mut end_max = f64::NEG_INFINITY;
-    for candidate in candidates {
-        start_min = start_min.min(candidate.start_height_m);
-        start_max = start_max.max(candidate.start_height_m);
-        end_min = end_min.min(candidate.end_height_m);
-        end_max = end_max.max(candidate.end_height_m);
-    }
-    start_max - start_min <= SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M
-        && end_max - end_min <= SAME_MATERIAL_SHARED_EDGE_HEIGHT_CANONICAL_EPS_M
-}
-
-fn apply_junctionn_same_material_vertex_height_tiebreak(regions: &mut [NodeHeightedRegion]) {
+fn apply_junctionn_same_material_vertex_height_tiebreak(
+    regions: &mut [NodeHeightedRegion],
+) -> Result<(), NodeHeightFieldError> {
     let mut contexts_by_key =
         BTreeMap::<SameMaterialVertexHeightTieKey, Vec<SameMaterialVertexHeightContext>>::new();
+    let mut candidates_by_key =
+        BTreeMap::<SameMaterialVertexHeightTieKey, Vec<SameMaterialVertexHeightCandidate>>::new();
     let mut selected_by_key =
         BTreeMap::<SameMaterialVertexHeightTieKey, SameMaterialVertexHeightCandidate>::new();
 
@@ -515,6 +517,10 @@ fn apply_junctionn_same_material_vertex_height_tiebreak(regions: &mut [NodeHeigh
             if !contexts.contains(&context) {
                 contexts.push(context);
                 contexts.sort_unstable();
+                candidates_by_key
+                    .entry(key.clone())
+                    .or_default()
+                    .push(candidate);
             }
             selected_by_key
                 .entry(key)
@@ -527,6 +533,17 @@ fn apply_junctionn_same_material_vertex_height_tiebreak(regions: &mut [NodeHeigh
                 })
                 .or_insert(candidate);
         }
+    }
+
+    for (key, contexts) in &contexts_by_key {
+        if contexts.len() < 2 {
+            continue;
+        }
+        reject_same_material_height_conflict(
+            key.kind,
+            key.point,
+            candidates_by_key.get(key).into_iter().flatten().copied(),
+        )?;
     }
 
     for region in regions {
@@ -556,6 +573,7 @@ fn apply_junctionn_same_material_vertex_height_tiebreak(regions: &mut [NodeHeigh
             }
         }
     }
+    Ok(())
 }
 
 fn same_material_vertex_height_tie_key_from_parts(
@@ -591,10 +609,8 @@ fn same_material_vertex_height_candidate_key(
 }
 
 fn apply_junctionn_same_material_seam_height_unification(regions: &mut [NodeHeightedRegion]) {
-    let mut ranges_by_key = BTreeMap::<
-        NodeGradeExplicitSeamHeightKey,
-        (f64, f64, SameMaterialVertexHeightCandidate),
-    >::new();
+    let mut candidates_by_key =
+        BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
@@ -613,27 +629,15 @@ fn apply_junctionn_same_material_seam_height_unification(regions: &mut [NodeHeig
                     height_authority: vertex.height_authority,
                     has_explicit_shared_material_seam: false,
                 };
-                ranges_by_key
-                    .entry(key)
-                    .and_modify(|(min_height, max_height, selected)| {
-                        *min_height = min_height.min(vertex.height_m);
-                        *max_height = max_height.max(vertex.height_m);
-                        if same_material_vertex_height_candidate_key(candidate)
-                            < same_material_vertex_height_candidate_key(*selected)
-                        {
-                            *selected = candidate;
-                        }
-                    })
-                    .or_insert((vertex.height_m, vertex.height_m, candidate));
+                push_unique_same_material_candidate(&mut candidates_by_key, key, candidate);
             }
         }
     }
 
-    let selected_by_key = ranges_by_key
+    let selected_by_key = candidates_by_key
         .into_iter()
-        .filter_map(|(key, (min_height, max_height, selected))| {
-            (max_height - min_height <= JUNCTIONN_SAME_MATERIAL_SEAM_BLEND_LIMIT_M)
-                .then_some((key, selected))
+        .filter_map(|(key, candidates)| {
+            same_height_selected_candidate(&candidates).map(|selected| (key, selected))
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -671,10 +675,8 @@ fn apply_junctionn_same_material_seam_height_unification(regions: &mut [NodeHeig
 }
 
 fn apply_junctionn_explicit_material_seam_height_unification(regions: &mut [NodeHeightedRegion]) {
-    let mut ranges_by_key = BTreeMap::<
-        NodeGradeExplicitSeamHeightKey,
-        (f64, f64, SameMaterialVertexHeightCandidate),
-    >::new();
+    let mut candidates_by_key =
+        BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
@@ -693,27 +695,15 @@ fn apply_junctionn_explicit_material_seam_height_unification(regions: &mut [Node
                     height_authority: vertex.height_authority,
                     has_explicit_shared_material_seam: true,
                 };
-                ranges_by_key
-                    .entry(key)
-                    .and_modify(|(min_height, max_height, selected)| {
-                        *min_height = min_height.min(vertex.height_m);
-                        *max_height = max_height.max(vertex.height_m);
-                        if same_material_vertex_height_candidate_key(candidate)
-                            < same_material_vertex_height_candidate_key(*selected)
-                        {
-                            *selected = candidate;
-                        }
-                    })
-                    .or_insert((vertex.height_m, vertex.height_m, candidate));
+                push_unique_same_material_candidate(&mut candidates_by_key, key, candidate);
             }
         }
     }
 
-    let selected_by_key = ranges_by_key
+    let selected_by_key = candidates_by_key
         .into_iter()
-        .filter_map(|(key, (min_height, max_height, selected))| {
-            (max_height - min_height <= EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M)
-                .then_some((key, selected.height_m))
+        .filter_map(|(key, candidates)| {
+            same_height_selected_candidate(&candidates).map(|selected| (key, selected.height_m))
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -759,88 +749,101 @@ fn vertex_has_explicit_shared_material_seam(
         .any(|constraint| constraint.is_material_transition)
 }
 
-fn apply_junctionn_explicit_material_seam_height_to_unconstrained_same_material_vertices(
-    regions: &mut [NodeHeightedRegion],
+fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
+    road_xz_lies_exactly_on_segment(point, start, end)
+}
+
+fn push_unique_same_material_candidate<K: Ord>(
+    candidates_by_key: &mut BTreeMap<K, Vec<SameMaterialVertexHeightCandidate>>,
+    key: K,
+    candidate: SameMaterialVertexHeightCandidate,
 ) {
-    let mut explicit_by_key = BTreeMap::<
-        SameMaterialSharedVertexKey,
-        (f64, f64, SameMaterialVertexHeightCandidate),
-    >::new();
-
-    for region in regions.iter() {
-        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
-            if !vertex_has_explicit_shared_material_seam(vertex, &region.seam_constraints) {
-                continue;
-            }
-            let key = SameMaterialSharedVertexKey {
-                kind: region.kind,
-                point: SurfaceXzKey::from_road_xz(vertex.point_xz),
-            };
-            let candidate = SameMaterialVertexHeightCandidate {
-                owner: region.owner,
-                height_field_id: vertex.height_field_id,
-                height_m: vertex.height_m,
-                height_authority: vertex.height_authority,
-                has_explicit_shared_material_seam: true,
-            };
-            explicit_by_key
-                .entry(key)
-                .and_modify(|(min_height, max_height, selected)| {
-                    *min_height = min_height.min(vertex.height_m);
-                    *max_height = max_height.max(vertex.height_m);
-                    if same_material_vertex_height_candidate_key(candidate)
-                        < same_material_vertex_height_candidate_key(*selected)
-                    {
-                        *selected = candidate;
-                    }
-                })
-                .or_insert((vertex.height_m, vertex.height_m, candidate));
-        }
-    }
-
-    let selected_by_key = explicit_by_key
-        .into_iter()
-        .filter_map(|(key, (min_height, max_height, selected))| {
-            (max_height - min_height <= EXPLICIT_MATERIAL_SEAM_HEIGHT_CANONICAL_EPS_M)
-                .then_some((key, selected.height_m))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    if selected_by_key.is_empty() {
+    let candidates = candidates_by_key.entry(key).or_default();
+    let context = SameMaterialVertexHeightContext::from_candidate(candidate);
+    if candidates
+        .iter()
+        .copied()
+        .map(SameMaterialVertexHeightContext::from_candidate)
+        .any(|existing| existing == context)
+    {
         return;
     }
+    candidates.push(candidate);
+}
 
-    for region in regions {
-        let owner = region.owner;
-        for vertex in region
-            .shape
-            .iter_mut()
-            .flat_map(|contour| contour.iter_mut())
-        {
-            if vertex_has_explicit_shared_material_seam(vertex, &region.seam_constraints) {
-                continue;
-            }
-            let key = SameMaterialSharedVertexKey {
-                kind: region.kind,
-                point: SurfaceXzKey::from_road_xz(vertex.point_xz),
-            };
-            if let Some(height_m) = selected_by_key.get(&key)
-                && (*height_m - vertex.height_m).abs()
-                    <= JUNCTIONN_UNCONSTRAINED_SEAM_ADOPTION_LIMIT_M
-            {
-                set_vertex_grade_height(
-                    owner,
-                    vertex,
-                    *height_m,
-                    NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption,
-                );
-            }
-        }
+fn same_height_selected_candidate(
+    candidates: &[SameMaterialVertexHeightCandidate],
+) -> Option<SameMaterialVertexHeightCandidate> {
+    let first = candidates.first().copied()?;
+    let height_key = SurfaceHeightMmKey::from_m_f64(first.height_m);
+    if candidates
+        .iter()
+        .copied()
+        .all(|candidate| SurfaceHeightMmKey::from_m_f64(candidate.height_m) == height_key)
+    {
+        candidates
+            .iter()
+            .copied()
+            .min_by_key(|candidate| same_material_vertex_height_candidate_key(*candidate))
+    } else {
+        None
     }
 }
 
-fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
-    road_xz_lies_exactly_on_segment(point, start, end)
+fn reject_same_material_height_conflict(
+    kind: RoadSurfaceBandKind,
+    point: SurfaceXzKey,
+    candidates: impl IntoIterator<Item = SameMaterialVertexHeightCandidate>,
+) -> Result<(), NodeHeightFieldError> {
+    let mut candidates_by_height = BTreeMap::<i64, SameMaterialVertexHeightCandidate>::new();
+    for candidate in candidates {
+        let height_mm = SurfaceHeightMmKey::from_m_f64(candidate.height_m).as_i64();
+        candidates_by_height
+            .entry(height_mm)
+            .and_modify(|selected| {
+                if same_material_vertex_height_candidate_key(candidate)
+                    < same_material_vertex_height_candidate_key(*selected)
+                {
+                    *selected = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+    if candidates_by_height.len() < 2 {
+        return Ok(());
+    }
+
+    let mut ordered = candidates_by_height
+        .into_iter()
+        .map(|(height_mm, candidate)| {
+            (
+                same_material_vertex_height_candidate_key(candidate),
+                height_mm,
+                candidate,
+            )
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|(candidate_key, height_mm, _)| (*candidate_key, *height_mm));
+    let (_, existing_height_mm, existing) = ordered[0];
+    let (_, incoming_height_mm, incoming) = ordered
+        .into_iter()
+        .find(|(_, height_mm, _)| *height_mm != existing_height_mm)
+        .expect("same-material conflict has at least two distinct height keys");
+    Err(NodeHeightFieldError::SharedSourceHeightConflict {
+        point_x_mm: point.x_mm(),
+        point_z_mm: point.z_mm(),
+        kind,
+        owner: existing.owner,
+        opposite_owner: None,
+        height_field_id: Some(existing.height_field_id),
+        incoming_owner: incoming.owner,
+        incoming_height_field_id: Some(incoming.height_field_id),
+        constraint_index: None,
+        existing_authority: existing.height_authority,
+        incoming_authority: incoming.height_authority,
+        existing_height_mm,
+        incoming_height_mm,
+    })
 }
 
 fn set_vertex_grade_height(
@@ -870,17 +873,21 @@ mod tests {
     #[test]
     fn carrier_records_same_material_vertex_decision() {
         let mut regions = vec![
-            manual_region(RoadSurfaceBandKind::Carriageway, 9, 2.0),
-            manual_region(RoadSurfaceBandKind::Carriageway, 14, 1.0),
+            manual_region(RoadSurfaceBandKind::Carriageway, 9, 2.0004),
+            manual_region(RoadSurfaceBandKind::Carriageway, 14, 2.00049),
             manual_region(RoadSurfaceBandKind::Sidewalk, 1, 3.0),
         ];
 
-        apply_junctionn_node_grade_carrier(&mut regions);
+        apply_junctionn_node_grade_carrier(&mut regions)
+            .expect("same-material heights with one height key may share authority");
 
-        let adopted = &regions[1].shape[0][0];
-        assert_eq!(adopted.height_m, 2.0);
+        let normalized = &regions[1].shape[0][0];
         assert_eq!(
-            adopted
+            SurfaceHeightMmKey::from_m_f64(normalized.height_m).as_i64(),
+            2000
+        );
+        assert_eq!(
+            normalized
                 .grade_authority
                 .expect("carrier should write explicit grade authority")
                 .decision,
@@ -890,6 +897,21 @@ mod tests {
             regions[2].shape[0][0].height_m, 3.0,
             "different materials must not be pulled into same-material carrier decisions"
         );
+    }
+
+    #[test]
+    fn carrier_rejects_same_material_vertex_height_conflict() {
+        let mut regions = vec![
+            manual_region(RoadSurfaceBandKind::Carriageway, 9, 2.0),
+            manual_region(RoadSurfaceBandKind::Carriageway, 14, 1.0),
+        ];
+
+        assert!(matches!(
+            apply_junctionn_node_grade_carrier(&mut regions),
+            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
+        ));
+        assert_eq!(regions[0].shape[0][0].height_m, 2.0);
+        assert_eq!(regions[1].shape[0][0].height_m, 1.0);
     }
 
     fn manual_region(

@@ -204,6 +204,10 @@ Remaining ROAD-01 gap:
   `JunctionN` height evaluation now scopes final owned-region vertices to their explicit
   post-boolean band carrier, so overlapping same-material source patches no longer behave like a
   shared node-wide grade sampler while unresolved carriers still fail before CDT export.
+  Same-material carrier tie-breaks may normalize only candidates that already agree under
+  `SurfaceHeightMmKey`; elevated multi-arm junctions with contradictory same-XZ carriageway owner
+  heights now reject with a structured height diagnostic until ownership selects one carrier before
+  sampling.
   Same-height seam validation is likewise scoped to the materialized final owner-pair seam, so one
   source rail index reused by separate elevated curb / sidewalk seams cannot cross-contaminate
   unrelated grade carriers.

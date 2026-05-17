@@ -181,7 +181,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   post-boolean region-scoped band carrier, keeping same-material overlap conflicts local to the
   explicit owner instead of reviving the old node-wide grade sampler; same-height seam validation
   now keys separate materialized owner-pair seams independently even when they came from the same
-  source rail index. The render mesh
+  source rail index. Same-material carrier tie-breaks now require equal `SurfaceHeightMmKey`
+  heights, so elevated multi-arm nodes with contradictory same-XZ carriageway owners reject
+  deterministically until ownership selects one carrier before height sampling. The render mesh
   payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
   buckets. Post-boolean `node_non_road`
   subdivision now requires every final curb /

@@ -1269,9 +1269,6 @@ impl RoadSurfaceSystem {
             NodeGradeCarrierDecision::SameMaterialVertex => "same_material_vertex",
             NodeGradeCarrierDecision::SameMaterialSeam => "same_material_seam",
             NodeGradeCarrierDecision::ExplicitMaterialSeam => "explicit_material_seam",
-            NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption => {
-                "explicit_material_seam_adoption"
-            }
         }
     }
 

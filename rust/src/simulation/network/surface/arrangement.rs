@@ -1565,10 +1565,9 @@ fn node_grade_decision_rank(decision: NodeGradeCarrierDecision) -> u8 {
         NodeGradeCarrierDecision::ExplicitMaterialSeam => 0,
         NodeGradeCarrierDecision::SameMaterialSeam => 1,
         NodeGradeCarrierDecision::SameMaterialSharedEdge => 2,
-        NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption => 3,
-        NodeGradeCarrierDecision::SameMaterialVertex => 4,
-        NodeGradeCarrierDecision::SameOwnerCanonicalVertex => 5,
-        NodeGradeCarrierDecision::SourceCarrier { .. } => 6,
+        NodeGradeCarrierDecision::SameMaterialVertex => 3,
+        NodeGradeCarrierDecision::SameOwnerCanonicalVertex => 4,
+        NodeGradeCarrierDecision::SourceCarrier { .. } => 5,
     }
 }
 
@@ -1775,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn arrangement_exports_explicit_material_seam_adoption_grade_decision() {
+    fn arrangement_exports_explicit_material_seam_grade_decision() {
         let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
         let field = NodeBandHeightFieldId::new(0, 6, RoadSurfaceBandKind::Carriageway);
         let mut heights = NodeHeightSolution {
@@ -1801,15 +1800,14 @@ mod tests {
                 vertex.height_m,
                 owner,
                 field,
-                NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption,
+                NodeGradeCarrierDecision::ExplicitMaterialSeam,
             ));
         }
 
         let arrangement = NodeArrangement::from_height_solution(&heights)
-            .expect("grade-authorized seam adoption should arrange");
+            .expect("grade-authorized explicit seam should arrange");
         assert!(arrangement.vertices().iter().all(|vertex| {
-            vertex.grade_authority().decision
-                == NodeGradeCarrierDecision::ExplicitMaterialSeamAdoption
+            vertex.grade_authority().decision == NodeGradeCarrierDecision::ExplicitMaterialSeam
         }));
     }
 
