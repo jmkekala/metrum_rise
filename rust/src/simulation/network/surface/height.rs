@@ -18,21 +18,22 @@ use super::rails::{
     NodeGeneratedContourPurpose, NodeRailContourSet,
 };
 use super::segments::{
-    key_lies_exactly_on_segment, raw_tuple_key_lies_exactly_on_segment,
-    raw_tuple_quantization_cell_intersects_segment,
+    raw_tuple_key_lies_exactly_on_segment, raw_tuple_quantization_cell_intersects_segment,
 };
 use super::terminal::{
     NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
 };
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_M,
 };
 use spade::{Point2, Triangulation};
 use std::collections::BTreeMap;
 
 const HEIGHT_SOURCE_KEY_SCALE: f64 = SURFACE_XZ_KEY_SCALE;
-const HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS: i128 = 8192;
+// Source-edge handoff may absorb only project point-dedup drift, not a general near-edge search.
+const HEIGHT_SOURCE_EDGE_DEDUP_DRIFT_UNITS: i128 =
+    (WORLD_POINT_DEDUP_DISTANCE_M as f64 * HEIGHT_SOURCE_KEY_SCALE + 0.5) as i128;
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 type NodeHeightSourcePointKey = (i64, i64);
@@ -1561,54 +1562,41 @@ fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> 
     for edge in edges {
         let start = height_source_point_key(edge.start_xz);
         let end = height_source_point_key(edge.end_xz);
-        if raw_tuple_key_lies_exactly_on_segment(point, start, end)
-            || raw_tuple_quantization_cell_intersects_segment(
-                point,
-                start,
-                end,
-                HEIGHT_SOURCE_EDGE_NEIGHBOR_UNITS,
-            )
-        {
-            let dx = end.0 - start.0;
-            let dz = end.1 - start.1;
-            let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
-            if denominator == 0 {
-                continue;
-            }
-            let numerator = if dx.abs() >= dz.abs() {
-                point.0 - start.0
-            } else {
-                point.1 - start.1
-            };
-            let t = numerator as f64 / denominator as f64;
-            if !(0.0..=1.0).contains(&t) {
-                continue;
-            }
-            return Some(edge.start_height_m + (edge.end_height_m - edge.start_height_m) * t);
-        }
-
-        let point = NodeHeightPointKey::from_point(point_xz);
-        let start = NodeHeightPointKey::from_point(edge.start_xz);
-        let end = NodeHeightPointKey::from_point(edge.end_xz);
-        if !key_lies_exactly_on_segment(point.surface_key(), start.surface_key(), end.surface_key())
-        {
+        if !height_key_has_source_edge_support(point, start, end) {
             continue;
         }
-        let dx = end.x_key - start.x_key;
-        let dz = end.z_key - start.z_key;
+        let dx = end.0 - start.0;
+        let dz = end.1 - start.1;
         let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
         if denominator == 0 {
             continue;
         }
         let numerator = if dx.abs() >= dz.abs() {
-            point.x_key - start.x_key
+            point.0 - start.0
         } else {
-            point.z_key - start.z_key
+            point.1 - start.1
         };
         let t = numerator as f64 / denominator as f64;
+        if !(0.0..=1.0).contains(&t) {
+            continue;
+        }
         return Some(edge.start_height_m + (edge.end_height_m - edge.start_height_m) * t);
     }
     None
+}
+
+fn height_key_has_source_edge_support(
+    point: NodeHeightSourcePointKey,
+    start: NodeHeightSourcePointKey,
+    end: NodeHeightSourcePointKey,
+) -> bool {
+    raw_tuple_key_lies_exactly_on_segment(point, start, end)
+        || raw_tuple_quantization_cell_intersects_segment(
+            point,
+            start,
+            end,
+            HEIGHT_SOURCE_EDGE_DEDUP_DRIFT_UNITS,
+        )
 }
 
 fn height_source_point_key(point: RoadVec2) -> NodeHeightSourcePointKey {
@@ -1642,10 +1630,6 @@ impl NodeHeightPointKey {
 
     fn z_mm(self) -> i64 {
         SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
-    }
-
-    fn surface_key(self) -> SurfaceXzKey {
-        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
     }
 }
 
@@ -1969,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn side_join_height_authority_reuses_source_rail_at_handoff_vertices() {
+    fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_vertices() {
         let mut field = NodeBandHeightField::from_interval(
             0,
             &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
@@ -2006,18 +1990,30 @@ mod tests {
         );
         assert!((handoff_height.height_m - 0.5).abs() <= 1.0e-6);
 
-        let drifted_handoff_height = field
+        let dedup_drifted_handoff_height = field
             .evaluate_authorized_height(
                 owner,
                 NodeGeneratedContourClaimPriority::SideJoin,
                 RoadVec2::new(5.0, 0.00005),
             )
-            .expect("overlay-drifted side-join vertex on source rail should still reuse the rail");
+            .expect("sub-dedup side-join vertex on source rail should reuse the rail");
         assert_eq!(
-            drifted_handoff_height.authority,
+            dedup_drifted_handoff_height.authority,
             NodeHeightAuthoritySource::SourceInterval
         );
-        assert!((drifted_handoff_height.height_m - 0.5).abs() <= 1.0e-6);
+        assert!((dedup_drifted_handoff_height.height_m - 0.5).abs() <= 1.0e-6);
+
+        assert!(
+            matches!(
+                field.evaluate_authorized_height(
+                    owner,
+                    NodeGeneratedContourClaimPriority::SideJoin,
+                    RoadVec2::new(5.0, -0.001)
+                ),
+                Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
+            ),
+            "near-edge vertices outside the project dedup envelope must not inherit source-rail height"
+        );
 
         let interior_height = field
             .evaluate_authorized_height(
@@ -2087,6 +2083,7 @@ mod tests {
             concat!("evaluate_region_", "scoped_height"),
             concat!("bounded_region_", "scoped_edge_height"),
             concat!("region_scoped_", "carrier"),
+            concat!("HEIGHT_SOURCE_EDGE_", "NEIGHBOR_UNITS"),
         ] {
             assert!(
                 !source.contains(forbidden),
