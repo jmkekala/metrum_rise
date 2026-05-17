@@ -2,8 +2,8 @@
 
 use super::arrangement::NodeBandOwner;
 use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
-    road_points_to_polyline, road_vec3_xz as xz,
+    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, road_points_to_polyline,
+    road_vec3_xz as xz,
 };
 use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
@@ -12,7 +12,7 @@ use super::input::{
 use super::joins::{
     NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, side_join_bands_by_mouth,
 };
-use super::keys::{SURFACE_POLYLINE_POINT_EQUAL_EPS_M, SurfaceXzKey};
+use super::keys::SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
 use super::segments::{
     raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment,
     raw_tuple_segment_parameter_key as generated_segment_parameter_key,
@@ -22,12 +22,11 @@ use super::terminal::{
     terminal_cap_bands_by_mouth,
 };
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind,
 };
 use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineSourceMut};
-use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 mod bands;
 mod caps_and_joins;
@@ -45,11 +44,10 @@ use constraints::*;
 use contacts::{
     append_generated_material_point_contact_constraints,
     append_generated_same_band_contact_constraints,
-    append_source_authorized_raised_step_point_contacts,
-    generated_raised_step_boundary_role_for_owner, node_generated_contact_contours,
+    append_source_authorized_raised_step_point_contacts, node_generated_contact_contours,
     node_generated_contact_source_constraints,
     node_generated_contact_sources_from_contour_backed_contacts,
-    raised_step_band_kinds_can_contact, retain_source_authorized_generated_contact_constraints,
+    retain_source_authorized_generated_contact_constraints,
     validate_generated_contact_constraint_endpoints_from_sources,
 };
 use contours::*;

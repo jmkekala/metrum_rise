@@ -3,7 +3,7 @@
 use super::arrangement::{
     NodeArrangement, NodeArrangementKey, NodeArrangementVertex, NodeArrangementVertexId,
     NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
-    owners_form_explicit_vertical_step_pair,
+    NodeRegionSeamConstraint, owners_form_explicit_vertical_step_pair,
 };
 use super::backend::RoadVec3;
 use super::grade::NodeGradeVertexAuthority;
@@ -137,8 +137,12 @@ impl NodeTriangulationSolution {
 
         let mut explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         if arrangement.piece_kind() == RoadSurfaceVisualNodePieceKind::JunctionN {
-            explicit_vertical_step_segments
-                .extend(explicit_vertical_step_segments_from_triangulated_boundaries(&regions));
+            explicit_vertical_step_segments.extend(
+                source_authorized_vertical_step_segments_from_triangulated_boundaries(
+                    arrangement,
+                    &regions,
+                ),
+            );
             explicit_vertical_step_segments.sort_unstable();
             explicit_vertical_step_segments.dedup();
         }
@@ -152,7 +156,8 @@ impl NodeTriangulationSolution {
     }
 }
 
-fn explicit_vertical_step_segments_from_triangulated_boundaries(
+fn source_authorized_vertical_step_segments_from_triangulated_boundaries(
+    arrangement: &NodeArrangement,
     regions: &[NodeTriangulatedRegion],
 ) -> Vec<NodeExplicitVerticalStepSegment> {
     let mut boundary_edges_by_xz = BTreeMap::<
@@ -208,6 +213,12 @@ fn explicit_vertical_step_segments_from_triangulated_boundaries(
             for (right_owner, _, right_region_index) in edges.iter().skip(left_index + 1) {
                 if left_region_index == right_region_index
                     || !owners_form_explicit_vertical_step_pair(*left_owner, *right_owner)
+                    || !triangulated_boundary_edge_has_explicit_step_source_authority(
+                        arrangement,
+                        key,
+                        *left_owner,
+                        *right_owner,
+                    )
                 {
                     continue;
                 }
@@ -220,6 +231,60 @@ fn explicit_vertical_step_segments_from_triangulated_boundaries(
         }
     }
     segments.into_iter().collect()
+}
+
+fn triangulated_boundary_edge_has_explicit_step_source_authority(
+    arrangement: &NodeArrangement,
+    edge: (NodeArrangementKey, NodeArrangementKey),
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+) -> bool {
+    let constraints = arrangement
+        .regions()
+        .iter()
+        .flat_map(|region| region.seam_constraints())
+        .filter(|constraint| {
+            constraint.is_material_transition
+                && !constraint.constrains_shared_height
+                && seam_constraint_matches_owner_pair(constraint, left_owner, right_owner)
+        })
+        .collect::<Vec<_>>();
+    constraints
+        .iter()
+        .any(|constraint| seam_constraint_covers_edge(constraint, edge.0, edge.1))
+        || (constraints
+            .iter()
+            .any(|constraint| seam_constraint_covers_key(constraint, edge.0))
+            && constraints
+                .iter()
+                .any(|constraint| seam_constraint_covers_key(constraint, edge.1)))
+}
+
+fn seam_constraint_matches_owner_pair(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    (constraint.owner == Some(owner) && constraint.opposite_owner == Some(opposite_owner))
+        || (constraint.owner == Some(opposite_owner) && constraint.opposite_owner == Some(owner))
+}
+
+fn seam_constraint_covers_edge(
+    constraint: &NodeRegionSeamConstraint,
+    edge_start: NodeArrangementKey,
+    edge_end: NodeArrangementKey,
+) -> bool {
+    seam_constraint_covers_key(constraint, edge_start)
+        && seam_constraint_covers_key(constraint, edge_end)
+}
+
+fn seam_constraint_covers_key(
+    constraint: &NodeRegionSeamConstraint,
+    key: NodeArrangementKey,
+) -> bool {
+    let start = NodeArrangementKey::from_point(constraint.start_xz);
+    let end = NodeArrangementKey::from_point(constraint.end_xz);
+    arrangement_key_lies_exactly_on_segment(key, start, end)
 }
 
 fn triangulated_edge_arrangement_key(
@@ -242,6 +307,17 @@ fn triangulated_edge_arrangement_key(
     } else {
         (end, start)
     })
+}
+
+fn arrangement_key_lies_exactly_on_segment(
+    point: NodeArrangementKey,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+) -> bool {
+    let point = SurfaceXzKey::from_raw_keys(point.x_key(), point.z_key());
+    let start = SurfaceXzKey::from_raw_keys(start.x_key(), start.z_key());
+    let end = SurfaceXzKey::from_raw_keys(end.x_key(), end.z_key());
+    point.lies_exactly_on_segment(start, end)
 }
 
 fn triangulate_arrangement_region(
@@ -732,6 +808,112 @@ mod tests {
     }
 
     #[test]
+    fn triangulation_does_not_derive_step_authority_from_shared_boundaries() {
+        let lower_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let raised_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let lower_height_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+        let raised_height_field =
+            NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+        let mut arrangement = NodeArrangement::new(94, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+        let lower_a = arrangement_test_vertex(
+            &mut arrangement,
+            0.0,
+            0.0,
+            0.0,
+            lower_owner,
+            lower_height_field,
+        );
+        let lower_b = arrangement_test_vertex(
+            &mut arrangement,
+            1.0,
+            0.0,
+            0.0,
+            lower_owner,
+            lower_height_field,
+        );
+        let lower_c = arrangement_test_vertex(
+            &mut arrangement,
+            1.0,
+            1.0,
+            0.0,
+            lower_owner,
+            lower_height_field,
+        );
+        let lower_d = arrangement_test_vertex(
+            &mut arrangement,
+            0.0,
+            1.0,
+            0.0,
+            lower_owner,
+            lower_height_field,
+        );
+        arrangement.push_region(
+            lower_owner,
+            lower_height_field,
+            vec![lower_a, lower_b, lower_c, lower_d],
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+
+        let raised_a = arrangement_test_vertex(
+            &mut arrangement,
+            0.0,
+            1.0,
+            0.12,
+            raised_owner,
+            raised_height_field,
+        );
+        let raised_b = arrangement_test_vertex(
+            &mut arrangement,
+            1.0,
+            1.0,
+            0.12,
+            raised_owner,
+            raised_height_field,
+        );
+        let raised_c = arrangement_test_vertex(
+            &mut arrangement,
+            1.0,
+            2.0,
+            0.12,
+            raised_owner,
+            raised_height_field,
+        );
+        let raised_d = arrangement_test_vertex(
+            &mut arrangement,
+            0.0,
+            2.0,
+            0.12,
+            raised_owner,
+            raised_height_field,
+        );
+        arrangement.push_region(
+            raised_owner,
+            raised_height_field,
+            vec![raised_a, raised_b, raised_c, raised_d],
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            Vec::new(),
+        );
+
+        let solution = NodeTriangulationSolution::from_arrangement(&arrangement)
+            .expect("adjacent owned regions should triangulate");
+
+        assert!(
+            arrangement.explicit_vertical_step_segments().is_empty(),
+            "test arrangement must not carry source step authority"
+        );
+        assert!(
+            solution.explicit_vertical_step_segments.is_empty(),
+            "CDT boundary contact must not synthesize explicit vertical step authority"
+        );
+    }
+
+    #[test]
     fn triangulates_owned_region_with_hole_without_filling_the_hole() {
         let heights = NodeHeightSolution {
             node_id: 91,
@@ -880,6 +1062,27 @@ mod tests {
                 super::super::grade::NodeGradeCarrierDecision::SourceCarrier { authority: None },
             )),
         }
+    }
+
+    fn arrangement_test_vertex(
+        arrangement: &mut NodeArrangement,
+        x: f64,
+        z: f64,
+        height_m: f64,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+    ) -> NodeArrangementVertexId {
+        arrangement
+            .insert_vertex(
+                super::super::backend::RoadVec2::new(x, z),
+                height_m,
+                [owner],
+                height_field_id,
+                [NodeSeamSource::FootprintBoundary {
+                    owner_index: owner.owner_index(),
+                }],
+            )
+            .expect("test vertex should enter arrangement")
     }
 
     fn triangle_centroid_xz(

@@ -12,7 +12,6 @@ use super::paths::{
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
-const TERMINAL_CAP_HEIGHT_EDGE_EPS_M: f64 = 0.001;
 const TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 const TERMINAL_CAP_WIDTH_EPS_M: f64 = 0.001;
 
@@ -696,11 +695,7 @@ fn clean_terminal_cap_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVe
         return None;
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let cleaned_world = reheight_road_points_from_world_path(
-        points_xz,
-        &path_world,
-        TERMINAL_CAP_HEIGHT_EDGE_EPS_M,
-    )?;
+    let cleaned_world = reheight_road_points_from_world_path(points_xz, &path_world)?;
     (cleaned_world.len() >= 2).then_some(cleaned_world)
 }
 
@@ -717,11 +712,8 @@ fn clean_terminal_cap_contour_world(contour_world: Vec<RoadVec3>) -> Option<Vec<
     {
         return None;
     }
-    let cleaned_world = reheight_road_points_from_world_path(
-        polyline_to_road_points(&cleaned),
-        &contour_world,
-        TERMINAL_CAP_HEIGHT_EDGE_EPS_M,
-    )?;
+    let cleaned_world =
+        reheight_road_points_from_world_path(polyline_to_road_points(&cleaned), &contour_world)?;
     (cleaned_world.len() >= 3).then_some(cleaned_world)
 }
 

@@ -5,6 +5,7 @@ use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
 use godot::prelude::{Vector2, Vector3};
+use std::collections::BTreeSet;
 
 fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
     IncidentMouthBand {
@@ -425,7 +426,7 @@ fn bend_side_join_contacts_name_exact_adjacent_owner_pair() {
             && constraint.source_band_index == Some(4)
             && (constraint.owner == Some(side_join_owner)
                 || constraint.opposite_owner == Some(side_join_owner))
-            && generated_constraint_opposite_owner(constraint, side_join_owner)
+            && constraint_opposite_owner(constraint, side_join_owner)
                 .is_some_and(|owner| owner.kind() == RoadSurfaceBandKind::Carriageway)
     }));
     assert!(!contours.constraints.iter().any(|constraint| {
@@ -1276,8 +1277,7 @@ fn terminal_cap_contacts_name_adjacent_owner_pairs() {
                     || constraint.opposite_owner == Some(terminal_curb_owner))
         })
         .filter_map(|constraint| {
-            let opposite_owner =
-                generated_constraint_opposite_owner(constraint, terminal_curb_owner)?;
+            let opposite_owner = constraint_opposite_owner(constraint, terminal_curb_owner)?;
             Some((
                 GeneratedContourEdgeKey::new(
                     road_point_key(constraint.points_xz[0]),
@@ -1290,6 +1290,17 @@ fn terminal_cap_contacts_name_adjacent_owner_pairs() {
 
     assert!(contacts.contains(&(left_segment, left_carriageway)));
     assert!(contacts.contains(&(right_segment, right_carriageway)));
+}
+
+fn constraint_opposite_owner(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+) -> Option<NodeBandOwner> {
+    match (constraint.owner, constraint.opposite_owner) {
+        (Some(left), Some(right)) if left == owner => Some(right),
+        (Some(left), Some(right)) if right == owner => Some(left),
+        _ => None,
+    }
 }
 
 #[test]

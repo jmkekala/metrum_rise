@@ -1,7 +1,7 @@
 //! Exact source validation for generated rail contacts.
 
-use super::super::*;
 use super::source_authority::generated_contact_kind_from_constraint;
+use super::*;
 
 pub(in crate::simulation::network::surface::node::rails) fn retain_source_authorized_generated_contact_constraints(
     contours: &[NodeGeneratedContour],

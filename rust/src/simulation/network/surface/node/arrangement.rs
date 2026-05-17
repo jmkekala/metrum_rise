@@ -1345,6 +1345,10 @@ impl NodeOwnedRegion {
     pub(crate) fn area_m2(&self) -> f32 {
         self.area_m2
     }
+
+    pub(crate) fn seam_constraints(&self) -> &[NodeRegionSeamConstraint] {
+        &self.seam_constraints
+    }
 }
 
 impl NodeArrangementFace {
@@ -1491,12 +1495,12 @@ pub(crate) fn seam_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConst
 
 fn owners_for_material_seam_constraint(
     constraint: &NodeRegionSeamConstraint,
-    fallback_owner: NodeBandOwner,
+    region_owner: NodeBandOwner,
 ) -> Vec<NodeBandOwner> {
     match (constraint.owner, constraint.opposite_owner) {
         (Some(owner), Some(opposite_owner)) => vec![owner, opposite_owner],
         (Some(owner), None) | (None, Some(owner)) => vec![owner],
-        (None, None) => vec![fallback_owner],
+        (None, None) => vec![region_owner],
     }
 }
 

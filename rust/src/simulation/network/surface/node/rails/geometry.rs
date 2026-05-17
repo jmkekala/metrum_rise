@@ -1,6 +1,8 @@
 //! Canonical quantized rail geometry helpers.
 
-use super::*;
+use super::super::backend::RoadVec2;
+use super::super::keys::SurfaceXzKey;
+use super::topology::NodeRailPointKey;
 
 pub(super) fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
     keys.dedup();
@@ -31,7 +33,7 @@ pub(super) fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) 
         }
     }
 }
-pub(super) fn generated_triangle_double_area(
+fn generated_triangle_double_area(
     a: NodeRailPointKey,
     b: NodeRailPointKey,
     c: NodeRailPointKey,
@@ -72,8 +74,8 @@ pub(super) fn quantized_proper_segment_intersection(
     let x_num = i128::from(a.0) * denominator + r_x * numerator;
     let z_num = i128::from(a.1) * denominator + r_z * numerator;
     let intersection = (
-        div_round_nearest_i128(x_num, denominator)?,
-        div_round_nearest_i128(z_num, denominator)?,
+        div_round_to_canonical_key_i128(x_num, denominator)?,
+        div_round_to_canonical_key_i128(z_num, denominator)?,
     );
     if intersection == a || intersection == b || intersection == c || intersection == d {
         None
@@ -81,7 +83,7 @@ pub(super) fn quantized_proper_segment_intersection(
         Some(intersection)
     }
 }
-pub(super) fn div_round_nearest_i128(numerator: i128, denominator: i128) -> Option<i64> {
+fn div_round_to_canonical_key_i128(numerator: i128, denominator: i128) -> Option<i64> {
     if denominator == 0 {
         return None;
     }

@@ -1,6 +1,6 @@
 //! Canonical generated-contact geometry helpers.
 
-use super::super::*;
+use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GeneratedPointContourLocation {

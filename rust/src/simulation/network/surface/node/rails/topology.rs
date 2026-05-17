@@ -1,6 +1,12 @@
 //! Generated contour topology helpers for node rails.
 
-use super::*;
+use super::super::backend::polyline_to_road_points;
+use super::contours::{align_height_points_to_contour, cleaned_closed_contour};
+use super::geometry::{road_point_from_key, road_point_key};
+use super::owners::generated_contour_band_kind;
+use super::{
+    NodeGeneratedContour, NodeRailConstraint, NodeRailConstraintKind, NodeRailGenerationError,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedContourEdgeKey {
@@ -48,7 +54,7 @@ pub(super) fn set_generated_contour_from_keys(
     update_generated_band_contour_constraint(contour, constraints);
     Ok(())
 }
-pub(super) fn update_generated_band_contour_constraint(
+fn update_generated_band_contour_constraint(
     contour: &NodeGeneratedContour,
     constraints: &mut [NodeRailConstraint],
 ) {
@@ -98,9 +104,7 @@ pub(super) fn shared_generated_contour_points(
         .filter(|point| right_points.binary_search(point).is_ok())
         .collect()
 }
-pub(super) fn generated_contour_edges(
-    contour: &NodeGeneratedContour,
-) -> Vec<GeneratedContourEdgeKey> {
+fn generated_contour_edges(contour: &NodeGeneratedContour) -> Vec<GeneratedContourEdgeKey> {
     let keys = generated_contour_keys(contour);
     let mut edges = Vec::new();
     for index in 0..keys.len() {

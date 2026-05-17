@@ -1,8 +1,8 @@
 //! Materialization of source-authorized generated rail contacts.
 
-use super::super::*;
 use super::geometry::*;
 use super::source_authority::*;
+use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedMaterialPointContactAuthority {

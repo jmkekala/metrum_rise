@@ -29,7 +29,7 @@ enum SideJoinPathMode {
     JunctionNonRoad,
 }
 
-const SIDE_JOIN_HEIGHT_EDGE_EPS_M: f64 = 0.001;
+const SIDE_JOIN_ARC_RADIUS_EPS_M: f64 = 0.001;
 const SIDE_JOIN_ARC_SPLIT_DEPTH: usize = 2;
 const SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 
@@ -424,7 +424,7 @@ fn side_join_backend_arc_path_xz(
     let start_radius_m = center_xz.distance(start_xz);
     let end_radius_m = center_xz.distance(end_xz);
     if start_radius_m <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M
-        || (start_radius_m - end_radius_m).abs() > SIDE_JOIN_HEIGHT_EDGE_EPS_M
+        || (start_radius_m - end_radius_m).abs() > SIDE_JOIN_ARC_RADIUS_EPS_M
     {
         return None;
     }
@@ -588,8 +588,7 @@ fn clean_side_join_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>
         return None;
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let cleaned_world =
-        reheight_road_points_from_world_path(points_xz, &path_world, SIDE_JOIN_HEIGHT_EDGE_EPS_M)?;
+    let cleaned_world = reheight_road_points_from_world_path(points_xz, &path_world)?;
     (cleaned_world.len() >= 2).then_some(cleaned_world)
 }
 

@@ -1,6 +1,16 @@
 //! Generated rail constraint predicates and boundary-role helpers.
 
-use super::*;
+use super::super::arrangement::NodeBandOwner;
+use super::contacts::{
+    generated_raised_step_boundary_role_for_owner, raised_step_band_kinds_can_contact,
+};
+use super::geometry::road_point_key;
+use super::owners::{generated_contour_band_kind, is_carriageway};
+use super::topology::{GeneratedContourDirectedEdge, NodeRailPointKey, generated_contour_keys};
+use super::{
+    NodeGeneratedContour, NodeInputBoundaryRailRole, NodeRailConstraint, NodeRailConstraintKind,
+    RoadSurfaceBandKind, generated_point_key_lies_on_segment,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum GeneratedSameBandBoundaryRole {
@@ -81,7 +91,7 @@ pub(super) fn generated_contour_supports_same_band_role(kind: RoadSurfaceBandKin
         RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk
     )
 }
-pub(super) fn collect_generated_same_band_role_on_segment(
+fn collect_generated_same_band_role_on_segment(
     contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
     start: NodeRailPointKey,
@@ -107,7 +117,7 @@ pub(super) fn collect_generated_same_band_role_on_segment(
         }
     }
 }
-pub(super) fn generated_same_band_boundary_role_at_key(
+fn generated_same_band_boundary_role_at_key(
     contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
     key: NodeRailPointKey,
@@ -142,7 +152,7 @@ pub(super) fn generated_same_band_boundary_role_at_key(
         None
     }
 }
-pub(super) fn generated_boundary_role_from_constraint(
+fn generated_boundary_role_from_constraint(
     contour_kind: RoadSurfaceBandKind,
     owner: NodeBandOwner,
     constraint: &NodeRailConstraint,
@@ -168,7 +178,7 @@ pub(super) fn generated_boundary_role_from_constraint(
         | NodeRailConstraintKind::BandBoundary { .. } => None,
     }
 }
-pub(super) fn generated_constraint_opposite_owner(
+fn generated_constraint_opposite_owner(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,
 ) -> Option<NodeBandOwner> {
@@ -178,7 +188,7 @@ pub(super) fn generated_constraint_opposite_owner(
         _ => None,
     }
 }
-pub(super) fn generated_constraint_applies_to_owner(
+fn generated_constraint_applies_to_owner(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,
 ) -> bool {

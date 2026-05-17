@@ -1,12 +1,12 @@
 //! Canonical contact-point insertion for generated rail contacts.
 
-use super::super::*;
 use super::geometry::*;
 use super::materialization::generated_contact_point_has_explicit_roles;
 use super::source_authority::{
     GeneratedSameBandContactConstraint, generated_contact_kind_from_constraint,
     generated_raised_step_contact_kind_for_owners, generated_same_band_contact_constraint,
 };
+use super::*;
 
 pub(in crate::simulation::network::surface::node::rails) fn node_generated_contact_contours(
     contours: &mut [NodeGeneratedContour],
@@ -156,8 +156,12 @@ pub(super) fn insert_keys_on_generated_contour_edges(
                     height_points[index].y,
                     height_points[next].y,
                 ) else {
-                    contour.height_points_world = None;
-                    continue;
+                    return Err(NodeRailGenerationError::InvalidHeightCarrier {
+                        kind: contour.kind,
+                        mouth_order_index: contour.source_mouth_order_index,
+                        band_index: contour.source_band_index,
+                        reason: "contact_noding_height_not_on_source_edge",
+                    });
                 };
                 let point = road_point_from_key(insert_key);
                 new_height_points.push(RoadVec3::new(point.x, height_m, point.y));

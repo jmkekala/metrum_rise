@@ -1,8 +1,7 @@
 //! Explicit source-authority support for generated rail contacts.
 
-use super::super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};
-use super::super::*;
 use super::geometry::*;
+use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedSameBandContactConstraint {
