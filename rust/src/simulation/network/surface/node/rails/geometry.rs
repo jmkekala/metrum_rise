@@ -2,6 +2,7 @@
 
 use super::super::backend::RoadVec2;
 use super::super::keys::SurfaceXzKey;
+use super::super::segments::raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment;
 use super::topology::NodeRailPointKey;
 
 pub(super) fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
@@ -77,11 +78,16 @@ pub(super) fn quantized_proper_segment_intersection(
         div_round_to_canonical_key_i128(x_num, denominator)?,
         div_round_to_canonical_key_i128(z_num, denominator)?,
     );
-    if intersection == a || intersection == b || intersection == c || intersection == d {
-        None
-    } else {
-        Some(intersection)
+    if intersection == a
+        || intersection == b
+        || intersection == c
+        || intersection == d
+        || !generated_point_key_lies_on_segment(intersection, a, b)
+        || !generated_point_key_lies_on_segment(intersection, c, d)
+    {
+        return None;
     }
+    Some(intersection)
 }
 fn div_round_to_canonical_key_i128(numerator: i128, denominator: i128) -> Option<i64> {
     if denominator == 0 {

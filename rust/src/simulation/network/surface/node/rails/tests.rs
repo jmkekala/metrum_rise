@@ -12,7 +12,7 @@ use super::contacts::{
     append_source_authorized_raised_step_point_contacts, node_generated_contact_source_constraints,
     validate_generated_contact_constraint_endpoints_from_sources,
 };
-use super::contours::push_generated_contour;
+use super::contours::{height_for_key_on_generated_edge, push_generated_contour};
 use super::geometry::road_point_key;
 use super::owners::owners_by_mouth;
 use super::topology::GeneratedContourEdgeKey;
@@ -176,7 +176,7 @@ fn input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
         boundary_paths_world: Vec::new(),
         band_start_paths_world: Vec::new(),
         band_end_paths_world: Vec::new(),
-        uses_sampled_band_domain_paths: false,
+        uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
         direction_xz: Vector2::RIGHT,
         edge_idx: 7,
@@ -197,7 +197,7 @@ fn terminal_input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
         boundary_paths_world: Vec::new(),
         band_start_paths_world: Vec::new(),
         band_end_paths_world: Vec::new(),
-        uses_sampled_band_domain_paths: false,
+        uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
         direction_xz: Vector2::RIGHT,
         edge_idx: 7,
@@ -218,7 +218,7 @@ fn side_join_input(piece_kind: RoadSurfaceVisualNodePieceKind) -> NodeArrangemen
         boundary_paths_world: Vec::new(),
         band_start_paths_world: Vec::new(),
         band_end_paths_world: Vec::new(),
-        uses_sampled_band_domain_paths: false,
+        uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
         direction_xz: Vector2::RIGHT,
         edge_idx: 7,
@@ -230,7 +230,7 @@ fn side_join_input(piece_kind: RoadSurfaceVisualNodePieceKind) -> NodeArrangemen
         boundary_paths_world: Vec::new(),
         band_start_paths_world: Vec::new(),
         band_end_paths_world: Vec::new(),
-        uses_sampled_band_domain_paths: false,
+        uses_explicit_band_domain_paths: false,
         direction_angle_ccw: std::f32::consts::FRAC_PI_2,
         direction_xz: Vector2::DOWN,
         edge_idx: 8,
@@ -458,6 +458,18 @@ fn bend_side_join_contacts_name_exact_adjacent_owner_pair() {
 }
 
 #[test]
+fn generated_edge_height_requires_canonical_segment_support() {
+    let start = road_point_key(RoadVec2::new(0.0, 0.0));
+    let end = road_point_key(RoadVec2::new(2.0, 0.0));
+    let off_segment = road_point_key(RoadVec2::new(1.0, 0.5));
+
+    assert_eq!(
+        height_for_key_on_generated_edge(off_segment, start, end, 4.0, 6.0),
+        None
+    );
+}
+
+#[test]
 fn generated_contact_rejects_non_exact_owner_pair_authority() {
     let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let actual_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
@@ -542,7 +554,7 @@ fn generated_contact_rejects_non_exact_owner_pair_authority() {
 }
 
 #[test]
-fn sampled_band_domain_paths_reject_mismatched_height_carrier_lengths() {
+fn explicit_band_domain_paths_reject_mismatched_height_carrier_lengths() {
     let mouth = OrderedIncidentPieceMouth {
         profile: profile(10.0),
         endpoint_profile: profile(0.0),
@@ -564,7 +576,7 @@ fn sampled_band_domain_paths_reject_mismatched_height_carrier_lengths() {
                 Vector3::new(0.0, 4.2, 0.0),
             ],
         ],
-        uses_sampled_band_domain_paths: true,
+        uses_explicit_band_domain_paths: true,
         direction_angle_ccw: 0.0,
         direction_xz: Vector2::RIGHT,
         edge_idx: 7,
@@ -578,7 +590,7 @@ fn sampled_band_domain_paths_reject_mismatched_height_carrier_lengths() {
     .expect("test mouth should produce canonical input");
 
     let error = NodeRailContourSet::from_input(&input)
-        .expect_err("mismatched sampled carriers must fail before ownership");
+        .expect_err("mismatched explicit carriers must fail before ownership");
 
     assert!(matches!(
         error,
@@ -679,6 +691,47 @@ fn bend_side_join_point_contact_reowns_exact_source_rail_by_band_kind() {
             && constraint.points_xz.len() == 2
             && road_point_key(constraint.points_xz[0]) == start
             && road_point_key(constraint.points_xz[1]) == end
+    }));
+}
+
+#[test]
+fn source_authorized_point_contact_uses_deterministic_source_name() {
+    let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let shared_point = RoadVec2::new(0.0, 0.0);
+    let mut constraints = vec![
+        NodeRailConstraint {
+            constraint_index: 0,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(asphalt_owner),
+            opposite_owner: Some(curb_owner),
+            points_xz: vec![shared_point, RoadVec2::new(1.0, 0.0)],
+        },
+        NodeRailConstraint {
+            constraint_index: 1,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 1,
+            source_band_index: Some(2),
+            source_boundary_index: Some(2),
+            owner: Some(asphalt_owner),
+            opposite_owner: Some(curb_owner),
+            points_xz: vec![shared_point, RoadVec2::new(0.0, 1.0)],
+        },
+    ];
+
+    append_source_authorized_raised_step_point_contacts(
+        RoadSurfaceVisualNodePieceKind::Bend,
+        &[],
+        &mut constraints,
+    );
+
+    assert!(constraints.iter().skip(2).any(|constraint| {
+        constraint.source_mouth_order_index == 0
+            && constraint.source_band_index == Some(1)
+            && constraint.points_xz == vec![shared_point, shared_point]
     }));
 }
 

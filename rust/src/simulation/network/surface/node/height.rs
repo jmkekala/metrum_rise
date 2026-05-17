@@ -1903,7 +1903,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
-            uses_sampled_band_domain_paths: false,
+            uses_explicit_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
@@ -1975,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn source_band_height_carrier_rejects_mismatched_sampled_paths() {
+    fn source_band_height_carrier_rejects_mismatched_explicit_paths() {
         let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
         interval.start_path_world = vec![
             interval.mouth_start_world,
@@ -2001,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn source_band_height_carrier_uses_explicit_outer_chord_for_one_sided_sampled_path() {
+    fn source_band_height_carrier_uses_outer_chord_for_one_sided_explicit_path() {
         let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
         interval.start_path_world = vec![
             interval.mouth_start_world,
@@ -2960,7 +2960,7 @@ mod tests {
                     manual_interval(0, RoadSurfaceBandKind::Carriageway, 2.0, 4.0),
                     manual_interval(1, RoadSurfaceBandKind::Sidewalk, 5.0, 7.0),
                 ],
-                uses_sampled_band_domain_paths: false,
+                uses_explicit_band_domain_paths: false,
             }],
         }
     }

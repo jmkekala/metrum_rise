@@ -117,8 +117,8 @@ pub(super) fn push_band_contour(
     };
     let purpose = band_contour_purpose(piece_kind, interval.band_kind);
     let last_band_index = mouth.band_intervals.len().saturating_sub(1);
-    if mouth.uses_sampled_band_domain_paths {
-        let uses_paired_sampled_paths =
+    if mouth.uses_explicit_band_domain_paths {
+        let uses_paired_explicit_paths =
             interval.start_path_world.len() > 2 || interval.end_path_world.len() > 2;
         let uses_explicit_outer_chord = interval.band_index == 0
             && interval.start_path_world.len() > 2
@@ -126,7 +126,7 @@ pub(super) fn push_band_contour(
             || interval.band_index == last_band_index
                 && interval.start_path_world.len() == 2
                 && interval.end_path_world.len() > 2;
-        if uses_paired_sampled_paths
+        if uses_paired_explicit_paths
             && interval.start_path_world.len() != interval.end_path_world.len()
             && !uses_explicit_outer_chord
         {
@@ -137,7 +137,7 @@ pub(super) fn push_band_contour(
                 reason: "mismatched_path_height_carrier_lengths",
             });
         }
-        if uses_paired_sampled_paths
+        if uses_paired_explicit_paths
             && interval.start_path_world.len() == interval.end_path_world.len()
         {
             return push_path_band_contour(

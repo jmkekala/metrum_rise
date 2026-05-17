@@ -45,7 +45,7 @@ pub(crate) struct OrderedIncidentPieceMouth {
     pub(crate) boundary_paths_world: Vec<Vec<Vector3>>,
     pub(crate) band_start_paths_world: Vec<Vec<Vector3>>,
     pub(crate) band_end_paths_world: Vec<Vec<Vector3>>,
-    pub(crate) uses_sampled_band_domain_paths: bool,
+    pub(crate) uses_explicit_band_domain_paths: bool,
     pub(crate) direction_angle_ccw: f32,
     pub(crate) direction_xz: Vector2,
     pub(crate) edge_idx: usize,

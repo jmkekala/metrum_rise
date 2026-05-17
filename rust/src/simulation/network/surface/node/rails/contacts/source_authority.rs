@@ -146,7 +146,8 @@ pub(super) fn collect_source_authorized_raised_step_contacts(
     for (point, sources) in source_authority.sources_by_contact_point() {
         for left_index in 0..sources.len() {
             for right_index in left_index + 1..sources.len() {
-                let source = sources[left_index].min(sources[right_index]);
+                let (source_mouth_order_index, source_band_index) =
+                    deterministic_contact_source_name(sources[left_index], sources[right_index]);
                 for left_owner in sources[left_index].owners {
                     for right_owner in sources[right_index].owners {
                         let Some(kind) =
@@ -164,14 +165,24 @@ pub(super) fn collect_source_authorized_raised_step_contacts(
                             opposite_owner: pair.opposite_owner,
                             start: point,
                             end: point,
-                            source_mouth_order_index: source.source_mouth_order_index,
-                            source_band_index: source.source_band_index,
+                            source_mouth_order_index,
+                            source_band_index,
                         });
                     }
                 }
             }
         }
     }
+}
+
+fn deterministic_contact_source_name(
+    left: GeneratedRaisedStepEndpointSource,
+    right: GeneratedRaisedStepEndpointSource,
+) -> (usize, Option<usize>) {
+    // The generated contact already has exact endpoint authority from both sources.
+    // NodeRailConstraint carries one source name, so use a deterministic label only.
+    let source = left.min(right);
+    (source.source_mouth_order_index, source.source_band_index)
 }
 
 impl<'a> RaisedStepSourceAuthority<'a> {

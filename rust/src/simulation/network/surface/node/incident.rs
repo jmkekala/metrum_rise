@@ -15,7 +15,7 @@ impl RoadSurfaceSystem {
                 boundary_paths_world,
                 band_start_paths_world,
                 band_end_paths_world,
-                uses_sampled_band_domain_paths,
+                uses_explicit_band_domain_paths,
             ) = self.build_incident_mouth_paths(incident, &profile, &endpoint_profile);
             mouths.push(OrderedIncidentPieceMouth {
                 profile,
@@ -23,7 +23,7 @@ impl RoadSurfaceSystem {
                 boundary_paths_world,
                 band_start_paths_world,
                 band_end_paths_world,
-                uses_sampled_band_domain_paths,
+                uses_explicit_band_domain_paths,
                 direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
                 direction_xz: incident.direction_xz,
                 edge_idx: incident.edge_idx,
@@ -150,7 +150,7 @@ impl RoadSurfaceSystem {
             return (Vec::new(), Vec::new(), Vec::new(), false);
         }
 
-        let uses_sampled_band_domain_paths =
+        let uses_explicit_band_domain_paths =
             incident_profile_path_has_non_collinear_center(&profile_path);
         let boundary_paths_world = (0..profile.boundary_points_world.len())
             .map(|boundary_index| {
@@ -183,7 +183,7 @@ impl RoadSurfaceSystem {
             boundary_paths_world,
             band_start_paths_world,
             band_end_paths_world,
-            uses_sampled_band_domain_paths,
+            uses_explicit_band_domain_paths,
         )
     }
 

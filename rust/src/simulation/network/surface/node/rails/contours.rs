@@ -612,7 +612,7 @@ pub(super) fn height_for_key_on_generated_edge(
     start_height_m: f64,
     end_height_m: f64,
 ) -> Option<f64> {
-    if start == end {
+    if start == end || !generated_point_key_lies_on_segment(point, start, end) {
         return None;
     }
     let dx = end.0 - start.0;

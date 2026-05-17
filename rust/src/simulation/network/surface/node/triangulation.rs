@@ -753,7 +753,7 @@ mod tests {
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
-            uses_sampled_band_domain_paths: false,
+            uses_explicit_band_domain_paths: false,
             direction_angle_ccw: 0.0,
             direction_xz: Vector2::RIGHT,
             edge_idx: 7,
