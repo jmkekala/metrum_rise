@@ -67,7 +67,7 @@ impl RoadSurfaceSystem {
         }
 
         let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
-            Self::visible_top_polygons_from_owned_regions(&owned_regions);
+            Self::top_polygons_from_owned_regions_by_material(&owned_regions);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()
@@ -172,7 +172,9 @@ impl RoadSurfaceSystem {
                     &mut points,
                     |current_point_key, local_points| {
                         boundary_export_sources
-                            .has_final_owned_footprint_boundary_support_at_point(current_point_key)
+                            .has_exact_final_owned_footprint_boundary_support_at_point(
+                                current_point_key,
+                            )
                             || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
                                 > boundary_points_numeric_area_budget_m2(&local_points)
                     },
@@ -201,7 +203,7 @@ impl RoadSurfaceSystem {
         boundary_export_sources.height_mm_at_key(key)
     }
 
-    fn visible_top_polygons_from_owned_regions(
+    fn top_polygons_from_owned_regions_by_material(
         owned_regions: &[NodeOwnedRegion],
     ) -> (
         Vec<RoadSurfaceVisualPolygon>,
@@ -301,9 +303,11 @@ impl RoadSurfaceSystem {
         Option<(RoadSurfaceVisualPolygon, NodeTopSurfacePolygonSource)>,
         NodeBoundaryExportError,
     > {
-        let Some((triangle, vertex_ids)) =
-            Self::arrangement_face_canonical_triangle_with_vertices(arrangement, face)
+        let Some(vertex_ids) = Self::arrangement_face_canonical_vertex_ids(arrangement, face)
         else {
+            return Ok(None);
+        };
+        let Some(triangle) = Self::arrangement_face_world_triangle(arrangement, vertex_ids) else {
             return Ok(None);
         };
         let Some(region) = arrangement.regions().get(face.region().index()) else {
@@ -340,32 +344,52 @@ impl RoadSurfaceSystem {
         )))
     }
 
-    pub(super) fn arrangement_face_canonical_triangle_with_vertices(
+    pub(super) fn arrangement_face_canonical_vertex_ids(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
-    ) -> Option<(
-        [Vector3; 3],
-        [super::arrangement::NodeArrangementVertexId; 3],
-    )> {
+    ) -> Option<[super::arrangement::NodeArrangementVertexId; 3]> {
         let mut vertices = face.vertices();
-        let mut triangle = [
+        let triangle = [
+            Self::arrangement_vertex_flat_world(arrangement, vertices[0])?,
+            Self::arrangement_vertex_flat_world(arrangement, vertices[1])?,
+            Self::arrangement_vertex_flat_world(arrangement, vertices[2])?,
+        ];
+        let signed_area = Self::signed_polygon_area_xz(&triangle);
+        if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+            return None;
+        }
+        if signed_area < 0.0 {
+            vertices.swap(1, 2);
+        }
+        Some(vertices)
+    }
+
+    fn arrangement_face_world_triangle(
+        arrangement: &NodeArrangement,
+        vertices: [super::arrangement::NodeArrangementVertexId; 3],
+    ) -> Option<[Vector3; 3]> {
+        let triangle = [
             Self::arrangement_vertex_world(arrangement, vertices[0])?,
             Self::arrangement_vertex_world(arrangement, vertices[1])?,
             Self::arrangement_vertex_world(arrangement, vertices[2])?,
         ];
-        let has_area = Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2;
         let area_3d_m2 = (triangle[1] - triangle[0])
             .cross(triangle[2] - triangle[0])
             .length()
             * 0.5;
-        if !has_area || area_3d_m2 < NODE_OVERLAY_MIN_AREA_M2 {
+        if area_3d_m2 < NODE_OVERLAY_MIN_AREA_M2 {
             return None;
         }
-        if Self::signed_polygon_area_xz(&triangle) < 0.0 {
-            triangle.swap(1, 2);
-            vertices.swap(1, 2);
-        }
-        Some((triangle, vertices))
+        Some(triangle)
+    }
+
+    fn arrangement_vertex_flat_world(
+        arrangement: &NodeArrangement,
+        vertex_id: super::arrangement::NodeArrangementVertexId,
+    ) -> Option<Vector3> {
+        let vertex = arrangement.vertices().get(vertex_id.index())?;
+        let point_xz = vertex.point_xz();
+        Some(super::backend::road_xz_with_height_to_godot(point_xz, 0.0))
     }
 
     pub(super) fn arrangement_vertex_world(

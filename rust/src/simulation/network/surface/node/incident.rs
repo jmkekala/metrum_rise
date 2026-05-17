@@ -31,10 +31,14 @@ impl RoadSurfaceSystem {
             });
         }
         mouths.sort_by(|a, b| {
-            a.direction_angle_ccw
-                .total_cmp(&b.direction_angle_ccw)
-                .then(a.edge_idx.cmp(&b.edge_idx))
-                .then(a.side.cmp(&b.side))
+            incident_direction_ordering(
+                a.direction_angle_ccw,
+                a.edge_idx,
+                a.side,
+                b.direction_angle_ccw,
+                b.edge_idx,
+                b.side,
+            )
         });
         Some(mouths)
     }
@@ -392,11 +396,29 @@ impl RoadSurfaceSystem {
         a: &IncidentSurfaceEdge,
         b: &IncidentSurfaceEdge,
     ) -> std::cmp::Ordering {
-        Self::normalized_angle_ccw(a.direction_xz)
-            .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
-            .then(a.edge_idx.cmp(&b.edge_idx))
-            .then(a.side.cmp(&b.side))
+        incident_direction_ordering(
+            Self::normalized_angle_ccw(a.direction_xz),
+            a.edge_idx,
+            a.side,
+            Self::normalized_angle_ccw(b.direction_xz),
+            b.edge_idx,
+            b.side,
+        )
     }
+}
+
+fn incident_direction_ordering(
+    left_angle_ccw: f32,
+    left_edge_idx: usize,
+    left_side: IncidentEdgeSide,
+    right_angle_ccw: f32,
+    right_edge_idx: usize,
+    right_side: IncidentEdgeSide,
+) -> std::cmp::Ordering {
+    left_angle_ccw
+        .total_cmp(&right_angle_ccw)
+        .then(left_edge_idx.cmp(&right_edge_idx))
+        .then(left_side.cmp(&right_side))
 }
 
 fn incident_mouth_profiles_match(

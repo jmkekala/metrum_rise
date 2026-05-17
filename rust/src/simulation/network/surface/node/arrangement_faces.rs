@@ -22,8 +22,8 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
         .iter()
         .filter(|face| face.owner() == owner)
     {
-        let Some((_, vertices)) =
-            RoadSurfaceSystem::arrangement_face_canonical_triangle_with_vertices(arrangement, face)
+        let Some(vertices) =
+            RoadSurfaceSystem::arrangement_face_canonical_vertex_ids(arrangement, face)
         else {
             continue;
         };
