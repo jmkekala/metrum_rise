@@ -1,12 +1,21 @@
 //! Canonical contact-point insertion for generated rail contacts.
 
-use super::geometry::*;
+use super::geometry::generated_contour_boundary_contains_key;
 use super::materialization::generated_contact_point_has_explicit_roles;
 use super::source_authority::{
     GeneratedSameBandContactConstraint, generated_contact_kind_from_constraint,
     generated_raised_step_contact_kind_for_owners, generated_same_band_contact_constraint,
 };
-use super::*;
+use super::{
+    GeneratedContourDirectedEdge, NodeGeneratedContour, NodeGeneratedContourClaimPriority,
+    NodeRailConstraint, NodeRailGenerationError, NodeRailPointKey, RoadVec3,
+    generated_constraint_directed_edges, generated_contour_band_kind,
+    generated_contour_directed_edges, generated_contour_keys, generated_point_key_lies_on_segment,
+    generated_segment_parameter_key, height_for_key_on_generated_edge, owners_match_unordered,
+    quantized_proper_segment_intersection, remove_generated_contour_spikes, road_point_from_key,
+    road_point_key, set_generated_contour_from_keys,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::simulation::network::surface::node::rails) fn node_generated_contact_contours(
     contours: &mut [NodeGeneratedContour],
@@ -30,7 +39,7 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
     Ok(())
 }
 
-pub(super) fn generated_contact_contour_noding_candidates(
+fn generated_contact_contour_noding_candidates(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
 ) -> Vec<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)> {
@@ -69,7 +78,7 @@ pub(super) fn generated_contact_contour_noding_candidates(
     candidates
 }
 
-pub(super) fn insert_contact_noding_candidates(
+fn insert_contact_noding_candidates(
     contours: &mut [NodeGeneratedContour],
     constraints: &mut [NodeRailConstraint],
     candidates: Vec<(usize, GeneratedContourDirectedEdge, NodeRailPointKey)>,
@@ -98,7 +107,7 @@ pub(super) fn insert_contact_noding_candidates(
     Ok(inserted_any)
 }
 
-pub(super) fn insert_keys_on_generated_contour_edges(
+fn insert_keys_on_generated_contour_edges(
     contours: &mut [NodeGeneratedContour],
     constraints: &mut [NodeRailConstraint],
     contour_index: usize,
@@ -200,7 +209,7 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
     );
 }
 
-pub(super) fn generated_contact_source_constraint_noding_candidates(
+fn generated_contact_source_constraint_noding_candidates(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
 ) -> BTreeMap<usize, BTreeMap<GeneratedContourDirectedEdge, BTreeSet<NodeRailPointKey>>> {
@@ -254,7 +263,7 @@ pub(super) fn generated_contact_source_constraint_noding_candidates(
     candidates
 }
 
-pub(super) fn generated_contact_source_constraint_can_node_with_contour(
+fn generated_contact_source_constraint_can_node_with_contour(
     constraint: &NodeRailConstraint,
     contour: &NodeGeneratedContour,
 ) -> bool {
@@ -320,7 +329,7 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
     );
 }
 
-pub(super) fn generated_contact_point_has_source_contour_authority(
+fn generated_contact_point_has_source_contour_authority(
     contours: &[NodeGeneratedContour],
     contact: GeneratedSameBandContactConstraint,
     point: NodeRailPointKey,
@@ -338,7 +347,7 @@ pub(super) fn generated_contact_point_has_source_contour_authority(
     })
 }
 
-pub(super) fn insert_keys_on_generated_source_constraints(
+fn insert_keys_on_generated_source_constraints(
     constraints: &mut [NodeRailConstraint],
     insertions_by_constraint: BTreeMap<
         usize,
@@ -393,7 +402,7 @@ pub(super) fn insert_keys_on_generated_source_constraints(
     inserted_any
 }
 
-pub(super) fn generated_contours_support_contact_noding(
+fn generated_contours_support_contact_noding(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
 ) -> bool {
@@ -406,7 +415,7 @@ pub(super) fn generated_contours_support_contact_noding(
     generated_raised_step_contact_kind_for_owners(left_owner, right_owner).is_some()
 }
 
-pub(super) fn generated_contact_point_on_edge_noding_candidates(
+fn generated_contact_point_on_edge_noding_candidates(
     edge_contour: &NodeGeneratedContour,
     point_contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
@@ -432,7 +441,7 @@ pub(super) fn generated_contact_point_on_edge_noding_candidates(
     candidates
 }
 
-pub(super) fn generated_contact_edge_intersection_noding_candidates(
+fn generated_contact_edge_intersection_noding_candidates(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
@@ -466,7 +475,7 @@ pub(super) fn generated_contact_edge_intersection_noding_candidates(
     candidates
 }
 
-pub(super) fn generated_contact_noding_point_has_explicit_roles(
+fn generated_contact_noding_point_has_explicit_roles(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],

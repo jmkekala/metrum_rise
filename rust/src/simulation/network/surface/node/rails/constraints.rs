@@ -1,6 +1,8 @@
 //! Generated rail constraint predicates and boundary-role helpers.
 
 use super::super::arrangement::NodeBandOwner;
+use super::super::input::NodeInputBoundaryRailRole;
+use super::super::segments::raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment;
 use super::contacts::{
     generated_raised_step_boundary_role_for_owner, raised_step_band_kinds_can_contact,
 };
@@ -8,8 +10,7 @@ use super::geometry::road_point_key;
 use super::owners::{generated_contour_band_kind, is_carriageway};
 use super::topology::{GeneratedContourDirectedEdge, NodeRailPointKey, generated_contour_keys};
 use super::{
-    NodeGeneratedContour, NodeInputBoundaryRailRole, NodeRailConstraint, NodeRailConstraintKind,
-    RoadSurfaceBandKind, generated_point_key_lies_on_segment,
+    NodeGeneratedContour, NodeRailConstraint, NodeRailConstraintKind, RoadSurfaceBandKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

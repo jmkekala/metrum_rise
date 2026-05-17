@@ -1,7 +1,13 @@
 //! Exact source validation for generated rail contacts.
 
 use super::source_authority::generated_contact_kind_from_constraint;
-use super::*;
+use super::{
+    GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair, NodeBandOwner, NodeGeneratedContour,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailGenerationError, NodeRailPointKey,
+    RoadSurfaceBandKind, generated_constraint_directed_edges, generated_contour_directed_edges,
+    generated_contour_keys, owners_match_unordered, road_point_key,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::simulation::network::surface::node::rails) fn retain_source_authorized_generated_contact_constraints(
     contours: &[NodeGeneratedContour],
@@ -467,7 +473,7 @@ impl ExactGeneratedSourceAuthority {
     }
 }
 
-pub(super) fn generated_segments_have_endpoint(
+fn generated_segments_have_endpoint(
     segments: &BTreeSet<GeneratedContourEdgeKey>,
     point: NodeRailPointKey,
 ) -> bool {
@@ -476,7 +482,7 @@ pub(super) fn generated_segments_have_endpoint(
         .any(|segment| segment.start == point || segment.end == point)
 }
 
-pub(super) fn exact_generated_contact_owner_pair(
+fn exact_generated_contact_owner_pair(
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,

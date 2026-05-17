@@ -10,26 +10,35 @@ use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};
 use super::super::keys::SurfaceXzKey;
+use super::super::segments::{
+    raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment,
+    raw_tuple_segment_parameter_key as generated_segment_parameter_key,
+};
 use super::super::{
     NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
-use super::contours::height_for_key_on_generated_edge;
-use super::{
-    GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
-    GeneratedSameBandBoundaryRole, NodeGeneratedContour, NodeGeneratedContourClaimPriority,
-    NodeRailConstraint, NodeRailConstraintKind, NodeRailGenerationError, NodeRailPointKey,
+use super::constraints::{
+    GeneratedRaisedStepOwnerPair, GeneratedSameBandBoundaryRole,
     generated_constraint_contains_key_segment, generated_constraint_directed_edges,
-    generated_constraint_touches_key, generated_contour_band_kind,
-    generated_contour_directed_edges, generated_contour_keys,
-    generated_contour_supports_same_band_role, generated_point_key_lies_on_segment,
-    generated_same_band_boundary_role_at_contour_vertex, generated_segment_parameter_key,
-    owners_match_unordered, quantized_proper_segment_intersection, remove_generated_contour_spikes,
-    road_point_from_key, road_point_key, set_generated_contour_from_keys,
+    generated_constraint_touches_key, generated_contour_supports_same_band_role,
+    generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
+};
+use super::contours::height_for_key_on_generated_edge;
+use super::geometry::{
+    quantized_proper_segment_intersection, remove_generated_contour_spikes, road_point_from_key,
+    road_point_key,
+};
+use super::owners::generated_contour_band_kind;
+use super::topology::{
+    GeneratedContourDirectedEdge, GeneratedContourEdgeKey, NodeRailPointKey,
+    generated_contour_directed_edges, generated_contour_keys, set_generated_contour_from_keys,
     shared_generated_contour_edges, shared_generated_contour_points,
 };
-use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::{BTreeMap, BTreeSet};
+use super::{
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailGenerationError,
+};
 
 pub(super) use materialization::{
     append_generated_material_point_contact_constraints,

@@ -1,31 +1,14 @@
 //! Library-backed rail and contour generation for canonical node arrangements.
 
 use super::arrangement::NodeBandOwner;
-use super::backend::{
-    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, road_points_to_polyline,
-    road_vec3_xz as xz,
-};
-use super::input::{
-    NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
-    NodeInputProfileRail,
-};
-use super::joins::{
-    NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, side_join_bands_by_mouth,
-};
+use super::backend::{RoadPolyline, RoadVec2, RoadVec3};
+use super::input::NodeArrangementInput;
+use super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
 use super::keys::SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
-use super::segments::{
-    raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment,
-    raw_tuple_segment_parameter_key as generated_segment_parameter_key,
-};
 use super::terminal::{
-    NodeTerminalCapBand, TerminalCapBandRole, TerminalCapGenerationError,
-    terminal_cap_bands_by_mouth,
+    NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
 };
-use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind,
-};
-use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineSourceMut};
+use super::{RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind};
 use std::collections::BTreeMap;
 
 mod bands;
@@ -40,7 +23,6 @@ mod topology;
 
 use bands::{push_band_contour, push_full_roadbed_contour, push_raw_carriageway_corridor_contour};
 use caps_and_joins::{push_side_join_band_contours, push_terminal_cap_band_contours};
-use constraints::*;
 use contacts::{
     append_generated_material_point_contact_constraints,
     append_generated_same_band_contact_constraints,
@@ -50,11 +32,9 @@ use contacts::{
     retain_source_authorized_generated_contact_constraints,
     validate_generated_contact_constraint_endpoints_from_sources,
 };
-use contours::*;
-use geometry::*;
-use owners::*;
+use contours::{push_boundary_constraint, push_span_handoff_constraint};
+use owners::{boundary_owners, owners_by_mouth};
 use source_points::{interval_height_carrier_points, push_band_height_carrier_points};
-use topology::*;
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
 

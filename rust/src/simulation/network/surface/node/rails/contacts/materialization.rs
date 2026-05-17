@@ -1,18 +1,35 @@
 //! Materialization of source-authorized generated rail contacts.
 
-use super::geometry::*;
-use super::source_authority::*;
-use super::*;
+use super::geometry::{
+    generated_contact_edges_from_overlay_intersection, generated_contact_edges_inside_contour,
+    generated_contact_points_from_contour_intersections, generated_contour_contains_key,
+};
+use super::source_authority::{
+    GeneratedSameBandContactConstraint, collect_source_authorized_raised_step_contacts,
+    generated_raised_step_contact_kind_for_owners, generated_same_band_contact_constraint_key,
+};
+use super::{
+    GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair, NodeBandOwner, NodeGeneratedContour,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
+    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
+    generated_constraint_directed_edges, generated_constraint_touches_key,
+    generated_contour_band_kind, generated_contour_directed_edges, generated_contour_keys,
+    generated_contour_supports_same_band_role, generated_point_key_lies_on_segment,
+    generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
+    quantized_proper_segment_intersection, road_point_from_key, road_point_key,
+    shared_generated_contour_edges, shared_generated_contour_points,
+};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) struct GeneratedMaterialPointContactAuthority {
+struct GeneratedMaterialPointContactAuthority {
     source_mouth_order_index: usize,
     source_band_index: Option<usize>,
     owner: Option<NodeBandOwner>,
     opposite_owner: Option<NodeBandOwner>,
 }
 
-pub(super) fn insert_generated_material_point_constraint(
+fn insert_generated_material_point_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
@@ -224,7 +241,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
     }
 }
 
-pub(super) fn generated_material_authority_points_on_counterpart_contour(
+fn generated_material_authority_points_on_counterpart_contour(
     kind: NodeRailConstraintKind,
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
@@ -265,7 +282,7 @@ pub(super) fn generated_material_authority_points_on_counterpart_contour(
     points
 }
 
-pub(super) fn generated_constraint_contour_contact_points(
+fn generated_constraint_contour_contact_points(
     constraint: &NodeRailConstraint,
     contour: &NodeGeneratedContour,
 ) -> Vec<NodeRailPointKey> {
@@ -315,7 +332,7 @@ pub(super) fn generated_constraint_contour_contact_points(
     points
 }
 
-pub(super) fn generated_material_point_contact_authority(
+fn generated_material_point_contact_authority(
     kind: NodeRailConstraintKind,
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
@@ -343,7 +360,7 @@ pub(super) fn generated_material_point_contact_authority(
         })
 }
 
-pub(super) fn generated_exact_owner_pair_contact_authority_for_edge(
+fn generated_exact_owner_pair_contact_authority_for_edge(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
     constraints: &[NodeRailConstraint],
@@ -372,7 +389,7 @@ pub(super) fn generated_exact_owner_pair_contact_authority_for_edge(
         })
 }
 
-pub(super) fn generated_exact_owner_pair_contact_authority_at_point(
+fn generated_exact_owner_pair_contact_authority_at_point(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
     constraints: &[NodeRailConstraint],
@@ -593,7 +610,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     }
 }
 
-pub(super) fn insert_generated_contact_constraint(
+fn insert_generated_contact_constraint(
     contact_edges: &mut BTreeSet<GeneratedSameBandContactConstraint>,
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
@@ -626,7 +643,7 @@ pub(super) fn insert_generated_contact_constraint(
     }
 }
 
-pub(super) fn generated_contact_edge_source_authority(
+fn generated_contact_edge_source_authority(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
     constraints: &[NodeRailConstraint],
@@ -635,7 +652,7 @@ pub(super) fn generated_contact_edge_source_authority(
     generated_exact_owner_pair_contact_authority_for_edge(owner, opposite_owner, constraints, edge)
 }
 
-pub(super) fn generated_same_band_point_contact_has_explicit_roles(
+fn generated_same_band_point_contact_has_explicit_roles(
     kind: RoadSurfaceBandKind,
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,

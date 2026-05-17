@@ -1,7 +1,22 @@
 //! Explicit source-authority support for generated rail contacts.
 
-use super::geometry::*;
-use super::*;
+use super::geometry::{
+    generated_directed_edge_segments_inside_shape_edges, generated_overlay_contour,
+    generated_overlay_shapes_directed_edges, generated_shape_boundary_segments_on_source_edge,
+};
+use super::{
+    GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
+    GeneratedSameBandBoundaryRole, NodeBandOwner, NodeGeneratedContour,
+    NodeGeneratedContourClaimPriority, NodeOverlayShapes, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
+    generated_constraint_directed_edges, generated_constraint_touches_key,
+    generated_contour_band_kind, generated_contour_directed_edges,
+    generated_point_key_lies_on_segment, quantized_proper_segment_intersection,
+    raised_step_band_rank, raised_step_kinds_can_contact, road_point_key,
+};
+use i_overlay::core::overlay_rule::OverlayRule;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedSameBandContactConstraint {
@@ -24,7 +39,7 @@ pub(super) struct GeneratedSameBandContactConstraintKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) struct GeneratedRaisedStepEndpointSource {
+struct GeneratedRaisedStepEndpointSource {
     constraint_index: usize,
     source_mouth_order_index: usize,
     source_band_index: Option<usize>,
@@ -32,24 +47,24 @@ pub(super) struct GeneratedRaisedStepEndpointSource {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct RaisedStepSourceConstraint<'a> {
+struct RaisedStepSourceConstraint<'a> {
     source: GeneratedRaisedStepEndpointSource,
     constraint: &'a NodeRailConstraint,
 }
 
-pub(super) struct RaisedStepSourceAuthority<'a> {
+struct RaisedStepSourceAuthority<'a> {
     constraints: Vec<RaisedStepSourceConstraint<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) struct SourceAuthorizedTargetGroupKey {
+struct SourceAuthorizedTargetGroupKey {
     owner: NodeBandOwner,
     kind: RoadSurfaceBandKind,
     claim_priority: NodeGeneratedContourClaimPriority,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct SourceAuthorizedTargetGroup {
+struct SourceAuthorizedTargetGroup {
     key: SourceAuthorizedTargetGroupKey,
     contour_indices: Vec<usize>,
     shapes: NodeOverlayShapes,
@@ -198,7 +213,7 @@ impl<'a> RaisedStepSourceAuthority<'a> {
     }
 }
 
-pub(super) fn collect_source_authorized_exact_group_overlap_contacts(
+fn collect_source_authorized_exact_group_overlap_contacts(
     source_constraint: &RaisedStepSourceConstraint<'_>,
     contours: &[NodeGeneratedContour],
     target_groups: &[SourceAuthorizedTargetGroup],
@@ -243,7 +258,7 @@ pub(super) fn collect_source_authorized_exact_group_overlap_contacts(
     }
 }
 
-pub(super) fn source_authorized_exact_target_groups(
+fn source_authorized_exact_target_groups(
     target_groups: &[SourceAuthorizedTargetGroup],
     owner: NodeBandOwner,
 ) -> Vec<&SourceAuthorizedTargetGroup> {
@@ -253,7 +268,7 @@ pub(super) fn source_authorized_exact_target_groups(
         .collect()
 }
 
-pub(super) fn source_authorized_group_edges_inside_group(
+fn source_authorized_group_edges_inside_group(
     source_constraint: &NodeRailConstraint,
     edge_group: &SourceAuthorizedTargetGroup,
     containing_group: &SourceAuthorizedTargetGroup,
@@ -290,7 +305,7 @@ pub(super) fn source_authorized_group_edges_inside_group(
     edges.into_iter().collect()
 }
 
-pub(super) fn source_authorized_source_edges_inside_group_intersection(
+fn source_authorized_source_edges_inside_group_intersection(
     source_constraint: &NodeRailConstraint,
     left_group: &SourceAuthorizedTargetGroup,
     right_group: &SourceAuthorizedTargetGroup,
@@ -318,7 +333,7 @@ pub(super) fn source_authorized_source_edges_inside_group_intersection(
     edges.into_iter().collect()
 }
 
-pub(super) fn source_authorized_raised_step_target_pairs(
+fn source_authorized_raised_step_target_pairs(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
     source: GeneratedRaisedStepEndpointSource,
@@ -363,7 +378,7 @@ pub(super) fn source_authorized_raised_step_target_pairs(
     pairs
 }
 
-pub(super) fn source_authorized_contact_segments(
+fn source_authorized_contact_segments(
     edge: GeneratedContourEdgeKey,
     include_edge: bool,
 ) -> Vec<(NodeRailPointKey, NodeRailPointKey)> {
@@ -374,7 +389,7 @@ pub(super) fn source_authorized_contact_segments(
     }
 }
 
-pub(super) fn source_authorized_target_claim_priority(
+fn source_authorized_target_claim_priority(
     contours: &[NodeGeneratedContour],
     owner: NodeBandOwner,
 ) -> Option<NodeGeneratedContourClaimPriority> {
@@ -391,7 +406,7 @@ pub(super) fn source_authorized_target_claim_priority(
         .min()
 }
 
-pub(super) fn generated_raised_step_source_contact_points(
+fn generated_raised_step_source_contact_points(
     source_constraints: &[RaisedStepSourceConstraint<'_>],
 ) -> BTreeSet<NodeRailPointKey> {
     let mut points = source_constraints
@@ -414,7 +429,7 @@ pub(super) fn generated_raised_step_source_contact_points(
     points
 }
 
-pub(super) fn generated_source_edge_contact_points(
+fn generated_source_edge_contact_points(
     left: GeneratedContourDirectedEdge,
     right: GeneratedContourDirectedEdge,
 ) -> Vec<NodeRailPointKey> {
@@ -439,7 +454,7 @@ pub(super) fn generated_source_edge_contact_points(
     points
 }
 
-pub(super) fn generated_raised_step_endpoint_source(
+fn generated_raised_step_endpoint_source(
     constraint: &NodeRailConstraint,
 ) -> Option<GeneratedRaisedStepEndpointSource> {
     if constraint.kind != NodeRailConstraintKind::RaisedStepContact {
@@ -456,9 +471,7 @@ pub(super) fn generated_raised_step_endpoint_source(
     })
 }
 
-pub(super) fn generated_constraint_endpoint_keys(
-    constraint: &NodeRailConstraint,
-) -> Vec<NodeRailPointKey> {
+fn generated_constraint_endpoint_keys(constraint: &NodeRailConstraint) -> Vec<NodeRailPointKey> {
     let mut points = Vec::new();
     if let Some(point) = constraint.points_xz.first().copied() {
         points.push(road_point_key(point));
@@ -471,7 +484,7 @@ pub(super) fn generated_constraint_endpoint_keys(
     points
 }
 
-pub(super) fn source_authorized_target_groups(
+fn source_authorized_target_groups(
     contours: &[NodeGeneratedContour],
 ) -> Vec<SourceAuthorizedTargetGroup> {
     let mut contour_indices_by_key = BTreeMap::<SourceAuthorizedTargetGroupKey, Vec<usize>>::new();

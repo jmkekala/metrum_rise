@@ -1,6 +1,21 @@
 //! Mouth band and corridor contour generation for node rails.
 
-use super::*;
+use super::super::arrangement::NodeBandOwner;
+use super::super::backend::road_vec3_xz as xz;
+use super::super::input::{NodeInputBandInterval, NodeInputMouth};
+use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use super::contours::{
+    append_world_path_points, append_world_path_xz, default_generated_contour_purpose,
+    push_generated_contour, push_generated_contour_with_purpose, push_path_band_contour,
+    push_path_strip_contours, push_road_path_point, push_world_path_point,
+    remove_closing_road_path_duplicate, remove_closing_world_path_duplicate,
+    subdivided_world_chord,
+};
+use super::{
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+    NodeGeneratedContourPurpose, NodeRailConstraint, NodeRailConstraintKind,
+    NodeRailGenerationError,
+};
 
 pub(super) fn push_full_roadbed_contour(
     mouth: &NodeInputMouth,

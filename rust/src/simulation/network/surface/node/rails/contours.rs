@@ -1,6 +1,23 @@
 //! Generic generated contour, constraint, and path helpers for node rails.
 
-use super::*;
+use super::super::arrangement::NodeBandOwner;
+use super::super::backend::{
+    RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, road_points_to_polyline,
+    road_vec3_xz as xz,
+};
+use super::super::input::{NodeInputBoundaryRailRole, NodeInputMouth, NodeInputProfileRail};
+use super::super::segments::raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment;
+use super::super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind};
+use super::constraints::{GeneratedRaisedStepOwnerPair, boundary_constraint_kind};
+use super::geometry::road_point_key;
+use super::topology::NodeRailPointKey;
+use super::{
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+    NodeGeneratedContourPurpose, NodeRailConstraint, NodeRailConstraintKind,
+    NodeRailGenerationError, RAIL_CONTOUR_POINT_EQUAL_EPS_M,
+};
+use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineSourceMut};
+use std::collections::BTreeMap;
 
 pub(super) fn push_path_strip_contours(
     kind: NodeGeneratedContourKind,

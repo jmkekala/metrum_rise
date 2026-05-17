@@ -1,6 +1,10 @@
 //! Source height-carrier point collection for generated node rails.
 
-use super::*;
+use super::super::RoadSurfaceBandKind;
+use super::super::backend::{RoadVec2, RoadVec3, road_vec3_xz as xz};
+use super::super::input::NodeInputBandInterval;
+use super::contours::push_road_path_point;
+use std::collections::BTreeMap;
 
 pub(super) fn interval_height_carrier_points(
     interval: &NodeInputBandInterval,
