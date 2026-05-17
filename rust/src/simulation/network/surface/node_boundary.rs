@@ -270,6 +270,21 @@ impl NodeFootprintBoundaryExportSources {
         Ok(Some(candidate.height_mm))
     }
 
+    pub(super) fn has_final_owned_footprint_boundary_support_at_point(
+        &self,
+        point_key: ArrangementBoundaryPointKey,
+    ) -> bool {
+        self.direct_vertex_sources
+            .get(&point_key)
+            .is_some_and(|source| {
+                matches!(source.source, NodeFootprintBoundaryVertexSource::Direct(_))
+            })
+            || self.source_edges.iter().any(|source_edge| {
+                node_footprint_boundary_vertex_source_for_edge_point(source_edge, point_key)
+                    .is_some()
+            })
+    }
+
     fn height_candidate_at_boundary_vertex(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -568,7 +583,7 @@ pub(super) fn remove_unsupported_numeric_boundary_vertices<F>(
     points: &mut Vec<Vector3>,
     mut should_keep_vertex: F,
 ) where
-    F: FnMut(arrangement::NodeArrangementKey, [Vector3; 3]) -> bool,
+    F: FnMut(ArrangementBoundaryPointKey, [Vector3; 3]) -> bool,
 {
     loop {
         if points.len() < 4 {
@@ -587,11 +602,8 @@ pub(super) fn remove_unsupported_numeric_boundary_vertices<F>(
                 index + 1
             };
             let local_points = [points[previous], points[index], points[next]];
-            let current_key = arrangement::NodeArrangementKey::from_point(RoadVec2::new(
-                f64::from(points[index].x),
-                f64::from(points[index].z),
-            ));
-            if should_keep_vertex(current_key, local_points) {
+            let current_point_key = ArrangementBoundaryPointKey::from_world(points[index]);
+            if should_keep_vertex(current_point_key, local_points) {
                 continue;
             }
             points.remove(index);
@@ -1380,6 +1392,71 @@ mod tests {
             node_footprint_boundary_vertex_source_for_edge_point(&source_edge, wrong_height_key)
                 .is_none(),
             "boundary source recovery must block height drift instead of picking nearest top"
+        );
+    }
+
+    #[test]
+    fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
+        let source_edge = test_source_edge(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let start_source = source_edge.start_source;
+        let end_source = source_edge.end_source;
+        let unsupported_point = Vector3::new(1.0, 0.0, 0.00001);
+        let unsupported_key = ArrangementBoundaryPointKey::from_world(unsupported_point);
+        let mut direct_vertex_sources = BTreeMap::new();
+        direct_vertex_sources.insert(
+            unsupported_key,
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                    owning_segment_start: start_source,
+                    owning_segment_end: end_source,
+                    height_mm: unsupported_key.y_mm,
+                },
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+        );
+        let sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![source_edge],
+            direct_vertex_sources,
+        };
+        let supported_midpoint =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0));
+
+        assert!(
+            sources.has_final_owned_footprint_boundary_support_at_point(supported_midpoint),
+            "source-edge interpolation is valid footprint boundary support"
+        );
+        assert!(
+            !sources.has_final_owned_footprint_boundary_support_at_point(unsupported_key),
+            "contour-only interpolation must not make numeric cleanup depend on hidden support"
+        );
+
+        let mut points = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            unsupported_point,
+            Vector3::new(2.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 1.0),
+            Vector3::new(0.0, 0.0, 1.0),
+        ];
+        remove_unsupported_numeric_boundary_vertices(&mut points, |point_key, local_points| {
+            sources.has_final_owned_footprint_boundary_support_at_point(point_key)
+                || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                    > boundary_points_numeric_area_budget_m2(&local_points)
+        });
+
+        assert_eq!(points.len(), 4);
+        assert!(
+            points
+                .iter()
+                .copied()
+                .all(|point| ArrangementBoundaryPointKey::from_world(point) != unsupported_key)
         );
     }
 

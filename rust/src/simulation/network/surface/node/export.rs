@@ -90,15 +90,9 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
-        let top_polygons = road_surface_polygons
-            .iter()
-            .chain(curb_surface_polygons.iter())
-            .chain(sidewalk_surface_polygons.iter())
-            .collect::<Vec<_>>();
         let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
             arrangement,
             &mut boundary_export_sources,
-            &top_polygons,
             footprint_shapes,
             true,
         )?;
@@ -164,7 +158,6 @@ impl RoadSurfaceSystem {
     fn footprint_boundary_point_loops_from_shapes(
         _arrangement: &NodeArrangement,
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
-        top_polygons: &[&RoadSurfaceVisualPolygon],
         footprint_shapes: &super::NodeOverlayShapes,
         clean_unsupported_numeric_vertices: bool,
     ) -> Result<Vec<Vec<Vector3>>, NodeBoundaryExportError> {
@@ -209,9 +202,11 @@ impl RoadSurfaceSystem {
                 if clean_unsupported_numeric_vertices {
                     remove_unsupported_numeric_boundary_vertices(
                         &mut points,
-                        |current_key, local_points| {
-                            visible_top_boundary_height_mm_at_key(top_polygons, current_key)
-                                .is_some()
+                        |current_point_key, local_points| {
+                            boundary_export_sources
+                                .has_final_owned_footprint_boundary_support_at_point(
+                                    current_point_key,
+                                )
                                 || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
                                     > boundary_points_numeric_area_budget_m2(&local_points)
                         },
