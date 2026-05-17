@@ -26,40 +26,8 @@ pub(super) fn visual_polygon_boundary_overlaps_edge_at_height(
     polygon: &RoadSurfaceVisualPolygon,
     edge: [Vector3; 2],
 ) -> bool {
-    if !polygon.triangles_world.is_empty() {
-        let mut triangle_edges = BTreeMap::<
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-            (usize, [Vector3; 2]),
-        >::new();
-        for triangle in &polygon.triangles_world {
-            for edge_index in 0..3 {
-                let start = triangle[edge_index];
-                let end = triangle[(edge_index + 1) % 3];
-                if ArrangementBoundaryPointKey::from_world(start).xz_key()
-                    == ArrangementBoundaryPointKey::from_world(end).xz_key()
-                {
-                    continue;
-                }
-                triangle_edges
-                    .entry(normalized_arrangement_boundary_segment_key(start, end))
-                    .and_modify(|entry| entry.0 += 1)
-                    .or_insert((1, [start, end]));
-            }
-        }
-        return triangle_edges
-            .into_values()
-            .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
-            .any(|boundary_edge| boundary_edge_contains_edge_at_height(boundary_edge, edge));
-    }
-
-    let points = &polygon.points_world;
-    if points.len() < 2 {
-        return false;
-    }
-    (0..points.len()).any(|index| {
-        let start = points[index];
-        let end = points[(index + 1) % points.len()];
-        boundary_edge_contains_edge_at_height([start, end], edge)
+    visual_polygon_boundary_edge_matches(polygon, |boundary_edge| {
+        boundary_edge_contains_edge_at_height(boundary_edge, edge)
     })
 }
 
@@ -67,30 +35,19 @@ pub(super) fn visual_polygon_boundary_overlaps_edge_xz(
     polygon: &RoadSurfaceVisualPolygon,
     edge: [Vector3; 2],
 ) -> bool {
+    visual_polygon_boundary_edge_matches(polygon, |boundary_edge| {
+        boundary_edge_contains_edge_xz(boundary_edge, edge)
+    })
+}
+
+fn visual_polygon_boundary_edge_matches(
+    polygon: &RoadSurfaceVisualPolygon,
+    mut matches_edge: impl FnMut([Vector3; 2]) -> bool,
+) -> bool {
     if !polygon.triangles_world.is_empty() {
-        let mut triangle_edges = BTreeMap::<
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-            (usize, [Vector3; 2]),
-        >::new();
-        for triangle in &polygon.triangles_world {
-            for edge_index in 0..3 {
-                let start = triangle[edge_index];
-                let end = triangle[(edge_index + 1) % 3];
-                if ArrangementBoundaryPointKey::from_world(start).xz_key()
-                    == ArrangementBoundaryPointKey::from_world(end).xz_key()
-                {
-                    continue;
-                }
-                triangle_edges
-                    .entry(normalized_arrangement_boundary_segment_key(start, end))
-                    .and_modify(|entry| entry.0 += 1)
-                    .or_insert((1, [start, end]));
-            }
-        }
-        return triangle_edges
-            .into_values()
-            .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
-            .any(|boundary_edge| boundary_edge_contains_edge_xz(boundary_edge, edge));
+        return triangle_boundary_edges_world(&polygon.triangles_world)
+            .into_iter()
+            .any(matches_edge);
     }
 
     let points = &polygon.points_world;
@@ -100,8 +57,34 @@ pub(super) fn visual_polygon_boundary_overlaps_edge_xz(
     (0..points.len()).any(|index| {
         let start = points[index];
         let end = points[(index + 1) % points.len()];
-        boundary_edge_contains_edge_xz([start, end], edge)
+        matches_edge([start, end])
     })
+}
+
+fn triangle_boundary_edges_world(triangles_world: &[[Vector3; 3]]) -> Vec<[Vector3; 2]> {
+    let mut triangle_edges = BTreeMap::<
+        (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+        (usize, [Vector3; 2]),
+    >::new();
+    for triangle in triangles_world {
+        for edge_index in 0..3 {
+            let start = triangle[edge_index];
+            let end = triangle[(edge_index + 1) % 3];
+            if ArrangementBoundaryPointKey::from_world(start).xz_key()
+                == ArrangementBoundaryPointKey::from_world(end).xz_key()
+            {
+                continue;
+            }
+            triangle_edges
+                .entry(normalized_arrangement_boundary_segment_key(start, end))
+                .and_modify(|entry| entry.0 += 1)
+                .or_insert((1, [start, end]));
+        }
+    }
+    triangle_edges
+        .into_values()
+        .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
+        .collect()
 }
 
 pub(super) fn boundary_edge_contains_edge_xz(

@@ -71,7 +71,6 @@ impl RoadSurfaceSystem {
         retain_raised_step_faces_with_top_support(&mut raised_step_faces, &owned_regions);
         orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
         dedup_raised_step_faces(&mut raised_step_faces);
-        orient_raised_step_faces_to_lower_owner_support(&mut raised_step_faces, &owned_regions);
         if road_surface_polygons.is_empty()
             && curb_surface_polygons.is_empty()
             && sidewalk_surface_polygons.is_empty()

@@ -91,7 +91,7 @@ struct SameMaterialVertexHeightContext {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SameMaterialVertexHeightTieKey {
+struct SameMaterialVertexHeightSupportKey {
     kind: RoadSurfaceBandKind,
     point: SurfaceXzKey,
     explicit_seams: Vec<NodeGradeExplicitSeamHeightKey>,
@@ -234,11 +234,11 @@ impl SameMaterialVertexHeightContext {
 pub(crate) fn apply_junctionn_node_grade_carrier(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
-    apply_junctionn_same_owner_height_field_vertex_unification(regions);
-    apply_junctionn_same_material_shared_edge_height_tiebreak(regions)?;
-    apply_junctionn_same_material_vertex_height_tiebreak(regions)?;
-    apply_junctionn_same_material_seam_height_unification(regions);
-    apply_junctionn_explicit_material_seam_height_unification(regions);
+    apply_junctionn_same_owner_canonical_vertex_height_normalization(regions);
+    apply_junctionn_same_material_shared_edge_height_normalization(regions)?;
+    apply_junctionn_same_material_vertex_height_normalization(regions)?;
+    apply_junctionn_same_material_seam_height_normalization(regions);
+    apply_junctionn_explicit_material_seam_height_normalization(regions);
     Ok(())
 }
 
@@ -280,7 +280,9 @@ pub(crate) fn canonical_explicit_seam_owner_pair(
     }
 }
 
-fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [NodeHeightedRegion]) {
+fn apply_junctionn_same_owner_canonical_vertex_height_normalization(
+    regions: &mut [NodeHeightedRegion],
+) {
     let mut heights_by_key =
         BTreeMap::<NodeGradeVertexContextKey, SameMaterialVertexHeightCandidate>::new();
     let mut samples_by_key = BTreeMap::<NodeGradeVertexContextKey, (usize, Vec<i64>)>::new();
@@ -360,7 +362,7 @@ fn apply_junctionn_same_owner_height_field_vertex_unification(regions: &mut [Nod
     }
 }
 
-fn apply_junctionn_same_material_shared_edge_height_tiebreak(
+fn apply_junctionn_same_material_shared_edge_height_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
     let mut candidates_by_edge =
@@ -485,19 +487,21 @@ fn apply_junctionn_same_material_shared_edge_height_tiebreak(
     Ok(())
 }
 
-fn apply_junctionn_same_material_vertex_height_tiebreak(
+fn apply_junctionn_same_material_vertex_height_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
     let mut contexts_by_key =
-        BTreeMap::<SameMaterialVertexHeightTieKey, Vec<SameMaterialVertexHeightContext>>::new();
-    let mut candidates_by_key =
-        BTreeMap::<SameMaterialVertexHeightTieKey, Vec<SameMaterialVertexHeightCandidate>>::new();
+        BTreeMap::<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightContext>>::new();
+    let mut candidates_by_key = BTreeMap::<
+        SameMaterialVertexHeightSupportKey,
+        Vec<SameMaterialVertexHeightCandidate>,
+    >::new();
     let mut selected_by_key =
-        BTreeMap::<SameMaterialVertexHeightTieKey, SameMaterialVertexHeightCandidate>::new();
+        BTreeMap::<SameMaterialVertexHeightSupportKey, SameMaterialVertexHeightCandidate>::new();
 
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
-            let key = same_material_vertex_height_tie_key_from_parts(
+            let key = same_material_vertex_height_support_key_from_parts(
                 region.kind,
                 &region.seam_constraints,
                 vertex,
@@ -556,7 +560,7 @@ fn apply_junctionn_same_material_vertex_height_tiebreak(
             .flat_map(|contour| contour.iter_mut())
         {
             let key =
-                same_material_vertex_height_tie_key_from_parts(kind, seam_constraints, vertex);
+                same_material_vertex_height_support_key_from_parts(kind, seam_constraints, vertex);
             if contexts_by_key
                 .get(&key)
                 .is_none_or(|contexts| contexts.len() < 2)
@@ -576,11 +580,11 @@ fn apply_junctionn_same_material_vertex_height_tiebreak(
     Ok(())
 }
 
-fn same_material_vertex_height_tie_key_from_parts(
+fn same_material_vertex_height_support_key_from_parts(
     kind: RoadSurfaceBandKind,
     seam_constraints: &[NodeRegionSeamConstraint],
     vertex: &NodeHeightedVertex,
-) -> SameMaterialVertexHeightTieKey {
+) -> SameMaterialVertexHeightSupportKey {
     let point = SurfaceXzKey::from_road_xz(vertex.point_xz);
     let mut explicit_seams =
         material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
@@ -589,7 +593,7 @@ fn same_material_vertex_height_tie_key_from_parts(
             .collect::<Vec<_>>();
     explicit_seams.sort_unstable();
     explicit_seams.dedup();
-    SameMaterialVertexHeightTieKey {
+    SameMaterialVertexHeightSupportKey {
         kind,
         point,
         explicit_seams,
@@ -608,7 +612,7 @@ fn same_material_vertex_height_candidate_key(
     )
 }
 
-fn apply_junctionn_same_material_seam_height_unification(regions: &mut [NodeHeightedRegion]) {
+fn apply_junctionn_same_material_seam_height_normalization(regions: &mut [NodeHeightedRegion]) {
     let mut candidates_by_key =
         BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
@@ -674,7 +678,7 @@ fn apply_junctionn_same_material_seam_height_unification(regions: &mut [NodeHeig
     }
 }
 
-fn apply_junctionn_explicit_material_seam_height_unification(regions: &mut [NodeHeightedRegion]) {
+fn apply_junctionn_explicit_material_seam_height_normalization(regions: &mut [NodeHeightedRegion]) {
     let mut candidates_by_key =
         BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 

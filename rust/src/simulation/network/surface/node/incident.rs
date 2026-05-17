@@ -270,42 +270,11 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         node_id: u32,
     ) -> Vec<IncidentSurfaceEdge> {
-        if node_id as usize >= graph.node_adjacency_count() {
-            return Vec::new();
-        }
-
-        let mut incidents = Vec::new();
-        for &edge_idx in graph.node_adjacency(node_id) {
-            if edge_idx >= graph.edge_count() {
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if !Self::is_surface_edge(edge) {
-                continue;
-            }
-
-            let side = if graph.get_valid_node(edge.start_node) == node_id {
-                Some(IncidentEdgeSide::Start)
-            } else if graph.get_valid_node(edge.end_node) == node_id {
-                Some(IncidentEdgeSide::End)
-            } else {
-                None
-            };
-            let Some(side) = side else {
-                continue;
-            };
-            let Some(direction_xz) = self.incident_direction_from_edge_geometry(edge, side) else {
-                continue;
-            };
-            incidents.push(IncidentSurfaceEdge {
-                edge_idx,
-                side,
-                direction_xz,
-            });
-        }
-
-        incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.side.cmp(&b.side)));
-        incidents
+        self.collect_incident_surface_edges_with_direction(
+            graph,
+            node_id,
+            |surface, _, edge, side| surface.incident_direction_from_edge_geometry(edge, side),
+        )
     }
 
     fn incident_direction_from_edge_geometry(
@@ -358,6 +327,21 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         node_id: u32,
     ) -> Vec<IncidentSurfaceEdge> {
+        self.collect_incident_surface_edges_with_direction(
+            graph,
+            node_id,
+            |surface, edge_idx, _, side| {
+                surface.incident_direction_from_compiled_mouth(edge_idx, side)
+            },
+        )
+    }
+
+    fn collect_incident_surface_edges_with_direction(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        mut direction_for: impl FnMut(&Self, usize, &Edge, IncidentEdgeSide) -> Option<Vector2>,
+    ) -> Vec<IncidentSurfaceEdge> {
         if node_id as usize >= graph.node_adjacency_count() {
             return Vec::new();
         }
@@ -382,19 +366,7 @@ impl RoadSurfaceSystem {
             let Some(side) = side else {
                 continue;
             };
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            let Some(direction_xz) = (match side {
-                IncidentEdgeSide::Start => piece
-                    .start_mouth_profile
-                    .as_ref()
-                    .map(|mouth| mouth.inward_direction_xz),
-                IncidentEdgeSide::End => piece
-                    .end_mouth_profile
-                    .as_ref()
-                    .map(|mouth| mouth.inward_direction_xz),
-            }) else {
+            let Some(direction_xz) = direction_for(self, edge_idx, edge, side) else {
                 continue;
             };
             incidents.push(IncidentSurfaceEdge {
@@ -406,6 +378,24 @@ impl RoadSurfaceSystem {
 
         incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.side.cmp(&b.side)));
         incidents
+    }
+
+    fn incident_direction_from_compiled_mouth(
+        &self,
+        edge_idx: usize,
+        side: IncidentEdgeSide,
+    ) -> Option<Vector2> {
+        let piece = self.compiled_visual_span_pieces.get(&edge_idx)?;
+        match side {
+            IncidentEdgeSide::Start => piece
+                .start_mouth_profile
+                .as_ref()
+                .map(|mouth| mouth.inward_direction_xz),
+            IncidentEdgeSide::End => piece
+                .end_mouth_profile
+                .as_ref()
+                .map(|mouth| mouth.inward_direction_xz),
+        }
     }
 }
 
