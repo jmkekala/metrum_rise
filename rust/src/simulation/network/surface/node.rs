@@ -8,7 +8,6 @@ use self::{
         ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
         NodeFootprintBoundaryExportSources, arrangement_boundary_point_to_world,
         boundary_points_numeric_area_budget_m2, boundary_segment_parameter_xz,
-        interpolated_segment_height_mm, interpolated_segment_point_key,
         node_earthwork_boundary_segments_from_footprint_loops,
         remove_subbudget_unsupported_numeric_boundary_vertices,
     },

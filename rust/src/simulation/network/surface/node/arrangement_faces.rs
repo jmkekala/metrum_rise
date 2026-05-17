@@ -109,25 +109,37 @@ fn arrangement_face_boundary_overlap_interval(
     (end > start).then_some((start, end))
 }
 
-pub(super) fn arrangement_face_boundary_interval_point_at(
+pub(super) fn arrangement_face_boundary_interval_existing_point_at(
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     interval: ArrangementFaceBoundaryInterval,
     parameter: ArrangementSegmentParameter,
-) -> Option<Vector3> {
+) -> Option<ArrangementBoundaryPointKey> {
     let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
-    let segment_point = interpolated_segment_point_key(segment_start, segment_end, parameter);
-    let edge_t =
-        boundary_segment_parameter_xz(segment_point, interval.edge_start, interval.edge_end)?;
-    let edge_point = interpolated_segment_point_key(interval.edge_start, interval.edge_end, edge_t);
-    let y_mm = interpolated_segment_height_mm(interval.edge_start, interval.edge_end, edge_t);
-    Some(arrangement_boundary_point_to_world(
-        ArrangementBoundaryPointKey {
-            x_key: edge_point.x_key,
-            z_key: edge_point.z_key,
-            y_mm,
-        },
-    ))
+    arrangement_boundary_endpoint_at_parameter(
+        interval.edge_start,
+        segment_start,
+        segment_end,
+        parameter,
+    )
+    .or_else(|| {
+        arrangement_boundary_endpoint_at_parameter(
+            interval.edge_end,
+            segment_start,
+            segment_end,
+            parameter,
+        )
+    })
+}
+
+fn arrangement_boundary_endpoint_at_parameter(
+    endpoint: ArrangementBoundaryPointKey,
+    segment_start: ArrangementBoundaryPointKey,
+    segment_end: ArrangementBoundaryPointKey,
+    parameter: ArrangementSegmentParameter,
+) -> Option<ArrangementBoundaryPointKey> {
+    let endpoint_t = boundary_segment_parameter_xz(endpoint, segment_start, segment_end)?;
+    (endpoint_t.cmp(&parameter) == std::cmp::Ordering::Equal).then_some(endpoint)
 }
 
 pub(super) fn arrangement_key_boundary_point(

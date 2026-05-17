@@ -61,37 +61,45 @@ impl RoadSurfaceSystem {
         faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
     ) {
         for (lower_interval, raised_interval, start_t, end_t) in shared_intervals {
-            let Some(lower_start) = arrangement_face_boundary_interval_point_at(
+            let Some(lower_start_key) = arrangement_face_boundary_interval_existing_point_at(
                 lower_segment_key,
                 lower_interval,
                 start_t,
             ) else {
                 continue;
             };
-            let Some(lower_end) = arrangement_face_boundary_interval_point_at(
+            let Some(lower_end_key) = arrangement_face_boundary_interval_existing_point_at(
                 lower_segment_key,
                 lower_interval,
                 end_t,
             ) else {
                 continue;
             };
-            let Some(raised_start) = arrangement_face_boundary_interval_point_at(
+            let Some(raised_start_key) = arrangement_face_boundary_interval_existing_point_at(
                 raised_segment_key,
                 raised_interval,
                 start_t,
             ) else {
                 continue;
             };
-            let Some(raised_end) = arrangement_face_boundary_interval_point_at(
+            let Some(raised_end_key) = arrangement_face_boundary_interval_existing_point_at(
                 raised_segment_key,
                 raised_interval,
                 end_t,
             ) else {
                 continue;
             };
+            let lower_start = arrangement_boundary_point_to_world(lower_start_key);
+            let lower_end = arrangement_boundary_point_to_world(lower_end_key);
+            let raised_start = arrangement_boundary_point_to_world(raised_start_key);
+            let raised_end = arrangement_boundary_point_to_world(raised_end_key);
             let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_polygon(
                 lower_segment_key,
                 lower_interval,
+                lower_start_key,
+                lower_end_key,
+                raised_start_key,
+                raised_end_key,
                 lower_start,
                 lower_end,
                 raised_start,
@@ -115,6 +123,10 @@ impl RoadSurfaceSystem {
     fn arrangement_vertical_step_face_polygon(
         segment_key: (NodeArrangementKey, NodeArrangementKey),
         lower_interval: ArrangementFaceBoundaryInterval,
+        lower_start_key: ArrangementBoundaryPointKey,
+        lower_end_key: ArrangementBoundaryPointKey,
+        raised_start_key: ArrangementBoundaryPointKey,
+        raised_end_key: ArrangementBoundaryPointKey,
         lower_start: Vector3,
         lower_end: Vector3,
         raised_start: Vector3,
@@ -140,7 +152,12 @@ impl RoadSurfaceSystem {
         {
             return None;
         }
-        let dedup_key = vertical_face_dedup_key(lower_start, lower_end, raised_start, raised_end);
+        let dedup_key = vertical_face_dedup_key(
+            lower_start_key,
+            lower_end_key,
+            raised_start_key,
+            raised_end_key,
+        );
         let lower_owner_on_right =
             lower_interval_owner_lies_right_of_segment(segment_key, lower_interval)?;
         let points = if lower_owner_on_right {
@@ -177,10 +194,10 @@ fn lower_interval_owner_lies_right_of_segment(
 }
 
 fn vertical_face_dedup_key(
-    lower_start: Vector3,
-    lower_end: Vector3,
-    upper_start: Vector3,
-    upper_end: Vector3,
+    lower_start: ArrangementBoundaryPointKey,
+    lower_end: ArrangementBoundaryPointKey,
+    upper_start: ArrangementBoundaryPointKey,
+    upper_end: ArrangementBoundaryPointKey,
 ) -> (
     (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
     (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),

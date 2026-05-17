@@ -10,7 +10,7 @@ use super::{
         NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
         NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeTopSurfacePolygonSource,
     },
-    segments::{exact_line_parameter, interpolate_height_i64, interpolate_key},
+    segments::{exact_line_parameter, interpolate_height_i64},
 };
 use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
@@ -180,23 +180,6 @@ pub(super) fn interpolated_segment_height_mm(
     parameter: ArrangementSegmentParameter,
 ) -> i64 {
     interpolate_height_i64(start.y_mm, end.y_mm, parameter)
-}
-
-pub(super) fn interpolated_segment_point_key(
-    start: ArrangementBoundaryPointKey,
-    end: ArrangementBoundaryPointKey,
-    parameter: ArrangementSegmentParameter,
-) -> ArrangementBoundaryPointKey {
-    let point = interpolate_key(
-        boundary_point_surface_key(start),
-        boundary_point_surface_key(end),
-        parameter,
-    );
-    ArrangementBoundaryPointKey {
-        x_key: point.x_key(),
-        z_key: point.z_key(),
-        y_mm: interpolated_segment_height_mm(start, end, parameter),
-    }
 }
 
 pub(super) fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Vector3 {
