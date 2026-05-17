@@ -1,6 +1,5 @@
 //! Node surface export tests.
 
-use super::super::NodeFootprintBoundaryVertexSource;
 use super::super::arrangement::{NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource};
 use super::super::backend::RoadVec2;
 use super::super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
@@ -325,7 +324,7 @@ fn node_export_uses_boolean_footprint_boundary_vertices() {
 }
 
 #[test]
-fn node_export_uses_surface_provenance_for_boolean_footprint_vertex_height() {
+fn node_export_rejects_post_triangulation_footprint_vertex_height_sampling() {
     let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
     let height_field_id = height_field(owner);
     let heights = NodeHeightSolution {
@@ -370,52 +369,19 @@ fn node_export_uses_surface_provenance_for_boolean_footprint_vertex_height() {
         .attach_triangulation(&triangulation)
         .expect("test triangle should attach triangulation");
     let footprint_shapes = footprint_shapes_from_points(&[
-        RoadVec2::new(0.0, 0.0),
-        RoadVec2::new(0.5, 0.25),
-        RoadVec2::new(1.0, 0.0),
-        RoadVec2::new(0.0, 1.0),
+        RoadVec2::new(0.2, 0.2),
+        RoadVec2::new(0.6, 0.2),
+        RoadVec2::new(0.2, 0.6),
     ]);
 
-    let regions =
+    let error =
         RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
-            .expect("footprint export should use visible top-surface provenance");
+            .expect_err("footprint boundary heights must not be sampled from final top triangles");
 
-    let boundary_point = regions
-        .outer_boundary_loops
-        .iter()
-        .flat_map(|polygon| polygon.points_world.iter())
-        .find(|point| (point.x - 0.5).abs() <= 1.0e-6 && (point.z - 0.25).abs() <= 1.0e-6)
-        .expect("boolean footprint vertex should be preserved");
-    assert!((boundary_point.y - 0.5).abs() <= 1.0e-6);
-
-    let has_surface_source = regions
-        .earthwork_boundary_segments
-        .iter()
-        .flatten()
-        .any(|segment| {
-            let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                boundary_source: Some(boundary_source),
-                ..
-            } = segment.source
-            else {
-                return false;
-            };
-            [boundary_source.start, boundary_source.end]
-                .into_iter()
-                .any(|source| {
-                    matches!(
-                        source,
-                        NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                            height_mm: 500,
-                            ..
-                        }
-                    )
-                })
-        });
-    assert!(
-        has_surface_source,
-        "boolean footprint vertices inside visible top triangles must export surface provenance"
-    );
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::MissingFootprintBoundaryHeight
+    ));
 }
 
 #[test]
@@ -511,7 +477,7 @@ fn node_export_rejects_conflicting_footprint_boundary_heights() {
     let footprint_shapes = footprint_shapes_from_points(&[
         RoadVec2::new(0.0, 0.0),
         RoadVec2::new(1.0, 0.0),
-        RoadVec2::new(0.0, 1.0),
+        RoadVec2::new(0.0, -1.0),
     ]);
 
     let error =

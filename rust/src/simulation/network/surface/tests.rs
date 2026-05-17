@@ -1037,22 +1037,6 @@ fn assert_node_footprint_boundary_vertex_source_is_valid(
                 NodeFootprintBoundaryVertexSource::Direct(owning_segment_end),
             );
         }
-        NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-            top_surface_source_index,
-            grade_authority_indices,
-            ..
-        } => {
-            assert!(
-                top_surface_source_index < piece.node_top_surface_sources.len(),
-                "surface-interpolated boundary source must reference an emitted top surface source"
-            );
-            for grade_authority_index in grade_authority_indices {
-                assert!(
-                    grade_authority_index < piece.node_grade_authorities.len(),
-                    "surface-interpolated boundary source must reference node grade authority"
-                );
-            }
-        }
     }
 }
 

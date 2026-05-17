@@ -183,7 +183,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   now keys separate materialized owner-pair seams independently even when they came from the same
   source rail index. Same-material carrier tie-breaks now require equal `SurfaceHeightMmKey`
   heights, so elevated multi-arm nodes with contradictory same-XZ carriageway owners reject
-  deterministically until ownership selects one carrier before height sampling. The render mesh
+  deterministically until ownership selects one carrier before height sampling. Node footprint
+  boundary export now resolves heights only from adjacent solved boundary provenance, with terminal
+  raised-step corners accepted only when ordered source edges prove the material step. The render mesh
   payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
   buckets. Post-boolean `node_non_road`
   subdivision now requires every final curb /

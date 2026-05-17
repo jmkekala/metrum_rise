@@ -4,7 +4,7 @@ use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
-    band_semantics::band_kind_sort_key,
+    band_semantics::{band_kind_sort_key, raised_step_band_rank, raised_step_kinds_can_contact},
     earthwork::{RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace},
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
     node_grade::NodeGradeVertexAuthority,
@@ -67,18 +67,13 @@ struct NodeFootprintBoundaryDirectVertex {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct NodeFootprintBoundaryTriangleSource {
-    triangle: [Vector3; 3],
-    top_surface_source_index: usize,
-    grade_authority_indices: [usize; 3],
-    owner_kind: RoadSurfaceBandKind,
-    owner_index: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
 struct NodeFootprintBoundaryHeightCandidate {
     height_mm: i64,
     source: NodeFootprintBoundaryDirectVertex,
+    source_edge: Option<(
+        arrangement::NodeArrangementKey,
+        arrangement::NodeArrangementKey,
+    )>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +85,6 @@ struct NodeFootprintBoundarySplitPoint {
 pub(super) struct NodeFootprintBoundaryExportSources {
     source_edges: Vec<NodeEarthworkBoundarySourceEdge>,
     direct_vertex_sources: BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
-    triangle_sources: Vec<NodeFootprintBoundaryTriangleSource>,
 }
 
 #[derive(Debug)]
@@ -211,11 +205,6 @@ pub(crate) enum NodeFootprintBoundaryVertexSource {
         owning_segment_end: NodeFootprintBoundaryDirectSource,
         height_mm: i64,
     },
-    SurfaceInterpolation {
-        top_surface_source_index: usize,
-        grade_authority_indices: [usize; 3],
-        height_mm: i64,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -266,121 +255,296 @@ impl NodeFootprintBoundaryExportSources {
                 owned_regions,
                 node_top_surface_sources,
             )?,
-            triangle_sources: node_footprint_boundary_triangle_sources(
-                owned_regions,
-                node_top_surface_sources,
-            )?,
         })
     }
 
-    pub(super) fn height_mm_at_key(&self, key: arrangement::NodeArrangementKey) -> Option<i64> {
-        // Boolean footprint vertices may land inside a final top triangle while sharing a
-        // quantized key with nearby boundary vertices. Use a unique visible surface source first;
-        // conflicting surface coverage must be resolved by explicit boundary/direct provenance.
-        self.surface_unique_height_candidate_at_key(key)
-            .or_else(|| self.boundary_edge_height_candidate_at_key(key))
-            .or_else(|| self.direct_unique_height_candidate_at_key(key))
-            .map(|candidate| candidate.height_mm)
+    pub(super) fn height_mm_at_key(
+        &mut self,
+        key: arrangement::NodeArrangementKey,
+        adjacent_keys: [arrangement::NodeArrangementKey; 2],
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        let Some(candidate) = self.height_candidate_at_boundary_vertex(key, adjacent_keys)? else {
+            return Ok(None);
+        };
+        self.insert_boundary_vertex_source(key, candidate.height_mm, candidate.source);
+        Ok(Some(candidate.height_mm))
     }
 
-    fn boundary_edge_height_candidate_at_key(
+    fn height_candidate_at_boundary_vertex(
         &self,
         key: arrangement::NodeArrangementKey,
-    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
-        if self.direct_vertex_heights_at_key(key).len() > 1 {
-            return None;
-        }
-        self.source_edges
-            .iter()
-            .filter_map(|source_edge| {
-                if !arrangement_key_lies_on_segment(key, source_edge.start_key, source_edge.end_key)
-                {
-                    return None;
-                }
-                let parameter = arrangement_key_segment_parameter_xz(
-                    key,
-                    source_edge.start_key,
-                    source_edge.end_key,
-                )?;
-                let height_mm = interpolated_segment_height_mm(
-                    source_edge.start_point_key,
-                    source_edge.end_point_key,
-                    parameter,
-                );
-                Some(NodeFootprintBoundaryHeightCandidate {
-                    height_mm,
-                    source: NodeFootprintBoundaryDirectVertex {
-                        source: node_footprint_boundary_vertex_source_for_edge_point(
-                            source_edge,
-                            ArrangementBoundaryPointKey {
-                                x_key: key.x_key(),
-                                z_key: key.z_key(),
-                                y_mm: height_mm,
-                            },
-                        )?,
-                        owner_kind: source_edge.owner_kind,
-                        owner_index: source_edge.owner_index,
-                    },
+        adjacent_keys: [arrangement::NodeArrangementKey; 2],
+    ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
+        let edge_candidates = self
+            .boundary_edge_height_candidates_at_key(key)
+            .filter(|candidate| {
+                candidate.source_edge.is_some_and(|(start, end)| {
+                    adjacent_keys.iter().copied().any(|adjacent_key| {
+                        adjacent_key != key
+                            && arrangement_key_lies_on_segment(adjacent_key, start, end)
+                    })
                 })
             })
-            .min_by(|a, b| {
-                node_footprint_direct_vertex_ordering(a.source, b.source)
-                    .then(a.height_mm.cmp(&b.height_mm))
-            })
-    }
-
-    fn direct_unique_height_candidate_at_key(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
-        let direct_candidates = self
-            .direct_height_candidates_at_key(key)
             .collect::<Vec<_>>();
-        let mut direct_heights = direct_candidates
-            .iter()
-            .map(|candidate| candidate.height_mm)
-            .collect::<Vec<_>>();
-        direct_heights.sort_unstable();
-        direct_heights.dedup();
-        match direct_heights.as_slice() {
-            [_] => direct_candidates.into_iter().max_by(|a, b| {
-                node_footprint_direct_vertex_ordering(a.source, b.source)
-                    .then(a.height_mm.cmp(&b.height_mm))
-            }),
-            _ => None,
+        if !edge_candidates.is_empty() {
+            return self.unique_height_candidate_at_key(key, edge_candidates);
         }
+        self.unique_height_candidate_at_key(
+            key,
+            self.direct_height_candidates_at_key(key)
+                .collect::<Vec<_>>(),
+        )
     }
 
-    fn surface_unique_height_candidate_at_key(
+    fn unique_height_candidate_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
-    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
-        let candidates = self
-            .surface_height_candidates_at_key(key)
-            .collect::<Vec<_>>();
+        candidates: Vec<NodeFootprintBoundaryHeightCandidate>,
+    ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
         let mut heights = candidates
             .iter()
             .map(|candidate| candidate.height_mm)
             .collect::<Vec<_>>();
         heights.sort_unstable();
         heights.dedup();
-        match heights.as_slice() {
-            [_] => candidates.into_iter().max_by(|a, b| {
-                node_footprint_direct_vertex_ordering(a.source, b.source)
-                    .then(a.height_mm.cmp(&b.height_mm))
-            }),
-            _ => None,
+        if heights.len() != 1 {
+            if let Some(candidate) = raised_step_footprint_height_candidate(&candidates, &heights) {
+                return Ok(Some(candidate));
+            }
+            return Err(
+                NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
+                    x_key: key.x_key(),
+                    z_key: key.z_key(),
+                },
+            );
         }
+
+        Ok(candidates
+            .into_iter()
+            .max_by(|a, b| node_footprint_direct_vertex_ordering(a.source, b.source))
+            .map(|candidate| candidate))
     }
 
-    fn direct_vertex_heights_at_key(&self, key: arrangement::NodeArrangementKey) -> Vec<i64> {
-        let mut heights = self
-            .direct_height_candidates_at_key(key)
-            .map(|candidate| candidate.height_mm)
-            .collect::<Vec<_>>();
-        heights.sort_unstable();
-        heights.dedup();
-        heights
+    pub(super) fn interpolate_missing_footprint_boundary_heights(
+        &mut self,
+        vertices: &mut [(arrangement::NodeArrangementKey, Option<i64>)],
+    ) -> Result<(), NodeBoundaryExportError> {
+        let Some(_first_missing_key) = vertices
+            .iter()
+            .find_map(|(key, height_mm)| height_mm.is_none().then_some(*key))
+        else {
+            return Ok(());
+        };
+        let Some(first_solved_index) = vertices
+            .iter()
+            .position(|(_, height_mm)| height_mm.is_some())
+        else {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+        };
+        if vertices
+            .iter()
+            .filter(|(_, height_mm)| height_mm.is_some())
+            .count()
+            < 2
+        {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+        }
+
+        let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
+        ordered_indices.extend(first_solved_index..vertices.len());
+        ordered_indices.extend(0..=first_solved_index);
+
+        let mut start_pos = 0;
+        while start_pos + 1 < ordered_indices.len() {
+            let start_index = ordered_indices[start_pos];
+            let Some(start_height_mm) = vertices[start_index].1 else {
+                return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+            };
+            let Some(end_pos) = (start_pos + 1..ordered_indices.len())
+                .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
+            else {
+                return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+            };
+            if end_pos == start_pos + 1 {
+                start_pos = end_pos;
+                continue;
+            }
+
+            let end_index = ordered_indices[end_pos];
+            let Some(end_height_mm) = vertices[end_index].1 else {
+                return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+            };
+            let Some(start_candidate) =
+                self.height_candidate_at_point(vertices[start_index].0, start_height_mm)?
+            else {
+                return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
+            };
+            let Some(end_candidate) =
+                self.height_candidate_at_point(vertices[end_index].0, end_height_mm)?
+            else {
+                return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
+            };
+
+            let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
+            cumulative_lengths.push(0.0);
+            let mut total_length_m = 0.0;
+            for pair_pos in start_pos..end_pos {
+                total_length_m += arrangement_key_distance_m(
+                    vertices[ordered_indices[pair_pos]].0,
+                    vertices[ordered_indices[pair_pos + 1]].0,
+                );
+                cumulative_lengths.push(total_length_m);
+            }
+            if total_length_m <= f64::EPSILON {
+                return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
+            }
+
+            for run_offset in 1..cumulative_lengths.len() - 1 {
+                let index = ordered_indices[start_pos + run_offset];
+                let t = cumulative_lengths[run_offset] / total_length_m;
+                let height_mm = (start_height_mm as f64
+                    + (end_height_mm - start_height_mm) as f64 * t)
+                    .round() as i64;
+                vertices[index].1 = Some(height_mm);
+                self.insert_contour_interpolated_boundary_source(
+                    vertices[index].0,
+                    height_mm,
+                    start_candidate,
+                    end_candidate,
+                );
+            }
+            start_pos = end_pos;
+        }
+        Ok(())
+    }
+
+    fn height_candidate_at_point(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        height_mm: i64,
+    ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
+        let point_key = ArrangementBoundaryPointKey::from_world(
+            arrangement_boundary_point_to_world(ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: height_mm,
+            }),
+        );
+        if let Some(source) = self.direct_vertex_sources.get(&point_key).copied() {
+            return Ok(Some(NodeFootprintBoundaryHeightCandidate {
+                height_mm,
+                source,
+                source_edge: None,
+            }));
+        }
+        Ok(self
+            .unique_height_candidate_at_key(
+                key,
+                self.height_candidates_at_key(key)
+                    .filter(|candidate| candidate.height_mm == height_mm)
+                    .collect::<Vec<_>>(),
+            )?
+            .filter(|candidate| candidate.height_mm == height_mm))
+    }
+
+    fn insert_contour_interpolated_boundary_source(
+        &mut self,
+        key: arrangement::NodeArrangementKey,
+        height_mm: i64,
+        start: NodeFootprintBoundaryHeightCandidate,
+        end: NodeFootprintBoundaryHeightCandidate,
+    ) {
+        let owner = if node_footprint_direct_vertex_ordering(start.source, end.source).is_ge() {
+            start.source
+        } else {
+            end.source
+        };
+        let candidate = NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start: node_footprint_boundary_source_start_direct_source(
+                    start.source.source,
+                ),
+                owning_segment_end: node_footprint_boundary_source_end_direct_source(
+                    end.source.source,
+                ),
+                height_mm,
+            },
+            owner_kind: owner.owner_kind,
+            owner_index: owner.owner_index,
+        };
+        self.insert_boundary_vertex_source(key, height_mm, candidate);
+    }
+
+    fn insert_boundary_vertex_source(
+        &mut self,
+        key: arrangement::NodeArrangementKey,
+        height_mm: i64,
+        candidate: NodeFootprintBoundaryDirectVertex,
+    ) {
+        let point_key = ArrangementBoundaryPointKey::from_world(
+            arrangement_boundary_point_to_world(ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: height_mm,
+            }),
+        );
+        self.direct_vertex_sources
+            .entry(point_key)
+            .and_modify(|current| {
+                if node_footprint_direct_vertex_ordering(candidate, *current).is_gt() {
+                    *current = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+
+    fn height_candidates_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
+        self.direct_height_candidates_at_key(key)
+            .chain(self.boundary_edge_height_candidates_at_key(key))
+    }
+
+    fn boundary_edge_height_candidates_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
+        self.source_edges.iter().filter_map(move |source_edge| {
+            if !arrangement_key_lies_on_segment(key, source_edge.start_key, source_edge.end_key) {
+                return None;
+            }
+            let parameter = arrangement_key_segment_parameter_xz(
+                key,
+                source_edge.start_key,
+                source_edge.end_key,
+            )?;
+            let height_mm = interpolated_segment_height_mm(
+                source_edge.start_point_key,
+                source_edge.end_point_key,
+                parameter,
+            );
+            Some(NodeFootprintBoundaryHeightCandidate {
+                height_mm,
+                source: NodeFootprintBoundaryDirectVertex {
+                    source: node_footprint_boundary_vertex_source_for_edge_point(
+                        source_edge,
+                        ArrangementBoundaryPointKey {
+                            x_key: key.x_key(),
+                            z_key: key.z_key(),
+                            y_mm: height_mm,
+                        },
+                    )?,
+                    owner_kind: source_edge.owner_kind,
+                    owner_index: source_edge.owner_index,
+                },
+                source_edge: Some((source_edge.start_key, source_edge.end_key)),
+            })
+        })
     }
 
     fn direct_height_candidates_at_key(
@@ -395,117 +559,9 @@ impl NodeFootprintBoundaryExportSources {
             .map(|(point_key, source)| NodeFootprintBoundaryHeightCandidate {
                 height_mm: point_key.y_mm,
                 source: *source,
+                source_edge: None,
             })
     }
-
-    fn surface_height_candidates_at_key(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
-        let point_xz = Vector2::new(
-            (key.x_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-            (key.z_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-        );
-        self.triangle_sources
-            .iter()
-            .copied()
-            .filter_map(move |source| {
-                let (wa, wb, wc) =
-                    RoadSurfaceSystem::triangle_barycentric_weights_xz(source.triangle, point_xz)?;
-                let height_m = source.triangle[0].y * wa
-                    + source.triangle[1].y * wb
-                    + source.triangle[2].y * wc;
-                let height_mm = (height_m * 1000.0).round() as i64;
-                Some(NodeFootprintBoundaryHeightCandidate {
-                    height_mm,
-                    source: NodeFootprintBoundaryDirectVertex {
-                        source: NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                            top_surface_source_index: source.top_surface_source_index,
-                            grade_authority_indices: source.grade_authority_indices,
-                            height_mm,
-                        },
-                        owner_kind: source.owner_kind,
-                        owner_index: source.owner_index,
-                    },
-                })
-            })
-    }
-}
-
-pub(super) fn interpolate_missing_footprint_boundary_heights(
-    vertices: &mut [(arrangement::NodeArrangementKey, Option<i64>)],
-) -> Result<(), NodeBoundaryExportError> {
-    let Some(_first_missing_key) = vertices
-        .iter()
-        .find_map(|(key, height_mm)| height_mm.is_none().then_some(*key))
-    else {
-        return Ok(());
-    };
-    let Some(first_solved_index) = vertices
-        .iter()
-        .position(|(_, height_mm)| height_mm.is_some())
-    else {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-    };
-    if vertices
-        .iter()
-        .filter(|(_, height_mm)| height_mm.is_some())
-        .count()
-        < 2
-    {
-        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-    }
-
-    let mut ordered_indices = Vec::with_capacity(vertices.len() + 1);
-    ordered_indices.extend(first_solved_index..vertices.len());
-    ordered_indices.extend(0..=first_solved_index);
-
-    let mut start_pos = 0;
-    while start_pos + 1 < ordered_indices.len() {
-        let start_index = ordered_indices[start_pos];
-        let Some(start_height_mm) = vertices[start_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-        let Some(end_pos) = (start_pos + 1..ordered_indices.len())
-            .find(|pos| vertices[ordered_indices[*pos]].1.is_some())
-        else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-        if end_pos == start_pos + 1 {
-            start_pos = end_pos;
-            continue;
-        }
-
-        let end_index = ordered_indices[end_pos];
-        let Some(end_height_mm) = vertices[end_index].1 else {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        };
-
-        let mut cumulative_lengths = Vec::with_capacity(end_pos - start_pos + 1);
-        cumulative_lengths.push(0.0);
-        let mut total_length_m = 0.0;
-        for pair_pos in start_pos..end_pos {
-            total_length_m += arrangement_key_distance_m(
-                vertices[ordered_indices[pair_pos]].0,
-                vertices[ordered_indices[pair_pos + 1]].0,
-            );
-            cumulative_lengths.push(total_length_m);
-        }
-        if total_length_m <= f64::EPSILON {
-            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
-        }
-
-        for run_offset in 1..cumulative_lengths.len() - 1 {
-            let index = ordered_indices[start_pos + run_offset];
-            let t = cumulative_lengths[run_offset] / total_length_m;
-            vertices[index].1 = Some(
-                (start_height_mm as f64 + (end_height_mm - start_height_mm) as f64 * t).round()
-                    as i64,
-            );
-        }
-        start_pos = end_pos;
-    }
-    Ok(())
 }
 
 pub(super) fn remove_unsupported_numeric_boundary_vertices<F>(
@@ -570,7 +626,6 @@ pub(super) fn node_earthwork_boundary_segments_from_footprint_loops(
                     points[(index + 1) % points.len()],
                     &sources.source_edges,
                     &sources.direct_vertex_sources,
-                    &sources.triangle_sources,
                     &mut segments,
                 )?;
             }
@@ -687,43 +742,6 @@ fn node_footprint_boundary_direct_vertex_sources(
     Ok(sources)
 }
 
-fn node_footprint_boundary_triangle_sources(
-    owned_regions: &[NodeOwnedRegion],
-    node_top_surface_sources: &[NodeTopSurfacePolygonSource],
-) -> Result<Vec<NodeFootprintBoundaryTriangleSource>, NodeBoundaryExportError> {
-    if owned_regions.len() != node_top_surface_sources.len() {
-        return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
-    }
-    let mut sources = Vec::new();
-    for (region_index, region) in owned_regions.iter().enumerate() {
-        let Some(top_source) = node_top_surface_sources.get(region_index) else {
-            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
-        };
-        if top_source.triangle_sources.len() != region.polygon.triangles_world.len() {
-            return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
-        }
-        for (triangle_index, triangle) in region.polygon.triangles_world.iter().copied().enumerate()
-        {
-            sources.push(NodeFootprintBoundaryTriangleSource {
-                triangle,
-                top_surface_source_index: region_index,
-                grade_authority_indices: top_source.triangle_sources[triangle_index]
-                    .map(|source| source.grade_authority_index),
-                owner_kind: region.kind,
-                owner_index: region.owner_index,
-            });
-        }
-    }
-    sources.sort_by(|a, b| {
-        band_kind_sort_key(a.owner_kind)
-            .cmp(&band_kind_sort_key(b.owner_kind))
-            .then(a.owner_index.cmp(&b.owner_index))
-            .then(a.top_surface_source_index.cmp(&b.top_surface_source_index))
-            .then(a.grade_authority_indices.cmp(&b.grade_authority_indices))
-    });
-    Ok(sources)
-}
-
 fn push_sourced_node_earthwork_boundary_segments(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
@@ -734,7 +752,6 @@ fn push_sourced_node_earthwork_boundary_segments(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
     segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
 ) -> Result<(), NodeBoundaryExportError> {
     let start_key = ArrangementBoundaryPointKey::from_world(start).xz_key();
@@ -746,19 +763,11 @@ fn push_sourced_node_earthwork_boundary_segments(
         BTreeMap::<ArrangementSegmentParameter, NodeFootprintBoundarySplitPoint>::new();
     split_points.insert(
         ArrangementSegmentParameter::zero(),
-        node_footprint_boundary_split_point_from_world(
-            start,
-            direct_vertex_sources,
-            triangle_sources,
-        ),
+        node_footprint_boundary_split_point_from_world(start, direct_vertex_sources),
     );
     split_points.insert(
         ArrangementSegmentParameter::one(),
-        node_footprint_boundary_split_point_from_world(
-            end,
-            direct_vertex_sources,
-            triangle_sources,
-        ),
+        node_footprint_boundary_split_point_from_world(end, direct_vertex_sources),
     );
     for source_edge in source_edges {
         for (split_key, split_point_key, split_source) in [
@@ -821,7 +830,6 @@ fn push_sourced_node_earthwork_boundary_segments(
             sub_end_point_key,
             source_edges,
             direct_vertex_sources,
-            triangle_sources,
             sub_start_split.source,
             sub_end_split.source,
         );
@@ -849,16 +857,11 @@ fn node_footprint_boundary_split_point_from_world(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
 ) -> NodeFootprintBoundarySplitPoint {
     let point_key = ArrangementBoundaryPointKey::from_world(point);
     NodeFootprintBoundarySplitPoint {
         point_key,
-        source: node_footprint_boundary_vertex_source_at_point(
-            point_key,
-            direct_vertex_sources,
-            triangle_sources,
-        ),
+        source: node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources),
     }
 }
 
@@ -929,7 +932,6 @@ fn node_earthwork_source_for_boundary_subsegment(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
     start_split_source: Option<NodeFootprintBoundaryDirectVertex>,
     end_split_source: Option<NodeFootprintBoundaryDirectVertex>,
 ) -> Option<RoadSurfaceEarthworkFaceSource> {
@@ -946,7 +948,6 @@ fn node_earthwork_source_for_boundary_subsegment(
                 start_point_key,
                 end_point_key,
                 direct_vertex_sources,
-                triangle_sources,
             )
         })
         .or_else(|| {
@@ -991,18 +992,10 @@ fn node_earthwork_source_for_direct_boundary_segment(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
 ) -> Option<RoadSurfaceEarthworkFaceSource> {
-    let start = node_footprint_boundary_vertex_source_at_point(
-        start_point_key,
-        direct_vertex_sources,
-        triangle_sources,
-    )?;
-    let end = node_footprint_boundary_vertex_source_at_point(
-        end_point_key,
-        direct_vertex_sources,
-        triangle_sources,
-    )?;
+    let start =
+        node_footprint_boundary_vertex_source_at_point(start_point_key, direct_vertex_sources)?;
+    let end = node_footprint_boundary_vertex_source_at_point(end_point_key, direct_vertex_sources)?;
     let owner = if node_footprint_direct_vertex_ordering(start, end).is_ge() {
         start
     } else {
@@ -1026,38 +1019,8 @@ fn node_footprint_boundary_vertex_source_at_point(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-    triangle_sources: &[NodeFootprintBoundaryTriangleSource],
 ) -> Option<NodeFootprintBoundaryDirectVertex> {
-    if let Some(source) = direct_vertex_sources.get(&point_key).copied() {
-        return Some(source);
-    }
-    let point_xz = Vector2::new(
-        (point_key.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-        (point_key.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-    );
-    triangle_sources
-        .iter()
-        .copied()
-        .filter_map(|source| {
-            let (wa, wb, wc) =
-                RoadSurfaceSystem::triangle_barycentric_weights_xz(source.triangle, point_xz)?;
-            let height_m =
-                source.triangle[0].y * wa + source.triangle[1].y * wb + source.triangle[2].y * wc;
-            let height_mm = (height_m * 1000.0).round() as i64;
-            if (height_mm - point_key.y_mm).abs() > 1 {
-                return None;
-            }
-            Some(NodeFootprintBoundaryDirectVertex {
-                source: NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                    top_surface_source_index: source.top_surface_source_index,
-                    grade_authority_indices: source.grade_authority_indices,
-                    height_mm: point_key.y_mm,
-                },
-                owner_kind: source.owner_kind,
-                owner_index: source.owner_index,
-            })
-        })
-        .max_by(|a, b| node_footprint_direct_vertex_ordering(*a, *b))
+    direct_vertex_sources.get(&point_key).copied()
 }
 
 fn node_earthwork_source_edge_for_subsegment(
@@ -1123,6 +1086,69 @@ fn node_footprint_boundary_vertex_source_for_edge_point(
         owning_segment_end: source_edge.end_source,
         height_mm: point_key.y_mm,
     })
+}
+
+fn node_footprint_boundary_source_start_direct_source(
+    source: NodeFootprintBoundaryVertexSource,
+) -> NodeFootprintBoundaryDirectSource {
+    match source {
+        NodeFootprintBoundaryVertexSource::Direct(direct) => direct,
+        NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start,
+            ..
+        } => owning_segment_start,
+    }
+}
+
+fn node_footprint_boundary_source_end_direct_source(
+    source: NodeFootprintBoundaryVertexSource,
+) -> NodeFootprintBoundaryDirectSource {
+    match source {
+        NodeFootprintBoundaryVertexSource::Direct(direct) => direct,
+        NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_end, ..
+        } => owning_segment_end,
+    }
+}
+
+fn raised_step_footprint_height_candidate(
+    candidates: &[NodeFootprintBoundaryHeightCandidate],
+    heights: &[i64],
+) -> Option<NodeFootprintBoundaryHeightCandidate> {
+    // Terminal cap corners can put a lower material edge and its raised neighbor at one
+    // footprint key. Accept that only when the material ranks prove an adjacent raised-step
+    // transition; unrelated cross-material conflicts still reject above.
+    let [lower_height, raised_height] = heights else {
+        return None;
+    };
+    let lower_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == *lower_height)
+        .collect::<Vec<_>>();
+    let raised_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == *raised_height)
+        .collect::<Vec<_>>();
+    if lower_candidates.is_empty() || raised_candidates.is_empty() {
+        return None;
+    }
+    for lower in &lower_candidates {
+        for raised in &raised_candidates {
+            if !raised_step_kinds_can_contact(lower.source.owner_kind, raised.source.owner_kind) {
+                return None;
+            }
+            let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
+            let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
+            if lower_rank >= raised_rank {
+                return None;
+            }
+        }
+    }
+    raised_candidates
+        .into_iter()
+        .max_by(|a, b| node_footprint_direct_vertex_ordering(a.source, b.source))
 }
 
 fn node_earthwork_source_edge_ordering(
@@ -1394,7 +1420,6 @@ mod tests {
             Vector3::new(2.0, 2.0, 0.0),
             &source_edges,
             &BTreeMap::new(),
-            &[],
             &mut segments,
         )
         .expect("same-height duplicate split points should merge without height repair");

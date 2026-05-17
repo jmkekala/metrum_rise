@@ -50,7 +50,7 @@ impl RoadSurfaceSystem {
             &mut owned_regions,
             &mut node_top_surface_sources,
         )?;
-        let boundary_export_sources = NodeFootprintBoundaryExportSources::from_owned_regions(
+        let mut boundary_export_sources = NodeFootprintBoundaryExportSources::from_owned_regions(
             arrangement.node_id(),
             arrangement.piece_kind(),
             &owned_regions,
@@ -97,7 +97,7 @@ impl RoadSurfaceSystem {
             .collect::<Vec<_>>();
         let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
             arrangement,
-            &boundary_export_sources,
+            &mut boundary_export_sources,
             &top_polygons,
             footprint_shapes,
             true,
@@ -162,8 +162,8 @@ impl RoadSurfaceSystem {
     }
 
     fn footprint_boundary_point_loops_from_shapes(
-        arrangement: &NodeArrangement,
-        boundary_export_sources: &NodeFootprintBoundaryExportSources,
+        _arrangement: &NodeArrangement,
+        boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
         top_polygons: &[&RoadSurfaceVisualPolygon],
         footprint_shapes: &super::NodeOverlayShapes,
         clean_unsupported_numeric_vertices: bool,
@@ -172,18 +172,30 @@ impl RoadSurfaceSystem {
         for shape in footprint_shapes {
             for contour in shape {
                 let mut keyed_points = Vec::with_capacity(contour.len());
-                for point in contour {
+                for (index, point) in contour.iter().enumerate() {
                     let key = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
                         point[0], point[1],
                     ));
+                    let previous = contour[(index + contour.len() - 1) % contour.len()];
+                    let next = contour[(index + 1) % contour.len()];
+                    let adjacent_keys = [
+                        NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+                            previous[0],
+                            previous[1],
+                        )),
+                        NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+                            next[0], next[1],
+                        )),
+                    ];
                     let height_mm = Self::arrangement_footprint_boundary_height_mm(
-                        arrangement,
                         boundary_export_sources,
                         key,
+                        adjacent_keys,
                     )?;
                     keyed_points.push((key, height_mm));
                 }
-                interpolate_missing_footprint_boundary_heights(&mut keyed_points)?;
+                boundary_export_sources
+                    .interpolate_missing_footprint_boundary_heights(&mut keyed_points)?;
                 let mut points = keyed_points
                     .into_iter()
                     .map(|(key, height_mm)| {
@@ -223,240 +235,11 @@ impl RoadSurfaceSystem {
     }
 
     fn arrangement_footprint_boundary_height_mm(
-        arrangement: &NodeArrangement,
-        boundary_export_sources: &NodeFootprintBoundaryExportSources,
+        boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
         key: NodeArrangementKey,
+        adjacent_keys: [NodeArrangementKey; 2],
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
-        if let Some(height_mm) = boundary_export_sources.height_mm_at_key(key) {
-            return Ok(Some(height_mm));
-        }
-        let heights_mm = Self::arrangement_boundary_edge_heights_at_key(arrangement, key);
-        let has_height_source = !heights_mm.is_empty();
-        if let Some(height_mm) = Self::unique_footprint_boundary_height_mm(heights_mm) {
-            return Ok(Some(height_mm));
-        }
-        if let Some(height_mm) =
-            Self::explicit_raised_step_boundary_height_mm_at_key(arrangement, key)
-        {
-            return Ok(Some(height_mm));
-        }
-        if has_height_source {
-            return Err(
-                NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
-                    x_key: key.x_key(),
-                    z_key: key.z_key(),
-                },
-            );
-        }
-
-        let heights_mm = arrangement
-            .vertices()
-            .iter()
-            .filter(|vertex| vertex.key() == key)
-            .map(|vertex| vertex.height_mm())
-            .collect::<Vec<_>>();
-        let has_height_source = !heights_mm.is_empty();
-        if let Some(height_mm) = Self::unique_footprint_boundary_height_mm(heights_mm) {
-            return Ok(Some(height_mm));
-        }
-        if let Some(height_mm) =
-            Self::explicit_raised_step_boundary_height_mm_at_key(arrangement, key)
-        {
-            return Ok(Some(height_mm));
-        }
-        if has_height_source {
-            return Err(
-                NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
-                    x_key: key.x_key(),
-                    z_key: key.z_key(),
-                },
-            );
-        }
-
-        let heights_mm = Self::arrangement_visible_top_heights_at_key(arrangement, key);
-        let has_height_source = !heights_mm.is_empty();
-        if let Some(height_mm) = Self::unique_footprint_boundary_height_mm(heights_mm) {
-            return Ok(Some(height_mm));
-        }
-        if let Some(height_mm) =
-            Self::explicit_raised_step_boundary_height_mm_at_key(arrangement, key)
-        {
-            return Ok(Some(height_mm));
-        }
-        if has_height_source {
-            return Err(
-                NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
-                    x_key: key.x_key(),
-                    z_key: key.z_key(),
-                },
-            );
-        }
-        Ok(None)
-    }
-
-    fn unique_footprint_boundary_height_mm(mut heights_mm: Vec<i64>) -> Option<i64> {
-        heights_mm.sort_unstable();
-        heights_mm.dedup();
-        match heights_mm.as_slice() {
-            [height_mm] => Some(*height_mm),
-            _ => None,
-        }
-    }
-
-    fn explicit_raised_step_boundary_height_mm_at_key(
-        arrangement: &NodeArrangement,
-        key: NodeArrangementKey,
-    ) -> Option<i64> {
-        Self::unique_footprint_boundary_height_mm(
-            Self::explicit_raised_step_boundary_height_candidates_at_key(arrangement, key),
-        )
-    }
-
-    fn explicit_raised_step_boundary_height_candidates_at_key(
-        arrangement: &NodeArrangement,
-        key: NodeArrangementKey,
-    ) -> Vec<i64> {
-        let mut raised_heights = Vec::new();
-        for segment in arrangement.explicit_vertical_step_segments() {
-            if !arrangement_key_lies_on_segment(key, segment.start(), segment.end()) {
-                continue;
-            }
-            let Some((_, raised_owner)) = canonical_vertical_step_lower_and_raised_owners(segment)
-            else {
-                continue;
-            };
-            raised_heights.extend(Self::arrangement_visible_top_heights_at_key_for_owner(
-                arrangement,
-                key,
-                raised_owner,
-            ));
-            let segment_key = (segment.start(), segment.end());
-            let Some(parameter) =
-                arrangement_key_segment_parameter_xz(key, segment.start(), segment.end())
-            else {
-                continue;
-            };
-            for interval in arrangement_owner_face_boundary_intervals_for_segment(
-                arrangement,
-                raised_owner,
-                segment_key,
-            ) {
-                if parameter < interval.start || parameter > interval.end {
-                    continue;
-                }
-                let Some(point) =
-                    arrangement_face_boundary_interval_point_at(segment_key, interval, parameter)
-                else {
-                    continue;
-                };
-                raised_heights.push((point.y * 1000.0).round() as i64);
-            }
-            raised_heights.extend(
-                arrangement
-                    .vertices()
-                    .iter()
-                    .filter(|vertex| vertex.key() == key)
-                    .filter(|vertex| vertex.owners().contains(&raised_owner))
-                    .map(|vertex| vertex.height_mm()),
-            );
-        }
-        raised_heights
-    }
-
-    fn arrangement_visible_top_heights_at_key_for_owner(
-        arrangement: &NodeArrangement,
-        key: NodeArrangementKey,
-        owner: NodeBandOwner,
-    ) -> Vec<i64> {
-        let point = Vector2::new(
-            (key.x_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-            (key.z_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-        );
-        let mut heights = Vec::new();
-        for face in arrangement
-            .faces()
-            .iter()
-            .filter(|face| face.owner() == owner)
-        {
-            let Some(triangle) = Self::arrangement_face_visual_triangle(arrangement, face) else {
-                continue;
-            };
-            let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point) else {
-                continue;
-            };
-            let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-            heights.push((height_m * 1000.0).round() as i64);
-        }
-        heights.sort_unstable();
-        heights.dedup();
-        heights
-    }
-
-    fn arrangement_visible_top_heights_at_key(
-        arrangement: &NodeArrangement,
-        key: NodeArrangementKey,
-    ) -> Vec<i64> {
-        let point = Vector2::new(
-            (key.x_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-            (key.z_key() as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-        );
-        let mut heights = Vec::new();
-        for face in arrangement.faces() {
-            let Some(triangle) = Self::arrangement_face_visual_triangle(arrangement, face) else {
-                continue;
-            };
-            let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point) else {
-                continue;
-            };
-            let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-            heights.push((height_m * 1000.0).round() as i64);
-        }
-        heights.sort_unstable();
-        heights.dedup();
-        heights
-    }
-
-    fn arrangement_boundary_edge_heights_at_key(
-        arrangement: &NodeArrangement,
-        key: NodeArrangementKey,
-    ) -> Vec<i64> {
-        let mut heights = Vec::new();
-        for face in arrangement
-            .faces()
-            .iter()
-            .filter(|face| Self::arrangement_face_visual_triangle(arrangement, face).is_some())
-        {
-            let vertices = face.vertices();
-            for index in 0..vertices.len() {
-                let Some(start) = arrangement.vertices().get(vertices[index].index()) else {
-                    continue;
-                };
-                let Some(end) = arrangement
-                    .vertices()
-                    .get(vertices[(index + 1) % vertices.len()].index())
-                else {
-                    continue;
-                };
-                if !arrangement_key_lies_on_segment(key, start.key(), end.key()) {
-                    continue;
-                }
-                let Some(parameter) = boundary_segment_parameter_xz(
-                    arrangement_key_boundary_point(key, 0),
-                    arrangement_key_boundary_point(start.key(), start.height_mm()),
-                    arrangement_key_boundary_point(end.key(), end.height_mm()),
-                ) else {
-                    continue;
-                };
-                heights.push(interpolated_segment_height_mm(
-                    arrangement_key_boundary_point(start.key(), start.height_mm()),
-                    arrangement_key_boundary_point(end.key(), end.height_mm()),
-                    parameter,
-                ));
-            }
-        }
-        heights.sort_unstable();
-        heights.dedup();
-        heights
+        boundary_export_sources.height_mm_at_key(key, adjacent_keys)
     }
 
     fn visible_top_polygons_from_owned_regions(

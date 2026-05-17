@@ -280,17 +280,6 @@ impl RoadSurfaceSystem {
                 ),
                 height_mm,
             },
-            super::NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                top_surface_source_index,
-                grade_authority_indices,
-                height_mm,
-            } => TerrainCdtNodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                top_surface_source_index: u64::try_from(top_surface_source_index)
-                    .unwrap_or(u64::MAX),
-                grade_authority_indices: grade_authority_indices
-                    .map(|index| u64::try_from(index).unwrap_or(u64::MAX)),
-                height_mm,
-            },
         }
     }
 

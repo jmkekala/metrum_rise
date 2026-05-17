@@ -182,7 +182,9 @@ Live behavior:
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
   sub-budget material dust region was discarded may inherit its terrain-seam height by deterministic
   contour interpolation between adjacent solved footprint vertices; it must not create render
-  triangles.
+  triangles. Terminal raised-step footprint corners may use the raised adjacent material height
+  only when the boundary source edges prove an ordered asphalt / curb or curb / sidewalk step at
+  that canonical key.
 - surface and road-touched terrain chunk ownership is now indexed by compiled visual piece
   coverage; dirty recompiles rebuild `old_coverage union new_coverage`
 - ordinary dirty chunk rebuilds read sorted chunk contributor sets instead of scanning every

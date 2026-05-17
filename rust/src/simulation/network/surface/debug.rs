@@ -959,21 +959,6 @@ impl RoadSurfaceSystem {
                     owning_segment_end.grade_authority_index
                 );
             }
-            NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                top_surface_source_index,
-                grade_authority_indices,
-                height_mm,
-            } => {
-                let _ = write!(
-                    dump,
-                    "{{\"source_kind\":\"surface_interpolation\",\"top_surface_source_index\":{},\"height_mm\":{},\"grade_authority_indices\":[{},{},{}]}}",
-                    top_surface_source_index,
-                    height_mm,
-                    grade_authority_indices[0],
-                    grade_authority_indices[1],
-                    grade_authority_indices[2]
-                );
-            }
         }
     }
 
@@ -2518,11 +2503,6 @@ impl RoadSurfaceSystem {
                         }) => {
                             boundary_interpolation_source_count += 1;
                         }
-                        Some(NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
-                            ..
-                        }) => {
-                            boundary_interpolation_source_count += 1;
-                        }
                         None => {
                             missing_source_count += 1;
                         }
@@ -2531,9 +2511,6 @@ impl RoadSurfaceSystem {
                         || matches!(
                             source,
                             Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation { .. })
-                                | Some(
-                                    NodeFootprintBoundaryVertexSource::SurfaceInterpolation { .. }
-                                )
                         ))
                         && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
                     {
@@ -2700,11 +2677,6 @@ impl RoadSurfaceSystem {
                                 direct_source_count += 1;
                             }
                             Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
-                                ..
-                            }) => {
-                                boundary_interpolation_source_count += 1;
-                            }
-                            Some(NodeFootprintBoundaryVertexSource::SurfaceInterpolation {
                                 ..
                             }) => {
                                 boundary_interpolation_source_count += 1;

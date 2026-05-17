@@ -195,11 +195,6 @@ pub(crate) enum TerrainCdtNodeFootprintBoundaryVertexSource {
         owning_segment_end: TerrainCdtNodeFootprintBoundaryDirectSource,
         height_mm: i64,
     },
-    SurfaceInterpolation {
-        top_surface_source_index: u64,
-        grade_authority_indices: [u64; 3],
-        height_mm: i64,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
