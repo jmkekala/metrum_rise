@@ -1,6 +1,7 @@
 //! Tests for canonical node-height field construction and evaluation.
 
 use super::super::arrangement::NodeSeamSource;
+use super::build::height_fields_by_source;
 use super::grade::apply_junctionn_height_authority_normalization;
 use super::model::*;
 use super::seams::*;
@@ -23,7 +24,7 @@ use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
 use godot::prelude::{Vector2, Vector3};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
     IncidentMouthBand {
@@ -418,10 +419,11 @@ fn junctionn_canonical_height_authority_scopes_generated_carriers_to_owned_regio
 
 #[test]
 fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_vertices() {
+    let source_support = [RoadVec3::new(5.0, 0.5, 0.0)];
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
-        None,
+        Some(&source_support),
     )
     .expect("manual interval is a valid source height carrier");
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
@@ -724,6 +726,122 @@ fn generated_band_contour_requires_explicit_height_points() {
 }
 
 #[test]
+fn generated_band_contour_requires_source_band_index_for_height_carrier() {
+    let input = conflicting_manual_input();
+    let mut contour = generated_band_contour(
+        RoadSurfaceBandKind::Sidewalk,
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(10.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 5.0, 0.0),
+            RoadVec3::new(10.0, 7.0, 0.0),
+            RoadVec3::new(10.0, 7.0, 2.0),
+            RoadVec3::new(0.0, 5.0, 2.0),
+        ]),
+    );
+    contour.source_band_index = None;
+    let rails = manual_rail_contours(input.node_id, input.piece_kind, vec![contour]);
+
+    assert!(matches!(
+        height_fields_by_source(&input, Some(&rails)),
+        Err(
+            NodeHeightFieldError::GeneratedContourMissingSourceBandIndex {
+                mouth_order_index: 0,
+                source_kind: RoadSurfaceBandKind::Sidewalk,
+                purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                owner: Some(_),
+            }
+        )
+    ));
+}
+
+#[test]
+fn generated_band_contour_rejects_missing_source_band() {
+    let input = conflicting_manual_input();
+    let mut contour = generated_band_contour(
+        RoadSurfaceBandKind::Sidewalk,
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(10.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 5.0, 0.0),
+            RoadVec3::new(10.0, 7.0, 0.0),
+            RoadVec3::new(10.0, 7.0, 2.0),
+            RoadVec3::new(0.0, 5.0, 2.0),
+        ]),
+    );
+    contour.source_band_index = Some(99);
+    let rails = manual_rail_contours(input.node_id, input.piece_kind, vec![contour]);
+
+    assert!(matches!(
+        height_fields_by_source(&input, Some(&rails)),
+        Err(NodeHeightFieldError::GeneratedContourMissingSourceBand {
+            mouth_order_index: 0,
+            band_index: 99,
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            owner: Some(_),
+        })
+    ));
+}
+
+#[test]
+fn generated_contour_source_handoff_height_mismatch_rejects() {
+    let source_support = [RoadVec3::new(5.0, 0.5, 0.0)];
+    let mut field = NodeBandHeightField::from_interval(
+        0,
+        &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        Some(&source_support),
+    )
+    .expect("manual interval is a valid source height carrier");
+    let contour = generated_band_contour(
+        RoadSurfaceBandKind::Sidewalk,
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(5.0, 0.0),
+            RoadVec2::new(10.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(5.0, 0.75, 0.0),
+            RoadVec3::new(10.0, 1.0, 0.0),
+            RoadVec3::new(10.0, 1.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ]),
+    );
+
+    assert_eq!(
+        field.extend_with_generated_contour(&contour),
+        Err(
+            NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
+                mouth_order_index: 0,
+                band_index: 0,
+                source_kind: RoadSurfaceBandKind::Sidewalk,
+                height_field_id: field.id,
+                purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0)),
+                point_x_mm: 5000,
+                point_z_mm: 0,
+                source_height_mm: 500,
+                contour_height_mm: 750,
+            }
+        )
+    );
+}
+
+#[test]
 fn generated_band_contour_rejects_invalid_height_carrier_contour() {
     let mut field = NodeBandHeightField::from_interval(
         0,
@@ -761,6 +879,20 @@ fn generated_band_contour_rejects_invalid_height_carrier_contour() {
             ..
         }) if height_field_id == field.id
     ));
+}
+
+fn manual_rail_contours(
+    node_id: u32,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: Vec<NodeGeneratedContour>,
+) -> NodeRailContourSet {
+    NodeRailContourSet {
+        node_id,
+        piece_kind,
+        contours,
+        constraints: Vec::new(),
+        height_carrier_points_by_source: BTreeMap::new(),
+    }
 }
 
 fn terminal_cap_band_for_height_test(

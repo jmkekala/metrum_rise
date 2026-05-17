@@ -179,6 +179,17 @@ pub(super) fn extend_height_fields_with_generated_contours(
             continue;
         };
         let Some(band_index) = contour.source_band_index else {
+            if generated_contour_requires_height_field(contour) {
+                return Err(
+                    NodeHeightFieldError::GeneratedContourMissingSourceBandIndex {
+                        mouth_order_index: contour.source_mouth_order_index,
+                        source_kind: kind,
+                        purpose: contour.purpose,
+                        claim_priority: contour.claim_priority,
+                        owner: contour.owner,
+                    },
+                );
+            }
             continue;
         };
         let key = NodeSourceBandKey {
@@ -186,6 +197,16 @@ pub(super) fn extend_height_fields_with_generated_contours(
             band_index,
         };
         let Some(field) = fields.get_mut(&key) else {
+            if generated_contour_requires_height_field(contour) {
+                return Err(NodeHeightFieldError::GeneratedContourMissingSourceBand {
+                    mouth_order_index: key.mouth_order_index,
+                    band_index: key.band_index,
+                    source_kind: kind,
+                    purpose: contour.purpose,
+                    claim_priority: contour.claim_priority,
+                    owner: contour.owner,
+                });
+            }
             continue;
         };
         if field.kind != kind {
@@ -199,4 +220,8 @@ pub(super) fn extend_height_fields_with_generated_contours(
         field.extend_with_generated_contour(contour)?;
     }
     Ok(())
+}
+
+fn generated_contour_requires_height_field(contour: &NodeGeneratedContour) -> bool {
+    contour.owner.is_some() || contour.height_points_world.is_some()
 }

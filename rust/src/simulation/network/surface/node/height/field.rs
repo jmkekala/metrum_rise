@@ -302,7 +302,22 @@ impl NodeBandHeightField {
             let source_height_key = SurfaceHeightMmKey::from_m_f64(source_height_m);
             let contour_height_key = SurfaceHeightMmKey::from_m_f64(point.y);
             if source_height_key != contour_height_key {
-                continue;
+                let key = NodeHeightPointKey::from_point(point_xz);
+                return Err(
+                    NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
+                        mouth_order_index: self.id.mouth_order_index(),
+                        band_index: self.id.band_index(),
+                        source_kind: self.kind,
+                        height_field_id: self.id,
+                        purpose: contour.purpose,
+                        claim_priority: contour.claim_priority,
+                        owner: contour.owner,
+                        point_x_mm: key.x_mm(),
+                        point_z_mm: key.z_mm(),
+                        source_height_mm: source_height_key.as_i64(),
+                        contour_height_mm: contour_height_key.as_i64(),
+                    },
+                );
             }
             self.source_handoff_keys
                 .insert(NodeAuthorizedSourceHandoffKey {
@@ -400,6 +415,8 @@ impl NodeBandHeightPatch {
     ) -> Result<Self, NodeHeightFieldError> {
         let (triangles, contour_edges) =
             interval_height_carrier(id, interval, source_support_points)?;
+        let source_handoff_support_keys =
+            source_handoff_support_keys(id, interval, &contour_edges, source_support_points)?;
         let mut explicit_vertices =
             interval_height_carrier_vertices(id, interval, source_support_points)?;
         if let Some(source_support_points) = source_support_points {
@@ -417,6 +434,7 @@ impl NodeBandHeightPatch {
         Ok(Self {
             authority: NodeHeightPatchAuthority::source_interval(),
             explicit_vertex_heights,
+            source_handoff_support_keys,
             contour_edge_support_keys,
             triangles: Some(triangles),
             contour_edges: Some(contour_edges),
@@ -442,6 +460,7 @@ impl NodeBandHeightPatch {
         Ok(Self {
             authority,
             explicit_vertex_heights,
+            source_handoff_support_keys: BTreeSet::new(),
             contour_edge_support_keys,
             triangles: Some(terminal_cap_band_height_triangles(
                 id,
@@ -506,6 +525,7 @@ impl NodeBandHeightPatch {
         Ok(Self {
             authority,
             explicit_vertex_heights,
+            source_handoff_support_keys: BTreeSet::new(),
             contour_edge_support_keys,
             triangles: Some(height_triangles_from_contour(
                 id,
@@ -536,6 +556,12 @@ impl NodeBandHeightPatch {
         // This is not a search for the nearest source height. The caller must first prove the
         // point is an explicit generated-contour handoff key; this only reads the matching source
         // interval edge height.
+        if !self
+            .source_handoff_support_keys
+            .contains(&height_source_point_key(point_xz))
+        {
+            return Ok(None);
+        }
         self.contour_edges.as_ref().map_or(Ok(None), |edges| {
             terminal_edge_height_at_exact(point_xz, edges)
         })
@@ -667,4 +693,72 @@ impl NodeBandHeightPatch {
             incoming_height_mm: conflict.incoming_height_mm,
         }
     }
+}
+
+fn source_handoff_support_keys(
+    id: NodeBandHeightFieldId,
+    interval: &NodeInputBandInterval,
+    contour_edges: &[NodeBandHeightEdge],
+    source_support_points: Option<&[RoadVec3]>,
+) -> Result<BTreeSet<NodeHeightSourcePointKey>, NodeHeightFieldError> {
+    let Some(source_support_points) = source_support_points else {
+        return Ok(BTreeSet::new());
+    };
+    let base_keys = interval_declared_source_point_keys(interval);
+    let mut support_keys = BTreeSet::new();
+    for point in source_support_points {
+        let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
+        let point_key = height_source_point_key(point_xz);
+        if base_keys.contains(&point_key) {
+            continue;
+        }
+        let source_height_m =
+            terminal_edge_height_at_exact(point_xz, contour_edges).map_err(|conflict| {
+                NodeHeightFieldError::SourceHeightFieldConflict {
+                    mouth_order_index: id.mouth_order_index(),
+                    band_index: id.band_index(),
+                    source_kind: interval.band_kind,
+                    height_field_id: id,
+                    owner: None,
+                    existing_authority: NodeHeightAuthoritySource::SourceInterval,
+                    incoming_authority: NodeHeightAuthoritySource::SourceInterval,
+                    point_x_mm: NodeHeightPointKey::from_point(point_xz).x_mm(),
+                    point_z_mm: NodeHeightPointKey::from_point(point_xz).z_mm(),
+                    existing_height_mm: conflict.existing_height_mm,
+                    incoming_height_mm: conflict.incoming_height_mm,
+                }
+            })?;
+        let Some(source_height_m) = source_height_m else {
+            continue;
+        };
+        if SurfaceHeightMmKey::from_m_f64(source_height_m)
+            == SurfaceHeightMmKey::from_m_f64(point.y)
+        {
+            support_keys.insert(point_key);
+        }
+    }
+    Ok(support_keys)
+}
+
+fn interval_declared_source_point_keys(
+    interval: &NodeInputBandInterval,
+) -> BTreeSet<NodeHeightSourcePointKey> {
+    if interval.start_path_world.is_empty() && interval.end_path_world.is_empty() {
+        return [
+            interval.mouth_start_world,
+            interval.mouth_end_world,
+            interval.endpoint_end_world,
+            interval.endpoint_start_world,
+        ]
+        .into_iter()
+        .map(|point| height_source_point_key(quantize_road_vec2_to_overlay_grid(xz(point))))
+        .collect();
+    }
+
+    interval
+        .start_path_world
+        .iter()
+        .chain(interval.end_path_world.iter())
+        .map(|point| height_source_point_key(quantize_road_vec2_to_overlay_grid(xz(*point))))
+        .collect()
 }
