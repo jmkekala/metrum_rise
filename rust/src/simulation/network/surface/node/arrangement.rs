@@ -1,7 +1,10 @@
 //! Canonical node-arrangement identity and ownership data model.
 
 mod build;
+mod edges;
+mod faces;
 mod model;
+mod regions;
 mod seams;
 mod steps;
 
