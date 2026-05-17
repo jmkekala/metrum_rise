@@ -1,6 +1,9 @@
 //! Arrangement face boundary intervals used by node vertical face export.
 
+use super::arrangement::NodeArrangementFace;
+use super::boundary_edges::normalized_arrangement_boundary_segment_key;
 use super::*;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct ArrangementFaceBoundaryInterval {
@@ -16,12 +19,25 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
     owner: NodeBandOwner,
     segment_key: (NodeArrangementKey, NodeArrangementKey),
 ) -> Vec<ArrangementFaceBoundaryInterval> {
-    let mut intervals = Vec::new();
+    let mut edge_counts = BTreeMap::<
+        (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+        (
+            usize,
+            ArrangementBoundaryPointKey,
+            ArrangementBoundaryPointKey,
+        ),
+    >::new();
     for face in arrangement
         .faces()
         .iter()
         .filter(|face| face.owner() == owner)
     {
+        let Some(face_area_m2) = arrangement_face_area_abs_m2(arrangement, face) else {
+            continue;
+        };
+        if face_area_m2 <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+            continue;
+        }
         let Some(vertices) =
             RoadSurfaceSystem::arrangement_face_canonical_vertex_ids(arrangement, face)
         else {
@@ -39,22 +55,46 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
             ) else {
                 continue;
             };
-            if let Some((start, end)) =
-                arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
-            {
-                intervals.push(ArrangementFaceBoundaryInterval {
-                    owner: face.owner(),
-                    start,
-                    end,
-                    edge_start,
-                    edge_end,
-                });
-            }
+            let key = normalized_arrangement_boundary_segment_key(edge_start, edge_end);
+            edge_counts
+                .entry(key)
+                .and_modify(|(count, _, _)| *count += 1)
+                .or_insert((1, edge_start, edge_end));
+        }
+    }
+
+    let mut intervals = Vec::new();
+    for (_, (count, edge_start, edge_end)) in edge_counts {
+        if count != 1 {
+            continue;
+        }
+        if let Some((start, end)) =
+            arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
+        {
+            intervals.push(ArrangementFaceBoundaryInterval {
+                owner,
+                start,
+                end,
+                edge_start,
+                edge_end,
+            });
         }
     }
     intervals.sort();
     intervals.dedup();
     intervals
+}
+
+fn arrangement_face_area_abs_m2(
+    arrangement: &NodeArrangement,
+    face: &NodeArrangementFace,
+) -> Option<f64> {
+    let vertices = RoadSurfaceSystem::arrangement_face_canonical_vertex_ids(arrangement, face)?;
+    let a = arrangement.vertices().get(vertices[0].index())?.point_xz();
+    let b = arrangement.vertices().get(vertices[1].index())?.point_xz();
+    let c = arrangement.vertices().get(vertices[2].index())?.point_xz();
+    let double_area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    Some(double_area.abs() * 0.5)
 }
 
 fn arrangement_vertex_boundary_point_key(

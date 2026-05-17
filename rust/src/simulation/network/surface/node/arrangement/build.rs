@@ -1,20 +1,18 @@
 //! Construction pipeline for canonical node arrangements.
 
+use super::super::RoadSurfaceVisualNodePieceKind;
 use super::super::backend::RoadVec2;
 use super::super::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::super::height::NodeHeightSolution;
 use super::super::keys::SurfaceHeightMmKey;
-use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::edges::collect_pending_region_edge_support;
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
-use super::seams::{
-    NodeSeamSource, owners_for_material_seam_constraint, seam_constraint_touches_key,
-};
+use super::seams::NodeSeamSource;
 use super::{
     NodeArrangement, NodeArrangementError, NodeArrangementKey, NodeArrangementVertex,
     NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 impl NodeArrangement {
     #[cfg(test)]
@@ -202,21 +200,27 @@ impl NodeArrangement {
                 for right_index in left_index + 1..vertex_ids.len() {
                     let left = &self.vertices[vertex_ids[left_index].0];
                     let right = &self.vertices[vertex_ids[right_index].0];
-                    if left.height_key == right.height_key
-                        || left.height_field_id == right.height_field_id
-                        || owners_share_band_kind(&left.owners, &right.owners)
-                    {
+                    if left.height_key == right.height_key {
                         continue;
                     }
-                    if !self.has_explicit_material_seam_at_key_between(
-                        key,
-                        &left.owners,
-                        &right.owners,
-                    ) && !self.has_explicit_material_seam_endpoint_path_at_key_between(
-                        key,
-                        &left.owners,
-                        &right.owners,
-                    ) {
+                    let crosses_band_kind = !owners_share_band_kind(&left.owners, &right.owners);
+                    let has_explicit_material_seam = crosses_band_kind
+                        && (self.has_explicit_material_seam_at_key_between(
+                            key,
+                            &left.owners,
+                            &right.owners,
+                        ) || self.has_explicit_material_seam_endpoint_path_at_key_between(
+                            key,
+                            &left.owners,
+                            &right.owners,
+                        ));
+                    let has_explicit_vertical_step = self
+                        .has_explicit_vertical_step_at_key_between(
+                            key,
+                            &left.owners,
+                            &right.owners,
+                        );
+                    if !has_explicit_material_seam && !has_explicit_vertical_step {
                         return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                             key,
                             existing_height_mm: left.height_key.0,
@@ -229,94 +233,6 @@ impl NodeArrangement {
         Ok(())
     }
 
-    fn has_explicit_material_seam_endpoint_path_at_key_between(
-        &self,
-        key: NodeArrangementKey,
-        left_owners: &[NodeBandOwner],
-        right_owners: &[NodeBandOwner],
-    ) -> bool {
-        let adjacency = self.material_seam_endpoint_owner_adjacency_at_key(key);
-        if adjacency.is_empty() {
-            return false;
-        }
-
-        let right_owners = right_owners.iter().copied().collect::<BTreeSet<_>>();
-        let mut visited = BTreeSet::new();
-        let mut pending = left_owners.to_vec();
-        while let Some(owner) = pending.pop() {
-            if !visited.insert(owner) {
-                continue;
-            }
-            if right_owners.contains(&owner) {
-                return true;
-            }
-            if let Some(neighbors) = adjacency.get(&owner) {
-                pending.extend(neighbors.iter().copied());
-            }
-        }
-        false
-    }
-
-    fn material_seam_endpoint_owner_adjacency_at_key(
-        &self,
-        key: NodeArrangementKey,
-    ) -> BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>> {
-        let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
-        let mut owners_by_kind = BTreeMap::<RoadSurfaceBandKind, Vec<NodeBandOwner>>::new();
-        for region in &self.regions {
-            let mut region_touches_key = false;
-            for constraint in &region.seam_constraints {
-                if !seam_constraint_touches_key(constraint, key) {
-                    continue;
-                }
-                region_touches_key = true;
-                if !constraint.is_material_transition {
-                    continue;
-                }
-                let owners = owners_for_material_seam_constraint(constraint, region.owner);
-                merge_sorted_unique(
-                    owners_by_constraint
-                        .entry(constraint.constraint_index)
-                        .or_default(),
-                    owners,
-                );
-            }
-            if region_touches_key {
-                owners_by_kind
-                    .entry(region.owner.kind())
-                    .or_default()
-                    .push(region.owner);
-            }
-        }
-
-        let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
-        for mut owners in owners_by_constraint.into_values() {
-            owners.sort_unstable();
-            owners.dedup();
-            for left_index in 0..owners.len() {
-                for right_index in left_index + 1..owners.len() {
-                    let left = owners[left_index];
-                    let right = owners[right_index];
-                    adjacency.entry(left).or_default().insert(right);
-                    adjacency.entry(right).or_default().insert(left);
-                }
-            }
-        }
-        for mut owners in owners_by_kind.into_values() {
-            owners.sort_unstable();
-            owners.dedup();
-            for left_index in 0..owners.len() {
-                for right_index in left_index + 1..owners.len() {
-                    let left = owners[left_index];
-                    let right = owners[right_index];
-                    adjacency.entry(left).or_default().insert(right);
-                    adjacency.entry(right).or_default().insert(left);
-                }
-            }
-        }
-        adjacency
-    }
-
     fn has_explicit_material_seam_at_key_between(
         &self,
         key: NodeArrangementKey,
@@ -325,6 +241,7 @@ impl NodeArrangement {
     ) -> bool {
         self.edges.iter().any(|edge| {
             edge.is_material_transition
+                && !edge.constrains_shared_height
                 && !edge.source_constraint_indices.is_empty()
                 && self.edge_has_applicable_material_source_constraint(edge)
                 && (self.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal

@@ -143,6 +143,7 @@ impl NodeArrangement {
             let opposite_height_field_id = opposite.map(|owner| owner.height_field_id);
             let source_constraints =
                 source_constraints_for_edge(edge, &pending.seam_constraints, &self.vertices);
+            let selected_source_constraint = selected_edge_source_constraint(&source_constraints);
             if let Some(opposite_owner) = opposite_owner {
                 if owners_require_explicit_boundary_seam(pending.owner, opposite_owner) {
                     if source_constraints.is_empty() {
@@ -166,15 +167,12 @@ impl NodeArrangement {
                     }
                 }
             }
-            let seam_source = source_constraints
-                .first()
+            let seam_source = selected_source_constraint
                 .map(|constraint| constraint.seam_source)
                 .unwrap_or_else(|| NodeSeamSource::for_owner(pending.owner));
-            let constrains_shared_height = source_constraints
-                .first()
+            let constrains_shared_height = selected_source_constraint
                 .is_some_and(|constraint| constraint.constrains_shared_height);
-            let is_material_transition = source_constraints
-                .first()
+            let is_material_transition = selected_source_constraint
                 .is_some_and(|constraint| constraint.is_material_transition);
             let source_constraint_indices = canonical_sources(
                 source_constraints
@@ -260,6 +258,12 @@ fn source_constraints_for_edge<'a>(
     matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+fn selected_edge_source_constraint<'a>(
+    constraints: &'a [&'a NodeRegionSeamConstraint],
+) -> Option<&'a NodeRegionSeamConstraint> {
+    constraints.first().copied()
 }
 
 fn owners_require_explicit_boundary_seam(a: NodeBandOwner, b: NodeBandOwner) -> bool {

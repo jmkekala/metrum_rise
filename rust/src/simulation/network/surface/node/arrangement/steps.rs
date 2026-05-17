@@ -112,13 +112,6 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
     ) -> Option<NodeBandOwner> {
-        if self.piece_kind == super::super::RoadSurfaceVisualNodePieceKind::JunctionN
-            && let Some(opposite_owner) = edge.opposite_owner
-            && edge.owner != opposite_owner
-            && edge.owner.kind == opposite_owner.kind
-        {
-            return Some(opposite_owner);
-        }
         if !edge.is_material_transition || edge.constrains_shared_height {
             return None;
         }
@@ -243,6 +236,25 @@ impl NodeArrangement {
             has_start && has_end
         })
     }
+
+    pub(super) fn has_explicit_vertical_step_at_key_between(
+        &self,
+        key: NodeArrangementKey,
+        left_owners: &[NodeBandOwner],
+        right_owners: &[NodeBandOwner],
+    ) -> bool {
+        self.explicit_vertical_step_segments()
+            .into_iter()
+            .any(|segment| {
+                key.lies_on_segment(segment.start(), segment.end())
+                    && owner_sets_match_step(
+                        left_owners,
+                        right_owners,
+                        segment.owner(),
+                        segment.opposite_owner(),
+                    )
+            })
+    }
 }
 
 pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeBandOwner) -> bool {
@@ -253,4 +265,14 @@ pub(crate) fn owners_form_explicit_vertical_step_pair(a: NodeBandOwner, b: NodeB
         return raised_step_band_rank(a.kind()).is_some();
     }
     ordered_raised_step_kinds(a.kind(), b.kind()).is_some()
+}
+
+fn owner_sets_match_step(
+    left_owners: &[NodeBandOwner],
+    right_owners: &[NodeBandOwner],
+    step_owner: NodeBandOwner,
+    step_opposite_owner: NodeBandOwner,
+) -> bool {
+    (left_owners.contains(&step_owner) && right_owners.contains(&step_opposite_owner))
+        || (left_owners.contains(&step_opposite_owner) && right_owners.contains(&step_owner))
 }

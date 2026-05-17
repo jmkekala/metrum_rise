@@ -2,7 +2,9 @@
 
 use super::super::RoadSurfaceBandKind;
 use super::super::backend::RoadVec2;
-use super::{NodeArrangementKey, NodeBandOwner};
+use super::build::merge_sorted_unique;
+use super::{NodeArrangement, NodeArrangementKey, NodeBandOwner};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeSeamSource {
@@ -147,5 +149,72 @@ pub(super) fn owners_for_material_seam_constraint(
         (Some(owner), Some(opposite_owner)) => vec![owner, opposite_owner],
         (Some(owner), None) | (None, Some(owner)) => vec![owner],
         (None, None) => vec![region_owner],
+    }
+}
+
+impl NodeArrangement {
+    pub(super) fn has_explicit_material_seam_endpoint_path_at_key_between(
+        &self,
+        key: NodeArrangementKey,
+        left_owners: &[NodeBandOwner],
+        right_owners: &[NodeBandOwner],
+    ) -> bool {
+        let adjacency = self.material_seam_endpoint_owner_adjacency_at_key(key);
+        if adjacency.is_empty() {
+            return false;
+        }
+
+        let right_owners = right_owners.iter().copied().collect::<BTreeSet<_>>();
+        let mut visited = BTreeSet::new();
+        let mut pending = left_owners.to_vec();
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) {
+                continue;
+            }
+            if right_owners.contains(&owner) {
+                return true;
+            }
+            if let Some(neighbors) = adjacency.get(&owner) {
+                pending.extend(neighbors.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn material_seam_endpoint_owner_adjacency_at_key(
+        &self,
+        key: NodeArrangementKey,
+    ) -> BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>> {
+        let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
+        for region in &self.regions {
+            for constraint in &region.seam_constraints {
+                if constraint.constrains_shared_height
+                    || !constraint.is_material_transition
+                    || !seam_constraint_touches_key(constraint, key)
+                {
+                    continue;
+                }
+                let owners = owners_for_material_seam_constraint(constraint, region.owner);
+                merge_sorted_unique(
+                    owners_by_constraint
+                        .entry(constraint.constraint_index)
+                        .or_default(),
+                    owners,
+                );
+            }
+        }
+
+        let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
+        for owners in owners_by_constraint.into_values() {
+            for left_index in 0..owners.len() {
+                for right_index in left_index + 1..owners.len() {
+                    let left = owners[left_index];
+                    let right = owners[right_index];
+                    adjacency.entry(left).or_default().insert(right);
+                    adjacency.entry(right).or_default().insert(left);
+                }
+            }
+        }
+        adjacency
     }
 }

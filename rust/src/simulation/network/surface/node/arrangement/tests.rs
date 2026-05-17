@@ -234,60 +234,103 @@ fn duplicate_arrangement_vertex_key_rejects_same_context_height_conflict() {
 }
 
 #[test]
-fn duplicate_arrangement_vertex_key_keeps_distinct_same_material_owner_contexts() {
-    let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
-    let point = RoadVec2::new(0.0, 0.0);
+fn arrangement_rejects_same_material_same_xz_height_conflict_without_explicit_step() {
+    let first = owner(RoadSurfaceBandKind::Sidewalk, 0);
+    let second = owner(RoadSurfaceBandKind::Sidewalk, 1);
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                first,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 1.0, 0.0),
+                    height_vertex(0.0, 1.0, 0.0),
+                ],
+                Vec::new(),
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                second,
+                vec![
+                    height_vertex(1.0, 0.0, 0.5),
+                    height_vertex(2.0, 0.0, 0.5),
+                    height_vertex(2.0, 1.0, 0.5),
+                    height_vertex(1.0, 1.0, 0.5),
+                ],
+                Vec::new(),
+            ),
+        ],
+    };
 
-    arrangement
-        .insert_vertex(
-            point,
-            1.0,
-            [owner(RoadSurfaceBandKind::Sidewalk, 0)],
-            height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
-            [seam_source(0)],
-        )
-        .expect("first sidewalk vertex should insert");
-
-    let second = arrangement
-        .insert_vertex(
-            point,
-            2.0,
-            [owner(RoadSurfaceBandKind::Sidewalk, 1)],
-            height_field_id(RoadSurfaceBandKind::Sidewalk, 1),
-            [seam_source(1)],
-        )
-        .expect("same material point contact keeps distinct owner-height context");
-
-    assert_ne!(second, NodeArrangementVertexId(0));
-    assert_eq!(arrangement.vertices().len(), 2);
+    assert!(matches!(
+        NodeArrangement::from_height_solution(&heights),
+        Err(NodeArrangementError::DuplicateVertexHeightConflict { .. })
+    ));
 }
 
 #[test]
-fn duplicate_arrangement_vertex_key_keeps_distinct_curb_rail_height_contexts() {
-    let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
-    let point = RoadVec2::new(0.0, 0.0);
+fn arrangement_accepts_same_material_same_xz_height_split_with_explicit_vertical_step() {
+    let lower = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let start = RoadVec2::new(1.0, 0.0);
+    let end = RoadVec2::new(1.0, 1.0);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 54,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
+        owner: Some(lower),
+        opposite_owner: Some(raised),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: end,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                lower,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 1.0, 0.0),
+                    height_vertex(0.0, 1.0, 0.0),
+                ],
+                vec![seam.clone()],
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                raised,
+                vec![
+                    height_vertex(1.0, 0.0, 0.12),
+                    height_vertex(2.0, 0.0, 0.12),
+                    height_vertex(2.0, 1.0, 0.12),
+                    height_vertex(1.0, 1.0, 0.12),
+                ],
+                vec![seam],
+            ),
+        ],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("explicit same-material raised step should authorize split heights");
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(start),
+        NodeArrangementKey::from_point(end),
+        lower,
+        raised,
+    )
+    .expect("test segment is non-degenerate");
 
-    let lower = arrangement
-        .insert_vertex(
-            point,
-            0.0,
-            [owner(RoadSurfaceBandKind::CurbOrShoulder, 0)],
-            height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 0),
-            [NodeSeamSource::RaisedStepContact { owner_index: 0 }],
-        )
-        .expect("lower curb rail vertex should insert");
-    let raised = arrangement
-        .insert_vertex(
-            point,
-            0.12,
-            [owner(RoadSurfaceBandKind::CurbOrShoulder, 1)],
-            height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1),
-            [NodeSeamSource::RaisedStepContact { owner_index: 1 }],
-        )
-        .expect("raised curb rail vertex should keep separate owner-height context");
-
-    assert_ne!(lower, raised);
-    assert_eq!(arrangement.vertices().len(), 2);
+    assert!(
+        arrangement
+            .explicit_vertical_step_segments()
+            .contains(&expected)
+    );
 }
 
 #[test]
@@ -642,6 +685,39 @@ fn explicit_vertical_step_segments_do_not_derive_steps_from_face_overlap() {
 
     assert!(!segments.contains(&expected));
     assert!(!segments.contains(&stale_full_edge));
+}
+
+#[test]
+fn explicit_vertical_step_segments_require_source_for_same_kind_junction_edge() {
+    let lower = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::JunctionN);
+    let start = arrangement
+        .insert_vertex(RoadVec2::new(0.0, 0.0), 0.0, [lower], lower_height, [])
+        .expect("test vertex is legal");
+    let end = arrangement
+        .insert_vertex(RoadVec2::new(1.0, 0.0), 0.0, [lower], lower_height, [])
+        .expect("test vertex is legal");
+
+    arrangement.push_edge(
+        start,
+        end,
+        lower,
+        lower_height,
+        Some(raised),
+        Some(height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1)),
+        false,
+        false,
+        false,
+        NodeSeamSource::RaisedStepContact { owner_index: 1 },
+        Vec::new(),
+    );
+
+    assert!(
+        arrangement.explicit_vertical_step_segments().is_empty(),
+        "same-kind JunctionN edges require source-authorized step constraints"
+    );
 }
 
 #[test]
