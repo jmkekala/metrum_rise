@@ -5,7 +5,9 @@ use super::seams::{
     seam_constraint_covers_edge, seam_constraint_covers_key, seam_constraint_matches_owner_pair,
     seam_constraint_opposite_owner_for_edge_owner,
 };
-use super::{NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner};
+use super::{
+    NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner, NodeSeamSource,
+};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -100,6 +102,12 @@ impl NodeArrangement {
         self.regions.iter().any(|region| {
             region.seam_constraints.iter().any(|constraint| {
                 seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
+                    && constraint.is_material_transition
+                    && !constraint.constrains_shared_height
+                    && matches!(
+                        constraint.seam_source,
+                        NodeSeamSource::RaisedStepContact { .. }
+                    )
                     && edge
                         .source_constraint_indices
                         .contains(&constraint.constraint_index)
@@ -112,38 +120,55 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
     ) -> Option<NodeBandOwner> {
-        if !edge.is_material_transition || edge.constrains_shared_height {
+        if edge.constrains_shared_height {
             return None;
         }
 
-        let mut candidates = BTreeSet::new();
-        if let Some(opposite_owner) = edge.opposite_owner {
-            if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
-                && (self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
-                    || self.edge_has_owner_pair_endpoint_source_constraints_for_opposite(
-                        edge,
-                        opposite_owner,
-                    ))
+        if edge.is_material_transition {
+            let mut candidates = BTreeSet::new();
+            if let Some(opposite_owner) = edge.opposite_owner {
+                if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
+                    && self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
+                {
+                    return Some(opposite_owner);
+                }
+            }
+            candidates.extend(
+                self.edge_source_constraint_opposite_owners(edge)
+                    .into_iter()
+                    .filter(|opposite_owner| {
+                        owners_form_explicit_vertical_step_pair(edge.owner, *opposite_owner)
+                    }),
+            );
+
+            let candidates = candidates.into_iter().collect::<Vec<_>>();
+            if candidates.len() == 1 {
+                return Some(candidates[0]);
+            } else if edge.exposed_boundary
+                && let Some(opposite_owner) =
+                    self.edge_selected_source_constraint_opposite_owner(edge)
             {
                 return Some(opposite_owner);
             }
         }
-        candidates.extend(
-            self.edge_source_constraint_opposite_owners(edge)
-                .into_iter()
-                .filter(|opposite_owner| {
-                    owners_form_explicit_vertical_step_pair(edge.owner, *opposite_owner)
-                }),
-        );
 
-        let candidates = candidates.into_iter().collect::<Vec<_>>();
-        if candidates.len() == 1 {
-            Some(candidates[0])
-        } else if edge.exposed_boundary {
-            self.edge_selected_source_constraint_opposite_owner(edge)
-        } else {
-            None
+        if let Some(opposite_owner) = edge.opposite_owner {
+            if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
+                && self.edge_has_owner_pair_endpoint_source_constraints_for_opposite(
+                    edge,
+                    opposite_owner,
+                )
+            {
+                return Some(opposite_owner);
+            }
         }
+        let endpoint_candidates = self.edge_endpoint_source_constraint_opposite_owners(edge);
+        if endpoint_candidates.len() == 1
+            && owners_form_explicit_vertical_step_pair(edge.owner, endpoint_candidates[0])
+        {
+            return Some(endpoint_candidates[0]);
+        }
+        None
     }
 
     fn edge_selected_source_constraint_opposite_owner(
@@ -162,6 +187,12 @@ impl NodeArrangement {
             .flat_map(|region| region.seam_constraints.iter())
             .filter(|constraint| constraint.is_material_transition)
             .filter(|constraint| !constraint.constrains_shared_height)
+            .filter(|constraint| {
+                matches!(
+                    constraint.seam_source,
+                    NodeSeamSource::RaisedStepContact { .. }
+                )
+            })
             .filter(|constraint| {
                 edge.source_constraint_indices
                     .contains(&constraint.constraint_index)
@@ -196,12 +227,66 @@ impl NodeArrangement {
             .filter(|constraint| constraint.is_material_transition)
             .filter(|constraint| !constraint.constrains_shared_height)
             .filter(|constraint| {
+                matches!(
+                    constraint.seam_source,
+                    NodeSeamSource::RaisedStepContact { .. }
+                )
+            })
+            .filter(|constraint| {
                 edge.source_constraint_indices
                     .contains(&constraint.constraint_index)
                     && seam_constraint_covers_edge(constraint, start, end)
             })
             .filter_map(|constraint| {
                 seam_constraint_opposite_owner_for_edge_owner(constraint, edge.owner)
+            })
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
+    fn edge_endpoint_source_constraint_opposite_owners(
+        &self,
+        edge: &NodeArrangementEdge,
+    ) -> Vec<NodeBandOwner> {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return Vec::new();
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return Vec::new();
+        };
+        let start_owners = self.endpoint_source_constraint_opposite_owners(edge.owner, start);
+        let end_owners = self.endpoint_source_constraint_opposite_owners(edge.owner, end);
+        let mut owners = start_owners
+            .into_iter()
+            .filter(|owner| end_owners.contains(owner))
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
+    fn endpoint_source_constraint_opposite_owners(
+        &self,
+        owner: NodeBandOwner,
+        key: NodeArrangementKey,
+    ) -> Vec<NodeBandOwner> {
+        let mut owners = self
+            .regions
+            .iter()
+            .flat_map(|region| region.seam_constraints.iter())
+            .filter(|constraint| constraint.is_material_transition)
+            .filter(|constraint| !constraint.constrains_shared_height)
+            .filter(|constraint| {
+                matches!(
+                    constraint.seam_source,
+                    NodeSeamSource::RaisedStepContact { .. }
+                )
+            })
+            .filter(|constraint| seam_constraint_covers_key(constraint, key))
+            .filter_map(|constraint| {
+                seam_constraint_opposite_owner_for_edge_owner(constraint, owner)
             })
             .collect::<Vec<_>>();
         owners.sort_unstable();
@@ -225,12 +310,20 @@ impl NodeArrangement {
                 seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
                     && constraint.is_material_transition
                     && !constraint.constrains_shared_height
+                    && matches!(
+                        constraint.seam_source,
+                        NodeSeamSource::RaisedStepContact { .. }
+                    )
                     && seam_constraint_covers_key(constraint, start)
             });
             let has_end = region.seam_constraints.iter().any(|constraint| {
                 seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
                     && constraint.is_material_transition
                     && !constraint.constrains_shared_height
+                    && matches!(
+                        constraint.seam_source,
+                        NodeSeamSource::RaisedStepContact { .. }
+                    )
                     && seam_constraint_covers_key(constraint, end)
             });
             has_start && has_end

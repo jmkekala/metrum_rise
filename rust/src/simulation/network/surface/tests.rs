@@ -1402,7 +1402,7 @@ fn assert_top_raised_step_owner_boundaries_have_vertical_faces(piece: &RoadSurfa
                         .iter()
                         .copied()
                         .any(|face_key| face_key.contains(lower_edge.xz_key)),
-                    "surviving raised-step owner boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] matching_canonical_steps={:?}",
+                    "surviving raised-step owner boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?} matching_canonical_steps={:?} face_lower_keys={:?}",
                     piece.kind,
                     lower_edge.xz_key,
                     lower_edge.kind,
@@ -1411,7 +1411,10 @@ fn assert_top_raised_step_owner_boundaries_have_vertical_faces(piece: &RoadSurfa
                     lower_edge.end,
                     raised_edge.kind,
                     raised_edge.owner_index,
-                    matching_canonical_steps
+                    raised_edge.start,
+                    raised_edge.end,
+                    matching_canonical_steps,
+                    face_lower_keys
                 );
             }
         }
@@ -1431,9 +1434,11 @@ fn explicit_vertical_step_descriptions_for_xz_key(
                 .filter(|step_key| step_key.contains(xz_key))
                 .map(|_| {
                     format!(
-                        "#{step_index} {:?}<->{:?}",
+                        "#{step_index} {:?}<->{:?} {:?}->{:?}",
                         segment.owner(),
-                        segment.opposite_owner()
+                        segment.opposite_owner(),
+                        segment.start(),
+                        segment.end()
                     )
                 })
         })

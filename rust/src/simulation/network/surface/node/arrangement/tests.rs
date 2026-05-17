@@ -726,7 +726,7 @@ fn explicit_vertical_step_segments_include_direct_sidewalk_contacts() {
     let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
     let seam = NodeRegionSeamConstraint {
         constraint_index: 92,
-        seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 2 },
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 2 },
         owner: Some(carriageway),
         opposite_owner: Some(sidewalk),
         constrains_shared_height: false,
@@ -864,6 +864,103 @@ fn explicit_vertical_step_segments_use_selected_source_pair_on_exposed_boundary(
 
     assert!(segments.contains(&expected));
     assert!(!segments.contains(&stale));
+}
+
+#[test]
+fn explicit_vertical_step_segments_materialize_exposed_endpoint_pair_source() {
+    let carriageway = owner(RoadSurfaceBandKind::Carriageway, 14);
+    let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 10);
+    let start = RoadVec2::new(0.0, 0.0);
+    let end = RoadVec2::new(2.0, 0.0);
+    let start_contact = NodeRegionSeamConstraint {
+        constraint_index: 325,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 14 },
+        owner: Some(carriageway),
+        opposite_owner: Some(curb),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: start,
+    };
+    let end_contact = NodeRegionSeamConstraint {
+        constraint_index: 327,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 14 },
+        owner: Some(carriageway),
+        opposite_owner: Some(curb),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: end,
+        end_xz: end,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 11,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![test_height_region_with_seams(
+            RoadSurfaceBandKind::Carriageway,
+            carriageway,
+            vec![
+                height_vertex(0.0, 0.0, 0.0),
+                height_vertex(2.0, 0.0, 0.0),
+                height_vertex(0.0, 1.0, 0.0),
+            ],
+            vec![start_contact, end_contact],
+        )],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("endpoint step contacts should produce a canonical arrangement");
+
+    let segments = arrangement.explicit_vertical_step_segments();
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(start),
+        NodeArrangementKey::from_point(end),
+        carriageway,
+        curb,
+    )
+    .expect("test segment is non-degenerate");
+
+    assert!(segments.contains(&expected));
+}
+
+#[test]
+fn explicit_vertical_step_segments_reject_ambiguous_exposed_endpoint_pairs() {
+    let carriageway = owner(RoadSurfaceBandKind::Carriageway, 14);
+    let first_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 10);
+    let second_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 13);
+    let start = RoadVec2::new(0.0, 0.0);
+    let end = RoadVec2::new(2.0, 0.0);
+    let contact = |constraint_index, point, curb| NodeRegionSeamConstraint {
+        constraint_index,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 14 },
+        owner: Some(carriageway),
+        opposite_owner: Some(curb),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: point,
+        end_xz: point,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 11,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![test_height_region_with_seams(
+            RoadSurfaceBandKind::Carriageway,
+            carriageway,
+            vec![
+                height_vertex(0.0, 0.0, 0.0),
+                height_vertex(2.0, 0.0, 0.0),
+                height_vertex(0.0, 1.0, 0.0),
+            ],
+            vec![
+                contact(325, start, first_curb),
+                contact(327, end, first_curb),
+                contact(329, start, second_curb),
+                contact(331, end, second_curb),
+            ],
+        )],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("ambiguous endpoint contacts should still produce a canonical arrangement");
+
+    assert!(arrangement.explicit_vertical_step_segments().is_empty());
 }
 
 #[test]

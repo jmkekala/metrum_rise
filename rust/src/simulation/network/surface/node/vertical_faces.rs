@@ -22,11 +22,13 @@ impl RoadSurfaceSystem {
                 arrangement,
                 lower_owner,
                 segment_key,
+                false,
             );
             let raised_intervals = arrangement_owner_face_boundary_intervals_for_segment(
                 arrangement,
                 raised_owner,
                 segment_key,
+                true,
             );
             let shared_intervals =
                 arrangement_shared_face_boundary_intervals(&lower_intervals, &raised_intervals);

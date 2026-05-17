@@ -18,6 +18,7 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
     arrangement: &NodeArrangement,
     owner: NodeBandOwner,
     segment_key: (NodeArrangementKey, NodeArrangementKey),
+    include_internal_edges: bool,
 ) -> Vec<ArrangementFaceBoundaryInterval> {
     let mut edge_counts = BTreeMap::<
         (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
@@ -65,7 +66,7 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
 
     let mut intervals = Vec::new();
     for (_, (count, edge_start, edge_end)) in edge_counts {
-        if count != 1 {
+        if !include_internal_edges && count != 1 {
             continue;
         }
         if let Some((start, end)) =
