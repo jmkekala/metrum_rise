@@ -1,7 +1,10 @@
 //! Tests for canonical node arrangement construction and export contracts.
 
+use super::super::backend::RoadVec2;
 use super::super::grade::NodeGradeCarrierDecision;
+use super::super::grade::NodeGradeVertexAuthority;
 use super::super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
+use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::*;
 
 fn owner(kind: RoadSurfaceBandKind, owner_index: usize) -> NodeBandOwner {

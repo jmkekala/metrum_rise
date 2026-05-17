@@ -6,6 +6,7 @@ use super::super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedV
 use super::super::keys::{SurfaceHeightMmKey, SurfaceXzSegmentKey};
 use super::super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
 use super::seams::{
     NodeRegionSeamConstraint, NodeSeamSource, owners_for_material_seam_constraint,
     seam_constraint_can_source_edge_owner_pair, seam_constraint_covers_edge,
@@ -13,10 +14,9 @@ use super::seams::{
 };
 use super::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId,
-    NodeArrangementError, NodeArrangementFace, NodeArrangementFaceId, NodeArrangementHeightKey,
-    NodeArrangementKey, NodeArrangementVertex, NodeArrangementVertexContextKey,
-    NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner, NodeOwnedRegion,
-    NodeOwnedRegionId,
+    NodeArrangementError, NodeArrangementFace, NodeArrangementFaceId, NodeArrangementKey,
+    NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
+    NodeOwnedRegion, NodeOwnedRegionId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
