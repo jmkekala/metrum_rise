@@ -40,22 +40,6 @@ impl RoadSurfaceSystem {
                 &mut emitted,
                 &mut faces,
             );
-            if let Some((dedup_key, face)) = Self::arrangement_vertical_step_face_from_segment(
-                arrangement,
-                lower_owner,
-                raised_owner,
-                segment_key,
-            ) {
-                if emitted.insert(dedup_key) {
-                    faces.push((
-                        face,
-                        RoadSurfaceVerticalFaceSource::CanonicalStep {
-                            explicit_vertical_step_index: step_index,
-                            segment,
-                        },
-                    ));
-                }
-            }
         }
         faces
     }
@@ -128,53 +112,6 @@ impl RoadSurfaceSystem {
                 },
             ));
         }
-    }
-
-    fn arrangement_vertical_step_face_from_segment(
-        arrangement: &NodeArrangement,
-        lower_owner: NodeBandOwner,
-        raised_owner: NodeBandOwner,
-        segment_key: (NodeArrangementKey, NodeArrangementKey),
-    ) -> Option<(
-        (
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-        ),
-        RoadSurfaceVisualPolygon,
-    )> {
-        let lower_start = arrangement_owner_boundary_point_at_key(
-            arrangement,
-            lower_owner,
-            segment_key.0,
-            false,
-        )?;
-        let lower_end = arrangement_owner_boundary_point_at_key(
-            arrangement,
-            lower_owner,
-            segment_key.1,
-            false,
-        )?;
-        let raised_start = arrangement_owner_boundary_point_at_key(
-            arrangement,
-            raised_owner,
-            segment_key.0,
-            true,
-        )?;
-        let raised_end = arrangement_owner_boundary_point_at_key(
-            arrangement,
-            raised_owner,
-            segment_key.1,
-            true,
-        )?;
-        Self::arrangement_vertical_step_face_polygon(
-            arrangement,
-            lower_owner,
-            segment_key,
-            lower_start,
-            lower_end,
-            raised_start,
-            raised_end,
-        )
     }
 
     fn arrangement_vertical_step_face_polygon(

@@ -140,34 +140,6 @@ pub(super) fn arrangement_key_boundary_point(
     }
 }
 
-pub(super) fn arrangement_owner_boundary_point_at_key(
-    arrangement: &NodeArrangement,
-    owner: NodeBandOwner,
-    key: NodeArrangementKey,
-    prefer_highest: bool,
-) -> Option<Vector3> {
-    let mut candidates = arrangement
-        .vertices()
-        .iter()
-        .filter(|vertex| vertex.owners().contains(&owner))
-        .filter(|vertex| vertex.key() == key)
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|vertex| {
-        let height_key = if prefer_highest {
-            -vertex.height_mm()
-        } else {
-            vertex.height_mm()
-        };
-        (height_key, vertex.key())
-    });
-    candidates.first().map(|vertex| {
-        arrangement_boundary_point_to_world(arrangement_key_boundary_point(
-            vertex.key(),
-            vertex.height_mm(),
-        ))
-    })
-}
-
 pub(super) fn arrangement_owner_direction_for_segment(
     arrangement: &NodeArrangement,
     owner: NodeBandOwner,
