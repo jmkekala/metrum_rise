@@ -109,9 +109,6 @@ pub(crate) enum RoadSurfaceVerticalFaceSource {
         explicit_vertical_step_index: usize,
         segment: arrangement::NodeExplicitVerticalStepSegment,
     },
-    FinalOwnedBoundary {
-        segment: arrangement::NodeExplicitVerticalStepSegment,
-    },
 }
 
 impl RoadSurfaceVerticalFaceSource {
@@ -121,13 +118,12 @@ impl RoadSurfaceVerticalFaceSource {
                 explicit_vertical_step_index,
                 ..
             } => Some(explicit_vertical_step_index),
-            Self::FinalOwnedBoundary { .. } => None,
         }
     }
 
     pub(crate) fn segment(self) -> arrangement::NodeExplicitVerticalStepSegment {
         match self {
-            Self::CanonicalStep { segment, .. } | Self::FinalOwnedBoundary { segment } => segment,
+            Self::CanonicalStep { segment, .. } => segment,
         }
     }
 
@@ -143,7 +139,6 @@ impl RoadSurfaceVerticalFaceSource {
                 explicit_vertical_step_index,
                 segment,
             } => (0, segment, Some(explicit_vertical_step_index)),
-            Self::FinalOwnedBoundary { segment } => (1, segment, None),
         }
     }
 }

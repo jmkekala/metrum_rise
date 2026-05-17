@@ -534,3 +534,127 @@ fn vertical_step_export_does_not_repair_overlay_sibling_support() {
         "overlay-neighbor support must not synthesize a vertical face"
     );
 }
+
+#[test]
+fn node_export_does_not_emit_final_owned_vertical_face_without_step_authority() {
+    let lower_owner = owner(RoadSurfaceBandKind::Carriageway, 0);
+    let raised_owner = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_height = height_field(lower_owner);
+    let raised_height = height_field(raised_owner);
+    let mut arrangement = NodeArrangement::new(86, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+    let lower_a = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 0.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower vertex is valid");
+    let lower_b = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 0.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower vertex is valid");
+    let lower_c = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 1.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower vertex is valid");
+    let lower_d = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 1.0),
+            0.0,
+            [lower_owner],
+            lower_height,
+            [],
+        )
+        .expect("lower vertex is valid");
+    let lower_region = arrangement.push_region(
+        lower_owner,
+        lower_height,
+        vec![lower_a, lower_b, lower_c, lower_d],
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        Vec::new(),
+    );
+    arrangement.push_face(lower_region, lower_owner, [lower_a, lower_b, lower_c]);
+    arrangement.push_face(lower_region, lower_owner, [lower_a, lower_c, lower_d]);
+
+    let raised_a = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 1.0),
+            0.12,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised vertex is valid");
+    let raised_b = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 1.0),
+            0.12,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised vertex is valid");
+    let raised_c = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 2.0),
+            0.12,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised vertex is valid");
+    let raised_d = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 2.0),
+            0.12,
+            [raised_owner],
+            raised_height,
+            [],
+        )
+        .expect("raised vertex is valid");
+    let raised_region = arrangement.push_region(
+        raised_owner,
+        raised_height,
+        vec![raised_a, raised_b, raised_c, raised_d],
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        Vec::new(),
+    );
+    arrangement.push_face(raised_region, raised_owner, [raised_a, raised_b, raised_c]);
+    arrangement.push_face(raised_region, raised_owner, [raised_a, raised_c, raised_d]);
+
+    let footprint_shapes = footprint_shapes_from_points(&[
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(1.0, 0.0),
+        RoadVec2::new(1.0, 2.0),
+        RoadVec2::new(0.0, 2.0),
+    ]);
+    let regions =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
+            .expect("shared top boundaries without step authority should still export top regions");
+
+    assert!(
+        arrangement.explicit_vertical_step_segments().is_empty(),
+        "test setup must not carry materialized step authority"
+    );
+    assert!(
+        regions.raised_step_faces.is_empty(),
+        "compatible shared owners must not synthesize a vertical face without explicit step authority"
+    );
+}

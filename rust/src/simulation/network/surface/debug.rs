@@ -1514,17 +1514,15 @@ impl RoadSurfaceSystem {
             if face_index >= face_canonical_matches.len() {
                 continue;
             }
-            if let RoadSurfaceVerticalFaceSource::CanonicalStep {
+            let RoadSurfaceVerticalFaceSource::CanonicalStep {
                 explicit_vertical_step_index,
                 segment,
-            } = source
+            } = source;
+            if let Some(&canonical_step_index) =
+                canonical_step_indices_by_source.get(&(explicit_vertical_step_index, segment))
             {
-                if let Some(&canonical_step_index) =
-                    canonical_step_indices_by_source.get(&(explicit_vertical_step_index, segment))
-                {
-                    face_canonical_matches[face_index].push(canonical_step_index);
-                    canonical_face_matches[canonical_step_index].push(face_index);
-                }
+                face_canonical_matches[face_index].push(canonical_step_index);
+                canonical_face_matches[canonical_step_index].push(face_index);
             }
         }
 
@@ -1796,9 +1794,6 @@ impl RoadSurfaceSystem {
         match source {
             Some(RoadSurfaceVerticalFaceSource::CanonicalStep { .. }) => {
                 dump.push_str("\"canonical_step\"");
-            }
-            Some(RoadSurfaceVerticalFaceSource::FinalOwnedBoundary { .. }) => {
-                dump.push_str("\"final_owned_boundary\"");
             }
             None => dump.push_str("null"),
         }
@@ -3567,60 +3562,6 @@ mod tests {
         assert!(dump.contains("\"source_explicit_vertical_step_index\":0"));
         assert!(dump.contains("\"matching_canonical_step_indices\":[0]"));
         assert!(dump.contains("\"matching_face_indices\":[0]"));
-    }
-
-    #[test]
-    fn raised_step_face_debug_reports_final_owned_boundary_source() {
-        let mut piece = empty_node_piece();
-        let boundary_segment = NodeExplicitVerticalStepSegment::new(
-            NodeArrangementKey::from_point(backend::RoadVec2::new(-1.0, 0.0)),
-            NodeArrangementKey::from_point(backend::RoadVec2::new(1.0, 0.0)),
-            NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7),
-            NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 11),
-        )
-        .expect("test boundary step should be non-degenerate");
-        piece.owned_regions.push(NodeOwnedRegion {
-            kind: RoadSurfaceBandKind::Carriageway,
-            owner_index: 7,
-            polygon: polygon(vec![
-                Vector3::new(-1.0, 0.0, -1.0),
-                Vector3::new(1.0, 0.0, -1.0),
-                Vector3::new(1.0, 0.0, 0.0),
-                Vector3::new(-1.0, 0.0, 0.0),
-            ]),
-        });
-        piece.owned_regions.push(NodeOwnedRegion {
-            kind: RoadSurfaceBandKind::CurbOrShoulder,
-            owner_index: 11,
-            polygon: polygon(vec![
-                Vector3::new(-1.0, 0.12, 0.0),
-                Vector3::new(1.0, 0.12, 0.0),
-                Vector3::new(1.0, 0.12, 1.0),
-                Vector3::new(-1.0, 0.12, 1.0),
-            ]),
-        });
-        piece.raised_step_face_polygons.push(polygon(vec![
-            Vector3::new(-1.0, 0.12, 0.0),
-            Vector3::new(-1.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.12, 0.0),
-        ]));
-        piece
-            .raised_step_face_sources
-            .push(RoadSurfaceVerticalFaceSource::FinalOwnedBoundary {
-                segment: boundary_segment,
-            });
-
-        let mut dump = String::new();
-        RoadSurfaceSystem::append_raised_step_face_details_debug_literal(&mut dump, &piece);
-
-        assert!(dump.contains("\"face_count\":1"));
-        assert!(dump.contains("\"problem_count\":0"));
-        assert!(dump.contains("\"source_kind\":\"final_owned_boundary\""));
-        assert!(dump.contains("\"source_explicit_vertical_step_index\":null"));
-        assert!(dump.contains("\"source_owner_pair\":{\"owner\":{\"kind\":\"Carriageway\",\"owner_index\":7},\"opposite_owner\":{\"kind\":\"CurbOrShoulder\",\"owner_index\":11}}"));
-        assert!(dump.contains("\"source_canonical_edge_key\":{\"start\""));
-        assert!(!dump.contains("18446744073709551615"));
     }
 
     #[test]

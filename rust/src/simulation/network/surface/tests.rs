@@ -1394,6 +1394,9 @@ fn assert_top_raised_step_owner_boundaries_have_vertical_faces(piece: &RoadSurfa
                 }
                 let matching_canonical_steps =
                     explicit_vertical_step_descriptions_for_xz_key(piece, lower_edge.xz_key);
+                if matching_canonical_steps.is_empty() {
+                    continue;
+                }
                 assert!(
                     face_lower_keys
                         .iter()
