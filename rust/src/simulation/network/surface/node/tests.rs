@@ -52,6 +52,28 @@ fn arrangement_with_owner_pair_vertical_step_support(
     raised_start: RoadVec2,
     raised_end: RoadVec2,
 ) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
+    arrangement_with_owner_pair_vertical_step_support_and_heights(
+        lower_kind,
+        raised_kind,
+        raised_start,
+        raised_end,
+        0.0,
+        0.0,
+        0.12,
+        0.12,
+    )
+}
+
+fn arrangement_with_owner_pair_vertical_step_support_and_heights(
+    lower_kind: RoadSurfaceBandKind,
+    raised_kind: RoadSurfaceBandKind,
+    raised_start: RoadVec2,
+    raised_end: RoadVec2,
+    lower_start_height_m: f64,
+    lower_end_height_m: f64,
+    raised_start_height_m: f64,
+    raised_end_height_m: f64,
+) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
     let lower_owner = owner(lower_kind, 0);
     let raised_owner = owner(raised_kind, 1);
     let lower_height = height_field(lower_owner);
@@ -62,15 +84,15 @@ fn arrangement_with_owner_pair_vertical_step_support(
     let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::Bend);
 
     let lower_start = arrangement
-        .insert_vertex(start, 0.0, [lower_owner], lower_height, [])
+        .insert_vertex(start, lower_start_height_m, [lower_owner], lower_height, [])
         .expect("lower start vertex is valid");
     let lower_end = arrangement
-        .insert_vertex(end, 0.0, [lower_owner], lower_height, [])
+        .insert_vertex(end, lower_end_height_m, [lower_owner], lower_height, [])
         .expect("lower end vertex is valid");
     let lower_apex = arrangement
         .insert_vertex(
             RoadVec2::new(0.0, -1.0),
-            0.0,
+            lower_start_height_m,
             [lower_owner],
             lower_height,
             [],
@@ -107,15 +129,27 @@ fn arrangement_with_owner_pair_vertical_step_support(
     );
 
     let upper_start = arrangement
-        .insert_vertex(raised_start, 0.12, [raised_owner], raised_height, [])
+        .insert_vertex(
+            raised_start,
+            raised_start_height_m,
+            [raised_owner],
+            raised_height,
+            [],
+        )
         .expect("upper start vertex is valid");
     let upper_end = arrangement
-        .insert_vertex(raised_end, 0.12, [raised_owner], raised_height, [])
+        .insert_vertex(
+            raised_end,
+            raised_end_height_m,
+            [raised_owner],
+            raised_height,
+            [],
+        )
         .expect("upper end vertex is valid");
     let upper_apex = arrangement
         .insert_vertex(
             RoadVec2::new(raised_start.x, 1.0),
-            0.12,
+            raised_start_height_m,
             [raised_owner],
             raised_height,
             [],
@@ -516,6 +550,29 @@ fn vertical_step_export_uses_generic_curb_sidewalk_owner_pair() {
 
     assert_eq!(segments.len(), 1);
     assert_eq!(faces.len(), 1);
+}
+
+#[test]
+fn vertical_step_export_requires_raised_owner_height_at_both_endpoints() {
+    let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support_and_heights(
+        RoadSurfaceBandKind::Carriageway,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(2.0, 0.0),
+        0.0,
+        0.0,
+        0.12,
+        -0.12,
+    );
+
+    let faces =
+        RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
+
+    assert_eq!(segments.len(), 1);
+    assert!(
+        faces.is_empty(),
+        "material-rank raised-step authority must not emit an inverted physical step"
+    );
 }
 
 #[test]

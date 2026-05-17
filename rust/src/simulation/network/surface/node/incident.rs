@@ -256,12 +256,7 @@ impl RoadSurfaceSystem {
         node_id: u32,
     ) -> Vec<IncidentSurfaceEdge> {
         let mut incidents = self.collect_incident_surface_edges_from_graph_geometry(graph, node_id);
-        incidents.sort_by(|a, b| {
-            Self::normalized_angle_ccw(a.direction_xz)
-                .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
-                .then(a.edge_idx.cmp(&b.edge_idx))
-                .then(a.side.cmp(&b.side))
-        });
+        incidents.sort_by(Self::incident_surface_edge_direction_ordering);
         incidents
     }
 
@@ -313,12 +308,7 @@ impl RoadSurfaceSystem {
         node_id: u32,
     ) -> Vec<IncidentSurfaceEdge> {
         let mut incidents = self.collect_incident_surface_edges(graph, node_id);
-        incidents.sort_by(|a, b| {
-            Self::normalized_angle_ccw(a.direction_xz)
-                .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
-                .then(a.edge_idx.cmp(&b.edge_idx))
-                .then(a.side.cmp(&b.side))
-        });
+        incidents.sort_by(Self::incident_surface_edge_direction_ordering);
         incidents
     }
 
@@ -396,6 +386,16 @@ impl RoadSurfaceSystem {
                 .as_ref()
                 .map(|mouth| mouth.inward_direction_xz),
         }
+    }
+
+    fn incident_surface_edge_direction_ordering(
+        a: &IncidentSurfaceEdge,
+        b: &IncidentSurfaceEdge,
+    ) -> std::cmp::Ordering {
+        Self::normalized_angle_ccw(a.direction_xz)
+            .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
+            .then(a.edge_idx.cmp(&b.edge_idx))
+            .then(a.side.cmp(&b.side))
     }
 }
 

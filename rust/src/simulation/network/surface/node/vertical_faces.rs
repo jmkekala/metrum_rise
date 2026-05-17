@@ -1,4 +1,4 @@
-//! Raised-step vertical face construction and support checks.
+//! Raised-step vertical face construction from canonical arrangement intervals.
 
 use super::arrangement_faces::*;
 use super::boundary_edges::*;
@@ -135,8 +135,8 @@ impl RoadSurfaceSystem {
         {
             return None;
         }
-        if (raised_start.y - lower_start.y <= SAMPLE_EPSILON_M)
-            && (raised_end.y - lower_end.y <= SAMPLE_EPSILON_M)
+        if raised_start.y <= lower_start.y + SAMPLE_EPSILON_M
+            || raised_end.y <= lower_end.y + SAMPLE_EPSILON_M
         {
             return None;
         }

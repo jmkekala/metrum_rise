@@ -76,10 +76,8 @@ impl RoadSurfaceSystem {
         }
 
         let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
-            arrangement,
             &mut boundary_export_sources,
             footprint_shapes,
-            true,
         )?;
         let mut earthwork_boundary_segments =
             node_earthwork_boundary_segments_from_footprint_loops(
@@ -141,10 +139,8 @@ impl RoadSurfaceSystem {
     }
 
     fn footprint_boundary_point_loops_from_shapes(
-        _arrangement: &NodeArrangement,
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
         footprint_shapes: &super::NodeOverlayShapes,
-        clean_unsupported_numeric_vertices: bool,
     ) -> Result<Vec<Vec<Vector3>>, NodeBoundaryExportError> {
         let mut loops = Vec::new();
         for shape in footprint_shapes {
@@ -172,19 +168,15 @@ impl RoadSurfaceSystem {
                         ))
                     })
                     .collect::<Result<Vec<_>, NodeBoundaryExportError>>()?;
-                if clean_unsupported_numeric_vertices {
-                    remove_unsupported_numeric_boundary_vertices(
-                        &mut points,
-                        |current_point_key, local_points| {
-                            boundary_export_sources
-                                .has_final_owned_footprint_boundary_support_at_point(
-                                    current_point_key,
-                                )
-                                || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                                    > boundary_points_numeric_area_budget_m2(&local_points)
-                        },
-                    );
-                }
+                remove_subbudget_unsupported_numeric_boundary_vertices(
+                    &mut points,
+                    |current_point_key, local_points| {
+                        boundary_export_sources
+                            .has_final_owned_footprint_boundary_support_at_point(current_point_key)
+                            || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                                > boundary_points_numeric_area_budget_m2(&local_points)
+                    },
+                );
                 let points = Self::canonicalize_loop_points(points);
                 if points.len() < 3 {
                     continue;
@@ -310,7 +302,7 @@ impl RoadSurfaceSystem {
         NodeBoundaryExportError,
     > {
         let Some((triangle, vertex_ids)) =
-            Self::arrangement_face_visual_triangle_with_vertices(arrangement, face)
+            Self::arrangement_face_canonical_triangle_with_vertices(arrangement, face)
         else {
             return Ok(None);
         };
@@ -348,7 +340,7 @@ impl RoadSurfaceSystem {
         )))
     }
 
-    pub(super) fn arrangement_face_visual_triangle_with_vertices(
+    pub(super) fn arrangement_face_canonical_triangle_with_vertices(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
     ) -> Option<(

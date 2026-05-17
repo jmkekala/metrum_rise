@@ -23,7 +23,7 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
         .filter(|face| face.owner() == owner)
     {
         let Some((_, vertices)) =
-            RoadSurfaceSystem::arrangement_face_visual_triangle_with_vertices(arrangement, face)
+            RoadSurfaceSystem::arrangement_face_canonical_triangle_with_vertices(arrangement, face)
         else {
             continue;
         };

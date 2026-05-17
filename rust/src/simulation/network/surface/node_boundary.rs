@@ -289,23 +289,21 @@ impl NodeFootprintBoundaryExportSources {
         &self,
         key: arrangement::NodeArrangementKey,
     ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
-        let edge_candidates = self
-            .boundary_edge_height_candidates_at_key(key)
+        let exact_candidates = self
+            .direct_height_candidates_at_key(key)
+            .chain(self.boundary_edge_height_candidates_at_key(key))
             .collect::<Vec<_>>();
-        if !edge_candidates.is_empty() {
-            return self.unique_height_candidate_at_key(key, edge_candidates);
+        if !exact_candidates.is_empty() {
+            return self.unique_height_candidate_at_key(key, exact_candidates);
         }
+
         let canonical_drift_edge_candidates = self
             .boundary_edge_canonical_drift_height_candidates_at_key(key)
             .collect::<Vec<_>>();
         if !canonical_drift_edge_candidates.is_empty() {
             return self.unique_height_candidate_at_key(key, canonical_drift_edge_candidates);
         }
-        self.unique_height_candidate_at_key(
-            key,
-            self.direct_height_candidates_at_key(key)
-                .collect::<Vec<_>>(),
-        )
+        Ok(None)
     }
 
     fn unique_height_candidate_at_key(
@@ -406,10 +404,10 @@ impl NodeFootprintBoundaryExportSources {
             else {
                 return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
             };
-            if !footprint_boundary_missing_run_is_subbudget(
+            if !self.missing_footprint_boundary_run_is_authorized_subbudget(
                 vertices,
                 &ordered_indices[start_pos..=end_pos],
-            ) {
+            )? {
                 return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight);
             }
 
@@ -444,6 +442,53 @@ impl NodeFootprintBoundaryExportSources {
             start_pos = end_pos;
         }
         Ok(())
+    }
+
+    fn missing_footprint_boundary_run_is_authorized_subbudget(
+        &self,
+        vertices: &[(arrangement::NodeArrangementKey, Option<i64>)],
+        ordered_indices: &[usize],
+    ) -> Result<bool, NodeBoundaryExportError> {
+        if !footprint_boundary_missing_run_is_subbudget(vertices, ordered_indices) {
+            return Ok(false);
+        }
+        let Some(start_index) = ordered_indices.first().copied() else {
+            return Ok(false);
+        };
+        let Some(end_index) = ordered_indices.last().copied() else {
+            return Ok(false);
+        };
+        let Some(start_height_mm) = vertices[start_index].1 else {
+            return Ok(false);
+        };
+        let Some(end_height_mm) = vertices[end_index].1 else {
+            return Ok(false);
+        };
+        if !self.has_final_owned_footprint_boundary_support_at_point(
+            arrangement_boundary_point_key_with_height(vertices[start_index].0, start_height_mm),
+        ) || !self.has_final_owned_footprint_boundary_support_at_point(
+            arrangement_boundary_point_key_with_height(vertices[end_index].0, end_height_mm),
+        ) {
+            return Ok(false);
+        }
+
+        for missing_index in ordered_indices
+            .iter()
+            .copied()
+            .skip(1)
+            .take(ordered_indices.len().saturating_sub(2))
+        {
+            if vertices[missing_index].1.is_some() {
+                return Ok(false);
+            }
+            if self
+                .height_candidate_at_boundary_vertex(vertices[missing_index].0)?
+                .is_some()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn height_candidate_at_point(
@@ -614,7 +659,7 @@ impl NodeFootprintBoundaryExportSources {
     }
 }
 
-pub(super) fn remove_unsupported_numeric_boundary_vertices<F>(
+pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
     points: &mut Vec<Vector3>,
     mut should_keep_vertex: F,
 ) where
@@ -1521,6 +1566,17 @@ pub(super) fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPoin
     )
 }
 
+fn arrangement_boundary_point_key_with_height(
+    key: arrangement::NodeArrangementKey,
+    height_mm: i64,
+) -> ArrangementBoundaryPointKey {
+    ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: height_mm,
+    }
+}
+
 pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
     if points.len() < 2 {
         return NODE_OVERLAY_MIN_AREA_M2;
@@ -1552,23 +1608,36 @@ fn arrangement_key_segment_parameter_with_canonical_drift(
     start: arrangement::NodeArrangementKey,
     end: arrangement::NodeArrangementKey,
 ) -> Option<ArrangementSegmentParameter> {
-    // This is only for independent overlay projection drift around an already-owned
-    // source edge. The tolerance is the project point-dedup scale, not a search window.
+    // This is only for independent overlay projection drift around an already-owned source edge.
+    // Interior drift must project inside the source segment; endpoint extension drift is accepted
+    // only inside the project point-dedup radius of the actual source endpoint.
     let dx = i128::from(end.x_key() - start.x_key());
     let dz = i128::from(end.z_key() - start.z_key());
     let length_squared = dx * dx + dz * dz;
     if length_squared == 0 {
         return None;
     }
-    if arrangement_key_segment_distance_m(point, start, end)
-        > f64::from(WORLD_POINT_DEDUP_DISTANCE_M)
-    {
-        return None;
-    }
-
     let px = i128::from(point.x_key() - start.x_key());
     let pz = i128::from(point.z_key() - start.z_key());
-    let numerator = (px * dx + pz * dz).clamp(0, length_squared);
+    let projected_numerator = px * dx + pz * dz;
+    let numerator = if projected_numerator < 0 {
+        if arrangement_key_distance_m(point, start) > f64::from(WORLD_POINT_DEDUP_DISTANCE_M) {
+            return None;
+        }
+        0
+    } else if projected_numerator > length_squared {
+        if arrangement_key_distance_m(point, end) > f64::from(WORLD_POINT_DEDUP_DISTANCE_M) {
+            return None;
+        }
+        length_squared
+    } else {
+        if arrangement_key_segment_distance_m(point, start, end)
+            > f64::from(WORLD_POINT_DEDUP_DISTANCE_M)
+        {
+            return None;
+        }
+        projected_numerator
+    };
     ArrangementSegmentParameter::new(numerator, length_squared)
 }
 
@@ -1741,6 +1810,73 @@ mod tests {
             ),
             "canonical drift normalization must still record final-owned source-edge provenance"
         );
+    }
+
+    #[test]
+    fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
+        let source_edge = test_source_edge(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let conflicting_point =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.2, 0.0));
+        let mut direct_vertex_sources = BTreeMap::new();
+        direct_vertex_sources.insert(
+            conflicting_point,
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 9,
+                        grade_authority_index: 90,
+                    },
+                ),
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![source_edge],
+            direct_vertex_sources,
+            explicit_vertical_step_segments: Vec::new(),
+        };
+
+        let error = sources
+            .height_mm_at_key(conflicting_point.xz_key())
+            .expect_err("exact source edge and direct boundary height conflicts must reject");
+
+        assert!(matches!(
+            error,
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+        ));
+    }
+
+    #[test]
+    fn boundary_height_canonical_drift_accepts_endpoint_scale_source_edge_extension() {
+        let source_edge = test_source_edge(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![source_edge],
+            direct_vertex_sources: BTreeMap::new(),
+            explicit_vertical_step_segments: Vec::new(),
+        };
+        let near_extension =
+            ArrangementBoundaryPointKey::from_world(Vector3::new(1.00005, 0.0, 0.0));
+
+        let height_mm = sources
+            .height_mm_at_key(near_extension.xz_key())
+            .expect("endpoint-scale source-edge drift should be explicit and bounded");
+
+        assert_eq!(height_mm, Some(0));
     }
 
     #[test]
@@ -1976,11 +2112,14 @@ mod tests {
             Vector3::new(2.0, 0.0, 1.0),
             Vector3::new(0.0, 0.0, 1.0),
         ];
-        remove_unsupported_numeric_boundary_vertices(&mut points, |point_key, local_points| {
-            sources.has_final_owned_footprint_boundary_support_at_point(point_key)
-                || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                    > boundary_points_numeric_area_budget_m2(&local_points)
-        });
+        remove_subbudget_unsupported_numeric_boundary_vertices(
+            &mut points,
+            |point_key, local_points| {
+                sources.has_final_owned_footprint_boundary_support_at_point(point_key)
+                    || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                        > boundary_points_numeric_area_budget_m2(&local_points)
+            },
+        );
 
         assert_eq!(points.len(), 4);
         assert!(
@@ -2012,7 +2151,7 @@ mod tests {
                 Some(0),
             ),
             (
-                ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.00001)).xz_key(),
+                ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.0002)).xz_key(),
                 None,
             ),
             (
@@ -2026,6 +2165,64 @@ mod tests {
             .expect("sub-budget boundary-only runs may inherit contour height");
 
         assert_eq!(vertices[1].1, Some(0));
+    }
+
+    #[test]
+    fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() {
+        let source_edge = test_source_edge(
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        );
+        let start_key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0));
+        let mut direct_vertex_sources = BTreeMap::new();
+        direct_vertex_sources.insert(
+            start_key,
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                    owning_segment_start: NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 8,
+                        grade_authority_index: 80,
+                    },
+                    owning_segment_end: NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 9,
+                        grade_authority_index: 90,
+                    },
+                    height_mm: start_key.y_mm,
+                },
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+        );
+        let mut sources = NodeFootprintBoundaryExportSources {
+            source_edges: vec![source_edge],
+            direct_vertex_sources,
+            explicit_vertical_step_segments: Vec::new(),
+        };
+        let mut vertices = vec![
+            (start_key.xz_key(), Some(start_key.y_mm)),
+            (
+                ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.00001)).xz_key(),
+                None,
+            ),
+            (
+                ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key(),
+                Some(0),
+            ),
+        ];
+
+        let error = sources
+            .interpolate_missing_authorized_footprint_boundary_heights(&mut vertices)
+            .expect_err("sub-budget interpolation must be bounded by final-owned source support");
+
+        assert!(matches!(
+            error,
+            NodeBoundaryExportError::MissingFootprintBoundaryHeight
+        ));
+        assert_eq!(vertices[1].1, None);
     }
 
     #[test]
