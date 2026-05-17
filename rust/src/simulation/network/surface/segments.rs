@@ -118,20 +118,6 @@ pub(crate) fn raw_tuple_key_lies_exactly_on_segment(
     )
 }
 
-/// Returns whether a raw tuple key's quantization cell intersects a raw tuple segment.
-pub(crate) fn raw_tuple_quantization_cell_intersects_segment(
-    point: (i64, i64),
-    start: (i64, i64),
-    end: (i64, i64),
-    neighbor_radius_units: i128,
-) -> bool {
-    raw_tuple_key(point).quantization_cell_intersects_segment(
-        raw_tuple_key(start),
-        raw_tuple_key(end),
-        neighbor_radius_units,
-    )
-}
-
 /// Returns the raw dot-product ordering key for raw tuple segment points.
 pub(crate) fn raw_tuple_segment_parameter_key(
     start: (i64, i64),
@@ -267,25 +253,6 @@ mod tests {
             (5_000, 5_001),
             start,
             end
-        ));
-    }
-
-    #[test]
-    fn raw_tuple_quantization_cell_intersection_uses_caller_radius() {
-        let start = (0, 0);
-        let end = (10, 10);
-
-        assert!(raw_tuple_quantization_cell_intersects_segment(
-            (5, 6),
-            start,
-            end,
-            1
-        ));
-        assert!(!raw_tuple_quantization_cell_intersects_segment(
-            (5, 9),
-            start,
-            end,
-            1
         ));
     }
 

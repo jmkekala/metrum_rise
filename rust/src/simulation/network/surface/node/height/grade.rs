@@ -1,13 +1,15 @@
-//! Node-local grade-carrier decisions for canonical owned node vertices.
+//! Node-height authority normalization for canonical owned node vertices.
 
-use super::RoadSurfaceBandKind;
-use super::arrangement::{NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint};
-use super::backend::RoadVec2;
-use super::height::{
+use super::super::RoadSurfaceBandKind;
+use super::super::arrangement::{
+    NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
+};
+use super::super::backend::RoadVec2;
+use super::super::keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey};
+use super::super::segments::road_xz_lies_exactly_on_segment;
+use super::model::{
     NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightedRegion, NodeHeightedVertex,
 };
-use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
-use super::segments::road_xz_lies_exactly_on_segment;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -95,6 +97,7 @@ struct SameMaterialVertexHeightSupportKey {
     kind: RoadSurfaceBandKind,
     point: SurfaceXzKey,
     explicit_seams: Vec<NodeGradeExplicitSeamHeightKey>,
+    explicit_height_splits: Vec<(NodeBandOwner, NodeGradeExplicitSeamHeightKey)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -155,6 +158,9 @@ impl SameMaterialSharedEdgeCandidate {
         let mut start_key = SurfaceXzKey::from_road_xz(start.point_xz);
         let mut end_key = SurfaceXzKey::from_road_xz(end.point_xz);
         if start_key == end_key {
+            return None;
+        }
+        if edge_has_explicit_height_split(start.point_xz, end.point_xz, seam_constraints) {
             return None;
         }
         let mut start_height_m = start.height_m;
@@ -231,7 +237,7 @@ impl SameMaterialVertexHeightContext {
     }
 }
 
-pub(crate) fn apply_junctionn_node_grade_carrier(
+pub(crate) fn apply_junctionn_height_authority_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
     apply_junctionn_same_owner_canonical_vertex_height_normalization(regions);
@@ -503,6 +509,7 @@ fn apply_junctionn_same_material_vertex_height_normalization(
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             let key = same_material_vertex_height_support_key_from_parts(
                 region.kind,
+                region.owner,
                 &region.seam_constraints,
                 vertex,
             );
@@ -559,8 +566,12 @@ fn apply_junctionn_same_material_vertex_height_normalization(
             .iter_mut()
             .flat_map(|contour| contour.iter_mut())
         {
-            let key =
-                same_material_vertex_height_support_key_from_parts(kind, seam_constraints, vertex);
+            let key = same_material_vertex_height_support_key_from_parts(
+                kind,
+                owner,
+                seam_constraints,
+                vertex,
+            );
             if contexts_by_key
                 .get(&key)
                 .is_none_or(|contexts| contexts.len() < 2)
@@ -582,6 +593,7 @@ fn apply_junctionn_same_material_vertex_height_normalization(
 
 fn same_material_vertex_height_support_key_from_parts(
     kind: RoadSurfaceBandKind,
+    owner: NodeBandOwner,
     seam_constraints: &[NodeRegionSeamConstraint],
     vertex: &NodeHeightedVertex,
 ) -> SameMaterialVertexHeightSupportKey {
@@ -593,10 +605,23 @@ fn same_material_vertex_height_support_key_from_parts(
             .collect::<Vec<_>>();
     explicit_seams.sort_unstable();
     explicit_seams.dedup();
+    let mut explicit_height_splits =
+        explicit_height_split_constraints_for_vertex(vertex.point_xz, seam_constraints)
+            .into_iter()
+            .map(|constraint| {
+                (
+                    owner,
+                    NodeGradeExplicitSeamHeightKey::new(point, constraint),
+                )
+            })
+            .collect::<Vec<_>>();
+    explicit_height_splits.sort_unstable();
+    explicit_height_splits.dedup();
     SameMaterialVertexHeightSupportKey {
         kind,
         point,
         explicit_seams,
+        explicit_height_splits,
     }
 }
 
@@ -753,6 +778,57 @@ fn vertex_has_explicit_shared_material_seam(
         .any(|constraint| constraint.is_material_transition)
 }
 
+fn edge_has_explicit_height_split(
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
+    seam_constraints: &[NodeRegionSeamConstraint],
+) -> bool {
+    seam_constraints.iter().any(|constraint| {
+        explicit_height_split_constraint(constraint)
+            && point_lies_on_height_segment(start_xz, constraint.start_xz, constraint.end_xz)
+            && point_lies_on_height_segment(end_xz, constraint.start_xz, constraint.end_xz)
+    })
+}
+
+fn explicit_height_split_constraints_for_vertex(
+    point_xz: RoadVec2,
+    seam_constraints: &[NodeRegionSeamConstraint],
+) -> Vec<&NodeRegionSeamConstraint> {
+    let mut matches = seam_constraints
+        .iter()
+        .filter(|constraint| explicit_height_split_constraint(constraint))
+        .filter(|constraint| {
+            point_lies_on_height_segment(point_xz, constraint.start_xz, constraint.end_xz)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_unstable_by_key(|constraint| {
+        (
+            constraint.priority_key(),
+            SurfaceXzKey::from_road_xz(constraint.start_xz),
+            SurfaceXzKey::from_road_xz(constraint.end_xz),
+        )
+    });
+    matches.dedup_by_key(|constraint| {
+        (
+            constraint.constraint_index,
+            constraint.owner,
+            constraint.opposite_owner,
+            SurfaceXzKey::from_road_xz(constraint.start_xz),
+            SurfaceXzKey::from_road_xz(constraint.end_xz),
+        )
+    });
+    matches
+}
+
+fn explicit_height_split_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
+    constraint.is_material_transition
+        && !constraint.constrains_shared_height
+        && matches!(
+            constraint.seam_source,
+            NodeSeamSource::RaisedStepContact { .. }
+        )
+}
+
 fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
     road_xz_lies_exactly_on_segment(point, start, end)
 }
@@ -856,6 +932,7 @@ fn set_vertex_grade_height(
     height_m: f64,
     decision: NodeGradeCarrierDecision,
 ) {
+    let height_m = canonical_height_m(height_m);
     vertex.height_m = height_m;
     vertex.grade_authority = Some(NodeGradeVertexAuthority::new(
         vertex.point_xz,
@@ -866,12 +943,16 @@ fn set_vertex_grade_height(
     ));
 }
 
+fn canonical_height_m(height_m: f64) -> f64 {
+    SurfaceHeightMmKey::from_m_f64(height_m).as_i64() as f64 / SURFACE_MM_PER_M
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::RoadSurfaceBandKind;
-    use super::super::arrangement::NodeBandHeightFieldId;
-    use super::super::backend::RoadVec2;
-    use super::super::height::{NodeHeightedRegion, NodeHeightedVertex};
+    use super::super::super::RoadSurfaceBandKind;
+    use super::super::super::arrangement::NodeBandHeightFieldId;
+    use super::super::super::backend::RoadVec2;
+    use super::super::model::{NodeHeightedRegion, NodeHeightedVertex};
     use super::*;
 
     #[test]
@@ -882,7 +963,7 @@ mod tests {
             manual_region(RoadSurfaceBandKind::Sidewalk, 1, 3.0),
         ];
 
-        apply_junctionn_node_grade_carrier(&mut regions)
+        apply_junctionn_height_authority_normalization(&mut regions)
             .expect("same-material heights with one height key may share authority");
 
         let normalized = &regions[1].shape[0][0];
@@ -911,7 +992,7 @@ mod tests {
         ];
 
         assert!(matches!(
-            apply_junctionn_node_grade_carrier(&mut regions),
+            apply_junctionn_height_authority_normalization(&mut regions),
             Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
         ));
         assert_eq!(regions[0].shape[0][0].height_m, 2.0);

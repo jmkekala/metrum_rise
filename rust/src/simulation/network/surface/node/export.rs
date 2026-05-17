@@ -298,7 +298,7 @@ impl RoadSurfaceSystem {
     fn visual_polygon_from_arrangement_face(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
-        authority_indices: &BTreeMap<super::grade::NodeGradeVertexAuthority, usize>,
+        authority_indices: &BTreeMap<super::height::NodeGradeVertexAuthority, usize>,
     ) -> Result<
         Option<(RoadSurfaceVisualPolygon, NodeTopSurfacePolygonSource)>,
         NodeBoundaryExportError,
@@ -414,7 +414,7 @@ impl RoadSurfaceSystem {
         mut raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
-        node_grade_authorities: Vec<super::grade::NodeGradeVertexAuthority>,
+        node_grade_authorities: Vec<super::height::NodeGradeVertexAuthority>,
         mut node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,

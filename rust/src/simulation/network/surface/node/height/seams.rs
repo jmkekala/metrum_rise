@@ -1,5 +1,9 @@
 //! Height agreement validation for explicit seams and shared sources.
 
+use super::grade::{
+    NodeGradeExplicitSeamHeightKey, canonical_explicit_seam_owner_pair,
+    material_height_constraints_for_vertex,
+};
 use super::model::*;
 use super::*;
 

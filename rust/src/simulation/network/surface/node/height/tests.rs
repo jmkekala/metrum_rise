@@ -1,8 +1,14 @@
 //! Tests for canonical node-height field construction and evaluation.
 
 use super::super::arrangement::NodeSeamSource;
+use super::grade::apply_junctionn_height_authority_normalization;
 use super::model::*;
 use super::seams::*;
+use super::source_edges::{
+    height_edges_from_vertices, height_source_point_key, terminal_edge_height_at,
+    terminal_edge_height_at_exact,
+};
+use super::triangles::height_triangles_from_contour;
 use super::*;
 use crate::simulation::network::surface::backend::road_points_to_polyline;
 use crate::simulation::network::surface::input::NodeInputMouth;
@@ -17,6 +23,7 @@ use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
 use godot::prelude::{Vector2, Vector3};
+use std::collections::BTreeSet;
 
 fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
     IncidentMouthBand {
@@ -156,7 +163,7 @@ fn source_band_height_carrier_rejects_mismatched_explicit_paths() {
         interval.endpoint_end_world,
     ];
 
-    let result = NodeBandHeightField::from_interval(0, &interval);
+    let result = NodeBandHeightField::from_interval(0, &interval, None);
 
     assert!(matches!(
         result,
@@ -176,7 +183,12 @@ fn source_band_height_carrier_uses_outer_chord_for_one_sided_explicit_path() {
         interval.endpoint_start_world,
     ];
     interval.end_path_world = vec![interval.mouth_end_world, interval.endpoint_end_world];
-    let field = NodeBandHeightField::from_interval(0, &interval)
+    let source_support = vec![
+        RoadVec3::new(10.0, 4.0, 2.0),
+        RoadVec3::new(5.0, 3.0, 2.0),
+        RoadVec3::new(0.0, 2.0, 2.0),
+    ];
+    let field = NodeBandHeightField::from_interval(0, &interval, Some(&source_support))
         .expect("one explicit source rail plus endpoint chord is a valid carrier");
 
     let height_m = field
@@ -187,6 +199,34 @@ fn source_band_height_carrier_uses_outer_chord_for_one_sided_explicit_path() {
         SurfaceHeightMmKey::from_m_f64(height_m),
         SurfaceHeightMmKey::from_m_f64(4.5)
     );
+}
+
+#[test]
+fn height_carrier_rejects_duplicate_canonical_xz_with_different_height() {
+    let points = [
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.25, 0.0),
+        RoadVec3::new(10.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 2.0),
+    ];
+    assert!(matches!(
+        height_edges_from_vertices(&points),
+        Err(HeightCarrierContourError::ConflictingDuplicateHeightVertex)
+    ));
+
+    let id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
+    assert!(matches!(
+        height_triangles_from_contour(
+            id,
+            RoadSurfaceBandKind::Sidewalk,
+            NodeHeightPatchAuthority::source_interval(),
+            &points,
+        ),
+        Err(NodeHeightFieldError::InvalidHeightCarrierContour {
+            reason: "conflicting_duplicate_height_vertex",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -256,6 +296,7 @@ fn junctionn_canonical_height_authority_prefers_owner_generated_carrier_over_bas
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
@@ -305,6 +346,7 @@ fn junctionn_canonical_height_authority_scopes_generated_carriers_to_owned_regio
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
@@ -379,28 +421,39 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
-    let patch = NodeBandHeightPatch::from_heighted_contour(
-        field.id,
-        field.kind,
-        &[
-            RoadVec3::new(0.0, 2.0, 0.0),
-            RoadVec3::new(10.0, 2.0, 0.0),
-            RoadVec3::new(10.0, 2.0, 2.0),
-            RoadVec3::new(0.0, 2.0, 2.0),
-        ],
-        NodeHeightPatchAuthority {
-            owner: Some(owner),
-            role: NodeHeightPatchAuthorityRole::GeneratedContour {
-                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
-                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
-            },
+    let points_xz = vec![
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(5.0, 0.0),
+        RoadVec2::new(10.0, 0.0),
+        RoadVec2::new(10.0, 2.0),
+        RoadVec2::new(0.0, 2.0),
+    ];
+    let contour = NodeGeneratedContour {
+        kind: NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Sidewalk,
         },
-    )
-    .expect("test generated contour is a valid height carrier");
-    field.patches.push(patch);
+        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+        source_mouth_order_index: 0,
+        source_band_index: Some(0),
+        owner: Some(owner),
+        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        backend_polyline: road_points_to_polyline(points_xz.clone(), true),
+        points_xz,
+        height_points_world: Some(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(5.0, 0.5, 0.0),
+            RoadVec3::new(10.0, 1.0, 0.0),
+            RoadVec3::new(10.0, 1.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ]),
+    };
+    field
+        .extend_with_generated_contour(&contour)
+        .expect("test generated contour is a valid height carrier");
 
     let handoff_height = field
         .evaluate_authorized_height(
@@ -415,18 +468,53 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
     );
     assert!((handoff_height.height_m - 0.5).abs() <= 1.0e-6);
 
+    let source_edge_non_handoff_height = field
+        .evaluate_authorized_height(
+            owner,
+            NodeGeneratedContourClaimPriority::SideJoin,
+            RoadVec2::new(2.5, 0.0),
+        )
+        .expect(
+            "source-edge point without explicit topology handoff should evaluate generated carrier",
+        );
+    assert_eq!(
+        source_edge_non_handoff_height.authority,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        }
+    );
+    assert!(
+        (source_edge_non_handoff_height.height_m - 0.25).abs() <= 1.0e-6,
+        "exact boundary vertices may evaluate the generated contour, not a drifted source fallback"
+    );
+
     let dedup_drifted_handoff_height = field
         .evaluate_authorized_height(
             owner,
             NodeGeneratedContourClaimPriority::SideJoin,
             RoadVec2::new(5.0, 0.00005),
         )
-        .expect("sub-dedup side-join vertex on source rail should reuse the rail");
+        .expect("drifted side-join vertex should use generated authority, not source-edge handoff");
     assert_eq!(
         dedup_drifted_handoff_height.authority,
-        NodeHeightAuthoritySource::SourceInterval
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        }
     );
-    assert!((dedup_drifted_handoff_height.height_m - 0.5).abs() <= 1.0e-6);
+
+    assert!(
+        matches!(
+            field.evaluate_authorized_height(
+                owner,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                RoadVec2::new(5.0, -0.00005)
+            ),
+            Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
+        ),
+        "canonical drift outside the contour must not be accepted as edge support"
+    );
 
     assert!(
         matches!(
@@ -437,7 +525,7 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
             ),
             Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
         ),
-        "near-edge vertices outside the project dedup envelope must not inherit source-rail height"
+        "near-edge vertices outside the generated contour must not inherit source-rail height"
     );
 
     let near_generated_height = field
@@ -446,7 +534,7 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
             NodeGeneratedContourClaimPriority::SideJoin,
             RoadVec2::new(5.0, 0.0002),
         )
-        .expect("inside generated contour but outside source-edge dedup should evaluate generated carrier");
+        .expect("inside generated contour but off exact handoff should evaluate generated carrier");
     assert_eq!(
         near_generated_height.authority,
         NodeHeightAuthoritySource::GeneratedContour {
@@ -454,7 +542,6 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
             claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
         }
     );
-    assert!((near_generated_height.height_m - 2.0).abs() <= 1.0e-6);
 
     let interior_height = field
         .evaluate_authorized_height(
@@ -470,7 +557,53 @@ fn side_join_height_authority_reuses_source_rail_only_at_canonical_handoff_verti
             claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
         }
     );
-    assert!((interior_height.height_m - 2.0).abs() <= 1.0e-6);
+}
+
+#[test]
+fn contour_edge_height_requires_precomputed_support_key() {
+    let edges = vec![NodeBandHeightEdge {
+        start_xz: RoadVec2::new(0.0, 0.0),
+        end_xz: RoadVec2::new(10.0, 0.0),
+        start_height_m: 0.0,
+        end_height_m: 1.0,
+    }];
+    let point_xz = RoadVec2::new(5.0, 0.0);
+    let empty_support = BTreeSet::new();
+    assert_eq!(
+        terminal_edge_height_at(point_xz, &edges, &empty_support)
+            .expect("single edge has no height conflict"),
+        None
+    );
+
+    let mut explicit_support = BTreeSet::new();
+    explicit_support.insert(height_source_point_key(point_xz));
+    let height_m = terminal_edge_height_at(point_xz, &edges, &explicit_support)
+        .expect("single edge has no height conflict")
+        .expect("explicit support key should allow exact contour-edge height");
+    assert!((height_m - 0.5).abs() <= 1.0e-6);
+}
+
+#[test]
+fn contour_edge_height_rejects_conflicting_exact_edge_candidates() {
+    let edges = vec![
+        NodeBandHeightEdge {
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 0.0),
+            start_height_m: 1.0,
+            end_height_m: 1.0,
+        },
+        NodeBandHeightEdge {
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(0.0, 1.0),
+            start_height_m: 2.0,
+            end_height_m: 2.0,
+        },
+    ];
+
+    let conflict = terminal_edge_height_at_exact(RoadVec2::new(0.0, 0.0), &edges)
+        .expect_err("same canonical edge key with different heights must reject");
+    assert_eq!(conflict.existing_height_mm, 1000);
+    assert_eq!(conflict.incoming_height_mm, 2000);
 }
 
 #[test]
@@ -478,6 +611,7 @@ fn junctionn_canonical_height_authority_rejects_conflicting_owner_generated_carr
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
@@ -522,10 +656,12 @@ fn height_solution_has_no_post_overlay_height_repair_path() {
         include_str!("carriers.rs"),
         include_str!("evaluate.rs"),
         include_str!("field.rs"),
+        include_str!("grade.rs"),
         include_str!("model.rs"),
         include_str!("seams.rs"),
         include_str!("source_edges.rs"),
         include_str!("triangles.rs"),
+        include_str!("vertices.rs"),
     ]
     .join("\n");
     for forbidden in [
@@ -539,7 +675,9 @@ fn height_solution_has_no_post_overlay_height_repair_path() {
         concat!("bounded_region_", "scoped_edge_height"),
         concat!("region_scoped_", "carrier"),
         concat!("HEIGHT_SOURCE_EDGE_", "NEIGHBOR_UNITS"),
+        concat!("HEIGHT_SOURCE_EDGE_", "DEDUP_DRIFT_UNITS"),
         concat!("allow_missing_height_points_", "backfill"),
+        concat!("subdivided_", "height_chord"),
     ] {
         assert!(
             !source.contains(forbidden),
@@ -553,6 +691,7 @@ fn generated_band_contour_requires_explicit_height_points() {
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let contour = generated_band_contour(
@@ -589,6 +728,7 @@ fn generated_band_contour_rejects_invalid_height_carrier_contour() {
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::CurbOrShoulder, 0.0, 0.0),
+        None,
     )
     .expect("manual interval is a valid source height carrier");
     let points_xz = vec![
@@ -599,7 +739,7 @@ fn generated_band_contour_rejects_invalid_height_carrier_contour() {
     ];
     let height_points_world = points_xz
         .iter()
-        .map(|point| RoadVec3::new(point.x, 1.0, point.y))
+        .map(|point| RoadVec3::new(point.x, 0.0, point.y))
         .collect();
     let contour = generated_band_contour(
         RoadSurfaceBandKind::CurbOrShoulder,
@@ -829,7 +969,7 @@ fn junctionn_same_material_shared_vertices_reject_height_conflict() {
     ];
 
     assert!(matches!(
-        apply_junctionn_node_grade_carrier(&mut regions),
+        apply_junctionn_height_authority_normalization(&mut regions),
         Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
     ));
 
@@ -842,6 +982,39 @@ fn junctionn_same_material_shared_vertices_reject_height_conflict() {
         regions[2].shape[0][0].height_m, 0.25,
         "different materials must not be pulled into the same-material tie-break"
     );
+}
+
+#[test]
+fn junctionn_same_material_raised_step_contact_allows_vertical_height_split() {
+    let seam = manual_seam_constraint(
+        88,
+        NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        false,
+        true,
+    );
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.25)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions).expect(
+        "explicit same-material raised-step contacts are height splits, not shared-height repairs",
+    );
+
+    assert_eq!(regions[0].shape[0][0].height_m, 1.0);
+    assert_eq!(regions[1].shape[0][0].height_m, 1.25);
 }
 
 #[test]
@@ -861,7 +1034,7 @@ fn junctionn_same_material_shared_vertices_share_authority_when_height_keys_matc
         ),
     ];
 
-    apply_junctionn_node_grade_carrier(&mut regions)
+    apply_junctionn_height_authority_normalization(&mut regions)
         .expect("matching height keys may share deterministic same-material authority");
 
     assert_eq!(
@@ -906,7 +1079,7 @@ fn junctionn_node_grade_carrier_does_not_adopt_explicit_material_seam_for_same_m
         ),
     ];
 
-    apply_junctionn_node_grade_carrier(&mut regions)
+    apply_junctionn_height_authority_normalization(&mut regions)
         .expect("unconstrained same-material vertex should remain independently heighted");
 
     assert_eq!(
@@ -949,7 +1122,7 @@ fn same_material_seam_rejects_shared_height_disagreement() {
     ];
 
     assert!(matches!(
-        apply_junctionn_node_grade_carrier(&mut regions),
+        apply_junctionn_height_authority_normalization(&mut regions),
         Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
     ));
 }
@@ -1010,7 +1183,7 @@ fn explicit_curb_sidewalk_seam_accepts_matching_quantized_shared_height() {
         ),
     ];
 
-    apply_junctionn_node_grade_carrier(&mut regions)
+    apply_junctionn_height_authority_normalization(&mut regions)
         .expect("explicit material seams may normalize only equal height keys");
     assert_eq!(
         SurfaceHeightMmKey::from_m_f64(regions[0].shape[0][0].height_m),

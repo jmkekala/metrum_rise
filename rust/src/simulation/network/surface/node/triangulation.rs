@@ -5,7 +5,7 @@ use super::arrangement::{
     NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
 };
 use super::backend::RoadVec3;
-use super::grade::NodeGradeVertexAuthority;
+use super::height::NodeGradeVertexAuthority;
 use super::indices::normalized_vertex_edge;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::{
@@ -896,7 +896,7 @@ mod tests {
                 height_m,
                 owner,
                 height_field_id,
-                super::super::grade::NodeGradeCarrierDecision::SourceCarrier { authority: None },
+                super::super::height::NodeGradeCarrierDecision::SourceCarrier { authority: None },
             )),
         }
     }

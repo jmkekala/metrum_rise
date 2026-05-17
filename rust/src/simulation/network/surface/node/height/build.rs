@@ -1,6 +1,7 @@
 //! Construction pipeline for node-height solutions.
 
 use super::evaluate::*;
+use super::grade::apply_junctionn_height_authority_normalization;
 use super::model::*;
 use super::seams::*;
 use super::*;
@@ -30,7 +31,8 @@ impl NodeHeightSolution {
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
         validate_input_ownership_pair(input, ownership)?;
-        let fields = height_fields_by_source(input, rails)?;
+        let mut fields = height_fields_by_source(input, rails)?;
+        register_owned_region_contour_support(&mut fields, ownership)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
         let resolved_authority = (ownership.piece_kind
             == RoadSurfaceVisualNodePieceKind::JunctionN)
@@ -44,7 +46,7 @@ impl NodeHeightSolution {
             }
         }
         if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
-            apply_junctionn_node_grade_carrier(&mut regions)?;
+            apply_junctionn_height_authority_normalization(&mut regions)?;
         }
         validate_explicit_material_seam_heights(&regions)?;
         validate_shared_source_height_agreement(&regions)?;
@@ -55,6 +57,48 @@ impl NodeHeightSolution {
             regions,
         })
     }
+}
+
+pub(super) fn register_owned_region_contour_support(
+    fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    ownership: &NodeBooleanOwnership,
+) -> Result<(), NodeHeightFieldError> {
+    for region in &ownership.owned_regions {
+        let band_index =
+            region
+                .source_band_index
+                .ok_or(NodeHeightFieldError::MissingRegionBandIndex {
+                    mouth_order_index: region.source_mouth_order_index,
+                    kind: region.kind,
+                })?;
+        let key = NodeSourceBandKey {
+            mouth_order_index: region.source_mouth_order_index,
+            band_index,
+        };
+        let field = fields
+            .get_mut(&key)
+            .ok_or(NodeHeightFieldError::MissingSourceBand {
+                mouth_order_index: key.mouth_order_index,
+                band_index: key.band_index,
+            })?;
+        if field.kind != region.kind {
+            return Err(NodeHeightFieldError::SourceBandKindMismatch {
+                mouth_order_index: key.mouth_order_index,
+                band_index: key.band_index,
+                region_kind: region.kind,
+                source_kind: field.kind,
+            });
+        }
+        for point in region
+            .shape
+            .iter()
+            .flat_map(|contour| contour.iter().copied())
+        {
+            let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+            field.register_contour_edge_support(region.owner, region.claim_priority, point_xz);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_input_ownership_pair(
@@ -82,11 +126,21 @@ pub(super) fn height_fields_by_source(
     let mut fields = BTreeMap::new();
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
-            let field = NodeBandHeightField::from_interval(mouth.order_index, interval)?;
             let key = NodeSourceBandKey {
                 mouth_order_index: mouth.order_index,
                 band_index: interval.band_index,
             };
+            let source_support_points = rails.and_then(|rails| {
+                rails
+                    .height_carrier_points_by_source
+                    .get(&(interval.band_kind, mouth.order_index, interval.band_index))
+                    .map(Vec::as_slice)
+            });
+            let field = NodeBandHeightField::from_interval(
+                mouth.order_index,
+                interval,
+                source_support_points,
+            )?;
             if fields.insert(key, field).is_some() {
                 return Err(NodeHeightFieldError::DuplicateSourceBand {
                     mouth_order_index: mouth.order_index,

@@ -44,7 +44,6 @@ pub(crate) mod boundary;
 mod boundary_edges;
 mod compile;
 mod export;
-pub(crate) mod grade;
 pub(crate) mod height;
 mod incident;
 pub(crate) mod input;

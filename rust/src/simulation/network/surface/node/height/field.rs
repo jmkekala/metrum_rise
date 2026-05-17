@@ -5,6 +5,7 @@ use super::evaluate::*;
 use super::model::*;
 use super::source_edges::*;
 use super::triangles::*;
+use super::vertices::height_vertex_heights_from_vertices;
 use super::*;
 
 impl NodeHeightPatchAuthority {
@@ -78,13 +79,19 @@ impl NodeBandHeightField {
     pub(super) fn from_interval(
         mouth_order_index: usize,
         interval: &NodeInputBandInterval,
+        source_support_points: Option<&[RoadVec3]>,
     ) -> Result<Self, NodeHeightFieldError> {
         let id =
             NodeBandHeightFieldId::new(mouth_order_index, interval.band_index, interval.band_kind);
         Ok(Self {
             id,
             kind: interval.band_kind,
-            patches: vec![NodeBandHeightPatch::from_interval(id, interval)?],
+            patches: vec![NodeBandHeightPatch::from_interval(
+                id,
+                interval,
+                source_support_points,
+            )?],
+            source_handoff_keys: BTreeSet::new(),
         })
     }
 
@@ -105,6 +112,7 @@ impl NodeBandHeightField {
                 cap_band.band_kind,
                 cap_band,
             )?],
+            source_handoff_keys: BTreeSet::new(),
         })
     }
 
@@ -132,6 +140,7 @@ impl NodeBandHeightField {
         &mut self,
         contour: &NodeGeneratedContour,
     ) -> Result<(), NodeHeightFieldError> {
+        self.register_generated_contour_source_handoffs(contour)?;
         self.patches
             .push(NodeBandHeightPatch::from_generated_contour(
                 self.id, self.kind, contour,
@@ -179,6 +188,24 @@ impl NodeBandHeightField {
             .map(|height| height.height_m)
     }
 
+    pub(super) fn register_contour_edge_support(
+        &mut self,
+        owner: NodeBandOwner,
+        claim_priority: NodeGeneratedContourClaimPriority,
+        point_xz: RoadVec2,
+    ) {
+        let point = height_source_point_key(point_xz);
+        for patch in &mut self.patches {
+            if patch
+                .authority
+                .rank_for_owned_region(owner, claim_priority)
+                .is_some()
+            {
+                patch.contour_edge_support_keys.insert(point);
+            }
+        }
+    }
+
     pub(super) fn evaluate_authorized_height(
         &self,
         owner: NodeBandOwner,
@@ -192,10 +219,16 @@ impl NodeBandHeightField {
             else {
                 continue;
             };
-            // Source-edge handoff is the one allowed priority exception: a generated contour may
-            // terminate on an existing source rail, but only at exact source-edge support or within
-            // the project point-dedup envelope checked by height_key_has_source_edge_support.
-            if let Some(height_m) = patch.source_handoff_height_at(point_xz) {
+            if self.source_handoff_authorized(owner, claim_priority, point_xz)
+                && let Some(height_m) =
+                    patch
+                        .source_handoff_height_at(point_xz)
+                        .map_err(|conflict| {
+                            patch.contour_edge_height_conflict_error(
+                                self.id, self.kind, point_xz, conflict,
+                            )
+                        })?
+            {
                 candidates.push(NodeAuthorizedHeightCandidate {
                     authority_rank: 4,
                     authority: patch.authority.source(),
@@ -241,11 +274,75 @@ impl NodeBandHeightField {
             .map(|candidate| candidate.authority_rank)
             .max()
             .expect("non-empty candidate set has a maximum rank");
-        let heights_m = candidates
-            .into_iter()
-            .filter(|candidate| candidate.authority_rank == best_rank)
-            .collect();
+        let heights_m = if best_rank == 4 {
+            candidates
+        } else {
+            candidates
+                .into_iter()
+                .filter(|candidate| candidate.authority_rank == best_rank)
+                .collect()
+        };
         self.agreed_height(point_xz, Some(owner), heights_m)
+    }
+
+    fn register_generated_contour_source_handoffs(
+        &mut self,
+        contour: &NodeGeneratedContour,
+    ) -> Result<(), NodeHeightFieldError> {
+        let (Some(owner), Some(points_world)) =
+            (contour.owner, contour.height_points_world.as_ref())
+        else {
+            return Ok(());
+        };
+        for point in points_world {
+            let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
+            let Some(source_height_m) = self.source_interval_height_at(point_xz)? else {
+                continue;
+            };
+            let source_height_key = SurfaceHeightMmKey::from_m_f64(source_height_m);
+            let contour_height_key = SurfaceHeightMmKey::from_m_f64(point.y);
+            if source_height_key != contour_height_key {
+                continue;
+            }
+            self.source_handoff_keys
+                .insert(NodeAuthorizedSourceHandoffKey {
+                    owner,
+                    claim_priority: contour.claim_priority,
+                    point: height_source_point_key(point_xz),
+                });
+        }
+        Ok(())
+    }
+
+    fn source_interval_height_at(
+        &self,
+        point_xz: RoadVec2,
+    ) -> Result<Option<f64>, NodeHeightFieldError> {
+        for patch in &self.patches {
+            match patch
+                .source_handoff_height_at(point_xz)
+                .map_err(|conflict| {
+                    patch.contour_edge_height_conflict_error(self.id, self.kind, point_xz, conflict)
+                })? {
+                Some(height_m) => return Ok(Some(height_m)),
+                None => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    fn source_handoff_authorized(
+        &self,
+        owner: NodeBandOwner,
+        claim_priority: NodeGeneratedContourClaimPriority,
+        point_xz: RoadVec2,
+    ) -> bool {
+        self.source_handoff_keys
+            .contains(&NodeAuthorizedSourceHandoffKey {
+                owner,
+                claim_priority,
+                point: height_source_point_key(point_xz),
+            })
     }
 
     pub(super) fn agreed_height(
@@ -299,10 +396,28 @@ impl NodeBandHeightPatch {
     pub(super) fn from_interval(
         id: NodeBandHeightFieldId,
         interval: &NodeInputBandInterval,
+        source_support_points: Option<&[RoadVec3]>,
     ) -> Result<Self, NodeHeightFieldError> {
-        let (triangles, contour_edges) = interval_height_carrier(id, interval)?;
+        let (triangles, contour_edges) =
+            interval_height_carrier(id, interval, source_support_points)?;
+        let mut explicit_vertices =
+            interval_height_carrier_vertices(id, interval, source_support_points)?;
+        if let Some(source_support_points) = source_support_points {
+            explicit_vertices.extend_from_slice(source_support_points);
+        }
+        let explicit_vertex_heights = height_vertex_heights_from_vertices(&explicit_vertices)
+            .map_err(|error| {
+                invalid_source_band_height_carrier_error(
+                    id,
+                    interval.band_kind,
+                    error.diagnostic_reason(),
+                )
+            })?;
+        let contour_edge_support_keys = explicit_vertex_heights.keys().copied().collect();
         Ok(Self {
             authority: NodeHeightPatchAuthority::source_interval(),
+            explicit_vertex_heights,
+            contour_edge_support_keys,
             triangles: Some(triangles),
             contour_edges: Some(contour_edges),
         })
@@ -314,15 +429,36 @@ impl NodeBandHeightPatch {
         cap_band: &NodeTerminalCapBand,
     ) -> Result<Self, NodeHeightFieldError> {
         let authority = NodeHeightPatchAuthority::terminal_cap();
+        let explicit_vertex_heights = height_vertex_heights_from_vertices(&cap_band.contour_world)
+            .map_err(|error| NodeHeightFieldError::InvalidHeightCarrierContour {
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
+                source_kind,
+                height_field_id: id,
+                authority: authority.source(),
+                reason: error.diagnostic_reason(),
+            })?;
+        let contour_edge_support_keys = explicit_vertex_heights.keys().copied().collect();
         Ok(Self {
             authority,
+            explicit_vertex_heights,
+            contour_edge_support_keys,
             triangles: Some(terminal_cap_band_height_triangles(
                 id,
                 source_kind,
                 authority,
                 cap_band,
             )?),
-            contour_edges: Some(terminal_cap_band_height_edges(cap_band)),
+            contour_edges: Some(terminal_cap_band_height_edges(cap_band).map_err(|error| {
+                NodeHeightFieldError::InvalidHeightCarrierContour {
+                    mouth_order_index: id.mouth_order_index(),
+                    band_index: id.band_index(),
+                    source_kind,
+                    height_field_id: id,
+                    authority: authority.source(),
+                    reason: error.diagnostic_reason(),
+                }
+            })?),
         })
     }
 
@@ -355,28 +491,54 @@ impl NodeBandHeightPatch {
         points: &[RoadVec3],
         authority: NodeHeightPatchAuthority,
     ) -> Result<Self, NodeHeightFieldError> {
+        let explicit_vertex_heights =
+            height_vertex_heights_from_vertices(points).map_err(|error| {
+                NodeHeightFieldError::InvalidHeightCarrierContour {
+                    mouth_order_index: id.mouth_order_index(),
+                    band_index: id.band_index(),
+                    source_kind,
+                    height_field_id: id,
+                    authority: authority.source(),
+                    reason: error.diagnostic_reason(),
+                }
+            })?;
+        let contour_edge_support_keys = explicit_vertex_heights.keys().copied().collect();
         Ok(Self {
             authority,
+            explicit_vertex_heights,
+            contour_edge_support_keys,
             triangles: Some(height_triangles_from_contour(
                 id,
                 source_kind,
                 authority,
                 points,
             )?),
-            contour_edges: Some(height_edges_from_vertices(points)),
+            contour_edges: Some(height_edges_from_vertices(points).map_err(|error| {
+                NodeHeightFieldError::InvalidHeightCarrierContour {
+                    mouth_order_index: id.mouth_order_index(),
+                    band_index: id.band_index(),
+                    source_kind,
+                    height_field_id: id,
+                    authority: authority.source(),
+                    reason: error.diagnostic_reason(),
+                }
+            })?),
         })
     }
 
-    pub(super) fn source_handoff_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
+    pub(super) fn source_handoff_height_at(
+        &self,
+        point_xz: RoadVec2,
+    ) -> Result<Option<f64>, NodeContourEdgeHeightConflict> {
         if self.authority.role != NodeHeightPatchAuthorityRole::SourceInterval {
-            return None;
+            return Ok(None);
         }
-        // This is not a search for the nearest source height. It only preserves a source rail
-        // height at canonical handoff vertices that lie on the source interval contour edge, with
-        // the same point-dedup drift allowed by topology construction.
-        self.contour_edges
-            .as_ref()
-            .and_then(|edges| terminal_edge_height_at(point_xz, edges))
+        // This is not a search for the nearest source height. The caller must first prove the
+        // point is an explicit generated-contour handoff key; this only reads the matching source
+        // interval edge height.
+        self.contour_edges.as_ref().map_or(Ok(None), |edges| {
+            terminal_edge_height_at_exact(point_xz, edges)
+        })
     }
 
     pub(super) fn evaluate_surface_height(
@@ -385,10 +547,21 @@ impl NodeBandHeightPatch {
         source_kind: RoadSurfaceBandKind,
         point_xz: RoadVec2,
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
-        if let Some(edges) = &self.contour_edges
-            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
+        if let Some(height_m) = self
+            .explicit_vertex_heights
+            .get(&height_source_point_key(point_xz))
+            .copied()
         {
             return Ok(NodeHeightPatchEvaluation::Inside(height_m));
+        }
+        if let Some(edges) = &self.contour_edges {
+            match terminal_edge_height_at(point_xz, edges, &self.contour_edge_support_keys)
+                .map_err(|conflict| {
+                    self.contour_edge_height_conflict_error(id, source_kind, point_xz, conflict)
+                })? {
+                Some(height_m) => return Ok(NodeHeightPatchEvaluation::Inside(height_m)),
+                None => {}
+            }
         }
         let mut triangle_outside_error = None;
         if let Some(triangles) = &self.triangles {
@@ -469,6 +642,29 @@ impl NodeBandHeightPatch {
             point_z_mm: key.z_mm(),
             axis,
             raw_parameter,
+        }
+    }
+
+    fn contour_edge_height_conflict_error(
+        &self,
+        id: NodeBandHeightFieldId,
+        source_kind: RoadSurfaceBandKind,
+        point_xz: RoadVec2,
+        conflict: NodeContourEdgeHeightConflict,
+    ) -> NodeHeightFieldError {
+        let key = NodeHeightPointKey::from_point(point_xz);
+        NodeHeightFieldError::SourceHeightFieldConflict {
+            mouth_order_index: id.mouth_order_index(),
+            band_index: id.band_index(),
+            source_kind,
+            height_field_id: id,
+            owner: self.authority.owner,
+            existing_authority: self.authority.source(),
+            incoming_authority: self.authority.source(),
+            point_x_mm: key.x_mm(),
+            point_z_mm: key.z_mm(),
+            existing_height_mm: conflict.existing_height_mm,
+            incoming_height_mm: conflict.incoming_height_mm,
         }
     }
 }

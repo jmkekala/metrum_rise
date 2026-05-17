@@ -3,7 +3,7 @@
 use super::{
     RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    arrangement, grade::NodeGradeVertexAuthority,
+    arrangement, height::NodeGradeVertexAuthority,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,11 +1,9 @@
 //! Core node-height records, keys, authority types, and scalar quantization.
 
+use super::grade::NodeGradeVertexAuthority;
 use super::*;
 
 pub(super) const HEIGHT_SOURCE_KEY_SCALE: f64 = SURFACE_XZ_KEY_SCALE;
-// Source-edge handoff may absorb only project point-dedup drift, not a general near-edge search.
-pub(super) const HEIGHT_SOURCE_EDGE_DEDUP_DRIFT_UNITS: i128 =
-    (WORLD_POINT_DEDUP_DISTANCE_M as f64 * HEIGHT_SOURCE_KEY_SCALE + 0.5) as i128;
 pub(super) type NodeHeightedContour = Vec<NodeHeightedVertex>;
 pub(super) type NodeHeightedShape = Vec<NodeHeightedContour>;
 pub(super) type NodeHeightSourcePointKey = (i64, i64);
@@ -171,6 +169,13 @@ pub(super) struct NodeResolvedHeightAuthorityMap {
         BTreeMap<NodeResolvedHeightAuthorityKey, NodeResolvedHeightAuthority>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) struct NodeAuthorizedSourceHandoffKey {
+    pub(super) owner: NodeBandOwner,
+    pub(super) claim_priority: NodeGeneratedContourClaimPriority,
+    pub(super) point: NodeHeightSourcePointKey,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct NodeResolvedHeightAuthority {
     pub(super) point_xz: RoadVec2,
@@ -182,10 +187,13 @@ pub(super) struct NodeBandHeightField {
     pub(super) id: NodeBandHeightFieldId,
     pub(super) kind: RoadSurfaceBandKind,
     pub(super) patches: Vec<NodeBandHeightPatch>,
+    pub(super) source_handoff_keys: BTreeSet<NodeAuthorizedSourceHandoffKey>,
 }
 
 pub(super) struct NodeBandHeightPatch {
     pub(super) authority: NodeHeightPatchAuthority,
+    pub(super) explicit_vertex_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
+    pub(super) contour_edge_support_keys: BTreeSet<NodeHeightSourcePointKey>,
     pub(super) triangles: Option<Vec<NodeBandHeightTriangle>>,
     pub(super) contour_edges: Option<Vec<NodeBandHeightEdge>>,
 }
@@ -222,6 +230,12 @@ pub(super) struct NodeBandHeightEdge {
     pub(super) end_height_m: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NodeContourEdgeHeightConflict {
+    pub(super) existing_height_mm: i64,
+    pub(super) incoming_height_mm: i64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct NodeAuthorizedHeightCandidate {
     pub(super) authority_rank: u8,
@@ -244,6 +258,7 @@ pub(super) enum NodeHeightPatchEvaluation {
 pub(super) enum HeightCarrierContourError {
     TooFewVertices,
     DegenerateContour,
+    ConflictingDuplicateHeightVertex,
     CdtBuildFailed,
     InvalidConstraint,
     EmptyInteriorTriangulation,
@@ -254,6 +269,7 @@ impl HeightCarrierContourError {
         match self {
             Self::TooFewVertices => "height_carrier_too_few_vertices",
             Self::DegenerateContour => "height_carrier_degenerate_contour",
+            Self::ConflictingDuplicateHeightVertex => "conflicting_duplicate_height_vertex",
             Self::CdtBuildFailed => "height_carrier_cdt_build_failed",
             Self::InvalidConstraint => "height_carrier_invalid_constraint",
             Self::EmptyInteriorTriangulation => "height_carrier_empty_interior_triangulation",

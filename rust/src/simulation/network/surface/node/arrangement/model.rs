@@ -1,7 +1,7 @@
 //! Core arrangement identifiers, keys, records, and accessors.
 
 use super::super::backend::RoadVec2;
-use super::super::grade::NodeGradeVertexAuthority;
+use super::super::height::NodeGradeVertexAuthority;
 use super::super::keys::SurfaceXzKey;
 use super::super::segments::arrangement_key_lies_on_segment;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};

@@ -2,8 +2,9 @@
 
 use super::super::RoadSurfaceVisualNodePieceKind;
 use super::super::backend::RoadVec2;
-use super::super::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
-use super::super::height::NodeHeightSolution;
+use super::super::height::{
+    NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightSolution,
+};
 use super::super::keys::SurfaceHeightMmKey;
 use super::edges::collect_pending_region_edge_support;
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};

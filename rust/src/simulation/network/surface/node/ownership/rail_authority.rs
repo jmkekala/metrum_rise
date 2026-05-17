@@ -47,7 +47,7 @@ pub(super) fn canonical_points_for_rail_set(
         let points = points
             .iter()
             .copied()
-            .map(ownership_key_from_road_point)
+            .map(|point| ownership_key_from_road_point(super::super::backend::road_vec3_xz(point)))
             .collect::<Vec<_>>();
         all_points.extend(points.iter().copied());
         height_points_by_source

@@ -15,7 +15,7 @@ use crate::simulation::network::surface::height::{
     NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightSolution,
 };
 use crate::simulation::network::surface::input::NodeArrangementInput;
-use crate::simulation::network::surface::node::grade::{
+use crate::simulation::network::surface::node::height::{
     NodeGradeCarrierDecision, NodeGradeVertexAuthority,
 };
 use crate::simulation::network::surface::ownership::{

@@ -84,7 +84,7 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) contours: Vec<NodeGeneratedContour>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
     pub(crate) height_carrier_points_by_source:
-        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>,
+        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
 }
 
 #[derive(Clone, Debug)]
@@ -244,7 +244,7 @@ impl NodeRailContourSet {
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_points_by_source =
-            BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec2>>::new();
+            BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>::new();
 
         for (mouth_index, (mouth, mouth_owners)) in
             input.mouths.iter().zip(&owners_by_mouth).enumerate()

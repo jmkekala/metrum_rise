@@ -226,43 +226,6 @@ impl SurfaceXzKey {
         self.inside_segment_bounds(start, end, true)
     }
 
-    pub(crate) fn quantization_cell_intersects_segment(
-        self,
-        start: Self,
-        end: Self,
-        neighbor_radius_units: i128,
-    ) -> bool {
-        if start == end {
-            return false;
-        }
-        let neighbor_radius_x2 = neighbor_radius_units * 2;
-        let min_x2 = i128::from(self.x_key) * 2 - neighbor_radius_x2;
-        let max_x2 = i128::from(self.x_key) * 2 + neighbor_radius_x2;
-        let min_z2 = i128::from(self.z_key) * 2 - neighbor_radius_x2;
-        let max_z2 = i128::from(self.z_key) * 2 + neighbor_radius_x2;
-        let segment_start = start.doubled();
-        let segment_end = end.doubled();
-        if doubled_point_inside_axis_aligned_box(segment_start, min_x2, max_x2, min_z2, max_z2)
-            || doubled_point_inside_axis_aligned_box(segment_end, min_x2, max_x2, min_z2, max_z2)
-        {
-            return true;
-        }
-        let lower_left = (min_x2, min_z2);
-        let lower_right = (max_x2, min_z2);
-        let upper_right = (max_x2, max_z2);
-        let upper_left = (min_x2, max_z2);
-        [
-            (lower_left, lower_right),
-            (lower_right, upper_right),
-            (upper_right, upper_left),
-            (upper_left, lower_left),
-        ]
-        .into_iter()
-        .any(|(edge_start, edge_end)| {
-            doubled_segments_intersect(segment_start, segment_end, edge_start, edge_end)
-        })
-    }
-
     fn inside_segment_bounds(self, start: Self, end: Self, include_endpoints: bool) -> bool {
         let inside_x = if start.x_key == end.x_key {
             self.x_key == start.x_key
@@ -279,10 +242,6 @@ impl SurfaceXzKey {
             self.z_key > start.z_key.min(end.z_key) && self.z_key < start.z_key.max(end.z_key)
         };
         inside_x && inside_z
-    }
-
-    fn doubled(self) -> (i128, i128) {
-        (i128::from(self.x_key) * 2, i128::from(self.z_key) * 2)
     }
 }
 
@@ -396,56 +355,6 @@ impl SurfaceHeightMmKey {
     }
 }
 
-fn doubled_point_inside_axis_aligned_box(
-    point: (i128, i128),
-    min_x: i128,
-    max_x: i128,
-    min_z: i128,
-    max_z: i128,
-) -> bool {
-    point.0 >= min_x && point.0 <= max_x && point.1 >= min_z && point.1 <= max_z
-}
-
-fn doubled_segments_intersect(
-    a: (i128, i128),
-    b: (i128, i128),
-    c: (i128, i128),
-    d: (i128, i128),
-) -> bool {
-    let ab_c = doubled_triangle_area2(a, b, c);
-    let ab_d = doubled_triangle_area2(a, b, d);
-    let cd_a = doubled_triangle_area2(c, d, a);
-    let cd_b = doubled_triangle_area2(c, d, b);
-    if ab_c == 0 && doubled_point_on_segment(c, a, b) {
-        return true;
-    }
-    if ab_d == 0 && doubled_point_on_segment(d, a, b) {
-        return true;
-    }
-    if cd_a == 0 && doubled_point_on_segment(a, c, d) {
-        return true;
-    }
-    if cd_b == 0 && doubled_point_on_segment(b, c, d) {
-        return true;
-    }
-    (ab_c > 0) != (ab_d > 0) && (cd_a > 0) != (cd_b > 0)
-}
-
-fn doubled_triangle_area2(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> i128 {
-    let ab_x = b.0 - a.0;
-    let ab_z = b.1 - a.1;
-    let ac_x = c.0 - a.0;
-    let ac_z = c.1 - a.1;
-    ab_x * ac_z - ab_z * ac_x
-}
-
-fn doubled_point_on_segment(point: (i128, i128), start: (i128, i128), end: (i128, i128)) -> bool {
-    point.0 >= start.0.min(end.0)
-        && point.0 <= start.0.max(end.0)
-        && point.1 >= start.1.min(end.1)
-        && point.1 <= start.1.max(end.1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,16 +460,5 @@ mod tests {
             SurfaceXzKey::raw_tuple_triangle_area_m2_abs((0, 0), (one_meter, 0), (0, one_meter));
 
         assert!((area_m2 - 0.5).abs() <= f64::EPSILON);
-    }
-
-    #[test]
-    fn quantization_cell_intersection_uses_doubled_integer_geometry() {
-        let point = SurfaceXzKey::from_raw_keys(5, 5);
-        let start = SurfaceXzKey::from_raw_keys(0, 0);
-        let end = SurfaceXzKey::from_raw_keys(10, 10);
-        let far = SurfaceXzKey::from_raw_keys(5, 9);
-
-        assert!(point.quantization_cell_intersects_segment(start, end, 1));
-        assert!(!far.quantization_cell_intersects_segment(start, end, 1));
     }
 }

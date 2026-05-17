@@ -3,6 +3,7 @@
 use super::model::*;
 use super::seams::*;
 use super::source_edges::*;
+use super::vertices::canonical_height_vertices;
 use super::*;
 
 impl NodeBandHeightTriangle {
@@ -54,16 +55,16 @@ pub(super) fn path_band_height_triangles(
 pub(super) fn path_band_height_edges(
     start_path_world: &[RoadVec3],
     end_path_world: &[RoadVec3],
-) -> Option<Vec<NodeBandHeightEdge>> {
+) -> Result<Option<Vec<NodeBandHeightEdge>>, HeightCarrierContourError> {
     if start_path_world.len() != end_path_world.len() || start_path_world.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     let mut contour = Vec::with_capacity(start_path_world.len() + end_path_world.len());
     contour.extend_from_slice(start_path_world);
     contour.extend(end_path_world.iter().rev().copied());
-    let edges = height_edges_from_vertices(&contour);
-    (!edges.is_empty()).then_some(edges)
+    let edges = height_edges_from_vertices(&contour)?;
+    Ok((!edges.is_empty()).then_some(edges))
 }
 
 pub(super) fn terminal_cap_band_height_triangles(
@@ -129,13 +130,15 @@ pub(super) fn push_height_triangle(
 
 pub(super) fn terminal_cap_band_height_edges(
     cap_band: &NodeTerminalCapBand,
-) -> Vec<NodeBandHeightEdge> {
+) -> Result<Vec<NodeBandHeightEdge>, HeightCarrierContourError> {
     height_edges_from_vertices(&cap_band.contour_world)
 }
 
-pub(super) fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
-    let vertices = canonical_height_vertices(points);
-    fan_height_triangles_from_vertices(&vertices)
+pub(super) fn height_triangles_from_vertices(
+    points: &[RoadVec3],
+) -> Result<Vec<NodeBandHeightTriangle>, HeightCarrierContourError> {
+    let vertices = canonical_height_vertices(points)?;
+    Ok(fan_height_triangles_from_vertices(&vertices))
 }
 
 pub(super) fn height_triangles_from_contour(
@@ -159,7 +162,7 @@ pub(super) fn height_triangles_from_contour(
 pub(super) fn constrained_height_triangles_from_vertices(
     points: &[RoadVec3],
 ) -> Result<Vec<NodeBandHeightTriangle>, HeightCarrierContourError> {
-    let vertices = canonical_height_vertices(points);
+    let vertices = canonical_height_vertices(points)?;
     if vertices.len() < 3 {
         return Err(HeightCarrierContourError::TooFewVertices);
     }
@@ -207,28 +210,6 @@ pub(super) fn constrained_height_triangles_from_vertices(
     (!triangles.is_empty())
         .then_some(triangles)
         .ok_or(HeightCarrierContourError::EmptyInteriorTriangulation)
-}
-
-pub(super) fn canonical_height_vertices(points: &[RoadVec3]) -> Vec<(RoadVec2, f64)> {
-    let mut vertices = Vec::with_capacity(points.len());
-    for point in points {
-        let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
-        let key = height_source_point_key(point_xz);
-        if vertices
-            .last()
-            .is_some_and(|(last_xz, _)| height_source_point_key(*last_xz) == key)
-        {
-            continue;
-        }
-        vertices.push((point_xz, quantize_source_height_m(point.y)));
-    }
-    if vertices.len() > 1
-        && height_source_point_key(vertices[0].0)
-            == height_source_point_key(vertices.last().expect("height vertices are non-empty").0)
-    {
-        vertices.pop();
-    }
-    vertices
 }
 
 pub(super) fn fan_height_triangles_from_vertices(

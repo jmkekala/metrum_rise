@@ -11,9 +11,8 @@ use super::{
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},
     backend,
     band_semantics::ordered_raised_step_kinds,
-    height::NodeHeightAuthoritySource,
+    height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightAuthoritySource},
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
-    node::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority},
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};

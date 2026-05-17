@@ -2,7 +2,7 @@
 
 use super::arrangement::{NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource};
 use super::backend::RoadVec2;
-use super::grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
+use super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::*;
 
