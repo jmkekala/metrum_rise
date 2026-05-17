@@ -1,5 +1,9 @@
 //! Final-owned footprint boundary support proofs.
 
+use super::sources::{
+    node_footprint_boundary_vertex_source_for_edge_point,
+    node_footprint_boundary_vertex_source_for_edge_point_with_canonical_drift,
+};
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
