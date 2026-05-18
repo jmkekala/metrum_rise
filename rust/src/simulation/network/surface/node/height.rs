@@ -10,7 +10,7 @@ use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
-    NodeGeneratedContourPurpose, NodeRailContourSet,
+    NodeGeneratedContourPurpose, NodeRailContourSet, NodeRailGenerationError,
 };
 use super::segments::raw_tuple_key_lies_exactly_on_segment;
 use super::terminal::{

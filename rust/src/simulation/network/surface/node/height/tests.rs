@@ -225,6 +225,54 @@ fn source_band_height_carrier_accepts_materialized_two_sided_explicit_paths() {
 }
 
 #[test]
+fn source_support_points_reject_conflicting_duplicate_canonical_height() {
+    let source_support = [RoadVec3::new(5.0, 0.5, 0.0), RoadVec3::new(5.0, 0.75, 0.0)];
+    let result = NodeBandHeightField::from_interval(
+        0,
+        &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        Some(&source_support),
+    );
+
+    match result {
+        Err(NodeHeightFieldError::SourceHeightFieldConflict {
+            mouth_order_index,
+            band_index,
+            source_kind,
+            height_field_id,
+            owner,
+            existing_authority,
+            incoming_authority,
+            point_x_mm,
+            point_z_mm,
+            existing_height_mm,
+            incoming_height_mm,
+        }) => {
+            assert_eq!(mouth_order_index, 0);
+            assert_eq!(band_index, 0);
+            assert_eq!(source_kind, RoadSurfaceBandKind::Sidewalk);
+            assert_eq!(
+                height_field_id,
+                NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk)
+            );
+            assert_eq!(owner, None);
+            assert_eq!(
+                existing_authority,
+                NodeHeightAuthoritySource::SourceInterval
+            );
+            assert_eq!(
+                incoming_authority,
+                NodeHeightAuthoritySource::SourceInterval
+            );
+            assert_eq!(point_x_mm, 5000);
+            assert_eq!(point_z_mm, 0);
+            assert_eq!(existing_height_mm, 500);
+            assert_eq!(incoming_height_mm, 750);
+        }
+        _ => panic!("conflicting source support should reject with source height conflict"),
+    }
+}
+
+#[test]
 fn source_band_height_field_uses_rail_materialized_outer_chord() {
     let mouth = OrderedIncidentPieceMouth {
         profile: profile(10.0, 4.0),
@@ -795,7 +843,10 @@ fn height_solution_has_no_post_overlay_height_repair_path() {
         include_str!("evaluate.rs"),
         include_str!("field.rs"),
         include_str!("grade.rs"),
+        include_str!("authority.rs"),
+        include_str!("handoff.rs"),
         include_str!("model.rs"),
+        include_str!("patch.rs"),
         include_str!("seams.rs"),
         include_str!("source_edges.rs"),
         include_str!("triangles.rs"),
@@ -972,6 +1023,50 @@ fn generated_contour_source_handoff_height_mismatch_rejects() {
                 point_z_mm: 0,
                 source_height_mm: 500,
                 contour_height_mm: 750,
+            }
+        )
+    );
+}
+
+#[test]
+fn generated_contour_source_handoff_checks_explicit_source_vertices() {
+    let mut field = NodeBandHeightField::from_interval(
+        0,
+        &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        None,
+    )
+    .expect("manual interval is a valid source height carrier");
+    let contour = generated_band_contour(
+        RoadSurfaceBandKind::Sidewalk,
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(10.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 0.25, 0.0),
+            RoadVec3::new(10.0, 1.0, 0.0),
+            RoadVec3::new(10.0, 1.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ]),
+    );
+
+    assert_eq!(
+        field.extend_with_generated_contour(&contour),
+        Err(
+            NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
+                mouth_order_index: 0,
+                band_index: 0,
+                source_kind: RoadSurfaceBandKind::Sidewalk,
+                height_field_id: field.id,
+                purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0)),
+                point_x_mm: 0,
+                point_z_mm: 0,
+                source_height_mm: 0,
+                contour_height_mm: 250,
             }
         )
     );

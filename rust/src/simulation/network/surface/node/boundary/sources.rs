@@ -45,13 +45,16 @@ fn node_earthwork_boundary_source_edges_from_owned_regions(
         if points.len() < 3 {
             continue;
         }
-        if top_source.vertex_sources.len() != points.len() {
+        if top_source.vertex_sources.len() != points.len()
+            || top_source.vertex_keys.len() != points.len()
+            || top_source.vertex_height_mm.len() != points.len()
+        {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
         }
         for index in 0..points.len() {
-            let start_point_key = ArrangementBoundaryPointKey::from_world(points[index]);
+            let start_point_key = top_source_boundary_point_key(top_source, index);
             let end_point_key =
-                ArrangementBoundaryPointKey::from_world(points[(index + 1) % points.len()]);
+                top_source_boundary_point_key(top_source, (index + 1) % points.len());
             let start_key = start_point_key.xz_key();
             let end_key = end_point_key.xz_key();
             if start_key == end_key {
@@ -101,10 +104,13 @@ fn node_footprint_boundary_direct_vertex_sources(
         let Some(top_source) = node_top_surface_sources.get(region_index) else {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
         };
-        if top_source.vertex_sources.len() != region.polygon.points_world.len() {
+        if top_source.vertex_sources.len() != region.polygon.points_world.len()
+            || top_source.vertex_keys.len() != region.polygon.points_world.len()
+            || top_source.vertex_height_mm.len() != region.polygon.points_world.len()
+        {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
         }
-        for (point_index, point) in region.polygon.points_world.iter().copied().enumerate() {
+        for point_index in 0..region.polygon.points_world.len() {
             let candidate = NodeFootprintBoundaryDirectVertex {
                 source: NodeFootprintBoundaryVertexSource::Direct(
                     NodeFootprintBoundaryDirectSource {
@@ -117,7 +123,7 @@ fn node_footprint_boundary_direct_vertex_sources(
                 owner_index: region.owner_index,
             };
             sources
-                .entry(ArrangementBoundaryPointKey::from_world(point))
+                .entry(top_source_boundary_point_key(top_source, point_index))
                 .and_modify(|current| {
                     if node_footprint_direct_vertex_ordering(candidate, *current).is_gt() {
                         *current = candidate;
@@ -127,6 +133,17 @@ fn node_footprint_boundary_direct_vertex_sources(
         }
     }
     Ok(sources)
+}
+
+fn top_source_boundary_point_key(
+    top_source: &NodeTopSurfacePolygonSource,
+    point_index: usize,
+) -> ArrangementBoundaryPointKey {
+    ArrangementBoundaryPointKey {
+        x_key: top_source.vertex_keys[point_index].x_key(),
+        z_key: top_source.vertex_keys[point_index].z_key(),
+        y_mm: top_source.vertex_height_mm[point_index],
+    }
 }
 
 pub(super) fn node_footprint_boundary_vertex_source_at_point(
@@ -171,40 +188,6 @@ pub(super) fn node_footprint_boundary_vertex_source_for_edge_point(
         owning_segment_end: source_edge.end_source,
         height_mm: point_key.y_mm,
     })
-}
-
-pub(super) fn node_footprint_boundary_vertex_source_for_edge_point_with_canonical_drift(
-    source_edge: &NodeEarthworkBoundarySourceEdge,
-    point_key: ArrangementBoundaryPointKey,
-) -> Option<NodeFootprintBoundaryVertexSource> {
-    let parameter = arrangement_key_segment_parameter_with_canonical_drift(
-        point_key.xz_key(),
-        source_edge.start_key,
-        source_edge.end_key,
-    )?;
-    let expected_height_mm = interpolated_segment_height_mm(
-        source_edge.start_point_key,
-        source_edge.end_point_key,
-        parameter,
-    );
-    if (expected_height_mm - point_key.y_mm).abs() > 1 {
-        return None;
-    }
-    Some(node_footprint_boundary_vertex_source_for_edge_parameter(
-        source_edge,
-        point_key.y_mm,
-    ))
-}
-
-pub(super) fn node_footprint_boundary_vertex_source_for_edge_parameter(
-    source_edge: &NodeEarthworkBoundarySourceEdge,
-    height_mm: i64,
-) -> NodeFootprintBoundaryVertexSource {
-    NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
-        owning_segment_start: source_edge.start_source,
-        owning_segment_end: source_edge.end_source,
-        height_mm,
-    }
 }
 
 fn node_earthwork_source_edge_ordering(

@@ -1,10 +1,7 @@
 //! Footprint boundary height resolution and conflict rejection.
 
 use super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};
-use super::sources::{
-    node_footprint_boundary_vertex_source_for_edge_parameter,
-    node_footprint_boundary_vertex_source_for_edge_point,
-};
+use super::sources::node_footprint_boundary_vertex_source_for_edge_point;
 use super::*;
 
 impl NodeFootprintBoundaryExportSources {
@@ -30,16 +27,10 @@ impl NodeFootprintBoundaryExportSources {
         if !exact_candidates.is_empty() {
             return self.unique_height_candidate_at_key(key, exact_candidates);
         }
-
-        let canonical_drift_edge_candidates = self
-            .boundary_edge_canonical_drift_height_candidates_at_key(key)
-            .collect::<Vec<_>>();
-        if !canonical_drift_edge_candidates.is_empty() {
-            return self.unique_height_candidate_at_key(key, canonical_drift_edge_candidates);
-        }
         Ok(None)
     }
 
+    #[cfg(test)]
     pub(super) fn height_candidate_at_point(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -54,12 +45,7 @@ impl NodeFootprintBoundaryExportSources {
                 .filter(|candidate| candidate.height_mm == height_mm));
         }
 
-        let canonical_drift_candidates = self
-            .boundary_edge_canonical_drift_height_candidates_at_key(key)
-            .collect::<Vec<NodeFootprintBoundaryHeightCandidate>>();
-        Ok(self
-            .unique_height_candidate_at_key(key, canonical_drift_candidates)?
-            .filter(|candidate| candidate.height_mm == height_mm))
+        Ok(None)
     }
 
     fn unique_height_candidate_at_key(
@@ -87,10 +73,26 @@ impl NodeFootprintBoundaryExportSources {
             ) {
                 return Ok(Some(candidate));
             }
+            let existing = candidates
+                .iter()
+                .find(|candidate| candidate.height_mm == heights[0])
+                .expect("conflicting boundary height includes existing candidate");
+            let incoming = candidates
+                .iter()
+                .find(|candidate| candidate.height_mm == heights[1])
+                .expect("conflicting boundary height includes incoming candidate");
             return Err(
                 NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
                     x_key: key.x_key(),
                     z_key: key.z_key(),
+                    existing_y_mm: heights[0],
+                    incoming_y_mm: heights[1],
+                    existing_owner_kind: existing.source.owner_kind,
+                    existing_owner_index: existing.source.owner_index,
+                    existing_source: existing.source.source,
+                    incoming_owner_kind: incoming.source.owner_kind,
+                    incoming_owner_index: incoming.source.owner_index,
+                    incoming_source: incoming.source.source,
                 },
             );
         }
@@ -124,6 +126,7 @@ impl NodeFootprintBoundaryExportSources {
             .or_insert(candidate);
     }
 
+    #[cfg(test)]
     fn height_candidates_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -168,35 +171,6 @@ impl NodeFootprintBoundaryExportSources {
         })
     }
 
-    fn boundary_edge_canonical_drift_height_candidates_at_key(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
-        self.source_edges.iter().filter_map(move |source_edge| {
-            let parameter = arrangement_key_segment_parameter_with_canonical_drift(
-                key,
-                source_edge.start_key,
-                source_edge.end_key,
-            )?;
-            let height_mm = interpolated_segment_height_mm(
-                source_edge.start_point_key,
-                source_edge.end_point_key,
-                parameter,
-            );
-            Some(NodeFootprintBoundaryHeightCandidate {
-                height_mm,
-                source: NodeFootprintBoundaryDirectVertex {
-                    source: node_footprint_boundary_vertex_source_for_edge_parameter(
-                        source_edge,
-                        height_mm,
-                    ),
-                    owner_kind: source_edge.owner_kind,
-                    owner_index: source_edge.owner_index,
-                },
-            })
-        })
-    }
-
     fn direct_height_candidates_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -220,10 +194,10 @@ fn raised_step_footprint_height_candidate(
     explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
     source_edges: &[NodeEarthworkBoundarySourceEdge],
 ) -> Option<NodeFootprintBoundaryHeightCandidate> {
-    // Terminal cap corners can put a lower material edge and its raised neighbor at one
-    // footprint key. Accept that only when a materialized vertical-step segment or terminal
-    // boundary source-edge endpoints prove the ordered owner pair at that canonical key; unrelated
-    // cross-material conflicts still reject.
+    // Raised-step corners can put a lower material edge and its raised neighbor at one footprint
+    // key. Accept that only when a materialized vertical-step segment or exact terminal source-edge
+    // endpoints prove the ordered owner pair at that canonical key; unrelated cross-material
+    // conflicts still reject.
     let [_, _] = heights else {
         return None;
     };
@@ -246,15 +220,15 @@ fn raised_step_footprint_height_candidate(
                 raised.source,
                 explicit_vertical_step_segments,
             );
-            let terminal_boundary_authorized =
-                terminal_boundary_source_edges_authorize_footprint_height_pair(
+            let terminal_source_endpoint_authorized =
+                terminal_source_edge_endpoints_authorize_footprint_height_pair(
                     key,
                     lower,
                     raised,
                     source_edges,
                 );
-            if !explicit_step_authorized && !terminal_boundary_authorized {
-                return None;
+            if !explicit_step_authorized && !terminal_source_endpoint_authorized {
+                continue;
             }
             if !raised_candidates
                 .iter()
@@ -318,7 +292,7 @@ fn vertical_step_segment_authorizes_owner_pair(
             .is_some_and(|(lower_rank, raised_rank)| lower_rank < raised_rank)
 }
 
-fn terminal_boundary_source_edges_authorize_footprint_height_pair(
+fn terminal_source_edge_endpoints_authorize_footprint_height_pair(
     key: arrangement::NodeArrangementKey,
     lower: NodeFootprintBoundaryHeightCandidate,
     raised: NodeFootprintBoundaryHeightCandidate,
@@ -359,14 +333,12 @@ fn terminal_source_edge_endpoint_proves_candidate_at_key(
         source_edge.start_key,
         source_edge.start_point_key.y_mm,
         source_edge.start_source,
-        source_edge,
         key,
         candidate,
     ) || terminal_source_edge_endpoint_matches_candidate(
         source_edge.end_key,
         source_edge.end_point_key.y_mm,
         source_edge.end_source,
-        source_edge,
         key,
         candidate,
     )
@@ -376,21 +348,12 @@ fn terminal_source_edge_endpoint_matches_candidate(
     endpoint_key: arrangement::NodeArrangementKey,
     endpoint_height_mm: i64,
     endpoint_source: NodeFootprintBoundaryDirectSource,
-    source_edge: &NodeEarthworkBoundarySourceEdge,
     key: arrangement::NodeArrangementKey,
     candidate: NodeFootprintBoundaryHeightCandidate,
 ) -> bool {
     if endpoint_height_mm != candidate.height_mm {
         return false;
     }
-    if endpoint_key == key {
-        return candidate.source.source
-            == NodeFootprintBoundaryVertexSource::Direct(endpoint_source);
-    }
-    arrangement_key_distance_m(endpoint_key, key) <= f64::from(WORLD_POINT_DEDUP_DISTANCE_M)
-        && candidate.source.source
-            == node_footprint_boundary_vertex_source_for_edge_parameter(
-                source_edge,
-                candidate.height_mm,
-            )
+    endpoint_key == key
+        && candidate.source.source == NodeFootprintBoundaryVertexSource::Direct(endpoint_source)
 }

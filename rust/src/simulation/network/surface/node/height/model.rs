@@ -60,6 +60,9 @@ pub(crate) enum NodeHeightFieldError {
         region_kind: RoadSurfaceBandKind,
         source_kind: RoadSurfaceBandKind,
     },
+    RailHeightCarrierGeneration {
+        reason: &'static str,
+    },
     InvalidSourceBandHeightCarrier {
         mouth_order_index: usize,
         band_index: usize,

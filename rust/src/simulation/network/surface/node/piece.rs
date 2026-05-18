@@ -113,6 +113,8 @@ pub(crate) struct NodeTopSurfacePolygonSource {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner_index: usize,
     pub(crate) height_field_id: arrangement::NodeBandHeightFieldId,
+    pub(crate) vertex_keys: Vec<arrangement::NodeArrangementKey>,
+    pub(crate) vertex_height_mm: Vec<i64>,
     pub(crate) vertex_sources: Vec<NodeTopSurfaceVertexSource>,
     pub(crate) triangle_sources: Vec<[NodeTopSurfaceVertexSource; 3]>,
 }

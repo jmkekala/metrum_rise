@@ -114,29 +114,44 @@ pub(super) fn source_handoff_support_heights(
 }
 
 pub(super) fn source_support_heights(
+    id: NodeBandHeightFieldId,
+    source_kind: RoadSurfaceBandKind,
     source_support_points: Option<&[RoadVec3]>,
-) -> BTreeMap<NodeHeightSourcePointKey, f64> {
+) -> Result<BTreeMap<NodeHeightSourcePointKey, f64>, NodeHeightFieldError> {
     let mut support_heights =
-        BTreeMap::<NodeHeightSourcePointKey, Option<(SurfaceHeightMmKey, f64)>>::new();
+        BTreeMap::<NodeHeightSourcePointKey, (SurfaceHeightMmKey, f64)>::new();
     for point in source_support_points.unwrap_or(&[]) {
         let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
         let point_key = height_source_point_key(point_xz);
         let height_key = SurfaceHeightMmKey::from_m_f64(point.y);
         let height_m = quantize_source_height_m(point.y);
         match support_heights.get_mut(&point_key) {
-            Some(Some((existing_height_key, _))) if *existing_height_key == height_key => {}
-            Some(existing) => {
-                *existing = None;
+            Some((existing_height_key, _)) if *existing_height_key == height_key => {}
+            Some((existing_height_key, _)) => {
+                let key = NodeHeightPointKey::from_point(point_xz);
+                return Err(NodeHeightFieldError::SourceHeightFieldConflict {
+                    mouth_order_index: id.mouth_order_index(),
+                    band_index: id.band_index(),
+                    source_kind,
+                    height_field_id: id,
+                    owner: None,
+                    existing_authority: NodeHeightAuthoritySource::SourceInterval,
+                    incoming_authority: NodeHeightAuthoritySource::SourceInterval,
+                    point_x_mm: key.x_mm(),
+                    point_z_mm: key.z_mm(),
+                    existing_height_mm: existing_height_key.as_i64(),
+                    incoming_height_mm: height_key.as_i64(),
+                });
             }
             None => {
-                support_heights.insert(point_key, Some((height_key, height_m)));
+                support_heights.insert(point_key, (height_key, height_m));
             }
         }
     }
-    support_heights
+    Ok(support_heights
         .into_iter()
-        .filter_map(|(point_key, height)| height.map(|(_, height_m)| (point_key, height_m)))
-        .collect()
+        .map(|(point_key, (_, height_m))| (point_key, height_m))
+        .collect())
 }
 
 fn interval_declared_source_point_keys(

@@ -2,7 +2,7 @@
 
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, WORLD_POINT_DEDUP_DISTANCE_M, arrangement,
+    RoadSurfaceVisualNodePieceKind, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
     band_semantics::band_kind_sort_key,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
@@ -99,10 +99,21 @@ pub(super) struct NodeFootprintBoundaryExportSources {
 #[derive(Debug)]
 pub(crate) enum NodeBoundaryExportError {
     EmptyOuterBoundary,
-    MissingFootprintBoundaryHeight,
+    MissingFootprintBoundaryHeight {
+        x_key: i64,
+        z_key: i64,
+    },
     ConflictingFootprintBoundaryHeight {
         x_key: i64,
         z_key: i64,
+        existing_y_mm: i64,
+        incoming_y_mm: i64,
+        existing_owner_kind: RoadSurfaceBandKind,
+        existing_owner_index: usize,
+        existing_source: NodeFootprintBoundaryVertexSource,
+        incoming_owner_kind: RoadSurfaceBandKind,
+        incoming_owner_index: usize,
+        incoming_source: NodeFootprintBoundaryVertexSource,
     },
     ConflictingFootprintBoundarySplitHeight {
         x_key: i64,
@@ -205,79 +216,6 @@ pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 
 
 fn boundary_point_surface_key(point: ArrangementBoundaryPointKey) -> SurfaceXzKey {
     SurfaceXzKey::from_raw_keys(point.x_key, point.z_key)
-}
-
-fn arrangement_key_distance_m(
-    a: arrangement::NodeArrangementKey,
-    b: arrangement::NodeArrangementKey,
-) -> f64 {
-    let dx = (a.x_key() - b.x_key()) as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let dz = (a.z_key() - b.z_key()) as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    (dx * dx + dz * dz).sqrt()
-}
-
-fn arrangement_key_segment_parameter_with_canonical_drift(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> Option<ArrangementSegmentParameter> {
-    // This is only for independent overlay projection drift around an already-owned source edge.
-    // Interior drift must project inside the source segment; endpoint extension drift is accepted
-    // only inside the project point-dedup radius of the actual source endpoint.
-    let dx = i128::from(end.x_key() - start.x_key());
-    let dz = i128::from(end.z_key() - start.z_key());
-    let length_squared = dx * dx + dz * dz;
-    if length_squared == 0 {
-        return None;
-    }
-    let px = i128::from(point.x_key() - start.x_key());
-    let pz = i128::from(point.z_key() - start.z_key());
-    let projected_numerator = px * dx + pz * dz;
-    let numerator = if projected_numerator < 0 {
-        if arrangement_key_distance_m(point, start) > f64::from(WORLD_POINT_DEDUP_DISTANCE_M) {
-            return None;
-        }
-        0
-    } else if projected_numerator > length_squared {
-        if arrangement_key_distance_m(point, end) > f64::from(WORLD_POINT_DEDUP_DISTANCE_M) {
-            return None;
-        }
-        length_squared
-    } else {
-        if arrangement_key_segment_distance_m(point, start, end)
-            > f64::from(WORLD_POINT_DEDUP_DISTANCE_M)
-        {
-            return None;
-        }
-        projected_numerator
-    };
-    ArrangementSegmentParameter::new(numerator, length_squared)
-}
-
-fn arrangement_key_segment_distance_m(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> f64 {
-    let px = point.x_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let pz = point.z_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let sx = start.x_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let sz = start.z_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let ex = end.x_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let ez = end.z_key() as f64 / ROAD_OVERLAY_COORDINATE_SCALE;
-    let dx = ex - sx;
-    let dz = ez - sz;
-    let length_squared = dx * dx + dz * dz;
-    let t = if length_squared > f64::EPSILON {
-        (((px - sx) * dx + (pz - sz) * dz) / length_squared).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let closest_x = sx + dx * t;
-    let closest_z = sz + dz * t;
-    let distance_x = px - closest_x;
-    let distance_z = pz - closest_z;
-    (distance_x * distance_x + distance_z * distance_z).sqrt()
 }
 
 #[cfg(test)]

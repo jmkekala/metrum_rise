@@ -132,8 +132,10 @@ fn height_fields_by_source_for_ownership(
 ) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
     let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
         .map_err(|error| NodeHeightFieldError::TerminalCapGeneration { error })?;
-    let rail_height_carrier_points =
-        rails.map(|rails| rails.height_carrier_points_for_ownership(ownership));
+    let rail_height_carrier_points = rails
+        .map(|rails| rails.height_carrier_points_for_ownership(ownership))
+        .transpose()
+        .map_err(rail_generation_error_to_height_error)?;
     let mut fields = BTreeMap::new();
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
@@ -193,6 +195,66 @@ fn height_fields_by_source_for_ownership(
         extend_height_fields_with_generated_contours(rails, &mut fields)?;
     }
     Ok(fields)
+}
+
+fn rail_generation_error_to_height_error(error: NodeRailGenerationError) -> NodeHeightFieldError {
+    match error {
+        NodeRailGenerationError::ConflictingHeightCarrierPoint {
+            kind,
+            mouth_order_index,
+            band_index,
+            point_x_key,
+            point_z_key,
+            existing_height_mm,
+            incoming_height_mm,
+        } => {
+            let id = NodeBandHeightFieldId::new(mouth_order_index, band_index, kind);
+            NodeHeightFieldError::SourceHeightFieldConflict {
+                mouth_order_index,
+                band_index,
+                source_kind: kind,
+                height_field_id: id,
+                owner: None,
+                existing_authority: NodeHeightAuthoritySource::SourceInterval,
+                incoming_authority: NodeHeightAuthoritySource::SourceInterval,
+                point_x_mm: SurfaceXzKey::from_raw_keys(point_x_key, point_z_key).x_mm(),
+                point_z_mm: SurfaceXzKey::from_raw_keys(point_x_key, point_z_key).z_mm(),
+                existing_height_mm,
+                incoming_height_mm,
+            }
+        }
+        NodeRailGenerationError::InvalidHeightCarrier { reason, .. } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration { reason }
+        }
+        NodeRailGenerationError::SideJoinGeneration { error } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: error.reason,
+            }
+        }
+        NodeRailGenerationError::TerminalCapGeneration { error } => {
+            NodeHeightFieldError::TerminalCapGeneration { error }
+        }
+        NodeRailGenerationError::DegenerateConstraint { .. } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "degenerate_constraint",
+            }
+        }
+        NodeRailGenerationError::DegenerateContour { .. } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "degenerate_contour",
+            }
+        }
+        NodeRailGenerationError::EmptyInput { .. } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "empty_input",
+            }
+        }
+        NodeRailGenerationError::NonCanonicalGeneratedContactEndpoint { .. } => {
+            NodeHeightFieldError::RailHeightCarrierGeneration {
+                reason: "noncanonical_generated_contact_endpoint",
+            }
+        }
+    }
 }
 
 pub(super) fn extend_height_fields_with_generated_contours(

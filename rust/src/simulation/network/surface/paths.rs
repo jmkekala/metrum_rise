@@ -2,24 +2,44 @@
 
 use super::{
     backend::{RoadPolyline, RoadVec2, RoadVec3, road_points_to_polyline, road_vec3_xz},
-    keys::SurfaceXzKey,
+    keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use cavalier_contours::polyline::{PlineCreation, PlineSource};
 
+/// A canonical path key received contradictory source heights.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PathHeightResolutionError {
+    pub(crate) point_x_key: i64,
+    pub(crate) point_z_key: i64,
+    pub(crate) existing_height_mm: i64,
+    pub(crate) incoming_height_mm: i64,
+}
+
+impl PathHeightResolutionError {
+    /// Stable diagnostic reason for callers that wrap path-height failures.
+    pub(crate) fn diagnostic_reason(self) -> &'static str {
+        "conflicting_path_height"
+    }
+}
+
 /// Recovers a deterministic world height for a quantized XZ point on a source path.
-pub(crate) fn height_on_world_path(point_xz: RoadVec2, path_world: &[RoadVec3]) -> Option<f64> {
+pub(crate) fn height_on_world_path(
+    point_xz: RoadVec2,
+    path_world: &[RoadVec3],
+) -> Result<Option<f64>, PathHeightResolutionError> {
     let key = SurfaceXzKey::from_road_xz(point_xz);
+    let mut selected_height = None;
     for point_world in path_world {
         if SurfaceXzKey::from_road_xz(road_vec3_xz(*point_world)) == key {
-            return Some(point_world.y);
+            collect_path_height_candidate(point_xz, &mut selected_height, point_world.y)?;
         }
     }
     for segment in path_world.windows(2) {
         if let Some(height_m) = height_on_world_segment(point_xz, segment[0], segment[1]) {
-            return Some(height_m);
+            collect_path_height_candidate(point_xz, &mut selected_height, height_m)?;
         }
     }
-    None
+    Ok(selected_height.map(|(_, height_m)| height_m))
 }
 
 /// Interpolates height for an XZ key with canonical source-segment support.
@@ -40,16 +60,21 @@ pub(crate) fn height_on_world_segment(
 pub(crate) fn reheight_road_points_from_world_path(
     points_xz: impl IntoIterator<Item = RoadVec2>,
     source_path_world: &[RoadVec3],
-) -> Option<Vec<RoadVec3>> {
-    let mut points = points_xz
+) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
+    let Some(mut points) = points_xz
         .into_iter()
         .map(|point_xz| {
-            let height_m = height_on_world_path(point_xz, source_path_world)?;
-            Some(RoadVec3::new(point_xz.x, height_m, point_xz.y))
+            let Some(height_m) = height_on_world_path(point_xz, source_path_world)? else {
+                return Ok(None);
+            };
+            Ok(Some(RoadVec3::new(point_xz.x, height_m, point_xz.y)))
         })
-        .collect::<Option<Vec<_>>>()?;
-    remove_repeated_road_vec3_xz_points(&mut points);
-    Some(points)
+        .collect::<Result<Option<Vec<_>>, PathHeightResolutionError>>()?
+    else {
+        return Ok(None);
+    };
+    remove_repeated_road_vec3_xz_points(&mut points)?;
+    Ok(Some(points))
 }
 
 /// Cleans an open XZ path through the shared road-polyline representation.
@@ -95,18 +120,70 @@ pub(crate) fn closed_world_contour_has_area(
 }
 
 /// Removes consecutive and closing duplicate XZ keys while preserving the first height.
-pub(crate) fn remove_repeated_road_vec3_xz_points(points: &mut Vec<RoadVec3>) {
-    points.dedup_by(|a, b| {
-        SurfaceXzKey::from_road_xz(road_vec3_xz(*a)) == SurfaceXzKey::from_road_xz(road_vec3_xz(*b))
-    });
+pub(crate) fn remove_repeated_road_vec3_xz_points(
+    points: &mut Vec<RoadVec3>,
+) -> Result<(), PathHeightResolutionError> {
+    let mut index = 1;
+    while index < points.len() {
+        if SurfaceXzKey::from_road_xz(road_vec3_xz(points[index - 1]))
+            != SurfaceXzKey::from_road_xz(road_vec3_xz(points[index]))
+        {
+            index += 1;
+            continue;
+        }
+        reject_conflicting_path_height(points[index - 1], points[index])?;
+        points.remove(index);
+    }
     if points.len() > 1
         && SurfaceXzKey::from_road_xz(road_vec3_xz(points[0]))
             == SurfaceXzKey::from_road_xz(road_vec3_xz(
                 *points.last().expect("points are non-empty"),
             ))
     {
+        reject_conflicting_path_height(points[0], *points.last().expect("points are non-empty"))?;
         points.pop();
     }
+    Ok(())
+}
+
+fn collect_path_height_candidate(
+    point_xz: RoadVec2,
+    selected_height: &mut Option<(SurfaceHeightMmKey, f64)>,
+    candidate_height_m: f64,
+) -> Result<(), PathHeightResolutionError> {
+    let candidate_key = SurfaceHeightMmKey::from_m_f64(candidate_height_m);
+    if let Some((existing_key, _)) = selected_height {
+        if *existing_key != candidate_key {
+            let point = SurfaceXzKey::from_road_xz(point_xz);
+            return Err(PathHeightResolutionError {
+                point_x_key: point.x_key(),
+                point_z_key: point.z_key(),
+                existing_height_mm: existing_key.as_i64(),
+                incoming_height_mm: candidate_key.as_i64(),
+            });
+        }
+    } else {
+        *selected_height = Some((candidate_key, candidate_height_m));
+    }
+    Ok(())
+}
+
+fn reject_conflicting_path_height(
+    existing: RoadVec3,
+    incoming: RoadVec3,
+) -> Result<(), PathHeightResolutionError> {
+    let existing_key = SurfaceHeightMmKey::from_m_f64(existing.y);
+    let incoming_key = SurfaceHeightMmKey::from_m_f64(incoming.y);
+    if existing_key == incoming_key {
+        return Ok(());
+    }
+    let point = SurfaceXzKey::from_road_xz(road_vec3_xz(incoming));
+    Err(PathHeightResolutionError {
+        point_x_key: point.x_key(),
+        point_z_key: point.z_key(),
+        existing_height_mm: existing_key.as_i64(),
+        incoming_height_mm: incoming_key.as_i64(),
+    })
 }
 
 #[cfg(test)]
@@ -122,6 +199,7 @@ mod tests {
         ];
 
         let height = height_on_world_path(RoadVec2::new(1.0, 0.0), &path)
+            .expect("source path should not conflict")
             .expect("endpoint key should be heighted directly");
 
         assert_eq!(height, 5.0);
@@ -132,6 +210,7 @@ mod tests {
         let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
 
         let height = height_on_world_path(RoadVec2::new(1.0, 0.0), &path)
+            .expect("source path should not conflict")
             .expect("midpoint should project onto source segment");
 
         assert_eq!(height, 4.0);
@@ -141,14 +220,22 @@ mod tests {
     fn off_segment_point_outside_epsilon_has_no_height() {
         let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
 
-        assert!(height_on_world_path(RoadVec2::new(1.0, 0.01), &path).is_none());
+        assert!(
+            height_on_world_path(RoadVec2::new(1.0, 0.01), &path)
+                .expect("source path should not conflict")
+                .is_none()
+        );
     }
 
     #[test]
     fn off_segment_point_inside_old_epsilon_has_no_height() {
         let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
 
-        assert!(height_on_world_path(RoadVec2::new(1.0, 0.0005), &path).is_none());
+        assert!(
+            height_on_world_path(RoadVec2::new(1.0, 0.0005), &path)
+                .expect("source path should not conflict")
+                .is_none()
+        );
     }
 
     #[test]
@@ -156,7 +243,7 @@ mod tests {
         let path = [
             RoadVec3::new(0.0, 1.0, 0.0),
             RoadVec3::new(1.0, 2.0, 0.0),
-            RoadVec3::new(0.0, 3.0, 0.0),
+            RoadVec3::new(0.0, 1.0, 0.0),
         ];
 
         let points = reheight_road_points_from_world_path(
@@ -167,12 +254,28 @@ mod tests {
             ],
             &path,
         )
+        .expect("source path should not conflict")
         .expect("source path should provide all requested heights");
 
         assert_eq!(
             points,
             vec![RoadVec3::new(0.0, 1.0, 0.0), RoadVec3::new(1.0, 2.0, 0.0)]
         );
+    }
+
+    #[test]
+    fn conflicting_duplicate_path_height_rejects() {
+        let path = [
+            RoadVec3::new(0.0, 1.0, 0.0),
+            RoadVec3::new(1.0, 2.0, 0.0),
+            RoadVec3::new(0.0, 3.0, 0.0),
+        ];
+
+        let error = height_on_world_path(RoadVec2::new(0.0, 0.0), &path)
+            .expect_err("same XZ with different heights must not choose a winner");
+
+        assert_eq!(error.existing_height_mm, 1000);
+        assert_eq!(error.incoming_height_mm, 3000);
     }
 
     #[test]

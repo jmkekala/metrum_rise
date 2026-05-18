@@ -25,8 +25,8 @@ use super::{
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
-    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_M, backend,
-    band_semantics, indices, keys, paths, segments,
+    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt, backend, band_semantics, indices, keys, paths,
+    segments,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;

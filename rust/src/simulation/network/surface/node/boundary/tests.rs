@@ -85,7 +85,7 @@ fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
 }
 
 #[test]
-fn boundary_height_accepts_project_quantization_drift_from_source_edge() {
+fn boundary_height_rejects_project_quantization_drift_from_source_edge() {
     let source_edge = test_source_edge(
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(2.0, 2.0, 0.0),
@@ -104,9 +104,9 @@ fn boundary_height_accepts_project_quantization_drift_from_source_edge() {
 
     let height_mm = sources
         .height_mm_at_key(drifted_midpoint.xz_key())
-        .expect("project-quantization drift near a final source edge should normalize");
+        .expect("drifted source edge lookup should not conflict");
 
-    assert_eq!(height_mm, Some(1000));
+    assert_eq!(height_mm, None);
     assert!(
         !sources.has_exact_final_owned_footprint_boundary_support_at_point(
             ArrangementBoundaryPointKey {
@@ -198,7 +198,7 @@ fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
 }
 
 #[test]
-fn boundary_height_canonical_drift_accepts_endpoint_scale_source_edge_extension() {
+fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
     let source_edge = test_source_edge(
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(1.0, 0.0, 0.0),
@@ -216,9 +216,9 @@ fn boundary_height_canonical_drift_accepts_endpoint_scale_source_edge_extension(
 
     let height_mm = sources
         .height_mm_at_key(near_extension.xz_key())
-        .expect("endpoint-scale source-edge drift should be explicit and bounded");
+        .expect("endpoint-scale drift should not conflict");
 
-    assert_eq!(height_mm, Some(0));
+    assert_eq!(height_mm, None);
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
 }
 
 #[test]
-fn terminal_raised_step_footprint_height_accepts_endpoint_quantization_drift() {
+fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
     let drifted_step_start =
         ArrangementBoundaryPointKey::from_world(Vector3::new(0.000001, 0.0, 0.0)).xz_key();
     let lower_edge = test_source_edge_for_owner_and_kind(
@@ -376,11 +376,14 @@ fn terminal_raised_step_footprint_height_accepts_endpoint_quantization_drift() {
         explicit_vertical_step_segments: Vec::new(),
     };
 
-    let height_mm = sources.height_mm_at_key(drifted_step_start).expect(
-        "terminal endpoint-scale quantization drift should preserve raised corner authority",
-    );
+    let error = sources
+        .height_mm_at_key(drifted_step_start)
+        .expect_err("terminal endpoint-scale quantization drift must not authorize raised corners");
 
-    assert_eq!(height_mm, Some(120));
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+    ));
 }
 
 #[test]
@@ -494,7 +497,7 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
 }
 
 #[test]
-fn missing_boundary_height_interpolation_accepts_subbudget_run() {
+fn missing_boundary_height_rejects_subbudget_run() {
     let source_edge = test_source_edge(
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(1.0, 0.0, 0.0),
@@ -503,12 +506,12 @@ fn missing_boundary_height_interpolation_accepts_subbudget_run() {
         3,
         31,
     );
-    let mut sources = NodeFootprintBoundaryExportSources {
+    let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let mut vertices = vec![
+    let vertices = vec![
         (
             ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key(),
             Some(0),
@@ -523,11 +526,15 @@ fn missing_boundary_height_interpolation_accepts_subbudget_run() {
         ),
     ];
 
-    sources
-        .interpolate_missing_authorized_footprint_boundary_heights(&mut vertices)
-        .expect("sub-budget boundary-only runs may inherit contour height");
+    let error = sources
+        .reject_missing_footprint_boundary_heights(&vertices)
+        .expect_err("sub-budget boundary-only runs must not invent contour height");
 
-    assert_eq!(vertices[1].1, Some(0));
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::MissingFootprintBoundaryHeight { .. }
+    ));
+    assert_eq!(vertices[1].1, None);
 }
 
 #[test]
@@ -560,12 +567,12 @@ fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() 
             owner_index: 5,
         },
     );
-    let mut sources = NodeFootprintBoundaryExportSources {
+    let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
         explicit_vertical_step_segments: Vec::new(),
     };
-    let mut vertices = vec![
+    let vertices = vec![
         (start_key.xz_key(), Some(start_key.y_mm)),
         (
             ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.00001)).xz_key(),
@@ -578,12 +585,12 @@ fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() 
     ];
 
     let error = sources
-        .interpolate_missing_authorized_footprint_boundary_heights(&mut vertices)
+        .reject_missing_footprint_boundary_heights(&vertices)
         .expect_err("sub-budget interpolation must be bounded by final-owned source support");
 
     assert!(matches!(
         error,
-        NodeBoundaryExportError::MissingFootprintBoundaryHeight
+        NodeBoundaryExportError::MissingFootprintBoundaryHeight { .. }
     ));
     assert_eq!(vertices[1].1, None);
 }
@@ -613,12 +620,12 @@ fn missing_boundary_height_interpolation_rejects_overbudget_same_owner_connector
             owner_index: 5,
         },
     );
-    let mut sources = NodeFootprintBoundaryExportSources {
+    let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
         explicit_vertical_step_segments: Vec::new(),
     };
-    let mut vertices = vec![
+    let vertices = vec![
         (start_point_key.xz_key(), Some(start_point_key.y_mm)),
         (
             ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key(),
@@ -628,12 +635,12 @@ fn missing_boundary_height_interpolation_rejects_overbudget_same_owner_connector
     ];
 
     let error = sources
-        .interpolate_missing_authorized_footprint_boundary_heights(&mut vertices)
+        .reject_missing_footprint_boundary_heights(&vertices)
         .expect_err("same-owner gaps must not authorize over-budget contour interpolation");
 
     assert!(matches!(
         error,
-        NodeBoundaryExportError::MissingFootprintBoundaryHeight
+        NodeBoundaryExportError::MissingFootprintBoundaryHeight { .. }
     ));
     assert_eq!(vertices[1].1, None);
 }
@@ -648,12 +655,12 @@ fn missing_boundary_height_interpolation_rejects_overbudget_run() {
         3,
         31,
     );
-    let mut sources = NodeFootprintBoundaryExportSources {
+    let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let mut vertices = vec![
+    let vertices = vec![
         (
             ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key(),
             Some(0),
@@ -669,12 +676,12 @@ fn missing_boundary_height_interpolation_rejects_overbudget_run() {
     ];
 
     let error = sources
-        .interpolate_missing_authorized_footprint_boundary_heights(&mut vertices)
+        .reject_missing_footprint_boundary_heights(&vertices)
         .expect_err("over-budget missing topology must not be hidden by contour interpolation");
 
     assert!(matches!(
         error,
-        NodeBoundaryExportError::MissingFootprintBoundaryHeight
+        NodeBoundaryExportError::MissingFootprintBoundaryHeight { .. }
     ));
     assert_eq!(vertices[1].1, None);
 }

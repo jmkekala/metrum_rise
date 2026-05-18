@@ -3,7 +3,7 @@
 use super::arrangement::NodeBandOwner;
 use super::backend::{RoadPolyline, RoadVec2, RoadVec3};
 use super::input::NodeArrangementInput;
-use super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
+use super::joins::{NodeInputSideJoinBand, SideJoinGenerationError, side_join_bands_by_mouth};
 use super::keys::SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
 use super::ownership::NodeBooleanOwnership;
 use super::terminal::{
@@ -172,7 +172,8 @@ impl NodeRailContourSet {
     pub(in crate::simulation::network::surface::node) fn height_carrier_points_for_ownership(
         &self,
         ownership: Option<&NodeBooleanOwnership>,
-    ) -> BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>> {
+    ) -> Result<BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>, NodeRailGenerationError>
+    {
         let mut points_by_source = self.height_carrier_points_by_source.clone();
         if let Some(ownership) = ownership {
             push_owned_region_height_carrier_points(
@@ -181,9 +182,9 @@ impl NodeRailContourSet {
                 &self.constraints,
                 &self.height_carrier_paths_by_source,
                 ownership,
-            );
+            )?;
         }
-        points_by_source
+        Ok(points_by_source)
     }
 }
 
@@ -233,6 +234,15 @@ pub(crate) enum NodeRailGenerationError {
         band_index: Option<usize>,
         reason: &'static str,
     },
+    ConflictingHeightCarrierPoint {
+        kind: RoadSurfaceBandKind,
+        mouth_order_index: usize,
+        band_index: usize,
+        point_x_key: i64,
+        point_z_key: i64,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
     NonCanonicalGeneratedContactEndpoint {
         kind: NodeRailConstraintKind,
         mouth_order_index: usize,
@@ -241,6 +251,9 @@ pub(crate) enum NodeRailGenerationError {
         opposite_owner: Option<NodeBandOwner>,
         point_x_key: i64,
         point_z_key: i64,
+    },
+    SideJoinGeneration {
+        error: SideJoinGenerationError,
     },
     TerminalCapGeneration {
         error: TerminalCapGenerationError,
@@ -267,7 +280,8 @@ impl NodeRailContourSet {
 
         let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
             .map_err(|error| NodeRailGenerationError::TerminalCapGeneration { error })?;
-        let side_join_bands_by_mouth = side_join_bands_by_mouth(input);
+        let side_join_bands_by_mouth = side_join_bands_by_mouth(input)
+            .map_err(|error| NodeRailGenerationError::SideJoinGeneration { error })?;
         let owners_by_mouth = owners_by_mouth(
             input,
             &terminal_cap_bands_by_mouth,
@@ -309,7 +323,7 @@ impl NodeRailContourSet {
                     interval.band_index,
                     interval.band_kind,
                     interval_height_carrier_points(interval, &height_carrier_paths),
-                );
+                )?;
                 let owner = mouth_owners.band_owners[band_index];
                 push_band_contour(
                     input.piece_kind,
@@ -332,7 +346,7 @@ impl NodeRailContourSet {
                         .chain(&cap_band.inner_path_world)
                         .chain(&cap_band.outer_path_world)
                         .copied(),
-                );
+                )?;
             }
             for side_join_band in side_join_bands {
                 push_band_height_carrier_points(
@@ -341,7 +355,7 @@ impl NodeRailContourSet {
                     side_join_band.source_band_index,
                     side_join_band.band_kind,
                     side_join_band.contour_world.iter().copied(),
-                );
+                )?;
             }
 
             push_terminal_cap_band_contours(
@@ -432,11 +446,11 @@ impl NodeRailContourSet {
         push_generated_contour_height_carrier_points(
             &mut height_carrier_points_by_source,
             &contours,
-        );
+        )?;
         push_source_constraint_height_carrier_points(
             &mut height_carrier_points_by_source,
             &validation_constraints[..source_constraint_count],
-        );
+        )?;
         Ok(Self {
             node_id: input.node_id,
             piece_kind: input.piece_kind,

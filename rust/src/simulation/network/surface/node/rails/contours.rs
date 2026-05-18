@@ -6,6 +6,7 @@ use super::super::backend::{
     road_vec3_xz as xz,
 };
 use super::super::input::{NodeInputBoundaryRailRole, NodeInputMouth, NodeInputProfileRail};
+use super::super::keys::SurfaceHeightMmKey;
 use super::super::segments::raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment;
 use super::super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind};
 use super::constraints::{GeneratedRaisedStepOwnerPair, boundary_constraint_kind};
@@ -378,10 +379,10 @@ pub(super) fn push_road_path_point(points: &mut Vec<RoadVec2>, point: RoadVec2) 
 }
 
 pub(super) fn push_world_path_point(points: &mut Vec<RoadVec3>, point: RoadVec3) {
-    if points
-        .last()
-        .is_none_or(|last| road_point_key(xz(*last)) != road_point_key(xz(point)))
-    {
+    if points.last().is_none_or(|last| {
+        road_point_key(xz(*last)) != road_point_key(xz(point))
+            || SurfaceHeightMmKey::from_m_f64(last.y) != SurfaceHeightMmKey::from_m_f64(point.y)
+    }) {
         points.push(point);
     }
 }
@@ -397,6 +398,8 @@ pub(super) fn remove_closing_road_path_duplicate(points: &mut Vec<RoadVec2>) {
 pub(super) fn remove_closing_world_path_duplicate(points: &mut Vec<RoadVec3>) {
     if points.len() > 1
         && road_point_key(xz(points[0])) == road_point_key(xz(*points.last().expect("len checked")))
+        && SurfaceHeightMmKey::from_m_f64(points[0].y)
+            == SurfaceHeightMmKey::from_m_f64(points.last().expect("len checked").y)
     {
         points.pop();
     }

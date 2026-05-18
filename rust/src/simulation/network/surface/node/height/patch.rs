@@ -25,7 +25,8 @@ impl NodeBandHeightPatch {
                     error.diagnostic_reason(),
                 )
             })?;
-        let source_support_heights = source_support_heights(source_support_points);
+        let source_support_heights =
+            source_support_heights(id, interval.band_kind, source_support_points)?;
         let source_handoff_support_heights =
             source_handoff_support_heights(interval, &source_support_heights);
         let mut contour_edge_support_heights = explicit_vertex_heights.clone();
@@ -128,8 +129,10 @@ impl NodeBandHeightPatch {
         if self.authority.role != NodeHeightPatchAuthorityRole::SourceInterval {
             return None;
         }
-        self.source_handoff_support_heights
-            .get(&height_source_point_key(point_xz))
+        let point = height_source_point_key(point_xz);
+        self.explicit_vertex_heights
+            .get(&point)
+            .or_else(|| self.source_handoff_support_heights.get(&point))
             .copied()
     }
 

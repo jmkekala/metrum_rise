@@ -2149,14 +2149,25 @@ fn assert_node_piece_has_curb_and_sidewalk_owners(piece: &RoadSurfaceVisualNodeP
     );
 }
 
-fn assert_compiled_bend_piece(
-    surface: &RoadSurfaceSystem,
+fn assert_compiled_bend_piece<'a>(
+    surface: &'a RoadSurfaceSystem,
+    graph: &RegionGraph,
     bend: u32,
-) -> &RoadSurfaceVisualNodePiece {
+) -> &'a RoadSurfaceVisualNodePiece {
     let piece = surface
         .compiled_visual_node_pieces()
         .get(&bend)
-        .expect("bend should compile through canonical owned regions");
+        .unwrap_or_else(|| {
+            panic!(
+                "bend should compile through canonical owned regions: {}",
+                canonical_node_pipeline_report(
+                    surface,
+                    graph,
+                    bend,
+                    RoadSurfaceVisualNodePieceKind::Bend
+                )
+            )
+        });
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_piece_uses_band_owned_regions(piece);
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
@@ -2182,14 +2193,20 @@ fn assert_compiled_bend_piece(
     piece
 }
 
-fn assert_compiled_junction_piece(
-    surface: &RoadSurfaceSystem,
+fn assert_compiled_junction_piece<'a>(
+    surface: &'a RoadSurfaceSystem,
+    graph: &RegionGraph,
     junction: u32,
-) -> &RoadSurfaceVisualNodePiece {
+) -> &'a RoadSurfaceVisualNodePiece {
     let piece = surface
         .compiled_visual_node_pieces()
         .get(&junction)
-        .expect("junction should compile through canonical owned regions");
+        .unwrap_or_else(|| {
+            panic!(
+                "junction should compile through canonical owned regions: {}",
+                canonical_junction_pipeline_report(surface, graph, junction)
+            )
+        });
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
     assert_node_piece_uses_band_owned_regions(piece);
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
@@ -2220,15 +2237,27 @@ fn canonical_junction_pipeline_report(
     graph: &RegionGraph,
     node_id: u32,
 ) -> String {
+    canonical_node_pipeline_report(
+        surface,
+        graph,
+        node_id,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    )
+}
+
+fn canonical_node_pipeline_report(
+    surface: &RoadSurfaceSystem,
+    graph: &RegionGraph,
+    node_id: u32,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> String {
     let valid = graph.get_valid_node(node_id);
     let incidents = surface.sorted_incident_surface_edges(graph, valid);
     let Some(mouths) = surface.build_ordered_piece_mouths(&incidents) else {
         return format!("node {node_id}: failed to build ordered mouths");
     };
     let input = match RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
-        node_id,
-        RoadSurfaceVisualNodePieceKind::JunctionN,
-        &mouths,
+        node_id, piece_kind, &mouths,
     ) {
         Ok(input) => input,
         Err(error) => return format!("node {node_id}: input extraction failed: {error:?}"),
@@ -2236,23 +2265,15 @@ fn canonical_junction_pipeline_report(
     let rails = match RoadSurfaceSystem::build_node_rail_contours_from_input(&input) {
         Ok(rails) => rails,
         Err(error) => {
-            return NodeValidationReport::from_rail_generation_error(
-                node_id,
-                RoadSurfaceVisualNodePieceKind::JunctionN,
-                &error,
-            )
-            .debug_dump();
+            return NodeValidationReport::from_rail_generation_error(node_id, piece_kind, &error)
+                .debug_dump();
         }
     };
     let ownership = match RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails) {
         Ok(ownership) => ownership,
         Err(error) => {
-            return NodeValidationReport::from_boolean_ownership_error(
-                node_id,
-                RoadSurfaceVisualNodePieceKind::JunctionN,
-                &error,
-            )
-            .debug_dump();
+            return NodeValidationReport::from_boolean_ownership_error(node_id, piece_kind, &error)
+                .debug_dump();
         }
     };
     if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
@@ -2272,24 +2293,16 @@ fn canonical_junction_pipeline_report(
             {
                 return format!(
                     "{} {}",
-                    NodeValidationReport::from_height_field_error(
-                        node_id,
-                        RoadSurfaceVisualNodePieceKind::JunctionN,
-                        &error,
-                    )
-                    .debug_dump(),
+                    NodeValidationReport::from_height_field_error(node_id, piece_kind, &error,)
+                        .debug_dump(),
                     source_rail_debug_for_height_conflict(
                         &input,
                         rails.constraints.get(*constraint_index)
                     )
                 );
             }
-            return NodeValidationReport::from_height_field_error(
-                node_id,
-                RoadSurfaceVisualNodePieceKind::JunctionN,
-                &error,
-            )
-            .debug_dump();
+            return NodeValidationReport::from_height_field_error(node_id, piece_kind, &error)
+                .debug_dump();
         }
     };
     let mut arrangement = match NodeArrangement::from_height_solution(&heights) {
@@ -2298,21 +2311,13 @@ fn canonical_junction_pipeline_report(
             if let NodeArrangementError::DuplicateVertexHeightConflict { key, .. } = &error {
                 return format!(
                     "{} vertices_at_key={:?}",
-                    NodeValidationReport::from_arrangement_error(
-                        node_id,
-                        RoadSurfaceVisualNodePieceKind::JunctionN,
-                        &error,
-                    )
-                    .debug_dump(),
+                    NodeValidationReport::from_arrangement_error(node_id, piece_kind, &error,)
+                        .debug_dump(),
                     height_solution_vertices_at_arrangement_key(&heights, *key)
                 );
             }
-            return NodeValidationReport::from_arrangement_error(
-                node_id,
-                RoadSurfaceVisualNodePieceKind::JunctionN,
-                &error,
-            )
-            .debug_dump();
+            return NodeValidationReport::from_arrangement_error(node_id, piece_kind, &error)
+                .debug_dump();
         }
     };
     if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
@@ -2322,12 +2327,8 @@ fn canonical_junction_pipeline_report(
         match RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement) {
             Ok(triangulation) => triangulation,
             Err(error) => {
-                return NodeValidationReport::from_triangulation_error(
-                    node_id,
-                    RoadSurfaceVisualNodePieceKind::JunctionN,
-                    &error,
-                )
-                .debug_dump();
+                return NodeValidationReport::from_triangulation_error(node_id, piece_kind, &error)
+                    .debug_dump();
             }
         };
     match RoadSurfaceSystem::validate_node_triangulation_solution(&triangulation) {
@@ -2351,20 +2352,62 @@ fn canonical_junction_pipeline_report(
         }
     }
     if let Err(error) = arrangement.attach_triangulation(&triangulation) {
-        return NodeValidationReport::from_arrangement_error(
-            node_id,
-            RoadSurfaceVisualNodePieceKind::JunctionN,
-            &error,
-        )
-        .debug_dump();
+        return NodeValidationReport::from_arrangement_error(node_id, piece_kind, &error)
+            .debug_dump();
     }
     if let Err(error) = RoadSurfaceSystem::node_surface_regions_from_arrangement(
         &arrangement,
         &ownership.footprint_shapes,
     ) {
-        return format!("boundary export failed: {error:?}");
+        return format!(
+            "boundary export failed: {error:?} {}",
+            boundary_export_step_debug(&arrangement, &error)
+        );
     }
-    "canonical JunctionN pipeline reached boundary export".to_string()
+    format!("canonical {piece_kind:?} pipeline reached boundary export")
+}
+
+fn boundary_export_step_debug(
+    arrangement: &NodeArrangement,
+    error: &super::node::boundary::NodeBoundaryExportError,
+) -> String {
+    let super::node::boundary::NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
+        x_key,
+        z_key,
+        existing_owner_kind,
+        existing_owner_index,
+        incoming_owner_kind,
+        incoming_owner_index,
+        ..
+    } = error
+    else {
+        return String::new();
+    };
+    let key = NodeArrangementKey::from_point(super::backend::RoadVec2::new(
+        *x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
+        *z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
+    ));
+    let existing_owner = NodeBandOwner::new(*existing_owner_kind, *existing_owner_index);
+    let incoming_owner = NodeBandOwner::new(*incoming_owner_kind, *incoming_owner_index);
+    let step_segments = arrangement.explicit_vertical_step_segments();
+    let owner_pair_segments = step_segments
+        .iter()
+        .filter(|segment| {
+            (segment.owner() == existing_owner && segment.opposite_owner() == incoming_owner)
+                || (segment.owner() == incoming_owner && segment.opposite_owner() == existing_owner)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let key_segments = owner_pair_segments
+        .iter()
+        .filter(|segment| {
+            super::segments::arrangement_key_lies_on_segment(key, segment.start(), segment.end())
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    format!(
+        "boundary_key={key:?} owner_pair_segments={owner_pair_segments:?} key_segments={key_segments:?}"
+    )
 }
 
 fn assert_junction_rejected_with_canonical_height_diagnostic(
@@ -2379,6 +2422,7 @@ fn assert_junction_rejected_with_canonical_height_diagnostic(
     );
     let report = canonical_junction_pipeline_report(surface, graph, node_id);
     let accepted_height_rejection = report.contains("shared_source_height_conflict")
+        || report.contains("source_height_field_conflict")
         || report.contains("generated_contour_source_handoff_height_mismatch")
         || report.contains("vertex_outside_height_field");
     assert!(
@@ -3524,7 +3568,7 @@ fn flat_logged_curve_bend_compiles_with_explicit_point_contact_curb_ownership() 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3564,7 +3608,7 @@ fn logged_sixty_degree_bend_compiles_with_explicit_curb_sidewalk_endpoint_author
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3604,7 +3648,7 @@ fn logged_flat_sixty_degree_bend_compiles_with_explicit_curb_sidewalk_endpoint_a
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3644,7 +3688,7 @@ fn logged_oblique_curve_bend_top_surfaces_cover_footprint() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3697,7 +3741,7 @@ fn logged_bend_with_fragmented_asphalt_curb_step_compiles() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3867,7 +3911,7 @@ fn logged_inside_bend_compiles_with_explicit_point_contact_curb_ownership() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -3904,7 +3948,7 @@ fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_compiled_bend_piece(&surface, bend);
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]
@@ -4176,7 +4220,7 @@ fn logged_curved_terminal_top_surfaces_cover_footprint() {
 }
 
 #[test]
-fn logged_terminal_with_tiny_boundary_dust_compiles_both_terminals() {
+fn logged_terminal_with_tiny_boundary_dust_exports_final_top_footprint() {
     let terrain = flat_terrain(256, 256);
     let points = road_points_from_json(
         r#"[[98.445,0.0,22.22],[98.058,0.0,22.613],[97.589,0.0,23.089],[97.18,0.0,23.504],[96.698,0.0,23.994],[96.145,0.0,24.556],[95.524,0.0,25.186],[95.015,0.0,25.703],[94.656,0.0,26.067],[94.282,0.0,26.447],[93.892,0.0,26.843],[93.488,0.0,27.253],[93.07,0.0,27.678],[92.637,0.0,28.117],[92.191,0.0,28.57],[91.731,0.0,29.037],[91.259,0.0,29.517],[90.774,0.0,30.009],[90.276,0.0,30.514],[89.767,0.0,31.032],[89.246,0.0,31.561],[88.713,0.0,32.101],[88.17,0.0,32.653],[87.616,0.0,33.215],[87.052,0.0,33.788],[86.478,0.0,34.371],[85.895,0.0,34.963],[85.302,0.0,35.565],[84.7,0.0,36.176],[84.09,0.0,36.795],[83.472,0.0,37.423],[82.846,0.0,38.059],[82.213,0.0,38.702],[81.572,0.0,39.352],[80.925,0.0,40.009],[80.271,0.0,40.673],[79.612,0.0,41.343],[78.946,0.0,42.018],[78.275,0.0,42.7],[77.599,0.0,43.386],[76.919,0.0,44.077],[76.234,0.0,44.772],[75.545,0.0,45.472],[74.853,0.0,46.175],[74.157,0.0,46.881],[73.458,0.0,47.591],[72.932,0.0,48.125],[72.581,0.0,48.481],[72.229,0.0,48.839],[71.877,0.0,49.196],[71.524,0.0,49.554],[71.171,0.0,49.913],[70.818,0.0,50.272],[70.464,0.0,50.631],[70.11,0.0,50.991],[69.755,0.0,51.351],[69.401,0.0,51.711],[69.046,0.0,52.071],[68.691,0.0,52.431],[68.336,0.0,52.791],[67.981,0.0,53.152],[67.626,0.0,53.512],[67.272,0.0,53.872],[66.917,0.0,54.233],[66.562,0.0,54.593],[66.208,0.0,54.953],[65.854,0.0,55.312],[65.5,0.0,55.671],[65.146,0.0,56.03],[64.793,0.0,56.389],[64.44,0.0,56.747],[64.088,0.0,57.105],[63.736,0.0,57.462],[63.385,0.0,57.819],[62.859,0.0,58.353],[62.161,0.0,59.062],[61.465,0.0,59.768],[60.772,0.0,60.472],[60.083,0.0,61.171],[59.399,0.0,61.866],[58.718,0.0,62.557],[58.042,0.0,63.244],[57.371,0.0,63.925],[56.706,0.0,64.601],[56.046,0.0,65.27],[55.392,0.0,65.934],[54.745,0.0,66.591],[54.105,0.0,67.242],[53.471,0.0,67.885],[52.845,0.0,68.52],[52.227,0.0,69.148],[51.617,0.0,69.767],[51.016,0.0,70.378],[50.423,0.0,70.98],[49.84,0.0,71.572],[49.266,0.0,72.155],[48.702,0.0,72.728],[48.148,0.0,73.29],[47.604,0.0,73.842],[47.072,0.0,74.382],[46.551,0.0,74.912],[46.041,0.0,75.429],[45.544,0.0,75.934],[45.059,0.0,76.427],[44.586,0.0,76.907],[44.126,0.0,77.373],[43.68,0.0,77.826],[43.248,0.0,78.266],[42.829,0.0,78.69],[42.425,0.0,79.101],[42.036,0.0,79.496],[41.661,0.0,79.876],[41.302,0.0,80.241],[40.794,0.0,80.757],[40.173,0.0,81.388],[39.62,0.0,81.949],[39.137,0.0,82.439],[38.729,0.0,82.854],[38.259,0.0,83.331],[37.872,0.0,83.724]]"#,
@@ -4202,18 +4246,19 @@ fn logged_terminal_with_tiny_boundary_dust_compiles_both_terminals() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0]);
     for node_id in [start, end] {
-        let terminal_piece = surface
+        let piece = surface
             .compiled_visual_node_pieces()
             .get(&node_id)
-            .expect("logged terminal endpoint should compile a terminal piece");
-        assert_eq!(
-            terminal_piece.kind,
-            RoadSurfaceVisualNodePieceKind::Terminal
-        );
-        assert_node_top_covers_footprint(terminal_piece);
-        assert_material_triangles_do_not_overlap(terminal_piece);
+            .unwrap_or_else(|| panic!("tiny boundary dust should not survive into final top footprint; node_id={node_id} dump={dump}"));
+        assert_node_top_covers_footprint(piece);
     }
+    assert!(
+        dump.contains("\"missing_source_count\":0")
+            && dump.contains("\"boundary_interpolation_source_count\":0"),
+        "tiny boundary dust must be absent from final top-owned footprint export, not repaired by boundary interpolation; dump={dump}"
+    );
 }
 
 #[test]
@@ -4515,13 +4560,14 @@ fn steep_standard_terminal_compiles_legal_height_ownership() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0]);
     assert!(
         surface.compiled_visual_node_pieces().contains_key(&start),
-        "steep terminal should compile with explicit terminal cap height ownership"
+        "steep terminal should compile with explicit terminal cap height ownership; dump={dump}"
     );
     assert!(
         surface.compiled_visual_node_pieces().contains_key(&end),
-        "opposite steep terminal should compile with explicit terminal cap height ownership"
+        "opposite steep terminal should compile with explicit terminal cap height ownership; dump={dump}"
     );
 }
 
@@ -4947,7 +4993,7 @@ fn oblique_t_junction_compiles_with_canonical_side_join_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -4999,7 +5045,7 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_side_join_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 
     let raw_clip_sources = surface
         .compiled_visual_span_pieces()
@@ -5111,7 +5157,7 @@ fn logged_flat_three_way_oblique_junction_compiles_side_join_ownership() {
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -5163,7 +5209,7 @@ fn logged_current_flat_three_way_oblique_junction_compiles_side_join_ownership()
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -5215,7 +5261,7 @@ fn logged_flat_three_way_right_angle_junction_compiles_explicit_raised_steps() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = assert_compiled_junction_piece(&surface, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
     assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
 
@@ -5268,7 +5314,7 @@ fn logged_flat_three_way_oblique_variant_compiles_with_explicit_vertical_steps()
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = assert_compiled_junction_piece(&surface, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
     assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
 
@@ -6127,7 +6173,7 @@ fn logged_flat_oblique_four_way_compiles_with_explicit_height_carriers() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -6160,7 +6206,7 @@ fn arbitrary_six_way_junction_compiles_with_explicit_height_carriers() {
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -6193,7 +6239,7 @@ fn arbitrary_five_way_junction_compiles_with_explicit_height_carriers() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -6341,7 +6387,7 @@ fn dirty_recompile_expanded_arbitrary_node_piece_compiles_with_explicit_height_c
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -6464,7 +6510,7 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert_compiled_junction_piece(&surface, center);
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]

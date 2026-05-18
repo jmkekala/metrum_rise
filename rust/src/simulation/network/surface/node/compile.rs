@@ -254,15 +254,38 @@ impl RoadSurfaceSystem {
             return;
         }
         let report = match error {
-            NodeBoundaryExportError::MissingFootprintBoundaryHeight => {
+            NodeBoundaryExportError::MissingFootprintBoundaryHeight { x_key, z_key } => {
+                let _ = (*x_key, *z_key);
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
                     arrangement.piece_kind(),
                     "missing_footprint_boundary_height",
                 )
             }
-            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { x_key, z_key } => {
-                let _ = (*x_key, *z_key);
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
+                x_key,
+                z_key,
+                existing_y_mm,
+                incoming_y_mm,
+                existing_owner_kind,
+                existing_owner_index,
+                existing_source,
+                incoming_owner_kind,
+                incoming_owner_index,
+                incoming_source,
+            } => {
+                let _ = (
+                    *x_key,
+                    *z_key,
+                    *existing_y_mm,
+                    *incoming_y_mm,
+                    *existing_owner_kind,
+                    *existing_owner_index,
+                    *existing_source,
+                    *incoming_owner_kind,
+                    *incoming_owner_index,
+                    *incoming_source,
+                );
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
                     arrangement.piece_kind(),

@@ -6,7 +6,7 @@ use super::backend::{
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::paths::{
-    cleaned_open_world_path_polyline, closed_world_contour_has_area,
+    PathHeightResolutionError, cleaned_open_world_path_polyline, closed_world_contour_has_area,
     reheight_road_points_from_world_path,
 };
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
@@ -46,6 +46,7 @@ pub(crate) enum TerminalCapFailureReason {
     DegeneratePath,
     DegenerateContour,
     InvalidCapArea,
+    ConflictingPathHeight,
 }
 
 impl TerminalCapFailureReason {
@@ -59,6 +60,7 @@ impl TerminalCapFailureReason {
             Self::DegeneratePath => "terminal_cap_degenerate_path",
             Self::DegenerateContour => "terminal_cap_degenerate_contour",
             Self::InvalidCapArea => "terminal_cap_invalid_area",
+            Self::ConflictingPathHeight => "terminal_cap_conflicting_path_height",
         }
     }
 }
@@ -464,7 +466,18 @@ fn push_terminal_cap_band(
     outer_path_world: Option<Vec<RoadVec3>>,
 ) -> Result<(), TerminalCapGenerationError> {
     let inner_path_world = inner_path_world
-        .and_then(clean_terminal_cap_path_world)
+        .map(clean_terminal_cap_path_world)
+        .transpose()
+        .map_err(|_| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::ConflictingPathHeight,
+            )
+        })?
+        .flatten()
         .ok_or_else(|| {
             TerminalCapGenerationError::for_cap(
                 mouth,
@@ -475,7 +488,18 @@ fn push_terminal_cap_band(
             )
         })?;
     let outer_path_world = outer_path_world
-        .and_then(clean_terminal_cap_path_world)
+        .map(clean_terminal_cap_path_world)
+        .transpose()
+        .map_err(|_| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::ConflictingPathHeight,
+            )
+        })?
+        .flatten()
         .ok_or_else(|| {
             TerminalCapGenerationError::for_cap(
                 mouth,
@@ -486,6 +510,15 @@ fn push_terminal_cap_band(
             )
         })?;
     let contour_world = terminal_cap_contour_world(&inner_path_world, &outer_path_world)
+        .map_err(|_| {
+            TerminalCapGenerationError::for_cap(
+                mouth,
+                source_band_index,
+                band_kind,
+                provenance,
+                TerminalCapFailureReason::ConflictingPathHeight,
+            )
+        })?
         .ok_or_else(|| {
             TerminalCapGenerationError::for_cap(
                 mouth,
@@ -617,7 +650,15 @@ fn canonicalize_terminal_cap_bands(
     for cap_band in cap_bands.iter_mut() {
         quantize_terminal_cap_band_xz(cap_band);
         let Some(inner_path_world) =
-            clean_terminal_cap_path_world(cap_band.inner_path_world.clone())
+            clean_terminal_cap_path_world(cap_band.inner_path_world.clone()).map_err(|_| {
+                TerminalCapGenerationError::for_cap(
+                    mouth,
+                    cap_band.source_band_index,
+                    cap_band.band_kind,
+                    cap_band.provenance,
+                    TerminalCapFailureReason::ConflictingPathHeight,
+                )
+            })?
         else {
             return Err(TerminalCapGenerationError::for_cap(
                 mouth,
@@ -628,7 +669,15 @@ fn canonicalize_terminal_cap_bands(
             ));
         };
         let Some(outer_path_world) =
-            clean_terminal_cap_path_world(cap_band.outer_path_world.clone())
+            clean_terminal_cap_path_world(cap_band.outer_path_world.clone()).map_err(|_| {
+                TerminalCapGenerationError::for_cap(
+                    mouth,
+                    cap_band.source_band_index,
+                    cap_band.band_kind,
+                    cap_band.provenance,
+                    TerminalCapFailureReason::ConflictingPathHeight,
+                )
+            })?
         else {
             return Err(TerminalCapGenerationError::for_cap(
                 mouth,
@@ -639,6 +688,15 @@ fn canonicalize_terminal_cap_bands(
             ));
         };
         let Some(contour_world) = terminal_cap_contour_world(&inner_path_world, &outer_path_world)
+            .map_err(|_| {
+                TerminalCapGenerationError::for_cap(
+                    mouth,
+                    cap_band.source_band_index,
+                    cap_band.band_kind,
+                    cap_band.provenance,
+                    TerminalCapFailureReason::ConflictingPathHeight,
+                )
+            })?
         else {
             return Err(TerminalCapGenerationError::for_cap(
                 mouth,
@@ -673,33 +731,41 @@ fn quantize_terminal_cap_band_xz(cap_band: &mut NodeTerminalCapBand) {
 fn terminal_cap_contour_world(
     inner_path_world: &[RoadVec3],
     outer_path_world: &[RoadVec3],
-) -> Option<Vec<RoadVec3>> {
+) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
     if inner_path_world.len() < 2 || outer_path_world.len() < 2 {
-        return None;
+        return Ok(None);
     }
     let mut contour_world = inner_path_world.to_vec();
     contour_world.extend(outer_path_world.iter().rev().copied());
     clean_terminal_cap_contour_world(contour_world)
 }
 
-fn clean_terminal_cap_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>> {
+fn clean_terminal_cap_path_world(
+    path_world: Vec<RoadVec3>,
+) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
     if path_world.len() < 2 {
-        return None;
+        return Ok(None);
     }
-    let polyline = cleaned_open_world_path_polyline(
+    let Some(polyline) = cleaned_open_world_path_polyline(
         &path_world,
         TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M,
         false,
-    )?;
+    ) else {
+        return Ok(None);
+    };
     if polyline.vertex_count() < 2 {
-        return None;
+        return Ok(None);
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let cleaned_world = reheight_road_points_from_world_path(points_xz, &path_world)?;
-    (cleaned_world.len() >= 2).then_some(cleaned_world)
+    let Some(cleaned_world) = reheight_road_points_from_world_path(points_xz, &path_world)? else {
+        return Ok(None);
+    };
+    Ok((cleaned_world.len() >= 2).then_some(cleaned_world))
 }
 
-fn clean_terminal_cap_contour_world(contour_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>> {
+fn clean_terminal_cap_contour_world(
+    contour_world: Vec<RoadVec3>,
+) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
     let raw = road_points_to_polyline(contour_world.iter().copied().map(xz), true);
     let mut cleaned =
         RoadPolyline::create_from_remove_repeat(&raw, TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M);
@@ -710,11 +776,14 @@ fn clean_terminal_cap_contour_world(contour_world: Vec<RoadVec3>) -> Option<Vec<
         || cleaned.area().abs() <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
         || cleaned.scan_for_self_intersect()
     {
-        return None;
+        return Ok(None);
     }
-    let cleaned_world =
-        reheight_road_points_from_world_path(polyline_to_road_points(&cleaned), &contour_world)?;
-    (cleaned_world.len() >= 3).then_some(cleaned_world)
+    let Some(cleaned_world) =
+        reheight_road_points_from_world_path(polyline_to_road_points(&cleaned), &contour_world)?
+    else {
+        return Ok(None);
+    };
+    Ok((cleaned_world.len() >= 3).then_some(cleaned_world))
 }
 
 fn terminal_cap_band_has_quantized_area(cap_band: &NodeTerminalCapBand) -> bool {

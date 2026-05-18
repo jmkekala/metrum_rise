@@ -7,8 +7,9 @@ use super::backend::{
 use super::input::{NodeArrangementInput, NodeInputMouth};
 use super::keys::SurfaceXzKey;
 use super::paths::{
-    cleaned_open_road_polyline, cleaned_open_world_path_polyline, closed_world_contour_has_area,
-    reheight_road_points_from_world_path, remove_repeated_road_vec3_xz_points,
+    PathHeightResolutionError, cleaned_open_road_polyline, cleaned_open_world_path_polyline,
+    closed_world_contour_has_area, reheight_road_points_from_world_path,
+    remove_repeated_road_vec3_xz_points,
 };
 use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use cavalier_contours::core::math::{
@@ -58,40 +59,62 @@ pub(crate) enum NodeInputSideJoinBandBoundaryMode {
     SameOwnerOuterCap,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SideJoinGenerationError {
+    pub(crate) reason: &'static str,
+    pub(crate) point_x_key: i64,
+    pub(crate) point_z_key: i64,
+    pub(crate) existing_height_mm: i64,
+    pub(crate) incoming_height_mm: i64,
+}
+
+impl SideJoinGenerationError {
+    pub(crate) fn from_path_height_error(error: PathHeightResolutionError) -> Self {
+        Self {
+            reason: error.diagnostic_reason(),
+            point_x_key: error.point_x_key,
+            point_z_key: error.point_z_key,
+            existing_height_mm: error.existing_height_mm,
+            incoming_height_mm: error.incoming_height_mm,
+        }
+    }
+}
+
 pub(crate) fn side_join_bands_by_mouth(
     input: &NodeArrangementInput,
-) -> Vec<Vec<NodeInputSideJoinBand>> {
+) -> Result<Vec<Vec<NodeInputSideJoinBand>>, SideJoinGenerationError> {
     let mut bands_by_mouth = vec![Vec::new(); input.mouths.len()];
     match input.piece_kind {
         RoadSurfaceVisualNodePieceKind::Bend => {
-            add_bend_side_join_bands(&input.mouths, &mut bands_by_mouth);
+            add_bend_side_join_bands(&input.mouths, &mut bands_by_mouth)?;
         }
         RoadSurfaceVisualNodePieceKind::JunctionN => {
-            add_junction_side_join_bands(&input.mouths, &mut bands_by_mouth);
+            add_junction_side_join_bands(&input.mouths, &mut bands_by_mouth)?;
         }
         RoadSurfaceVisualNodePieceKind::Terminal => {}
     }
-    bands_by_mouth
+    Ok(bands_by_mouth)
 }
 
 fn add_bend_side_join_bands(
     mouths: &[NodeInputMouth],
     bands_by_mouth: &mut [Vec<NodeInputSideJoinBand>],
-) {
+) -> Result<(), SideJoinGenerationError> {
     if mouths.len() != 2 {
-        return;
+        return Ok(());
     }
 
-    append_adjacent_side_join_bands(mouths, bands_by_mouth, 0, 1, SideJoinPathMode::BendArc);
-    append_adjacent_side_join_bands(mouths, bands_by_mouth, 1, 0, SideJoinPathMode::BendArc);
+    append_adjacent_side_join_bands(mouths, bands_by_mouth, 0, 1, SideJoinPathMode::BendArc)?;
+    append_adjacent_side_join_bands(mouths, bands_by_mouth, 1, 0, SideJoinPathMode::BendArc)?;
+    Ok(())
 }
 
 fn add_junction_side_join_bands(
     mouths: &[NodeInputMouth],
     bands_by_mouth: &mut [Vec<NodeInputSideJoinBand>],
-) {
+) -> Result<(), SideJoinGenerationError> {
     if mouths.len() < 2 {
-        return;
+        return Ok(());
     }
 
     for from_index in 0..mouths.len() {
@@ -106,8 +129,9 @@ fn add_junction_side_join_bands(
             from_index,
             to_index,
             SideJoinPathMode::JunctionNonRoad,
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn append_adjacent_side_join_bands(
@@ -116,18 +140,20 @@ fn append_adjacent_side_join_bands(
     from_index: usize,
     to_index: usize,
     path_mode: SideJoinPathMode,
-) {
+) -> Result<(), SideJoinGenerationError> {
     let from_mouth = &mouths[from_index];
     let to_mouth = &mouths[to_index];
     let from_layers = side_join_layers(from_mouth, SideJoinProfileSide::End);
     let to_layers = side_join_layers(to_mouth, SideJoinProfileSide::Start);
     if from_layers.is_empty() || to_layers.is_empty() {
-        return;
+        return Ok(());
     }
 
-    let mut join_bands = side_join_bands(from_mouth, &from_layers, to_mouth, &to_layers, path_mode);
+    let mut join_bands =
+        side_join_bands(from_mouth, &from_layers, to_mouth, &to_layers, path_mode)?;
     canonicalize_side_join_bands(&mut join_bands);
     bands_by_mouth[from_index].extend(join_bands);
+    Ok(())
 }
 
 fn canonicalize_side_join_bands(join_bands: &mut Vec<NodeInputSideJoinBand>) {
@@ -190,7 +216,7 @@ fn side_join_bands(
     to_mouth: &NodeInputMouth,
     to_layers: &[SideJoinLayer],
     path_mode: SideJoinPathMode,
-) -> Vec<NodeInputSideJoinBand> {
+) -> Result<Vec<NodeInputSideJoinBand>, SideJoinGenerationError> {
     let mut join_bands = Vec::new();
     let mut inner_path_world = None;
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
@@ -211,7 +237,8 @@ fn side_join_bands(
             to_layer,
             inner_path_world,
             path_mode,
-        ) else {
+        )?
+        else {
             break;
         };
         let Some(outer_start_world) = endpoint_layer_outer_world(from_mouth, from_layer) else {
@@ -226,7 +253,8 @@ fn side_join_bands(
             to_mouth,
             outer_end_world,
             path_mode,
-        ) else {
+        )?
+        else {
             break;
         };
 
@@ -243,10 +271,10 @@ fn side_join_bands(
             boundary_mode,
             band_inner_path_world,
             band_outer_path_world.clone(),
-        );
+        )?;
         inner_path_world = Some(band_outer_path_world);
     }
-    join_bands
+    Ok(join_bands)
 }
 
 fn side_join_band_inner_path(
@@ -256,17 +284,25 @@ fn side_join_band_inner_path(
     to_layer: &SideJoinLayer,
     previous_outer_path_world: Option<Vec<RoadVec3>>,
     path_mode: SideJoinPathMode,
-) -> Option<Vec<RoadVec3>> {
+) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     if let Some(path_world) = previous_outer_path_world {
         if path_mode != SideJoinPathMode::BendArc {
-            return Some(path_world);
+            return Ok(Some(path_world));
         }
-        let inner_start_world = endpoint_layer_inner_world(from_mouth, from_layer)?;
-        let inner_end_world = endpoint_layer_inner_world(to_mouth, to_layer)?;
+        let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
+            return Ok(None);
+        };
+        let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
+            return Ok(None);
+        };
         return reheight_side_join_path_world(path_world, inner_start_world.y, inner_end_world.y);
     }
-    let inner_start_world = endpoint_layer_inner_world(from_mouth, from_layer)?;
-    let inner_end_world = endpoint_layer_inner_world(to_mouth, to_layer)?;
+    let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
+        return Ok(None);
+    };
+    let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
+        return Ok(None);
+    };
     side_join_boundary_path_world(
         from_mouth,
         inner_start_world,
@@ -280,7 +316,7 @@ fn reheight_side_join_path_world(
     mut path_world: Vec<RoadVec3>,
     start_height_m: f64,
     end_height_m: f64,
-) -> Option<Vec<RoadVec3>> {
+) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     let total_length_m = path_world
         .windows(2)
         .map(|segment| xz_from_road_vec3(segment[0]).distance(xz_from_road_vec3(segment[1])))
@@ -298,7 +334,7 @@ fn reheight_side_join_path_world(
         };
         path_world[index].y = start_height_m + (end_height_m - start_height_m) * t;
     }
-    clean_side_join_path_world(path_world)
+    clean_side_join_path_world(path_world).map_err(SideJoinGenerationError::from_path_height_error)
 }
 
 fn push_side_join_band(
@@ -308,14 +344,15 @@ fn push_side_join_band(
     boundary_mode: NodeInputSideJoinBandBoundaryMode,
     inner_path_world: Vec<RoadVec3>,
     outer_path_world: Vec<RoadVec3>,
-) {
+) -> Result<(), SideJoinGenerationError> {
     if inner_path_world.len() < 2 || outer_path_world.len() < 2 {
-        return;
+        return Ok(());
     }
 
     let mut contour_world = inner_path_world.clone();
     contour_world.extend(outer_path_world.iter().rev().copied());
-    remove_repeated_road_vec3_xz_points(&mut contour_world);
+    remove_repeated_road_vec3_xz_points(&mut contour_world)
+        .map_err(SideJoinGenerationError::from_path_height_error)?;
     join_bands.push(NodeInputSideJoinBand {
         source_band_index,
         band_kind,
@@ -324,6 +361,7 @@ fn push_side_join_band(
         outer_path_world,
         contour_world,
     });
+    Ok(())
 }
 
 fn side_join_boundary_path_world(
@@ -332,7 +370,7 @@ fn side_join_boundary_path_world(
     to_mouth: &NodeInputMouth,
     to_world: RoadVec3,
     path_mode: SideJoinPathMode,
-) -> Option<Vec<RoadVec3>> {
+) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     let from_xz = xz_from_road_vec3(from_world);
     let to_xz = xz_from_road_vec3(to_world);
     let join_point_xz = side_join_backend_meet_point_xz(
@@ -342,9 +380,17 @@ fn side_join_boundary_path_world(
         to_mouth.direction_xz,
     );
     let path_xz = if let Some(join_point_xz) = join_point_xz {
-        side_join_backend_join_path_xz(from_xz, join_point_xz, to_xz, path_mode)?
+        let Some(path_xz) =
+            side_join_backend_join_path_xz(from_xz, join_point_xz, to_xz, path_mode)
+        else {
+            return Ok(None);
+        };
+        path_xz
     } else {
-        cleaned_open_road_points([from_xz, to_xz])?
+        let Some(path_xz) = cleaned_open_road_points([from_xz, to_xz]) else {
+            return Ok(None);
+        };
+        path_xz
     };
     let path_world = path_xz
         .into_iter()
@@ -354,7 +400,7 @@ fn side_join_boundary_path_world(
             RoadVec3::new(point_xz.x, height_m, point_xz.y)
         })
         .collect();
-    clean_side_join_path_world(path_world)
+    clean_side_join_path_world(path_world).map_err(SideJoinGenerationError::from_path_height_error)
 }
 
 fn side_join_backend_join_path_xz(
@@ -578,18 +624,25 @@ fn height_on_linear_height_path(
     start_height_m + (end_height_m - start_height_m) * t
 }
 
-fn clean_side_join_path_world(path_world: Vec<RoadVec3>) -> Option<Vec<RoadVec3>> {
+fn clean_side_join_path_world(
+    path_world: Vec<RoadVec3>,
+) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
     if path_world.len() < 2 {
-        return None;
+        return Ok(None);
     }
-    let polyline =
-        cleaned_open_world_path_polyline(&path_world, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M, true)?;
+    let Some(polyline) =
+        cleaned_open_world_path_polyline(&path_world, SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M, true)
+    else {
+        return Ok(None);
+    };
     if polyline.vertex_count() < 2 {
-        return None;
+        return Ok(None);
     }
     let points_xz = polyline_to_road_points(&polyline);
-    let cleaned_world = reheight_road_points_from_world_path(points_xz, &path_world)?;
-    (cleaned_world.len() >= 2).then_some(cleaned_world)
+    let Some(cleaned_world) = reheight_road_points_from_world_path(points_xz, &path_world)? else {
+        return Ok(None);
+    };
+    Ok((cleaned_world.len() >= 2).then_some(cleaned_world))
 }
 
 fn endpoint_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Option<RoadVec3> {
@@ -778,7 +831,8 @@ mod tests {
 
     #[test]
     fn junction_side_join_bands_are_backend_cleaned_non_road_carriers() {
-        let bands_by_mouth = side_join_bands_by_mouth(&junction_input());
+        let bands_by_mouth = side_join_bands_by_mouth(&junction_input())
+            .expect("test junction side joins should not have height conflicts");
         let bands = bands_by_mouth.iter().flatten().collect::<Vec<_>>();
 
         assert!(

@@ -6,7 +6,7 @@ use super::*;
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
-        footprint_shapes: &super::NodeOverlayShapes,
+        _footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
         let mut node_grade_authorities = arrangement
             .vertices()
@@ -74,10 +74,13 @@ impl RoadSurfaceSystem {
         {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
+        let final_footprint_shapes =
+            Self::top_surface_overlay_shapes_from_sources(&node_top_surface_sources)
+                .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)?;
 
         let footprint_boundary_point_loops = Self::footprint_boundary_point_loops_from_shapes(
             &mut boundary_export_sources,
-            footprint_shapes,
+            &final_footprint_shapes,
         )?;
         let mut earthwork_boundary_segments =
             node_earthwork_boundary_segments_from_footprint_loops(
@@ -138,6 +141,37 @@ impl RoadSurfaceSystem {
         Ok(())
     }
 
+    fn top_surface_overlay_shapes_from_sources(
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+    ) -> Option<super::NodeOverlayShapes> {
+        let mut contours = Vec::new();
+        let mut source_keys = BTreeSet::new();
+        for source in node_top_surface_sources {
+            if source.vertex_keys.len() < 3 {
+                continue;
+            }
+            source_keys.extend(
+                source
+                    .vertex_keys
+                    .iter()
+                    .map(|key| (key.x_key(), key.z_key())),
+            );
+            let contour = source
+                .vertex_keys
+                .iter()
+                .map(|key| {
+                    [
+                        key.x_key() as f64 / backend::ROAD_OVERLAY_COORDINATE_SCALE,
+                        key.z_key() as f64 / backend::ROAD_OVERLAY_COORDINATE_SCALE,
+                    ]
+                })
+                .collect::<super::NodeOverlayContour>();
+            contours.push(contour);
+        }
+        Self::overlay_union_contours(&contours)
+            .map(|shapes| canonicalize_overlay_shapes_to_source_keys(shapes, &source_keys))
+    }
+
     fn footprint_boundary_point_loops_from_shapes(
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
         footprint_shapes: &super::NodeOverlayShapes,
@@ -156,13 +190,16 @@ impl RoadSurfaceSystem {
                     )?;
                     keyed_points.push((key, height_mm));
                 }
-                boundary_export_sources
-                    .interpolate_missing_authorized_footprint_boundary_heights(&mut keyed_points)?;
+                boundary_export_sources.reject_missing_footprint_boundary_heights(&keyed_points)?;
                 let mut points = keyed_points
                     .into_iter()
                     .map(|(key, height_mm)| {
-                        let height_mm = height_mm
-                            .ok_or(NodeBoundaryExportError::MissingFootprintBoundaryHeight)?;
+                        let height_mm = height_mm.ok_or(
+                            NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                                x_key: key.x_key(),
+                                z_key: key.z_key(),
+                            },
+                        )?;
                         Ok(arrangement_boundary_point_to_world(
                             arrangement_key_boundary_point(key, height_mm),
                         ))
@@ -314,6 +351,8 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
         };
         let mut vertex_sources = Vec::with_capacity(vertex_ids.len());
+        let mut vertex_keys = Vec::with_capacity(vertex_ids.len());
+        let mut vertex_height_mm = Vec::with_capacity(vertex_ids.len());
         for vertex_id in vertex_ids {
             let Some(vertex) = arrangement.vertices().get(vertex_id.index()) else {
                 return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
@@ -326,12 +365,16 @@ impl RoadSurfaceSystem {
             vertex_sources.push(NodeTopSurfaceVertexSource {
                 grade_authority_index,
             });
+            vertex_keys.push(vertex.key());
+            vertex_height_mm.push(vertex.height_mm());
         }
         let triangle_sources = vec![[vertex_sources[0], vertex_sources[1], vertex_sources[2]]];
         let source = NodeTopSurfacePolygonSource {
             kind: face.owner().kind(),
             owner_index: face.owner().owner_index(),
             height_field_id: region.height_field_id(),
+            vertex_keys,
+            vertex_height_mm,
             vertex_sources,
             triangle_sources,
         };
@@ -467,4 +510,53 @@ impl RoadSurfaceSystem {
             render_earthwork_faces,
         })
     }
+}
+
+fn canonicalize_overlay_shapes_to_source_keys(
+    shapes: super::NodeOverlayShapes,
+    source_keys: &BTreeSet<(i64, i64)>,
+) -> super::NodeOverlayShapes {
+    shapes
+        .into_iter()
+        .map(|shape| {
+            shape
+                .into_iter()
+                .map(|contour| {
+                    contour
+                        .into_iter()
+                        .map(|point| canonicalize_overlay_point_to_source_key(point, source_keys))
+                        .collect()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn canonicalize_overlay_point_to_source_key(
+    point: super::NodeOverlayPoint,
+    source_keys: &BTreeSet<(i64, i64)>,
+) -> super::NodeOverlayPoint {
+    // The overlay backend returns grid points as f64. When the output point is a unique input
+    // source key after one raw-grid roundtrip unit, preserve the source key identity; ambiguous
+    // points and true overlay-generated intersections are left for exact support validation.
+    let raw_x = (point[0] * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64;
+    let raw_z = (point[1] * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64;
+    let mut matched_key = None;
+    for x_key in (raw_x - 1)..=(raw_x + 1) {
+        for z_key in (raw_z - 1)..=(raw_z + 1) {
+            if !source_keys.contains(&(x_key, z_key)) {
+                continue;
+            }
+            if matched_key.replace((x_key, z_key)).is_some() {
+                return point;
+            }
+        }
+    }
+    let Some((x_key, z_key)) = matched_key else {
+        return point;
+    };
+    [
+        x_key as f64 / backend::ROAD_OVERLAY_COORDINATE_SCALE,
+        z_key as f64 / backend::ROAD_OVERLAY_COORDINATE_SCALE,
+    ]
 }

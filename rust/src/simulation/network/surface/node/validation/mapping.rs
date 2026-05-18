@@ -157,9 +157,19 @@ impl NodeGeometryDiagnostic {
             NodeRailGenerationError::InvalidHeightCarrier { reason, .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure { reason }
             }
+            NodeRailGenerationError::ConflictingHeightCarrierPoint { .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "conflicting_height_carrier_point",
+                }
+            }
             NodeRailGenerationError::NonCanonicalGeneratedContactEndpoint { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
                     reason: "noncanonical_generated_contact_endpoint",
+                }
+            }
+            NodeRailGenerationError::SideJoinGeneration { error } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: error.reason,
                 }
             }
             NodeRailGenerationError::TerminalCapGeneration { error } => {
@@ -329,6 +339,21 @@ impl NodeGeometryDiagnostic {
                 axis: None,
                 raw_parameter: None,
             },
+            NodeHeightFieldError::RailHeightCarrierGeneration { reason } => {
+                NodeGeometryDiagnosticKind::HeightFieldFailure {
+                    reason,
+                    mouth_order_index: None,
+                    band_index: None,
+                    kind: None,
+                    source_kind: None,
+                    height_field_id: None,
+                    owner: None,
+                    point_x_mm: None,
+                    point_z_mm: None,
+                    axis: None,
+                    raw_parameter: None,
+                }
+            }
             NodeHeightFieldError::InvalidSourceBandHeightCarrier {
                 mouth_order_index,
                 band_index,
