@@ -413,12 +413,10 @@ impl NodeBandHeightPatch {
         interval: &NodeInputBandInterval,
         source_support_points: Option<&[RoadVec3]>,
     ) -> Result<Self, NodeHeightFieldError> {
-        let (triangles, contour_edges) =
-            interval_height_carrier(id, interval, source_support_points)?;
+        let (triangles, contour_edges) = interval_height_carrier(id, interval)?;
         let source_handoff_support_keys =
             source_handoff_support_keys(id, interval, &contour_edges, source_support_points)?;
-        let mut explicit_vertices =
-            interval_height_carrier_vertices(id, interval, source_support_points)?;
+        let mut explicit_vertices = interval_height_carrier_vertices(id, interval)?;
         if let Some(source_support_points) = source_support_points {
             explicit_vertices.extend_from_slice(source_support_points);
         }

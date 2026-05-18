@@ -3,13 +3,12 @@
 use super::model::*;
 use super::source_edges::*;
 use super::triangles::*;
-use super::vertices::validate_canonical_height_vertices;
+use super::vertices::canonical_height_vertices;
 use super::*;
 
 pub(super) fn interval_height_carrier(
     id: NodeBandHeightFieldId,
     interval: &NodeInputBandInterval,
-    source_support_points: Option<&[RoadVec3]>,
 ) -> Result<(Vec<NodeBandHeightTriangle>, Vec<NodeBandHeightEdge>), NodeHeightFieldError> {
     if interval.start_path_world.is_empty() && interval.end_path_world.is_empty() {
         let points = [
@@ -35,14 +34,7 @@ pub(super) fn interval_height_carrier(
             })?,
         ));
     }
-    let (start_path_world, end_path_world) =
-        explicit_source_band_height_paths(id, interval, source_support_points)?;
-    validate_canonical_height_vertices(&start_path_world).map_err(|error| {
-        invalid_source_band_height_carrier_error(id, interval.band_kind, error.diagnostic_reason())
-    })?;
-    validate_canonical_height_vertices(&end_path_world).map_err(|error| {
-        invalid_source_band_height_carrier_error(id, interval.band_kind, error.diagnostic_reason())
-    })?;
+    let (start_path_world, end_path_world) = explicit_source_band_height_paths(id, interval)?;
     if start_path_world.len() < 2 {
         return Err(invalid_source_band_height_carrier_error(
             id,
@@ -79,7 +71,6 @@ pub(super) fn interval_height_carrier(
 pub(super) fn interval_height_carrier_vertices(
     id: NodeBandHeightFieldId,
     interval: &NodeInputBandInterval,
-    source_support_points: Option<&[RoadVec3]>,
 ) -> Result<Vec<RoadVec3>, NodeHeightFieldError> {
     if interval.start_path_world.is_empty() && interval.end_path_world.is_empty() {
         return Ok(vec![
@@ -89,191 +80,52 @@ pub(super) fn interval_height_carrier_vertices(
             interval.endpoint_start_world,
         ]);
     }
-    let (start_path_world, end_path_world) =
-        explicit_source_band_height_paths(id, interval, source_support_points)?;
+    let (start_path_world, end_path_world) = explicit_source_band_height_paths(id, interval)?;
     Ok(start_path_world.into_iter().chain(end_path_world).collect())
 }
 
 pub(super) fn explicit_source_band_height_paths(
     id: NodeBandHeightFieldId,
     interval: &NodeInputBandInterval,
-    source_support_points: Option<&[RoadVec3]>,
 ) -> Result<(Vec<RoadVec3>, Vec<RoadVec3>), NodeHeightFieldError> {
-    if interval.start_path_world.len() == interval.end_path_world.len() {
-        return Ok((
-            interval.start_path_world.clone(),
-            interval.end_path_world.clone(),
+    if interval.start_path_world.len() != interval.end_path_world.len() {
+        return Err(invalid_source_band_height_carrier_error(
+            id,
+            interval.band_kind,
+            "mismatched_source_band_path_lengths",
         ));
     }
-    if interval.start_path_world.len() > 2
-        && source_height_path_is_endpoint_chord(
-            &interval.end_path_world,
-            interval.mouth_end_world,
-            interval.endpoint_end_world,
-        )
-    {
-        return Ok((
-            interval.start_path_world.clone(),
-            materialized_height_chord(
-                id,
-                interval.band_kind,
-                interval.mouth_end_world,
-                interval.endpoint_end_world,
-                interval.start_path_world.len(),
-                source_support_points,
-            )?,
+    let start_canonical_len =
+        validate_source_band_height_path(id, interval, &interval.start_path_world)?;
+    let end_canonical_len =
+        validate_source_band_height_path(id, interval, &interval.end_path_world)?;
+    if start_canonical_len != end_canonical_len {
+        return Err(invalid_source_band_height_carrier_error(
+            id,
+            interval.band_kind,
+            "mismatched_source_band_canonical_path_lengths",
         ));
     }
-    if interval.end_path_world.len() > 2
-        && source_height_path_is_endpoint_chord(
-            &interval.start_path_world,
-            interval.mouth_start_world,
-            interval.endpoint_start_world,
-        )
-    {
-        return Ok((
-            materialized_height_chord(
-                id,
-                interval.band_kind,
-                interval.mouth_start_world,
-                interval.endpoint_start_world,
-                interval.end_path_world.len(),
-                source_support_points,
-            )?,
-            interval.end_path_world.clone(),
-        ));
-    }
-    Err(invalid_source_band_height_carrier_error(
-        id,
-        interval.band_kind,
-        "mismatched_source_band_path_lengths",
+    Ok((
+        interval.start_path_world.clone(),
+        interval.end_path_world.clone(),
     ))
 }
 
-pub(super) fn source_height_path_is_endpoint_chord(
-    path_world: &[RoadVec3],
-    mouth_world: RoadVec3,
-    endpoint_world: RoadVec3,
-) -> bool {
-    path_world.len() == 2
-        && source_height_points_match(path_world[0], mouth_world)
-        && source_height_points_match(path_world[1], endpoint_world)
-}
-
-pub(super) fn source_height_points_match(a: RoadVec3, b: RoadVec3) -> bool {
-    SurfaceXzKey::from_world_xz(a) == SurfaceXzKey::from_world_xz(b)
-        && SurfaceHeightMmKey::from_m_f64(a.y) == SurfaceHeightMmKey::from_m_f64(b.y)
-}
-
-pub(super) fn materialized_height_chord(
+fn validate_source_band_height_path(
     id: NodeBandHeightFieldId,
-    source_kind: RoadSurfaceBandKind,
-    start: RoadVec3,
-    end: RoadVec3,
-    point_count: usize,
-    source_support_points: Option<&[RoadVec3]>,
-) -> Result<Vec<RoadVec3>, NodeHeightFieldError> {
-    let Some(source_support_points) = source_support_points else {
-        return Err(invalid_source_band_height_carrier_error(
-            id,
-            source_kind,
-            "missing_materialized_source_chord_points",
-        ));
-    };
-    if point_count < 2 {
-        return Ok(vec![start, end]);
-    }
-    let start_key = SurfaceXzKey::from_world_xz(start).raw_tuple();
-    let end_key = SurfaceXzKey::from_world_xz(end).raw_tuple();
-    let Some(denominator) = chord_parameter_numerator(end_key, start_key, end_key) else {
-        return Err(invalid_source_band_height_carrier_error(
-            id,
-            source_kind,
-            "invalid_materialized_source_chord_point",
-        ));
-    };
-    let mut points = BTreeMap::<i128, RoadVec3>::new();
-    for point in source_support_points.iter().copied() {
-        let point_xz = xz(point);
-        let point_key = SurfaceXzKey::from_road_xz(point_xz).raw_tuple();
-        if !raw_tuple_key_lies_exactly_on_segment(point_key, start_key, end_key) {
-            continue;
-        }
-        let Some(parameter) = chord_parameter_numerator(point_key, start_key, end_key) else {
-            continue;
-        };
-        let ordered_parameter = if denominator < 0 {
-            -parameter
-        } else {
-            parameter
-        };
-        let expected_height_m =
-            height_on_materialized_chord(point_key, start_key, end_key, start.y, end.y)
-                .ok_or_else(|| {
-                    invalid_source_band_height_carrier_error(
-                        id,
-                        source_kind,
-                        "invalid_materialized_source_chord_point",
-                    )
-                })?;
-        if SurfaceHeightMmKey::from_m_f64(point.y)
-            != SurfaceHeightMmKey::from_m_f64(expected_height_m)
-        {
-            return Err(invalid_source_band_height_carrier_error(
+    interval: &NodeInputBandInterval,
+    path_world: &[RoadVec3],
+) -> Result<usize, NodeHeightFieldError> {
+    canonical_height_vertices(path_world)
+        .map_err(|error| {
+            invalid_source_band_height_carrier_error(
                 id,
-                source_kind,
-                "conflicting_materialized_source_chord_height",
-            ));
-        }
-        points.insert(
-            ordered_parameter,
-            RoadVec3::new(point_xz.x, point.y, point_xz.y),
-        );
-    }
-    if points.len() != point_count {
-        return Err(invalid_source_band_height_carrier_error(
-            id,
-            source_kind,
-            "missing_materialized_source_chord_points",
-        ));
-    }
-    Ok(points.into_values().collect())
-}
-
-fn chord_parameter_numerator(
-    point: NodeHeightSourcePointKey,
-    start: NodeHeightSourcePointKey,
-    end: NodeHeightSourcePointKey,
-) -> Option<i128> {
-    let dx = end.0 - start.0;
-    let dz = end.1 - start.1;
-    if dx == 0 && dz == 0 {
-        return None;
-    }
-    Some(if dx.abs() >= dz.abs() {
-        i128::from(point.0 - start.0)
-    } else {
-        i128::from(point.1 - start.1)
-    })
-}
-
-fn height_on_materialized_chord(
-    point: NodeHeightSourcePointKey,
-    start: NodeHeightSourcePointKey,
-    end: NodeHeightSourcePointKey,
-    start_height_m: f64,
-    end_height_m: f64,
-) -> Option<f64> {
-    let denominator = chord_parameter_numerator(end, start, end)?;
-    let numerator = chord_parameter_numerator(point, start, end)?;
-    if denominator == 0 {
-        return None;
-    }
-    let t = numerator as f64 / denominator as f64;
-    if !(0.0..=1.0).contains(&t) {
-        return None;
-    }
-    Some(start_height_m + (end_height_m - start_height_m) * t)
+                interval.band_kind,
+                error.diagnostic_reason(),
+            )
+        })
+        .map(|vertices| vertices.len())
 }
 
 pub(super) fn invalid_source_band_height_carrier_error(

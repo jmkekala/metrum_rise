@@ -39,12 +39,6 @@ pub(super) fn canonical_height_vertices(
     Ok(vertices)
 }
 
-pub(super) fn validate_canonical_height_vertices(
-    points: &[RoadVec3],
-) -> Result<(), HeightCarrierContourError> {
-    canonical_height_vertices(points).map(|_| ())
-}
-
 pub(super) fn height_vertex_heights_from_vertices(
     points: &[RoadVec3],
 ) -> Result<BTreeMap<NodeHeightSourcePointKey, f64>, HeightCarrierContourError> {

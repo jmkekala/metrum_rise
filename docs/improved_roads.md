@@ -793,6 +793,9 @@ Implementation ownership:
 - keep height evaluation in an explicit height-carrier layer. Carrier triangles and contour edges
   may evaluate known canonical vertices, but they must not create vertices, choose material
   ownership, repair contradictory seams, or fall back to parametric band sampling
+- source-band height carriers must arrive with both side rails already materialized to matching
+  canonical path vertices; height evaluation must reject one-sided explicit paths instead of
+  synthesizing an opposite chord from support points
 - noded split vertices on an explicit carrier contour may inherit height from that carrier contour;
   arbitrary vertices outside the carrier must still fail loudly
 - keep `Terminal` on explicit side-band / end-band topology, but record the same owned-region
@@ -1665,6 +1668,8 @@ Implementation phases:
 6. Height fields:
    - build explicit height carriers from authorized source rails, endpoint profiles, generated
      contours, and terminal cap contours
+   - consume paired, canonical source-band rail paths as input; upstream rail / topology ownership
+     must materialize any required opposite rail before height evaluation
    - assign every accepted owned region, arrangement vertex, arrangement edge, and triangulated
      vertex to exactly one `NodeBandHeightFieldId`
    - evaluate heights only at already-known canonical arrangement vertices

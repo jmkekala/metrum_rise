@@ -176,7 +176,7 @@ fn source_band_height_carrier_rejects_mismatched_explicit_paths() {
 }
 
 #[test]
-fn source_band_height_carrier_uses_outer_chord_for_one_sided_explicit_path() {
+fn source_band_height_carrier_rejects_one_sided_explicit_path_even_with_support_points() {
     let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
     interval.start_path_world = vec![
         interval.mouth_start_world,
@@ -189,8 +189,33 @@ fn source_band_height_carrier_uses_outer_chord_for_one_sided_explicit_path() {
         RoadVec3::new(5.0, 3.0, 2.0),
         RoadVec3::new(0.0, 2.0, 2.0),
     ];
-    let field = NodeBandHeightField::from_interval(0, &interval, Some(&source_support))
-        .expect("one explicit source rail plus endpoint chord is a valid carrier");
+
+    let result = NodeBandHeightField::from_interval(0, &interval, Some(&source_support));
+
+    assert!(matches!(
+        result,
+        Err(NodeHeightFieldError::InvalidSourceBandHeightCarrier {
+            reason: "mismatched_source_band_path_lengths",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn source_band_height_carrier_accepts_materialized_two_sided_explicit_paths() {
+    let mut interval = manual_interval(0, RoadSurfaceBandKind::Sidewalk, 2.0, 4.0);
+    interval.start_path_world = vec![
+        interval.mouth_start_world,
+        RoadVec3::new(5.0, 6.0, 0.0),
+        interval.endpoint_start_world,
+    ];
+    interval.end_path_world = vec![
+        interval.mouth_end_world,
+        RoadVec3::new(5.0, 3.0, 2.0),
+        interval.endpoint_end_world,
+    ];
+    let field = NodeBandHeightField::from_interval(0, &interval, None)
+        .expect("paired explicit source rails are a valid carrier");
 
     let height_m = field
         .evaluate_height(RoadVec2::new(5.0, 1.0))
