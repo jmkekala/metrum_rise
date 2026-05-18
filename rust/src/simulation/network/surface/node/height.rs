@@ -23,12 +23,15 @@ use super::{
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod authority;
 mod build;
 mod carriers;
 mod evaluate;
 mod field;
 mod grade;
+mod handoff;
 mod model;
+mod patch;
 mod seams;
 mod source_edges;
 mod triangles;

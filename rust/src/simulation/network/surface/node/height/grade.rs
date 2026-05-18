@@ -1,4 +1,4 @@
-//! Node-height authority normalization for canonical owned node vertices.
+//! Node-height authority agreement for canonical owned node vertices.
 
 use super::super::RoadSurfaceBandKind;
 use super::super::arrangement::{
@@ -105,6 +105,21 @@ struct NodeGradeVertexContextKey {
     point: SurfaceXzKey,
     owner: NodeBandOwner,
     height_field_id: NodeBandHeightFieldId,
+}
+
+struct SameMaterialSharedEdgeHeightAgreement {
+    selected_by_vertex: BTreeMap<SameMaterialSharedVertexKey, SameMaterialVertexHeightCandidate>,
+    affected_contexts_by_vertex:
+        BTreeMap<SameMaterialSharedVertexKey, Vec<SameMaterialSharedVertexContext>>,
+}
+
+struct SameMaterialVertexHeightGroups {
+    contexts_by_key:
+        BTreeMap<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightContext>>,
+    candidates_by_key:
+        BTreeMap<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightCandidate>>,
+    selected_by_key:
+        BTreeMap<SameMaterialVertexHeightSupportKey, SameMaterialVertexHeightCandidate>,
 }
 
 impl NodeGradeVertexAuthority {
@@ -234,6 +249,23 @@ impl SameMaterialVertexHeightContext {
             height_field_id: candidate.height_field_id,
             height_mm: SurfaceHeightMmKey::from_m_f64(candidate.height_m).as_i64(),
         }
+    }
+}
+
+fn same_material_vertex_height_candidate_from_vertex(
+    owner: NodeBandOwner,
+    vertex: &NodeHeightedVertex,
+    seam_constraints: &[NodeRegionSeamConstraint],
+) -> SameMaterialVertexHeightCandidate {
+    SameMaterialVertexHeightCandidate {
+        owner,
+        height_field_id: vertex.height_field_id,
+        height_m: vertex.height_m,
+        height_authority: vertex.height_authority,
+        has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
+            vertex,
+            seam_constraints,
+        ),
     }
 }
 
@@ -371,10 +403,19 @@ fn apply_junctionn_same_owner_canonical_vertex_height_normalization(
 fn apply_junctionn_same_material_shared_edge_height_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
+    let candidates_by_edge = collect_same_material_shared_edge_height_candidates(regions);
+    let agreement = resolve_same_material_shared_edge_height_agreement(candidates_by_edge)?;
+    apply_same_material_shared_edge_height_agreement(regions, &agreement);
+    Ok(())
+}
+
+fn collect_same_material_shared_edge_height_candidates(
+    regions: &[NodeHeightedRegion],
+) -> BTreeMap<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>> {
     let mut candidates_by_edge =
         BTreeMap::<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>>::new();
 
-    for region in regions.iter() {
+    for region in regions {
         for contour in &region.shape {
             if contour.len() < 2 {
                 continue;
@@ -398,7 +439,12 @@ fn apply_junctionn_same_material_shared_edge_height_normalization(
             }
         }
     }
+    candidates_by_edge
+}
 
+fn resolve_same_material_shared_edge_height_agreement(
+    candidates_by_edge: BTreeMap<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>>,
+) -> Result<SameMaterialSharedEdgeHeightAgreement, NodeHeightFieldError> {
     let mut selected_by_vertex =
         BTreeMap::<SameMaterialSharedVertexKey, SameMaterialVertexHeightCandidate>::new();
     let mut affected_contexts_by_vertex =
@@ -457,7 +503,16 @@ fn apply_junctionn_same_material_shared_edge_height_normalization(
             }
         }
     }
+    Ok(SameMaterialSharedEdgeHeightAgreement {
+        selected_by_vertex,
+        affected_contexts_by_vertex,
+    })
+}
 
+fn apply_same_material_shared_edge_height_agreement(
+    regions: &mut [NodeHeightedRegion],
+    agreement: &SameMaterialSharedEdgeHeightAgreement,
+) {
     for region in regions {
         let owner = region.owner;
         let kind = region.kind;
@@ -470,7 +525,7 @@ fn apply_junctionn_same_material_shared_edge_height_normalization(
                 kind,
                 point: SurfaceXzKey::from_road_xz(vertex.point_xz),
             };
-            let Some(contexts) = affected_contexts_by_vertex.get(&key) else {
+            let Some(contexts) = agreement.affected_contexts_by_vertex.get(&key) else {
                 continue;
             };
             let context = SameMaterialSharedVertexContext {
@@ -480,7 +535,7 @@ fn apply_junctionn_same_material_shared_edge_height_normalization(
             if !contexts.contains(&context) {
                 continue;
             }
-            if let Some(selected) = selected_by_vertex.get(&key) {
+            if let Some(selected) = agreement.selected_by_vertex.get(&key) {
                 set_vertex_grade_height(
                     owner,
                     vertex,
@@ -490,22 +545,27 @@ fn apply_junctionn_same_material_shared_edge_height_normalization(
             }
         }
     }
-    Ok(())
 }
 
 fn apply_junctionn_same_material_vertex_height_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
-    let mut contexts_by_key =
-        BTreeMap::<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightContext>>::new();
-    let mut candidates_by_key = BTreeMap::<
-        SameMaterialVertexHeightSupportKey,
-        Vec<SameMaterialVertexHeightCandidate>,
-    >::new();
-    let mut selected_by_key =
-        BTreeMap::<SameMaterialVertexHeightSupportKey, SameMaterialVertexHeightCandidate>::new();
+    let groups = collect_same_material_vertex_height_groups(regions);
+    reject_same_material_vertex_height_group_conflicts(&groups)?;
+    apply_same_material_vertex_height_groups(regions, &groups);
+    Ok(())
+}
 
-    for region in regions.iter() {
+fn collect_same_material_vertex_height_groups(
+    regions: &[NodeHeightedRegion],
+) -> SameMaterialVertexHeightGroups {
+    let mut groups = SameMaterialVertexHeightGroups {
+        contexts_by_key: BTreeMap::new(),
+        candidates_by_key: BTreeMap::new(),
+        selected_by_key: BTreeMap::new(),
+    };
+
+    for region in regions {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             let key = same_material_vertex_height_support_key_from_parts(
                 region.kind,
@@ -513,27 +573,24 @@ fn apply_junctionn_same_material_vertex_height_normalization(
                 &region.seam_constraints,
                 vertex,
             );
-            let candidate = SameMaterialVertexHeightCandidate {
-                owner: region.owner,
-                height_field_id: vertex.height_field_id,
-                height_m: vertex.height_m,
-                height_authority: vertex.height_authority,
-                has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
-                    vertex,
-                    &region.seam_constraints,
-                ),
-            };
-            let contexts = contexts_by_key.entry(key.clone()).or_default();
+            let candidate = same_material_vertex_height_candidate_from_vertex(
+                region.owner,
+                vertex,
+                &region.seam_constraints,
+            );
+            let contexts = groups.contexts_by_key.entry(key.clone()).or_default();
             let context = SameMaterialVertexHeightContext::from_candidate(candidate);
             if !contexts.contains(&context) {
                 contexts.push(context);
                 contexts.sort_unstable();
-                candidates_by_key
+                groups
+                    .candidates_by_key
                     .entry(key.clone())
                     .or_default()
                     .push(candidate);
             }
-            selected_by_key
+            groups
+                .selected_by_key
                 .entry(key)
                 .and_modify(|selected| {
                     if same_material_vertex_height_candidate_key(candidate)
@@ -545,18 +602,34 @@ fn apply_junctionn_same_material_vertex_height_normalization(
                 .or_insert(candidate);
         }
     }
+    groups
+}
 
-    for (key, contexts) in &contexts_by_key {
+fn reject_same_material_vertex_height_group_conflicts(
+    groups: &SameMaterialVertexHeightGroups,
+) -> Result<(), NodeHeightFieldError> {
+    for (key, contexts) in &groups.contexts_by_key {
         if contexts.len() < 2 {
             continue;
         }
         reject_same_material_height_conflict(
             key.kind,
             key.point,
-            candidates_by_key.get(key).into_iter().flatten().copied(),
+            groups
+                .candidates_by_key
+                .get(key)
+                .into_iter()
+                .flatten()
+                .copied(),
         )?;
     }
+    Ok(())
+}
 
+fn apply_same_material_vertex_height_groups(
+    regions: &mut [NodeHeightedRegion],
+    groups: &SameMaterialVertexHeightGroups,
+) {
     for region in regions {
         let owner = region.owner;
         let kind = region.kind;
@@ -572,13 +645,14 @@ fn apply_junctionn_same_material_vertex_height_normalization(
                 seam_constraints,
                 vertex,
             );
-            if contexts_by_key
+            if groups
+                .contexts_by_key
                 .get(&key)
                 .is_none_or(|contexts| contexts.len() < 2)
             {
                 continue;
             }
-            if let Some(selected) = selected_by_key.get(&key) {
+            if let Some(selected) = groups.selected_by_key.get(&key) {
                 set_vertex_grade_height(
                     owner,
                     vertex,
@@ -588,7 +662,6 @@ fn apply_junctionn_same_material_vertex_height_normalization(
             }
         }
     }
-    Ok(())
 }
 
 fn same_material_vertex_height_support_key_from_parts(
