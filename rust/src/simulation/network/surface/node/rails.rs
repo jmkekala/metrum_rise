@@ -34,7 +34,9 @@ use contacts::{
 };
 use contours::{push_boundary_constraint, push_span_handoff_constraint};
 use owners::{boundary_owners, owners_by_mouth};
-use source_points::{interval_height_carrier_points, push_band_height_carrier_points};
+use source_points::{
+    interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
+};
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
 
@@ -83,8 +85,16 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) contours: Vec<NodeGeneratedContour>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
+    pub(crate) height_carrier_paths_by_source:
+        BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
     pub(crate) height_carrier_points_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NodeRailHeightCarrierPaths {
+    pub(crate) start_path_world: Vec<RoadVec3>,
+    pub(crate) end_path_world: Vec<RoadVec3>,
 }
 
 #[derive(Clone, Debug)]
@@ -243,6 +253,8 @@ impl NodeRailContourSet {
         );
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
+        let mut height_carrier_paths_by_source =
+            BTreeMap::<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>::new();
         let mut height_carrier_points_by_source =
             BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>::new();
 
@@ -264,12 +276,17 @@ impl NodeRailContourSet {
             )?;
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
+                let height_carrier_paths = interval_height_carrier_paths(interval);
+                height_carrier_paths_by_source.insert(
+                    (interval.band_kind, mouth.order_index, interval.band_index),
+                    height_carrier_paths.clone(),
+                );
                 push_band_height_carrier_points(
                     &mut height_carrier_points_by_source,
                     mouth.order_index,
                     interval.band_index,
                     interval.band_kind,
-                    interval_height_carrier_points(interval),
+                    interval_height_carrier_points(interval, &height_carrier_paths),
                 );
                 let owner = mouth_owners.band_owners[band_index];
                 push_band_contour(
@@ -395,6 +412,7 @@ impl NodeRailContourSet {
             piece_kind: input.piece_kind,
             contours,
             constraints,
+            height_carrier_paths_by_source,
             height_carrier_points_by_source,
         })
     }

@@ -228,6 +228,50 @@ fn source_band_height_carrier_accepts_materialized_two_sided_explicit_paths() {
 }
 
 #[test]
+fn source_band_height_field_uses_rail_materialized_outer_chord() {
+    let mouth = OrderedIncidentPieceMouth {
+        profile: profile(10.0, 4.0),
+        endpoint_profile: profile(0.0, 2.0),
+        boundary_paths_world: Vec::new(),
+        band_start_paths_world: vec![vec![
+            Vector3::new(10.0, 4.0, -4.0),
+            Vector3::new(5.0, 3.0, -4.0),
+            Vector3::new(0.0, 2.0, -4.0),
+        ]],
+        band_end_paths_world: Vec::new(),
+        uses_explicit_band_domain_paths: true,
+        direction_angle_ccw: 0.0,
+        direction_xz: Vector2::RIGHT,
+        edge_idx: 7,
+        side: IncidentEdgeSide::Start,
+    };
+    let input = NodeArrangementInput::from_ordered_mouths(
+        42,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &[mouth],
+    )
+    .expect("test mouth should produce canonical input");
+    let rails = NodeRailContourSet::from_input(&input).expect("rails should materialize carriers");
+    let fields = height_fields_by_source(&input, Some(&rails))
+        .expect("height fields should consume rail-materialized carrier paths");
+    let field = fields
+        .get(&NodeSourceBandKey {
+            mouth_order_index: 0,
+            band_index: 0,
+        })
+        .expect("test input has a first sidewalk field");
+
+    let height_m = field
+        .evaluate_height(RoadVec2::new(5.0, -3.0))
+        .expect("materialized outer chord should make the band interior evaluable");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(height_m),
+        SurfaceHeightMmKey::from_m_f64(3.05)
+    );
+}
+
+#[test]
 fn height_carrier_rejects_duplicate_canonical_xz_with_different_height() {
     let points = [
         RoadVec3::new(0.0, 0.0, 0.0),
@@ -916,6 +960,7 @@ fn manual_rail_contours(
         piece_kind,
         contours,
         constraints: Vec::new(),
+        height_carrier_paths_by_source: BTreeMap::new(),
         height_carrier_points_by_source: BTreeMap::new(),
     }
 }

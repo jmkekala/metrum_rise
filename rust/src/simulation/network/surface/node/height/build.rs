@@ -136,6 +136,21 @@ pub(super) fn height_fields_by_source(
                     .get(&(interval.band_kind, mouth.order_index, interval.band_index))
                     .map(Vec::as_slice)
             });
+            let resolved_interval = rails
+                .and_then(|rails| {
+                    rails.height_carrier_paths_by_source.get(&(
+                        interval.band_kind,
+                        mouth.order_index,
+                        interval.band_index,
+                    ))
+                })
+                .map(|paths| {
+                    let mut interval = interval.clone();
+                    interval.start_path_world = paths.start_path_world.clone();
+                    interval.end_path_world = paths.end_path_world.clone();
+                    interval
+                });
+            let interval = resolved_interval.as_ref().unwrap_or(interval);
             let field = NodeBandHeightField::from_interval(
                 mouth.order_index,
                 interval,
