@@ -221,10 +221,9 @@ pub(super) struct NodeBandHeightField {
 pub(super) struct NodeBandHeightPatch {
     pub(super) authority: NodeHeightPatchAuthority,
     pub(super) explicit_vertex_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
-    pub(super) source_handoff_support_keys: BTreeSet<NodeHeightSourcePointKey>,
-    pub(super) contour_edge_support_keys: BTreeSet<NodeHeightSourcePointKey>,
+    pub(super) source_handoff_support_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
+    pub(super) contour_edge_support_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
     pub(super) triangles: Option<Vec<NodeBandHeightTriangle>>,
-    pub(super) contour_edges: Option<Vec<NodeBandHeightEdge>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,19 +249,6 @@ pub(super) struct NodeBandHeightTriangle {
     pub(super) a_height_m: f64,
     pub(super) b_height_m: f64,
     pub(super) c_height_m: f64,
-}
-
-pub(super) struct NodeBandHeightEdge {
-    pub(super) start_xz: RoadVec2,
-    pub(super) end_xz: RoadVec2,
-    pub(super) start_height_m: f64,
-    pub(super) end_height_m: f64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct NodeContourEdgeHeightConflict {
-    pub(super) existing_height_mm: i64,
-    pub(super) incoming_height_mm: i64,
 }
 
 #[derive(Clone, Copy, Debug)]

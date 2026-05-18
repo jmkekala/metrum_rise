@@ -18,7 +18,7 @@ use super::terminal::{
 };
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_M,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};

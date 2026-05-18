@@ -5,6 +5,7 @@ use super::backend::{RoadPolyline, RoadVec2, RoadVec3};
 use super::input::NodeArrangementInput;
 use super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
 use super::keys::SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
+use super::ownership::NodeBooleanOwnership;
 use super::terminal::{
     NodeTerminalCapBand, TerminalCapGenerationError, terminal_cap_bands_by_mouth,
 };
@@ -36,6 +37,8 @@ use contours::{push_boundary_constraint, push_span_handoff_constraint};
 use owners::{boundary_owners, owners_by_mouth};
 use source_points::{
     interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
+    push_generated_contour_height_carrier_points, push_owned_region_height_carrier_points,
+    push_source_constraint_height_carrier_points,
 };
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
@@ -162,6 +165,25 @@ impl NodeGeneratedContour {
                 | NodeGeneratedContourPurpose::BendSideJoin
                 | NodeGeneratedContourPurpose::JunctionSideJoin
         )
+    }
+}
+
+impl NodeRailContourSet {
+    pub(in crate::simulation::network::surface::node) fn height_carrier_points_for_ownership(
+        &self,
+        ownership: Option<&NodeBooleanOwnership>,
+    ) -> BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>> {
+        let mut points_by_source = self.height_carrier_points_by_source.clone();
+        if let Some(ownership) = ownership {
+            push_owned_region_height_carrier_points(
+                &mut points_by_source,
+                &self.contours,
+                &self.constraints,
+                &self.height_carrier_paths_by_source,
+                ownership,
+            );
+        }
+        points_by_source
     }
 }
 
@@ -407,6 +429,14 @@ impl NodeRailContourSet {
             &validation_constraints,
             source_constraint_count,
         )?;
+        push_generated_contour_height_carrier_points(
+            &mut height_carrier_points_by_source,
+            &contours,
+        );
+        push_source_constraint_height_carrier_points(
+            &mut height_carrier_points_by_source,
+            &validation_constraints[..source_constraint_count],
+        );
         Ok(Self {
             node_id: input.node_id,
             piece_kind: input.piece_kind,

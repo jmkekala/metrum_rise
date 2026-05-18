@@ -1,12 +1,16 @@
 //! Source height-carrier point collection for generated node rails.
 
 use super::super::RoadSurfaceBandKind;
-use super::super::backend::{RoadVec3, road_vec3_xz as xz};
+use super::super::backend::{RoadVec3, overlay_point_to_road, road_vec3_xz as xz};
 use super::super::input::NodeInputBandInterval;
 use super::super::keys::SurfaceHeightMmKey;
-use super::NodeRailHeightCarrierPaths;
-use super::contours::subdivided_world_chord;
-use super::geometry::road_point_key;
+use super::super::ownership::NodeBooleanOwnership;
+use super::contours::{height_for_key_on_generated_edge, subdivided_world_chord};
+use super::geometry::{road_point_from_key, road_point_key};
+use super::topology::NodeRailPointKey;
+use super::{
+    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailConstraint, NodeRailHeightCarrierPaths,
+};
 use std::collections::BTreeMap;
 
 pub(super) fn interval_height_carrier_paths(
@@ -91,6 +95,116 @@ pub(super) fn push_band_height_carrier_points(
     }
 }
 
+pub(super) fn push_generated_contour_height_carrier_points(
+    points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    contours: &[NodeGeneratedContour],
+) {
+    for contour in contours {
+        let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index), Some(points_world)) = (
+            contour.kind,
+            contour.source_band_index,
+            contour.height_points_world.as_deref(),
+        ) else {
+            continue;
+        };
+        push_band_height_carrier_points(
+            points_by_source,
+            contour.source_mouth_order_index,
+            source_band_index,
+            kind,
+            points_world.iter().copied(),
+        );
+    }
+}
+
+pub(super) fn push_source_constraint_height_carrier_points(
+    points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    constraints: &[NodeRailConstraint],
+) {
+    let mut materialized = Vec::new();
+    for constraint in constraints {
+        let (Some(owner), Some(source_band_index)) =
+            (constraint.owner, constraint.source_band_index)
+        else {
+            continue;
+        };
+        let source = (
+            owner.kind(),
+            constraint.source_mouth_order_index,
+            source_band_index,
+        );
+        let Some(source_points) = points_by_source.get(&source) else {
+            continue;
+        };
+        let source_heights_by_key = source_height_points_by_key(source_points);
+        materialized.extend(
+            materialized_constraint_height_points(constraint, &source_heights_by_key)
+                .into_iter()
+                .map(|point| (source, point)),
+        );
+    }
+    for ((kind, mouth_order_index, source_band_index), point) in materialized {
+        push_band_height_carrier_points(
+            points_by_source,
+            mouth_order_index,
+            source_band_index,
+            kind,
+            [point],
+        );
+    }
+}
+
+pub(super) fn push_owned_region_height_carrier_points(
+    points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    contours: &[NodeGeneratedContour],
+    constraints: &[NodeRailConstraint],
+    paths_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
+    ownership: &NodeBooleanOwnership,
+) {
+    let mut materialized = Vec::new();
+    for region in &ownership.owned_regions {
+        let Some(source_band_index) = region.source_band_index else {
+            continue;
+        };
+        let source = (
+            region.kind,
+            region.source_mouth_order_index,
+            source_band_index,
+        );
+        for point_xz in region
+            .shape
+            .iter()
+            .flat_map(|contour| contour.iter().copied())
+            .map(overlay_point_to_road)
+        {
+            let point = road_point_key(point_xz);
+            if source_has_height_point(points_by_source, source, point) {
+                continue;
+            }
+            let Some(height_m) = height_for_source_key(
+                source,
+                point,
+                contours,
+                constraints,
+                paths_by_source,
+                points_by_source,
+            ) else {
+                continue;
+            };
+            materialized.push((source, RoadVec3::new(point_xz.x, height_m, point_xz.y)));
+        }
+    }
+    for ((kind, mouth_order_index, source_band_index), point) in materialized {
+        push_band_height_carrier_points(
+            points_by_source,
+            mouth_order_index,
+            source_band_index,
+            kind,
+            [point],
+        );
+    }
+}
+
 fn source_height_path_is_endpoint_chord(
     path_world: &[RoadVec3],
     mouth_world: RoadVec3,
@@ -104,4 +218,238 @@ fn source_height_path_is_endpoint_chord(
 fn source_height_points_match(a: RoadVec3, b: RoadVec3) -> bool {
     road_point_key(xz(a)) == road_point_key(xz(b))
         && SurfaceHeightMmKey::from_m_f64(a.y) == SurfaceHeightMmKey::from_m_f64(b.y)
+}
+
+fn source_height_points_by_key(points: &[RoadVec3]) -> BTreeMap<NodeRailPointKey, Option<f64>> {
+    let mut heights_by_key = BTreeMap::<NodeRailPointKey, Option<f64>>::new();
+    for point in points {
+        let key = road_point_key(xz(*point));
+        match heights_by_key.get_mut(&key) {
+            Some(Some(existing_height_m))
+                if SurfaceHeightMmKey::from_m_f64(*existing_height_m)
+                    == SurfaceHeightMmKey::from_m_f64(point.y) => {}
+            Some(existing_height_m) => {
+                *existing_height_m = None;
+            }
+            None => {
+                heights_by_key.insert(key, Some(point.y));
+            }
+        }
+    }
+    heights_by_key
+}
+
+fn materialized_constraint_height_points(
+    constraint: &NodeRailConstraint,
+    heights_by_key: &BTreeMap<NodeRailPointKey, Option<f64>>,
+) -> Vec<RoadVec3> {
+    let keys = constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(road_point_key)
+        .collect::<Vec<_>>();
+    let mut points = Vec::new();
+    for (index, point) in keys.iter().copied().enumerate() {
+        if known_height(heights_by_key, point).is_some() {
+            continue;
+        }
+        let Some((start, start_height_m, end, end_height_m)) =
+            surrounding_known_height_segment(&keys, heights_by_key, index)
+        else {
+            continue;
+        };
+        let Some(height_m) =
+            height_for_key_on_generated_edge(point, start, end, start_height_m, end_height_m)
+        else {
+            continue;
+        };
+        let point_xz = road_point_from_key(point);
+        points.push(RoadVec3::new(point_xz.x, height_m, point_xz.y));
+    }
+    points
+}
+
+fn surrounding_known_height_segment(
+    keys: &[NodeRailPointKey],
+    heights_by_key: &BTreeMap<NodeRailPointKey, Option<f64>>,
+    index: usize,
+) -> Option<(NodeRailPointKey, f64, NodeRailPointKey, f64)> {
+    let (start, start_height_m) = (0..index).rev().find_map(|candidate_index| {
+        let point = keys[candidate_index];
+        known_height(heights_by_key, point).map(|height_m| (point, height_m))
+    })?;
+    let (end, end_height_m) = (index + 1..keys.len()).find_map(|candidate_index| {
+        let point = keys[candidate_index];
+        known_height(heights_by_key, point).map(|height_m| (point, height_m))
+    })?;
+    Some((start, start_height_m, end, end_height_m))
+}
+
+fn known_height(
+    heights_by_key: &BTreeMap<NodeRailPointKey, Option<f64>>,
+    point: NodeRailPointKey,
+) -> Option<f64> {
+    heights_by_key.get(&point).copied().flatten()
+}
+
+fn source_has_height_point(
+    points_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    source: (RoadSurfaceBandKind, usize, usize),
+    point: NodeRailPointKey,
+) -> bool {
+    points_by_source.get(&source).is_some_and(|points| {
+        points
+            .iter()
+            .any(|source_point| road_point_key(xz(*source_point)) == point)
+    })
+}
+
+fn height_for_source_key(
+    source: (RoadSurfaceBandKind, usize, usize),
+    point: NodeRailPointKey,
+    contours: &[NodeGeneratedContour],
+    constraints: &[NodeRailConstraint],
+    paths_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
+    points_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+) -> Option<f64> {
+    let mut selected_height_m = None;
+    if let Some(paths) = paths_by_source.get(&source) {
+        let mut contour_world =
+            Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
+        contour_world.extend(paths.start_path_world.iter().copied());
+        contour_world.extend(paths.end_path_world.iter().rev().copied());
+        collect_candidate_height(
+            &mut selected_height_m,
+            height_on_world_points_key(point, &contour_world, true),
+        )?;
+    }
+    for contour in contours {
+        let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index), Some(points_world)) = (
+            contour.kind,
+            contour.source_band_index,
+            contour.height_points_world.as_deref(),
+        ) else {
+            continue;
+        };
+        if (kind, contour.source_mouth_order_index, source_band_index) != source {
+            continue;
+        }
+        collect_candidate_height(
+            &mut selected_height_m,
+            height_on_world_points_key(point, points_world, true),
+        )?;
+    }
+    let source_heights_by_key = points_by_source
+        .get(&source)
+        .map(|points| source_height_points_by_key(points))
+        .unwrap_or_default();
+    for constraint in constraints {
+        if (
+            constraint.owner.map(|owner| owner.kind()),
+            constraint.source_mouth_order_index,
+            constraint.source_band_index,
+        ) != (Some(source.0), source.1, Some(source.2))
+        {
+            continue;
+        }
+        collect_candidate_height(
+            &mut selected_height_m,
+            height_on_constraint_key(point, constraint, &source_heights_by_key),
+        )?;
+    }
+    selected_height_m
+}
+
+fn collect_candidate_height(
+    selected_height_m: &mut Option<f64>,
+    candidate: Option<f64>,
+) -> Option<()> {
+    let Some(candidate_height_m) = candidate else {
+        return Some(());
+    };
+    if let Some(selected_height_m) = selected_height_m {
+        if SurfaceHeightMmKey::from_m_f64(*selected_height_m)
+            != SurfaceHeightMmKey::from_m_f64(candidate_height_m)
+        {
+            return None;
+        }
+    } else {
+        *selected_height_m = Some(candidate_height_m);
+    }
+    Some(())
+}
+
+fn height_on_world_points_key(
+    point: NodeRailPointKey,
+    points_world: &[RoadVec3],
+    closed: bool,
+) -> Option<f64> {
+    if points_world.is_empty() {
+        return None;
+    }
+    for source_point in points_world {
+        if road_point_key(xz(*source_point)) == point {
+            return Some(source_point.y);
+        }
+    }
+    for segment in points_world.windows(2) {
+        if let Some(height_m) = height_on_world_segment_key(point, segment[0], segment[1]) {
+            return Some(height_m);
+        }
+    }
+    if closed && points_world.len() > 2 {
+        return height_on_world_segment_key(
+            point,
+            *points_world.last().expect("checked non-empty"),
+            points_world[0],
+        );
+    }
+    None
+}
+
+fn height_on_world_segment_key(
+    point: NodeRailPointKey,
+    start: RoadVec3,
+    end: RoadVec3,
+) -> Option<f64> {
+    height_for_key_on_generated_edge(
+        point,
+        road_point_key(xz(start)),
+        road_point_key(xz(end)),
+        start.y,
+        end.y,
+    )
+}
+
+fn height_on_constraint_key(
+    point: NodeRailPointKey,
+    constraint: &NodeRailConstraint,
+    heights_by_key: &BTreeMap<NodeRailPointKey, Option<f64>>,
+) -> Option<f64> {
+    let points = constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(road_point_key)
+        .collect::<Vec<_>>();
+    if points.contains(&point) {
+        return known_height(heights_by_key, point);
+    }
+    for segment in points.windows(2) {
+        let start = segment[0];
+        let end = segment[1];
+        let (Some(start_height_m), Some(end_height_m)) = (
+            known_height(heights_by_key, start),
+            known_height(heights_by_key, end),
+        ) else {
+            continue;
+        };
+        if let Some(height_m) =
+            height_for_key_on_generated_edge(point, start, end, start_height_m, end_height_m)
+        {
+            return Some(height_m);
+        }
+    }
+    None
 }

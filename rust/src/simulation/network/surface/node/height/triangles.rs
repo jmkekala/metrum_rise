@@ -52,21 +52,6 @@ pub(super) fn path_band_height_triangles(
     (!triangles.is_empty()).then_some(triangles)
 }
 
-pub(super) fn path_band_height_edges(
-    start_path_world: &[RoadVec3],
-    end_path_world: &[RoadVec3],
-) -> Result<Option<Vec<NodeBandHeightEdge>>, HeightCarrierContourError> {
-    if start_path_world.len() != end_path_world.len() || start_path_world.len() < 2 {
-        return Ok(None);
-    }
-
-    let mut contour = Vec::with_capacity(start_path_world.len() + end_path_world.len());
-    contour.extend_from_slice(start_path_world);
-    contour.extend(end_path_world.iter().rev().copied());
-    let edges = height_edges_from_vertices(&contour)?;
-    Ok((!edges.is_empty()).then_some(edges))
-}
-
 pub(super) fn terminal_cap_band_height_triangles(
     id: NodeBandHeightFieldId,
     source_kind: RoadSurfaceBandKind,
@@ -126,12 +111,6 @@ pub(super) fn push_height_triangle(
         b_height_m: quantize_source_height_m(b_world.y),
         c_height_m: quantize_source_height_m(c_world.y),
     });
-}
-
-pub(super) fn terminal_cap_band_height_edges(
-    cap_band: &NodeTerminalCapBand,
-) -> Result<Vec<NodeBandHeightEdge>, HeightCarrierContourError> {
-    height_edges_from_vertices(&cap_band.contour_world)
 }
 
 pub(super) fn height_triangles_from_vertices(

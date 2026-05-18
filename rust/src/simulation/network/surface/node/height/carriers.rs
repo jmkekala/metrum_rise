@@ -1,7 +1,6 @@
 //! Height-carrier construction from source bands and generated contours.
 
 use super::model::*;
-use super::source_edges::*;
 use super::triangles::*;
 use super::vertices::canonical_height_vertices;
 use super::*;
@@ -9,7 +8,7 @@ use super::*;
 pub(super) fn interval_height_carrier(
     id: NodeBandHeightFieldId,
     interval: &NodeInputBandInterval,
-) -> Result<(Vec<NodeBandHeightTriangle>, Vec<NodeBandHeightEdge>), NodeHeightFieldError> {
+) -> Result<Vec<NodeBandHeightTriangle>, NodeHeightFieldError> {
     if interval.start_path_world.is_empty() && interval.end_path_world.is_empty() {
         let points = [
             interval.mouth_start_world,
@@ -17,22 +16,13 @@ pub(super) fn interval_height_carrier(
             interval.endpoint_end_world,
             interval.endpoint_start_world,
         ];
-        return Ok((
-            height_triangles_from_vertices(&points).map_err(|error| {
-                invalid_source_band_height_carrier_error(
-                    id,
-                    interval.band_kind,
-                    error.diagnostic_reason(),
-                )
-            })?,
-            height_edges_from_vertices(&points).map_err(|error| {
-                invalid_source_band_height_carrier_error(
-                    id,
-                    interval.band_kind,
-                    error.diagnostic_reason(),
-                )
-            })?,
-        ));
+        return height_triangles_from_vertices(&points).map_err(|error| {
+            invalid_source_band_height_carrier_error(
+                id,
+                interval.band_kind,
+                error.diagnostic_reason(),
+            )
+        });
     }
     let (start_path_world, end_path_world) = explicit_source_band_height_paths(id, interval)?;
     if start_path_world.len() < 2 {
@@ -50,22 +40,7 @@ pub(super) fn interval_height_carrier(
                 "degenerate_source_band_height_triangles",
             )
         })?;
-    let contour_edges = path_band_height_edges(&start_path_world, &end_path_world)
-        .map_err(|error| {
-            invalid_source_band_height_carrier_error(
-                id,
-                interval.band_kind,
-                error.diagnostic_reason(),
-            )
-        })?
-        .ok_or_else(|| {
-            invalid_source_band_height_carrier_error(
-                id,
-                interval.band_kind,
-                "degenerate_source_band_height_edges",
-            )
-        })?;
-    Ok((triangles, contour_edges))
+    Ok(triangles)
 }
 
 pub(super) fn interval_height_carrier_vertices(

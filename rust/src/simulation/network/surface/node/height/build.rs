@@ -31,7 +31,7 @@ impl NodeHeightSolution {
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
         validate_input_ownership_pair(input, ownership)?;
-        let mut fields = height_fields_by_source(input, rails)?;
+        let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
         register_owned_region_contour_support(&mut fields, ownership)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
         let resolved_authority = (ownership.piece_kind
@@ -117,12 +117,23 @@ pub(super) fn validate_input_ownership_pair(
     })
 }
 
+#[cfg(test)]
 pub(super) fn height_fields_by_source(
     input: &NodeArrangementInput,
     rails: Option<&NodeRailContourSet>,
 ) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
+    height_fields_by_source_for_ownership(input, rails, None)
+}
+
+fn height_fields_by_source_for_ownership(
+    input: &NodeArrangementInput,
+    rails: Option<&NodeRailContourSet>,
+    ownership: Option<&NodeBooleanOwnership>,
+) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
     let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
         .map_err(|error| NodeHeightFieldError::TerminalCapGeneration { error })?;
+    let rail_height_carrier_points =
+        rails.map(|rails| rails.height_carrier_points_for_ownership(ownership));
     let mut fields = BTreeMap::new();
     for (mouth_index, mouth) in input.mouths.iter().enumerate() {
         for interval in &mouth.band_intervals {
@@ -130,9 +141,8 @@ pub(super) fn height_fields_by_source(
                 mouth_order_index: mouth.order_index,
                 band_index: interval.band_index,
             };
-            let source_support_points = rails.and_then(|rails| {
-                rails
-                    .height_carrier_points_by_source
+            let source_support_points = rail_height_carrier_points.as_ref().and_then(|points| {
+                points
                     .get(&(interval.band_kind, mouth.order_index, interval.band_index))
                     .map(Vec::as_slice)
             });

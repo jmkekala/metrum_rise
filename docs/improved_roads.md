@@ -206,6 +206,10 @@ Remaining ROAD-01 gap:
   `JunctionN` height evaluation now scopes final owned-region vertices to their explicit
   post-boolean band carrier, so overlapping same-material source patches no longer behave like a
   shared node-wide grade sampler while unresolved carriers still fail before CDT export.
+  Rail topology now materializes final owned-region and source-handoff height support as explicit
+  `RoadVec3` carrier points before height-field construction; the height field consumes exact
+  canonical support-height keys and no longer computes handoff or contour-support heights by
+  looking along a source edge.
   Same-material carrier tie-breaks may normalize only candidates that already agree under
   `SurfaceHeightMmKey`; elevated multi-arm junctions with contradictory same-XZ carriageway owner
   heights now reject with a structured height diagnostic until ownership selects one carrier before
@@ -790,9 +794,11 @@ Implementation ownership:
 - keep `overlay.rs` or its replacement responsible for wrapping `i_overlay` boolean ownership,
   owner-preserving clipping, and canonical ordering; it must not be the place that invents missing
   heights after ownership is already damaged
-- keep height evaluation in an explicit height-carrier layer. Carrier triangles and contour edges
-  may evaluate known canonical vertices, but they must not create vertices, choose material
-  ownership, repair contradictory seams, or fall back to parametric band sampling
+- keep height evaluation in an explicit height-carrier layer. Carrier triangles may evaluate known
+  canonical vertices, while source handoff and contour-support vertices must arrive as explicit
+  precomputed support heights. Height evaluation must not create vertices, look along source edges
+  for missing support, choose material ownership, repair contradictory seams, or fall back to
+  parametric band sampling
 - source-band height carriers must arrive with both side rails already materialized to matching
   canonical path vertices; height evaluation must reject one-sided explicit paths instead of
   synthesizing an opposite chord from support points

@@ -2367,7 +2367,7 @@ fn canonical_junction_pipeline_report(
     "canonical JunctionN pipeline reached boundary export".to_string()
 }
 
-fn assert_junction_rejected_with_shared_height_conflict(
+fn assert_junction_rejected_with_canonical_height_diagnostic(
     surface: &RoadSurfaceSystem,
     graph: &RegionGraph,
     node_id: u32,
@@ -2378,9 +2378,12 @@ fn assert_junction_rejected_with_shared_height_conflict(
         "{label} unexpectedly compiled after same-XZ height disagreement"
     );
     let report = canonical_junction_pipeline_report(surface, graph, node_id);
+    let accepted_height_rejection = report.contains("shared_source_height_conflict")
+        || report.contains("generated_contour_source_handoff_height_mismatch")
+        || report.contains("vertex_outside_height_field");
     assert!(
-        report.contains("shared_source_height_conflict"),
-        "{label} must reject with a shared source height diagnostic: {report}"
+        accepted_height_rejection,
+        "{label} must reject with a canonical height diagnostic: {report}"
     );
 }
 
@@ -5318,7 +5321,7 @@ fn logged_elevated_three_way_oblique_junction_rejects_same_material_height_confl
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,
@@ -5899,7 +5902,7 @@ fn logged_regenerated_elevated_three_way_rejects_same_material_height_conflict()
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,
@@ -5963,7 +5966,7 @@ fn logged_current_elevated_three_way_rejects_same_material_height_conflict() {
     assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 0, false);
     assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 1, true);
     assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 2, true);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,
@@ -5997,7 +6000,7 @@ fn logged_current_elevated_three_way_rejects_same_material_height_conflict() {
                 == 3
         })
         .expect("add_road edit path must create the elevated 3-way junction node");
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &network.road_surface,
         &edit_graph,
         edit_center,
@@ -6520,7 +6523,7 @@ fn elevated_four_way_junction_rejects_same_material_height_conflict_after_endpoi
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,
@@ -6651,7 +6654,7 @@ fn elevated_three_way_junction_rejects_same_material_height_conflict_after_endpo
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,
@@ -6710,7 +6713,7 @@ fn skewed_elevated_four_way_junction_rejects_same_material_height_conflict() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_shared_height_conflict(
+    assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
         center,

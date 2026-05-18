@@ -186,7 +186,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   deterministically until ownership selects one carrier before height sampling. Source-band height
   carriers now also reject one-sided explicit paths during height-field
   construction; any required opposite rail must already be materialized by the rail / topology
-  stage with matching canonical path vertices before height evaluation. Node footprint boundary
+  stage with matching canonical path vertices before height evaluation. Source handoff and
+  final-region support heights are now likewise materialized as explicit rail-owned `RoadVec3`
+  support points before height-field construction, so height evaluation no longer interpolates
+  along source edges to authorize contour support. Node footprint boundary
   export now resolves heights only from adjacent solved boundary provenance, with terminal
   raised-step corners accepted only when ordered source edges prove the material step. The render mesh
   payload now exposes those faces as `raised_step_*` buffers rather than curb-specific vertical
