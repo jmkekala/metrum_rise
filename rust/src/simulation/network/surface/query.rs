@@ -5,6 +5,7 @@ use super::{
     ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipExportError,
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
     RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
+    keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
@@ -157,12 +158,8 @@ impl RoadSurfaceSystem {
         loop_index: usize,
         boundary_loop: &RoadSurfaceTerrainClipLoop,
     ) -> TerrainCdtRoadLoop {
-        let stable_piece_id = boundary_loop
-            .source_edges
-            .iter()
-            .map(|edge| Self::terrain_cdt_stable_piece_id_for_source(edge.source))
-            .min()
-            .unwrap_or_else(|| u64::try_from(loop_index).unwrap_or(u64::MAX));
+        let stable_piece_id =
+            Self::terrain_cdt_stable_piece_id_for_terrain_clip_loop(boundary_loop, loop_index);
         let vertices = boundary_loop
             .points_world
             .iter()
@@ -191,6 +188,38 @@ impl RoadSurfaceSystem {
             vertices,
             source_edges,
         )
+    }
+
+    fn terrain_cdt_stable_piece_id_for_terrain_clip_loop(
+        boundary_loop: &RoadSurfaceTerrainClipLoop,
+        loop_index: usize,
+    ) -> u64 {
+        if boundary_loop.points_world.is_empty() {
+            return u64::try_from(loop_index).unwrap_or(u64::MAX);
+        }
+
+        let mut hasher = TerrainClipStableHasher::new();
+        hasher.write_str("terrain_clip_union_loop_v1");
+        hasher.write_usize(boundary_loop.points_world.len());
+        for point in &boundary_loop.points_world {
+            let key = SurfaceXzKey::from_godot_world_xz(*point);
+            hasher.write_i64(key.x_key());
+            hasher.write_i64(key.z_key());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(point.y).as_i64());
+        }
+        hasher.write_usize(boundary_loop.source_edges.len());
+        for edge in &boundary_loop.source_edges {
+            let start_key = SurfaceXzKey::from_godot_world_xz(edge.start);
+            let end_key = SurfaceXzKey::from_godot_world_xz(edge.end);
+            hasher.write_i64(start_key.x_key());
+            hasher.write_i64(start_key.z_key());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(edge.start.y).as_i64());
+            hasher.write_i64(end_key.x_key());
+            hasher.write_i64(end_key.z_key());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(edge.end.y).as_i64());
+            hasher.write_u64(Self::terrain_cdt_stable_piece_id_for_source(edge.source));
+        }
+        hasher.finish()
     }
 
     fn terrain_cdt_stable_piece_id_for_source(
@@ -940,5 +969,46 @@ impl RoadSurfaceSystem {
             && polygon_max_x >= min_x
             && polygon_min_z <= max_z
             && polygon_max_z >= min_z
+    }
+}
+
+struct TerrainClipStableHasher {
+    state: u64,
+}
+
+impl TerrainClipStableHasher {
+    fn new() -> Self {
+        Self {
+            state: 0xcbf29ce484222325,
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.state ^= u64::from(byte);
+            self.state = self.state.wrapping_mul(0x100000001b3);
+        }
+        self.state ^= 0xff;
+        self.state = self.state.wrapping_mul(0x100000001b3);
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_str(&mut self, value: &str) {
+        self.write_bytes(value.as_bytes());
+    }
+
+    fn finish(self) -> u64 {
+        self.state
     }
 }

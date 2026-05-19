@@ -5,8 +5,10 @@ use super::{
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
-    band_semantics::band_kind_sort_key, terrain_clip_edge_kind_for_band,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    band_semantics::band_kind_sort_key,
+    keys::{SurfaceHeightMmKey, SurfaceXzKey},
+    terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
@@ -871,6 +873,8 @@ fn canonicalize_span_terrain_clip_source_edges(
 
 fn matching_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Option<Vector3> {
     loop_points.iter().copied().find(|candidate| {
-        (*candidate - point).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+        SurfaceXzKey::from_godot_world_xz(*candidate) == SurfaceXzKey::from_godot_world_xz(point)
+            && SurfaceHeightMmKey::from_m_f32(candidate.y)
+                == SurfaceHeightMmKey::from_m_f32(point.y)
     })
 }

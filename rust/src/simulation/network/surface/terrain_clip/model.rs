@@ -50,6 +50,12 @@ pub(crate) enum RoadSurfaceTerrainClipExportError {
         start: Vector3,
         end: Vector3,
     },
+    AmbiguousOutputBoundaryOwner {
+        shape_index: usize,
+        start: Vector3,
+        end: Vector3,
+        context: String,
+    },
     UnclosedOutputBoundary {
         shape_index: usize,
         start: Vector3,
@@ -63,6 +69,9 @@ impl RoadSurfaceTerrainClipExportError {
             Self::OverlayUnionFailed { .. } => "terrain_clip_overlay_union_failed",
             Self::MissingOuterBoundaryOwner { .. } => "terrain_clip_missing_outer_boundary_owner",
             Self::MissingOutputBoundaryOwner { .. } => "terrain_clip_missing_output_boundary_owner",
+            Self::AmbiguousOutputBoundaryOwner { .. } => {
+                "terrain_clip_ambiguous_output_boundary_owner"
+            }
             Self::UnclosedOutputBoundary { .. } => "terrain_clip_unclosed_output_boundary",
         }
     }
@@ -135,6 +144,14 @@ pub(super) fn terrain_clip_source_edge_ordering(
 ) -> std::cmp::Ordering {
     terrain_clip_edge_kind_priority(a.kind)
         .cmp(&terrain_clip_edge_kind_priority(b.kind))
+        .then_with(|| a.source.source_ordering(b.source))
         .then(a.source_index.cmp(&b.source_index))
         .then(a.edge_index.cmp(&b.edge_index))
+}
+
+pub(super) fn terrain_clip_source_edges_same_provenance(
+    a: TerrainClipSourceEdge,
+    b: TerrainClipSourceEdge,
+) -> bool {
+    a.kind == b.kind && a.source == b.source
 }

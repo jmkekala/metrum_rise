@@ -392,6 +392,40 @@ fn terrain_clip_union_stitches_source_chain_across_same_xz_height_step() {
 }
 
 #[test]
+fn terrain_clip_union_rejects_ambiguous_source_chain_recovery() {
+    let p0 = Vector3::new(0.0, 9.0, 0.0);
+    let p1_a = Vector3::new(0.45, 9.4, 0.18);
+    let p1_b = Vector3::new(0.55, 9.6, -0.16);
+    let p2 = Vector3::new(1.0, 10.0, 0.0);
+    let p3 = Vector3::new(1.0, 10.0, 0.5);
+    let p4 = Vector3::new(0.0, 9.0, 0.5);
+    let loop_for_node = |node_id, midpoint| RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_node_test(p0, midpoint, node_id),
+            terrain_clip_source_edge_for_node_test(midpoint, p2, node_id),
+            terrain_clip_source_edge_for_node_test(p2, p3, node_id),
+            terrain_clip_source_edge_for_node_test(p3, p4, node_id),
+            terrain_clip_source_edge_for_node_test(p4, p0, node_id),
+        ],
+        points_world: vec![p0, p2, p3, p4],
+    };
+
+    let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[
+        loop_for_node(1, p1_a),
+        loop_for_node(1, p1_b),
+    ]);
+
+    let Err(RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner { context, .. }) = unioned
+    else {
+        panic!("ambiguous source-chain recovery must reject provenance, got {unioned:?}");
+    };
+    assert!(
+        context.contains("ambiguous_source_chain"),
+        "ambiguous source-chain diagnostic should stay visible: {context}"
+    );
+}
+
+#[test]
 fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
     let y = 4.0;
     let valid = [
@@ -816,5 +850,24 @@ fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
             road_loops.is_empty() && clip_polygons.is_empty() && source_count == 0,
             "{case_name}: bridge/tunnel midspans must not feed road-touched terrain CDT"
         );
+    }
+}
+
+fn terrain_clip_source_edge_for_node_test(
+    start: Vector3,
+    end: Vector3,
+    node_id: u32,
+) -> RoadSurfaceTerrainClipSourceEdge {
+    RoadSurfaceTerrainClipSourceEdge {
+        start,
+        end,
+        kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind: RoadSurfaceVisualNodePieceKind::Terminal,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 0,
+            boundary_source: None,
+        },
     }
 }

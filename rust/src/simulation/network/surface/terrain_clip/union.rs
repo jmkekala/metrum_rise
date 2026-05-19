@@ -7,12 +7,19 @@ use super::super::{
     segments::{exact_line_parameter, overlay_point_key},
 };
 use super::model::*;
+use super::output::TerrainClipOutputSourceError;
 use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+
+enum TerrainClipSourceChainRecovery {
+    Missing,
+    Ambiguous(String),
+    Covered(Vec<Vector3>),
+}
 
 impl RoadSurfaceSystem {
     fn overlay_contours_from_terrain_clip_boundary_loops(
@@ -178,32 +185,103 @@ impl RoadSurfaceSystem {
                         source_edges,
                     ) {
                         points
-                    } else if let Some(points) =
-                        Self::terrain_clip_source_chain_points_from_source_edges(
-                            start,
-                            end,
-                            source_edges,
-                        )
-                    {
-                        points
                     } else {
-                        let context = Self::terrain_clip_missing_source_context_label(
+                        match Self::terrain_clip_source_chain_points_from_source_edges(
                             start,
                             end,
                             source_edges,
-                        );
+                        ) {
+                            TerrainClipSourceChainRecovery::Covered(points) => points,
+                            TerrainClipSourceChainRecovery::Missing => {
+                                let context = Self::terrain_clip_missing_source_context_label(
+                                    start,
+                                    end,
+                                    source_edges,
+                                );
+                                crate::debug_log!(
+                                    "road",
+                                    "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                                    shape_index,
+                                    start[0],
+                                    start[1],
+                                    end[0],
+                                    end[1],
+                                    context
+                                );
+                                return Err(
+                                    RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                                        shape_index,
+                                        start,
+                                        end,
+                                        context,
+                                    },
+                                );
+                            }
+                            TerrainClipSourceChainRecovery::Ambiguous(context) => {
+                                crate::debug_log!(
+                                    "road",
+                                    "terrain_clip_ambiguous_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                                    shape_index,
+                                    start[0],
+                                    start[1],
+                                    end[0],
+                                    end[1],
+                                    context
+                                );
+                                return Err(
+                                    RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                                        shape_index,
+                                        start,
+                                        end,
+                                        context,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            };
+            if let Err(error) = Self::append_terrain_clip_sourced_segment_points(
+                &mut output_edges,
+                segment_points,
+                source_edges,
+            ) {
+                match error {
+                    TerrainClipOutputSourceError::Missing { start, end } => {
                         crate::debug_log!(
                             "road",
-                            "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                            "terrain_clip_missing_output_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3})",
                             shape_index,
-                            start[0],
-                            start[1],
-                            end[0],
-                            end[1],
+                            start.x,
+                            start.z,
+                            end.x,
+                            end.z
+                        );
+                        return Err(
+                            RoadSurfaceTerrainClipExportError::MissingOutputBoundaryOwner {
+                                shape_index,
+                                start,
+                                end,
+                            },
+                        );
+                    }
+                    TerrainClipOutputSourceError::Ambiguous {
+                        start,
+                        end,
+                        context,
+                    } => {
+                        crate::debug_log!(
+                            "road",
+                            "terrain_clip_ambiguous_output_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                            shape_index,
+                            start.x,
+                            start.z,
+                            end.x,
+                            end.z,
                             context
                         );
                         return Err(
-                            RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                            RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner {
                                 shape_index,
                                 start,
                                 end,
@@ -212,30 +290,6 @@ impl RoadSurfaceSystem {
                         );
                     }
                 }
-            };
-            if let Err((missing_start, missing_end)) =
-                Self::append_terrain_clip_sourced_segment_points(
-                    &mut output_edges,
-                    segment_points,
-                    source_edges,
-                )
-            {
-                crate::debug_log!(
-                    "road",
-                    "terrain_clip_missing_output_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3})",
-                    shape_index,
-                    missing_start.x,
-                    missing_start.z,
-                    missing_end.x,
-                    missing_end.z
-                );
-                return Err(
-                    RoadSurfaceTerrainClipExportError::MissingOutputBoundaryOwner {
-                        shape_index,
-                        start: missing_start,
-                        end: missing_end,
-                    },
-                );
             }
         }
 
@@ -456,9 +510,9 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<Vector3>> {
+    ) -> TerrainClipSourceChainRecovery {
         if Self::terrain_clip_overlay_key(start) == Self::terrain_clip_overlay_key(end) {
-            return None;
+            return TerrainClipSourceChainRecovery::Missing;
         }
 
         let start_key = Self::terrain_clip_overlay_key(start);
@@ -467,7 +521,7 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|edge| edge.source_index)
             .collect::<BTreeSet<_>>();
-        let mut best: Option<(usize, usize, Vec<Vector3>)> = None;
+        let mut candidates = BTreeMap::<Vec<(i64, i64, i64)>, Vec<Vector3>>::new();
         for source_index in source_indices.iter().copied() {
             let mut source_chain_edges = source_edges
                 .iter()
@@ -495,7 +549,6 @@ impl RoadSurfaceSystem {
                     ) else {
                         continue;
                     };
-                    let source_edge_count = path_keys.len().saturating_sub(1);
                     let mut points = path_keys
                         .into_iter()
                         .filter_map(|key| {
@@ -510,19 +563,33 @@ impl RoadSurfaceSystem {
                     if points.len() < 2 {
                         continue;
                     }
-                    if best.as_ref().is_none_or(
-                        |(best_source_index, best_edge_count, best_points)| {
-                            (source_index, source_edge_count, points.len())
-                                < (*best_source_index, *best_edge_count, best_points.len())
-                        },
-                    ) {
-                        best = Some((source_index, source_edge_count, points));
-                    }
+                    candidates
+                        .entry(Self::terrain_clip_source_chain_point_identity(&points))
+                        .or_insert(points);
                 }
             }
         }
 
-        best.map(|(_, _, points)| points)
+        match candidates.len() {
+            0 => TerrainClipSourceChainRecovery::Missing,
+            1 => TerrainClipSourceChainRecovery::Covered(
+                candidates.into_values().next().unwrap_or_default(),
+            ),
+            _ => TerrainClipSourceChainRecovery::Ambiguous(format!(
+                "ambiguous_source_chain candidates={}",
+                candidates.len()
+            )),
+        }
+    }
+
+    fn terrain_clip_source_chain_point_identity(points: &[Vector3]) -> Vec<(i64, i64, i64)> {
+        points
+            .iter()
+            .map(|point| {
+                let key = Self::terrain_clip_world_key(*point);
+                (key.x_key(), key.z_key(), Self::overlay_height_key(point.y))
+            })
+            .collect()
     }
 
     fn terrain_clip_source_loop_positions_at_key(

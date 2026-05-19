@@ -1,16 +1,22 @@
 //! Terrain-clip output edge sourcing.
 
-use super::super::{NodeOverlayPoint, RoadSurfaceSystem};
+use super::super::RoadSurfaceSystem;
 use super::model::*;
 use super::union::interval_height_at;
 use godot::prelude::Vector3;
+
+enum TerrainClipOutputSourceSelection {
+    Missing,
+    Ambiguous(String),
+    Source(TerrainClipSourceEdge),
+}
 
 impl RoadSurfaceSystem {
     pub(super) fn append_terrain_clip_sourced_segment_points(
         out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
         mut points: Vec<Vector3>,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Result<(), (Vector3, Vector3)> {
+    ) -> Result<(), TerrainClipOutputSourceError> {
         Self::dedup_terrain_clip_segment_points(&mut points);
         for segment in points.windows(2) {
             let start = segment[0];
@@ -18,29 +24,7 @@ impl RoadSurfaceSystem {
             if Self::world_points_same_for_boundary(start, end) {
                 continue;
             }
-            let start_overlay = [f64::from(start.x), f64::from(start.z)];
-            let end_overlay = [f64::from(end.x), f64::from(end.z)];
-            let Some(source) = Self::terrain_clip_output_source_for_segment(
-                start_overlay,
-                end_overlay,
-                source_edges,
-            )
-            .or_else(|| {
-                Self::terrain_clip_output_source_for_endpoint_segment(
-                    start_overlay,
-                    end_overlay,
-                    source_edges,
-                )
-            })
-            .or_else(|| {
-                Self::terrain_clip_output_dust_connector_source(
-                    start_overlay,
-                    end_overlay,
-                    source_edges,
-                )
-            }) else {
-                return Err((start, end));
-            };
+            let source = Self::terrain_clip_output_source_for_points(start, end, source_edges)?;
             Self::append_terrain_clip_source_edge(
                 out,
                 RoadSurfaceTerrainClipSourceEdge {
@@ -52,6 +36,53 @@ impl RoadSurfaceSystem {
             );
         }
         Ok(())
+    }
+
+    fn terrain_clip_output_source_for_points(
+        start: Vector3,
+        end: Vector3,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<TerrainClipSourceEdge, TerrainClipOutputSourceError> {
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_source_for_segment(start, end, source_edges),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_source_for_endpoint_segment(start, end, source_edges),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_dust_connector_source(start, end, source_edges),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        Err(TerrainClipOutputSourceError::Missing { start, end })
+    }
+
+    fn terrain_clip_output_source_result(
+        selection: TerrainClipOutputSourceSelection,
+        start: Vector3,
+        end: Vector3,
+    ) -> Result<Option<TerrainClipSourceEdge>, TerrainClipOutputSourceError> {
+        match selection {
+            TerrainClipOutputSourceSelection::Missing => Ok(None),
+            TerrainClipOutputSourceSelection::Source(source) => Ok(Some(source)),
+            TerrainClipOutputSourceSelection::Ambiguous(context) => {
+                Err(TerrainClipOutputSourceError::Ambiguous {
+                    start,
+                    end,
+                    context,
+                })
+            }
+        }
     }
 
     pub(super) fn close_terrain_clip_source_edges(edges: &mut [RoadSurfaceTerrainClipSourceEdge]) {
@@ -94,80 +125,130 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_output_source_for_segment(
-        start: NodeOverlayPoint,
-        end: NodeOverlayPoint,
+        start: Vector3,
+        end: Vector3,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<TerrainClipSourceEdge> {
-        let mut best = None;
+    ) -> TerrainClipOutputSourceSelection {
+        let start_overlay = [f64::from(start.x), f64::from(start.z)];
+        let end_overlay = [f64::from(end.x), f64::from(end.z)];
+        let mut candidates = Vec::new();
         for &source_edge in source_edges {
-            let interval = Self::terrain_clip_source_interval_on_segment(start, end, source_edge)?;
+            let Some(interval) = Self::terrain_clip_source_interval_on_segment(
+                start_overlay,
+                end_overlay,
+                source_edge,
+            ) else {
+                continue;
+            };
             if !Self::terrain_clip_interval_covers(interval, 0.0, 1.0) {
                 continue;
             }
-            let height = interval_height_at(interval, 0.5);
-            if best.is_none_or(|(best_height, best_edge): (f32, TerrainClipSourceEdge)| {
-                height > best_height
-                    || (Self::overlay_heights_equal(height, best_height)
-                        && terrain_clip_source_edge_ordering(source_edge, best_edge).is_lt())
-            }) {
-                best = Some((height, source_edge));
+            if Self::overlay_heights_equal(interval_height_at(interval, 0.0), start.y)
+                && Self::overlay_heights_equal(interval_height_at(interval, 1.0), end.y)
+            {
+                candidates.push(source_edge);
             }
         }
-        best.map(|(_, source_edge)| source_edge)
+        Self::unique_terrain_clip_output_source(candidates, "covered_segment")
     }
 
     fn terrain_clip_output_source_for_endpoint_segment(
-        start: NodeOverlayPoint,
-        end: NodeOverlayPoint,
+        start: Vector3,
+        end: Vector3,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<TerrainClipSourceEdge> {
-        let start_key = Self::terrain_clip_overlay_key(start);
-        let end_key = Self::terrain_clip_overlay_key(end);
-        let mut candidates = source_edges
+    ) -> TerrainClipOutputSourceSelection {
+        let start_key = Self::terrain_clip_world_key(start);
+        let end_key = Self::terrain_clip_world_key(end);
+        let candidates = source_edges
             .iter()
             .copied()
             .filter(|source_edge| {
                 let source_start_key = Self::terrain_clip_world_key(source_edge.start);
                 let source_end_key = Self::terrain_clip_world_key(source_edge.end);
-                (source_start_key == start_key && source_end_key == end_key)
-                    || (source_start_key == end_key && source_end_key == start_key)
+                if source_start_key == start_key && source_end_key == end_key {
+                    Self::overlay_heights_equal(source_edge.start.y, start.y)
+                        && Self::overlay_heights_equal(source_edge.end.y, end.y)
+                } else if source_start_key == end_key && source_end_key == start_key {
+                    Self::overlay_heights_equal(source_edge.start.y, end.y)
+                        && Self::overlay_heights_equal(source_edge.end.y, start.y)
+                } else {
+                    false
+                }
             })
             .collect::<Vec<_>>();
-        candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        candidates.into_iter().next()
+        Self::unique_terrain_clip_output_source(candidates, "endpoint_segment")
     }
 
     fn terrain_clip_output_dust_connector_source(
-        start: NodeOverlayPoint,
-        end: NodeOverlayPoint,
+        start: Vector3,
+        end: Vector3,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<TerrainClipSourceEdge> {
-        let mut endpoint_edges =
-            Self::terrain_clip_source_edges_at_overlay_point(start, source_edges);
-        endpoint_edges.extend(Self::terrain_clip_source_edges_at_overlay_point(
+    ) -> TerrainClipOutputSourceSelection {
+        let mut candidates = Self::terrain_clip_source_edges_at_world_xz_point(start, source_edges);
+        candidates.extend(Self::terrain_clip_source_edges_at_world_xz_point(
             end,
             source_edges,
         ));
-        endpoint_edges.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        endpoint_edges.dedup_by(|a, b| terrain_clip_source_edge_ordering(*a, *b).is_eq());
-        endpoint_edges.into_iter().next()
+        if candidates.is_empty() {
+            return TerrainClipOutputSourceSelection::Missing;
+        }
+        let first = candidates[0];
+        if !candidates
+            .iter()
+            .copied()
+            .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
+        {
+            return TerrainClipOutputSourceSelection::Ambiguous(
+                "dust_connector_endpoint_sources_disagree".to_string(),
+            );
+        }
+        Self::unique_terrain_clip_output_source(candidates, "dust_connector")
     }
 
-    fn terrain_clip_source_edges_at_overlay_point(
-        point: NodeOverlayPoint,
+    fn terrain_clip_source_edges_at_world_xz_point(
+        point: Vector3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipSourceEdge> {
+        let overlay_point = [f64::from(point.x), f64::from(point.z)];
         source_edges
             .iter()
             .copied()
-            .filter(|source_edge| {
+            .filter(|&source_edge| {
                 let source_start = [
                     f64::from(source_edge.start.x),
                     f64::from(source_edge.start.z),
                 ];
                 let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
-                Self::overlay_segment_parameter(point, source_start, source_end).is_some()
+                let Some(_t) =
+                    Self::overlay_segment_parameter(overlay_point, source_start, source_end)
+                else {
+                    return false;
+                };
+                true
             })
             .collect()
     }
+
+    fn unique_terrain_clip_output_source(
+        mut candidates: Vec<TerrainClipSourceEdge>,
+        _context: &'static str,
+    ) -> TerrainClipOutputSourceSelection {
+        if candidates.is_empty() {
+            return TerrainClipOutputSourceSelection::Missing;
+        }
+        candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
+        TerrainClipOutputSourceSelection::Source(candidates[0])
+    }
+}
+
+pub(super) enum TerrainClipOutputSourceError {
+    Missing {
+        start: Vector3,
+        end: Vector3,
+    },
+    Ambiguous {
+        start: Vector3,
+        end: Vector3,
+        context: String,
+    },
 }
