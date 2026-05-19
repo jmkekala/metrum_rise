@@ -25,11 +25,17 @@ use std::collections::{BTreeMap, HashSet};
 impl RoadSurfaceSystem {
     pub(crate) fn terrain_render_patch_keys_with_visible_road(
         &self,
+        graph: &RegionGraph,
         terrain: &TerrainSystem,
     ) -> Vec<(usize, usize)> {
         let mut patch_keys = HashSet::new();
 
-        for piece in self.compiled_visual_span_pieces.values() {
+        let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
+        span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
+        for (_, piece) in span_pieces {
+            if piece.edge_class != EdgeClass::Standard {
+                continue;
+            }
             let Some((min, max)) = self.visual_span_piece_bounds(piece, ChunkCacheKind::Surface)
             else {
                 continue;
@@ -39,7 +45,12 @@ impl RoadSurfaceSystem {
             }
         }
 
-        for piece in self.compiled_visual_node_pieces.values() {
+        let mut node_pieces = self.compiled_visual_node_pieces.iter().collect::<Vec<_>>();
+        node_pieces.sort_by_key(|(node_id, _)| **node_id);
+        for (&node_id, piece) in node_pieces {
+            if !self.node_has_standard_surface_edges(graph, node_id) {
+                continue;
+            }
             let Some((min, max)) = self.visual_node_piece_bounds(piece, ChunkCacheKind::Surface)
             else {
                 continue;
@@ -104,7 +115,9 @@ impl RoadSurfaceSystem {
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut boundary_loops = Vec::new();
 
-        for piece in self.compiled_visual_span_pieces.values() {
+        let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
+        span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
+        for (_, piece) in span_pieces {
             if piece.edge_class != EdgeClass::Standard {
                 continue;
             }
@@ -118,7 +131,9 @@ impl RoadSurfaceSystem {
             );
         }
 
-        for (&node_id, piece) in &self.compiled_visual_node_pieces {
+        let mut node_pieces = self.compiled_visual_node_pieces.iter().collect::<Vec<_>>();
+        node_pieces.sort_by_key(|(node_id, _)| **node_id);
+        for (&node_id, piece) in node_pieces {
             if !self.node_has_standard_surface_edges(graph, node_id) {
                 continue;
             }

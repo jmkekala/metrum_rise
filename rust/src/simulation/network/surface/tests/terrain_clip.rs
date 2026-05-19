@@ -1013,7 +1013,7 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
         footprint_max_z = footprint_max_z.max(point.z);
     }
 
-    let keys = surface.terrain_render_patch_keys_with_visible_road(&terrain);
+    let keys = surface.terrain_render_patch_keys_with_visible_road(&graph, &terrain);
     assert!(!keys.is_empty());
     assert!(
         keys.len() < terrain.render_patch_cols() * terrain.render_patch_rows() / 8,
@@ -1031,6 +1031,49 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
             "road-locked patch ({patch_x}, {patch_z}) must overlap the road footprint, not only the earthwork envelope"
         );
     }
+}
+
+#[test]
+fn road_locked_terrain_patches_skip_bridge_and_tunnel_only_surfaces() {
+    let terrain = flat_terrain(257, 257);
+    let mut graph = RegionGraph::new();
+    let bridge_start = graph.add_node(Vector3::new(-32.0, 8.0, -48.0), NodeType::Junction);
+    let bridge_end = graph.add_node(Vector3::new(-32.0, 8.0, 48.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        bridge_start,
+        bridge_end,
+        vec![
+            Vector3::new(-32.0, 8.0, -48.0),
+            Vector3::new(-32.0, 8.0, 48.0),
+        ],
+        10.0,
+        EdgeClass::Bridge,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let tunnel_start = graph.add_node(Vector3::new(32.0, -8.0, -48.0), NodeType::Junction);
+    let tunnel_end = graph.add_node(Vector3::new(32.0, -8.0, 48.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        tunnel_start,
+        tunnel_end,
+        vec![
+            Vector3::new(32.0, -8.0, -48.0),
+            Vector3::new(32.0, -8.0, 48.0),
+        ],
+        10.0,
+        EdgeClass::Tunnel,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let keys = surface.terrain_render_patch_keys_with_visible_road(&graph, &terrain);
+    assert!(
+        keys.is_empty(),
+        "bridge/tunnel-only surfaces must not request grounded-road CDT terrain clips"
+    );
 }
 
 #[test]

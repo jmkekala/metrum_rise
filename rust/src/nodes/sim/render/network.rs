@@ -196,7 +196,7 @@ impl SimCore {
         let keys = self
             .transit_network
             .road_surface
-            .terrain_render_patch_keys_with_visible_road(&self.heightmap);
+            .terrain_render_patch_keys_with_visible_road(&self.region_graph, &self.heightmap);
 
         let mut packed = PackedInt32Array::new();
         for (patch_x, patch_z) in keys {

@@ -7706,6 +7706,35 @@ fn visible_surface_raycast_hits_bridge_before_terrain() {
 }
 
 #[test]
+fn visible_surface_raycast_hits_road_without_terrain_hit() {
+    let terrain = flat_terrain(97, 33);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(-24.0, 6.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(24.0, 6.0, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![
+            Vector3::new(-24.0, 6.0, 0.0),
+            Vector3::new(0.0, 6.0, 0.0),
+            Vector3::new(24.0, 6.0, 0.0),
+        ],
+        10.0,
+        EdgeClass::Bridge,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let hit = surface
+        .raycast_visible_surface(&graph, &terrain, Vector3::new(0.0, 2.0, 0.0), Vector3::UP)
+        .expect("road-owned visible surface should be hittable even when terrain is not");
+    assert!((hit.y - 6.0).abs() <= 0.05);
+}
+
+#[test]
 fn debug_line_data_exposes_sections_bands_patches_and_earthwork_chunks() {
     let mut terrain = flat_terrain(65, 65);
     let mut graph = RegionGraph::new();

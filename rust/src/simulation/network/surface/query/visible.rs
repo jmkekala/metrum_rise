@@ -1,6 +1,6 @@
 //! Visible-surface sampling, raycast, and section-range queries.
 
-use super::super::{RoadSurfaceSection, RoadSurfaceSystem};
+use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
@@ -17,7 +17,7 @@ impl RoadSurfaceSystem {
         let chunk = self.chunk_coords_for_world(world_x, world_z);
         let (edge_indices, node_ids) = self.collect_query_contributors(chunk, chunk);
         let point = Vector2::new(world_x, world_z);
-        let mut best_height_m: Option<f32> = None;
+        let mut top_surface_height_m: Option<f32> = None;
 
         for &node_id in &node_ids {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
@@ -34,7 +34,8 @@ impl RoadSurfaceSystem {
                         return;
                     };
                     let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                    top_surface_height_m =
+                        Some(top_surface_height_m.map_or(height_m, |best| best.max(height_m)));
                 },
             );
         }
@@ -49,10 +50,16 @@ impl RoadSurfaceSystem {
                     return;
                 };
                 let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                top_surface_height_m =
+                    Some(top_surface_height_m.map_or(height_m, |best| best.max(height_m)));
             });
         }
 
+        if top_surface_height_m.is_some() {
+            return top_surface_height_m;
+        }
+
+        let mut earthwork_height_m: Option<f32> = None;
         for &edge_idx in &edge_indices {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
@@ -66,7 +73,8 @@ impl RoadSurfaceSystem {
                     return;
                 };
                 let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                earthwork_height_m =
+                    Some(earthwork_height_m.map_or(height_m, |best| best.max(height_m)));
             });
         }
 
@@ -88,12 +96,13 @@ impl RoadSurfaceSystem {
                         return;
                     };
                     let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                    earthwork_height_m =
+                        Some(earthwork_height_m.map_or(height_m, |best| best.max(height_m)));
                 },
             );
         }
 
-        best_height_m
+        earthwork_height_m
     }
 
     #[cfg(test)]
@@ -170,24 +179,18 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let terrain_hit = terrain.raycast_visual_terrain(ray_origin, ray_dir)?;
-        let terrain_t =
-            (terrain_hit - ray_origin).dot(ray_dir) / ray_dir.length_squared().max(f32::EPSILON);
-        if terrain_t < 0.0 {
-            return Some(terrain_hit);
-        }
-
-        let min_chunk = self.chunk_coords_for_world(
-            ray_origin.x.min(terrain_hit.x),
-            ray_origin.z.min(terrain_hit.z),
-        );
-        let max_chunk = self.chunk_coords_for_world(
-            ray_origin.x.max(terrain_hit.x),
-            ray_origin.z.max(terrain_hit.z),
-        );
+        let terrain_hit = terrain.raycast_visual_terrain(ray_origin, ray_dir);
+        let terrain_t = terrain_hit.map(|terrain_hit| {
+            (terrain_hit - ray_origin).dot(ray_dir) / ray_dir.length_squared().max(f32::EPSILON)
+        });
+        let Some((min_chunk, max_chunk)) =
+            self.raycast_visible_query_chunk_bounds(terrain, ray_origin, ray_dir, terrain_hit)
+        else {
+            return terrain_hit;
+        };
         let (edge_indices, node_ids) = self.collect_query_contributors(min_chunk, max_chunk);
 
-        let mut best_t = terrain_t;
+        let mut best_t = terrain_t.unwrap_or(f32::INFINITY);
         let mut best_hit = None;
 
         for &node_id in &node_ids {
@@ -272,7 +275,7 @@ impl RoadSurfaceSystem {
             );
         }
 
-        best_hit.or(Some(terrain_hit))
+        best_hit.or(terrain_hit)
     }
 
     pub(crate) fn visible_section_ranges_for_edge(
@@ -327,4 +330,90 @@ impl RoadSurfaceSystem {
 
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
+
+    fn raycast_visible_query_chunk_bounds(
+        &self,
+        terrain: &TerrainSystem,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        terrain_hit: Option<Vector3>,
+    ) -> Option<(SurfaceChunkKey, SurfaceChunkKey)> {
+        if let Some(terrain_hit) = terrain_hit {
+            return Some((
+                self.chunk_coords_for_world(
+                    ray_origin.x.min(terrain_hit.x),
+                    ray_origin.z.min(terrain_hit.z),
+                ),
+                self.chunk_coords_for_world(
+                    ray_origin.x.max(terrain_hit.x),
+                    ray_origin.z.max(terrain_hit.z),
+                ),
+            ));
+        }
+
+        let (half_w, half_h) = terrain.half_world_extents();
+        let (entry_t, exit_t) =
+            ray_xz_interval_for_bounds(ray_origin, ray_dir, -half_w, -half_h, half_w, half_h)?;
+        if !entry_t.is_finite() || !exit_t.is_finite() {
+            let chunk = self.chunk_coords_for_world(ray_origin.x, ray_origin.z);
+            return Some((chunk, chunk));
+        }
+
+        let start_t = entry_t.max(0.0);
+        let end_t = exit_t.max(start_t);
+        let start = ray_origin + ray_dir * start_t;
+        let end = ray_origin + ray_dir * end_t;
+        Some((
+            self.chunk_coords_for_world(start.x.min(end.x), start.z.min(end.z)),
+            self.chunk_coords_for_world(start.x.max(end.x), start.z.max(end.z)),
+        ))
+    }
+}
+
+fn ray_xz_interval_for_bounds(
+    ray_origin: Vector3,
+    ray_dir: Vector3,
+    min_x: f32,
+    min_z: f32,
+    max_x: f32,
+    max_z: f32,
+) -> Option<(f32, f32)> {
+    let mut entry_t = f32::NEG_INFINITY;
+    let mut exit_t = f32::INFINITY;
+    clip_ray_axis_interval(
+        ray_origin.x,
+        ray_dir.x,
+        min_x,
+        max_x,
+        &mut entry_t,
+        &mut exit_t,
+    )?;
+    clip_ray_axis_interval(
+        ray_origin.z,
+        ray_dir.z,
+        min_z,
+        max_z,
+        &mut entry_t,
+        &mut exit_t,
+    )?;
+    (exit_t >= entry_t && exit_t >= 0.0).then_some((entry_t, exit_t))
+}
+
+fn clip_ray_axis_interval(
+    origin: f32,
+    direction: f32,
+    min: f32,
+    max: f32,
+    entry_t: &mut f32,
+    exit_t: &mut f32,
+) -> Option<()> {
+    if direction.abs() <= f32::EPSILON {
+        return (origin >= min && origin <= max).then_some(());
+    }
+
+    let t0 = (min - origin) / direction;
+    let t1 = (max - origin) / direction;
+    *entry_t = entry_t.max(t0.min(t1));
+    *exit_t = exit_t.min(t0.max(t1));
+    Some(())
 }
