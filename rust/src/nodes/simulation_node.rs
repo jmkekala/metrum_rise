@@ -466,7 +466,7 @@ impl SimulationNode {
             base_patch.world_origin_x + base_patch.world_size_x,
             base_patch.world_origin_z + base_patch.world_size_z,
         );
-        Self::append_road_clip_loops(&mut dict, &road_clip_query.cdt_road_loops);
+        Self::append_road_clip_query(&mut dict, &road_clip_query);
         Self::append_cdt_terrain_mesh(
             &mut dict,
             &refined_patch,
@@ -488,7 +488,7 @@ impl SimulationNode {
     ) {
         let road_clip_query =
             Self::road_clip_loop_query_for_bounds(core, min_x, min_z, max_x, max_z);
-        Self::append_road_clip_loops(dict, &road_clip_query.cdt_road_loops);
+        Self::append_road_clip_query(dict, &road_clip_query);
     }
 
     fn road_clip_loop_query_for_bounds(
@@ -514,6 +514,33 @@ impl SimulationNode {
                 clip_error_label: Some(err.debug_label()),
             },
         }
+    }
+
+    fn append_road_clip_query(dict: &mut VarDictionary, road_clip_query: &RoadClipLoopQuery) {
+        Self::append_road_clip_status(dict, road_clip_query);
+        Self::append_road_clip_loops(dict, &road_clip_query.cdt_road_loops);
+    }
+
+    fn append_road_clip_status(dict: &mut VarDictionary, road_clip_query: &RoadClipLoopQuery) {
+        let (status, error, source_count) = Self::road_clip_status_values(road_clip_query);
+        dict.set("road_clip_status", GString::from(status));
+        dict.set("road_clip_error", GString::from(error));
+        dict.set("road_clip_source_count", source_count);
+    }
+
+    fn road_clip_status_values(
+        road_clip_query: &RoadClipLoopQuery,
+    ) -> (&'static str, &'static str, i64) {
+        let (status, error) = if let Some(error_label) = road_clip_query.clip_error_label {
+            ("failed", error_label)
+        } else {
+            ("ok", "none")
+        };
+        (
+            status,
+            error,
+            i64::try_from(road_clip_query.source_count).unwrap_or(0),
+        )
     }
 
     fn append_road_clip_loops(dict: &mut VarDictionary, road_clip_loops: &[TerrainCdtRoadLoop]) {
@@ -3671,6 +3698,40 @@ mod tests {
         assert_eq!(export.owner_indices, vec![3]);
         assert_eq!(export.section_ranges, vec![-1, -1]);
         assert_eq!(export.s_ranges, vec![-1.0, -1.0]);
+    }
+
+    #[test]
+    fn road_clip_query_metadata_keeps_clip_failure_visible_without_loops() {
+        let query = RoadClipLoopQuery {
+            cdt_road_loops: Vec::new(),
+            source_count: 1,
+            clip_error_label: Some("terrain_clip_missing_output_boundary_owner"),
+        };
+
+        let (status, error, source_count) = SimulationNode::road_clip_status_values(&query);
+
+        assert_eq!(status, "failed");
+        assert_eq!(error, "terrain_clip_missing_output_boundary_owner");
+        assert_eq!(source_count, 1);
+        assert!(
+            query.cdt_road_loops.is_empty(),
+            "the failure status must survive even when there are no loops to upload"
+        );
+    }
+
+    #[test]
+    fn road_clip_query_metadata_marks_absent_road_clip_as_ok() {
+        let query = RoadClipLoopQuery {
+            cdt_road_loops: Vec::new(),
+            source_count: 0,
+            clip_error_label: None,
+        };
+
+        let (status, error, source_count) = SimulationNode::road_clip_status_values(&query);
+
+        assert_eq!(status, "ok");
+        assert_eq!(error, "none");
+        assert_eq!(source_count, 0);
     }
 
     fn test_patch() -> TerrainPatchSnapshot {

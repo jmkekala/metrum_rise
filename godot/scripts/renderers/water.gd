@@ -458,8 +458,11 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var layer_sample_count: int = int(layer_stats.get("total_samples", depth_sample_count))
 		var baseline_nonzero_count: int = int(layer_stats.get("baseline_nonzero", -1))
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
+		var road_clip_status: String = str(patch_data.get("road_clip_status", "ok"))
+		var road_clip_error: String = str(patch_data.get("road_clip_error", "none"))
+		var road_clip_source_count: int = int(patch_data.get("road_clip_source_count", 0))
 		lines.append(
-			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f)"
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f)"
 			% [
 				key.x,
 				key.y,
@@ -498,6 +501,9 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				int(layer_stats.get("source_count_total", -1)),
 				float(layer_stats.get("source_rate_sum", -1.0)),
 				float(layer_stats.get("source_rate_abs_sum", -1.0)),
+				road_clip_status,
+				road_clip_error,
+				road_clip_source_count,
 				int(clip_stats.get("group_count", 0)),
 				int(clip_stats.get("loop_count", 0)),
 				int(clip_stats.get("point_count", 0)),
@@ -585,7 +591,12 @@ func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
 	return expected_points == points.size()
 
 func _water_patch_mesh_from_data(patch_data: Dictionary, lod_step: int) -> Mesh:
+	if _patch_has_road_clip_failure(patch_data):
+		return ArrayMesh.new()
 	return _clipped_water_patch_mesh(patch_data, lod_step)
+
+func _patch_has_road_clip_failure(patch_data: Dictionary) -> bool:
+	return str(patch_data.get("road_clip_status", "ok")) == "failed"
 
 func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
 	if not _patch_has_road_clip_loops(patch_data):
