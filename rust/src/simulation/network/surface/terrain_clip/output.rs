@@ -1,8 +1,8 @@
 //! Terrain-clip output edge sourcing.
 
 use super::super::RoadSurfaceSystem;
+use super::heights::interval_height_at;
 use super::model::*;
-use super::union::interval_height_at;
 use godot::prelude::Vector3;
 
 enum TerrainClipOutputSourceSelection {
