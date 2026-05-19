@@ -51,7 +51,7 @@ fn source_local_owned_boundary_preserves_explicit_height_endpoint_authority() {
 }
 
 #[test]
-fn duplicate_owner_source_candidate_cluster_uses_stable_representative() {
+fn duplicate_owner_source_candidate_cluster_preserves_overlay_owned_key() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let representative = (1_000_000, 0);
     let duplicate_source = (1_000_019, 18);
@@ -78,19 +78,52 @@ fn duplicate_owner_source_candidate_cluster_uses_stable_representative() {
     };
 
     canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
-        .expect("duplicate source cluster should canonicalize to a stable representative");
+        .expect("sub-grid duplicate source cluster should preserve the owned overlay key");
 
     let contour_keys = regions[0].shape[0]
         .iter()
         .copied()
         .map(ownership_key_from_overlay_point)
         .collect::<BTreeSet<_>>();
-    assert!(contour_keys.contains(&representative));
-    assert!(!contour_keys.contains(&drifted_vertex));
-    assert!(
-        validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
-            .is_ok()
-    );
+    assert!(contour_keys.contains(&drifted_vertex));
+}
+
+#[test]
+fn duplicate_owner_source_candidate_cluster_preserves_same_mm_overlay_key() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let representative = (1_000_000, 0);
+    let duplicate_source = (1_000_001, 0);
+    let same_mm_overlay_vertex = (1_000_200, 0);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(same_mm_overlay_vertex),
+            overlay_point_from_key((0, 0)),
+            overlay_point_from_key((0, 1_000_000)),
+        ],
+    )];
+    let owner_points = vec![representative, duplicate_source];
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner: BTreeMap::new(),
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points)],
+        )),
+        height_points_by_source: BTreeMap::new(),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("tight duplicate source cluster should preserve same-mm overlay ownership");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&same_mm_overlay_vertex));
 }
 
 #[test]

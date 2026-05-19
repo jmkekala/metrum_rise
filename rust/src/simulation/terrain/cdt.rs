@@ -1674,6 +1674,12 @@ fn source_sample_parameter_on_road_constraint(
     end: TerrainCdtVertex,
     sample: TerrainCdtVertex,
 ) -> Option<f64> {
+    if same_xz(sample, start) {
+        return Some(0.0);
+    }
+    if same_xz(sample, end) {
+        return Some(1.0);
+    }
     let t = segment_parameter(start, end, sample.x, sample.z);
     if !unit_interval_contains(t) {
         return None;

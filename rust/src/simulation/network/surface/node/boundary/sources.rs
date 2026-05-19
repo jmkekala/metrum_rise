@@ -25,6 +25,70 @@ impl NodeFootprintBoundaryExportSources {
             explicit_vertical_step_segments: explicit_vertical_step_segments.to_vec(),
         })
     }
+
+    pub(in crate::simulation::network::surface) fn extend_arrangement_exposed_boundary_edges(
+        &mut self,
+        arrangement: &arrangement::NodeArrangement,
+    ) -> Result<(), NodeBoundaryExportError> {
+        for edge in arrangement
+            .edges()
+            .iter()
+            .filter(|edge| edge.exposed_boundary())
+        {
+            let Some(start_vertex) = arrangement.vertices().get(edge.start().index()) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            let Some(end_vertex) = arrangement.vertices().get(edge.end().index()) else {
+                return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
+            };
+            if start_vertex.key() == end_vertex.key() {
+                continue;
+            }
+            let start_point_key = ArrangementBoundaryPointKey {
+                x_key: start_vertex.key().x_key(),
+                z_key: start_vertex.key().z_key(),
+                y_mm: start_vertex.height_mm(),
+            };
+            let end_point_key = ArrangementBoundaryPointKey {
+                x_key: end_vertex.key().x_key(),
+                z_key: end_vertex.key().z_key(),
+                y_mm: end_vertex.height_mm(),
+            };
+            let Some(NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(start_source),
+                ..
+            }) = self.direct_vertex_sources.get(&start_point_key).copied()
+            else {
+                continue;
+            };
+            let Some(NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(end_source),
+                ..
+            }) = self.direct_vertex_sources.get(&end_point_key).copied()
+            else {
+                continue;
+            };
+            let owner = edge.owner();
+            self.source_edges.push(NodeEarthworkBoundarySourceEdge {
+                start_point_key,
+                end_point_key,
+                start_key: start_point_key.xz_key(),
+                end_key: end_point_key.xz_key(),
+                node_id: arrangement.node_id(),
+                kind: arrangement.piece_kind(),
+                owner_kind: owner.kind(),
+                owner_index: owner.owner_index(),
+                start_source,
+                end_source,
+            });
+        }
+        self.source_edges.sort_by(|a, b| {
+            node_earthwork_source_edge_ordering(a, b)
+                .then(a.start_key.cmp(&b.start_key))
+                .then(a.end_key.cmp(&b.end_key))
+        });
+        Ok(())
+    }
 }
 
 fn node_earthwork_boundary_source_edges_from_owned_regions(
@@ -169,6 +233,13 @@ pub(super) fn node_footprint_boundary_vertex_source_for_edge_point(
         return Some(NodeFootprintBoundaryVertexSource::Direct(
             source_edge.end_source,
         ));
+    }
+    if !arrangement_key_lies_exactly_on_segment(
+        point_key.xz_key(),
+        source_edge.start_key,
+        source_edge.end_key,
+    ) {
+        return None;
     }
     let parameter = arrangement_key_segment_parameter_xz(
         point_key.xz_key(),

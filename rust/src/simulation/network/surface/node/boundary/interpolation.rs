@@ -3,6 +3,7 @@
 use super::*;
 
 impl NodeFootprintBoundaryExportSources {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn reject_missing_footprint_boundary_heights(
         &self,
         vertices: &[(arrangement::NodeArrangementKey, Option<i64>)],

@@ -19,7 +19,7 @@ pub(super) struct NodeFootprintBoundarySplitPoint {
 pub(in crate::simulation::network::surface) fn node_earthwork_boundary_segments_from_footprint_loops(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
-    footprint_loops: &[Vec<Vector3>],
+    footprint_loops: &[Vec<NodeFootprintBoundaryPoint>],
     sources: &NodeFootprintBoundaryExportSources,
 ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, NodeBoundaryExportError> {
     if sources.source_edges.is_empty() {
@@ -55,8 +55,8 @@ pub(in crate::simulation::network::surface) fn node_earthwork_boundary_segments_
 pub(super) fn push_sourced_node_earthwork_boundary_segments(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
-    start: Vector3,
-    end: Vector3,
+    start: NodeFootprintBoundaryPoint,
+    end: NodeFootprintBoundaryPoint,
     source_edges: &[NodeEarthworkBoundarySourceEdge],
     direct_vertex_sources: &BTreeMap<
         ArrangementBoundaryPointKey,
@@ -64,8 +64,8 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
     >,
     segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
 ) -> Result<(), NodeBoundaryExportError> {
-    let start_key = ArrangementBoundaryPointKey::from_world(start).xz_key();
-    let end_key = ArrangementBoundaryPointKey::from_world(end).xz_key();
+    let start_key = start.xz_key();
+    let end_key = end.xz_key();
     if start_key == end_key {
         return Ok(());
     }
@@ -73,11 +73,11 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
         BTreeMap::<ArrangementSegmentParameter, NodeFootprintBoundarySplitPoint>::new();
     split_points.insert(
         ArrangementSegmentParameter::zero(),
-        node_footprint_boundary_split_point_from_world(start, direct_vertex_sources),
+        node_footprint_boundary_split_point_from_boundary_point(start, direct_vertex_sources),
     );
     split_points.insert(
         ArrangementSegmentParameter::one(),
-        node_footprint_boundary_split_point_from_world(end, direct_vertex_sources),
+        node_footprint_boundary_split_point_from_boundary_point(end, direct_vertex_sources),
     );
     for source_edge in source_edges {
         for (split_key, split_point_key, split_source) in [
@@ -92,7 +92,7 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
                 source_edge.end_source,
             ),
         ] {
-            if !arrangement_key_lies_on_segment(split_key, start_key, end_key) {
+            if !arrangement_key_lies_exactly_on_segment(split_key, start_key, end_key) {
                 continue;
             }
             let Some(parameter) =
@@ -131,13 +131,11 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
         {
             continue;
         }
-        let sub_start_point_key = ArrangementBoundaryPointKey::from_world(sub_start);
-        let sub_end_point_key = ArrangementBoundaryPointKey::from_world(sub_end);
         let source = node_earthwork_source_for_boundary_subsegment(
             node_id,
             kind,
-            sub_start_point_key,
-            sub_end_point_key,
+            sub_start_split.point_key,
+            sub_end_split.point_key,
             source_edges,
             direct_vertex_sources,
             sub_start_split.source,
@@ -161,14 +159,14 @@ impl NodeFootprintBoundarySplitPoint {
     }
 }
 
-fn node_footprint_boundary_split_point_from_world(
-    point: Vector3,
+fn node_footprint_boundary_split_point_from_boundary_point(
+    point: NodeFootprintBoundaryPoint,
     direct_vertex_sources: &BTreeMap<
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
 ) -> NodeFootprintBoundarySplitPoint {
-    let point_key = ArrangementBoundaryPointKey::from_world(point);
+    let point_key = point.point_key;
     NodeFootprintBoundarySplitPoint {
         point_key,
         source: node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources),
@@ -197,22 +195,14 @@ pub(super) fn insert_node_footprint_boundary_split_point(
         );
     }
     if existing.point_key.y_mm != incoming.point_key.y_mm {
-        let source_ordering =
-            node_footprint_split_source_ordering(incoming.source, existing.source);
-        if source_ordering.is_eq() {
-            return Err(
-                NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
-                    x_key: incoming.point_key.x_key,
-                    z_key: incoming.point_key.z_key,
-                    existing_y_mm: existing.point_key.y_mm,
-                    incoming_y_mm: incoming.point_key.y_mm,
-                },
-            );
-        }
-        if source_ordering.is_gt() {
-            *existing = incoming;
-        }
-        return Ok(());
+        return Err(
+            NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
+                x_key: incoming.point_key.x_key,
+                z_key: incoming.point_key.z_key,
+                existing_y_mm: existing.point_key.y_mm,
+                incoming_y_mm: incoming.point_key.y_mm,
+            },
+        );
     }
     if node_footprint_split_source_ordering(incoming.source, existing.source).is_gt() {
         existing.source = incoming.source;
@@ -275,11 +265,11 @@ fn node_earthwork_source_edge_for_subsegment(
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
 ) -> Option<RoadSurfaceEarthworkFaceSource> {
-    if !arrangement_key_lies_on_segment(
+    if !arrangement_key_lies_exactly_on_segment(
         start_point_key.xz_key(),
         source_edge.start_key,
         source_edge.end_key,
-    ) || !arrangement_key_lies_on_segment(
+    ) || !arrangement_key_lies_exactly_on_segment(
         end_point_key.xz_key(),
         source_edge.start_key,
         source_edge.end_key,
@@ -354,21 +344,23 @@ fn node_earthwork_source_for_direct_boundary_segment(
     })
 }
 
-fn same_winding_boundary_point_loops_from_loop(points: &[Vector3]) -> Vec<Vec<Vector3>> {
+pub(in crate::simulation::network::surface::node) fn same_winding_boundary_point_loops_from_loop(
+    points: &[NodeFootprintBoundaryPoint],
+) -> Vec<Vec<NodeFootprintBoundaryPoint>> {
     if !boundary_point_loop_has_repeated_xz(points) {
         return vec![points.to_vec()];
     }
 
-    let source_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(points);
+    let source_area_m2 = signed_boundary_point_loop_area_xz(points);
     split_boundary_point_loop_at_repeated_xz(points.to_vec())
         .into_iter()
         .filter_map(|points| {
-            let points = RoadSurfaceSystem::canonicalize_loop_points(points);
+            let points = canonicalize_boundary_point_loop(points);
             if points.len() < 3 {
                 return None;
             }
-            let split_area_m2 = RoadSurfaceSystem::signed_polygon_area_xz(&points);
-            if split_area_m2.abs() <= boundary_points_numeric_area_budget_m2(&points) {
+            let split_area_m2 = signed_boundary_point_loop_area_xz(&points);
+            if split_area_m2.abs() <= boundary_point_loop_numeric_area_budget_m2(&points) {
                 return None;
             }
             (source_area_m2.signum() == split_area_m2.signum()).then_some(points)
@@ -376,8 +368,10 @@ fn same_winding_boundary_point_loops_from_loop(points: &[Vector3]) -> Vec<Vec<Ve
         .collect()
 }
 
-fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vector3>> {
-    let points = RoadSurfaceSystem::canonicalize_loop_points(points);
+fn split_boundary_point_loop_at_repeated_xz(
+    points: Vec<NodeFootprintBoundaryPoint>,
+) -> Vec<Vec<NodeFootprintBoundaryPoint>> {
+    let points = canonicalize_boundary_point_loop(points);
     if points.len() < 3 {
         return Vec::new();
     }
@@ -385,17 +379,14 @@ fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vec
     let mut loops = Vec::new();
     let mut stack = vec![points[0]];
     let mut seen = BTreeMap::<arrangement::NodeArrangementKey, usize>::new();
-    seen.insert(
-        ArrangementBoundaryPointKey::from_world(points[0]).xz_key(),
-        0,
-    );
+    seen.insert(points[0].xz_key(), 0);
     for index in 1..=points.len() {
         let current = points[index % points.len()];
-        let current_key = ArrangementBoundaryPointKey::from_world(current).xz_key();
+        let current_key = current.xz_key();
         if let Some(start_index) = seen.get(&current_key).copied() {
             let mut cycle = stack[start_index..].to_vec();
             cycle.push(current);
-            let cycle = RoadSurfaceSystem::canonicalize_loop_points(cycle);
+            let cycle = canonicalize_boundary_point_loop(cycle);
             if cycle.len() >= 3 {
                 loops.push(cycle);
             }
@@ -405,10 +396,7 @@ fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vec
             }
             seen.clear();
             for (stack_index, point) in stack.iter().enumerate() {
-                seen.insert(
-                    ArrangementBoundaryPointKey::from_world(*point).xz_key(),
-                    stack_index,
-                );
+                seen.insert(point.xz_key(), stack_index);
             }
         } else {
             stack.push(current);
@@ -423,12 +411,36 @@ fn split_boundary_point_loop_at_repeated_xz(points: Vec<Vector3>) -> Vec<Vec<Vec
     }
 }
 
-fn boundary_point_loop_has_repeated_xz(points: &[Vector3]) -> bool {
+fn boundary_point_loop_has_repeated_xz(points: &[NodeFootprintBoundaryPoint]) -> bool {
     let mut seen = BTreeSet::new();
-    for point in RoadSurfaceSystem::canonicalize_loop_points(points.to_vec()) {
-        if !seen.insert(ArrangementBoundaryPointKey::from_world(point).xz_key()) {
+    for point in canonicalize_boundary_point_loop(points.to_vec()) {
+        if !seen.insert(point.xz_key()) {
             return true;
         }
     }
     false
+}
+
+fn canonicalize_boundary_point_loop(
+    mut points: Vec<NodeFootprintBoundaryPoint>,
+) -> Vec<NodeFootprintBoundaryPoint> {
+    points.dedup_by(|a, b| a.point_key == b.point_key);
+    if points.len() >= 2
+        && points.first().map(|point| point.point_key) == points.last().map(|point| point.point_key)
+    {
+        points.pop();
+    }
+    points
+}
+
+fn boundary_point_loop_world_points(points: &[NodeFootprintBoundaryPoint]) -> Vec<Vector3> {
+    points.iter().map(|point| point.point_world()).collect()
+}
+
+fn signed_boundary_point_loop_area_xz(points: &[NodeFootprintBoundaryPoint]) -> f32 {
+    RoadSurfaceSystem::signed_polygon_area_xz(&boundary_point_loop_world_points(points))
+}
+
+fn boundary_point_loop_numeric_area_budget_m2(points: &[NodeFootprintBoundaryPoint]) -> f32 {
+    boundary_points_numeric_area_budget_m2(&boundary_point_loop_world_points(points))
 }

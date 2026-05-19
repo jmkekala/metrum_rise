@@ -327,6 +327,24 @@ impl NodeArrangementVertex {
     }
 }
 
+impl NodeArrangementEdge {
+    pub(crate) fn start(&self) -> NodeArrangementVertexId {
+        self.start
+    }
+
+    pub(crate) fn end(&self) -> NodeArrangementVertexId {
+        self.end
+    }
+
+    pub(crate) fn exposed_boundary(&self) -> bool {
+        self.exposed_boundary
+    }
+
+    pub(crate) fn owner(&self) -> NodeBandOwner {
+        self.owner
+    }
+}
+
 impl NodeOwnedRegion {
     pub(crate) fn owner(&self) -> NodeBandOwner {
         self.owner

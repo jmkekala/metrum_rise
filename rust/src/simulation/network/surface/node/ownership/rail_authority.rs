@@ -328,8 +328,8 @@ impl NodeRailCanonicalPointSet {
         if candidates.len() == 1 {
             return Ok(candidates.iter().copied().next());
         }
-        if canonical_candidates_form_source_duplicate_cluster(candidates) {
-            return Ok(candidates.iter().copied().next());
+        if canonical_candidates_form_source_duplicate_cluster(point, candidates) {
+            return Ok(Some(point));
         }
         Err(
             NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex {
@@ -353,21 +353,39 @@ impl NodeRailCanonicalPointSet {
 }
 
 fn canonical_candidates_form_source_duplicate_cluster(
+    point: NodeOwnershipPointKey,
     candidates: &BTreeSet<NodeOwnershipPointKey>,
 ) -> bool {
-    // Coalesce duplicate source endpoints emitted by independent source rails after
-    // projection to the overlay grid. Wider same-mm ambiguity remains blocking.
-    let Some((first_x, first_z)) = candidates.first().copied() else {
+    if candidates.len() < 2 {
         return false;
-    };
-    let (mut min_x, mut max_x) = (first_x, first_x);
-    let (mut min_z, mut max_z) = (first_z, first_z);
-    for (x, z) in candidates.iter().copied() {
-        min_x = min_x.min(x);
-        max_x = max_x.max(x);
-        min_z = min_z.min(z);
-        max_z = max_z.max(z);
     }
+    let point_mm_key = ownership_mm_key(point);
+    if candidates
+        .iter()
+        .any(|candidate| ownership_mm_key(*candidate) != point_mm_key)
+    {
+        return false;
+    }
+    let min_x = candidates
+        .iter()
+        .map(|candidate| candidate.0)
+        .min()
+        .unwrap_or(point.0);
+    let max_x = candidates
+        .iter()
+        .map(|candidate| candidate.0)
+        .max()
+        .unwrap_or(point.0);
+    let min_z = candidates
+        .iter()
+        .map(|candidate| candidate.1)
+        .min()
+        .unwrap_or(point.1);
+    let max_z = candidates
+        .iter()
+        .map(|candidate| candidate.1)
+        .max()
+        .unwrap_or(point.1);
     max_x - min_x <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
         && max_z - min_z <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
 }

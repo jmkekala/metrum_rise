@@ -5,6 +5,7 @@ use super::sources::node_footprint_boundary_vertex_source_for_edge_point;
 use super::*;
 
 impl NodeFootprintBoundaryExportSources {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn height_mm_at_key(
         &mut self,
         key: arrangement::NodeArrangementKey,
@@ -14,6 +15,13 @@ impl NodeFootprintBoundaryExportSources {
         };
         self.insert_boundary_vertex_source(key, candidate.height_mm, candidate.source);
         Ok(Some(candidate.height_mm))
+    }
+
+    pub(in crate::simulation::network::surface) fn reject_boundary_vertex_height_conflict(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Result<(), NodeBoundaryExportError> {
+        self.height_candidate_at_boundary_vertex(key).map(|_| ())
     }
 
     pub(super) fn height_candidate_at_boundary_vertex(
@@ -103,19 +111,18 @@ impl NodeFootprintBoundaryExportSources {
             .map(|candidate| candidate))
     }
 
+    #[cfg(test)]
     pub(super) fn insert_boundary_vertex_source(
         &mut self,
         key: arrangement::NodeArrangementKey,
         height_mm: i64,
         candidate: NodeFootprintBoundaryDirectVertex,
     ) {
-        let point_key = ArrangementBoundaryPointKey::from_world(
-            arrangement_boundary_point_to_world(ArrangementBoundaryPointKey {
-                x_key: key.x_key(),
-                z_key: key.z_key(),
-                y_mm: height_mm,
-            }),
-        );
+        let point_key = ArrangementBoundaryPointKey {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+            y_mm: height_mm,
+        };
         self.direct_vertex_sources
             .entry(point_key)
             .and_modify(|current| {
@@ -140,7 +147,11 @@ impl NodeFootprintBoundaryExportSources {
         key: arrangement::NodeArrangementKey,
     ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
         self.source_edges.iter().filter_map(move |source_edge| {
-            if !arrangement_key_lies_on_segment(key, source_edge.start_key, source_edge.end_key) {
+            if !arrangement_key_lies_exactly_on_segment(
+                key,
+                source_edge.start_key,
+                source_edge.end_key,
+            ) {
                 return None;
             }
             let parameter = arrangement_key_segment_parameter_xz(
@@ -274,7 +285,7 @@ fn explicit_vertical_step_authorizes_footprint_height_pair(
     let lower_owner = arrangement::NodeBandOwner::new(lower.owner_kind, lower.owner_index);
     let raised_owner = arrangement::NodeBandOwner::new(raised.owner_kind, raised.owner_index);
     explicit_vertical_step_segments.iter().any(|segment| {
-        arrangement_key_lies_on_segment(key, segment.start(), segment.end())
+        arrangement_key_lies_exactly_on_segment(key, segment.start(), segment.end())
             && vertical_step_segment_authorizes_owner_pair(*segment, lower_owner, raised_owner)
     })
 }

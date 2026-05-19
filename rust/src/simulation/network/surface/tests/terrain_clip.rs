@@ -42,27 +42,27 @@ fn terrain_clip_polygons_include_standard_grounded_footprints() {
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
         "expected every terrain clip cutter to be a valid road footprint polygon"
     );
-    let expected_outer_boundary_loop_count: usize = surface
+    let expected_terrain_clip_source_loop_count: usize = surface
         .compiled_visual_span_pieces()
         .values()
-        .map(|piece| piece.outer_boundary_loops.len())
+        .map(|piece| piece.terrain_clip_boundary_loops.len())
         .sum::<usize>()
         + surface
             .compiled_visual_node_pieces()
             .values()
-            .map(|piece| piece.outer_boundary_loops.len())
+            .map(|piece| piece.terrain_clip_boundary_loops.len())
             .sum::<usize>();
     assert!(
-        clip_polygons.len() <= expected_outer_boundary_loop_count,
-        "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} cutters for {} raw outer loops",
+        clip_polygons.len() <= expected_terrain_clip_source_loop_count,
+        "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} cutters for {} raw clip loops",
         clip_polygons.len(),
-        expected_outer_boundary_loop_count
+        expected_terrain_clip_source_loop_count
     );
     let (cdt_road_loops, cdt_clip_polygons, cdt_source_count) = surface
         .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0)
         .expect("production terrain clip export should keep source-owned loops");
     assert_eq!(cdt_clip_polygons.len(), clip_polygons.len());
-    assert_eq!(cdt_source_count, expected_outer_boundary_loop_count);
+    assert_eq!(cdt_source_count, expected_terrain_clip_source_loop_count);
     assert!(
         cdt_road_loops
             .iter()

@@ -472,11 +472,11 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
     );
 
     let mut points = vec![
-        Vector3::new(0.0, 0.0, 0.0),
-        unsupported_point,
-        Vector3::new(2.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 1.0),
-        Vector3::new(0.0, 0.0, 1.0),
+        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(unsupported_point),
+        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(Vector3::new(2.0, 0.0, 1.0)),
+        test_boundary_point(Vector3::new(0.0, 0.0, 1.0)),
     ];
     remove_subbudget_unsupported_numeric_boundary_vertices(
         &mut points,
@@ -492,7 +492,7 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
         points
             .iter()
             .copied()
-            .all(|point| ArrangementBoundaryPointKey::from_world(point) != unsupported_key)
+            .all(|point| point.point_key != unsupported_key)
     );
 }
 
@@ -719,8 +719,8 @@ fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 2.0, 0.0),
+        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(Vector3::new(2.0, 2.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &mut segments,
@@ -787,7 +787,7 @@ fn duplicate_split_point_conflicting_height_is_rejected() {
 }
 
 #[test]
-fn duplicate_split_point_height_uses_source_order_not_max_y() {
+fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
     let parameter =
         ArrangementSegmentParameter::new(1, 2).expect("test parameter should be canonical");
     let lower_order_source = NodeFootprintBoundaryDirectVertex {
@@ -817,7 +817,7 @@ fn duplicate_split_point_height_uses_source_order_not_max_y() {
     )
     .expect("first split point should insert");
 
-    insert_node_footprint_boundary_split_point(
+    let error = insert_node_footprint_boundary_split_point(
         &mut split_points,
         parameter,
         NodeFootprintBoundarySplitPoint {
@@ -825,13 +825,21 @@ fn duplicate_split_point_height_uses_source_order_not_max_y() {
             source: Some(higher_order_source),
         },
     )
-    .expect("explicit source ordering should resolve duplicate split point height");
+    .expect_err("duplicate sourced split points with different heights must reject");
 
-    let selected = split_points
-        .get(&parameter)
-        .expect("merged split point should remain");
-    assert_eq!(selected.point_key.y_mm, 1000);
-    assert_eq!(selected.source, Some(higher_order_source));
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
+            x_key: 1_000_000,
+            z_key: 0,
+            existing_y_mm: 2000,
+            incoming_y_mm: 1000,
+        }
+    ));
+}
+
+fn test_boundary_point(point: Vector3) -> NodeFootprintBoundaryPoint {
+    NodeFootprintBoundaryPoint::new(ArrangementBoundaryPointKey::from_world(point))
 }
 
 fn test_source_edge(

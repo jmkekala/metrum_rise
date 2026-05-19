@@ -9,25 +9,21 @@ use super::RoadSurfaceVisualNodePieceKind;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConstraintOverlapMode {
     ExactCanonical,
-    TerminalOverlayGridBounded,
 }
 
 impl ConstraintOverlapMode {
-    pub(super) fn for_piece_kind(piece_kind: RoadSurfaceVisualNodePieceKind) -> Self {
-        match piece_kind {
-            RoadSurfaceVisualNodePieceKind::Terminal => Self::TerminalOverlayGridBounded,
-            RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::JunctionN => {
-                Self::ExactCanonical
-            }
-        }
+    pub(super) fn for_piece_kind(_piece_kind: RoadSurfaceVisualNodePieceKind) -> Self {
+        Self::ExactCanonical
     }
 
     pub(super) fn allows_grid_bounded_constraint_overlap(self) -> bool {
-        matches!(self, Self::TerminalOverlayGridBounded)
+        let _ = self;
+        false
     }
 
     pub(super) fn cleans_overlay_numeric_spikes(self) -> bool {
-        matches!(self, Self::TerminalOverlayGridBounded)
+        let _ = self;
+        true
     }
 }
 

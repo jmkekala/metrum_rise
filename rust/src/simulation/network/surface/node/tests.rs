@@ -1,6 +1,8 @@
 //! Node surface export tests.
 
-use super::arrangement::{NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource};
+use super::arrangement::{
+    NodeArrangementEdgeId, NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource,
+};
 use super::backend::RoadVec2;
 use super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
@@ -211,6 +213,31 @@ fn footprint_loop_contains_xz(loop_points: &[Vector3], point_xz: RoadVec2) -> bo
     loop_points
         .iter()
         .any(|point| ArrangementBoundaryPointKey::from_world(*point).xz_key() == key)
+}
+
+fn push_exposed_triangle_boundary_edges(
+    arrangement: &mut NodeArrangement,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    vertices: [super::arrangement::NodeArrangementVertexId; 3],
+) -> Vec<NodeArrangementEdgeId> {
+    (0..3)
+        .map(|index| {
+            arrangement.push_edge(
+                vertices[index],
+                vertices[(index + 1) % vertices.len()],
+                owner,
+                height_field_id,
+                None,
+                None,
+                true,
+                false,
+                false,
+                NodeSeamSource::for_owner(owner),
+                Vec::new(),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -460,12 +487,18 @@ fn node_export_rejects_conflicting_footprint_boundary_heights() {
             [],
         )
         .expect("lower apex vertex is valid");
+    let lower_edges = push_exposed_triangle_boundary_edges(
+        &mut arrangement,
+        lower_owner,
+        lower_height,
+        [lower_start, lower_end, lower_apex],
+    );
     let lower_region = arrangement.push_region(
         lower_owner,
         lower_height,
         vec![lower_start, lower_end, lower_apex],
         Vec::new(),
-        Vec::new(),
+        lower_edges,
         0.5,
         Vec::new(),
     );
@@ -502,12 +535,18 @@ fn node_export_rejects_conflicting_footprint_boundary_heights() {
             [],
         )
         .expect("raised apex vertex is valid");
+    let raised_edges = push_exposed_triangle_boundary_edges(
+        &mut arrangement,
+        raised_owner,
+        raised_height,
+        [raised_start, raised_end, raised_apex],
+    );
     let raised_region = arrangement.push_region(
         raised_owner,
         raised_height,
         vec![raised_start, raised_end, raised_apex],
         Vec::new(),
-        Vec::new(),
+        raised_edges,
         0.5,
         Vec::new(),
     );
@@ -858,7 +897,7 @@ fn vertical_step_export_does_not_repair_overlay_sibling_support() {
 }
 
 #[test]
-fn node_export_does_not_emit_final_owned_vertical_face_without_step_authority() {
+fn node_export_rejects_final_owned_footprint_height_conflict_without_step_authority() {
     let lower_owner = owner(RoadSurfaceBandKind::Carriageway, 0);
     let raised_owner = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
     let lower_height = height_field(lower_owner);
@@ -901,12 +940,53 @@ fn node_export_does_not_emit_final_owned_vertical_face_without_step_authority() 
             [],
         )
         .expect("lower vertex is valid");
+    let lower_boundary_edges = vec![
+        arrangement.push_edge(
+            lower_a,
+            lower_b,
+            lower_owner,
+            lower_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(lower_owner),
+            Vec::new(),
+        ),
+        arrangement.push_edge(
+            lower_b,
+            lower_c,
+            lower_owner,
+            lower_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(lower_owner),
+            Vec::new(),
+        ),
+        arrangement.push_edge(
+            lower_d,
+            lower_a,
+            lower_owner,
+            lower_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(lower_owner),
+            Vec::new(),
+        ),
+    ];
     let lower_region = arrangement.push_region(
         lower_owner,
         lower_height,
         vec![lower_a, lower_b, lower_c, lower_d],
         Vec::new(),
-        Vec::new(),
+        lower_boundary_edges,
         1.0,
         Vec::new(),
     );
@@ -949,12 +1029,53 @@ fn node_export_does_not_emit_final_owned_vertical_face_without_step_authority() 
             [],
         )
         .expect("raised vertex is valid");
+    let raised_boundary_edges = vec![
+        arrangement.push_edge(
+            raised_b,
+            raised_c,
+            raised_owner,
+            raised_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(raised_owner),
+            Vec::new(),
+        ),
+        arrangement.push_edge(
+            raised_c,
+            raised_d,
+            raised_owner,
+            raised_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(raised_owner),
+            Vec::new(),
+        ),
+        arrangement.push_edge(
+            raised_d,
+            raised_a,
+            raised_owner,
+            raised_height,
+            None,
+            None,
+            true,
+            false,
+            false,
+            NodeSeamSource::for_owner(raised_owner),
+            Vec::new(),
+        ),
+    ];
     let raised_region = arrangement.push_region(
         raised_owner,
         raised_height,
         vec![raised_a, raised_b, raised_c, raised_d],
         Vec::new(),
-        Vec::new(),
+        raised_boundary_edges,
         1.0,
         Vec::new(),
     );
@@ -967,16 +1088,18 @@ fn node_export_does_not_emit_final_owned_vertical_face_without_step_authority() 
         RoadVec2::new(1.0, 2.0),
         RoadVec2::new(0.0, 2.0),
     ]);
-    let regions =
-        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
-            .expect("shared top boundaries without step authority should still export top regions");
-
     assert!(
         arrangement.explicit_vertical_step_segments().is_empty(),
         "test setup must not carry materialized step authority"
     );
+    let error =
+        RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
+            .expect_err("shared footprint boundary heights require explicit step authority");
     assert!(
-        regions.raised_step_faces.is_empty(),
-        "compatible shared owners must not synthesize a vertical face without explicit step authority"
+        matches!(
+            error,
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+        ),
+        "expected structured footprint height conflict, got {error:?}"
     );
 }

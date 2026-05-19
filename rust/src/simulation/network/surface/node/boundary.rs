@@ -16,8 +16,9 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
 pub(super) use super::segments::{
-    arrangement_key_lies_on_segment,
+    arrangement_key,
     arrangement_key_overlay_segment_parameter as arrangement_key_segment_parameter_xz,
+    key_lies_exactly_on_segment,
 };
 
 mod earthwork_segments;
@@ -29,6 +30,7 @@ mod support;
 #[cfg(test)]
 use super::RoadSurfaceEarthworkFaceSource;
 pub(super) use earthwork_segments::node_earthwork_boundary_segments_from_footprint_loops;
+pub(super) use earthwork_segments::same_winding_boundary_point_loops_from_loop;
 #[cfg(test)]
 use earthwork_segments::{
     NodeFootprintBoundarySplitPoint, insert_node_footprint_boundary_split_point,
@@ -42,6 +44,11 @@ pub(super) struct ArrangementBoundaryPointKey {
     pub(super) x_key: i64,
     pub(super) z_key: i64,
     pub(super) y_mm: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NodeFootprintBoundaryPoint {
+    pub(super) point_key: ArrangementBoundaryPointKey,
 }
 
 pub(super) type ArrangementSegmentParameter = SurfaceSegmentParameter;
@@ -60,6 +67,20 @@ impl ArrangementBoundaryPointKey {
             self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
             self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
         ))
+    }
+}
+
+impl NodeFootprintBoundaryPoint {
+    pub(super) fn new(point_key: ArrangementBoundaryPointKey) -> Self {
+        Self { point_key }
+    }
+
+    pub(super) fn point_world(self) -> Vector3 {
+        arrangement_boundary_point_to_world(self.point_key)
+    }
+
+    pub(super) fn xz_key(self) -> arrangement::NodeArrangementKey {
+        self.point_key.xz_key()
     }
 }
 
@@ -127,7 +148,7 @@ pub(crate) enum NodeBoundaryExportError {
 }
 
 pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
-    points: &mut Vec<Vector3>,
+    points: &mut Vec<NodeFootprintBoundaryPoint>,
     mut should_keep_vertex: F,
 ) where
     F: FnMut(ArrangementBoundaryPointKey, [Vector3; 3]) -> bool,
@@ -148,8 +169,12 @@ pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
             } else {
                 index + 1
             };
-            let local_points = [points[previous], points[index], points[next]];
-            let current_point_key = ArrangementBoundaryPointKey::from_world(points[index]);
+            let local_points = [
+                points[previous].point_world(),
+                points[index].point_world(),
+                points[next].point_world(),
+            ];
+            let current_point_key = points[index].point_key;
             if should_keep_vertex(current_point_key, local_points) {
                 continue;
             }
@@ -161,6 +186,18 @@ pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
             return;
         }
     }
+}
+
+fn arrangement_key_lies_exactly_on_segment(
+    point: arrangement::NodeArrangementKey,
+    start: arrangement::NodeArrangementKey,
+    end: arrangement::NodeArrangementKey,
+) -> bool {
+    key_lies_exactly_on_segment(
+        arrangement_key(point),
+        arrangement_key(start),
+        arrangement_key(end),
+    )
 }
 
 fn node_footprint_direct_vertex_ordering(

@@ -517,7 +517,9 @@ fn assert_surface_terrain_cdt_contract(
     let mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
         terrain, road_loops, min_x, min_z, max_x, max_z, 8.0,
     ))
-    .unwrap_or_else(|_| panic!("{case_name}: production terrain CDT input should build"));
+    .unwrap_or_else(|err| {
+        panic!("{case_name}: production terrain CDT input should build: {err:?}")
+    });
 
     assert_eq!(
         mesh.stats.invalid_constraint_edges, 0,
@@ -2272,8 +2274,11 @@ fn canonical_node_pipeline_report(
     let ownership = match RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails) {
         Ok(ownership) => ownership,
         Err(error) => {
-            return NodeValidationReport::from_boolean_ownership_error(node_id, piece_kind, &error)
-                .debug_dump();
+            return format!(
+                "{} error={error:?}",
+                NodeValidationReport::from_boolean_ownership_error(node_id, piece_kind, &error)
+                    .debug_dump()
+            );
         }
     };
     if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
@@ -2371,6 +2376,44 @@ fn boundary_export_step_debug(
     arrangement: &NodeArrangement,
     error: &super::node::boundary::NodeBoundaryExportError,
 ) -> String {
+    if matches!(
+        error,
+        super::node::boundary::NodeBoundaryExportError::DegenerateOuterBoundaryLoop
+    ) {
+        let mut degree = BTreeMap::<(i64, i64), usize>::new();
+        let mut exposed = Vec::new();
+        for edge in arrangement
+            .edges()
+            .iter()
+            .filter(|edge| edge.exposed_boundary())
+        {
+            let Some(start) = arrangement.vertices().get(edge.start().index()) else {
+                continue;
+            };
+            let Some(end) = arrangement.vertices().get(edge.end().index()) else {
+                continue;
+            };
+            let start_key = (start.key().x_key(), start.key().z_key(), start.height_mm());
+            let end_key = (end.key().x_key(), end.key().z_key(), end.height_mm());
+            exposed.push((start_key, end_key));
+            *degree
+                .entry((start.key().x_key(), start.key().z_key()))
+                .or_default() += 1;
+            *degree
+                .entry((end.key().x_key(), end.key().z_key()))
+                .or_default() += 1;
+        }
+        let bad_degree = degree
+            .into_iter()
+            .filter(|(_, count)| *count != 2)
+            .take(24)
+            .collect::<Vec<_>>();
+        return format!(
+            "exposed_edge_count={} bad_xz_degrees={bad_degree:?} first_edges={:?}",
+            exposed.len(),
+            exposed.into_iter().take(24).collect::<Vec<_>>()
+        );
+    }
     let super::node::boundary::NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
         x_key,
         z_key,
@@ -4251,7 +4294,17 @@ fn logged_terminal_with_tiny_boundary_dust_exports_final_top_footprint() {
         let piece = surface
             .compiled_visual_node_pieces()
             .get(&node_id)
-            .unwrap_or_else(|| panic!("tiny boundary dust should not survive into final top footprint; node_id={node_id} dump={dump}"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "tiny boundary dust should not survive into final top footprint; node_id={node_id} report={} dump={dump}",
+                    canonical_node_pipeline_report(
+                        &surface,
+                        &graph,
+                        node_id,
+                        RoadSurfaceVisualNodePieceKind::Terminal,
+                    )
+                )
+            });
         assert_node_top_covers_footprint(piece);
     }
     assert!(
@@ -6106,7 +6159,12 @@ fn logged_flat_oblique_t_junction_compiles_with_explicit_curb_sidewalk_endpoint_
     let piece = surface
         .compiled_visual_node_pieces()
         .get(&center)
-        .expect("logged flat oblique T must compile with explicit curb/sidewalk endpoint path");
+        .unwrap_or_else(|| {
+            panic!(
+                "logged flat oblique T must compile with explicit curb/sidewalk endpoint path: {}",
+                canonical_junction_pipeline_report(&surface, &graph, center)
+            )
+        });
     assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_canonical_explicit_vertical_steps_have_faces(piece);
 }
