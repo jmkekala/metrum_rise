@@ -53,8 +53,8 @@ impl RoadSurfaceSystem {
             else {
                 return TerrainClipSegmentPointRecovery::Partial;
             };
-            Self::merge_terrain_clip_height(&mut heights[index], start_y);
-            Self::merge_terrain_clip_height(&mut heights[index + 1], end_y);
+            Self::merge_highest_terrain_clip_height(&mut heights[index], start_y);
+            Self::merge_highest_terrain_clip_height(&mut heights[index + 1], end_y);
         }
         if !covered_any {
             return TerrainClipSegmentPointRecovery::Missing;
@@ -144,7 +144,7 @@ impl RoadSurfaceSystem {
             .max_by(|a, b| a.total_cmp(b))
     }
 
-    pub(super) fn merge_terrain_clip_height(height: &mut Option<f32>, candidate: f32) {
+    fn merge_highest_terrain_clip_height(height: &mut Option<f32>, candidate: f32) {
         *height = Some(height.map_or(candidate, |current| current.max(candidate)));
     }
 
@@ -164,7 +164,7 @@ impl RoadSurfaceSystem {
         *points = deduped;
     }
 
-    pub(super) fn terrain_clip_overlay_point_height_from_source_edges(
+    pub(super) fn highest_terrain_clip_overlay_point_height_from_source_edges(
         point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<f32> {
@@ -178,7 +178,7 @@ impl RoadSurfaceSystem {
             let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
                 continue;
             };
-            Self::merge_terrain_clip_height(
+            Self::merge_highest_terrain_clip_height(
                 &mut height,
                 interpolate_height_f64(source_edge.start.y, source_edge.end.y, t),
             );

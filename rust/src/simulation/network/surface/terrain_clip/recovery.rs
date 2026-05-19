@@ -195,7 +195,7 @@ impl RoadSurfaceSystem {
     ) {
         for point in points {
             let overlay_point = [f64::from(point.x), f64::from(point.z)];
-            if let Some(height) = Self::terrain_clip_overlay_point_height_from_source_edges(
+            if let Some(height) = Self::highest_terrain_clip_overlay_point_height_from_source_edges(
                 overlay_point,
                 source_edges,
             ) {
