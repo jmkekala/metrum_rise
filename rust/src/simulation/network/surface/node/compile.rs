@@ -102,7 +102,8 @@ impl RoadSurfaceSystem {
                 &node_regions.earthwork_boundary_segments,
                 terrain,
                 top_surface_shapes.as_ref(),
-            );
+            )
+            .ok()?;
 
         self.assemble_explicit_node_piece(
             node_id,

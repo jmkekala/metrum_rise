@@ -591,23 +591,23 @@ impl RoadSurfaceSystem {
                 last_band.lateral_end_m,
                 last_band.height_end_m,
             );
-            let left_outer =
-                self.earthwork_transition_point(left_road, section.lateral_xz * -1.0, terrain);
-            let right_outer =
-                self.earthwork_transition_point(right_road, section.lateral_xz, terrain);
-
             dump.push_str("          \"left_road_edge\": ");
             Self::append_surface_sample_literal(dump, terrain, left_road);
             dump.push_str(",\n");
             dump.push_str("          \"right_road_edge\": ");
             Self::append_surface_sample_literal(dump, terrain, right_road);
             dump.push_str(",\n");
-            dump.push_str("          \"left_outer_margin\": ");
-            Self::append_surface_sample_literal(dump, terrain, left_outer);
-            dump.push_str(",\n");
-            dump.push_str("          \"right_outer_margin\": ");
-            Self::append_surface_sample_literal(dump, terrain, right_outer);
-            dump.push_str(",\n");
+            if let (Some(left_outer), Some(right_outer)) = (
+                self.earthwork_transition_point(left_road, section.lateral_xz * -1.0, terrain),
+                self.earthwork_transition_point(right_road, section.lateral_xz, terrain),
+            ) {
+                dump.push_str("          \"left_outer_margin\": ");
+                Self::append_surface_sample_literal(dump, terrain, left_outer);
+                dump.push_str(",\n");
+                dump.push_str("          \"right_outer_margin\": ");
+                Self::append_surface_sample_literal(dump, terrain, right_outer);
+                dump.push_str(",\n");
+            }
         }
 
         let _ = writeln!(dump, "          \"bands\": [");

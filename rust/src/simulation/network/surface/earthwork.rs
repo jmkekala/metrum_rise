@@ -21,8 +21,8 @@ use model::{EarthworkBoundaryEdgeKey, EarthworkBoundaryPointKey, IndexedEarthwor
 
 pub(crate) use model::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceEarthworkSupportPolicy,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkGeometryError,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy,
 };
 
 // Vertical roadbed offset applied when terrain earthworks need pavement clearance.
@@ -119,7 +119,8 @@ impl RoadSurfaceSystem {
     pub(super) fn span_earthwork_boundary_segment_loops_from_support_regions(
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
-    ) -> Vec<Vec<RoadSurfaceEarthworkBoundarySegment>> {
+    ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
+    {
         let support_policy = RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class);
         let mut candidate_segments = Vec::new();
         for region in regions {
@@ -169,7 +170,8 @@ impl RoadSurfaceSystem {
 
     fn owned_region_boundary_segment_loops(
         candidate_segments: Vec<RoadSurfaceEarthworkBoundarySegment>,
-    ) -> Vec<Vec<RoadSurfaceEarthworkBoundarySegment>> {
+    ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
+    {
         let mut edge_counts = BTreeMap::<EarthworkBoundaryEdgeKey, usize>::new();
         for segment in &candidate_segments {
             let start_key = EarthworkBoundaryPointKey::from_point(segment.inner_start);
@@ -202,7 +204,8 @@ impl RoadSurfaceSystem {
 
     fn assemble_earthwork_boundary_segment_loops(
         mut boundary_segments: Vec<IndexedEarthworkBoundarySegment>,
-    ) -> Vec<Vec<RoadSurfaceEarthworkBoundarySegment>> {
+    ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
+    {
         boundary_segments.sort_by(|a, b| {
             a.start_key
                 .cmp(&b.start_key)
@@ -275,26 +278,35 @@ impl RoadSurfaceSystem {
                 current_key = next_key;
             }
 
-            if current_key != start_key || loop_segments.len() < 3 {
-                continue;
+            if current_key != start_key {
+                return Err(RoadSurfaceEarthworkGeometryError::OpenBoundaryChain {
+                    segment_count: loop_segments.len(),
+                });
+            }
+            if loop_segments.len() < 3 {
+                return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
+                    point_count: loop_segments.len(),
+                });
             }
             let point_loop = loop_segments
                 .iter()
                 .map(|segment| segment.inner_start)
                 .collect::<Vec<_>>();
             if Self::signed_polygon_area_xz(&point_loop).abs() <= SAMPLE_EPSILON_M {
-                continue;
+                return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
+                    point_count: point_loop.len(),
+                });
             }
             loops.push(loop_segments);
         }
 
-        Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut loops);
-        loops
+        Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut loops)?;
+        Ok(loops)
     }
 
     pub(super) fn orient_earthwork_boundary_segment_loops_by_nesting(
         loops: &mut [Vec<RoadSurfaceEarthworkBoundarySegment>],
-    ) {
+    ) -> Result<(), RoadSurfaceEarthworkGeometryError> {
         let point_loops = loops
             .iter()
             .map(|segments| {
@@ -304,12 +316,19 @@ impl RoadSurfaceSystem {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        for points in &point_loops {
+            if points.is_empty() {
+                return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
+                    point_count: points.len(),
+                });
+            }
+        }
         let samples = point_loops
             .iter()
             .map(|points| {
                 points.iter().fold(Vector2::ZERO, |sum, point| {
                     sum + Vector2::new(point.x, point.z)
-                }) / points.len().max(1) as f32
+                }) / points.len() as f32
             })
             .collect::<Vec<_>>();
         let should_be_ccw = point_loops
@@ -340,6 +359,7 @@ impl RoadSurfaceSystem {
                 Self::reverse_earthwork_boundary_segment_loop(segments);
             }
         }
+        Ok(())
     }
 
     fn reverse_earthwork_boundary_segment_loop(
@@ -356,11 +376,14 @@ impl RoadSurfaceSystem {
         boundary_segment_loops: &[Vec<RoadSurfaceEarthworkBoundarySegment>],
         terrain: &TerrainSystem,
         top_surface_shapes: Option<&NodeOverlayShapes>,
-    ) -> (
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceEarthworkRenderFace>,
-    ) {
+    ) -> Result<
+        (
+            Vec<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceEarthworkRenderFace>,
+        ),
+        RoadSurfaceEarthworkGeometryError,
+    > {
         let mut earthwork_surface_polygons = Vec::new();
         let mut earthwork_outer_boundary_loops = Vec::new();
         let mut render_earthwork_faces = Vec::new();
@@ -371,7 +394,7 @@ impl RoadSurfaceSystem {
                     boundary_segments,
                     terrain,
                     top_surface_shapes,
-                )
+                )?
             else {
                 continue;
             };
@@ -385,11 +408,11 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
-        (
+        Ok((
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
-        )
+        ))
     }
 
     fn build_closed_earthwork_loop_geometry(
@@ -397,28 +420,43 @@ impl RoadSurfaceSystem {
         boundary_segments: &[RoadSurfaceEarthworkBoundarySegment],
         terrain: &TerrainSystem,
         top_surface_shapes: Option<&NodeOverlayShapes>,
-    ) -> Option<(
-        Option<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceVisualPolygon>,
-        Vec<RoadSurfaceEarthworkRenderFace>,
-    )> {
+    ) -> Result<
+        Option<(
+            Option<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceEarthworkRenderFace>,
+        )>,
+        RoadSurfaceEarthworkGeometryError,
+    > {
         if boundary_segments.len() < 3 {
-            return None;
+            return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
+                point_count: boundary_segments.len(),
+            });
         }
         let boundary_points = boundary_segments
             .iter()
             .map(|segment| segment.inner_start)
             .collect::<Vec<_>>();
 
-        let vertex_outer_points: Vec<Vector3> = boundary_points
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
-                let outward = Self::closed_loop_vertex_outward_xz(&boundary_points, index);
-                self.earthwork_transition_point(*point, outward, terrain)
-            })
-            .collect();
-        let outer_loop = Self::make_visual_polygon(vertex_outer_points);
+        let mut vertex_outer_points = Vec::with_capacity(boundary_points.len());
+        for (index, point) in boundary_points.iter().enumerate() {
+            let Some(outward) = Self::closed_loop_vertex_outward_xz(&boundary_points, index) else {
+                vertex_outer_points.clear();
+                break;
+            };
+            let Some(outer_point) = self.earthwork_transition_point(*point, outward, terrain)
+            else {
+                vertex_outer_points.clear();
+                break;
+            };
+            vertex_outer_points.push(outer_point);
+        }
+        // A cusp has no unique vertex miter. Keep edge-based faces, but do not invent a loop point.
+        let outer_loop = if vertex_outer_points.len() == boundary_points.len() {
+            Self::make_visual_polygon(vertex_outer_points)
+        } else {
+            None
+        };
         let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
         let winding_ccw = Self::signed_polygon_area_xz(&boundary_points) > 0.0;
@@ -431,7 +469,7 @@ impl RoadSurfaceSystem {
                 winding_ccw,
                 terrain,
                 top_surface_shapes,
-            );
+            )?;
             // Handoff and internal seam edges can be part of a closed footprint loop. They are not
             // terrain tie-ins, so a skirt whose plan area enters solved top ownership is rejected.
             if let Some(top_surface_shapes) = top_surface_shapes
@@ -460,9 +498,9 @@ impl RoadSurfaceSystem {
         }
 
         if outer_loop.is_none() && side_polygons.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some((outer_loop, side_polygons, render_faces))
+        Ok(Some((outer_loop, side_polygons, render_faces)))
     }
 
     fn earthwork_edge_transition_points(
@@ -472,33 +510,71 @@ impl RoadSurfaceSystem {
         winding_ccw: bool,
         terrain: &TerrainSystem,
         top_surface_shapes: Option<&NodeOverlayShapes>,
-    ) -> (Vector3, Vector3) {
+    ) -> Result<(Vector3, Vector3), RoadSurfaceEarthworkGeometryError> {
         let edge = Vector2::new(next.x - current.x, next.z - current.z);
-        let outward = Self::edge_outward_normal_xz(edge, winding_ccw);
-        let outer_current = self.earthwork_transition_point(current, outward, terrain);
-        let outer_next = self.earthwork_transition_point(next, outward, terrain);
+        let Some(outward) = Self::edge_outward_normal_xz(edge, winding_ccw) else {
+            return Err(
+                RoadSurfaceEarthworkGeometryError::DegenerateOutwardDirection {
+                    point_count: 2,
+                    point_index: 0,
+                },
+            );
+        };
+        let Some(outer_current) = self.earthwork_transition_point(current, outward, terrain) else {
+            return Err(
+                RoadSurfaceEarthworkGeometryError::DegenerateOutwardDirection {
+                    point_count: 2,
+                    point_index: 0,
+                },
+            );
+        };
+        let Some(outer_next) = self.earthwork_transition_point(next, outward, terrain) else {
+            return Err(
+                RoadSurfaceEarthworkGeometryError::DegenerateOutwardDirection {
+                    point_count: 2,
+                    point_index: 1,
+                },
+            );
+        };
         let Some(top_surface_shapes) = top_surface_shapes else {
-            return (outer_current, outer_next);
+            return Ok((outer_current, outer_next));
         };
 
-        let opposite_outer_current = self.earthwork_transition_point(current, -outward, terrain);
-        let opposite_outer_next = self.earthwork_transition_point(next, -outward, terrain);
+        let Some(opposite_outer_current) =
+            self.earthwork_transition_point(current, -outward, terrain)
+        else {
+            return Err(
+                RoadSurfaceEarthworkGeometryError::DegenerateOutwardDirection {
+                    point_count: 2,
+                    point_index: 0,
+                },
+            );
+        };
+        let Some(opposite_outer_next) = self.earthwork_transition_point(next, -outward, terrain)
+        else {
+            return Err(
+                RoadSurfaceEarthworkGeometryError::DegenerateOutwardDirection {
+                    point_count: 2,
+                    point_index: 1,
+                },
+            );
+        };
         let Some(nominal_overlap) = Self::earthwork_candidate_top_overlap_area_m2(
             [current, next, outer_next, outer_current],
             top_surface_shapes,
         ) else {
-            return (outer_current, outer_next);
+            return Ok((outer_current, outer_next));
         };
         let Some(opposite_overlap) = Self::earthwork_candidate_top_overlap_area_m2(
             [current, next, opposite_outer_next, opposite_outer_current],
             top_surface_shapes,
         ) else {
-            return (outer_current, outer_next);
+            return Ok((outer_current, outer_next));
         };
         if opposite_overlap < nominal_overlap {
-            (opposite_outer_current, opposite_outer_next)
+            Ok((opposite_outer_current, opposite_outer_next))
         } else {
-            (outer_current, outer_next)
+            Ok((outer_current, outer_next))
         }
     }
 
@@ -571,9 +647,9 @@ impl RoadSurfaceSystem {
         Self::overlay_union_contours(&contours)
     }
 
-    fn closed_loop_vertex_outward_xz(boundary_points: &[Vector3], index: usize) -> Vector2 {
+    fn closed_loop_vertex_outward_xz(boundary_points: &[Vector3], index: usize) -> Option<Vector2> {
         if boundary_points.len() < 3 {
-            return Vector2::RIGHT;
+            return None;
         }
 
         let len = boundary_points.len();
@@ -583,38 +659,25 @@ impl RoadSurfaceSystem {
         let incoming = Vector2::new(current.x - prev.x, current.z - prev.z);
         let outgoing = Vector2::new(next.x - current.x, next.z - current.z);
         let winding_ccw = Self::signed_polygon_area_xz(boundary_points) > 0.0;
-        let outward_incoming = Self::edge_outward_normal_xz(incoming, winding_ccw);
-        let outward_outgoing = Self::edge_outward_normal_xz(outgoing, winding_ccw);
-        let mut outward = outward_incoming + outward_outgoing;
-        if outward.length_squared() <= SAMPLE_EPSILON_M {
-            outward = if outward_incoming.length_squared() > SAMPLE_EPSILON_M {
-                outward_incoming
-            } else {
-                outward_outgoing
-            };
-        }
-        if outward.length_squared() <= SAMPLE_EPSILON_M {
-            let centroid = boundary_points.iter().fold(Vector2::ZERO, |sum, point| {
-                sum + Vector2::new(point.x, point.z)
-            }) / boundary_points.len() as f32;
-            outward = Vector2::new(current.x - centroid.x, current.z - centroid.y);
-        }
-        if outward.length_squared() <= SAMPLE_EPSILON_M {
-            Vector2::RIGHT
+        let outward_incoming = Self::edge_outward_normal_xz(incoming, winding_ccw)?;
+        let outward_outgoing = Self::edge_outward_normal_xz(outgoing, winding_ccw)?;
+        let outward = outward_incoming + outward_outgoing;
+        if outward.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            None
         } else {
-            outward.normalized()
+            Some(outward.normalized())
         }
     }
 
-    fn edge_outward_normal_xz(edge_xz: Vector2, winding_ccw: bool) -> Vector2 {
-        if edge_xz.length_squared() <= SAMPLE_EPSILON_M {
-            return Vector2::ZERO;
+    fn edge_outward_normal_xz(edge_xz: Vector2, winding_ccw: bool) -> Option<Vector2> {
+        if edge_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            return None;
         }
         let tangent = edge_xz.normalized();
         if winding_ccw {
-            Vector2::new(tangent.y, -tangent.x)
+            Some(Vector2::new(tangent.y, -tangent.x))
         } else {
-            Vector2::new(-tangent.y, tangent.x)
+            Some(Vector2::new(-tangent.y, tangent.x))
         }
     }
 
@@ -699,17 +762,16 @@ impl RoadSurfaceSystem {
         road_point: Vector3,
         outward_xz: Vector2,
         terrain: &TerrainSystem,
-    ) -> Vector3 {
-        let outward_xz = if outward_xz.length_squared() <= SAMPLE_EPSILON_M {
-            Vector2::RIGHT
-        } else {
-            outward_xz.normalized()
-        };
+    ) -> Option<Vector3> {
+        if outward_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            return None;
+        }
+        let outward_xz = outward_xz.normalized();
         let distance_m = self.earthwork_transition_distance_m(road_point, outward_xz, terrain);
         let outer_xz = Vector2::new(road_point.x, road_point.z) + outward_xz * distance_m;
         let outer_height_m =
             terrain.sample_height_world(outer_xz.x, outer_xz.y) * config::HEIGHT_SCALE;
-        Vector3::new(outer_xz.x, outer_height_m, outer_xz.y)
+        Some(Vector3::new(outer_xz.x, outer_height_m, outer_xz.y))
     }
 
     fn earthwork_transition_distance_m(
@@ -966,5 +1028,88 @@ impl RoadSurfaceSystem {
         }
 
         ranges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_earthwork_source() -> RoadSurfaceEarthworkFaceSource {
+        RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx: 0,
+            edge_class: EdgeClass::Standard,
+            support_policy: RoadSurfaceEarthworkSupportPolicy::StandardFullGroundedSpan,
+            owner: super::super::RoadSurfaceSpanBandOwner {
+                source_band_index: 0,
+                kind: super::super::RoadSurfaceBandKind::Carriageway,
+            },
+            role: super::super::RoadSurfaceSpanRegionRole::Asphalt,
+            start_section_index: 0,
+            end_section_index: 1,
+            start_s_m: 0.0,
+            end_s_m: 1.0,
+        }
+    }
+
+    fn boundary_segment(
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+    ) -> RoadSurfaceEarthworkBoundarySegment {
+        RoadSurfaceEarthworkBoundarySegment {
+            inner_start: Vector3::new(start_x, 0.0, start_z),
+            inner_end: Vector3::new(end_x, 0.0, end_z),
+            source: test_earthwork_source(),
+        }
+    }
+
+    #[test]
+    fn earthwork_boundary_loop_assembly_rejects_open_chain() {
+        let result = RoadSurfaceSystem::owned_region_boundary_segment_loops(vec![
+            boundary_segment(0.0, 0.0, 1.0, 0.0),
+            boundary_segment(1.0, 0.0, 1.0, 1.0),
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(RoadSurfaceEarthworkGeometryError::OpenBoundaryChain { segment_count: 2 })
+        ));
+    }
+
+    #[test]
+    fn earthwork_vertex_outward_rejects_degenerate_spur() {
+        let points = vec![
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(-1.0, 0.0, 0.0),
+        ];
+
+        assert!(RoadSurfaceSystem::closed_loop_vertex_outward_xz(&points, 1).is_none());
+    }
+
+    #[test]
+    fn earthwork_edge_outward_accepts_short_nonzero_edges() {
+        let outward = RoadSurfaceSystem::edge_outward_normal_xz(
+            Vector2::new(SAMPLE_EPSILON_M * 10.0, 0.0),
+            true,
+        );
+
+        assert_eq!(outward, Some(Vector2::new(0.0, -1.0)));
+    }
+
+    #[test]
+    fn earthwork_loop_orientation_preserves_prevalidated_skinny_loops() {
+        let mut loops = vec![vec![
+            boundary_segment(0.0, 0.0, 0.01, 0.0),
+            boundary_segment(0.01, 0.0, 0.0, 0.01),
+            boundary_segment(0.0, 0.01, 0.0, 0.0),
+        ]];
+
+        assert!(
+            RoadSurfaceSystem::orient_earthwork_boundary_segment_loops_by_nesting(&mut loops)
+                .is_ok()
+        );
     }
 }

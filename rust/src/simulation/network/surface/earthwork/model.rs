@@ -16,6 +16,20 @@ pub(crate) enum RoadSurfaceEarthworkFaceKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceEarthworkGeometryError {
+    OpenBoundaryChain {
+        segment_count: usize,
+    },
+    DegenerateBoundaryLoop {
+        point_count: usize,
+    },
+    DegenerateOutwardDirection {
+        point_count: usize,
+        point_index: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceEarthworkSupportPolicy {
     StandardFullGroundedSpan,
     BridgeEndpointAbutments,

@@ -213,13 +213,15 @@ impl RoadSurfaceSystem {
             Self::span_earthwork_boundary_segment_loops_from_support_regions(
                 &span_earthwork_support_regions,
                 edge.class,
-            );
+            )
+            .ok()?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_segments(
                 &earthwork_boundary_segments,
                 terrain,
                 None,
-            );
+            )
+            .ok()?;
 
         let start_mouth_profile =
             Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::Start);

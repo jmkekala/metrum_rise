@@ -87,7 +87,8 @@ impl RoadSurfaceSystem {
                 &footprint_boundary_point_loops,
                 &boundary_export_sources,
             )?;
-        Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut earthwork_boundary_segments);
+        Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut earthwork_boundary_segments)
+            .map_err(|_| NodeBoundaryExportError::DegenerateOuterBoundaryLoop)?;
         let mut outer_boundary_loops =
             Self::outer_boundary_polygons_from_arrangement_regions(arrangement)?;
         let mut terrain_clip_boundary_loops =
