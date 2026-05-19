@@ -1,6 +1,7 @@
 //! Terrain-clip segment and source-chain recovery.
 
 use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceXzKey};
+use super::geometry::interpolate_height_f64;
 use super::model::*;
 use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,7 +46,7 @@ impl RoadSurfaceSystem {
                 samples.push(interval);
             }
         }
-        Self::terrain_clip_points_from_interval_coverage(start, end, samples)
+        Self::terrain_clip_top_envelope_points_from_interval_coverage(start, end, samples)
     }
 
     pub(super) fn terrain_clip_source_chain_points_from_source_edges(
@@ -94,14 +95,17 @@ impl RoadSurfaceSystem {
                     let mut points = path_keys
                         .into_iter()
                         .filter_map(|key| {
-                            Self::terrain_clip_source_point_for_vertex_key(key, source_edges)
+                            Self::terrain_clip_top_envelope_source_point_for_vertex_key(
+                                key,
+                                source_edges,
+                            )
                         })
                         .collect::<Vec<_>>();
-                    Self::raise_terrain_clip_points_to_highest_source_heights(
+                    Self::apply_terrain_clip_source_chain_top_envelope_heights(
                         &mut points,
                         source_edges,
                     );
-                    Self::dedup_terrain_clip_segment_points(&mut points);
+                    Self::dedup_terrain_clip_top_envelope_points(&mut points);
                     if points.len() < 2 {
                         continue;
                     }
@@ -189,18 +193,43 @@ impl RoadSurfaceSystem {
         Some(Self::terrain_clip_world_key(source_edge.start))
     }
 
-    fn raise_terrain_clip_points_to_highest_source_heights(
+    fn apply_terrain_clip_source_chain_top_envelope_heights(
         points: &mut [Vector3],
         source_edges: &[TerrainClipSourceEdge],
     ) {
         for point in points {
             let overlay_point = [f64::from(point.x), f64::from(point.z)];
-            if let Some(height) = Self::highest_terrain_clip_overlay_point_height_from_source_edges(
-                overlay_point,
-                source_edges,
-            ) {
-                point.y = point.y.max(height);
+            if let Some(height) =
+                Self::terrain_clip_source_chain_top_envelope_height_from_source_edges(
+                    overlay_point,
+                    source_edges,
+                )
+                && height > point.y
+            {
+                point.y = height;
             }
         }
+    }
+
+    fn terrain_clip_source_chain_top_envelope_height_from_source_edges(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<f32> {
+        let mut top_height = None;
+        for &source_edge in source_edges {
+            let source_start = [
+                f64::from(source_edge.start.x),
+                f64::from(source_edge.start.z),
+            ];
+            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+            let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
+                continue;
+            };
+            let candidate = interpolate_height_f64(source_edge.start.y, source_edge.end.y, t);
+            if top_height.is_none_or(|height| candidate > height) {
+                top_height = Some(candidate);
+            }
+        }
+        top_height
     }
 }

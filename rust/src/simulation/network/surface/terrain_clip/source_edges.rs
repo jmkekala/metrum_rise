@@ -232,10 +232,13 @@ impl RoadSurfaceSystem {
         })
     }
 
-    pub(super) fn terrain_clip_source_point_for_vertex_key(
+    pub(super) fn terrain_clip_top_envelope_source_point_for_vertex_key(
         key: SurfaceXzKey,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<Vector3> {
+        // This top-envelope pick is scoped to terrain-removal cutter recovery after
+        // final footprint ownership exists. Output provenance and dust connectors
+        // must use their ambiguity-checking paths instead.
         source_edges
             .iter()
             .flat_map(|edge| [edge.start, edge.end])

@@ -133,7 +133,9 @@ Live behavior:
   nodes the patch-local roadbed constraint graph: T-touching endpoints, proper crossings, and
   collinear overlap endpoints are split into shared XZ vertices, with inserted roadbed heights
   sampled as the maximum incident top height. This keeps `cdt_invalid_constraints=0` from being
-  dependent on whether the roadbed union exported one loop or several touching loops.
+  dependent on whether the roadbed union exported one loop or several touching loops. This is the
+  same final-roadbed top-envelope exception used by terrain-removal cutters, not a node
+  ownership, dust recovery, or output source conflict resolver.
 - known debt: the post-overlay boundary snapping, seam welding, shared grade sampler, source-vector
   height plumbing, and hand-written terminal / bend helper path have been removed. Logged
   `Terminal` and 2-arm `Bend` regressions now compile through canonical curb / sidewalk join
@@ -1763,6 +1765,9 @@ Road-piece CDT is now part of the accepted visual carrier for node pieces:
   dropped because a secondary visual CDT fill fails. When several candidate top surfaces provide
   different heights at the same unioned clip vertex, the exported cutter uses the highest visible
   top height deterministically so terrain cannot survive above any road surface at that XZ point.
+  This exception applies only after final road ownership/source provenance is solved; dust
+  connector recovery, output source selection, and node height ownership must reject conflicting
+  height/source identities instead of applying the top-envelope policy.
 - invalid Spade constraints are counted as geometry bugs; the live node-piece path must not fall
   back to nearest-material classification, centroid voting, render order, or paired strip sectors
 

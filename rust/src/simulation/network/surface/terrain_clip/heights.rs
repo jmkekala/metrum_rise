@@ -8,7 +8,7 @@ use super::model::{
 use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
-    pub(super) fn terrain_clip_points_from_interval_coverage<I>(
+    pub(super) fn terrain_clip_top_envelope_points_from_interval_coverage<I>(
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
         intervals: I,
@@ -26,6 +26,9 @@ impl RoadSurfaceSystem {
         breakpoints.sort_by(|a, b| a.total_cmp(b));
         breakpoints.dedup_by(|a, b| *a == *b);
 
+        // Spec-scoped exception: this is the final terrain-removal cutter
+        // top envelope. It is not used for output owner selection or dust
+        // height recovery, which reject ambiguous provenance/height inputs.
         let mut heights = vec![None; breakpoints.len()];
         let mut covered_any = false;
         for index in 0..breakpoints.len().saturating_sub(1) {
@@ -45,16 +48,15 @@ impl RoadSurfaceSystem {
             }
             covered_any = true;
 
-            let Some(start_y) = Self::terrain_clip_highest_source_height_at_t(&covering, start_t)
+            let Some(start_y) = Self::terrain_clip_top_envelope_height_at_t(&covering, start_t)
             else {
                 return TerrainClipSegmentPointRecovery::Partial;
             };
-            let Some(end_y) = Self::terrain_clip_highest_source_height_at_t(&covering, end_t)
-            else {
+            let Some(end_y) = Self::terrain_clip_top_envelope_height_at_t(&covering, end_t) else {
                 return TerrainClipSegmentPointRecovery::Partial;
             };
-            Self::merge_highest_terrain_clip_height(&mut heights[index], start_y);
-            Self::merge_highest_terrain_clip_height(&mut heights[index + 1], end_y);
+            Self::merge_terrain_clip_top_envelope_height(&mut heights[index], start_y);
+            Self::merge_terrain_clip_top_envelope_height(&mut heights[index + 1], end_y);
         }
         if !covered_any {
             return TerrainClipSegmentPointRecovery::Missing;
@@ -68,7 +70,7 @@ impl RoadSurfaceSystem {
             let point = interpolate_overlay_point(start, end, t);
             points.push(Vector3::new(point[0] as f32, height, point[1] as f32));
         }
-        Self::dedup_terrain_clip_segment_points(&mut points);
+        Self::dedup_terrain_clip_top_envelope_points(&mut points);
         if points.len() >= 2 {
             TerrainClipSegmentPointRecovery::Covered(points)
         } else {
@@ -133,7 +135,7 @@ impl RoadSurfaceSystem {
         interval.start_t <= start_t && interval.end_t >= end_t
     }
 
-    fn terrain_clip_highest_source_height_at_t(
+    fn terrain_clip_top_envelope_height_at_t(
         intervals: &[TerrainClipSourceInterval],
         t: f64,
     ) -> Option<f32> {
@@ -144,11 +146,11 @@ impl RoadSurfaceSystem {
             .max_by(|a, b| a.total_cmp(b))
     }
 
-    fn merge_highest_terrain_clip_height(height: &mut Option<f32>, candidate: f32) {
+    fn merge_terrain_clip_top_envelope_height(height: &mut Option<f32>, candidate: f32) {
         *height = Some(height.map_or(candidate, |current| current.max(candidate)));
     }
 
-    pub(super) fn dedup_terrain_clip_segment_points(points: &mut Vec<Vector3>) {
+    pub(super) fn dedup_terrain_clip_top_envelope_points(points: &mut Vec<Vector3>) {
         let mut deduped = Vec::with_capacity(points.len());
         for &point in points.iter() {
             if let Some(last) = deduped.last_mut() {
@@ -162,28 +164,6 @@ impl RoadSurfaceSystem {
             deduped.push(point);
         }
         *points = deduped;
-    }
-
-    pub(super) fn highest_terrain_clip_overlay_point_height_from_source_edges(
-        point: NodeOverlayPoint,
-        source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<f32> {
-        let mut height = None;
-        for &source_edge in source_edges {
-            let source_start = [
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ];
-            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
-            let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
-                continue;
-            };
-            Self::merge_highest_terrain_clip_height(
-                &mut height,
-                interpolate_height_f64(source_edge.start.y, source_edge.end.y, t),
-            );
-        }
-        height
     }
 
     pub(super) fn terrain_clip_unambiguous_overlay_point_height_from_source_edges(

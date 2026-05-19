@@ -17,7 +17,7 @@ impl RoadSurfaceSystem {
         mut points: Vec<Vector3>,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<(), TerrainClipOutputSourceError> {
-        Self::dedup_terrain_clip_segment_points(&mut points);
+        Self::dedup_terrain_clip_top_envelope_points(&mut points);
         for segment in points.windows(2) {
             let start = segment[0];
             let end = segment[1];
