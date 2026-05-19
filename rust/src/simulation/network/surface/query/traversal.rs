@@ -1,0 +1,132 @@
+//! Shared chunk and triangle traversal helpers for surface queries.
+
+use super::super::{
+    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
+};
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::terrain::TerrainSystem;
+use godot::prelude::Vector3;
+
+impl RoadSurfaceSystem {
+    pub(super) fn collect_query_contributors(
+        &self,
+        min_chunk: SurfaceChunkKey,
+        max_chunk: SurfaceChunkKey,
+    ) -> (Vec<usize>, Vec<u32>) {
+        let mut edge_indices = Vec::new();
+        let mut node_ids = Vec::new();
+        for cx in (min_chunk.0 - 1)..=(max_chunk.0 + 1) {
+            for cz in (min_chunk.1 - 1)..=(max_chunk.1 + 1) {
+                let chunk = (cx, cz);
+                if let Some(entry) = self.surface_chunk_cache.get(&chunk) {
+                    edge_indices.extend(entry.edge_indices.iter().copied());
+                    node_ids.extend(entry.node_ids.iter().copied());
+                }
+                if let Some(entry) = self.earthwork_chunk_cache.get(&chunk) {
+                    edge_indices.extend(entry.edge_indices.iter().copied());
+                    node_ids.extend(entry.node_ids.iter().copied());
+                }
+            }
+        }
+
+        edge_indices.sort_unstable();
+        edge_indices.dedup();
+        node_ids.sort_unstable();
+        node_ids.dedup();
+        (edge_indices, node_ids)
+    }
+
+    pub(super) fn visit_visible_span_piece_triangles<F>(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for region in &piece.span_owned_regions {
+            Self::visit_visual_polygon_triangles(&region.polygon, visitor);
+        }
+    }
+
+    pub(super) fn visit_span_piece_earthwork_triangles<F>(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn visit_span_piece_clearance_triangles<F>(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for region in &piece.span_earthwork_support_regions {
+            Self::visit_visual_polygon_triangles(&region.polygon, visitor);
+        }
+    }
+
+    pub(super) fn visit_visible_node_piece_triangles<F>(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        if !self.node_uses_visible_surface(graph, terrain, node_id) {
+            return;
+        }
+
+        for polygon in piece
+            .road_surface_polygons
+            .iter()
+            .chain(&piece.curb_surface_polygons)
+            .chain(&piece.sidewalk_surface_polygons)
+        {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    pub(super) fn visit_node_piece_earthwork_triangles<F>(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
+            return;
+        }
+
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    pub(in crate::simulation::network::surface) fn visit_visual_polygon_triangles<F>(
+        polygon: &RoadSurfaceVisualPolygon,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for &triangle in &polygon.triangles_world {
+            if Self::triangle_has_area_xz(triangle) {
+                visitor(triangle);
+            }
+        }
+    }
+}
