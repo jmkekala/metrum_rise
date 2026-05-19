@@ -454,6 +454,44 @@ fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
 }
 
 #[test]
+fn terrain_clip_union_rejects_output_source_ambiguity_across_kind_priority() {
+    let y = 8.0;
+    let points = vec![
+        Vector3::new(0.0, y, 0.0),
+        Vector3::new(2.0, y, 0.0),
+        Vector3::new(2.0, y, 1.0),
+        Vector3::new(0.0, y, 1.0),
+    ];
+    let raw_clip_sources = vec![
+        terrain_clip_loop_for_node_kind_test(
+            &points,
+            1,
+            RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        ),
+        terrain_clip_loop_for_node_kind_test(
+            &points,
+            2,
+            RoadSurfaceTerrainClipEdgeKind::FootprintBoundary,
+        ),
+    ];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { context, .. }) =
+        unioned
+    else {
+        panic!(
+            "output source selection must reject differing provenance instead of choosing the highest-priority edge kind, got {unioned:?}"
+        );
+    };
+    assert!(
+        context.contains("sources_disagree"),
+        "ambiguous output source diagnostic should name cross-kind provenance disagreement: {context}"
+    );
+}
+
+#[test]
 fn terrain_clip_union_exports_hole_contours_for_ring_footprint() {
     let y = 2.0;
     let rectangles = [
@@ -1092,10 +1130,24 @@ fn terrain_clip_source_edge_for_node_test(
     end: Vector3,
     node_id: u32,
 ) -> RoadSurfaceTerrainClipSourceEdge {
+    terrain_clip_source_edge_for_node_kind_test(
+        start,
+        end,
+        node_id,
+        RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+    )
+}
+
+fn terrain_clip_source_edge_for_node_kind_test(
+    start: Vector3,
+    end: Vector3,
+    node_id: u32,
+    edge_kind: RoadSurfaceTerrainClipEdgeKind,
+) -> RoadSurfaceTerrainClipSourceEdge {
     RoadSurfaceTerrainClipSourceEdge {
         start,
         end,
-        kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        kind: edge_kind,
         source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
             node_id,
             kind: RoadSurfaceVisualNodePieceKind::Terminal,
@@ -1107,12 +1159,26 @@ fn terrain_clip_source_edge_for_node_test(
 }
 
 fn terrain_clip_loop_for_node_test(points: &[Vector3], node_id: u32) -> RoadSurfaceTerrainClipLoop {
+    terrain_clip_loop_for_node_kind_test(
+        points,
+        node_id,
+        RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+    )
+}
+
+fn terrain_clip_loop_for_node_kind_test(
+    points: &[Vector3],
+    node_id: u32,
+    edge_kind: RoadSurfaceTerrainClipEdgeKind,
+) -> RoadSurfaceTerrainClipLoop {
     RoadSurfaceTerrainClipLoop {
         source_edges: points
             .iter()
             .zip(points.iter().cycle().skip(1))
             .take(points.len())
-            .map(|(&start, &end)| terrain_clip_source_edge_for_node_test(start, end, node_id))
+            .map(|(&start, &end)| {
+                terrain_clip_source_edge_for_node_kind_test(start, end, node_id, edge_kind)
+            })
             .collect(),
         points_world: points.to_vec(),
     }

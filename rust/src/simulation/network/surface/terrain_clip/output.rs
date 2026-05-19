@@ -237,21 +237,23 @@ impl RoadSurfaceSystem {
             return TerrainClipOutputSourceSelection::Missing;
         }
         candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        let best_kind_priority = terrain_clip_edge_kind_priority(candidates[0].kind);
-        let best_candidates = candidates
+        let visible_candidates = candidates
             .iter()
             .copied()
-            .filter(|candidate| {
-                terrain_clip_edge_kind_priority(candidate.kind) == best_kind_priority
-            })
+            .filter(|candidate| candidate.kind != RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
             .collect::<Vec<_>>();
-        let first = best_candidates[0];
-        if !best_candidates
+        let provenance_candidates = if visible_candidates.is_empty() {
+            candidates.as_slice()
+        } else {
+            visible_candidates.as_slice()
+        };
+        let first = provenance_candidates[0];
+        if !provenance_candidates
             .iter()
             .copied()
             .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
         {
-            let sources = best_candidates
+            let sources = provenance_candidates
                 .iter()
                 .take(6)
                 .map(|candidate| {
