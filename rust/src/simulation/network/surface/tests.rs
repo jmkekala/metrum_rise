@@ -490,21 +490,19 @@ fn assert_surface_terrain_cdt_contract(
     expect_retaining_wall: bool,
 ) {
     let (min_x, min_z, max_x, max_z) = bounds;
-    let (road_loops, clip_polygons, source_count) = surface
-        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
-            graph, min_x, min_z, max_x, max_z,
-        )
+    let (road_loops, source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z)
         .unwrap_or_else(|err| panic!("{case_name}: terrain clip export failed: {err:?}"));
     assert!(
         !road_loops.is_empty(),
         "{case_name}: expected production terrain CDT road loops"
     );
     assert!(
-        !clip_polygons.is_empty(),
-        "{case_name}: expected production road-owned clip polygons"
-    );
-    assert!(
-        source_count >= clip_polygons.len(),
+        source_count
+            >= road_loops
+                .iter()
+                .filter(|road_loop| !road_loop.is_hole)
+                .count(),
         "{case_name}: source loop count should name the raw owned footprint contributors"
     );
     for edge_source in road_loops
@@ -515,7 +513,13 @@ fn assert_surface_terrain_cdt_contract(
     }
 
     let mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
-        terrain, road_loops, min_x, min_z, max_x, max_z, 8.0,
+        terrain,
+        road_loops.clone(),
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        8.0,
     ))
     .unwrap_or_else(|err| {
         panic!("{case_name}: production terrain CDT input should build: {err:?}")
@@ -592,7 +596,7 @@ fn assert_surface_terrain_cdt_contract(
             "{case_name}: elevated or extreme authored terrain should expose wall tie-ins"
         );
     }
-    assert_cdt_mesh_stays_outside_clip_polygons(case_name, &mesh, &clip_polygons);
+    assert_cdt_mesh_stays_outside_road_loops(case_name, &mesh, &road_loops);
     assert_cdt_mesh_sources_are_structured(case_name, &mesh);
 }
 
@@ -681,10 +685,10 @@ fn assert_cdt_mesh_sources_are_structured(case_name: &str, mesh: &TerrainCdtMesh
     }
 }
 
-fn assert_cdt_mesh_stays_outside_clip_polygons(
+fn assert_cdt_mesh_stays_outside_road_loops(
     case_name: &str,
     mesh: &TerrainCdtMesh,
-    clip_polygons: &[RoadSurfaceVisualPolygon],
+    road_loops: &[TerrainCdtRoadLoop],
 ) {
     for (triangle_index, triangle) in mesh
         .triangles
@@ -701,32 +705,52 @@ fn assert_cdt_mesh_stays_outside_clip_polygons(
                 ((a.z + b.z + c.z) / 3.0) as f32,
             )
         };
-        if let Some((polygon_index, polygon)) = clip_polygons
+        if let Some((loop_index, road_loop)) = road_loops
             .iter()
             .enumerate()
-            .find(|(_, polygon)| polygon_strictly_contains_point_xz(&polygon.points_world, center))
+            .filter(|(_, road_loop)| !road_loop.is_hole)
+            .find(|(_, road_loop)| {
+                road_loop_contains_road_owned_point_xz(road_loops, road_loop, center)
+            })
         {
             panic!(
-                "{case_name}: accepted terrain triangle centroid leaked inside road-owned footprint; triangle_index={triangle_index} center=({:.3},{:.3}) polygon_index={polygon_index} polygon_area_m2={:.3}",
-                center.x,
-                center.y,
-                RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
+                "{case_name}: accepted terrain triangle centroid leaked inside road-owned footprint; triangle_index={triangle_index} center=({:.3},{:.3}) loop_index={loop_index} footprint_group_id={}",
+                center.x, center.y, road_loop.footprint_group_id
             );
         }
     }
 }
 
-fn polygon_strictly_contains_point_xz(points_world: &[Vector3], point: Vector2) -> bool {
-    if points_world.len() < 3 {
+fn road_loop_contains_road_owned_point_xz(
+    road_loops: &[TerrainCdtRoadLoop],
+    outer_loop: &TerrainCdtRoadLoop,
+    point: Vector2,
+) -> bool {
+    if !terrain_cdt_loop_strictly_contains_point_xz(outer_loop, point) {
+        return false;
+    }
+    !road_loops.iter().any(|candidate| {
+        candidate.is_hole
+            && candidate.footprint_group_id == outer_loop.footprint_group_id
+            && terrain_cdt_loop_strictly_contains_point_xz(candidate, point)
+    })
+}
+
+fn terrain_cdt_loop_strictly_contains_point_xz(
+    road_loop: &TerrainCdtRoadLoop,
+    point: Vector2,
+) -> bool {
+    if road_loop.vertices.len() < 3 {
         return false;
     }
     let mut inside = false;
-    for index in 0..points_world.len() {
-        let start = points_world[index];
-        let end = points_world[(index + 1) % points_world.len()];
-        if (start.z > point.y) != (end.z > point.y) {
-            let edge_x_at_point_z =
-                (end.x - start.x) * (point.y - start.z) / (end.z - start.z) + start.x;
+    for index in 0..road_loop.vertices.len() {
+        let start = road_loop.vertices[index];
+        let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
+        if (start.z as f32 > point.y) != (end.z as f32 > point.y) {
+            let edge_x_at_point_z = ((end.x - start.x) as f32) * (point.y - start.z as f32)
+                / ((end.z - start.z) as f32)
+                + start.x as f32;
             if point.x < edge_x_at_point_z {
                 inside = !inside;
             }
@@ -5116,36 +5140,20 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_side_join_ownership() {
         "editor-sized 60-degree T junction must have raw terrain clip source loops"
     );
     let unioned_clip_sources =
-        RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources)
+        RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
             .expect("editor-sized 60-degree T junction clip union should be source-complete");
     assert!(
-        !unioned_clip_sources.is_empty(),
+        !unioned_clip_sources.loops.is_empty(),
         "editor-sized 60-degree T junction raw clip loops must survive deterministic union"
     );
 
-    let clip_polygons =
-        surface.terrain_clip_polygons_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0);
+    let (road_loops, _) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0)
+        .expect("editor-sized 60-degree T junction clip export should be source-complete");
     assert!(
-        !clip_polygons.is_empty(),
-        "editor-sized 60-degree T junction must export terrain clip cutters"
+        !road_loops.is_empty(),
+        "editor-sized 60-degree T junction must export terrain clip loops"
     );
-    let road_loops = clip_polygons
-        .iter()
-        .enumerate()
-        .map(|(index, polygon)| {
-            TerrainCdtRoadLoop::new(
-                index as u64,
-                0,
-                polygon
-                    .points_world
-                    .iter()
-                    .map(|point| {
-                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
-                    })
-                    .collect(),
-            )
-        })
-        .collect();
     let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
         TerrainCdtPatch::new(-128.0, -32.0, 64.0, 64.0, [0.0; 4]),
         road_loops,

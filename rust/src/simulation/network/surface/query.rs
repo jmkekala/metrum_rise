@@ -53,52 +53,14 @@ impl RoadSurfaceSystem {
         keys
     }
 
-    #[cfg(test)]
-    pub(crate) fn terrain_clip_polygons_for_world_bounds(
+    pub(crate) fn terrain_cdt_road_loops_for_world_bounds(
         &self,
         graph: &RegionGraph,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        self.terrain_clip_polygons_and_source_count_for_world_bounds(
-            graph, min_x, min_z, max_x, max_z,
-        )
-        .expect("terrain clip export should preserve owned source coverage")
-        .0
-    }
-
-    pub(crate) fn terrain_clip_polygons_and_source_count_for_world_bounds(
-        &self,
-        graph: &RegionGraph,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> Result<(Vec<RoadSurfaceVisualPolygon>, usize), RoadSurfaceTerrainClipExportError> {
-        let boundary_loops =
-            self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
-        let source_count = boundary_loops.len();
-        Self::union_terrain_clip_boundary_loops(&boundary_loops)
-            .map(|polygons| (polygons, source_count))
-    }
-
-    pub(crate) fn terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
-        &self,
-        graph: &RegionGraph,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> Result<
-        (
-            Vec<TerrainCdtRoadLoop>,
-            Vec<RoadSurfaceVisualPolygon>,
-            usize,
-        ),
-        RoadSurfaceTerrainClipExportError,
-    > {
+    ) -> Result<(Vec<TerrainCdtRoadLoop>, usize), RoadSurfaceTerrainClipExportError> {
         let boundary_loops =
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
         let source_count = boundary_loops.len();
@@ -128,7 +90,7 @@ impl RoadSurfaceSystem {
                 )
             })
             .collect::<Vec<_>>();
-        Ok((road_loops, export.polygons, source_count))
+        Ok((road_loops, source_count))
     }
 
     fn terrain_clip_boundary_loops_for_world_bounds(

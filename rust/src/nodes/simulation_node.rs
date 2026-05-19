@@ -102,7 +102,7 @@ use crate::simulation::terrain::cdt::{
 use crate::simulation::water::WaterSystem;
 
 use crate::debug_log;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 
 const TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL: &str = "cdt_triangulation";
@@ -212,8 +212,7 @@ pub struct SimulationNode {
     base: Base<Node3D>,
 }
 
-struct RoadClipPolygonQuery {
-    polygons: Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon>,
+struct RoadClipLoopQuery {
     cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
     clip_error_label: Option<&'static str>,
@@ -460,14 +459,14 @@ impl SimulationNode {
             height_data,
         };
         let mut dict = Self::terrain_patch_dict(&refined_patch);
-        let road_clip_query = Self::road_clip_polygon_query_for_bounds(
+        let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,
             base_patch.world_origin_x,
             base_patch.world_origin_z,
             base_patch.world_origin_x + base_patch.world_size_x,
             base_patch.world_origin_z + base_patch.world_size_z,
         );
-        Self::append_road_clip_polygons(&mut dict, &road_clip_query.polygons);
+        Self::append_road_clip_loops(&mut dict, &road_clip_query.cdt_road_loops);
         Self::append_cdt_terrain_mesh(
             &mut dict,
             &refined_patch,
@@ -479,7 +478,7 @@ impl SimulationNode {
         dict
     }
 
-    fn append_road_clip_polygons_for_bounds(
+    fn append_road_clip_loops_for_bounds(
         dict: &mut VarDictionary,
         core: &SimCore,
         min_x: f32,
@@ -487,56 +486,29 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) {
-        let road_clip_polygons =
-            Self::road_clip_polygons_for_bounds(core, min_x, min_z, max_x, max_z);
-        Self::append_road_clip_polygons(dict, &road_clip_polygons);
+        let road_clip_query =
+            Self::road_clip_loop_query_for_bounds(core, min_x, min_z, max_x, max_z);
+        Self::append_road_clip_loops(dict, &road_clip_query.cdt_road_loops);
     }
 
-    fn road_clip_polygons_for_bounds(
+    fn road_clip_loop_query_for_bounds(
         core: &SimCore,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon> {
-        core.transit_network
-            .road_surface
-            .terrain_clip_polygons_and_source_count_for_world_bounds(
-                &core.region_graph,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            )
-            .map(|(polygons, _)| polygons)
-            .unwrap_or_default()
-    }
-
-    fn road_clip_polygon_query_for_bounds(
-        core: &SimCore,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> RoadClipPolygonQuery {
+    ) -> RoadClipLoopQuery {
         match core
             .transit_network
             .road_surface
-            .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
-                &core.region_graph,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            ) {
-            Ok((cdt_road_loops, polygons, source_count)) => RoadClipPolygonQuery {
-                polygons,
+            .terrain_cdt_road_loops_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z)
+        {
+            Ok((cdt_road_loops, source_count)) => RoadClipLoopQuery {
                 cdt_road_loops,
                 source_count,
                 clip_error_label: None,
             },
-            Err(err) => RoadClipPolygonQuery {
-                polygons: Vec::new(),
+            Err(err) => RoadClipLoopQuery {
                 cdt_road_loops: Vec::new(),
                 source_count: 1,
                 clip_error_label: Some(err.debug_label()),
@@ -544,27 +516,46 @@ impl SimulationNode {
         }
     }
 
-    fn append_road_clip_polygons(
-        dict: &mut VarDictionary,
-        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
-    ) {
-        if road_clip_polygons.is_empty() {
+    fn append_road_clip_loops(dict: &mut VarDictionary, road_clip_loops: &[TerrainCdtRoadLoop]) {
+        if road_clip_loops.is_empty() {
             return;
         }
 
-        let mut polygon_counts = Vec::with_capacity(road_clip_polygons.len());
-        let mut polygon_points = Vec::new();
-        for polygon in road_clip_polygons {
-            polygon_counts.push(i32::try_from(polygon.points_world.len()).unwrap_or(0));
-            polygon_points.extend(polygon.points_world.iter().copied());
+        let mut group_ids = BTreeMap::<u64, i32>::new();
+        let mut loop_counts = Vec::with_capacity(road_clip_loops.len());
+        let mut loop_groups = Vec::with_capacity(road_clip_loops.len());
+        let mut loop_roles = Vec::with_capacity(road_clip_loops.len());
+        let mut loop_points = Vec::new();
+        for road_loop in road_clip_loops {
+            let next_group_id = i32::try_from(group_ids.len()).unwrap_or(i32::MAX);
+            let group_id = *group_ids
+                .entry(road_loop.footprint_group_id)
+                .or_insert(next_group_id);
+            loop_counts.push(i32::try_from(road_loop.vertices.len()).unwrap_or(0));
+            loop_groups.push(group_id);
+            loop_roles.push(if road_loop.is_hole { 1 } else { 0 });
+            loop_points.extend(
+                road_loop
+                    .vertices
+                    .iter()
+                    .map(|vertex| Vector3::new(vertex.x as f32, vertex.height_m, vertex.z as f32)),
+            );
         }
         dict.set(
-            "road_clip_polygon_counts",
-            PackedInt32Array::from_iter(polygon_counts),
+            "road_clip_loop_counts",
+            PackedInt32Array::from_iter(loop_counts),
         );
         dict.set(
-            "road_clip_polygon_points",
-            PackedVector3Array::from_iter(polygon_points),
+            "road_clip_loop_groups",
+            PackedInt32Array::from_iter(loop_groups),
+        );
+        dict.set(
+            "road_clip_loop_roles",
+            PackedInt32Array::from_iter(loop_roles),
+        );
+        dict.set(
+            "road_clip_loop_points",
+            PackedVector3Array::from_iter(loop_points),
         );
     }
 
@@ -580,7 +571,7 @@ impl SimulationNode {
             if let Some(error_label) = clip_error_label {
                 Self::append_empty_cdt_failure(dict, error_label);
             } else if has_grounded_road_contributors || requires_road_clip {
-                Self::append_empty_cdt_failure(dict, "missing_road_clip_polygons");
+                Self::append_empty_cdt_failure(dict, "missing_road_clip_loops");
             }
             return;
         }
@@ -1835,7 +1826,7 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         let mut dict = Self::water_patch_dict(&patch);
-        Self::append_road_clip_polygons_for_bounds(
+        Self::append_road_clip_loops_for_bounds(
             &mut dict,
             &core,
             patch.world_origin_x,

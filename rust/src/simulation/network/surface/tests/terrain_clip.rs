@@ -5,7 +5,7 @@ use super::super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::*;
 
 #[test]
-fn terrain_clip_polygons_include_standard_grounded_footprints() {
+fn terrain_clip_loops_include_standard_grounded_footprints() {
     let terrain = flat_terrain(97, 97);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
@@ -23,25 +23,26 @@ fn terrain_clip_polygons_include_standard_grounded_footprints() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let clip_polygons =
-        surface.terrain_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0);
+    let (cdt_road_loops, cdt_source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0)
+        .expect("production terrain clip export should keep source-owned loops");
 
     assert!(
-        !clip_polygons.is_empty(),
-        "expected grounded standard road footprint polygons to clip terrain topology"
+        !cdt_road_loops.is_empty(),
+        "expected grounded standard road footprint loops to clip terrain topology"
     );
     assert!(
-        clip_polygons
+        cdt_road_loops
             .iter()
-            .flat_map(|polygon| polygon.points_world.iter())
+            .flat_map(|road_loop| road_loop.vertices.iter())
             .any(|point| point.x.abs() > 5.0),
-        "expected terrain clip polygons to include the full sidewalk / shoulder footprint"
+        "expected terrain clip loops to include the full sidewalk / shoulder footprint"
     );
     assert!(
-        clip_polygons
+        cdt_road_loops
             .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
-        "expected every terrain clip cutter to be a valid road footprint polygon"
+            .all(|road_loop| road_loop.vertices.len() >= 3),
+        "expected every terrain clip loop to be a valid road footprint contour"
     );
     let expected_terrain_clip_source_loop_count: usize = surface
         .compiled_visual_span_pieces()
@@ -54,15 +55,11 @@ fn terrain_clip_polygons_include_standard_grounded_footprints() {
             .map(|piece| piece.terrain_clip_boundary_loops.len())
             .sum::<usize>();
     assert!(
-        clip_polygons.len() <= expected_terrain_clip_source_loop_count,
-        "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} cutters for {} raw clip loops",
-        clip_polygons.len(),
+        cdt_road_loops.len() <= expected_terrain_clip_source_loop_count,
+        "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} loops for {} raw clip loops",
+        cdt_road_loops.len(),
         expected_terrain_clip_source_loop_count
     );
-    let (cdt_road_loops, cdt_clip_polygons, cdt_source_count) = surface
-        .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0)
-        .expect("production terrain clip export should keep source-owned loops");
-    assert_eq!(cdt_clip_polygons.len(), clip_polygons.len());
     assert_eq!(cdt_source_count, expected_terrain_clip_source_loop_count);
     assert!(
         cdt_road_loops
@@ -759,16 +756,16 @@ fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
         points_world: points,
     }];
 
-    let clip_polygons = RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources)
+    let clip_export = RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
         .expect("endpoint-owned connector should preserve terrain clip export");
 
     assert_eq!(
-        clip_polygons.len(),
+        clip_export.loops.len(),
         1,
         "unioned terrain clip contour must keep source-owned endpoint continuity instead of dropping the road cutter"
     );
     assert!(
-        clip_polygons[0]
+        clip_export.loops[0]
             .points_world
             .iter()
             .all(|point| (point.y - y).abs() <= SAMPLE_EPSILON_M),
@@ -864,27 +861,27 @@ fn terrain_clip_union_preserves_boundary_only_connector_by_interpolation() {
         ],
     }];
 
-    let clip_polygons = RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources)
+    let clip_export = RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
         .expect("boundary-only connector should preserve terrain clip export");
 
     assert_eq!(
-        clip_polygons.len(),
+        clip_export.loops.len(),
         1,
         "unioned terrain clip cutter must survive a sub-budget boundary-only connector"
     );
     assert!(
-        RoadSurfaceSystem::polygon_has_area_xz(&clip_polygons[0].points_world),
+        RoadSurfaceSystem::polygon_has_area_xz(&clip_export.loops[0].points_world),
         "preserved terrain clip cutter must remain a valid road footprint polygon"
     );
     assert!(
-        clip_polygons[0]
+        clip_export.loops[0]
             .points_world
             .iter()
             .all(|point| (point.y - raw_boundary_y).abs() > SAMPLE_EPSILON_M),
         "boundary-only connector heights must come from solved source contour interpolation"
     );
     assert!(
-        clip_polygons[0]
+        clip_export.loops[0]
             .points_world
             .iter()
             .any(|point| point.y > p1.y && point.y < p2.y),
@@ -893,7 +890,7 @@ fn terrain_clip_union_preserves_boundary_only_connector_by_interpolation() {
 }
 
 #[test]
-fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
+fn terrain_clip_loops_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
     let terrain = flat_terrain(257, 257);
     let mut graph = RegionGraph::new();
     let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -916,30 +913,14 @@ fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let clip_polygons =
-        surface.terrain_clip_polygons_for_world_bounds(&graph, -96.0, -96.0, 96.0, 96.0);
+    let (road_loops, _) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -96.0, -96.0, 96.0, 96.0)
+        .expect("arbitrary multiway terrain clip export should succeed");
     assert!(
-        !clip_polygons.is_empty(),
-        "expected arbitrary multiway node to produce terrain clip polygons"
+        !road_loops.is_empty(),
+        "expected arbitrary multiway node to produce terrain clip loops"
     );
 
-    let road_loops = clip_polygons
-        .iter()
-        .enumerate()
-        .map(|(index, polygon)| {
-            TerrainCdtRoadLoop::new(
-                index as u64,
-                0,
-                polygon
-                    .points_world
-                    .iter()
-                    .map(|point| {
-                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
-                    })
-                    .collect(),
-            )
-        })
-        .collect();
     let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
         TerrainCdtPatch::new(-96.0, -96.0, 96.0, 96.0, [0.0; 4]),
         road_loops,
@@ -1015,7 +996,7 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
 }
 
 #[test]
-fn terrain_clip_polygons_skip_bridge_midspans() {
+fn terrain_clip_loops_skip_bridge_midspans() {
     let terrain = flat_terrain(97, 97);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
@@ -1033,11 +1014,12 @@ fn terrain_clip_polygons_skip_bridge_midspans() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let clip_polygons =
-        surface.terrain_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0);
+    let (road_loops, source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0)
+        .expect("bridge midspan terrain clip export should succeed");
 
     assert!(
-        clip_polygons.is_empty(),
+        road_loops.is_empty() && source_count == 0,
         "bridge midspans must not cut terrain topology like grounded standard roads"
     );
 }
@@ -1095,13 +1077,11 @@ fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
                 .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
             "{case_name}: support regions must stay out of the midspan"
         );
-        let (road_loops, clip_polygons, source_count) = surface
-            .terrain_cdt_road_loops_and_clip_polygons_for_world_bounds(
-                &graph, -8.0, -12.0, 8.0, 12.0,
-            )
+        let (road_loops, source_count) = surface
+            .terrain_cdt_road_loops_for_world_bounds(&graph, -8.0, -12.0, 8.0, 12.0)
             .expect("bridge/tunnel midspan query should not fail terrain clip export");
         assert!(
-            road_loops.is_empty() && clip_polygons.is_empty() && source_count == 0,
+            road_loops.is_empty() && source_count == 0,
             "{case_name}: bridge/tunnel midspans must not feed road-touched terrain CDT"
         );
     }

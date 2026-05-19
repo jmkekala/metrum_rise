@@ -2,8 +2,7 @@
 
 use super::super::{
     NodeFootprintBoundarySegmentSource, NodeOverlayPoint, RoadSurfaceBandKind,
-    RoadSurfaceVisualPolygon, earthwork::RoadSurfaceEarthworkFaceSource,
-    keys::SurfaceSegmentParameter,
+    earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceSegmentParameter,
 };
 use godot::prelude::Vector3;
 
@@ -33,7 +32,6 @@ pub(crate) struct RoadSurfaceTerrainClipLoop {
 pub(crate) struct RoadSurfaceTerrainClipExport {
     pub(crate) loops: Vec<RoadSurfaceTerrainClipLoop>,
     pub(crate) loop_topologies: Vec<RoadSurfaceTerrainClipLoopTopology>,
-    pub(crate) polygons: Vec<RoadSurfaceVisualPolygon>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

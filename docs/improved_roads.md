@@ -94,7 +94,7 @@ The road-touched terrain path has moved to the Spade CDT hardcut.
 
 Live behavior:
 
-- grounded `Standard` roads send piece-owned footprint clip polygons into road-touched terrain
+- grounded `Standard` roads send piece-owned footprint loops into road-touched terrain
   patches
 - Rust returns baked terrain patch mesh payloads for those road-touched patches
 - terrain under the road-owned footprint is no longer intended to be a visible carrier
@@ -1977,7 +1977,7 @@ Retire these node-construction patterns:
 Forbid these replacement shortcuts:
 
 - feeding node terrain clipping or local earthwork generation from candidate loops, raw render
-  triangles, or a post-export `union_terrain_clip_polygons` pass
+  triangles, or any post-export flat road-clip polygon pass
 - accepting an outer-boundary vertex that is not part of the canonical boolean footprint
 - accepting raw rendered triangle edges as terrain clip or skirt boundaries
 - choosing material ownership with hint-only classification, nearest material, centroid voting,

@@ -67,6 +67,8 @@ const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
+const ROAD_CLIP_LOOP_ROLE_OUTER := 0
+const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -760,7 +762,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -777,7 +779,8 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(patch_data["world_size_z"]),
 				float(height_stats.get("min", 0.0)),
 				float(height_stats.get("max", 0.0)),
-				int(clip_stats.get("polygon_count", 0)),
+				int(clip_stats.get("group_count", 0)),
+				int(clip_stats.get("loop_count", 0)),
 				int(clip_stats.get("point_count", 0)),
 				float(clip_stats.get("area", 0.0)),
 				_road_geometry_bounds_label(clip_stats),
@@ -835,16 +838,30 @@ func _terrain_patch_data_for_key(key: Vector2i) -> Dictionary:
 		)
 	return simulation_node.get_terrain_patch(key.x, key.y)
 
-func _patch_has_road_clip_polygons(patch_data: Dictionary) -> bool:
-	if not patch_data.has("road_clip_polygon_counts") or not patch_data.has("road_clip_polygon_points"):
+func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
+	if (
+		not patch_data.has("road_clip_loop_counts")
+		or not patch_data.has("road_clip_loop_groups")
+		or not patch_data.has("road_clip_loop_roles")
+		or not patch_data.has("road_clip_loop_points")
+	):
 		return false
-	var counts := patch_data["road_clip_polygon_counts"] as PackedInt32Array
-	var points := patch_data["road_clip_polygon_points"] as PackedVector3Array
+	var counts := patch_data["road_clip_loop_counts"] as PackedInt32Array
+	var groups := patch_data["road_clip_loop_groups"] as PackedInt32Array
+	var roles := patch_data["road_clip_loop_roles"] as PackedInt32Array
+	var points := patch_data["road_clip_loop_points"] as PackedVector3Array
 	if counts.size() == 0:
 		return false
+	if groups.size() != counts.size() or roles.size() != counts.size():
+		return false
 	var expected_points := 0
-	for count in counts:
+	for index in range(counts.size()):
+		var count: int = counts[index]
 		if count < 3:
+			return false
+		if groups[index] < 0:
+			return false
+		if roles[index] != ROAD_CLIP_LOOP_ROLE_OUTER and roles[index] != ROAD_CLIP_LOOP_ROLE_HOLE:
 			return false
 		expected_points += count
 	return expected_points == points.size()
@@ -931,22 +948,66 @@ func _retaining_wall_material() -> StandardMaterial3D:
 		retaining_wall_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return retaining_wall_material
 
-func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
-	var counts := patch_data["road_clip_polygon_counts"] as PackedInt32Array
-	var points := patch_data["road_clip_polygon_points"] as PackedVector3Array
-	var polygons: Array = []
+func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
+	if not _patch_has_road_clip_loops(patch_data):
+		return []
+	var counts := patch_data["road_clip_loop_counts"] as PackedInt32Array
+	var group_indices := patch_data["road_clip_loop_groups"] as PackedInt32Array
+	var roles := patch_data["road_clip_loop_roles"] as PackedInt32Array
+	var points := patch_data["road_clip_loop_points"] as PackedVector3Array
+	var groups_by_id: Dictionary = {}
+	var group_ids: Array = []
 	var cursor := 0
-	for count in counts:
-		var polygon := PackedVector2Array()
+	for loop_index in range(counts.size()):
+		var count: int = counts[loop_index]
+		var group_id: int = group_indices[loop_index]
+		var loop_points := PackedVector2Array()
 		for offset in range(count):
 			var point := points[cursor + offset]
-			polygon.append(Vector2(point.x, point.z))
-		polygons.append({
-			"points": polygon,
-			"bounds": _polygon_bounds(polygon),
-		})
+			loop_points.append(Vector2(point.x, point.z))
+		var loop_bounds := _polygon_bounds(loop_points)
+		var loop_entry := {
+			"points": loop_points,
+			"bounds": loop_bounds,
+			"role": roles[loop_index],
+		}
+		if not groups_by_id.has(group_id):
+			groups_by_id[group_id] = {
+				"group_id": group_id,
+				"outer_loops": [],
+				"hole_loops": [],
+				"bounds": loop_bounds,
+				"has_bounds": false,
+			}
+			group_ids.append(group_id)
+		var group_entry: Dictionary = groups_by_id[group_id]
+		if bool(group_entry["has_bounds"]):
+			group_entry["bounds"] = _merge_bounds(group_entry["bounds"], loop_bounds)
+		else:
+			group_entry["bounds"] = loop_bounds
+			group_entry["has_bounds"] = true
+		if roles[loop_index] == ROAD_CLIP_LOOP_ROLE_HOLE:
+			var hole_loops: Array = group_entry["hole_loops"]
+			hole_loops.append(loop_entry)
+		else:
+			var outer_loops: Array = group_entry["outer_loops"]
+			outer_loops.append(loop_entry)
 		cursor += count
-	return polygons
+	group_ids.sort()
+	var loop_groups: Array = []
+	for group_id_variant in group_ids:
+		var group_id: int = int(group_id_variant)
+		var group_entry: Dictionary = groups_by_id[group_id]
+		var outer_loops: Array = group_entry["outer_loops"]
+		if outer_loops.is_empty():
+			continue
+		loop_groups.append({
+			"group_id": group_id,
+			"outer_loops": outer_loops,
+			"hole_loops": group_entry["hole_loops"],
+			"bounds": group_entry["bounds"],
+		})
+	return loop_groups
 
 func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
 	if polygon.size() == 0:
@@ -960,6 +1021,13 @@ func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
 		max_x = maxf(max_x, point.x)
 		min_y = minf(min_y, point.y)
 		max_y = maxf(max_y, point.y)
+	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
+
+func _merge_bounds(a: Rect2, b: Rect2) -> Rect2:
+	var min_x := minf(a.position.x, b.position.x)
+	var min_y := minf(a.position.y, b.position.y)
+	var max_x := maxf(a.position.x + a.size.x, b.position.x + b.size.x)
+	var max_y := maxf(a.position.y + a.size.y, b.position.y + b.size.y)
 	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
 
 func _patch_mesh(
@@ -1291,7 +1359,8 @@ func _road_geometry_float_stats(values: PackedFloat32Array) -> Dictionary:
 
 func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 	var stats: Dictionary = {
-		"polygon_count": 0,
+		"group_count": 0,
+		"loop_count": 0,
 		"point_count": 0,
 		"area": 0.0,
 		"has_bounds": false,
@@ -1302,9 +1371,9 @@ func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 		"max_bbox_x": 0.0,
 		"max_bbox_z": 0.0,
 	}
-	if not _patch_has_road_clip_polygons(patch_data):
+	if not _patch_has_road_clip_loops(patch_data):
 		return stats
-	var polygons: Array = _road_clip_polygons_from_patch_data(patch_data)
+	var loop_groups: Array = _road_clip_loop_groups_from_patch_data(patch_data)
 	var has_bounds: bool = false
 	var min_x: float = 0.0
 	var max_x: float = 0.0
@@ -1314,12 +1383,10 @@ func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 	var total_area: float = 0.0
 	var max_bbox_x: float = 0.0
 	var max_bbox_z: float = 0.0
-	for clip_variant in polygons:
-		var clip: Dictionary = clip_variant
-		var points: PackedVector2Array = clip["points"]
-		var bounds: Rect2 = clip["bounds"]
-		point_count += points.size()
-		total_area += absf(_road_geometry_polygon_area(points))
+	var loop_count: int = 0
+	for group_variant in loop_groups:
+		var clip_group: Dictionary = group_variant
+		var bounds: Rect2 = clip_group["bounds"]
 		max_bbox_x = maxf(max_bbox_x, bounds.size.x)
 		max_bbox_z = maxf(max_bbox_z, bounds.size.y)
 		if not has_bounds:
@@ -1333,7 +1400,24 @@ func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 			max_x = maxf(max_x, bounds.position.x + bounds.size.x)
 			min_z = minf(min_z, bounds.position.y)
 			max_z = maxf(max_z, bounds.position.y + bounds.size.y)
-	stats["polygon_count"] = polygons.size()
+		var group_area: float = 0.0
+		var outer_loops: Array = clip_group["outer_loops"]
+		for outer_variant in outer_loops:
+			var outer: Dictionary = outer_variant
+			var outer_points: PackedVector2Array = outer["points"]
+			point_count += outer_points.size()
+			loop_count += 1
+			group_area += absf(_road_geometry_polygon_area(outer_points))
+		var hole_loops: Array = clip_group["hole_loops"]
+		for hole_variant in hole_loops:
+			var hole: Dictionary = hole_variant
+			var hole_points: PackedVector2Array = hole["points"]
+			point_count += hole_points.size()
+			loop_count += 1
+			group_area -= absf(_road_geometry_polygon_area(hole_points))
+		total_area += maxf(0.0, group_area)
+	stats["group_count"] = loop_groups.size()
+	stats["loop_count"] = loop_count
 	stats["point_count"] = point_count
 	stats["area"] = total_area
 	stats["has_bounds"] = has_bounds

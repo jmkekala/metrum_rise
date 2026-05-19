@@ -1,26 +1,11 @@
 //! Terrain-clip union orchestration.
 
-use super::super::{
-    NodeOverlayContour, NodeOverlayShape, RoadSurfaceSystem, RoadSurfaceVisualPolygon,
-};
+use super::super::{NodeOverlayContour, NodeOverlayShape, RoadSurfaceSystem};
 use super::model::*;
 use super::output::TerrainClipOutputSourceError;
 use super::recovery::TerrainClipSourceChainRecovery;
 
 impl RoadSurfaceSystem {
-    pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_loops(
-        boundary_loops: &[RoadSurfaceTerrainClipLoop],
-    ) -> Result<Vec<RoadSurfaceVisualPolygon>, RoadSurfaceTerrainClipExportError> {
-        Self::union_terrain_clip_boundary_loops_with_sources(boundary_loops).map(|loops| {
-            loops
-                .into_iter()
-                .filter_map(|boundary_loop| {
-                    Self::make_boundary_loop_polygon(boundary_loop.points_world)
-                })
-                .collect()
-        })
-    }
-
     pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_export(
         boundary_loops: &[RoadSurfaceTerrainClipLoop],
     ) -> Result<RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError> {
@@ -33,20 +18,13 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|contour| contour.topology)
             .collect::<Vec<_>>();
-        let mut polygons = contours
-            .iter()
-            .filter_map(|contour| {
-                Self::make_boundary_loop_polygon(contour.boundary_loop.points_world.clone())
-            })
-            .collect::<Vec<_>>();
-        Self::sort_visual_polygons(&mut polygons);
         Ok(RoadSurfaceTerrainClipExport {
             loops,
             loop_topologies,
-            polygons,
         })
     }
 
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_loops_with_sources(
         boundary_loops: &[RoadSurfaceTerrainClipLoop],
     ) -> Result<Vec<RoadSurfaceTerrainClipLoop>, RoadSurfaceTerrainClipExportError> {
