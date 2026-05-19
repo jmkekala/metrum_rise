@@ -1,0 +1,180 @@
+//! Earthwork visibility policy and span section range selection.
+
+use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M};
+use super::BRIDGE_ABUTMENT_LENGTH_M;
+use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::terrain::TerrainSystem;
+
+impl RoadSurfaceSystem {
+    pub(in crate::simulation::network::surface) fn node_piece_uses_earthworks(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        terrain: &TerrainSystem,
+    ) -> bool {
+        if node_id as usize >= graph.node_adjacency_count() {
+            return false;
+        }
+
+        for &edge_idx in graph.node_adjacency(node_id) {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if edge.deleted || !Self::is_surface_edge(edge) {
+                continue;
+            }
+            if edge.class != EdgeClass::Tunnel || edge.primary_type == TransitType::Foot {
+                return true;
+            }
+
+            let at_start = graph.get_valid_node(edge.start_node) == node_id;
+            if self.tunnel_throat_is_visible(edge_idx, at_start, terrain) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub(in crate::simulation::network::surface) fn earthwork_section_ranges_for_edge(
+        &self,
+        edge: &Edge,
+        sections: &[RoadSurfaceSection],
+        terrain: &TerrainSystem,
+    ) -> Vec<(usize, usize)> {
+        let Some((start_index, end_index)) = self.corridor_index_range_for_edge(edge, sections)
+        else {
+            return Vec::new();
+        };
+
+        match edge.class {
+            EdgeClass::Standard => vec![(start_index, end_index)],
+            EdgeClass::Bridge => self.endpoint_limited_section_ranges(
+                sections,
+                start_index,
+                end_index,
+                BRIDGE_ABUTMENT_LENGTH_M,
+            ),
+            EdgeClass::Tunnel => {
+                self.tunnel_visible_section_ranges(sections, start_index, end_index, terrain)
+            }
+        }
+    }
+
+    fn corridor_index_range_for_edge(
+        &self,
+        edge: &Edge,
+        sections: &[RoadSurfaceSection],
+    ) -> Option<(usize, usize)> {
+        if sections.len() < 2 {
+            return None;
+        }
+
+        // Bridge abutments and tunnel portals are structural endpoint regions; trimming them by
+        // the ordinary road-width handoff can either erase portals or collapse short spans into
+        // one full-length stamp.
+        if edge.class != EdgeClass::Standard {
+            return Some((0, sections.len().saturating_sub(1)));
+        }
+
+        let total_length = sections.last()?.s_m.max(0.0);
+        let start_handoff = Self::visual_start_handoff_m(edge, total_length);
+        let end_handoff = Self::visual_end_handoff_s_m(edge, total_length);
+        Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
+    }
+
+    fn endpoint_limited_section_ranges(
+        &self,
+        sections: &[RoadSurfaceSection],
+        start_index: usize,
+        end_index: usize,
+        endpoint_length_m: f32,
+    ) -> Vec<(usize, usize)> {
+        if end_index <= start_index {
+            return Vec::new();
+        }
+
+        let start_s = sections[start_index].s_m;
+        let end_s = sections[end_index].s_m;
+        if end_s - start_s <= endpoint_length_m * 2.0 {
+            return vec![(start_index, end_index)];
+        }
+
+        let mut ranges = Vec::new();
+        if let Some(start_end) = sections[start_index..=end_index]
+            .iter()
+            .rposition(|section| section.s_m <= start_s + endpoint_length_m + SAMPLE_EPSILON_M)
+            .map(|offset| start_index + offset)
+        {
+            if start_end > start_index {
+                ranges.push((start_index, start_end));
+            }
+        }
+
+        if let Some(end_start) = sections[start_index..=end_index]
+            .iter()
+            .position(|section| section.s_m >= end_s - endpoint_length_m - SAMPLE_EPSILON_M)
+            .map(|offset| start_index + offset)
+        {
+            if end_index > end_start {
+                ranges.push((end_start, end_index));
+            }
+        }
+
+        ranges.sort_unstable();
+        ranges.dedup();
+        ranges
+    }
+
+    pub(in crate::simulation::network::surface) fn tunnel_visible_section_ranges(
+        &self,
+        sections: &[RoadSurfaceSection],
+        start_index: usize,
+        end_index: usize,
+        terrain: &TerrainSystem,
+    ) -> Vec<(usize, usize)> {
+        if end_index <= start_index {
+            return Vec::new();
+        }
+
+        let mut ranges = Vec::new();
+
+        if self.section_is_tunnel_surface_visible(&sections[start_index], terrain) {
+            let mut visible_end = start_index;
+            while visible_end < end_index
+                && self.section_is_tunnel_surface_visible(&sections[visible_end + 1], terrain)
+            {
+                visible_end += 1;
+            }
+            let transition_end = (visible_end + 1).min(end_index);
+            if transition_end > start_index {
+                ranges.push((start_index, transition_end));
+            }
+        }
+
+        if self.section_is_tunnel_surface_visible(&sections[end_index], terrain) {
+            let mut visible_start = end_index;
+            while visible_start > start_index
+                && self.section_is_tunnel_surface_visible(&sections[visible_start - 1], terrain)
+            {
+                visible_start -= 1;
+            }
+            let transition_start = visible_start.saturating_sub(1).max(start_index);
+            if end_index > transition_start {
+                if let Some(last) = ranges.last_mut() {
+                    if transition_start <= last.1 {
+                        last.1 = end_index;
+                    } else {
+                        ranges.push((transition_start, end_index));
+                    }
+                } else {
+                    ranges.push((transition_start, end_index));
+                }
+            }
+        }
+
+        ranges
+    }
+}
