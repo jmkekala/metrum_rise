@@ -2960,11 +2960,26 @@ impl RoadSurfaceSystem {
             total_weight += weight;
         }
         if total_weight <= f64::EPSILON {
-            return Self::overlay_contour_average_xz(
-                shape.first().map(Vec::as_slice).unwrap_or(&[]),
-            );
+            return Self::overlay_shape_average_xz(shape);
         }
         (weighted_x / total_weight, weighted_z / total_weight)
+    }
+
+    fn overlay_shape_average_xz(shape: &NodeOverlayShape) -> (f64, f64) {
+        let mut x = 0.0;
+        let mut z = 0.0;
+        let mut count = 0usize;
+        for contour in shape {
+            for point in contour {
+                x += point[0];
+                z += point[1];
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return (0.0, 0.0);
+        }
+        (x / count as f64, z / count as f64)
     }
 
     fn overlay_contour_average_xz(contour: &[NodeOverlayPoint]) -> (f64, f64) {

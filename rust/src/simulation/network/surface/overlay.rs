@@ -311,15 +311,14 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn overlay_shape_area_m2(shape: &NodeOverlayShape) -> f32 {
-        let Some(outer) = shape.first() else {
+        let Some((outer, holes)) = shape.split_first() else {
             return 0.0;
         };
-        let holes = shape
+        let holes_area = holes
             .iter()
-            .skip(1)
             .map(|hole| Self::overlay_contour_area(hole).abs())
             .sum::<f32>();
-        (Self::overlay_contour_area(outer).abs() - holes).max(0.0)
+        (Self::overlay_contour_area(outer).abs() - holes_area).max(0.0)
     }
 
     pub(super) fn overlay_numeric_area_budget_for_shape(shape: &NodeOverlayShape) -> f32 {
