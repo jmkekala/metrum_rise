@@ -1,13 +1,10 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{
-    ChunkCacheKind, NodeFootprintBoundarySegmentSource, NodeOverlayContour, NodeOverlayShapes,
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion,
-    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
-    band_semantics::band_kind_sort_key,
-    keys::{SurfaceXzKey, SurfaceXzSegmentKey},
+    ChunkCacheKind, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceSection,
+    RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -15,7 +12,18 @@ use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+
+mod model;
+mod stamping;
+
+use model::{EarthworkBoundaryEdgeKey, EarthworkBoundaryPointKey, IndexedEarthworkBoundarySegment};
+
+pub(crate) use model::{
+    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceEarthworkSupportPolicy,
+};
 
 // Vertical roadbed offset applied when terrain earthworks need pavement clearance.
 pub(super) const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
@@ -33,212 +41,6 @@ const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 // Structural end caps that constrain bridge abutments and tunnel portal stamps.
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RoadSurfaceEarthworkFaceKind {
-    Slope,
-    RetainingWall,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RoadSurfaceEarthworkSupportPolicy {
-    StandardFullGroundedSpan,
-    BridgeEndpointAbutments,
-    TunnelVisiblePortals,
-}
-
-impl RoadSurfaceEarthworkSupportPolicy {
-    pub(crate) fn from_edge_class(edge_class: EdgeClass) -> Self {
-        match edge_class {
-            EdgeClass::Standard => Self::StandardFullGroundedSpan,
-            EdgeClass::Bridge => Self::BridgeEndpointAbutments,
-            EdgeClass::Tunnel => Self::TunnelVisiblePortals,
-        }
-    }
-
-    pub(crate) fn debug_name(self) -> &'static str {
-        match self {
-            Self::StandardFullGroundedSpan => "standard_full_grounded_span",
-            Self::BridgeEndpointAbutments => "bridge_endpoint_abutments",
-            Self::TunnelVisiblePortals => "tunnel_visible_portals",
-        }
-    }
-
-    pub(crate) fn sort_key(self) -> u8 {
-        match self {
-            Self::StandardFullGroundedSpan => 0,
-            Self::BridgeEndpointAbutments => 1,
-            Self::TunnelVisiblePortals => 2,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum RoadSurfaceEarthworkFaceSource {
-    SpanSupportBoundary {
-        edge_idx: usize,
-        edge_class: EdgeClass,
-        support_policy: RoadSurfaceEarthworkSupportPolicy,
-        owner: RoadSurfaceSpanBandOwner,
-        role: RoadSurfaceSpanRegionRole,
-        start_section_index: usize,
-        end_section_index: usize,
-        start_s_m: f32,
-        end_s_m: f32,
-    },
-    NodeFootprintBoundary {
-        node_id: u32,
-        kind: RoadSurfaceVisualNodePieceKind,
-        owner_kind: RoadSurfaceBandKind,
-        owner_index: usize,
-        boundary_source: Option<NodeFootprintBoundarySegmentSource>,
-    },
-}
-
-impl RoadSurfaceEarthworkFaceSource {
-    pub(crate) fn source_ordering(self, other: Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (
-                Self::SpanSupportBoundary {
-                    edge_idx: edge_idx_a,
-                    edge_class: edge_class_a,
-                    support_policy: support_policy_a,
-                    owner: owner_a,
-                    role: role_a,
-                    start_section_index: start_section_index_a,
-                    end_section_index: end_section_index_a,
-                    start_s_m: start_s_m_a,
-                    end_s_m: end_s_m_a,
-                },
-                Self::SpanSupportBoundary {
-                    edge_idx: edge_idx_b,
-                    edge_class: edge_class_b,
-                    support_policy: support_policy_b,
-                    owner: owner_b,
-                    role: role_b,
-                    start_section_index: start_section_index_b,
-                    end_section_index: end_section_index_b,
-                    start_s_m: start_s_m_b,
-                    end_s_m: end_s_m_b,
-                },
-            ) => edge_idx_a
-                .cmp(&edge_idx_b)
-                .then(edge_class_sort_key(edge_class_a).cmp(&edge_class_sort_key(edge_class_b)))
-                .then(
-                    support_policy_a
-                        .sort_key()
-                        .cmp(&support_policy_b.sort_key()),
-                )
-                .then(owner_a.sort_key().cmp(&owner_b.sort_key()))
-                .then(role_a.sort_key().cmp(&role_b.sort_key()))
-                .then(start_section_index_a.cmp(&start_section_index_b))
-                .then(end_section_index_a.cmp(&end_section_index_b))
-                .then(start_s_m_a.total_cmp(&start_s_m_b))
-                .then(end_s_m_a.total_cmp(&end_s_m_b)),
-            (
-                Self::NodeFootprintBoundary {
-                    node_id: node_id_a,
-                    kind: kind_a,
-                    owner_kind: owner_kind_a,
-                    owner_index: owner_index_a,
-                    boundary_source: boundary_source_a,
-                },
-                Self::NodeFootprintBoundary {
-                    node_id: node_id_b,
-                    kind: kind_b,
-                    owner_kind: owner_kind_b,
-                    owner_index: owner_index_b,
-                    boundary_source: boundary_source_b,
-                },
-            ) => node_id_a
-                .cmp(&node_id_b)
-                .then(kind_a.sort_key().cmp(&kind_b.sort_key()))
-                .then(band_kind_sort_key(owner_kind_a).cmp(&band_kind_sort_key(owner_kind_b)))
-                .then(owner_index_a.cmp(&owner_index_b))
-                .then(boundary_source_a.cmp(&boundary_source_b)),
-            (Self::SpanSupportBoundary { .. }, Self::NodeFootprintBoundary { .. }) => {
-                std::cmp::Ordering::Less
-            }
-            (Self::NodeFootprintBoundary { .. }, Self::SpanSupportBoundary { .. }) => {
-                std::cmp::Ordering::Greater
-            }
-        }
-    }
-}
-
-fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
-    match edge_class {
-        EdgeClass::Standard => 0,
-        EdgeClass::Bridge => 1,
-        EdgeClass::Tunnel => 2,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct RoadSurfaceEarthworkBoundarySegment {
-    pub(crate) inner_start: Vector3,
-    pub(crate) inner_end: Vector3,
-    pub(crate) source: RoadSurfaceEarthworkFaceSource,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RoadSurfaceEarthworkRenderFace {
-    pub(crate) kind: RoadSurfaceEarthworkFaceKind,
-    pub(crate) source: RoadSurfaceEarthworkFaceSource,
-    pub(crate) inner_start: Vector3,
-    pub(crate) inner_end: Vector3,
-    pub(crate) polygon: RoadSurfaceVisualPolygon,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct EarthworkBoundaryPointKey {
-    x_key: i64,
-    z_key: i64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct EarthworkBoundaryEdgeKey {
-    start: EarthworkBoundaryPointKey,
-    end: EarthworkBoundaryPointKey,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct IndexedEarthworkBoundarySegment {
-    segment_index: usize,
-    segment: RoadSurfaceEarthworkBoundarySegment,
-    start_key: EarthworkBoundaryPointKey,
-    end_key: EarthworkBoundaryPointKey,
-}
-
-impl EarthworkBoundaryPointKey {
-    fn from_point(point: Vector3) -> Self {
-        Self::from_surface_key(SurfaceXzKey::from_godot_world_xz(point))
-    }
-
-    fn from_surface_key(key: SurfaceXzKey) -> Self {
-        Self {
-            x_key: key.x_key(),
-            z_key: key.z_key(),
-        }
-    }
-
-    fn surface_key(self) -> SurfaceXzKey {
-        SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
-    }
-}
-
-impl EarthworkBoundaryEdgeKey {
-    fn normalized(
-        start: EarthworkBoundaryPointKey,
-        end: EarthworkBoundaryPointKey,
-    ) -> Option<Self> {
-        let segment = SurfaceXzSegmentKey::non_degenerate(start.surface_key(), end.surface_key())?;
-        Some(Self {
-            start: EarthworkBoundaryPointKey::from_surface_key(segment.start()),
-            end: EarthworkBoundaryPointKey::from_surface_key(segment.end()),
-        })
-    }
-}
 
 impl RoadSurfaceSystem {
     /// Rebuilds terrain earthworks only for the currently dirty road-surface chunks.
@@ -681,14 +483,18 @@ impl RoadSurfaceSystem {
 
         let opposite_outer_current = self.earthwork_transition_point(current, -outward, terrain);
         let opposite_outer_next = self.earthwork_transition_point(next, -outward, terrain);
-        let nominal_overlap = Self::earthwork_candidate_top_overlap_area_m2(
+        let Some(nominal_overlap) = Self::earthwork_candidate_top_overlap_area_m2(
             [current, next, outer_next, outer_current],
             top_surface_shapes,
-        );
-        let opposite_overlap = Self::earthwork_candidate_top_overlap_area_m2(
+        ) else {
+            return (outer_current, outer_next);
+        };
+        let Some(opposite_overlap) = Self::earthwork_candidate_top_overlap_area_m2(
             [current, next, opposite_outer_next, opposite_outer_current],
             top_surface_shapes,
-        );
+        ) else {
+            return (outer_current, outer_next);
+        };
         if opposite_overlap < nominal_overlap {
             (opposite_outer_current, opposite_outer_next)
         } else {
@@ -711,10 +517,9 @@ impl RoadSurfaceSystem {
     fn earthwork_candidate_top_overlap_area_m2(
         points: [Vector3; 4],
         top_surface_shapes: &NodeOverlayShapes,
-    ) -> f32 {
+    ) -> Option<f32> {
         Self::earthwork_candidate_top_overlap_metrics_m2(points, top_surface_shapes)
             .map(|(overlap_area_m2, _)| overlap_area_m2)
-            .unwrap_or(f32::INFINITY)
     }
 
     fn earthwork_candidate_top_overlap_metrics_m2(
@@ -869,7 +674,8 @@ impl RoadSurfaceSystem {
                         .cmp(&b.polygon.points_world.len()),
                 )
                 .then_with(|| {
-                    a.polygon
+                    match a
+                        .polygon
                         .points_world
                         .iter()
                         .zip(&b.polygon.points_world)
@@ -880,8 +686,10 @@ impl RoadSurfaceSystem {
                                 .then(point_a.z.total_cmp(&point_b.z))
                                 .then(point_a.y.total_cmp(&point_b.y));
                             (ordering != std::cmp::Ordering::Equal).then_some(ordering)
-                        })
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        }) {
+                        Some(ordering) => ordering,
+                        None => std::cmp::Ordering::Equal,
+                    }
                 })
         });
     }
@@ -1158,254 +966,5 @@ impl RoadSurfaceSystem {
         }
 
         ranges
-    }
-
-    fn section_is_tunnel_surface_visible(
-        &self,
-        section: &RoadSurfaceSection,
-        terrain: &TerrainSystem,
-    ) -> bool {
-        let terrain_height = terrain.sample_height_world(section.center_xz.x, section.center_xz.y)
-            * config::HEIGHT_SCALE;
-        section.center_height_m >= terrain_height - TUNNEL_PORTAL_STAMP_DEPTH_M
-    }
-
-    pub(super) fn tunnel_throat_is_visible(
-        &self,
-        edge_idx: usize,
-        at_start: bool,
-        terrain: &TerrainSystem,
-    ) -> bool {
-        let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-            return false;
-        };
-        let mouth = if at_start {
-            piece.start_mouth_profile.as_ref()
-        } else {
-            piece.end_mouth_profile.as_ref()
-        };
-        let Some(mouth) = mouth else {
-            return false;
-        };
-        let mut average_point = Vector3::ZERO;
-        for point in &mouth.boundary_points_world {
-            average_point += *point;
-        }
-        average_point /= mouth.boundary_points_world.len() as f32;
-        let terrain_height =
-            terrain.sample_height_world(average_point.x, average_point.z) * config::HEIGHT_SCALE;
-        average_point.y >= terrain_height - TUNNEL_PORTAL_STAMP_DEPTH_M
-    }
-
-    fn stamp_piece_top_surface_clearance_for_chunk(
-        &self,
-        road_surface_polygons: &[RoadSurfaceVisualPolygon],
-        curb_surface_polygons: &[RoadSurfaceVisualPolygon],
-        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-        height_offset_m: f32,
-    ) {
-        let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
-        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
-
-        for polygon in road_surface_polygons
-            .iter()
-            .chain(curb_surface_polygons)
-            .chain(sidewalk_surface_polygons)
-        {
-            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                self.collect_top_surface_support_triangle_candidates(
-                    terrain,
-                    chunk,
-                    triangle,
-                    conservative_margin_m,
-                    height_offset_m,
-                    &mut candidates,
-                );
-            });
-        }
-
-        for ((grid_x, grid_z), (_, height_sample)) in candidates {
-            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
-        }
-    }
-
-    fn stamp_span_top_surface_support_for_chunk(
-        &self,
-        regions: &[RoadSurfaceSpanOwnedRegion],
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-        height_offset_m: f32,
-    ) {
-        let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
-        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
-
-        for region in regions {
-            Self::visit_visual_polygon_triangles(&region.polygon, &mut |triangle| {
-                self.collect_top_surface_support_triangle_candidates(
-                    terrain,
-                    chunk,
-                    triangle,
-                    conservative_margin_m,
-                    height_offset_m,
-                    &mut candidates,
-                );
-            });
-        }
-
-        for ((grid_x, grid_z), (_, height_sample)) in candidates {
-            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
-        }
-    }
-
-    fn collect_top_surface_support_triangle_candidates(
-        &self,
-        terrain: &TerrainSystem,
-        chunk: SurfaceChunkKey,
-        triangle: [Vector3; 3],
-        conservative_margin_m: f32,
-        height_offset_m: f32,
-        candidates: &mut HashMap<(usize, usize), (f32, f32)>,
-    ) {
-        if !Self::triangle_has_area_xz(triangle) {
-            return;
-        }
-
-        let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
-        let min_x = triangle
-            .iter()
-            .map(|point| point.x)
-            .fold(chunk_max.x, f32::min)
-            .max(chunk_min.x - conservative_margin_m);
-        let max_x = triangle
-            .iter()
-            .map(|point| point.x)
-            .fold(chunk_min.x, f32::max)
-            .min(chunk_max.x + conservative_margin_m);
-        let min_z = triangle
-            .iter()
-            .map(|point| point.z)
-            .fold(chunk_max.z, f32::min)
-            .max(chunk_min.z - conservative_margin_m);
-        let max_z = triangle
-            .iter()
-            .map(|point| point.z)
-            .fold(chunk_min.z, f32::max)
-            .min(chunk_max.z + conservative_margin_m);
-        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
-            terrain.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
-        else {
-            return;
-        };
-        let (grid_width, grid_height) = terrain.grid_dimensions();
-        if grid_width == 0 || grid_height == 0 {
-            return;
-        }
-        let max_grid_x_index = grid_width.saturating_sub(1);
-        let max_grid_z_index = grid_height.saturating_sub(1);
-        let grid_min_x = min_grid_x.saturating_sub(1).min(max_grid_x_index);
-        let grid_max_x = max_grid_x.saturating_add(1).min(max_grid_x_index);
-        let grid_min_z = min_grid_z.saturating_sub(1).min(max_grid_z_index);
-        let grid_max_z = max_grid_z.saturating_add(1).min(max_grid_z_index);
-
-        for grid_z in grid_min_z..=grid_max_z {
-            for grid_x in grid_min_x..=grid_max_x {
-                let (world_x, world_z) = terrain.grid_to_world_coords(grid_x, grid_z);
-                let point_xz = Vector2::new(world_x, world_z);
-                if !Self::point_is_inside_or_near_triangle_xz(
-                    triangle,
-                    point_xz,
-                    conservative_margin_m,
-                ) {
-                    continue;
-                }
-                let Some((distance_squared, height_sample)) =
-                    Self::top_surface_support_candidate_from_triangle(
-                        triangle,
-                        point_xz,
-                        height_offset_m,
-                    )
-                else {
-                    continue;
-                };
-                let entry = candidates
-                    .entry((grid_x, grid_z))
-                    .or_insert((distance_squared, height_sample));
-                if Self::top_surface_support_candidate_replaces(
-                    *entry,
-                    (distance_squared, height_sample),
-                ) {
-                    *entry = (distance_squared, height_sample);
-                }
-            }
-        }
-    }
-
-    fn top_surface_support_candidate_replaces(existing: (f32, f32), candidate: (f32, f32)) -> bool {
-        let (existing_distance_squared, existing_height_sample) = existing;
-        let (candidate_distance_squared, candidate_height_sample) = candidate;
-        candidate_distance_squared < existing_distance_squared - 0.0001
-            || ((candidate_distance_squared - existing_distance_squared).abs() <= 0.0001
-                && candidate_height_sample < existing_height_sample)
-    }
-
-    fn top_surface_support_candidate_from_triangle(
-        triangle: [Vector3; 3],
-        point_xz: Vector2,
-        height_offset_m: f32,
-    ) -> Option<(f32, f32)> {
-        let sample_point_xz = Self::closest_point_on_triangle_xz(triangle, point_xz);
-        let (wa, wb, wc) = Self::triangle_barycentric_weights_xz(triangle, sample_point_xz)?;
-        let support_height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-        let clearance_sample = (support_height_m - height_offset_m) / config::HEIGHT_SCALE;
-        Some((
-            point_xz.distance_squared_to(sample_point_xz),
-            clearance_sample,
-        ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn earthwork_support_candidates_use_lower_envelope_for_overlapping_top_surfaces() {
-        assert!(RoadSurfaceSystem::top_surface_support_candidate_replaces(
-            (0.0, 0.30),
-            (0.0, 0.10),
-        ));
-        assert!(!RoadSurfaceSystem::top_surface_support_candidate_replaces(
-            (0.0, 0.10),
-            (0.0, 0.30),
-        ));
-    }
-
-    #[test]
-    fn earthwork_support_candidates_keep_nearest_non_overlapping_surface() {
-        assert!(RoadSurfaceSystem::top_surface_support_candidate_replaces(
-            (0.50, 0.10),
-            (0.10, 0.30),
-        ));
-        assert!(!RoadSurfaceSystem::top_surface_support_candidate_replaces(
-            (0.10, 0.30),
-            (0.50, 0.10),
-        ));
-    }
-
-    #[test]
-    fn earthwork_hardcut_has_no_per_material_sequential_stamping_path() {
-        let source = include_str!("earthwork.rs");
-        for forbidden in [
-            concat!("stamp_piece_surface_", "geometry_for_chunk"),
-            concat!("profile_clearance_", "candidate_from_triangle"),
-            concat!("collect_profile_clearance_", "triangle_candidates"),
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "road-touched terrain support must use one canonical lower-envelope pass, not `{forbidden}`"
-            );
-        }
     }
 }
