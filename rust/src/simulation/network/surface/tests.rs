@@ -7672,6 +7672,56 @@ fn visible_surface_height_skips_buried_tunnel_midspan() {
 }
 
 #[test]
+fn visible_surface_height_ignores_non_surface_node_adjacency() {
+    let terrain = flat_terrain(97, 97);
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let road_end = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        center,
+        road_end,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let rail_end = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        center,
+        rail_end,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 24.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Rail,
+        TransitFlags::RAIL,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("surface node piece should compile from the road adjacency");
+    let sample = piece
+        .road_surface_polygons
+        .iter()
+        .chain(&piece.curb_surface_polygons)
+        .chain(&piece.sidewalk_surface_polygons)
+        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .map(triangle_centroid_xz)
+        .next()
+        .expect("compiled node piece should contain visible top-surface triangles");
+    assert!(
+        surface
+            .sample_visible_surface_height(&graph, &terrain, sample.x, sample.y)
+            .is_some(),
+        "non-surface adjacency must not hide a valid road-owned node surface"
+    );
+}
+
+#[test]
 fn visible_surface_raycast_hits_bridge_before_terrain() {
     let terrain = flat_terrain(97, 33);
     let mut graph = RegionGraph::new();

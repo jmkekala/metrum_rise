@@ -117,6 +117,62 @@ impl RoadSurfaceSystem {
         }
     }
 
+    pub(super) fn visit_visible_top_surface_query_triangles<F>(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_indices: &[usize],
+        node_ids: &[u32],
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for &node_id in node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            self.visit_visible_node_piece_triangles(graph, terrain, node_id, piece, visitor);
+        }
+
+        for &edge_idx in edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            self.visit_visible_span_piece_triangles(piece, visitor);
+        }
+    }
+
+    pub(super) fn visit_visible_earthwork_query_triangles<F>(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_indices: &[usize],
+        node_ids: &[u32],
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for &edge_idx in edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            if !self.span_piece_uses_visible_earthwork(piece) {
+                continue;
+            }
+            self.visit_span_piece_earthwork_triangles(piece, visitor);
+        }
+
+        for &node_id in node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+                continue;
+            }
+            self.visit_node_piece_earthwork_triangles(graph, terrain, node_id, piece, visitor);
+        }
+    }
+
     pub(in crate::simulation::network::surface) fn visit_visual_polygon_triangles<F>(
         polygon: &RoadSurfaceVisualPolygon,
         visitor: &mut F,

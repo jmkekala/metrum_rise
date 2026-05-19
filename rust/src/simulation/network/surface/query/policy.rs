@@ -21,15 +21,15 @@ impl RoadSurfaceSystem {
         let mut has_visible_surface_attachment = false;
         for &edge_idx in graph.node_adjacency(node_id) {
             if edge_idx >= graph.edge_count() {
-                return false;
-            }
-            let edge = graph.edge(edge_idx);
-            if edge.deleted {
                 continue;
             }
-            if !Self::is_surface_edge(edge) || !self.compiled_sections.contains_key(&edge_idx) {
-                return false;
+            let edge = graph.edge(edge_idx);
+            if edge.deleted || !Self::is_surface_edge(edge) {
+                continue;
             }
+            let Some(_) = self.compiled_sections.get(&edge_idx) else {
+                continue;
+            };
 
             has_supported_surface = true;
             if edge.primary_type == TransitType::Foot || edge.class != EdgeClass::Tunnel {

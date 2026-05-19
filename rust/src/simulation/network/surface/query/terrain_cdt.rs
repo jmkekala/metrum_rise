@@ -88,12 +88,7 @@ impl RoadSurfaceSystem {
                 let footprint_group_id = footprint_group_ids
                     .get(&topology.shape_index)
                     .copied()
-                    .unwrap_or_else(|| {
-                        Self::terrain_cdt_stable_piece_id_for_terrain_clip_loop(
-                            boundary_loop,
-                            loop_index,
-                        )
-                    });
+                    .expect("terrain clip export topology must have a stable footprint group id");
                 Self::terrain_cdt_road_loop_from_terrain_clip_loop(
                     loop_index,
                     boundary_loop,
@@ -183,7 +178,7 @@ impl RoadSurfaceSystem {
         TerrainCdtRoadLoop::new_with_source_edges_and_topology(
             stable_piece_id,
             footprint_group_id,
-            u32::try_from(loop_index).unwrap_or(u32::MAX),
+            terrain_cdt_usize_to_u32(loop_index),
             topology.role == RoadSurfaceTerrainClipContourRole::Hole,
             vertices,
             source_edges,
@@ -256,7 +251,7 @@ impl RoadSurfaceSystem {
         loop_index: usize,
     ) -> u64 {
         if boundary_loop.points_world.is_empty() {
-            return u64::try_from(loop_index).unwrap_or(u64::MAX);
+            return terrain_cdt_usize_to_u64(loop_index);
         }
 
         let mut hasher = TerrainClipStableHasher::new();
@@ -286,7 +281,7 @@ impl RoadSurfaceSystem {
     fn terrain_cdt_stable_piece_id_for_source(source: RoadSurfaceEarthworkFaceSource) -> u64 {
         match source {
             RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_idx, .. } => {
-                u64::try_from(edge_idx).unwrap_or(u64::MAX)
+                terrain_cdt_usize_to_u64(edge_idx)
             }
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. } => {
                 (1_u64 << 63) | u64::from(node_id)
@@ -309,14 +304,14 @@ impl RoadSurfaceSystem {
                 start_s_m,
                 end_s_m,
             } => TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                edge_idx: u64::try_from(edge_idx).unwrap_or(u64::MAX),
+                edge_idx: terrain_cdt_usize_to_u64(edge_idx),
                 edge_class: Self::terrain_cdt_edge_class(edge_class),
                 support_policy: Self::terrain_cdt_support_policy(support_policy),
-                source_band_index: u32::try_from(owner.source_band_index).unwrap_or(u32::MAX),
+                source_band_index: terrain_cdt_usize_to_u32(owner.source_band_index),
                 band_kind: Self::terrain_cdt_band_kind(owner.kind),
                 role: Self::terrain_cdt_span_region_role(role),
-                start_section_index: u32::try_from(start_section_index).unwrap_or(u32::MAX),
-                end_section_index: u32::try_from(end_section_index).unwrap_or(u32::MAX),
+                start_section_index: terrain_cdt_usize_to_u32(start_section_index),
+                end_section_index: terrain_cdt_usize_to_u32(end_section_index),
                 start_s_m,
                 end_s_m,
             },
@@ -330,7 +325,7 @@ impl RoadSurfaceSystem {
                 node_id,
                 node_kind: Self::terrain_cdt_node_piece_kind(kind),
                 owner_kind: Self::terrain_cdt_band_kind(owner_kind),
-                owner_index: u32::try_from(owner_index).unwrap_or(u32::MAX),
+                owner_index: terrain_cdt_usize_to_u32(owner_index),
                 boundary_source: boundary_source
                     .map(Self::terrain_cdt_node_footprint_boundary_segment_source),
             },
@@ -375,9 +370,8 @@ impl RoadSurfaceSystem {
         source: NodeFootprintBoundaryDirectSource,
     ) -> TerrainCdtNodeFootprintBoundaryDirectSource {
         TerrainCdtNodeFootprintBoundaryDirectSource {
-            top_surface_source_index: u64::try_from(source.top_surface_source_index)
-                .unwrap_or(u64::MAX),
-            grade_authority_index: u64::try_from(source.grade_authority_index).unwrap_or(u64::MAX),
+            top_surface_source_index: terrain_cdt_usize_to_u64(source.top_surface_source_index),
+            grade_authority_index: terrain_cdt_usize_to_u64(source.grade_authority_index),
         }
     }
 
@@ -511,7 +505,7 @@ impl TerrainClipStableHasher {
     }
 
     fn write_usize(&mut self, value: usize) {
-        self.write_u64(u64::try_from(value).unwrap_or(u64::MAX));
+        self.write_u64(terrain_cdt_usize_to_u64(value));
     }
 
     fn write_str(&mut self, value: &str) {
@@ -521,4 +515,12 @@ impl TerrainClipStableHasher {
     fn finish(self) -> u64 {
         self.state
     }
+}
+
+fn terrain_cdt_usize_to_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("terrain CDT export index must fit u32")
+}
+
+fn terrain_cdt_usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).expect("terrain CDT export index must fit u64")
 }

@@ -19,88 +19,34 @@ impl RoadSurfaceSystem {
         let point = Vector2::new(world_x, world_z);
         let mut top_surface_height_m: Option<f32> = None;
 
-        for &node_id in &node_ids {
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            self.visit_visible_node_piece_triangles(
-                graph,
-                terrain,
-                node_id,
-                piece,
-                &mut |triangle| {
-                    let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                    else {
-                        return;
-                    };
-                    let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                    top_surface_height_m =
-                        Some(top_surface_height_m.map_or(height_m, |best| best.max(height_m)));
-                },
-            );
-        }
-
-        for &edge_idx in &edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            self.visit_visible_span_piece_triangles(piece, &mut |triangle| {
-                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                else {
-                    return;
-                };
-                let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                top_surface_height_m =
-                    Some(top_surface_height_m.map_or(height_m, |best| best.max(height_m)));
-            });
-        }
+        self.visit_visible_top_surface_query_triangles(
+            graph,
+            terrain,
+            &edge_indices,
+            &node_ids,
+            &mut |triangle| {
+                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    keep_max_height(&mut top_surface_height_m, height_m);
+                }
+            },
+        );
 
         if top_surface_height_m.is_some() {
             return top_surface_height_m;
         }
 
         let mut earthwork_height_m: Option<f32> = None;
-        for &edge_idx in &edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            if !self.span_piece_uses_visible_earthwork(piece) {
-                continue;
-            }
-            self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
-                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                else {
-                    return;
-                };
-                let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                earthwork_height_m =
-                    Some(earthwork_height_m.map_or(height_m, |best| best.max(height_m)));
-            });
-        }
-
-        for &node_id in &node_ids {
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
-                continue;
-            }
-            self.visit_node_piece_earthwork_triangles(
-                graph,
-                terrain,
-                node_id,
-                piece,
-                &mut |triangle| {
-                    let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                    else {
-                        return;
-                    };
-                    let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                    earthwork_height_m =
-                        Some(earthwork_height_m.map_or(height_m, |best| best.max(height_m)));
-                },
-            );
-        }
+        self.visit_visible_earthwork_query_triangles(
+            graph,
+            terrain,
+            &edge_indices,
+            &node_ids,
+            &mut |triangle| {
+                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    keep_max_height(&mut earthwork_height_m, height_m);
+                }
+            },
+        );
 
         earthwork_height_m
     }
@@ -138,13 +84,9 @@ impl RoadSurfaceSystem {
                 .chain(&piece.sidewalk_surface_polygons)
             {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                    let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                    else {
-                        return;
-                    };
-                    let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc
-                        - height_offset_m;
-                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.min(height_m)));
+                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                        keep_min_height(&mut best_height_m, height_m - height_offset_m);
+                    }
                 });
             }
         }
@@ -155,13 +97,9 @@ impl RoadSurfaceSystem {
             };
             let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
             self.visit_span_piece_clearance_triangles(piece, &mut |triangle| {
-                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
-                else {
-                    return;
-                };
-                let height_m =
-                    triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc - height_offset_m;
-                best_height_m = Some(best_height_m.map_or(height_m, |best| best.min(height_m)));
+                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    keep_min_height(&mut best_height_m, height_m - height_offset_m);
+                }
             });
         }
 
@@ -190,90 +128,30 @@ impl RoadSurfaceSystem {
         };
         let (edge_indices, node_ids) = self.collect_query_contributors(min_chunk, max_chunk);
 
-        let mut best_t = terrain_t.unwrap_or(f32::INFINITY);
+        let mut best_t = match terrain_t {
+            Some(t) => t,
+            None => f32::INFINITY,
+        };
         let mut best_hit = None;
 
-        for &node_id in &node_ids {
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            self.visit_visible_node_piece_triangles(
-                graph,
-                terrain,
-                node_id,
-                piece,
-                &mut |triangle| {
-                    let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
-                    else {
-                        return;
-                    };
-                    if t >= 0.0 && t <= best_t {
-                        best_t = t;
-                        best_hit = Some(ray_origin + ray_dir * t);
-                    }
-                },
-            );
-        }
-
-        for &edge_idx in &edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            self.visit_visible_span_piece_triangles(piece, &mut |triangle| {
-                let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
-                else {
-                    return;
-                };
-                if t >= 0.0 && t <= best_t {
-                    best_t = t;
-                    best_hit = Some(ray_origin + ray_dir * t);
-                }
-            });
-        }
-
-        for &edge_idx in &edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            if !self.span_piece_uses_visible_earthwork(piece) {
-                continue;
-            }
-            self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
-                let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
-                else {
-                    return;
-                };
-                if t >= 0.0 && t <= best_t {
-                    best_t = t;
-                    best_hit = Some(ray_origin + ray_dir * t);
-                }
-            });
-        }
-
-        for &node_id in &node_ids {
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
-                continue;
-            }
-            self.visit_node_piece_earthwork_triangles(
-                graph,
-                terrain,
-                node_id,
-                piece,
-                &mut |triangle| {
-                    let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
-                    else {
-                        return;
-                    };
-                    if t >= 0.0 && t <= best_t {
-                        best_t = t;
-                        best_hit = Some(ray_origin + ray_dir * t);
-                    }
-                },
-            );
-        }
+        self.visit_visible_top_surface_query_triangles(
+            graph,
+            terrain,
+            &edge_indices,
+            &node_ids,
+            &mut |triangle| {
+                update_closest_ray_hit(triangle, ray_origin, ray_dir, &mut best_t, &mut best_hit);
+            },
+        );
+        self.visit_visible_earthwork_query_triangles(
+            graph,
+            terrain,
+            &edge_indices,
+            &node_ids,
+            &mut |triangle| {
+                update_closest_ray_hit(triangle, ray_origin, ray_dir, &mut best_t, &mut best_hit);
+            },
+        );
 
         best_hit.or(terrain_hit)
     }
@@ -329,6 +207,11 @@ impl RoadSurfaceSystem {
         };
 
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
+    }
+
+    fn triangle_height_at_xz(triangle: [Vector3; 3], point: Vector2) -> Option<f32> {
+        let (wa, wb, wc) = Self::triangle_barycentric_weights_xz(triangle, point)?;
+        Some(triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc)
     }
 
     fn raycast_visible_query_chunk_bounds(
@@ -416,4 +299,30 @@ fn clip_ray_axis_interval(
     *entry_t = entry_t.max(t0.min(t1));
     *exit_t = exit_t.min(t0.max(t1));
     Some(())
+}
+
+fn keep_max_height(target: &mut Option<f32>, height_m: f32) {
+    *target = Some(target.map_or(height_m, |best| best.max(height_m)));
+}
+
+#[cfg(test)]
+fn keep_min_height(target: &mut Option<f32>, height_m: f32) {
+    *target = Some(target.map_or(height_m, |best| best.min(height_m)));
+}
+
+fn update_closest_ray_hit(
+    triangle: [Vector3; 3],
+    ray_origin: Vector3,
+    ray_dir: Vector3,
+    best_t: &mut f32,
+    best_hit: &mut Option<Vector3>,
+) {
+    let Some(t) = RoadSurfaceSystem::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
+    else {
+        return;
+    };
+    if t >= 0.0 && t <= *best_t {
+        *best_t = t;
+        *best_hit = Some(ray_origin + ray_dir * t);
+    }
 }
