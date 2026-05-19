@@ -1,6 +1,7 @@
 //! Terrain clip and road-touched CDT stage contract tests.
 
-use super::super::keys::SurfaceXzKey;
+use super::super::RoadSurfaceTerrainClipContourRole;
+use super::super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::*;
 
 #[test]
@@ -426,6 +427,164 @@ fn terrain_clip_union_rejects_ambiguous_source_chain_recovery() {
 }
 
 #[test]
+fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
+    let y = 8.0;
+    let points = vec![
+        Vector3::new(0.0, y, 0.0),
+        Vector3::new(2.0, y, 0.0),
+        Vector3::new(2.0, y, 1.0),
+        Vector3::new(0.0, y, 1.0),
+    ];
+    let raw_clip_sources = vec![
+        terrain_clip_loop_for_node_test(&points, 1),
+        terrain_clip_loop_for_node_test(&points, 2),
+    ];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { context, .. }) =
+        unioned
+    else {
+        panic!(
+            "coincident matching-height source edges with different provenance must reject, got {unioned:?}"
+        );
+    };
+    assert!(
+        context.contains("sources_disagree"),
+        "ambiguous output source diagnostic should name provenance disagreement: {context}"
+    );
+}
+
+#[test]
+fn terrain_clip_union_exports_hole_contours_for_ring_footprint() {
+    let y = 2.0;
+    let rectangles = [
+        vec![
+            Vector3::new(0.0, y, 0.0),
+            Vector3::new(4.0, y, 0.0),
+            Vector3::new(4.0, y, 1.0),
+            Vector3::new(0.0, y, 1.0),
+        ],
+        vec![
+            Vector3::new(0.0, y, 3.0),
+            Vector3::new(4.0, y, 3.0),
+            Vector3::new(4.0, y, 4.0),
+            Vector3::new(0.0, y, 4.0),
+        ],
+        vec![
+            Vector3::new(0.0, y, 1.0),
+            Vector3::new(1.0, y, 1.0),
+            Vector3::new(1.0, y, 3.0),
+            Vector3::new(0.0, y, 3.0),
+        ],
+        vec![
+            Vector3::new(3.0, y, 1.0),
+            Vector3::new(4.0, y, 1.0),
+            Vector3::new(4.0, y, 3.0),
+            Vector3::new(3.0, y, 3.0),
+        ],
+    ];
+    let raw_clip_sources = rectangles
+        .iter()
+        .enumerate()
+        .map(|(index, points)| terrain_clip_loop_for_node_test(points, index as u32))
+        .collect::<Vec<_>>();
+
+    let export = RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
+        .expect("ring road footprint should export both outer and hole contours");
+
+    assert_eq!(
+        export.loops.len(),
+        2,
+        "unioned ring footprint must preserve its inner terrain-island contour"
+    );
+    assert_eq!(
+        export
+            .loop_topologies
+            .iter()
+            .filter(|topology| topology.role == RoadSurfaceTerrainClipContourRole::Outer)
+            .count(),
+        1
+    );
+    assert_eq!(
+        export
+            .loop_topologies
+            .iter()
+            .filter(|topology| topology.role == RoadSurfaceTerrainClipContourRole::Hole)
+            .count(),
+        1
+    );
+    let hole_loop = export
+        .loops
+        .iter()
+        .zip(export.loop_topologies.iter())
+        .find(|(_, topology)| topology.role == RoadSurfaceTerrainClipContourRole::Hole)
+        .map(|(boundary_loop, _)| boundary_loop)
+        .expect("hole topology should identify the inner contour");
+    assert!(
+        hole_loop.points_world.iter().all(|point| {
+            point.x >= 1.0 - SAMPLE_EPSILON_M
+                && point.x <= 3.0 + SAMPLE_EPSILON_M
+                && point.z >= 1.0 - SAMPLE_EPSILON_M
+                && point.z <= 3.0 + SAMPLE_EPSILON_M
+        }),
+        "hole contour must stay on the inner terrain island boundary: {hole_loop:?}"
+    );
+}
+
+#[test]
+fn terrain_cdt_preserves_source_samples_inside_road_hole() {
+    let outer = vec![
+        TerrainCdtVertex::new(0.0, 0.0, 0.0),
+        TerrainCdtVertex::new(4.0, 0.0, 0.0),
+        TerrainCdtVertex::new(4.0, 0.0, 4.0),
+        TerrainCdtVertex::new(0.0, 0.0, 4.0),
+    ];
+    let hole = vec![
+        TerrainCdtVertex::new(1.0, 0.0, 1.0),
+        TerrainCdtVertex::new(1.0, 0.0, 3.0),
+        TerrainCdtVertex::new(3.0, 0.0, 3.0),
+        TerrainCdtVertex::new(3.0, 0.0, 1.0),
+    ];
+    let hole_sample = TerrainCdtVertex::new(2.0, 0.0, 2.0);
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-1.0, -1.0, 5.0, 5.0, [0.0; 4]),
+        vec![
+            TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+                10,
+                10,
+                0,
+                false,
+                outer,
+                Vec::new(),
+            ),
+            TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+                11,
+                10,
+                1,
+                true,
+                hole,
+                Vec::new(),
+            ),
+        ],
+        vec![hole_sample],
+    ))
+    .expect("CDT should accept road footprint holes as constrained terrain islands");
+
+    assert!(
+        mesh.vertices
+            .iter()
+            .any(
+                |vertex| (vertex.x - hole_sample.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                    && (vertex.z - hole_sample.z).abs() <= f64::from(SAMPLE_EPSILON_M)
+            ),
+        "source terrain sample inside a road footprint hole must not be rejected as road-owned"
+    );
+}
+
+#[test]
 fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
     let y = 4.0;
     let valid = [
@@ -539,6 +698,46 @@ fn terrain_clip_union_skips_same_key_dust_only_when_degenerate() {
 }
 
 #[test]
+fn terrain_clip_source_endpoint_groups_use_key_derived_coordinates() {
+    let p0_loop = Vector3::new(0.0, 10.0004, 0.0);
+    let p0_source = Vector3::new(0.0000002, 10.00049, 0.0000002);
+    let p1 = Vector3::new(1.0, 10.0, 0.0);
+    let p2 = Vector3::new(1.0, 10.0, 1.0);
+    let p3 = Vector3::new(0.0, 10.0, 1.0);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0_source, p1),
+            terrain_clip_source_edge_for_test(p1, p2),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p0_loop),
+        ],
+        points_world: vec![p0_loop, p1, p2, p3],
+    }];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources)
+            .expect("same key endpoint group should canonicalize through keys, not raw majority");
+    let origin = unioned[0]
+        .source_edges
+        .iter()
+        .flat_map(|edge| [edge.start, edge.end])
+        .find(|point| {
+            SurfaceXzKey::from_godot_world_xz(*point) == SurfaceXzKey::from_raw_keys(0, 0)
+        })
+        .expect("origin endpoint should remain present after terrain clip union");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f32(origin.y),
+        SurfaceHeightMmKey::from_m_f32(10.0),
+        "same-key source endpoints must be emitted at the canonical height key, not at a majority raw Vector3"
+    );
+    assert!(
+        origin.x.abs() <= SAMPLE_EPSILON_M && origin.z.abs() <= SAMPLE_EPSILON_M,
+        "same-key source endpoints must be emitted at the canonical XZ key"
+    );
+}
+
+#[test]
 fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
     let y = 12.0;
     let points = vec![
@@ -574,6 +773,61 @@ fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
             .iter()
             .all(|point| (point.y - y).abs() <= SAMPLE_EPSILON_M),
         "accepted connector must reuse canonical source endpoint heights"
+    );
+}
+
+#[test]
+fn terrain_clip_union_rejects_dust_connector_conflicting_same_xz_heights() {
+    let raw_boundary_y = -99.0;
+    let p0 = Vector3::new(0.0, 10.0, 0.0);
+    let p1 = Vector3::new(0.5, 10.5, 0.0);
+    let d0 = Vector3::new(0.50002, raw_boundary_y, 0.00008);
+    let d1 = Vector3::new(0.49998, raw_boundary_y, 0.00016);
+    let d2 = Vector3::new(0.50001, raw_boundary_y, 0.00024);
+    let p2 = Vector3::new(0.5, 10.7, 0.00032);
+    let p3 = Vector3::new(1.0, 11.0, 0.0);
+    let p4 = Vector3::new(1.0, 11.0, 0.1);
+    let p5 = Vector3::new(0.0, 10.0, 0.1);
+    let conflict_a0 = Vector3::new(d1.x - 0.0002, 20.0, d1.z);
+    let conflict_a1 = Vector3::new(d1.x + 0.0002, 20.0, d1.z);
+    let conflict_b0 = Vector3::new(d1.x - 0.0002, 21.0, d1.z);
+    let conflict_b1 = Vector3::new(d1.x + 0.0002, 21.0, d1.z);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p1),
+            terrain_clip_source_edge_for_test(p2, p3),
+            terrain_clip_source_edge_for_test(p3, p4),
+            terrain_clip_source_edge_for_test(p4, p5),
+            terrain_clip_source_edge_for_test(p5, p0),
+            terrain_clip_source_edge_for_test(conflict_a0, conflict_a1),
+            terrain_clip_source_edge_for_test(conflict_b0, conflict_b1),
+        ],
+        points_world: vec![
+            Vector3::new(p0.x, raw_boundary_y, p0.z),
+            Vector3::new(p1.x, raw_boundary_y, p1.z),
+            d0,
+            d1,
+            d2,
+            Vector3::new(p2.x, raw_boundary_y, p2.z),
+            Vector3::new(p3.x, raw_boundary_y, p3.z),
+            Vector3::new(p4.x, raw_boundary_y, p4.z),
+            Vector3::new(p5.x, raw_boundary_y, p5.z),
+        ],
+    }];
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousDustConnectorHeight { context, .. }) =
+        unioned
+    else {
+        panic!(
+            "dust connector with conflicting same-XZ source heights must reject, got {unioned:?}"
+        );
+    };
+    assert!(
+        context.contains("conflicting_source_heights"),
+        "dust connector height ambiguity should name conflicting height keys: {context}"
     );
 }
 
@@ -869,5 +1123,17 @@ fn terrain_clip_source_edge_for_node_test(
             owner_index: 0,
             boundary_source: None,
         },
+    }
+}
+
+fn terrain_clip_loop_for_node_test(points: &[Vector3], node_id: u32) -> RoadSurfaceTerrainClipLoop {
+    RoadSurfaceTerrainClipLoop {
+        source_edges: points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(&start, &end)| terrain_clip_source_edge_for_node_test(start, end, node_id))
+            .collect(),
+        points_world: points.to_vec(),
     }
 }

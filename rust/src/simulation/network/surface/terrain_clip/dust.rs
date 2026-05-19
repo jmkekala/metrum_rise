@@ -4,7 +4,9 @@ use super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSu
 use super::geometry::{
     contour_area_delta_after_removing_vertex, interpolate_height_f64, overlay_segment_length_m,
 };
-use super::model::{TerrainClipSegmentHeights, TerrainClipSourceEdge};
+use super::model::{
+    TerrainClipDustConnectorRecovery, TerrainClipSegmentHeights, TerrainClipSourceEdge,
+};
 use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
@@ -12,16 +14,16 @@ impl RoadSurfaceSystem {
         contour: &NodeOverlayContour,
         segment_index: usize,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<TerrainClipSegmentHeights> {
+    ) -> Result<Option<TerrainClipSegmentHeights>, String> {
         let len = contour.len();
         if len < 3 {
-            return None;
+            return Ok(None);
         }
 
         let start = contour[segment_index];
         let end = contour[(segment_index + 1) % len];
         if !Self::terrain_clip_connector_is_numeric_dust(contour, segment_index) {
-            return None;
+            return Ok(None);
         }
 
         let previous = contour[(segment_index + len - 1) % len];
@@ -30,37 +32,57 @@ impl RoadSurfaceSystem {
             Self::terrain_clip_segment_heights_from_source_edges(previous, start, source_edges),
             Self::terrain_clip_segment_heights_from_source_edges(end, next, source_edges),
         ) {
-            return Some(TerrainClipSegmentHeights {
+            Self::validate_terrain_clip_dust_endpoint_height(
+                "start",
+                start,
+                previous_heights.end_y,
+                source_edges,
+            )?;
+            Self::validate_terrain_clip_dust_endpoint_height(
+                "end",
+                end,
+                next_heights.start_y,
+                source_edges,
+            )?;
+            return Ok(Some(TerrainClipSegmentHeights {
                 start_y: previous_heights.end_y,
                 end_y: next_heights.start_y,
-            });
+            }));
         }
 
         let heights =
             Self::terrain_clip_contour_vertex_heights_from_source_edges(contour, source_edges)?;
-        Some(TerrainClipSegmentHeights {
+        let Some(heights) = heights else {
+            return Ok(None);
+        };
+        Ok(Some(TerrainClipSegmentHeights {
             start_y: heights[segment_index],
             end_y: heights[(segment_index + 1) % len],
-        })
+        }))
     }
 
     fn terrain_clip_contour_vertex_heights_from_source_edges(
         contour: &NodeOverlayContour,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<f32>> {
+    ) -> Result<Option<Vec<f32>>, String> {
         let len = contour.len();
         if len < 3 {
-            return None;
+            return Ok(None);
         }
 
         let mut heights = contour
             .iter()
             .copied()
             .map(|point| {
-                Self::terrain_clip_overlay_point_height_from_source_edges(point, source_edges)
+                Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
+                    point,
+                    source_edges,
+                )
             })
-            .collect::<Vec<_>>();
-        let anchor = heights.iter().position(Option::is_some)?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(anchor) = heights.iter().position(Option::is_some) else {
+            return Ok(None);
+        };
         let mut offset = 1usize;
         while offset < len {
             let index = (anchor + offset) % len;
@@ -75,15 +97,42 @@ impl RoadSurfaceSystem {
             }
             let prev_index = (anchor + run_start_offset - 1) % len;
             let next_index = (anchor + offset) % len;
-            Self::interpolate_terrain_clip_dust_run_heights(
+            if Self::interpolate_terrain_clip_dust_run_heights(
                 contour,
                 &mut heights,
                 prev_index,
                 next_index,
-            )?;
+            )
+            .is_none()
+            {
+                return Ok(None);
+            }
         }
 
-        heights.into_iter().collect()
+        Ok(heights.into_iter().collect())
+    }
+
+    fn validate_terrain_clip_dust_endpoint_height(
+        label: &'static str,
+        point: super::super::NodeOverlayPoint,
+        height: f32,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<(), String> {
+        let Some(source_height) =
+            Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
+                point,
+                source_edges,
+            )?
+        else {
+            return Ok(());
+        };
+        if Self::overlay_heights_equal(source_height, height) {
+            Ok(())
+        } else {
+            Err(format!(
+                "dust_connector_{label}_height_disagrees source={source_height:.6} recovered={height:.6}"
+            ))
+        }
     }
 
     fn interpolate_terrain_clip_dust_run_heights(
@@ -128,16 +177,20 @@ impl RoadSurfaceSystem {
         contour: &NodeOverlayContour,
         segment_index: usize,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vec<Vector3>> {
+    ) -> TerrainClipDustConnectorRecovery {
         let len = contour.len();
-        let heights = Self::terrain_clip_dust_connector_heights_from_source_edges(
+        let heights = match Self::terrain_clip_dust_connector_heights_from_source_edges(
             contour,
             segment_index,
             source_edges,
-        )?;
+        ) {
+            Ok(Some(heights)) => heights,
+            Ok(None) => return TerrainClipDustConnectorRecovery::Missing,
+            Err(context) => return TerrainClipDustConnectorRecovery::Ambiguous(context),
+        };
         let start = contour[segment_index];
         let end = contour[(segment_index + 1) % len];
-        Some(vec![
+        TerrainClipDustConnectorRecovery::Covered(vec![
             Vector3::new(start[0] as f32, heights.start_y, start[1] as f32),
             Vector3::new(end[0] as f32, heights.end_y, end[1] as f32),
         ])

@@ -10,6 +10,8 @@ mod source_edges;
 mod union;
 
 pub(crate) use model::{
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipSourceEdge, terrain_clip_edge_kind_for_band,
+    RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipLoopTopology, RoadSurfaceTerrainClipSourceEdge,
+    terrain_clip_edge_kind_for_band,
 };

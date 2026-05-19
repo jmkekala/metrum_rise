@@ -1,8 +1,9 @@
 //! Terrain-clip source model and local export diagnostics.
 
 use super::super::{
-    NodeOverlayPoint, RoadSurfaceBandKind, RoadSurfaceVisualPolygon,
-    earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceSegmentParameter,
+    NodeFootprintBoundarySegmentSource, NodeOverlayPoint, RoadSurfaceBandKind,
+    RoadSurfaceVisualPolygon, earthwork::RoadSurfaceEarthworkFaceSource,
+    keys::SurfaceSegmentParameter,
 };
 use godot::prelude::Vector3;
 
@@ -29,9 +30,10 @@ pub(crate) struct RoadSurfaceTerrainClipLoop {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(in crate::simulation::network::surface) struct RoadSurfaceTerrainClipExport {
-    pub(in crate::simulation::network::surface) loops: Vec<RoadSurfaceTerrainClipLoop>,
-    pub(in crate::simulation::network::surface) polygons: Vec<RoadSurfaceVisualPolygon>,
+pub(crate) struct RoadSurfaceTerrainClipExport {
+    pub(crate) loops: Vec<RoadSurfaceTerrainClipLoop>,
+    pub(crate) loop_topologies: Vec<RoadSurfaceTerrainClipLoopTopology>,
+    pub(crate) polygons: Vec<RoadSurfaceVisualPolygon>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +63,21 @@ pub(crate) enum RoadSurfaceTerrainClipExportError {
         start: Vector3,
         end: Vector3,
     },
+    RepeatedOverlayPointCycle {
+        shape_index: usize,
+        contour_index: usize,
+        x_key: i64,
+        z_key: i64,
+        cycle_area_m2: f64,
+        remainder_area_m2: f64,
+        dust_budget_m2: f64,
+    },
+    AmbiguousDustConnectorHeight {
+        shape_index: usize,
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        context: String,
+    },
 }
 
 impl RoadSurfaceTerrainClipExportError {
@@ -73,8 +90,47 @@ impl RoadSurfaceTerrainClipExportError {
                 "terrain_clip_ambiguous_output_boundary_owner"
             }
             Self::UnclosedOutputBoundary { .. } => "terrain_clip_unclosed_output_boundary",
+            Self::RepeatedOverlayPointCycle { .. } => "terrain_clip_repeated_overlay_point_cycle",
+            Self::AmbiguousDustConnectorHeight { .. } => {
+                "terrain_clip_ambiguous_dust_connector_height"
+            }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceTerrainClipContourRole {
+    Outer,
+    Hole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RoadSurfaceTerrainClipLoopTopology {
+    pub(crate) shape_index: usize,
+    pub(crate) contour_index: usize,
+    pub(crate) role: RoadSurfaceTerrainClipContourRole,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TerrainClipOutputContour {
+    pub(super) boundary_loop: RoadSurfaceTerrainClipLoop,
+    pub(super) topology: RoadSurfaceTerrainClipLoopTopology,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TerrainClipContourCompactError {
+    pub(super) x_key: i64,
+    pub(super) z_key: i64,
+    pub(super) cycle_area_m2: f64,
+    pub(super) remainder_area_m2: f64,
+    pub(super) dust_budget_m2: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum TerrainClipDustConnectorRecovery {
+    Missing,
+    Ambiguous(String),
+    Covered(Vec<Vector3>),
 }
 
 #[derive(Clone, Copy)]
@@ -153,5 +209,49 @@ pub(super) fn terrain_clip_source_edges_same_provenance(
     a: TerrainClipSourceEdge,
     b: TerrainClipSourceEdge,
 ) -> bool {
-    a.kind == b.kind && a.source == b.source
+    a.kind == b.kind && terrain_clip_sources_same_provenance(a.source, b.source)
+}
+
+fn terrain_clip_sources_same_provenance(
+    a: RoadSurfaceEarthworkFaceSource,
+    b: RoadSurfaceEarthworkFaceSource,
+) -> bool {
+    match (a, b) {
+        (
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: node_id_a,
+                kind: kind_a,
+                owner_kind: owner_kind_a,
+                owner_index: owner_index_a,
+                boundary_source: boundary_source_a,
+            },
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: node_id_b,
+                kind: kind_b,
+                owner_kind: owner_kind_b,
+                owner_index: owner_index_b,
+                boundary_source: boundary_source_b,
+            },
+        ) => {
+            node_id_a == node_id_b
+                && kind_a == kind_b
+                && owner_kind_a == owner_kind_b
+                && owner_index_a == owner_index_b
+                && terrain_clip_boundary_sources_same_undirected(
+                    boundary_source_a,
+                    boundary_source_b,
+                )
+        }
+        _ => a == b,
+    }
+}
+
+fn terrain_clip_boundary_sources_same_undirected(
+    a: Option<NodeFootprintBoundarySegmentSource>,
+    b: Option<NodeFootprintBoundarySegmentSource>,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b || (a.start == b.end && a.end == b.start),
+        _ => a == b,
+    }
 }

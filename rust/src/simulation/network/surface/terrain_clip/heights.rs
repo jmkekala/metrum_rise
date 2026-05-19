@@ -1,6 +1,6 @@
 //! Terrain-clip cutter height recovery and interval coverage.
 
-use super::super::{NodeOverlayPoint, RoadSurfaceSystem};
+use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceHeightMmKey};
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::{
     TerrainClipSegmentPointRecovery, TerrainClipSourceEdge, TerrainClipSourceInterval,
@@ -184,6 +184,41 @@ impl RoadSurfaceSystem {
             );
         }
         height
+    }
+
+    pub(super) fn terrain_clip_unambiguous_overlay_point_height_from_source_edges(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<Option<f32>, String> {
+        let mut height = None;
+        let mut height_key: Option<SurfaceHeightMmKey> = None;
+        for &source_edge in source_edges {
+            let source_start = [
+                f64::from(source_edge.start.x),
+                f64::from(source_edge.start.z),
+            ];
+            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+            let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
+                continue;
+            };
+            let candidate = interpolate_height_f64(source_edge.start.y, source_edge.end.y, t);
+            let candidate_key = SurfaceHeightMmKey::from_m_f32(candidate);
+            if let Some(current_key) = height_key {
+                if current_key != candidate_key {
+                    return Err(format!(
+                        "conflicting_source_heights point=({:.6},{:.6}) current_mm={} candidate_mm={}",
+                        point[0],
+                        point[1],
+                        current_key.as_i64(),
+                        candidate_key.as_i64()
+                    ));
+                }
+            } else {
+                height_key = Some(candidate_key);
+                height = Some(candidate_key.as_i64() as f32 / 1000.0);
+            }
+        }
+        Ok(height)
     }
 }
 

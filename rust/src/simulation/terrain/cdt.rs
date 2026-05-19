@@ -82,7 +82,9 @@ impl TerrainCdtPatch {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TerrainCdtRoadLoop {
     pub(crate) stable_piece_id: u64,
+    pub(crate) footprint_group_id: u64,
     pub(crate) local_loop_index: u32,
+    pub(crate) is_hole: bool,
     pub(crate) vertices: Vec<TerrainCdtVertex>,
     pub(crate) source_edges: Vec<TerrainCdtRoadLoopSourceEdge>,
 }
@@ -113,7 +115,9 @@ impl TerrainCdtRoadLoop {
         };
         Self {
             stable_piece_id,
+            footprint_group_id: stable_piece_id,
             local_loop_index,
+            is_hole: false,
             vertices,
             source_edges,
         }
@@ -127,7 +131,27 @@ impl TerrainCdtRoadLoop {
     ) -> Self {
         Self {
             stable_piece_id,
+            footprint_group_id: stable_piece_id,
             local_loop_index,
+            is_hole: false,
+            vertices,
+            source_edges,
+        }
+    }
+
+    pub(crate) fn new_with_source_edges_and_topology(
+        stable_piece_id: u64,
+        footprint_group_id: u64,
+        local_loop_index: u32,
+        is_hole: bool,
+        vertices: Vec<TerrainCdtVertex>,
+        source_edges: Vec<TerrainCdtRoadLoopSourceEdge>,
+    ) -> Self {
+        Self {
+            stable_piece_id,
+            footprint_group_id,
+            local_loop_index,
+            is_hole,
             vertices,
             source_edges,
         }
@@ -586,11 +610,7 @@ pub(crate) fn build_road_touched_terrain_patch(
             canonical.vertices[triangle[1]],
             canonical.vertices[triangle[2]],
         ]);
-        if canonical
-            .road_loops
-            .iter()
-            .any(|road_loop| point_in_polygon(center, &road_loop.vertices))
-        {
+        if point_inside_any_road_footprint(center, &canonical.road_loops) {
             rejected_road_faces += 1;
             continue;
         }
@@ -707,6 +727,8 @@ struct CanonicalTerrainCdtInput {
 
 #[derive(Clone, Debug, PartialEq)]
 struct CanonicalTerrainCdtRoadLoop {
+    footprint_group_id: u64,
+    is_hole: bool,
     vertices: Vec<TerrainCdtVertex>,
     edge_sources: Vec<Option<TerrainCdtRoadBoundarySource>>,
 }
@@ -747,9 +769,14 @@ fn canonicalize_input(
         insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
     }
 
-    input
-        .road_loops
-        .sort_by_key(|road_loop| (road_loop.stable_piece_id, road_loop.local_loop_index));
+    input.road_loops.sort_by_key(|road_loop| {
+        (
+            road_loop.footprint_group_id,
+            road_loop.is_hole,
+            road_loop.stable_piece_id,
+            road_loop.local_loop_index,
+        )
+    });
     for road_loop in input.road_loops {
         let original_source_edges = normalized_road_loop_source_edges(&road_loop);
         let original_points = simplified_loop(road_loop.vertices);
@@ -803,6 +830,8 @@ fn canonicalize_input(
             return Err(TerrainCdtError::MissingRoadBoundarySource);
         }
         road_loops.push(CanonicalTerrainCdtRoadLoop {
+            footprint_group_id: road_loop.footprint_group_id,
+            is_hole: road_loop.is_hole,
             vertices: points,
             edge_sources,
         });
@@ -819,10 +848,7 @@ fn canonicalize_input(
         if !patch_contains(sample, input.patch) {
             continue;
         }
-        if road_loops
-            .iter()
-            .any(|road_loop| point_in_polygon(sample, &road_loop.vertices))
-        {
+        if point_inside_any_road_footprint(sample, &road_loops) {
             continue;
         }
         if let Some(tie_in_sample) =
@@ -2027,6 +2053,23 @@ fn point_in_polygon(point: TerrainCdtVertex, polygon: &[TerrainCdtVertex]) -> bo
         previous = current;
     }
     inside
+}
+
+fn point_inside_any_road_footprint(
+    point: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    road_loops
+        .iter()
+        .filter(|road_loop| !road_loop.is_hole)
+        .filter(|road_loop| point_in_polygon(point, &road_loop.vertices))
+        .any(|outer_loop| {
+            !road_loops.iter().any(|hole_loop| {
+                hole_loop.is_hole
+                    && hole_loop.footprint_group_id == outer_loop.footprint_group_id
+                    && point_in_polygon(point, &hole_loop.vertices)
+            })
+        })
 }
 
 fn centroid(points: [TerrainCdtVertex; 3]) -> TerrainCdtVertex {

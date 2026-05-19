@@ -54,8 +54,10 @@ pub(crate) use span::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
 };
 pub(crate) use terrain_clip::{
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipSourceEdge, terrain_clip_edge_kind_for_band,
+    RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipLoopTopology, RoadSurfaceTerrainClipSourceEdge,
+    terrain_clip_edge_kind_for_band,
 };
 
 // Shared geometric tolerances used across surface compilation, overlay solving, and queries.

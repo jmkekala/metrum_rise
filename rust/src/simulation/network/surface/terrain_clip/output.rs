@@ -231,13 +231,45 @@ impl RoadSurfaceSystem {
 
     fn unique_terrain_clip_output_source(
         mut candidates: Vec<TerrainClipSourceEdge>,
-        _context: &'static str,
+        context: &'static str,
     ) -> TerrainClipOutputSourceSelection {
         if candidates.is_empty() {
             return TerrainClipOutputSourceSelection::Missing;
         }
         candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        TerrainClipOutputSourceSelection::Source(candidates[0])
+        let best_kind_priority = terrain_clip_edge_kind_priority(candidates[0].kind);
+        let best_candidates = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                terrain_clip_edge_kind_priority(candidate.kind) == best_kind_priority
+            })
+            .collect::<Vec<_>>();
+        let first = best_candidates[0];
+        if !best_candidates
+            .iter()
+            .copied()
+            .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
+        {
+            let sources = best_candidates
+                .iter()
+                .take(6)
+                .map(|candidate| {
+                    format!(
+                        "{:?}:{}:{}:{:?}",
+                        candidate.kind,
+                        candidate.source_index,
+                        candidate.edge_index,
+                        candidate.source
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            return TerrainClipOutputSourceSelection::Ambiguous(format!(
+                "{context}_sources_disagree candidates={sources}"
+            ));
+        }
+        TerrainClipOutputSourceSelection::Source(first)
     }
 }
 

@@ -2,7 +2,7 @@
 
 use super::super::{
     NodeOverlayPoint, RoadSurfaceSystem,
-    keys::{SurfaceXzKey, SurfaceXzSegmentKey},
+    keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::*;
@@ -60,16 +60,17 @@ impl RoadSurfaceSystem {
     }
 
     fn canonicalize_terrain_clip_source_endpoint_groups(edges: &mut [TerrainClipSourceEdge]) {
-        let mut groups: Vec<Vec<Vector3>> = Vec::new();
+        let mut groups: Vec<Vec<TerrainClipSourceEndpointKey>> = Vec::new();
         for point in edges.iter().flat_map(|edge| [edge.start, edge.end]) {
+            let point_key = Self::terrain_clip_source_endpoint_key(point);
             if let Some(group) = groups.iter_mut().find(|group| {
                 group.iter().any(|candidate| {
-                    Self::terrain_clip_source_points_share_canonical_endpoint(*candidate, point)
+                    Self::terrain_clip_source_endpoint_keys_match(*candidate, point_key)
                 })
             }) {
-                group.push(point);
+                group.push(point_key);
             } else {
-                groups.push(vec![point]);
+                groups.push(vec![point_key]);
             }
         }
 
@@ -78,44 +79,38 @@ impl RoadSurfaceSystem {
             if group.len() < 2 {
                 continue;
             }
-            let mut point_counts = BTreeMap::<(i64, i64, i64), (usize, Vector3)>::new();
-            for point in group {
-                let key = Self::terrain_clip_source_point_group_key(point);
-                let entry = point_counts.entry(key).or_insert((0, point));
-                entry.0 += 1;
-            }
-            let mut counted_points = point_counts.into_iter().collect::<Vec<_>>();
-            counted_points.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
-            let Some((_, (_, replacement))) = counted_points.first().copied() else {
-                continue;
-            };
-            for (key, _) in counted_points {
-                replacements.insert(key, replacement);
+            for key in group {
+                replacements.insert(key, terrain_clip_point_from_source_endpoint_key(key));
             }
         }
 
         for edge in edges {
             if let Some(point) =
-                replacements.get(&Self::terrain_clip_source_point_group_key(edge.start))
+                replacements.get(&Self::terrain_clip_source_endpoint_key(edge.start))
             {
                 edge.start = *point;
             }
-            if let Some(point) =
-                replacements.get(&Self::terrain_clip_source_point_group_key(edge.end))
+            if let Some(point) = replacements.get(&Self::terrain_clip_source_endpoint_key(edge.end))
             {
                 edge.end = *point;
             }
         }
     }
 
-    fn terrain_clip_source_points_share_canonical_endpoint(a: Vector3, b: Vector3) -> bool {
-        Self::terrain_clip_world_key(a) == Self::terrain_clip_world_key(b)
-            && Self::overlay_height_key(a.y) == Self::overlay_height_key(b.y)
+    fn terrain_clip_source_endpoint_keys_match(
+        a: TerrainClipSourceEndpointKey,
+        b: TerrainClipSourceEndpointKey,
+    ) -> bool {
+        a == b
     }
 
-    fn terrain_clip_source_point_group_key(point: Vector3) -> (i64, i64, i64) {
+    fn terrain_clip_source_endpoint_key(point: Vector3) -> TerrainClipSourceEndpointKey {
         let key = Self::terrain_clip_world_key(point);
-        (key.x_key(), key.z_key(), Self::overlay_height_key(point.y))
+        TerrainClipSourceEndpointKey {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+            height_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+        }
     }
 
     fn terrain_clip_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Vector3 {
@@ -247,4 +242,19 @@ impl RoadSurfaceSystem {
             .filter(|point| Self::terrain_clip_world_key(*point) == key)
             .max_by(|a, b| a.y.total_cmp(&b.y))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct TerrainClipSourceEndpointKey {
+    x_key: i64,
+    z_key: i64,
+    height_mm: i64,
+}
+
+fn terrain_clip_point_from_source_endpoint_key(key: TerrainClipSourceEndpointKey) -> Vector3 {
+    Vector3::new(
+        (key.x_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE) as f32,
+        key.height_mm as f32 / 1000.0,
+        (key.z_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE) as f32,
+    )
 }

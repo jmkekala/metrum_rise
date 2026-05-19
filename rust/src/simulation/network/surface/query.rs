@@ -2,8 +2,9 @@
 
 use super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;
 use super::{
-    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipExportError,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipContourRole,
+    RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipLoopTopology, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
     RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
@@ -18,7 +19,7 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtSpanRegionRole, TerrainCdtVertex,
 };
 use godot::prelude::{Vector2, Vector3};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 impl RoadSurfaceSystem {
     pub(crate) fn terrain_render_patch_keys_with_visible_road(
@@ -102,12 +103,29 @@ impl RoadSurfaceSystem {
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
         let source_count = boundary_loops.len();
         let export = Self::union_terrain_clip_boundary_export(&boundary_loops)?;
+        let footprint_group_ids =
+            Self::terrain_cdt_stable_footprint_group_ids_for_terrain_clip_export(&export);
         let road_loops = export
             .loops
             .iter()
             .enumerate()
             .map(|(loop_index, boundary_loop)| {
-                Self::terrain_cdt_road_loop_from_terrain_clip_loop(loop_index, boundary_loop)
+                let topology = export.loop_topologies[loop_index];
+                let footprint_group_id = footprint_group_ids
+                    .get(&topology.shape_index)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        Self::terrain_cdt_stable_piece_id_for_terrain_clip_loop(
+                            boundary_loop,
+                            loop_index,
+                        )
+                    });
+                Self::terrain_cdt_road_loop_from_terrain_clip_loop(
+                    loop_index,
+                    boundary_loop,
+                    topology,
+                    footprint_group_id,
+                )
             })
             .collect::<Vec<_>>();
         Ok((road_loops, export.polygons, source_count))
@@ -157,6 +175,8 @@ impl RoadSurfaceSystem {
     fn terrain_cdt_road_loop_from_terrain_clip_loop(
         loop_index: usize,
         boundary_loop: &RoadSurfaceTerrainClipLoop,
+        topology: RoadSurfaceTerrainClipLoopTopology,
+        footprint_group_id: u64,
     ) -> TerrainCdtRoadLoop {
         let stable_piece_id =
             Self::terrain_cdt_stable_piece_id_for_terrain_clip_loop(boundary_loop, loop_index);
@@ -182,12 +202,75 @@ impl RoadSurfaceSystem {
                 source: Self::terrain_cdt_boundary_source_from_surface(edge.source),
             })
             .collect::<Vec<_>>();
-        TerrainCdtRoadLoop::new_with_source_edges(
+        TerrainCdtRoadLoop::new_with_source_edges_and_topology(
             stable_piece_id,
+            footprint_group_id,
             u32::try_from(loop_index).unwrap_or(u32::MAX),
+            topology.role == RoadSurfaceTerrainClipContourRole::Hole,
             vertices,
             source_edges,
         )
+    }
+
+    fn terrain_cdt_stable_footprint_group_ids_for_terrain_clip_export(
+        export: &RoadSurfaceTerrainClipExport,
+    ) -> BTreeMap<usize, u64> {
+        let mut shape_indices = export
+            .loop_topologies
+            .iter()
+            .map(|topology| topology.shape_index)
+            .collect::<Vec<_>>();
+        shape_indices.sort_unstable();
+        shape_indices.dedup();
+
+        shape_indices
+            .into_iter()
+            .map(|shape_index| {
+                (
+                    shape_index,
+                    Self::terrain_cdt_stable_footprint_group_id_for_terrain_clip_shape(
+                        export,
+                        shape_index,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn terrain_cdt_stable_footprint_group_id_for_terrain_clip_shape(
+        export: &RoadSurfaceTerrainClipExport,
+        shape_index: usize,
+    ) -> u64 {
+        let mut contours = export
+            .loops
+            .iter()
+            .zip(export.loop_topologies.iter().copied())
+            .filter(|(_, topology)| topology.shape_index == shape_index)
+            .collect::<Vec<_>>();
+        contours.sort_by_key(|(_, topology)| topology.contour_index);
+
+        let mut hasher = TerrainClipStableHasher::new();
+        hasher.write_str("terrain_clip_union_shape_v1");
+        hasher.write_usize(contours.len());
+        for (boundary_loop, topology) in contours {
+            hasher.write_usize(topology.contour_index);
+            hasher.write_usize(match topology.role {
+                RoadSurfaceTerrainClipContourRole::Outer => 0,
+                RoadSurfaceTerrainClipContourRole::Hole => 1,
+            });
+            hasher.write_usize(boundary_loop.points_world.len());
+            for point in &boundary_loop.points_world {
+                let key = SurfaceXzKey::from_godot_world_xz(*point);
+                hasher.write_i64(key.x_key());
+                hasher.write_i64(key.z_key());
+                hasher.write_i64(SurfaceHeightMmKey::from_m_f32(point.y).as_i64());
+            }
+            hasher.write_usize(boundary_loop.source_edges.len());
+            for edge in &boundary_loop.source_edges {
+                hasher.write_u64(Self::terrain_cdt_stable_piece_id_for_source(edge.source));
+            }
+        }
+        hasher.finish()
     }
 
     fn terrain_cdt_stable_piece_id_for_terrain_clip_loop(

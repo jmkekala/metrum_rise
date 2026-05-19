@@ -7,7 +7,9 @@ use super::super::{
     keys::SurfaceXzKey,
     segments::{exact_line_parameter, overlay_point_key},
 };
-use super::model::{OverlaySegmentParameter, RoadSurfaceTerrainClipLoop};
+use super::model::{
+    OverlaySegmentParameter, RoadSurfaceTerrainClipLoop, TerrainClipContourCompactError,
+};
 use godot::prelude::Vector3;
 
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
@@ -52,7 +54,7 @@ impl RoadSurfaceSystem {
 
     pub(super) fn compact_overlay_contour_by_key(
         contour: &NodeOverlayContour,
-    ) -> NodeOverlayContour {
+    ) -> Result<NodeOverlayContour, TerrainClipContourCompactError> {
         let mut compact = Vec::with_capacity(contour.len());
         for &point in contour {
             if compact
@@ -67,8 +69,8 @@ impl RoadSurfaceSystem {
         {
             compact.pop();
         }
-        remove_repeated_overlay_point_spurs(&mut compact);
-        compact
+        remove_repeated_overlay_point_spurs(&mut compact)?;
+        Ok(compact)
     }
 
     pub(super) fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {
@@ -189,7 +191,9 @@ fn overlay_points_same_for_boundary(a: NodeOverlayPoint, b: NodeOverlayPoint) ->
     overlay_point_key(a) == overlay_point_key(b)
 }
 
-fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {
+fn remove_repeated_overlay_point_spurs(
+    points: &mut NodeOverlayContour,
+) -> Result<(), TerrainClipContourCompactError> {
     while points.len() >= 3 {
         let Some((first, second)) = first_repeated_overlay_point_pair(points) else {
             break;
@@ -201,14 +205,34 @@ fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {
 
         let cycle_area = RoadSurfaceSystem::overlay_contour_area_f64(&cycle).abs();
         let remainder_area = RoadSurfaceSystem::overlay_contour_area_f64(&remainder).abs();
-        if remainder.len() >= 3 && remainder_area >= cycle_area {
+        let dust_budget = f64::from(RoadSurfaceSystem::overlay_numeric_area_budget_m2(
+            RoadSurfaceSystem::overlay_contour_perimeter_m(points),
+            points.len(),
+        ));
+        let keep_remainder = remainder.len() >= 3
+            && (cycle.len() < 3
+                || cycle_area <= dust_budget
+                || (remainder_area <= dust_budget && remainder_area >= cycle_area));
+        let keep_cycle = cycle.len() >= 3
+            && (remainder.len() < 3
+                || remainder_area <= dust_budget
+                || (cycle_area <= dust_budget && cycle_area >= remainder_area));
+        if keep_remainder {
             *points = remainder;
-        } else if cycle.len() >= 3 {
+        } else if keep_cycle {
             *points = cycle;
         } else {
-            break;
+            let key = RoadSurfaceSystem::terrain_clip_overlay_key(points[first]);
+            return Err(TerrainClipContourCompactError {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                cycle_area_m2: cycle_area,
+                remainder_area_m2: remainder_area,
+                dust_budget_m2: dust_budget,
+            });
         }
     }
+    Ok(())
 }
 
 fn first_repeated_overlay_point_pair(points: &NodeOverlayContour) -> Option<(usize, usize)> {
@@ -247,4 +271,54 @@ pub(super) fn interpolate_overlay_point(
         start[0] + (end[0] - start[0]) * t,
         start[1] + (end[1] - start[1]) * t,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_overlay_contour_rejects_large_repeated_point_cycle() {
+        let contour = vec![
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 0.0],
+            [-4.0, 4.0],
+            [-4.0, 0.0],
+        ];
+
+        let error = RoadSurfaceSystem::compact_overlay_contour_by_key(&contour)
+            .expect_err("large repeated-point cycles must be geometry errors");
+
+        assert!(
+            error.cycle_area_m2 > error.dust_budget_m2
+                && error.remainder_area_m2 > error.dust_budget_m2,
+            "large repeated-point cycles should not be silently repaired by area preference: {error:?}"
+        );
+    }
+
+    #[test]
+    fn compact_overlay_contour_discards_subbudget_repeated_point_dust() {
+        let contour = vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.000001],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [0.0, 1.0],
+        ];
+
+        let compact = RoadSurfaceSystem::compact_overlay_contour_by_key(&contour)
+            .expect("sub-budget repeated-point dust may be discarded");
+
+        assert!(
+            first_repeated_overlay_point_pair(&compact).is_none(),
+            "sub-budget cleanup must remove the repeated point"
+        );
+        assert!(
+            RoadSurfaceSystem::overlay_contour_area_f64(&compact).abs() > 1.0,
+            "sub-budget cleanup must preserve the real contour area"
+        );
+    }
 }
