@@ -1049,6 +1049,7 @@ fn assert_node_footprint_boundary_vertex_source_is_valid(
                 "direct boundary source must reference node grade authority"
             );
         }
+        NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. } => {}
         NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
             owning_segment_start,
             owning_segment_end,

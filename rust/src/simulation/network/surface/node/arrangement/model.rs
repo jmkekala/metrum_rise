@@ -343,6 +343,10 @@ impl NodeArrangementEdge {
     pub(crate) fn owner(&self) -> NodeBandOwner {
         self.owner
     }
+
+    pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
+        self.height_field_id
+    }
 }
 
 impl NodeOwnedRegion {

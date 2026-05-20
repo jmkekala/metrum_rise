@@ -91,6 +91,7 @@ impl NodeFootprintBoundaryExportSources {
                 kind: arrangement.piece_kind(),
                 owner_kind: owner.kind(),
                 owner_index: owner.owner_index(),
+                height_field_id: edge.height_field_id(),
                 start_source,
                 end_source,
             });
@@ -147,6 +148,7 @@ fn node_earthwork_boundary_source_edges_from_owned_regions(
                 kind,
                 owner_kind: region.kind,
                 owner_index: region.owner_index,
+                height_field_id: top_source.height_field_id,
                 start_source: NodeFootprintBoundaryDirectSource {
                     top_surface_source_index: region_index,
                     grade_authority_index: top_source.vertex_sources[index].grade_authority_index,

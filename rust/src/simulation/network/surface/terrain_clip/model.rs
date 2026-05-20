@@ -207,7 +207,52 @@ pub(super) fn terrain_clip_source_edges_same_provenance(
     a: TerrainClipSourceEdge,
     b: TerrainClipSourceEdge,
 ) -> bool {
+    if a.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff
+        && b.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff
+        && terrain_clip_span_handoff_sources_same_provenance(a.source, b.source)
+    {
+        return true;
+    }
     a.kind == b.kind && terrain_clip_sources_same_provenance(a.source, b.source)
+}
+
+fn terrain_clip_span_handoff_sources_same_provenance(
+    a: RoadSurfaceEarthworkFaceSource,
+    b: RoadSurfaceEarthworkFaceSource,
+) -> bool {
+    match (a, b) {
+        (
+            RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                edge_idx: edge_idx_a,
+                edge_class: edge_class_a,
+                support_policy: support_policy_a,
+                start_section_index: start_section_index_a,
+                end_section_index: end_section_index_a,
+                start_s_m: start_s_m_a,
+                end_s_m: end_s_m_a,
+                ..
+            },
+            RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                edge_idx: edge_idx_b,
+                edge_class: edge_class_b,
+                support_policy: support_policy_b,
+                start_section_index: start_section_index_b,
+                end_section_index: end_section_index_b,
+                start_s_m: start_s_m_b,
+                end_s_m: end_s_m_b,
+                ..
+            },
+        ) => {
+            edge_idx_a == edge_idx_b
+                && edge_class_a == edge_class_b
+                && support_policy_a == support_policy_b
+                && start_section_index_a == start_section_index_b
+                && end_section_index_a == end_section_index_b
+                && start_s_m_a.to_bits() == start_s_m_b.to_bits()
+                && end_s_m_a.to_bits() == end_s_m_b.to_bits()
+        }
+        _ => false,
+    }
 }
 
 fn terrain_clip_sources_same_provenance(
@@ -219,22 +264,20 @@ fn terrain_clip_sources_same_provenance(
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id: node_id_a,
                 kind: kind_a,
-                owner_kind: owner_kind_a,
-                owner_index: owner_index_a,
+                owner_kind: _,
+                owner_index: _,
                 boundary_source: boundary_source_a,
             },
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id: node_id_b,
                 kind: kind_b,
-                owner_kind: owner_kind_b,
-                owner_index: owner_index_b,
+                owner_kind: _,
+                owner_index: _,
                 boundary_source: boundary_source_b,
             },
         ) => {
             node_id_a == node_id_b
                 && kind_a == kind_b
-                && owner_kind_a == owner_kind_b
-                && owner_index_a == owner_index_b
                 && terrain_clip_boundary_sources_same_undirected(
                     boundary_source_a,
                     boundary_source_b,

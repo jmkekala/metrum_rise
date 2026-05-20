@@ -17,30 +17,7 @@ impl NodeFootprintBoundaryExportSources {
         Ok(Some(candidate.height_mm))
     }
 
-    pub(in crate::simulation::network::surface) fn reject_boundary_vertex_height_conflict(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> Result<(), NodeBoundaryExportError> {
-        self.height_at_boundary_vertex(key).map(|_| ())
-    }
-
-    #[cfg(test)]
-    pub(super) fn height_candidate_at_boundary_vertex(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
-        let exact_candidates = self
-            .direct_height_candidates_at_key(key)
-            .into_iter()
-            .chain(self.boundary_edge_height_candidates_at_key(key))
-            .collect::<Vec<_>>();
-        if !exact_candidates.is_empty() {
-            return self.unique_height_candidate_at_key(key, exact_candidates);
-        }
-        Ok(None)
-    }
-
-    fn height_at_boundary_vertex(
+    pub(in crate::simulation::network::surface) fn boundary_height_mm_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
@@ -60,6 +37,7 @@ impl NodeFootprintBoundaryExportSources {
         heights.sort_unstable();
         heights.dedup();
         if heights.len() == 1 {
+            reject_same_owner_same_height_source_conflicts(key, &exact_candidates)?;
             return Ok(Some(heights[0]));
         }
 
@@ -95,6 +73,29 @@ impl NodeFootprintBoundaryExportSources {
                 incoming_source: incoming.source.source,
             },
         )
+    }
+
+    pub(in crate::simulation::network::surface) fn reject_boundary_vertex_height_conflict(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Result<(), NodeBoundaryExportError> {
+        self.boundary_height_mm_at_key(key).map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(super) fn height_candidate_at_boundary_vertex(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
+        let exact_candidates = self
+            .direct_height_candidates_at_key(key)
+            .into_iter()
+            .chain(self.boundary_edge_height_candidates_at_key(key))
+            .collect::<Vec<_>>();
+        if !exact_candidates.is_empty() {
+            return self.unique_height_candidate_at_key(key, exact_candidates);
+        }
+        Ok(None)
     }
 
     #[cfg(test)]
@@ -364,6 +365,36 @@ fn node_footprint_height_candidates_share_source_identity(
 ) -> bool {
     a.height_mm == b.height_mm
         && node_footprint_direct_vertices_share_source_identity(a.source, b.source)
+}
+
+fn reject_same_owner_same_height_source_conflicts(
+    key: arrangement::NodeArrangementKey,
+    candidates: &[NodeFootprintBoundaryHeightCandidate],
+) -> Result<(), NodeBoundaryExportError> {
+    for (left_index, left) in candidates.iter().copied().enumerate() {
+        for right in candidates.iter().copied().skip(left_index + 1) {
+            if left.height_mm != right.height_mm {
+                continue;
+            }
+            if left.source.owner_kind != right.source.owner_kind
+                || left.source.owner_index != right.source.owner_index
+            {
+                continue;
+            }
+            if !node_footprint_direct_vertices_share_source_identity(left.source, right.source) {
+                return Err(ambiguous_footprint_boundary_point_source_error(
+                    ArrangementBoundaryPointKey {
+                        x_key: key.x_key(),
+                        z_key: key.z_key(),
+                        y_mm: left.height_mm,
+                    },
+                    left.source,
+                    right.source,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ordered_raised_step_footprint_candidates(

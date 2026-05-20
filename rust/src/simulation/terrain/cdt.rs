@@ -214,6 +214,11 @@ pub(crate) struct TerrainCdtNodeFootprintBoundaryDirectSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum TerrainCdtNodeFootprintBoundaryVertexSource {
     Direct(TerrainCdtNodeFootprintBoundaryDirectSource),
+    CanonicalBoundaryPoint {
+        x_key: i64,
+        z_key: i64,
+        y_mm: i64,
+    },
     BoundaryInterpolation {
         owning_segment_start: TerrainCdtNodeFootprintBoundaryDirectSource,
         owning_segment_end: TerrainCdtNodeFootprintBoundaryDirectSource,

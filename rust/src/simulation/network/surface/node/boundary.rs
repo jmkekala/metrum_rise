@@ -92,6 +92,7 @@ struct NodeEarthworkBoundarySourceEdge {
     kind: RoadSurfaceVisualNodePieceKind,
     owner_kind: RoadSurfaceBandKind,
     owner_index: usize,
+    height_field_id: arrangement::NodeBandHeightFieldId,
     start_source: NodeFootprintBoundaryDirectSource,
     end_source: NodeFootprintBoundaryDirectSource,
 }
@@ -252,6 +253,18 @@ fn node_footprint_boundary_vertex_sources_share_identity(
             NodeFootprintBoundaryVertexSource::Direct(b),
         ) => a.grade_authority_index == b.grade_authority_index,
         (
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: a_x_key,
+                z_key: a_z_key,
+                y_mm: a_y_mm,
+            },
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: b_x_key,
+                z_key: b_z_key,
+                y_mm: b_y_mm,
+            },
+        ) => a_x_key == b_x_key && a_z_key == b_z_key && a_y_mm == b_y_mm,
+        (
             NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
                 owning_segment_start: a_start,
                 owning_segment_end: a_end,
@@ -264,8 +277,10 @@ fn node_footprint_boundary_vertex_sources_share_identity(
             },
         ) => {
             a_height_mm == b_height_mm
-                && a_start.grade_authority_index == b_start.grade_authority_index
-                && a_end.grade_authority_index == b_end.grade_authority_index
+                && ((a_start.grade_authority_index == b_start.grade_authority_index
+                    && a_end.grade_authority_index == b_end.grade_authority_index)
+                    || (a_start.grade_authority_index == b_end.grade_authority_index
+                        && a_end.grade_authority_index == b_start.grade_authority_index))
         }
         _ => false,
     }

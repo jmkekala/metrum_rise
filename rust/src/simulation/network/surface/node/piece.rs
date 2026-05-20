@@ -106,6 +106,11 @@ pub(crate) struct NodeFootprintBoundaryDirectSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum NodeFootprintBoundaryVertexSource {
     Direct(NodeFootprintBoundaryDirectSource),
+    CanonicalBoundaryPoint {
+        x_key: i64,
+        z_key: i64,
+        y_mm: i64,
+    },
     BoundaryInterpolation {
         owning_segment_start: NodeFootprintBoundaryDirectSource,
         owning_segment_end: NodeFootprintBoundaryDirectSource,

@@ -17,6 +17,21 @@ pub(super) struct NodeFootprintBoundarySplitPoint {
     pub(super) source: Option<NodeFootprintBoundaryDirectVertex>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NodeEarthworkBoundarySourceCandidate {
+    face_source: RoadSurfaceEarthworkFaceSource,
+    height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+}
+
+impl NodeEarthworkBoundarySourceCandidate {
+    fn from_face_source(face_source: RoadSurfaceEarthworkFaceSource) -> Self {
+        Self {
+            face_source,
+            height_field_id: None,
+        }
+    }
+}
+
 pub(in crate::simulation::network::surface) fn node_earthwork_boundary_segments_from_footprint_loops(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
@@ -116,6 +131,11 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
             if parameter <= ArrangementSegmentParameter::zero()
                 || parameter >= ArrangementSegmentParameter::one()
             {
+                continue;
+            }
+            let expected_height_mm =
+                interpolated_segment_height_mm(start.point_key, end.point_key, parameter);
+            if (expected_height_mm - split_point_key.y_mm).abs() > 1 {
                 continue;
             }
             insert_node_footprint_boundary_split_point(
@@ -279,8 +299,8 @@ fn node_earthwork_source_for_boundary_subsegment(
             candidate,
         )?;
     }
-    if source.is_some() {
-        return Ok(source);
+    if let Some(source) = source {
+        return Ok(Some(source.face_source));
     }
 
     for candidate in source_edges.iter().filter_map(|source_edge| {
@@ -301,8 +321,8 @@ fn node_earthwork_source_for_boundary_subsegment(
             candidate,
         )?;
     }
-    if source.is_some() {
-        return Ok(source);
+    if let Some(source) = source {
+        return Ok(Some(source.face_source));
     }
 
     if let Some(candidate) = node_earthwork_source_for_direct_boundary_segment(
@@ -332,21 +352,24 @@ fn node_earthwork_source_for_boundary_subsegment(
 fn merge_node_earthwork_source_candidate(
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
-    source: &mut Option<RoadSurfaceEarthworkFaceSource>,
-    candidate: RoadSurfaceEarthworkFaceSource,
+    source: &mut Option<NodeEarthworkBoundarySourceCandidate>,
+    candidate: NodeEarthworkBoundarySourceCandidate,
 ) -> Result<(), NodeBoundaryExportError> {
     let Some(existing) = *source else {
         *source = Some(candidate);
         return Ok(());
     };
-    if !node_earthwork_face_sources_share_identity(existing, candidate) {
+    let Some(merged) =
+        merged_node_earthwork_source_candidate(start_point_key, end_point_key, existing, candidate)
+    else {
         return Err(ambiguous_earthwork_boundary_segment_source_error(
             start_point_key,
             end_point_key,
-            existing,
-            candidate,
+            existing.face_source,
+            candidate.face_source,
         ));
-    }
+    };
+    *source = Some(merged);
     Ok(())
 }
 
@@ -354,7 +377,7 @@ fn node_earthwork_source_edge_for_subsegment(
     source_edge: &NodeEarthworkBoundarySourceEdge,
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
-) -> Option<RoadSurfaceEarthworkFaceSource> {
+) -> Option<NodeEarthworkBoundarySourceCandidate> {
     if !arrangement_key_lies_exactly_on_segment(
         start_point_key.xz_key(),
         source_edge.start_key,
@@ -366,18 +389,24 @@ fn node_earthwork_source_edge_for_subsegment(
     ) {
         return None;
     }
-    Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-        node_id: source_edge.node_id,
-        kind: source_edge.kind,
-        owner_kind: source_edge.owner_kind,
-        owner_index: source_edge.owner_index,
-        boundary_source: Some(NodeFootprintBoundarySegmentSource {
-            start: node_footprint_boundary_vertex_source_for_edge_point(
-                source_edge,
-                start_point_key,
-            )?,
-            end: node_footprint_boundary_vertex_source_for_edge_point(source_edge, end_point_key)?,
-        }),
+    Some(NodeEarthworkBoundarySourceCandidate {
+        face_source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id: source_edge.node_id,
+            kind: source_edge.kind,
+            owner_kind: source_edge.owner_kind,
+            owner_index: source_edge.owner_index,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: node_footprint_boundary_vertex_source_for_edge_point(
+                    source_edge,
+                    start_point_key,
+                )?,
+                end: node_footprint_boundary_vertex_source_for_edge_point(
+                    source_edge,
+                    end_point_key,
+                )?,
+            }),
+        },
+        height_field_id: Some(source_edge.height_field_id),
     })
 }
 
@@ -470,13 +499,13 @@ fn node_earthwork_source_for_direct_boundary_segment(
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts,
-    );
+    )?;
     let end_candidates = node_footprint_boundary_vertex_sources_at_point(
         end_point_key,
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts,
-    );
+    )?;
     if start_candidates.is_empty() || end_candidates.is_empty() {
         return Ok(None);
     };
@@ -501,12 +530,12 @@ fn node_earthwork_source_for_direct_boundary_segment(
                 start_point_key,
                 end_point_key,
                 &mut source,
-                candidate,
+                NodeEarthworkBoundarySourceCandidate::from_face_source(candidate),
             )?;
         }
     }
-    if source.is_some() {
-        return Ok(source);
+    if let Some(source) = source {
+        return Ok(Some(source.face_source));
     }
     if saw_direct_endpoint_candidates {
         return node_earthwork_source_for_boundary_vertices(
@@ -546,6 +575,13 @@ fn node_earthwork_boundary_owner_for_direct_vertices(
 ) -> Option<NodeFootprintBoundaryDirectVertex> {
     if node_footprint_direct_vertices_share_owner_identity(start, end) {
         return Some(start);
+    }
+    if start.owner_kind == end.owner_kind && start_point_key.y_mm == end_point_key.y_mm {
+        return Some(if start.owner_index <= end.owner_index {
+            start
+        } else {
+            end
+        });
     }
     explicit_vertical_step_boundary_owner(
         start_point_key,
@@ -597,9 +633,6 @@ fn raised_step_boundary_connector_owner(
     start: NodeFootprintBoundaryDirectVertex,
     end: NodeFootprintBoundaryDirectVertex,
 ) -> Option<NodeFootprintBoundaryDirectVertex> {
-    if !raised_step_kinds_can_contact(start.owner_kind, end.owner_kind) {
-        return None;
-    }
     let start_rank = raised_step_band_rank(start.owner_kind)?;
     let end_rank = raised_step_band_rank(end.owner_kind)?;
     match start_rank.cmp(&end_rank) {
@@ -623,16 +656,60 @@ fn node_footprint_boundary_vertex_sources_at_point(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertexConflict,
     >,
-) -> Vec<NodeFootprintBoundaryDirectVertex> {
+) -> Result<Vec<NodeFootprintBoundaryDirectVertex>, NodeBoundaryExportError> {
     if let Some(candidates) = direct_vertex_source_candidates.get(&point_key) {
-        return candidates.clone();
+        return canonicalized_same_material_boundary_point_sources(point_key, candidates);
     }
     if let Some(conflict) = direct_vertex_source_conflicts.get(&point_key).copied() {
-        return vec![conflict.existing, conflict.incoming];
+        return canonicalized_same_material_boundary_point_sources(
+            point_key,
+            &[conflict.existing, conflict.incoming],
+        );
     }
-    node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources)
-        .into_iter()
-        .collect()
+    Ok(
+        node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources)
+            .into_iter()
+            .collect(),
+    )
+}
+
+fn canonicalized_same_material_boundary_point_sources(
+    point_key: ArrangementBoundaryPointKey,
+    candidates: &[NodeFootprintBoundaryDirectVertex],
+) -> Result<Vec<NodeFootprintBoundaryDirectVertex>, NodeBoundaryExportError> {
+    for (left_index, left) in candidates.iter().copied().enumerate() {
+        for right in candidates.iter().copied().skip(left_index + 1) {
+            if left.owner_kind == right.owner_kind
+                && left.owner_index == right.owner_index
+                && !node_footprint_direct_vertices_share_source_identity(left, right)
+            {
+                return Err(ambiguous_footprint_boundary_point_source_error(
+                    point_key, left, right,
+                ));
+            }
+        }
+    }
+
+    let mut owner_counts = BTreeMap::<RoadSurfaceBandKind, usize>::new();
+    for candidate in candidates {
+        *owner_counts.entry(candidate.owner_kind).or_default() += 1;
+    }
+    let mut canonicalized = candidates.to_vec();
+    for candidate in &mut canonicalized {
+        if owner_counts
+            .get(&candidate.owner_kind)
+            .copied()
+            .unwrap_or_default()
+            > 1
+        {
+            candidate.source = NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: point_key.x_key,
+                z_key: point_key.z_key,
+                y_mm: point_key.y_mm,
+            };
+        }
+    }
+    Ok(canonicalized)
 }
 
 fn node_earthwork_source_for_direct_vertex_pair(
@@ -670,11 +747,13 @@ fn ambiguous_earthwork_boundary_segment_source_error(
     }
 }
 
-fn node_earthwork_face_sources_share_identity(
-    a: RoadSurfaceEarthworkFaceSource,
-    b: RoadSurfaceEarthworkFaceSource,
-) -> bool {
-    match (a, b) {
+fn merged_node_earthwork_source_candidate(
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    a: NodeEarthworkBoundarySourceCandidate,
+    b: NodeEarthworkBoundarySourceCandidate,
+) -> Option<NodeEarthworkBoundarySourceCandidate> {
+    match (a.face_source, b.face_source) {
         (
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id: a_node_id,
@@ -692,27 +771,228 @@ fn node_earthwork_face_sources_share_identity(
             },
         ) => {
             if a_node_id != b_node_id || a_kind != b_kind {
-                return false;
+                return None;
             }
-            if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
-                return true;
-            }
-            node_earthwork_boundary_sources_share_identity(a_boundary_source, b_boundary_source)
+            let (owner_kind, owner_index, boundary_source, height_field_id) =
+                merged_node_earthwork_boundary_source(
+                    start_point_key,
+                    end_point_key,
+                    a_owner_kind,
+                    a_owner_index,
+                    a_boundary_source,
+                    a.height_field_id,
+                    b_owner_kind,
+                    b_owner_index,
+                    b_boundary_source,
+                    b.height_field_id,
+                )?;
+            Some(NodeEarthworkBoundarySourceCandidate {
+                face_source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    node_id: a_node_id,
+                    kind: a_kind,
+                    owner_kind,
+                    owner_index,
+                    boundary_source,
+                },
+                height_field_id,
+            })
         }
-        _ => a == b,
+        _ => {
+            (a.face_source == b.face_source && a.height_field_id == b.height_field_id).then_some(a)
+        }
     }
 }
 
-fn node_earthwork_boundary_sources_share_identity(
+fn merged_node_earthwork_boundary_source(
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    a_owner_kind: RoadSurfaceBandKind,
+    a_owner_index: usize,
     a: Option<NodeFootprintBoundarySegmentSource>,
+    a_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+    b_owner_kind: RoadSurfaceBandKind,
+    b_owner_index: usize,
     b: Option<NodeFootprintBoundarySegmentSource>,
-) -> bool {
+    b_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+) -> Option<(
+    RoadSurfaceBandKind,
+    usize,
+    Option<NodeFootprintBoundarySegmentSource>,
+    Option<arrangement::NodeBandHeightFieldId>,
+)> {
     match (a, b) {
         (Some(a), Some(b)) => {
-            node_footprint_boundary_vertex_sources_share_identity(a.start, b.start)
-                && node_footprint_boundary_vertex_sources_share_identity(a.end, b.end)
+            let start_matches = node_earthwork_boundary_vertex_sources_share_identity_at_point(
+                start_point_key,
+                a.start,
+                b.start,
+            );
+            let end_matches = node_earthwork_boundary_vertex_sources_share_identity_at_point(
+                end_point_key,
+                a.end,
+                b.end,
+            );
+            if start_matches && end_matches {
+                let (owner_kind, owner_index, height_field_id) =
+                    canonical_earthwork_boundary_owner(
+                        a_owner_kind,
+                        a_owner_index,
+                        a_height_field_id,
+                        b_owner_kind,
+                        b_owner_index,
+                        b_height_field_id,
+                    )?;
+                return Some((owner_kind, owner_index, Some(a), height_field_id));
+            }
+            if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
+                return None;
+            }
+            if a_owner_kind == b_owner_kind {
+                let (owner_kind, owner_index, height_field_id) =
+                    canonical_earthwork_boundary_owner(
+                        a_owner_kind,
+                        a_owner_index,
+                        a_height_field_id,
+                        b_owner_kind,
+                        b_owner_index,
+                        b_height_field_id,
+                    )?;
+                return Some((
+                    owner_kind,
+                    owner_index,
+                    Some(NodeFootprintBoundarySegmentSource {
+                        start: canonical_boundary_point_source(start_point_key),
+                        end: canonical_boundary_point_source(end_point_key),
+                    }),
+                    height_field_id,
+                ));
+            }
+            if !raised_step_kinds_can_contact(a_owner_kind, b_owner_kind)
+                || (start_matches == end_matches)
+            {
+                return None;
+            }
+            let (owner_kind, owner_index, height_field_id) =
+                canonical_adjacent_material_earthwork_boundary_owner(
+                    a_owner_kind,
+                    a_owner_index,
+                    a_height_field_id,
+                    b_owner_kind,
+                    b_owner_index,
+                    b_height_field_id,
+                )?;
+            Some((
+                owner_kind,
+                owner_index,
+                Some(NodeFootprintBoundarySegmentSource {
+                    start: if start_matches {
+                        a.start
+                    } else {
+                        canonical_boundary_point_source(start_point_key)
+                    },
+                    end: if end_matches {
+                        a.end
+                    } else {
+                        canonical_boundary_point_source(end_point_key)
+                    },
+                }),
+                height_field_id,
+            ))
         }
-        (None, None) => true,
+        (None, None) => {
+            let (owner_kind, owner_index, height_field_id) = canonical_earthwork_boundary_owner(
+                a_owner_kind,
+                a_owner_index,
+                a_height_field_id,
+                b_owner_kind,
+                b_owner_index,
+                b_height_field_id,
+            )?;
+            Some((owner_kind, owner_index, None, height_field_id))
+        }
+        _ => None,
+    }
+}
+
+fn canonical_earthwork_boundary_owner(
+    a_owner_kind: RoadSurfaceBandKind,
+    a_owner_index: usize,
+    a_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+    b_owner_kind: RoadSurfaceBandKind,
+    b_owner_index: usize,
+    b_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+) -> Option<(
+    RoadSurfaceBandKind,
+    usize,
+    Option<arrangement::NodeBandHeightFieldId>,
+)> {
+    if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
+        return Some((a_owner_kind, a_owner_index, a_height_field_id));
+    }
+    if a_owner_kind == b_owner_kind {
+        return Some(if a_owner_index <= b_owner_index {
+            (a_owner_kind, a_owner_index, a_height_field_id)
+        } else {
+            (b_owner_kind, b_owner_index, b_height_field_id)
+        });
+    }
+    canonical_adjacent_material_earthwork_boundary_owner(
+        a_owner_kind,
+        a_owner_index,
+        a_height_field_id,
+        b_owner_kind,
+        b_owner_index,
+        b_height_field_id,
+    )
+}
+
+fn canonical_adjacent_material_earthwork_boundary_owner(
+    a_owner_kind: RoadSurfaceBandKind,
+    a_owner_index: usize,
+    a_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+    b_owner_kind: RoadSurfaceBandKind,
+    b_owner_index: usize,
+    b_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+) -> Option<(
+    RoadSurfaceBandKind,
+    usize,
+    Option<arrangement::NodeBandHeightFieldId>,
+)> {
+    let a_rank = raised_step_band_rank(a_owner_kind)?;
+    let b_rank = raised_step_band_rank(b_owner_kind)?;
+    if a_rank == b_rank || a_rank.abs_diff(b_rank) != 1 {
+        return None;
+    }
+    Some(if a_rank > b_rank {
+        (a_owner_kind, a_owner_index, a_height_field_id)
+    } else {
+        (b_owner_kind, b_owner_index, b_height_field_id)
+    })
+}
+
+fn canonical_boundary_point_source(
+    point_key: ArrangementBoundaryPointKey,
+) -> NodeFootprintBoundaryVertexSource {
+    NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+        x_key: point_key.x_key,
+        z_key: point_key.z_key,
+        y_mm: point_key.y_mm,
+    }
+}
+
+fn node_earthwork_boundary_vertex_sources_share_identity_at_point(
+    point_key: ArrangementBoundaryPointKey,
+    a: NodeFootprintBoundaryVertexSource,
+    b: NodeFootprintBoundaryVertexSource,
+) -> bool {
+    if node_footprint_boundary_vertex_sources_share_identity(a, b) {
+        return true;
+    }
+    match (a, b) {
+        (NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm }, _)
+        | (_, NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm }) => {
+            x_key == point_key.x_key && z_key == point_key.z_key && y_mm == point_key.y_mm
+        }
         _ => false,
     }
 }

@@ -350,6 +350,13 @@ impl RoadSurfaceSystem {
                     Self::terrain_cdt_node_footprint_boundary_direct_source(direct),
                 )
             }
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm } => {
+                TerrainCdtNodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key,
+                    z_key,
+                    y_mm,
+                }
+            }
             NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
                 owning_segment_start,
                 owning_segment_end,

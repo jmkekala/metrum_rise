@@ -943,6 +943,13 @@ impl RoadSurfaceSystem {
                     direct.top_surface_source_index, direct.grade_authority_index
                 );
             }
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"canonical_boundary_point\",\"x_key\":{},\"z_key\":{},\"y_mm\":{}}}",
+                    x_key, z_key, y_mm
+                );
+            }
             NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
                 owning_segment_start,
                 owning_segment_end,
@@ -2492,6 +2499,9 @@ impl RoadSurfaceSystem {
                         Some(NodeFootprintBoundaryVertexSource::Direct(_)) => {
                             direct_source_count += 1;
                         }
+                        Some(NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                            ..
+                        }) => {}
                         Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
                             ..
                         }) => {
@@ -2670,6 +2680,9 @@ impl RoadSurfaceSystem {
                             Some(NodeFootprintBoundaryVertexSource::Direct(_)) => {
                                 direct_source_count += 1;
                             }
+                            Some(NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                                ..
+                            }) => {}
                             Some(NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
                                 ..
                             }) => {
