@@ -214,6 +214,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
   [`terrain.md`](terrain.md).
+- `ROAD-01` node earthwork visibility is now owner-scoped: mixed Standard / Bridge or visible
+  Tunnel nodes retain Standard boundary roots for terrain/CDT, but render, query, and stamp only
+  structural owner faces as visible earthwork.
 - Added the first Rust-side terrain chunk loader in `rust/src/simulation/terrain/chunks.rs`,
   including strict `chunk.toml` validation and `.f32` payload loading for partial border chunks as
   well as full-size interior chunks. See [`terrain.md`](terrain.md).

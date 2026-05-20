@@ -1,6 +1,7 @@
 //! Visual node-piece compilation orchestration.
 
 use super::*;
+use crate::simulation::network::types::EdgeClass;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn compile_visual_node_piece(
@@ -13,10 +14,12 @@ impl RoadSurfaceSystem {
         let incidents = self.sorted_incident_surface_edges(graph, valid);
         match self.classify_visual_node_kind(&incidents) {
             CompiledNodeKind::Terminal => incidents.first().and_then(|incident| {
-                self.build_terminal_visual_node_piece(terrain, valid, *incident)
+                self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
             }),
             CompiledNodeKind::PassThrough => None,
-            CompiledNodeKind::Bend => self.build_bend_visual_node_piece(terrain, valid, &incidents),
+            CompiledNodeKind::Bend => {
+                self.build_bend_visual_node_piece(graph, terrain, valid, &incidents)
+            }
             CompiledNodeKind::JunctionN => {
                 self.build_junction_visual_node_piece(graph, terrain, valid, &incidents)
             }
@@ -24,12 +27,14 @@ impl RoadSurfaceSystem {
     }
     fn build_terminal_visual_node_piece(
         &self,
+        graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
         incident: IncidentSurfaceEdge,
     ) -> Option<RoadSurfaceVisualNodePiece> {
         let mouths = self.build_ordered_piece_mouths(&[incident])?;
         self.build_canonical_visual_node_piece(
+            graph,
             terrain,
             node_id,
             RoadSurfaceVisualNodePieceKind::Terminal,
@@ -39,6 +44,7 @@ impl RoadSurfaceSystem {
 
     fn build_bend_visual_node_piece(
         &self,
+        graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
         incidents: &[IncidentSurfaceEdge],
@@ -48,6 +54,7 @@ impl RoadSurfaceSystem {
         }
         let mouths = self.build_ordered_piece_mouths(incidents)?;
         self.build_canonical_visual_node_piece(
+            graph,
             terrain,
             node_id,
             RoadSurfaceVisualNodePieceKind::Bend,
@@ -75,6 +82,7 @@ impl RoadSurfaceSystem {
             return None;
         };
         self.build_canonical_visual_node_piece(
+            graph,
             terrain,
             node_id,
             RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -84,6 +92,7 @@ impl RoadSurfaceSystem {
 
     fn build_canonical_visual_node_piece(
         &self,
+        graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
         kind: RoadSurfaceVisualNodePieceKind,
@@ -104,6 +113,12 @@ impl RoadSurfaceSystem {
                 top_surface_shapes.as_ref(),
             )
             .ok()?;
+        let earthwork_owner_sources = Self::node_earthwork_owner_sources_from_regions(
+            graph,
+            mouths,
+            &node_regions.owned_regions,
+            &node_regions.node_top_surface_sources,
+        );
 
         self.assemble_explicit_node_piece(
             node_id,
@@ -118,10 +133,52 @@ impl RoadSurfaceSystem {
             node_regions.node_grade_authorities,
             node_regions.node_top_surface_sources,
             node_regions.owned_regions,
+            earthwork_owner_sources,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
         )
+    }
+
+    fn node_earthwork_owner_sources_from_regions(
+        graph: &RegionGraph,
+        mouths: &[OrderedIncidentPieceMouth],
+        owned_regions: &[NodeOwnedRegion],
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+    ) -> Vec<NodeEarthworkOwnerSource> {
+        let mut sources = Vec::new();
+        for (region, top_source) in owned_regions.iter().zip(node_top_surface_sources) {
+            let mouth_order_index = top_source.height_field_id.mouth_order_index();
+            let Some(mouth) = mouths.get(mouth_order_index) else {
+                continue;
+            };
+            if mouth.edge_idx >= graph.edge_count() {
+                continue;
+            }
+            sources.push(NodeEarthworkOwnerSource {
+                owner_kind: region.kind,
+                owner_index: region.owner_index,
+                mouth_order_index,
+                edge_idx: mouth.edge_idx,
+                edge_class: graph.edge(mouth.edge_idx).class,
+            });
+        }
+        sources.sort_by(|a, b| {
+            a.owner_kind
+                .cmp(&b.owner_kind)
+                .then(a.owner_index.cmp(&b.owner_index))
+                .then(a.mouth_order_index.cmp(&b.mouth_order_index))
+                .then(a.edge_idx.cmp(&b.edge_idx))
+                .then(edge_class_sort_key(a.edge_class).cmp(&edge_class_sort_key(b.edge_class)))
+        });
+        sources.dedup_by(|a, b| {
+            a.owner_kind == b.owner_kind
+                && a.owner_index == b.owner_index
+                && a.mouth_order_index == b.mouth_order_index
+                && a.edge_idx == b.edge_idx
+                && a.edge_class == b.edge_class
+        });
+        sources
     }
 
     fn compile_canonical_node_surface_regions(
@@ -306,6 +363,28 @@ impl RoadSurfaceSystem {
                     "conflicting_footprint_boundary_split_height",
                 )
             }
+            NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource {
+                start_x_key,
+                start_z_key,
+                end_x_key,
+                end_z_key,
+                existing_source,
+                incoming_source,
+            } => {
+                let _ = (
+                    *start_x_key,
+                    *start_z_key,
+                    *end_x_key,
+                    *end_z_key,
+                    *existing_source,
+                    *incoming_source,
+                );
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "ambiguous_earthwork_boundary_segment_source",
+                )
+            }
             NodeBoundaryExportError::EmptyOuterBoundary => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
@@ -336,5 +415,13 @@ impl RoadSurfaceSystem {
             }
         };
         self.log_node_validation_report(&report);
+    }
+}
+
+fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
+    match edge_class {
+        EdgeClass::Standard => 0,
+        EdgeClass::Bridge => 1,
+        EdgeClass::Tunnel => 2,
     }
 }

@@ -1,10 +1,11 @@
 //! Terrain visual-height stamping for road-owned earthwork support.
 
 use super::super::{
-    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualPolygon,
+    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
     SurfaceChunkKey,
 };
 use crate::config;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
@@ -54,11 +55,11 @@ impl RoadSurfaceSystem {
         self.section_is_tunnel_surface_visible(section, terrain)
     }
 
-    pub(super) fn stamp_piece_top_surface_clearance_for_chunk(
+    pub(super) fn stamp_node_structural_top_surface_clearance_for_chunk(
         &self,
-        road_surface_polygons: &[RoadSurfaceVisualPolygon],
-        curb_surface_polygons: &[RoadSurfaceVisualPolygon],
-        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+        graph: &RegionGraph,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
         height_offset_m: f32,
@@ -66,12 +67,18 @@ impl RoadSurfaceSystem {
         let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
         let mut candidates: BTreeMap<(usize, usize), (f32, f32)> = BTreeMap::new();
 
-        for polygon in road_surface_polygons
-            .iter()
-            .chain(curb_surface_polygons)
-            .chain(sidewalk_surface_polygons)
-        {
-            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+        for region in &piece.owned_regions {
+            if !self.node_earthwork_owner_uses_visible_earthwork(
+                graph,
+                terrain,
+                node_id,
+                piece,
+                region.kind,
+                region.owner_index,
+            ) {
+                continue;
+            }
+            Self::visit_visual_polygon_triangles(&region.polygon, &mut |triangle| {
                 self.collect_top_surface_support_triangle_candidates(
                     terrain,
                     chunk,

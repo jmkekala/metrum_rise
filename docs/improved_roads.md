@@ -110,6 +110,10 @@ Live behavior:
   input -> rail -> boolean ownership -> height -> Spade triangulation path. Render triangles,
   terrain clip loops, and node earthwork roots are exported from the same boolean-owned
   `node_footprint` result rather than from the retired post-overlay repair path.
+- node earthwork faces now carry final owner provenance through render, query, and terrain-stamp
+  policy. Mixed `Standard` / structural nodes expose only Bridge-owned or visible Tunnel-owned
+  earthwork faces; Standard-owned node boundary portions remain terrain/CDT seams instead of
+  visible closure geometry.
 - the legacy terminal U-shaped end-band helper is deleted in the hardcut. Terminal cap ownership is
   restored through `surface::terminal`, which generates canonical cap and side-to-end corner
   carriers for the rail / contour path instead of reintroducing the retired input-side endpoint

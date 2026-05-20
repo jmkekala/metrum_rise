@@ -147,10 +147,10 @@ impl RoadSurfaceSystem {
         }
 
         let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
-        self.stamp_piece_top_surface_clearance_for_chunk(
-            &piece.road_surface_polygons,
-            &piece.curb_surface_polygons,
-            &piece.sidewalk_surface_polygons,
+        self.stamp_node_structural_top_surface_clearance_for_chunk(
+            graph,
+            node_id,
+            piece,
             chunk,
             terrain,
             height_offset_m,

@@ -61,7 +61,8 @@ mod vertical_faces;
 
 pub use piece::RoadSurfaceVisualNodePiece;
 pub(crate) use piece::{
-    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
-    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeSurfaceRegionResult,
-    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
+    NodeEarthworkOwnerSource, NodeFootprintBoundaryDirectSource,
+    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, NodeOwnedRegion,
+    NodeSurfaceRegionResult, NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource,
+    RoadSurfaceVerticalFaceSource,
 };

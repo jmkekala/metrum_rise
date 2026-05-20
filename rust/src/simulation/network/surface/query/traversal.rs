@@ -112,8 +112,13 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        for polygon in &piece.earthwork_surface_polygons {
-            Self::visit_visual_polygon_triangles(polygon, visitor);
+        for face in &piece.render_earthwork_faces {
+            if !self
+                .node_earthwork_face_uses_visible_earthwork(graph, terrain, node_id, piece, face)
+            {
+                continue;
+            }
+            Self::visit_visual_polygon_triangles(&face.polygon, visitor);
         }
     }
 

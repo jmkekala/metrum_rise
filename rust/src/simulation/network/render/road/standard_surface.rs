@@ -147,7 +147,14 @@ fn emit_compiled_earthwork_mesh(
             continue;
         };
         if road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
-            emit_structural_earthwork_faces(mesh, &piece.render_earthwork_faces);
+            emit_structural_node_earthwork_faces(
+                mesh,
+                graph,
+                road_surface,
+                terrain,
+                node_id,
+                piece,
+            );
         }
     }
 }
@@ -165,6 +172,24 @@ fn emit_structural_earthwork_faces(
                 emit_surface_polygon(mesh, MeshLayer::Concrete, &face.polygon, concrete_color());
             }
         }
+    }
+}
+
+fn emit_structural_node_earthwork_faces(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
+    node_id: u32,
+    piece: &crate::simulation::network::surface::RoadSurfaceVisualNodePiece,
+) {
+    for face in &piece.render_earthwork_faces {
+        if !road_surface
+            .node_earthwork_face_uses_visible_earthwork(graph, terrain, node_id, piece, face)
+        {
+            continue;
+        }
+        emit_structural_earthwork_faces(mesh, std::slice::from_ref(face));
     }
 }
 

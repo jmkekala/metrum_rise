@@ -480,6 +480,7 @@ impl RoadSurfaceSystem {
         node_grade_authorities: Vec<super::height::NodeGradeVertexAuthority>,
         mut node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
         mut owned_regions: Vec<NodeOwnedRegion>,
+        mut earthwork_owner_sources: Vec<NodeEarthworkOwnerSource>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
@@ -506,6 +507,20 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
+        earthwork_owner_sources.sort_by(|a, b| {
+            a.owner_kind
+                .cmp(&b.owner_kind)
+                .then(a.owner_index.cmp(&b.owner_index))
+                .then(a.mouth_order_index.cmp(&b.mouth_order_index))
+                .then(a.edge_idx.cmp(&b.edge_idx))
+        });
+        earthwork_owner_sources.dedup_by(|a, b| {
+            a.owner_kind == b.owner_kind
+                && a.owner_index == b.owner_index
+                && a.mouth_order_index == b.mouth_order_index
+                && a.edge_idx == b.edge_idx
+                && a.edge_class == b.edge_class
+        });
         if outer_boundary_loops.is_empty() {
             return None;
         }
@@ -525,6 +540,7 @@ impl RoadSurfaceSystem {
             node_grade_authorities,
             node_top_surface_sources,
             owned_regions,
+            earthwork_owner_sources,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,

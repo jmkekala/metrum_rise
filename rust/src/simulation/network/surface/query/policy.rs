@@ -1,7 +1,11 @@
 //! Visibility and integrated-earthwork policy for surface queries.
 
 use super::super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;
-use super::super::{RoadSurfaceSystem, RoadSurfaceVisualSpanPiece};
+use super::super::node::NodeEarthworkOwnerSource;
+use super::super::{
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -59,32 +63,82 @@ impl RoadSurfaceSystem {
         node_id: u32,
         terrain: &TerrainSystem,
     ) -> bool {
-        if node_id as usize >= graph.node_adjacency_count() {
+        let Some(piece) = self.compiled_visual_node_pieces().get(&node_id) else {
+            return false;
+        };
+        piece.earthwork_owner_sources.iter().any(|source| {
+            self.node_earthwork_owner_source_uses_visible_earthwork(graph, terrain, node_id, source)
+        })
+    }
+
+    pub(crate) fn node_earthwork_face_uses_visible_earthwork(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+        face: &RoadSurfaceEarthworkRenderFace,
+    ) -> bool {
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            owner_kind,
+            owner_index,
+            ..
+        } = face.source
+        else {
+            return false;
+        };
+        self.node_earthwork_owner_uses_visible_earthwork(
+            graph,
+            terrain,
+            node_id,
+            piece,
+            owner_kind,
+            owner_index,
+        )
+    }
+
+    pub(in crate::simulation::network::surface) fn node_earthwork_owner_uses_visible_earthwork(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+        owner_kind: super::super::RoadSurfaceBandKind,
+        owner_index: usize,
+    ) -> bool {
+        piece
+            .earthwork_owner_sources
+            .iter()
+            .filter(|source| source.owner_kind == owner_kind && source.owner_index == owner_index)
+            .any(|source| {
+                self.node_earthwork_owner_source_uses_visible_earthwork(
+                    graph, terrain, node_id, source,
+                )
+            })
+    }
+
+    fn node_earthwork_owner_source_uses_visible_earthwork(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        source: &NodeEarthworkOwnerSource,
+    ) -> bool {
+        if source.edge_idx >= graph.edge_count() {
             return false;
         }
-
-        for &edge_idx in graph.node_adjacency(node_id) {
-            if edge_idx >= graph.edge_count() {
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if edge.deleted || !Self::is_surface_edge(edge) {
-                continue;
-            }
-
-            match edge.class {
-                EdgeClass::Standard => {}
-                EdgeClass::Bridge => return true,
-                EdgeClass::Tunnel => {
-                    let at_start = graph.get_valid_node(edge.start_node) == node_id;
-                    if self.tunnel_throat_is_visible(edge_idx, at_start, terrain) {
-                        return true;
-                    }
-                }
+        let edge = graph.edge(source.edge_idx);
+        if edge.deleted || !Self::is_surface_edge(edge) {
+            return false;
+        }
+        match edge.class {
+            EdgeClass::Standard => false,
+            EdgeClass::Bridge => true,
+            EdgeClass::Tunnel => {
+                let at_start = graph.get_valid_node(edge.start_node) == node_id;
+                self.tunnel_throat_is_visible(source.edge_idx, at_start, terrain)
             }
         }
-
-        false
     }
 
     pub(in crate::simulation::network::surface) fn span_piece_integrated_surface_offset_m(

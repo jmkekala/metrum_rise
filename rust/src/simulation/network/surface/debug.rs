@@ -3339,6 +3339,7 @@ mod tests {
             node_grade_authorities: Vec::new(),
             node_top_surface_sources: Vec::new(),
             owned_regions: Vec::new(),
+            earthwork_owner_sources: Vec::new(),
             earthwork_surface_polygons: Vec::new(),
             earthwork_outer_boundary_loops: Vec::new(),
             render_earthwork_faces: Vec::new(),

@@ -19,6 +19,7 @@ fn boundary_only_vertex_source_records_explicit_interpolation() {
         end_point_key,
         start_key: start_point_key.xz_key(),
         end_key: end_point_key.xz_key(),
+        final_footprint_boundary: false,
         node_id: 11,
         kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         owner_kind: RoadSurfaceBandKind::Sidewalk,
@@ -70,6 +71,8 @@ fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -99,6 +102,8 @@ fn boundary_height_rejects_project_quantization_drift_from_source_edge() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -145,6 +150,8 @@ fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -184,6 +191,8 @@ fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -210,6 +219,8 @@ fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let near_extension = ArrangementBoundaryPointKey::from_world(Vector3::new(1.00005, 0.0, 0.0));
@@ -234,6 +245,8 @@ fn numeric_cleanup_support_requires_exact_final_owned_boundary_support() {
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let exact_midpoint = ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.0));
@@ -275,6 +288,8 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
     let mut missing_authority = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -289,6 +304,8 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
     let mut authorized = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
                 step_start,
@@ -334,6 +351,8 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -373,6 +392,8 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -415,6 +436,8 @@ fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -458,6 +481,8 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let supported_midpoint = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0));
@@ -509,6 +534,8 @@ fn missing_boundary_height_rejects_subbudget_run() {
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let vertices = vec![
@@ -570,6 +597,8 @@ fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() 
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let vertices = vec![
@@ -623,6 +652,8 @@ fn missing_boundary_height_interpolation_rejects_overbudget_same_owner_connector
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources,
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let vertices = vec![
@@ -658,6 +689,8 @@ fn missing_boundary_height_interpolation_rejects_overbudget_run() {
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
     let vertices = vec![
@@ -722,6 +755,8 @@ fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
         test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
         test_boundary_point(Vector3::new(2.0, 2.0, 0.0)),
         &source_edges,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
         &BTreeMap::new(),
         &mut segments,
     )
@@ -838,6 +873,49 @@ fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
     ));
 }
 
+#[test]
+fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
+    let source_edges = vec![
+        test_source_edge(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        ),
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            6,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            4,
+            40,
+            4,
+            41,
+        ),
+    ];
+    let mut segments = Vec::new();
+
+    let error = push_sourced_node_earthwork_boundary_segments(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        &source_edges,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &mut segments,
+    )
+    .expect_err("coincident source edges with different provenance must not pick sorted first");
+
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource { .. }
+    ));
+}
+
 fn test_boundary_point(point: Vector3) -> NodeFootprintBoundaryPoint {
     NodeFootprintBoundaryPoint::new(ArrangementBoundaryPointKey::from_world(point))
 }
@@ -903,6 +981,7 @@ fn test_source_edge_for_owner_and_kind(
         end_point_key,
         start_key: start_point_key.xz_key(),
         end_key: end_point_key.xz_key(),
+        final_footprint_boundary: false,
         node_id: 11,
         kind,
         owner_kind,

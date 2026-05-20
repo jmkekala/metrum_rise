@@ -1,8 +1,8 @@
 //! Node-owned footprint boundary resolution and source-backed terrain seams.
 
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, arrangement,
+    NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
     band_semantics::band_kind_sort_key,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
@@ -27,8 +27,6 @@ mod interpolation;
 mod sources;
 mod support;
 
-#[cfg(test)]
-use super::RoadSurfaceEarthworkFaceSource;
 pub(super) use earthwork_segments::node_earthwork_boundary_segments_from_footprint_loops;
 pub(super) use earthwork_segments::same_winding_boundary_point_loops_from_loop;
 #[cfg(test)]
@@ -90,6 +88,7 @@ struct NodeEarthworkBoundarySourceEdge {
     end_point_key: ArrangementBoundaryPointKey,
     start_key: arrangement::NodeArrangementKey,
     end_key: arrangement::NodeArrangementKey,
+    final_footprint_boundary: bool,
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
     owner_kind: RoadSurfaceBandKind,
@@ -114,7 +113,17 @@ struct NodeFootprintBoundaryHeightCandidate {
 pub(super) struct NodeFootprintBoundaryExportSources {
     source_edges: Vec<NodeEarthworkBoundarySourceEdge>,
     direct_vertex_sources: BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+    direct_vertex_source_candidates:
+        BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
+    direct_vertex_source_conflicts:
+        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NodeFootprintBoundaryDirectVertexConflict {
+    existing: NodeFootprintBoundaryDirectVertex,
+    incoming: NodeFootprintBoundaryDirectVertex,
 }
 
 #[derive(Debug)]
@@ -141,6 +150,14 @@ pub(crate) enum NodeBoundaryExportError {
         z_key: i64,
         existing_y_mm: i64,
         incoming_y_mm: i64,
+    },
+    AmbiguousEarthworkBoundarySegmentSource {
+        start_x_key: i64,
+        start_z_key: i64,
+        end_x_key: i64,
+        end_z_key: i64,
+        existing_source: RoadSurfaceEarthworkFaceSource,
+        incoming_source: RoadSurfaceEarthworkFaceSource,
     },
     DegenerateOuterBoundaryLoop,
     MissingEarthworkBoundarySource,
@@ -208,6 +225,44 @@ fn node_footprint_direct_vertex_ordering(
         .cmp(&band_kind_sort_key(b.owner_kind))
         .then(a.owner_index.cmp(&b.owner_index))
         .then(a.source.cmp(&b.source))
+}
+
+fn node_footprint_direct_vertices_share_source_identity(
+    a: NodeFootprintBoundaryDirectVertex,
+    b: NodeFootprintBoundaryDirectVertex,
+) -> bool {
+    a.owner_kind == b.owner_kind
+        && a.owner_index == b.owner_index
+        && node_footprint_boundary_vertex_sources_share_identity(a.source, b.source)
+}
+
+fn node_footprint_boundary_vertex_sources_share_identity(
+    a: NodeFootprintBoundaryVertexSource,
+    b: NodeFootprintBoundaryVertexSource,
+) -> bool {
+    match (a, b) {
+        (
+            NodeFootprintBoundaryVertexSource::Direct(a),
+            NodeFootprintBoundaryVertexSource::Direct(b),
+        ) => a.grade_authority_index == b.grade_authority_index,
+        (
+            NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start: a_start,
+                owning_segment_end: a_end,
+                height_mm: a_height_mm,
+            },
+            NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start: b_start,
+                owning_segment_end: b_end,
+                height_mm: b_height_mm,
+            },
+        ) => {
+            a_height_mm == b_height_mm
+                && a_start.grade_authority_index == b_start.grade_authority_index
+                && a_end.grade_authority_index == b_end.grade_authority_index
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn boundary_segment_parameter_xz(

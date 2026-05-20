@@ -5,6 +5,7 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     arrangement, height::NodeGradeVertexAuthority,
 };
+use crate::simulation::network::types::EdgeClass;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceVerticalFaceSource {
@@ -69,6 +70,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
+    pub(crate) earthwork_owner_sources: Vec<NodeEarthworkOwnerSource>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
@@ -79,6 +81,15 @@ pub(crate) struct NodeOwnedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner_index: usize,
     pub(crate) polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NodeEarthworkOwnerSource {
+    pub(crate) owner_kind: RoadSurfaceBandKind,
+    pub(crate) owner_index: usize,
+    pub(crate) mouth_order_index: usize,
+    pub(crate) edge_idx: usize,
+    pub(crate) edge_class: EdgeClass,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

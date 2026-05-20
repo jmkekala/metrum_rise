@@ -38,6 +38,8 @@ pub(in crate::simulation::network::surface) fn node_earthwork_boundary_segments_
                     points[(index + 1) % points.len()],
                     &sources.source_edges,
                     &sources.direct_vertex_sources,
+                    &sources.direct_vertex_source_candidates,
+                    &sources.direct_vertex_source_conflicts,
                     &mut segments,
                 )?;
             }
@@ -61,6 +63,14 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
     direct_vertex_sources: &BTreeMap<
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
+    >,
+    direct_vertex_source_candidates: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        Vec<NodeFootprintBoundaryDirectVertex>,
+    >,
+    direct_vertex_source_conflicts: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertexConflict,
     >,
     segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
 ) -> Result<(), NodeBoundaryExportError> {
@@ -138,9 +148,11 @@ pub(super) fn push_sourced_node_earthwork_boundary_segments(
             sub_end_split.point_key,
             source_edges,
             direct_vertex_sources,
+            direct_vertex_source_candidates,
+            direct_vertex_source_conflicts,
             sub_start_split.source,
             sub_end_split.source,
-        );
+        )?;
         let Some(source) = source else {
             return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
         };
@@ -204,22 +216,21 @@ pub(super) fn insert_node_footprint_boundary_split_point(
             },
         );
     }
-    if node_footprint_split_source_ordering(incoming.source, existing.source).is_gt() {
-        existing.source = incoming.source;
+    match (existing.source, incoming.source) {
+        (Some(existing_source), Some(incoming_source)) => {
+            if !node_footprint_direct_vertices_share_source_identity(
+                existing_source,
+                incoming_source,
+            ) {
+                existing.source = None;
+            }
+        }
+        (None, Some(incoming_source)) => {
+            existing.source = Some(incoming_source);
+        }
+        _ => {}
     }
     Ok(())
-}
-
-fn node_footprint_split_source_ordering(
-    a: Option<NodeFootprintBoundaryDirectVertex>,
-    b: Option<NodeFootprintBoundaryDirectVertex>,
-) -> std::cmp::Ordering {
-    match (a, b) {
-        (Some(a), Some(b)) => node_footprint_direct_vertex_ordering(a, b),
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (None, None) => std::cmp::Ordering::Equal,
-    }
 }
 
 fn node_earthwork_source_for_boundary_subsegment(
@@ -232,32 +243,119 @@ fn node_earthwork_source_for_boundary_subsegment(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
+    direct_vertex_source_candidates: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        Vec<NodeFootprintBoundaryDirectVertex>,
+    >,
+    direct_vertex_source_conflicts: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertexConflict,
+    >,
     start_split_source: Option<NodeFootprintBoundaryDirectVertex>,
     end_split_source: Option<NodeFootprintBoundaryDirectVertex>,
-) -> Option<RoadSurfaceEarthworkFaceSource> {
-    source_edges
-        .iter()
-        .filter_map(|source_edge| {
-            node_earthwork_source_edge_for_subsegment(source_edge, start_point_key, end_point_key)
-        })
-        .min_by(|a, b| a.source_ordering(*b))
-        .or_else(|| {
-            node_earthwork_source_for_direct_boundary_segment(
-                node_id,
-                kind,
-                start_point_key,
-                end_point_key,
-                direct_vertex_sources,
-            )
-        })
-        .or_else(|| {
-            node_earthwork_source_for_split_boundary_segment(
-                node_id,
-                kind,
-                start_split_source?,
-                end_split_source?,
-            )
-        })
+) -> Result<Option<RoadSurfaceEarthworkFaceSource>, NodeBoundaryExportError> {
+    let mut source = None;
+    for candidate in source_edges.iter().filter_map(|source_edge| {
+        source_edge
+            .final_footprint_boundary
+            .then(|| {
+                node_earthwork_source_edge_for_subsegment(
+                    source_edge,
+                    start_point_key,
+                    end_point_key,
+                )
+            })
+            .flatten()
+    }) {
+        merge_node_earthwork_source_candidate(
+            start_point_key,
+            end_point_key,
+            &mut source,
+            candidate,
+        )?;
+    }
+    if source.is_some() {
+        return Ok(source);
+    }
+
+    for candidate in source_edges.iter().filter_map(|source_edge| {
+        (!source_edge.final_footprint_boundary)
+            .then(|| {
+                node_earthwork_source_edge_for_subsegment(
+                    source_edge,
+                    start_point_key,
+                    end_point_key,
+                )
+            })
+            .flatten()
+    }) {
+        merge_node_earthwork_source_candidate(
+            start_point_key,
+            end_point_key,
+            &mut source,
+            candidate,
+        )?;
+    }
+    if source.is_some() {
+        return Ok(source);
+    }
+
+    if let Some(candidate) = node_earthwork_source_for_direct_boundary_segment(
+        node_id,
+        kind,
+        start_point_key,
+        end_point_key,
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts,
+    )? {
+        return Ok(Some(candidate));
+    }
+
+    node_earthwork_source_for_split_boundary_segment(
+        node_id,
+        kind,
+        start_point_key,
+        end_point_key,
+        start_split_source,
+        end_split_source,
+    )
+}
+
+fn merge_node_earthwork_source_candidate(
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    source: &mut Option<RoadSurfaceEarthworkFaceSource>,
+    candidate: RoadSurfaceEarthworkFaceSource,
+) -> Result<(), NodeBoundaryExportError> {
+    let Some(existing) = *source else {
+        *source = Some(candidate);
+        return Ok(());
+    };
+    if !node_earthwork_face_sources_share_identity(existing, candidate) {
+        // A direct/direct segment is the canonical source for that final subsegment; a containing
+        // edge that reaches it only through interpolation is less specific, not a competing owner.
+        match node_earthwork_face_source_specificity(candidate)
+            .cmp(&node_earthwork_face_source_specificity(existing))
+        {
+            std::cmp::Ordering::Greater => {
+                *source = Some(candidate);
+                return Ok(());
+            }
+            std::cmp::Ordering::Less => return Ok(()),
+            std::cmp::Ordering::Equal => {}
+        }
+        return Err(ambiguous_earthwork_boundary_segment_source_error(
+            start_point_key,
+            end_point_key,
+            existing,
+            candidate,
+        ));
+    }
+    if candidate.source_ordering(existing).is_lt() {
+        *source = Some(candidate);
+    }
+    Ok(())
 }
 
 fn node_earthwork_source_edge_for_subsegment(
@@ -294,24 +392,50 @@ fn node_earthwork_source_edge_for_subsegment(
 fn node_earthwork_source_for_split_boundary_segment(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    start: Option<NodeFootprintBoundaryDirectVertex>,
+    end: Option<NodeFootprintBoundaryDirectVertex>,
+) -> Result<Option<RoadSurfaceEarthworkFaceSource>, NodeBoundaryExportError> {
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(None);
+    };
+    node_earthwork_source_for_boundary_vertices(
+        node_id,
+        kind,
+        start_point_key,
+        end_point_key,
+        start,
+        end,
+    )
+}
+
+fn node_earthwork_source_for_boundary_vertices(
+    node_id: u32,
+    kind: RoadSurfaceVisualNodePieceKind,
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
     start: NodeFootprintBoundaryDirectVertex,
     end: NodeFootprintBoundaryDirectVertex,
-) -> Option<RoadSurfaceEarthworkFaceSource> {
+) -> Result<Option<RoadSurfaceEarthworkFaceSource>, NodeBoundaryExportError> {
+    let _ = (start_point_key, end_point_key);
     let owner = if node_footprint_direct_vertex_ordering(start, end).is_ge() {
         start
     } else {
         end
     };
-    Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-        node_id,
-        kind,
-        owner_kind: owner.owner_kind,
-        owner_index: owner.owner_index,
-        boundary_source: Some(NodeFootprintBoundarySegmentSource {
-            start: start.source,
-            end: end.source,
-        }),
-    })
+    Ok(Some(
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind: owner.owner_kind,
+            owner_index: owner.owner_index,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: start.source,
+                end: end.source,
+            }),
+        },
+    ))
 }
 
 fn node_earthwork_source_for_direct_boundary_segment(
@@ -323,16 +447,103 @@ fn node_earthwork_source_for_direct_boundary_segment(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-) -> Option<RoadSurfaceEarthworkFaceSource> {
-    let start =
-        node_footprint_boundary_vertex_source_at_point(start_point_key, direct_vertex_sources)?;
-    let end = node_footprint_boundary_vertex_source_at_point(end_point_key, direct_vertex_sources)?;
-    let owner = if node_footprint_direct_vertex_ordering(start, end).is_ge() {
-        start
-    } else {
-        end
+    direct_vertex_source_candidates: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        Vec<NodeFootprintBoundaryDirectVertex>,
+    >,
+    direct_vertex_source_conflicts: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertexConflict,
+    >,
+) -> Result<Option<RoadSurfaceEarthworkFaceSource>, NodeBoundaryExportError> {
+    let start_candidates = node_footprint_boundary_vertex_sources_at_point(
+        start_point_key,
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts,
+    );
+    let end_candidates = node_footprint_boundary_vertex_sources_at_point(
+        end_point_key,
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts,
+    );
+    if start_candidates.is_empty() || end_candidates.is_empty() {
+        return Ok(None);
     };
-    Some(RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+
+    let mut source = None;
+    for start in start_candidates {
+        for end in &end_candidates {
+            let start_candidate =
+                node_earthwork_source_for_direct_vertex_pair(node_id, kind, start, start, *end);
+            let end_candidate =
+                node_earthwork_source_for_direct_vertex_pair(node_id, kind, *end, start, *end);
+            if !node_earthwork_face_sources_share_identity(start_candidate, end_candidate) {
+                continue;
+            }
+            merge_node_earthwork_source_candidate(
+                start_point_key,
+                end_point_key,
+                &mut source,
+                start_candidate,
+            )?;
+        }
+    }
+    if source.is_some() {
+        return Ok(source);
+    }
+
+    let start =
+        node_footprint_boundary_vertex_source_at_point(start_point_key, direct_vertex_sources);
+    let end = node_footprint_boundary_vertex_source_at_point(end_point_key, direct_vertex_sources);
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(None);
+    };
+    node_earthwork_source_for_boundary_vertices(
+        node_id,
+        kind,
+        start_point_key,
+        end_point_key,
+        start,
+        end,
+    )
+}
+
+fn node_footprint_boundary_vertex_sources_at_point(
+    point_key: ArrangementBoundaryPointKey,
+    direct_vertex_sources: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertex,
+    >,
+    direct_vertex_source_candidates: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        Vec<NodeFootprintBoundaryDirectVertex>,
+    >,
+    direct_vertex_source_conflicts: &BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertexConflict,
+    >,
+) -> Vec<NodeFootprintBoundaryDirectVertex> {
+    if let Some(candidates) = direct_vertex_source_candidates.get(&point_key) {
+        return candidates.clone();
+    }
+    if let Some(conflict) = direct_vertex_source_conflicts.get(&point_key).copied() {
+        return vec![conflict.existing, conflict.incoming];
+    }
+    node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources)
+        .into_iter()
+        .collect()
+}
+
+fn node_earthwork_source_for_direct_vertex_pair(
+    node_id: u32,
+    kind: RoadSurfaceVisualNodePieceKind,
+    owner: NodeFootprintBoundaryDirectVertex,
+    start: NodeFootprintBoundaryDirectVertex,
+    end: NodeFootprintBoundaryDirectVertex,
+) -> RoadSurfaceEarthworkFaceSource {
+    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
         node_id,
         kind,
         owner_kind: owner.owner_kind,
@@ -341,7 +552,66 @@ fn node_earthwork_source_for_direct_boundary_segment(
             start: start.source,
             end: end.source,
         }),
-    })
+    }
+}
+
+fn ambiguous_earthwork_boundary_segment_source_error(
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    existing_source: RoadSurfaceEarthworkFaceSource,
+    incoming_source: RoadSurfaceEarthworkFaceSource,
+) -> NodeBoundaryExportError {
+    NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource {
+        start_x_key: start_point_key.x_key,
+        start_z_key: start_point_key.z_key,
+        end_x_key: end_point_key.x_key,
+        end_z_key: end_point_key.z_key,
+        existing_source,
+        incoming_source,
+    }
+}
+
+fn node_earthwork_face_source_specificity(source: RoadSurfaceEarthworkFaceSource) -> u8 {
+    match source {
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            boundary_source: Some(boundary_source),
+            ..
+        } => {
+            u8::from(matches!(
+                boundary_source.start,
+                NodeFootprintBoundaryVertexSource::Direct(_)
+            )) + u8::from(matches!(
+                boundary_source.end,
+                NodeFootprintBoundaryVertexSource::Direct(_)
+            ))
+        }
+        _ => 0,
+    }
+}
+
+fn node_earthwork_face_sources_share_identity(
+    a: RoadSurfaceEarthworkFaceSource,
+    b: RoadSurfaceEarthworkFaceSource,
+) -> bool {
+    match (a, b) {
+        (
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: a_node_id,
+                kind: a_kind,
+                owner_kind: a_owner_kind,
+                owner_index: _,
+                boundary_source: _,
+            },
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: b_node_id,
+                kind: b_kind,
+                owner_kind: b_owner_kind,
+                owner_index: _,
+                boundary_source: _,
+            },
+        ) => a_node_id == b_node_id && a_kind == b_kind && a_owner_kind == b_owner_kind,
+        _ => a == b,
+    }
 }
 
 pub(in crate::simulation::network::surface::node) fn same_winding_boundary_point_loops_from_loop(

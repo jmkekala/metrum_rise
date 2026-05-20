@@ -11,6 +11,11 @@ impl NodeFootprintBoundaryExportSources {
         node_top_surface_sources: &[NodeTopSurfacePolygonSource],
         explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
     ) -> Result<Self, NodeBoundaryExportError> {
+        let (
+            direct_vertex_sources,
+            direct_vertex_source_candidates,
+            direct_vertex_source_conflicts,
+        ) = node_footprint_boundary_direct_vertex_sources(owned_regions, node_top_surface_sources)?;
         Ok(Self {
             source_edges: node_earthwork_boundary_source_edges_from_owned_regions(
                 node_id,
@@ -18,10 +23,9 @@ impl NodeFootprintBoundaryExportSources {
                 owned_regions,
                 node_top_surface_sources,
             )?,
-            direct_vertex_sources: node_footprint_boundary_direct_vertex_sources(
-                owned_regions,
-                node_top_surface_sources,
-            )?,
+            direct_vertex_sources,
+            direct_vertex_source_candidates,
+            direct_vertex_source_conflicts,
             explicit_vertical_step_segments: explicit_vertical_step_segments.to_vec(),
         })
     }
@@ -74,6 +78,7 @@ impl NodeFootprintBoundaryExportSources {
                 end_point_key,
                 start_key: start_point_key.xz_key(),
                 end_key: end_point_key.xz_key(),
+                final_footprint_boundary: true,
                 node_id: arrangement.node_id(),
                 kind: arrangement.piece_kind(),
                 owner_kind: owner.kind(),
@@ -129,6 +134,7 @@ fn node_earthwork_boundary_source_edges_from_owned_regions(
                 end_point_key,
                 start_key,
                 end_key,
+                final_footprint_boundary: false,
                 node_id,
                 kind,
                 owner_kind: region.kind,
@@ -157,13 +163,19 @@ fn node_footprint_boundary_direct_vertex_sources(
     owned_regions: &[NodeOwnedRegion],
     node_top_surface_sources: &[NodeTopSurfacePolygonSource],
 ) -> Result<
-    BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+    (
+        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+        BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
+        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
+    ),
     NodeBoundaryExportError,
 > {
     if owned_regions.len() != node_top_surface_sources.len() {
         return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
     }
     let mut sources = BTreeMap::new();
+    let mut candidates = BTreeMap::new();
+    let mut conflicts = BTreeMap::new();
     for (region_index, region) in owned_regions.iter().enumerate() {
         let Some(top_source) = node_top_surface_sources.get(region_index) else {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
@@ -186,17 +198,51 @@ fn node_footprint_boundary_direct_vertex_sources(
                 owner_kind: region.kind,
                 owner_index: region.owner_index,
             };
-            sources
-                .entry(top_source_boundary_point_key(top_source, point_index))
-                .and_modify(|current| {
-                    if node_footprint_direct_vertex_ordering(candidate, *current).is_gt() {
-                        *current = candidate;
-                    }
-                })
-                .or_insert(candidate);
+            insert_node_footprint_boundary_direct_vertex_source(
+                &mut sources,
+                &mut candidates,
+                &mut conflicts,
+                top_source_boundary_point_key(top_source, point_index),
+                candidate,
+            );
         }
     }
-    Ok(sources)
+    Ok((sources, candidates, conflicts))
+}
+
+fn insert_node_footprint_boundary_direct_vertex_source(
+    sources: &mut BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+    candidates: &mut BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
+    conflicts: &mut BTreeMap<
+        ArrangementBoundaryPointKey,
+        NodeFootprintBoundaryDirectVertexConflict,
+    >,
+    point_key: ArrangementBoundaryPointKey,
+    candidate: NodeFootprintBoundaryDirectVertex,
+) {
+    let point_candidates = candidates.entry(point_key).or_default();
+    if !point_candidates
+        .iter()
+        .copied()
+        .any(|existing| node_footprint_direct_vertices_share_source_identity(existing, candidate))
+    {
+        point_candidates.push(candidate);
+    }
+    let Some(current) = sources.get_mut(&point_key) else {
+        sources.insert(point_key, candidate);
+        return;
+    };
+    if !node_footprint_direct_vertices_share_source_identity(candidate, *current) {
+        conflicts
+            .entry(point_key)
+            .or_insert(NodeFootprintBoundaryDirectVertexConflict {
+                existing: *current,
+                incoming: candidate,
+            });
+    }
+    if node_footprint_direct_vertex_ordering(candidate, *current).is_gt() {
+        *current = candidate;
+    }
 }
 
 fn top_source_boundary_point_key(
