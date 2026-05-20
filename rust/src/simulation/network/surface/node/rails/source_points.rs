@@ -9,8 +9,7 @@ use super::contours::{height_for_key_on_generated_edge, subdivided_world_chord};
 use super::geometry::{road_point_from_key, road_point_key};
 use super::topology::NodeRailPointKey;
 use super::{
-    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailConstraint, NodeRailGenerationError,
-    NodeRailHeightCarrierPaths,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailGenerationError, NodeRailHeightCarrierPaths,
 };
 use std::collections::BTreeMap;
 
@@ -97,35 +96,15 @@ pub(super) fn push_band_height_carrier_points(
     Ok(())
 }
 
-pub(super) fn push_generated_contour_height_carrier_points(
-    points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
-    contours: &[NodeGeneratedContour],
-) -> Result<(), NodeRailGenerationError> {
-    for contour in contours {
-        let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index), Some(points_world)) = (
-            contour.kind,
-            contour.source_band_index,
-            contour.height_points_world.as_deref(),
-        ) else {
-            continue;
-        };
-        push_band_height_carrier_points(
-            points_by_source,
-            contour.source_mouth_order_index,
-            source_band_index,
-            kind,
-            points_world.iter().copied(),
-        )?;
-    }
-    Ok(())
-}
-
 pub(super) fn push_source_constraint_height_carrier_points(
     points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
     constraints: &[NodeRailConstraint],
 ) -> Result<(), NodeRailGenerationError> {
     let mut materialized = Vec::new();
     for constraint in constraints {
+        if constraint.kind == NodeRailConstraintKind::RaisedStepContact {
+            continue;
+        }
         let (Some(owner), Some(source_band_index)) =
             (constraint.owner, constraint.source_band_index)
         else {
@@ -162,7 +141,6 @@ pub(super) fn push_source_constraint_height_carrier_points(
 
 pub(super) fn push_owned_region_height_carrier_points(
     points_by_source: &mut BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
-    contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
     paths_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
     ownership: &NodeBooleanOwnership,
@@ -190,7 +168,6 @@ pub(super) fn push_owned_region_height_carrier_points(
             let Some(height_m) = height_for_source_key(
                 source,
                 point,
-                contours,
                 constraints,
                 paths_by_source,
                 points_by_source,
@@ -324,7 +301,6 @@ fn source_has_height_point(
 fn height_for_source_key(
     source: (RoadSurfaceBandKind, usize, usize),
     point: NodeRailPointKey,
-    contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
     paths_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
     points_by_source: &BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
@@ -342,30 +318,15 @@ fn height_for_source_key(
             height_on_world_points_key(point, &contour_world, true),
         )?;
     }
-    for contour in contours {
-        let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index), Some(points_world)) = (
-            contour.kind,
-            contour.source_band_index,
-            contour.height_points_world.as_deref(),
-        ) else {
-            continue;
-        };
-        if (kind, contour.source_mouth_order_index, source_band_index) != source {
-            continue;
-        }
-        collect_candidate_height(
-            source,
-            point,
-            &mut selected_height_m,
-            height_on_world_points_key(point, points_world, true),
-        )?;
-    }
     let source_heights_by_key = points_by_source
         .get(&source)
         .map(|points| source_height_points_by_key(source, points))
         .transpose()?
         .unwrap_or_default();
     for constraint in constraints {
+        if constraint.kind == NodeRailConstraintKind::RaisedStepContact {
+            continue;
+        }
         if (
             constraint.owner.map(|owner| owner.kind()),
             constraint.source_mouth_order_index,

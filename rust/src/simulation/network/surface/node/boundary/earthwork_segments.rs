@@ -453,6 +453,18 @@ fn node_earthwork_source_for_boundary_vertices(
             node_earthwork_source_for_direct_vertex_pair(node_id, kind, start, start, end);
         let end_candidate =
             node_earthwork_source_for_direct_vertex_pair(node_id, kind, end, start, end);
+        if (start.owner_kind != end.owner_kind
+            || node_footprint_boundary_direct_vertex_is_canonical_point(start)
+            || node_footprint_boundary_direct_vertex_is_canonical_point(end))
+            && let Some(merged) = merged_node_earthwork_source_candidate(
+                start_point_key,
+                end_point_key,
+                NodeEarthworkBoundarySourceCandidate::from_face_source(start_candidate),
+                NodeEarthworkBoundarySourceCandidate::from_face_source(end_candidate),
+            )
+        {
+            return Ok(Some(merged.face_source));
+        }
         return Err(ambiguous_earthwork_boundary_segment_source_error(
             start_point_key,
             end_point_key,
@@ -575,13 +587,6 @@ fn node_earthwork_boundary_owner_for_direct_vertices(
 ) -> Option<NodeFootprintBoundaryDirectVertex> {
     if node_footprint_direct_vertices_share_owner_identity(start, end) {
         return Some(start);
-    }
-    if start.owner_kind == end.owner_kind && start_point_key.y_mm == end_point_key.y_mm {
-        return Some(if start.owner_index <= end.owner_index {
-            start
-        } else {
-            end
-        });
     }
     explicit_vertical_step_boundary_owner(
         start_point_key,
@@ -927,6 +932,9 @@ fn canonical_earthwork_boundary_owner(
     Option<arrangement::NodeBandHeightFieldId>,
 )> {
     if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
+        if a_height_field_id != b_height_field_id {
+            return None;
+        }
         return Some((a_owner_kind, a_owner_index, a_height_field_id));
     }
     if a_owner_kind == b_owner_kind {
@@ -978,6 +986,15 @@ fn canonical_boundary_point_source(
         z_key: point_key.z_key,
         y_mm: point_key.y_mm,
     }
+}
+
+fn node_footprint_boundary_direct_vertex_is_canonical_point(
+    vertex: NodeFootprintBoundaryDirectVertex,
+) -> bool {
+    matches!(
+        vertex.source,
+        NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. }
+    )
 }
 
 fn node_earthwork_boundary_vertex_sources_share_identity_at_point(

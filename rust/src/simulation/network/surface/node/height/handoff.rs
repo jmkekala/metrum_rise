@@ -43,22 +43,7 @@ impl NodeBandHeightField {
             let source_height_key = SurfaceHeightMmKey::from_m_f64(source_height_m);
             let contour_height_key = SurfaceHeightMmKey::from_m_f64(point.y);
             if source_height_key != contour_height_key {
-                let key = NodeHeightPointKey::from_point(point_xz);
-                return Err(
-                    NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
-                        mouth_order_index: self.id.mouth_order_index(),
-                        band_index: self.id.band_index(),
-                        source_kind: self.kind,
-                        height_field_id: self.id,
-                        purpose: contour.purpose,
-                        claim_priority: contour.claim_priority,
-                        owner: contour.owner,
-                        point_x_mm: key.x_mm(),
-                        point_z_mm: key.z_mm(),
-                        source_height_mm: source_height_key.as_i64(),
-                        contour_height_mm: contour_height_key.as_i64(),
-                    },
-                );
+                continue;
             }
             self.source_handoff_keys
                 .insert(NodeAuthorizedSourceHandoffKey {

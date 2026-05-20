@@ -85,7 +85,6 @@ impl NodeBandHeightField {
             match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => {
                     candidates.push(NodeAuthorizedHeightCandidate {
-                        authority_rank: 0,
                         authority: patch.authority.source(),
                         height_m,
                     });
@@ -124,69 +123,62 @@ impl NodeBandHeightField {
         claim_priority: NodeGeneratedContourClaimPriority,
         point_xz: RoadVec2,
     ) -> Result<NodeEvaluatedHeight, NodeHeightFieldError> {
-        let mut candidates = Vec::new();
         let mut outside_error = None;
-        for patch in &self.patches {
-            let Some(authority_rank) = patch.authority.rank_for_owned_region(owner, claim_priority)
-            else {
-                continue;
-            };
-            if self.source_handoff_authorized(owner, claim_priority, point_xz)
-                && let Some(height_m) = patch.source_handoff_height_at(point_xz)
-            {
-                candidates.push(NodeAuthorizedHeightCandidate {
-                    authority_rank: 4,
-                    authority: patch.authority.source(),
-                    height_m,
-                });
-                continue;
-            }
-            match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
-                NodeHeightPatchEvaluation::Inside(height_m) => {
+        for target_rank in (1..=4).rev() {
+            let mut candidates = Vec::new();
+            for patch in &self.patches {
+                let Some(authority_rank) =
+                    patch.authority.rank_for_owned_region(owner, claim_priority)
+                else {
+                    continue;
+                };
+                if target_rank == 4
+                    && self.source_handoff_authorized(owner, claim_priority, point_xz)
+                    && let Some(height_m) = patch.source_handoff_height_at(point_xz)
+                {
                     candidates.push(NodeAuthorizedHeightCandidate {
-                        authority_rank,
                         authority: patch.authority.source(),
                         height_m,
                     });
+                    continue;
                 }
-                NodeHeightPatchEvaluation::Outside(error) => {
-                    if outside_error.is_none() {
-                        outside_error = Some(owner_scoped_outside_height_error(error, owner));
+                if authority_rank != target_rank {
+                    continue;
+                }
+                match patch.evaluate_surface_height(self.id, self.kind, point_xz) {
+                    Ok(NodeHeightPatchEvaluation::Inside(height_m)) => {
+                        candidates.push(NodeAuthorizedHeightCandidate {
+                            authority: patch.authority.source(),
+                            height_m,
+                        });
                     }
+                    Ok(NodeHeightPatchEvaluation::Outside(error)) => {
+                        if outside_error.is_none() {
+                            outside_error = Some(owner_scoped_outside_height_error(error, owner));
+                        }
+                    }
+                    Err(error) => return Err(error),
                 }
             }
-        }
-        if candidates.is_empty() {
-            if let Some(error) = outside_error {
-                return Err(error);
+            if !candidates.is_empty() {
+                return self.agreed_height(point_xz, Some(owner), candidates);
             }
-            let key = NodeHeightPointKey::from_point(point_xz);
-            return Err(NodeHeightFieldError::VertexOutsideHeightField {
-                mouth_order_index: self.id.mouth_order_index(),
-                band_index: self.id.band_index(),
-                source_kind: self.kind,
-                height_field_id: self.id,
-                owner: Some(owner),
-                point_x_mm: key.x_mm(),
-                point_z_mm: key.z_mm(),
-                axis: "canonical_authority",
-                raw_parameter: f64::NAN,
-            });
         }
 
-        let best_rank = candidates
-            .iter()
-            .map(|candidate| candidate.authority_rank)
-            .max()
-            .expect("non-empty candidate set has a maximum rank");
-        let heights_m = if best_rank == 4 {
-            candidates
-        } else {
-            candidates
-                .into_iter()
-                .filter(|candidate| candidate.authority_rank == best_rank)
-                .collect()
-        };
-        self.agreed_height(point_xz, Some(owner), heights_m)
+        if let Some(error) = outside_error {
+            return Err(error);
+        }
+        let key = NodeHeightPointKey::from_point(point_xz);
+        Err(NodeHeightFieldError::VertexOutsideHeightField {
+            mouth_order_index: self.id.mouth_order_index(),
+            band_index: self.id.band_index(),
+            source_kind: self.kind,
+            height_field_id: self.id,
+            owner: Some(owner),
+            point_x_mm: key.x_mm(),
+            point_z_mm: key.z_mm(),
+            axis: "canonical_authority",
+            raw_parameter: f64::NAN,
+        })
     }
 }

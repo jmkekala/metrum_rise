@@ -93,19 +93,6 @@ pub(crate) enum NodeHeightFieldError {
         claim_priority: NodeGeneratedContourClaimPriority,
         owner: Option<NodeBandOwner>,
     },
-    GeneratedContourSourceHandoffMismatch {
-        mouth_order_index: usize,
-        band_index: usize,
-        source_kind: RoadSurfaceBandKind,
-        height_field_id: NodeBandHeightFieldId,
-        purpose: NodeGeneratedContourPurpose,
-        claim_priority: NodeGeneratedContourClaimPriority,
-        owner: Option<NodeBandOwner>,
-        point_x_mm: i64,
-        point_z_mm: i64,
-        source_height_mm: i64,
-        contour_height_mm: i64,
-    },
     InvalidHeightCarrierContour {
         mouth_order_index: usize,
         band_index: usize,
@@ -256,7 +243,6 @@ pub(super) struct NodeBandHeightTriangle {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct NodeAuthorizedHeightCandidate {
-    pub(super) authority_rank: u8,
     pub(super) authority: NodeHeightAuthoritySource,
     pub(super) height_m: f64,
 }

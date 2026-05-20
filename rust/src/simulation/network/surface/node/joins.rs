@@ -5,7 +5,7 @@ use super::backend::{
     quantize_road_vec3_path_xz_to_overlay_grid, road_vec3_xz as xz_from_road_vec3,
 };
 use super::input::{NodeArrangementInput, NodeInputMouth};
-use super::keys::SurfaceXzKey;
+use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::paths::{
     PathHeightResolutionError, cleaned_open_road_polyline, cleaned_open_world_path_polyline,
     closed_world_contour_has_area, reheight_road_points_from_world_path,
@@ -33,6 +33,7 @@ enum SideJoinPathMode {
 const SIDE_JOIN_ARC_RADIUS_EPS_M: f64 = 0.001;
 const SIDE_JOIN_ARC_SPLIT_DEPTH: usize = 2;
 const SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
+const SIDE_JOIN_ENDPOINT_PLANE_HEIGHT_DUST_MM: i64 = 1;
 
 #[derive(Clone, Copy)]
 struct SideJoinLayer {
@@ -40,6 +41,13 @@ struct SideJoinLayer {
     band_kind: RoadSurfaceBandKind,
     inner_boundary_index: usize,
     outer_boundary_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SideJoinHeightPlane {
+    origin: RoadVec3,
+    grade_x: f64,
+    grade_z: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -149,8 +157,14 @@ fn append_adjacent_side_join_bands(
         return Ok(());
     }
 
-    let mut join_bands =
-        side_join_bands(from_mouth, &from_layers, to_mouth, &to_layers, path_mode)?;
+    let mut join_bands = side_join_bands(
+        mouths,
+        from_mouth,
+        &from_layers,
+        to_mouth,
+        &to_layers,
+        path_mode,
+    )?;
     canonicalize_side_join_bands(&mut join_bands);
     bands_by_mouth[from_index].extend(join_bands);
     Ok(())
@@ -211,6 +225,7 @@ fn side_join_layers(mouth: &NodeInputMouth, side: SideJoinProfileSide) -> Vec<Si
 }
 
 fn side_join_bands(
+    mouths: &[NodeInputMouth],
     from_mouth: &NodeInputMouth,
     from_layers: &[SideJoinLayer],
     to_mouth: &NodeInputMouth,
@@ -229,6 +244,11 @@ fn side_join_bands(
             inner_path_world = None;
             continue;
         }
+        let height_plane = if path_mode == SideJoinPathMode::JunctionNonRoad {
+            endpoint_height_plane_for_band_kind(mouths, from_layer.band_kind)?
+        } else {
+            None
+        };
 
         let Some(band_inner_path_world) = side_join_band_inner_path(
             from_mouth,
@@ -237,6 +257,7 @@ fn side_join_bands(
             to_layer,
             inner_path_world,
             path_mode,
+            height_plane,
         )?
         else {
             break;
@@ -253,6 +274,7 @@ fn side_join_bands(
             to_mouth,
             outer_end_world,
             path_mode,
+            height_plane,
         )?
         else {
             break;
@@ -284,6 +306,7 @@ fn side_join_band_inner_path(
     to_layer: &SideJoinLayer,
     previous_outer_path_world: Option<Vec<RoadVec3>>,
     path_mode: SideJoinPathMode,
+    height_plane: Option<SideJoinHeightPlane>,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     if let Some(path_world) = previous_outer_path_world {
         if path_mode != SideJoinPathMode::BendArc {
@@ -309,6 +332,7 @@ fn side_join_band_inner_path(
         to_mouth,
         inner_end_world,
         path_mode,
+        height_plane,
     )
 }
 
@@ -370,6 +394,7 @@ fn side_join_boundary_path_world(
     to_mouth: &NodeInputMouth,
     to_world: RoadVec3,
     path_mode: SideJoinPathMode,
+    height_plane: Option<SideJoinHeightPlane>,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     let from_xz = xz_from_road_vec3(from_world);
     let to_xz = xz_from_road_vec3(to_world);
@@ -395,12 +420,135 @@ fn side_join_boundary_path_world(
     let path_world = path_xz
         .into_iter()
         .map(|point_xz| {
-            let height_m =
-                height_on_linear_height_path(point_xz, from_xz, from_world.y, to_xz, to_world.y);
+            let height_m = height_plane.map_or_else(
+                || height_on_linear_height_path(point_xz, from_xz, from_world.y, to_xz, to_world.y),
+                |plane| {
+                    if same_surface_xz_key(point_xz, from_xz) {
+                        from_world.y
+                    } else if same_surface_xz_key(point_xz, to_xz) {
+                        to_world.y
+                    } else {
+                        plane.height_at_xz(point_xz)
+                    }
+                },
+            );
             RoadVec3::new(point_xz.x, height_m, point_xz.y)
         })
         .collect();
     clean_side_join_path_world(path_world).map_err(SideJoinGenerationError::from_path_height_error)
+}
+
+impl SideJoinHeightPlane {
+    fn height_at_xz(self, point_xz: RoadVec2) -> f64 {
+        self.origin.y
+            + self.grade_x * (point_xz.x - self.origin.x)
+            + self.grade_z * (point_xz.y - self.origin.z)
+    }
+}
+
+fn endpoint_height_plane_for_band_kind(
+    mouths: &[NodeInputMouth],
+    band_kind: RoadSurfaceBandKind,
+) -> Result<Option<SideJoinHeightPlane>, SideJoinGenerationError> {
+    let mut points = mouths
+        .iter()
+        .flat_map(|mouth| mouth.endpoint_rails.iter())
+        .filter(|rail| rail.band_kind == band_kind)
+        .flat_map(|rail| [rail.start_world, rail.end_world])
+        .collect::<Vec<_>>();
+    canonicalize_height_plane_points(&mut points);
+    let Some(plane) = height_plane_from_points(&points) else {
+        return Ok(None);
+    };
+    Ok(validate_height_plane(&points, plane).then_some(plane))
+}
+
+fn canonicalize_height_plane_points(points: &mut Vec<RoadVec3>) {
+    points.sort_by_key(|point| {
+        let key = SurfaceXzKey::from_road_xz(xz_from_road_vec3(*point));
+        (
+            key.x_key(),
+            key.z_key(),
+            SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
+        )
+    });
+    points.dedup_by_key(|point| {
+        let key = SurfaceXzKey::from_road_xz(xz_from_road_vec3(*point));
+        (
+            key.x_key(),
+            key.z_key(),
+            SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
+        )
+    });
+}
+
+fn height_plane_from_points(points: &[RoadVec3]) -> Option<SideJoinHeightPlane> {
+    let mut selected: Option<(u128, SideJoinHeightPlane)> = None;
+    for a_index in 0..points.len() {
+        for b_index in a_index + 1..points.len() {
+            for c_index in b_index + 1..points.len() {
+                let area =
+                    height_plane_triangle_area2(points[a_index], points[b_index], points[c_index]);
+                if area == 0 {
+                    continue;
+                }
+                let plane =
+                    height_plane_from_triangle(points[a_index], points[b_index], points[c_index])?;
+                if selected.is_none_or(|(selected_area, _)| area > selected_area) {
+                    selected = Some((area, plane));
+                }
+            }
+        }
+    }
+    selected.map(|(_, plane)| plane)
+}
+
+fn height_plane_triangle_area2(a: RoadVec3, b: RoadVec3, c: RoadVec3) -> u128 {
+    let a = SurfaceXzKey::from_road_xz(xz_from_road_vec3(a)).raw_tuple();
+    let b = SurfaceXzKey::from_road_xz(xz_from_road_vec3(b)).raw_tuple();
+    let c = SurfaceXzKey::from_road_xz(xz_from_road_vec3(c)).raw_tuple();
+    SurfaceXzKey::raw_tuple_triangle_area2(a, b, c).unsigned_abs()
+}
+
+fn height_plane_from_triangle(
+    origin: RoadVec3,
+    b: RoadVec3,
+    c: RoadVec3,
+) -> Option<SideJoinHeightPlane> {
+    let ux = b.x - origin.x;
+    let uz = b.z - origin.z;
+    let uy = b.y - origin.y;
+    let vx = c.x - origin.x;
+    let vz = c.z - origin.z;
+    let vy = c.y - origin.y;
+    let denominator = ux * vz - uz * vx;
+    if denominator.abs() <= f64::EPSILON {
+        return None;
+    }
+    Some(SideJoinHeightPlane {
+        origin,
+        grade_x: (uy * vz - uz * vy) / denominator,
+        grade_z: (ux * vy - uy * vx) / denominator,
+    })
+}
+
+fn validate_height_plane(points: &[RoadVec3], plane: SideJoinHeightPlane) -> bool {
+    for point in points {
+        let expected_height_m = plane.height_at_xz(xz_from_road_vec3(*point));
+        let expected_height_key = SurfaceHeightMmKey::from_m_f64(expected_height_m);
+        let incoming_height_key = SurfaceHeightMmKey::from_m_f64(point.y);
+        if (expected_height_key.as_i64() - incoming_height_key.as_i64()).abs()
+            <= SIDE_JOIN_ENDPOINT_PLANE_HEIGHT_DUST_MM
+        {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn same_surface_xz_key(a: RoadVec2, b: RoadVec2) -> bool {
+    SurfaceXzKey::from_road_xz(a) == SurfaceXzKey::from_road_xz(b)
 }
 
 fn side_join_backend_join_path_xz(

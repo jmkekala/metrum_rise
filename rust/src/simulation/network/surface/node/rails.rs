@@ -37,8 +37,7 @@ use contours::{push_boundary_constraint, push_span_handoff_constraint};
 use owners::{boundary_owners, owners_by_mouth};
 use source_points::{
     interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
-    push_generated_contour_height_carrier_points, push_owned_region_height_carrier_points,
-    push_source_constraint_height_carrier_points,
+    push_owned_region_height_carrier_points, push_source_constraint_height_carrier_points,
 };
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
@@ -178,7 +177,6 @@ impl NodeRailContourSet {
         if let Some(ownership) = ownership {
             push_owned_region_height_carrier_points(
                 &mut points_by_source,
-                &self.contours,
                 &self.constraints,
                 &self.height_carrier_paths_by_source,
                 ownership,
@@ -348,16 +346,6 @@ impl NodeRailContourSet {
                         .copied(),
                 )?;
             }
-            for side_join_band in side_join_bands {
-                push_band_height_carrier_points(
-                    &mut height_carrier_points_by_source,
-                    mouth.order_index,
-                    side_join_band.source_band_index,
-                    side_join_band.band_kind,
-                    side_join_band.contour_world.iter().copied(),
-                )?;
-            }
-
             push_terminal_cap_band_contours(
                 input.piece_kind,
                 mouth,
@@ -442,10 +430,6 @@ impl NodeRailContourSet {
             &contours,
             &validation_constraints,
             source_constraint_count,
-        )?;
-        push_generated_contour_height_carrier_points(
-            &mut height_carrier_points_by_source,
-            &contours,
         )?;
         push_source_constraint_height_carrier_points(
             &mut height_carrier_points_by_source,

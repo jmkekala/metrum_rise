@@ -982,7 +982,7 @@ fn generated_band_contour_rejects_missing_source_band() {
 }
 
 #[test]
-fn generated_contour_source_handoff_height_mismatch_rejects() {
+fn generated_contour_source_handoff_height_mismatch_keeps_generated_owner_contour() {
     let source_support = [RoadVec3::new(5.0, 0.5, 0.0)];
     let mut field = NodeBandHeightField::from_interval(
         0,
@@ -1008,28 +1008,28 @@ fn generated_contour_source_handoff_height_mismatch_rejects() {
         ]),
     );
 
-    assert_eq!(
-        field.extend_with_generated_contour(&contour),
-        Err(
-            NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
-                mouth_order_index: 0,
-                band_index: 0,
-                source_kind: RoadSurfaceBandKind::Sidewalk,
-                height_field_id: field.id,
-                purpose: NodeGeneratedContourPurpose::NonRoadBand,
-                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
-                owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0)),
-                point_x_mm: 5000,
-                point_z_mm: 0,
-                source_height_mm: 500,
-                contour_height_mm: 750,
-            }
+    field
+        .extend_with_generated_contour(&contour)
+        .expect("mismatched source support should not poison the owner contour");
+    let height = field
+        .evaluate_authorized_height(
+            NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            RoadVec2::new(5.0, 0.0),
         )
+        .expect("generated contour owns the mismatched handoff vertex");
+    assert_eq!(
+        height.authority,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+        }
     );
+    assert!((height.height_m - 0.75).abs() <= 1.0e-6);
 }
 
 #[test]
-fn generated_contour_source_handoff_checks_explicit_source_vertices() {
+fn generated_contour_source_handoff_mismatched_explicit_vertex_keeps_generated_owner_contour() {
     let mut field = NodeBandHeightField::from_interval(
         0,
         &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
@@ -1052,24 +1052,24 @@ fn generated_contour_source_handoff_checks_explicit_source_vertices() {
         ]),
     );
 
-    assert_eq!(
-        field.extend_with_generated_contour(&contour),
-        Err(
-            NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
-                mouth_order_index: 0,
-                band_index: 0,
-                source_kind: RoadSurfaceBandKind::Sidewalk,
-                height_field_id: field.id,
-                purpose: NodeGeneratedContourPurpose::NonRoadBand,
-                claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
-                owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0)),
-                point_x_mm: 0,
-                point_z_mm: 0,
-                source_height_mm: 0,
-                contour_height_mm: 250,
-            }
+    field
+        .extend_with_generated_contour(&contour)
+        .expect("mismatched explicit source vertex should not poison the owner contour");
+    let height = field
+        .evaluate_authorized_height(
+            NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            NodeGeneratedContourClaimPriority::MouthBand,
+            RoadVec2::new(0.0, 0.0),
         )
+        .expect("generated contour owns the mismatched explicit source vertex");
+    assert_eq!(
+        height.authority,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+        }
     );
+    assert!((height.height_m - 0.25).abs() <= 1.0e-6);
 }
 
 #[test]

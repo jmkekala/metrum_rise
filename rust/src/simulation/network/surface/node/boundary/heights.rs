@@ -41,14 +41,14 @@ impl NodeFootprintBoundaryExportSources {
             return Ok(Some(heights[0]));
         }
 
-        if let Some(candidate) = raised_step_footprint_height_candidate(
+        if let Some(height_mm) = raised_step_footprint_height_mm(
             key,
             &exact_candidates,
             &heights,
             &self.explicit_vertical_step_segments,
             &self.source_edges,
         ) {
-            return Ok(Some(candidate.height_mm));
+            return Ok(Some(height_mm));
         }
 
         let existing = exact_candidates
@@ -286,6 +286,7 @@ impl NodeFootprintBoundaryExportSources {
     }
 }
 
+#[cfg(test)]
 fn raised_step_footprint_height_candidate(
     key: arrangement::NodeArrangementKey,
     candidates: &[NodeFootprintBoundaryHeightCandidate],
@@ -357,6 +358,50 @@ fn raised_step_footprint_height_candidate(
         height_mm: heights[1],
         source,
     })
+}
+
+fn raised_step_footprint_height_mm(
+    key: arrangement::NodeArrangementKey,
+    candidates: &[NodeFootprintBoundaryHeightCandidate],
+    heights: &[i64],
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+) -> Option<i64> {
+    let [_, raised_height_mm] = heights else {
+        return None;
+    };
+
+    let mut checked_pairs = 0usize;
+    for (left_index, left) in candidates.iter().copied().enumerate() {
+        for right in candidates.iter().copied().skip(left_index + 1) {
+            if left.height_mm == right.height_mm {
+                continue;
+            }
+            checked_pairs += 1;
+            let Some((lower, raised)) = ordered_raised_step_footprint_candidates(left, right)
+            else {
+                return None;
+            };
+            let explicit_step_authorized = explicit_vertical_step_authorizes_footprint_height_pair(
+                key,
+                lower.source,
+                raised.source,
+                explicit_vertical_step_segments,
+            );
+            let terminal_source_endpoint_authorized =
+                terminal_source_edge_endpoints_authorize_footprint_height_pair(
+                    key,
+                    lower,
+                    raised,
+                    source_edges,
+                );
+            if !explicit_step_authorized && !terminal_source_endpoint_authorized {
+                return None;
+            }
+        }
+    }
+
+    (checked_pairs > 0).then_some(*raised_height_mm)
 }
 
 fn node_footprint_height_candidates_share_source_identity(

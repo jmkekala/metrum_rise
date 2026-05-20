@@ -428,28 +428,6 @@ impl NodeGeometryDiagnostic {
                 axis: None,
                 raw_parameter: None,
             },
-            NodeHeightFieldError::GeneratedContourSourceHandoffMismatch {
-                mouth_order_index,
-                band_index,
-                source_kind,
-                height_field_id,
-                owner,
-                point_x_mm,
-                point_z_mm,
-                ..
-            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
-                reason: "generated_contour_source_handoff_height_mismatch",
-                mouth_order_index: Some(*mouth_order_index),
-                band_index: Some(*band_index),
-                kind: None,
-                source_kind: Some(*source_kind),
-                height_field_id: Some(*height_field_id),
-                owner: *owner,
-                point_x_mm: Some(*point_x_mm),
-                point_z_mm: Some(*point_z_mm),
-                axis: None,
-                raw_parameter: None,
-            },
             NodeHeightFieldError::InvalidHeightCarrierContour {
                 mouth_order_index,
                 band_index,

@@ -2491,8 +2491,9 @@ fn assert_junction_rejected_with_canonical_height_diagnostic(
     let report = canonical_junction_pipeline_report(surface, graph, node_id);
     let accepted_height_rejection = report.contains("shared_source_height_conflict")
         || report.contains("source_height_field_conflict")
-        || report.contains("generated_contour_source_handoff_height_mismatch")
-        || report.contains("vertex_outside_height_field");
+        || report.contains("vertex_outside_height_field")
+        || report.contains("missing_raised_step_vertical_face")
+        || report.contains("MissingRaisedStepVerticalFace");
     assert!(
         accepted_height_rejection,
         "{label} must reject with a canonical height diagnostic: {report}"
@@ -3150,7 +3151,7 @@ fn section_height_at_lateral_offset(
     best_height_m
 }
 
-fn assert_junction_mouth_section_profile_laterally_flat(
+fn assert_junction_mouth_section_profile_matches_endpoint_plane(
     surface: &RoadSurfaceSystem,
     graph: &RegionGraph,
     edge_idx: usize,
@@ -3172,42 +3173,36 @@ fn assert_junction_mouth_section_profile_laterally_flat(
             .unwrap()
     };
     let edge = graph.edge(edge_idx);
+    let node_id = graph.get_valid_node(if at_start {
+        edge.start_node
+    } else {
+        edge.end_node
+    });
+    let plane = graph
+        .junction_endpoint_profile_plane(node_id)
+        .expect("JunctionN endpoint must expose a solved profile plane");
     let tolerance_m = 0.005;
-    let mut carriageway_count = 0;
-    for band in section
-        .bands
-        .iter()
-        .filter(|band| band.kind == RoadSurfaceBandKind::Carriageway)
-    {
-        carriageway_count += 1;
-        for height_m in [band.height_start_m, band.height_end_m] {
+    for band in &section.bands {
+        let height_offset_m = match band.kind {
+            RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk => {
+                CURB_STEP_HEIGHT_M
+            }
+            _ => 0.0,
+        };
+        for (lateral_m, height_m) in [
+            (band.lateral_start_m, band.height_start_m),
+            (band.lateral_end_m, band.height_end_m),
+        ] {
+            let expected_height_m = plane.height_at_xz(
+                section.center_xz.x + section.lateral_xz.x * lateral_m,
+                section.center_xz.y + section.lateral_xz.y * lateral_m,
+            ) + height_offset_m;
             assert!(
-                (height_m - section.center_height_m).abs() <= tolerance_m,
-                "JunctionN mouth carriageway must be laterally flat: edge={edge_idx} at_start={at_start} s_m={:.3} height={height_m:.3} center={:.3} delta={:.3}",
-                section.s_m,
-                section.center_height_m,
-                height_m - section.center_height_m
-            );
-        }
-    }
-    assert!(
-        carriageway_count > 0,
-        "edge {edge_idx} must expose carriageway bands at the JunctionN mouth"
-    );
-
-    let expected_non_road_height_m = section.center_height_m + CURB_STEP_HEIGHT_M;
-    for band in section.bands.iter().filter(|band| {
-        band.kind == RoadSurfaceBandKind::CurbOrShoulder
-            || band.kind == RoadSurfaceBandKind::Sidewalk
-    }) {
-        for height_m in [band.height_start_m, band.height_end_m] {
-            assert!(
-                (height_m - expected_non_road_height_m).abs() <= tolerance_m,
-                "JunctionN mouth curb/sidewalk must use the explicit curb step from the road height: edge={edge_idx} at_start={at_start} width={:.3} s_m={:.3} kind={:?} height={height_m:.3} expected={expected_non_road_height_m:.3} delta={:.3}",
-                edge.width,
+                (height_m - expected_height_m).abs() <= tolerance_m,
+                "JunctionN mouth band height must match the endpoint profile plane: edge={edge_idx} at_start={at_start} s_m={:.3} kind={:?} lateral={lateral_m:.3} height={height_m:.3} expected={expected_height_m:.3} delta={:.3}",
                 section.s_m,
                 band.kind,
-                height_m - expected_non_road_height_m
+                height_m - expected_height_m
             );
         }
     }
@@ -5381,7 +5376,7 @@ fn logged_flat_three_way_oblique_variant_compiles_with_explicit_vertical_steps()
 }
 
 #[test]
-fn logged_elevated_three_way_oblique_junction_rejects_same_material_height_conflict() {
+fn logged_elevated_three_way_oblique_junction_compiles_with_canonical_boundary_sources() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-5.708, 139.500, 43.670), NodeType::Junction);
@@ -5429,12 +5424,18 @@ fn logged_elevated_three_way_oblique_junction_rejects_same_material_height_confl
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_canonical_height_diagnostic(
-        &surface,
-        &graph,
-        center,
-        "logged elevated oblique JunctionN",
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .unwrap_or_else(|| {
+            panic!(
+                "logged elevated oblique JunctionN should compile with canonical boundary sources: {}",
+                canonical_junction_pipeline_report(&surface, &graph, center)
+            )
+        });
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_earthwork_faces_have_footprint_provenance(piece);
 }
 
 #[test]
@@ -6071,9 +6072,9 @@ fn logged_current_elevated_three_way_rejects_same_material_height_conflict() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 0, false);
-    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 1, true);
-    assert_junction_mouth_section_profile_laterally_flat(&surface, &graph, 2, true);
+    assert_junction_mouth_section_profile_matches_endpoint_plane(&surface, &graph, 0, false);
+    assert_junction_mouth_section_profile_matches_endpoint_plane(&surface, &graph, 1, true);
+    assert_junction_mouth_section_profile_matches_endpoint_plane(&surface, &graph, 2, true);
     assert_junction_rejected_with_canonical_height_diagnostic(
         &surface,
         &graph,
