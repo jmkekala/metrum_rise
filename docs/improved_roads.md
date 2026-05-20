@@ -114,6 +114,10 @@ Live behavior:
   policy. Mixed `Standard` / structural nodes expose only Bridge-owned or visible Tunnel-owned
   earthwork faces; Standard-owned node boundary portions remain terrain/CDT seams instead of
   visible closure geometry.
+- node footprint boundary source export now rejects distinct point / segment source identities
+  instead of collapsing them by source ordering. Identical boundary provenance may merge, and
+  raised-step boundary connectors may resolve only from explicit owner-pair topology or solved
+  raised/lower endpoint heights.
 - the legacy terminal U-shaped end-band helper is deleted in the hardcut. Terminal cap ownership is
   restored through `surface::terminal`, which generates canonical cap and side-to-end corner
   carriers for the rail / contour path instead of reintroducing the retired input-side endpoint

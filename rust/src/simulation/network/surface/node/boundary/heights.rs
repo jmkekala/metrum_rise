@@ -21,21 +21,80 @@ impl NodeFootprintBoundaryExportSources {
         &self,
         key: arrangement::NodeArrangementKey,
     ) -> Result<(), NodeBoundaryExportError> {
-        self.height_candidate_at_boundary_vertex(key).map(|_| ())
+        self.height_at_boundary_vertex(key).map(|_| ())
     }
 
+    #[cfg(test)]
     pub(super) fn height_candidate_at_boundary_vertex(
         &self,
         key: arrangement::NodeArrangementKey,
     ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
         let exact_candidates = self
             .direct_height_candidates_at_key(key)
+            .into_iter()
             .chain(self.boundary_edge_height_candidates_at_key(key))
             .collect::<Vec<_>>();
         if !exact_candidates.is_empty() {
             return self.unique_height_candidate_at_key(key, exact_candidates);
         }
         Ok(None)
+    }
+
+    fn height_at_boundary_vertex(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        let exact_candidates = self
+            .direct_height_candidates_at_key(key)
+            .into_iter()
+            .chain(self.boundary_edge_height_candidates_at_key(key))
+            .collect::<Vec<_>>();
+        if exact_candidates.is_empty() {
+            return Ok(None);
+        }
+
+        let mut heights = exact_candidates
+            .iter()
+            .map(|candidate| candidate.height_mm)
+            .collect::<Vec<_>>();
+        heights.sort_unstable();
+        heights.dedup();
+        if heights.len() == 1 {
+            return Ok(Some(heights[0]));
+        }
+
+        if let Some(candidate) = raised_step_footprint_height_candidate(
+            key,
+            &exact_candidates,
+            &heights,
+            &self.explicit_vertical_step_segments,
+            &self.source_edges,
+        ) {
+            return Ok(Some(candidate.height_mm));
+        }
+
+        let existing = exact_candidates
+            .iter()
+            .find(|candidate| candidate.height_mm == heights[0])
+            .expect("conflicting boundary height includes existing candidate");
+        let incoming = exact_candidates
+            .iter()
+            .find(|candidate| candidate.height_mm == heights[1])
+            .expect("conflicting boundary height includes incoming candidate");
+        Err(
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                existing_y_mm: heights[0],
+                incoming_y_mm: heights[1],
+                existing_owner_kind: existing.source.owner_kind,
+                existing_owner_index: existing.source.owner_index,
+                existing_source: existing.source.source,
+                incoming_owner_kind: incoming.source.owner_kind,
+                incoming_owner_index: incoming.source.owner_index,
+                incoming_source: incoming.source.source,
+            },
+        )
     }
 
     #[cfg(test)]
@@ -46,6 +105,7 @@ impl NodeFootprintBoundaryExportSources {
     ) -> Result<Option<NodeFootprintBoundaryHeightCandidate>, NodeBoundaryExportError> {
         let exact_candidates = self
             .height_candidates_at_key(key)
+            .into_iter()
             .collect::<Vec<NodeFootprintBoundaryHeightCandidate>>();
         if !exact_candidates.is_empty() {
             return Ok(self
@@ -56,6 +116,7 @@ impl NodeFootprintBoundaryExportSources {
         Ok(None)
     }
 
+    #[cfg(test)]
     fn unique_height_candidate_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -105,10 +166,19 @@ impl NodeFootprintBoundaryExportSources {
             );
         }
 
-        Ok(candidates
-            .into_iter()
-            .max_by(|a, b| node_footprint_direct_vertex_ordering(a.source, b.source))
-            .map(|candidate| candidate))
+        let mut source = None;
+        let point_key = ArrangementBoundaryPointKey {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+            y_mm: heights[0],
+        };
+        for candidate in candidates {
+            merge_node_footprint_boundary_point_source(point_key, &mut source, candidate.source)?;
+        }
+        Ok(source.map(|source| NodeFootprintBoundaryHeightCandidate {
+            height_mm: heights[0],
+            source,
+        }))
     }
 
     #[cfg(test)]
@@ -126,9 +196,10 @@ impl NodeFootprintBoundaryExportSources {
         self.direct_vertex_sources
             .entry(point_key)
             .and_modify(|current| {
-                if node_footprint_direct_vertex_ordering(candidate, *current).is_gt() {
-                    *current = candidate;
-                }
+                debug_assert!(
+                    node_footprint_direct_vertices_share_source_identity(candidate, *current),
+                    "test helper must not hide direct boundary source ambiguity"
+                );
             })
             .or_insert(candidate);
     }
@@ -137,9 +208,11 @@ impl NodeFootprintBoundaryExportSources {
     fn height_candidates_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
-    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
         self.direct_height_candidates_at_key(key)
+            .into_iter()
             .chain(self.boundary_edge_height_candidates_at_key(key))
+            .collect()
     }
 
     fn boundary_edge_height_candidates_at_key(
@@ -185,16 +258,30 @@ impl NodeFootprintBoundaryExportSources {
     fn direct_height_candidates_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
-    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
-        self.direct_vertex_sources
-            .iter()
-            .filter(move |(point_key, _)| {
-                point_key.x_key == key.x_key() && point_key.z_key == key.z_key()
-            })
-            .map(|(point_key, source)| NodeFootprintBoundaryHeightCandidate {
-                height_mm: point_key.y_mm,
-                source: *source,
-            })
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        let mut candidates = Vec::new();
+        for point_key in self
+            .direct_vertex_source_candidates
+            .keys()
+            .chain(self.direct_vertex_sources.keys())
+            .copied()
+        {
+            if point_key.x_key != key.x_key() || point_key.z_key != key.z_key() {
+                continue;
+            }
+            for source in self.direct_vertex_candidates_at_point(point_key) {
+                let candidate = NodeFootprintBoundaryHeightCandidate {
+                    height_mm: point_key.y_mm,
+                    source,
+                };
+                if !candidates.iter().any(|existing| {
+                    node_footprint_height_candidates_share_source_identity(*existing, candidate)
+                }) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates
     }
 }
 
@@ -252,9 +339,31 @@ fn raised_step_footprint_height_candidate(
     if checked_pairs == 0 || raised_candidates.is_empty() {
         return None;
     }
-    raised_candidates
-        .into_iter()
-        .max_by(|a, b| node_footprint_direct_vertex_ordering(a.source, b.source))
+    let mut source = None;
+    for candidate in raised_candidates {
+        let point_key = ArrangementBoundaryPointKey {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+            y_mm: candidate.height_mm,
+        };
+        if merge_node_footprint_boundary_point_source(point_key, &mut source, candidate.source)
+            .is_err()
+        {
+            return None;
+        }
+    }
+    source.map(|source| NodeFootprintBoundaryHeightCandidate {
+        height_mm: heights[1],
+        source,
+    })
+}
+
+fn node_footprint_height_candidates_share_source_identity(
+    a: NodeFootprintBoundaryHeightCandidate,
+    b: NodeFootprintBoundaryHeightCandidate,
+) -> bool {
+    a.height_mm == b.height_mm
+        && node_footprint_direct_vertices_share_source_identity(a.source, b.source)
 }
 
 fn ordered_raised_step_footprint_candidates(

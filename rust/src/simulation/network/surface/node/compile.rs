@@ -385,6 +385,34 @@ impl RoadSurfaceSystem {
                     "ambiguous_earthwork_boundary_segment_source",
                 )
             }
+            NodeBoundaryExportError::AmbiguousFootprintBoundaryPointSource {
+                x_key,
+                z_key,
+                y_mm,
+                existing_owner_kind,
+                existing_owner_index,
+                existing_source,
+                incoming_owner_kind,
+                incoming_owner_index,
+                incoming_source,
+            } => {
+                let _ = (
+                    *x_key,
+                    *z_key,
+                    *y_mm,
+                    *existing_owner_kind,
+                    *existing_owner_index,
+                    *existing_source,
+                    *incoming_owner_kind,
+                    *incoming_owner_index,
+                    *incoming_source,
+                );
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "ambiguous_footprint_boundary_point_source",
+                )
+            }
             NodeBoundaryExportError::EmptyOuterBoundary => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),

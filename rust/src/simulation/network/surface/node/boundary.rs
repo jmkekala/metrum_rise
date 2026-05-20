@@ -4,7 +4,6 @@ use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
-    band_semantics::band_kind_sort_key,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
     piece::{
         NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
@@ -159,6 +158,17 @@ pub(crate) enum NodeBoundaryExportError {
         existing_source: RoadSurfaceEarthworkFaceSource,
         incoming_source: RoadSurfaceEarthworkFaceSource,
     },
+    AmbiguousFootprintBoundaryPointSource {
+        x_key: i64,
+        z_key: i64,
+        y_mm: i64,
+        existing_owner_kind: RoadSurfaceBandKind,
+        existing_owner_index: usize,
+        existing_source: NodeFootprintBoundaryVertexSource,
+        incoming_owner_kind: RoadSurfaceBandKind,
+        incoming_owner_index: usize,
+        incoming_source: NodeFootprintBoundaryVertexSource,
+    },
     DegenerateOuterBoundaryLoop,
     MissingEarthworkBoundarySource,
     MissingNodeTopSurfaceGradeAuthority,
@@ -217,23 +227,19 @@ fn arrangement_key_lies_exactly_on_segment(
     )
 }
 
-fn node_footprint_direct_vertex_ordering(
-    a: NodeFootprintBoundaryDirectVertex,
-    b: NodeFootprintBoundaryDirectVertex,
-) -> std::cmp::Ordering {
-    band_kind_sort_key(a.owner_kind)
-        .cmp(&band_kind_sort_key(b.owner_kind))
-        .then(a.owner_index.cmp(&b.owner_index))
-        .then(a.source.cmp(&b.source))
-}
-
 fn node_footprint_direct_vertices_share_source_identity(
     a: NodeFootprintBoundaryDirectVertex,
     b: NodeFootprintBoundaryDirectVertex,
 ) -> bool {
-    a.owner_kind == b.owner_kind
-        && a.owner_index == b.owner_index
+    node_footprint_direct_vertices_share_owner_identity(a, b)
         && node_footprint_boundary_vertex_sources_share_identity(a.source, b.source)
+}
+
+fn node_footprint_direct_vertices_share_owner_identity(
+    a: NodeFootprintBoundaryDirectVertex,
+    b: NodeFootprintBoundaryDirectVertex,
+) -> bool {
+    a.owner_kind == b.owner_kind && a.owner_index == b.owner_index
 }
 
 fn node_footprint_boundary_vertex_sources_share_identity(
@@ -263,6 +269,41 @@ fn node_footprint_boundary_vertex_sources_share_identity(
         }
         _ => false,
     }
+}
+
+fn ambiguous_footprint_boundary_point_source_error(
+    point_key: ArrangementBoundaryPointKey,
+    existing: NodeFootprintBoundaryDirectVertex,
+    incoming: NodeFootprintBoundaryDirectVertex,
+) -> NodeBoundaryExportError {
+    NodeBoundaryExportError::AmbiguousFootprintBoundaryPointSource {
+        x_key: point_key.x_key,
+        z_key: point_key.z_key,
+        y_mm: point_key.y_mm,
+        existing_owner_kind: existing.owner_kind,
+        existing_owner_index: existing.owner_index,
+        existing_source: existing.source,
+        incoming_owner_kind: incoming.owner_kind,
+        incoming_owner_index: incoming.owner_index,
+        incoming_source: incoming.source,
+    }
+}
+
+fn merge_node_footprint_boundary_point_source(
+    point_key: ArrangementBoundaryPointKey,
+    source: &mut Option<NodeFootprintBoundaryDirectVertex>,
+    candidate: NodeFootprintBoundaryDirectVertex,
+) -> Result<(), NodeBoundaryExportError> {
+    let Some(existing) = *source else {
+        *source = Some(candidate);
+        return Ok(());
+    };
+    if !node_footprint_direct_vertices_share_source_identity(existing, candidate) {
+        return Err(ambiguous_footprint_boundary_point_source_error(
+            point_key, existing, candidate,
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn boundary_segment_parameter_xz(
