@@ -140,12 +140,8 @@ impl RoadSurfaceSystem {
         ),
         RoadSurfaceVisualPolygon,
     )> {
-        let lower_span_xz = Vector2::new(lower_end.x - lower_start.x, lower_end.z - lower_start.z);
-        let raised_span_xz =
-            Vector2::new(raised_end.x - raised_start.x, raised_end.z - raised_start.z);
-        if lower_span_xz.length_squared() <= VERTICAL_STEP_MIN_SPAN_M * VERTICAL_STEP_MIN_SPAN_M
-            || raised_span_xz.length_squared()
-                <= VERTICAL_STEP_MIN_SPAN_M * VERTICAL_STEP_MIN_SPAN_M
+        if lower_start_key.xz_key() == lower_end_key.xz_key()
+            || raised_start_key.xz_key() == raised_end_key.xz_key()
         {
             return None;
         }

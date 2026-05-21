@@ -872,9 +872,7 @@ fn merged_node_earthwork_boundary_source(
                     height_field_id,
                 ));
             }
-            if !raised_step_kinds_can_contact(a_owner_kind, b_owner_kind)
-                || (start_matches == end_matches)
-            {
+            if !raised_step_kinds_can_contact(a_owner_kind, b_owner_kind) {
                 return None;
             }
             let (owner_kind, owner_index, height_field_id) =

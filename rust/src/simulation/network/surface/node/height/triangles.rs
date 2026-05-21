@@ -12,6 +12,16 @@ impl NodeBandHeightTriangle {
         let b = height_source_point_key(self.b_xz);
         let c = height_source_point_key(self.c_xz);
         let p = height_source_point_key(point_xz);
+        if let Some(height_m) = triangle_edge_height_at(
+            p,
+            [
+                (a, self.a_height_m, b, self.b_height_m),
+                (b, self.b_height_m, c, self.c_height_m),
+                (c, self.c_height_m, a, self.a_height_m),
+            ],
+        ) {
+            return Some(height_m);
+        }
         let area = height_triangle_area2(a, b, c);
         if area == 0 {
             return None;
@@ -30,6 +40,30 @@ impl NodeBandHeightTriangle {
         let wc = abp as f64 / area_f;
         Some(self.a_height_m * wa + self.b_height_m * wb + self.c_height_m * wc)
     }
+}
+
+fn triangle_edge_height_at(
+    point: NodeHeightSourcePointKey,
+    edges: [(NodeHeightSourcePointKey, f64, NodeHeightSourcePointKey, f64); 3],
+) -> Option<f64> {
+    let mut accepted = None;
+    for (start, start_height_m, end, end_height_m) in edges {
+        let point_key = SurfaceXzKey::from_raw_tuple(point);
+        let start_key = SurfaceXzKey::from_raw_tuple(start);
+        let end_key = SurfaceXzKey::from_raw_tuple(end);
+        let Some(parameter) = point_key.overlay_segment_parameter(start_key, end_key) else {
+            continue;
+        };
+        let t = parameter.numerator as f64 / parameter.denominator as f64;
+        let height_m = start_height_m + (end_height_m - start_height_m) * t;
+        let height_mm = quantize_m(height_m);
+        match accepted {
+            Some((accepted_height_mm, _)) if accepted_height_mm != height_mm => return None,
+            Some(_) => {}
+            None => accepted = Some((height_mm, height_m)),
+        }
+    }
+    accepted.map(|(_, height_m)| height_m)
 }
 
 pub(super) fn path_band_height_triangles(
@@ -58,32 +92,7 @@ pub(super) fn terminal_cap_band_height_triangles(
     authority: NodeHeightPatchAuthority,
     cap_band: &NodeTerminalCapBand,
 ) -> Result<Vec<NodeBandHeightTriangle>, NodeHeightFieldError> {
-    if let Some(triangles) = terminal_material_band_height_triangles(&cap_band.contour_world) {
-        return Ok(triangles);
-    }
-
     height_triangles_from_contour(id, source_kind, authority, &cap_band.contour_world)
-}
-
-pub(super) fn terminal_material_band_height_triangles(
-    points: &[RoadVec3],
-) -> Option<Vec<NodeBandHeightTriangle>> {
-    if points.len() < 4 || points.len() % 2 != 0 {
-        return None;
-    }
-
-    let rail_point_count = points.len() / 2;
-    let mut triangles = Vec::with_capacity((rail_point_count - 1) * 2);
-    for index in 0..rail_point_count - 1 {
-        let inner_start = points[index];
-        let inner_end = points[index + 1];
-        let outer_end = points[points.len() - 2 - index];
-        let outer_start = points[points.len() - 1 - index];
-        push_height_triangle(&mut triangles, inner_start, inner_end, outer_end);
-        push_height_triangle(&mut triangles, inner_start, outer_end, outer_start);
-    }
-
-    (!triangles.is_empty()).then_some(triangles)
 }
 
 pub(super) fn push_height_triangle(

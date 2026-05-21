@@ -81,6 +81,39 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
             });
         }
     }
+    for region in arrangement
+        .regions()
+        .iter()
+        .filter(|region| region.owner() == owner)
+    {
+        for edge_id in region.boundary_edges() {
+            let Some(edge) = arrangement.edges().get(edge_id.index()) else {
+                continue;
+            };
+            if edge.owner() != owner {
+                continue;
+            }
+            let Some(edge_start) = arrangement_vertex_boundary_point_key(arrangement, edge.start())
+            else {
+                continue;
+            };
+            let Some(edge_end) = arrangement_vertex_boundary_point_key(arrangement, edge.end())
+            else {
+                continue;
+            };
+            if let Some((start, end)) =
+                arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
+            {
+                intervals.push(ArrangementFaceBoundaryInterval {
+                    owner,
+                    start,
+                    end,
+                    edge_start,
+                    edge_end,
+                });
+            }
+        }
+    }
     intervals.sort();
     intervals.dedup();
     intervals

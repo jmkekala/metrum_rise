@@ -329,6 +329,277 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
 }
 
 #[test]
+fn explicit_step_segment_authorizes_raised_boundary_height_at_endpoint() {
+    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let step_end = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
+    let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    let raised_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 120,
+    };
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1,
+                grade_authority_index: 91,
+            }),
+            owner_kind: lower_owner.kind(),
+            owner_index: lower_owner.owner_index(),
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 23,
+                grade_authority_index: 92,
+            }),
+            owner_kind: raised_owner.kind(),
+            owner_index: raised_owner.owner_index(),
+        }],
+    );
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: vec![
+            arrangement::NodeExplicitVerticalStepSegment::new(
+                key,
+                step_end,
+                lower_owner,
+                raised_owner,
+            )
+            .expect("test step should be non-degenerate"),
+        ],
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_key(key)
+        .expect("explicit endpoint step should authorize the raised footprint height");
+
+    assert_eq!(height_mm, Some(120));
+}
+
+#[test]
+fn raised_step_height_accepts_equivalent_same_height_plateau_candidates() {
+    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let step_end = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
+    let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let raised_curb_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let raised_sidewalk_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 7);
+    let lower_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    let raised_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 120,
+    };
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1,
+                grade_authority_index: 91,
+            }),
+            owner_kind: lower_owner.kind(),
+            owner_index: lower_owner.owner_index(),
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_point,
+        vec![
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 23,
+                        grade_authority_index: 92,
+                    },
+                ),
+                owner_kind: raised_curb_owner.kind(),
+                owner_index: raised_curb_owner.owner_index(),
+            },
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 24,
+                        grade_authority_index: 93,
+                    },
+                ),
+                owner_kind: raised_sidewalk_owner.kind(),
+                owner_index: raised_sidewalk_owner.owner_index(),
+            },
+        ],
+    );
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: vec![
+            arrangement::NodeExplicitVerticalStepSegment::new(
+                key,
+                step_end,
+                lower_owner,
+                raised_curb_owner,
+            )
+            .expect("test step should be non-degenerate"),
+        ],
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_key(key)
+        .expect("one canonical owner-pair step should authorize the raised plateau height");
+
+    assert_eq!(height_mm, Some(120));
+}
+
+#[test]
+fn raised_step_height_accepts_separate_explicit_endpoint_step_groups() {
+    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let lower_step_end =
+        ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
+    let raised_step_end =
+        ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 1.0)).xz_key();
+    let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let lower_step_raised_owner =
+        arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let raised_step_lower_owner =
+        arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 15);
+    let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 16);
+    let lower_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    let raised_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 120,
+    };
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 0,
+                grade_authority_index: 77,
+            }),
+            owner_kind: lower_owner.kind(),
+            owner_index: lower_owner.owner_index(),
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 56,
+                grade_authority_index: 78,
+            }),
+            owner_kind: raised_owner.kind(),
+            owner_index: raised_owner.owner_index(),
+        }],
+    );
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: vec![
+            arrangement::NodeExplicitVerticalStepSegment::new(
+                key,
+                lower_step_end,
+                lower_owner,
+                lower_step_raised_owner,
+            )
+            .expect("lower-side test step should be non-degenerate"),
+            arrangement::NodeExplicitVerticalStepSegment::new(
+                key,
+                raised_step_end,
+                raised_step_lower_owner,
+                raised_owner,
+            )
+            .expect("raised-side test step should be non-degenerate"),
+        ],
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_key(key)
+        .expect("separate explicit endpoint step groups should authorize the raised height");
+
+    assert_eq!(height_mm, Some(120));
+}
+
+#[test]
+fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
+    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    let raised_point = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 120,
+    };
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1,
+                grade_authority_index: 91,
+            }),
+            owner_kind: lower_owner.kind(),
+            owner_index: lower_owner.owner_index(),
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_point,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 23,
+                grade_authority_index: 92,
+            }),
+            owner_kind: raised_owner.kind(),
+            owner_index: raised_owner.owner_index(),
+        }],
+    );
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let error = sources
+        .boundary_height_mm_at_key(key)
+        .expect_err("material ranks without explicit owner-pair topology must reject");
+
+    assert!(matches!(
+        error,
+        NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+    ));
+}
+
+#[test]
 fn raised_step_footprint_height_accepts_multiple_explicit_raised_owners_without_source_priority() {
     let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
     let step_end_a = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
@@ -869,7 +1140,9 @@ fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
 #[test]
 fn off_height_source_endpoint_does_not_split_boundary_segment() {
     let source_edges = vec![
-        test_source_edge(
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Carriageway,
+            3,
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(2.0, 0.0, 0.0),
             3,
@@ -998,7 +1271,9 @@ fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
 #[test]
 fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
     let source_edges = vec![
-        test_source_edge(
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Carriageway,
+            3,
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(2.0, 0.0, 0.0),
             3,
@@ -1007,7 +1282,7 @@ fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
             31,
         ),
         test_source_edge_for_owner(
-            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Sidewalk,
             6,
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(2.0, 0.0, 0.0),
@@ -1224,6 +1499,69 @@ fn overlapping_adjacent_material_edges_with_one_sloped_handoff_source_are_accept
     .expect("same-mouth adjacent material handoff may share one canonical endpoint");
 
     assert_eq!(segments.len(), 1);
+}
+
+#[test]
+fn overlapping_adjacent_material_edges_with_distinct_endpoint_sources_use_canonical_segment() {
+    let source_edges = vec![
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            7,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(2.0, 0.12, 0.0),
+            31,
+            24,
+            32,
+            9,
+        ),
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(2.0, 0.12, 0.0),
+            40,
+            14,
+            41,
+            25,
+        ),
+    ];
+    let mut segments = Vec::new();
+
+    push_sourced_node_earthwork_boundary_segments(
+        11,
+        RoadSurfaceVisualNodePieceKind::Bend,
+        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        &source_edges,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &[],
+        &mut segments,
+    )
+    .expect("adjacent material source edges may canonicalize both explicit endpoints");
+
+    assert_eq!(segments.len(), 1);
+    assert!(matches!(
+        segments[0].source,
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: 0,
+                    z_key: 0,
+                    y_mm: 120,
+                },
+                end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: 2_000_000,
+                    z_key: 0,
+                    y_mm: 120,
+                },
+            }),
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -334,6 +334,126 @@ fn arrangement_accepts_same_material_same_xz_height_split_with_explicit_vertical
 }
 
 #[test]
+fn arrangement_accepts_height_ranked_step_endpoint_grouping() {
+    let lower_left = owner(RoadSurfaceBandKind::Carriageway, 2);
+    let raised_left = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_right = owner(RoadSurfaceBandKind::Carriageway, 15);
+    let raised_right = owner(RoadSurfaceBandKind::CurbOrShoulder, 16);
+    let lower_left_field = height_field_id(RoadSurfaceBandKind::Carriageway, 2);
+    let raised_right_field = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 16);
+    let key = RoadVec2::new(0.0, 0.0);
+    let left_end = RoadVec2::new(1.0, 0.0);
+    let right_end = RoadVec2::new(0.0, 1.0);
+    let left_step = NodeRegionSeamConstraint {
+        constraint_index: 19,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 2 },
+        owner: Some(lower_left),
+        opposite_owner: Some(raised_left),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: key,
+        end_xz: left_end,
+    };
+    let right_step = NodeRegionSeamConstraint {
+        constraint_index: 72,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 16 },
+        owner: Some(lower_right),
+        opposite_owner: Some(raised_right),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: key,
+        end_xz: right_end,
+    };
+    let mut arrangement = NodeArrangement::new(12, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+    let lower_start = arrangement
+        .insert_vertex(
+            key,
+            0.0,
+            [lower_left],
+            lower_left_field,
+            [left_step.seam_source],
+        )
+        .expect("lower step endpoint should insert");
+    let lower_end = arrangement
+        .insert_vertex(
+            left_end,
+            0.0,
+            [lower_left],
+            lower_left_field,
+            [left_step.seam_source],
+        )
+        .expect("lower step edge endpoint should insert");
+    let lower_edge = arrangement.push_edge(
+        lower_start,
+        lower_end,
+        lower_left,
+        lower_left_field,
+        Some(raised_left),
+        Some(height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1)),
+        false,
+        false,
+        true,
+        left_step.seam_source,
+        vec![left_step.constraint_index],
+    );
+    arrangement.push_region(
+        lower_left,
+        lower_left_field,
+        vec![lower_start, lower_end],
+        Vec::new(),
+        vec![lower_edge],
+        1.0,
+        vec![left_step],
+    );
+
+    let raised_start = arrangement
+        .insert_vertex(
+            key,
+            0.12,
+            [raised_right],
+            raised_right_field,
+            [right_step.seam_source],
+        )
+        .expect("raised step endpoint should insert");
+    let raised_end = arrangement
+        .insert_vertex(
+            right_end,
+            0.12,
+            [raised_right],
+            raised_right_field,
+            [right_step.seam_source],
+        )
+        .expect("raised step edge endpoint should insert");
+    let raised_edge = arrangement.push_edge(
+        raised_start,
+        raised_end,
+        raised_right,
+        raised_right_field,
+        Some(lower_right),
+        Some(height_field_id(RoadSurfaceBandKind::Carriageway, 15)),
+        false,
+        false,
+        true,
+        right_step.seam_source,
+        vec![right_step.constraint_index],
+    );
+    arrangement.push_region(
+        raised_right,
+        raised_right_field,
+        vec![raised_start, raised_end],
+        Vec::new(),
+        vec![raised_edge],
+        1.0,
+        vec![right_step],
+    );
+
+    arrangement
+        .reject_implicit_material_height_conflicts()
+        .expect("separate canonical step endpoints should authorize the ranked height split");
+}
+
+#[test]
 fn arrangement_keeps_height_distinct_explicit_seam_contexts() {
     let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::Bend);
     let point = RoadVec2::new(0.0, 0.0);

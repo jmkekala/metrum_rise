@@ -2492,6 +2492,7 @@ fn assert_junction_rejected_with_canonical_height_diagnostic(
     let accepted_height_rejection = report.contains("shared_source_height_conflict")
         || report.contains("source_height_field_conflict")
         || report.contains("vertex_outside_height_field")
+        || report.contains("\"height_conflict\"")
         || report.contains("missing_raised_step_vertical_face")
         || report.contains("MissingRaisedStepVerticalFace");
     assert!(
@@ -3436,7 +3437,15 @@ fn node_piece_classification_matches_surface_profiles() {
         junction_surface
             .compiled_visual_node_pieces()
             .get(&jb)
-            .expect("short right-angle bend should compile through raw corridor ownership")
+            .unwrap_or_else(|| panic!(
+                "short right-angle bend should compile through raw corridor ownership: {}",
+                canonical_node_pipeline_report(
+                    &junction_surface,
+                    &junction_graph,
+                    jb,
+                    RoadSurfaceVisualNodePieceKind::Bend,
+                )
+            ))
             .kind,
         RoadSurfaceVisualNodePieceKind::Bend
     );
@@ -4198,7 +4207,17 @@ fn logged_oblique_terminal_top_surfaces_cover_footprint() {
         let terminal_piece = surface
             .compiled_visual_node_pieces()
             .get(&node_id)
-            .expect("logged oblique road endpoint should compile a terminal piece");
+            .unwrap_or_else(|| {
+                panic!(
+                    "logged oblique road endpoint should compile a terminal piece: {}",
+                    canonical_node_pipeline_report(
+                        &surface,
+                        &graph,
+                        node_id,
+                        RoadSurfaceVisualNodePieceKind::Terminal,
+                    )
+                )
+            });
         assert_eq!(
             terminal_piece.kind,
             RoadSurfaceVisualNodePieceKind::Terminal

@@ -336,17 +336,96 @@ impl NodeArrangement {
         left_owners: &[NodeBandOwner],
         right_owners: &[NodeBandOwner],
     ) -> bool {
-        self.explicit_vertical_step_segments()
-            .into_iter()
-            .any(|segment| {
-                key.lies_on_segment(segment.start(), segment.end())
-                    && owner_sets_match_step(
-                        left_owners,
-                        right_owners,
-                        segment.owner(),
-                        segment.opposite_owner(),
-                    )
-            })
+        let segments = self.explicit_vertical_step_segments();
+        segments.iter().copied().any(|segment| {
+            key.lies_on_segment(segment.start(), segment.end())
+                && owner_sets_match_step(
+                    left_owners,
+                    right_owners,
+                    segment.owner(),
+                    segment.opposite_owner(),
+                )
+        }) || owner_sets_have_explicit_vertical_step_endpoint_authority(
+            key,
+            left_owners,
+            right_owners,
+            &segments,
+        )
+    }
+}
+
+fn owner_sets_have_explicit_vertical_step_endpoint_authority(
+    key: NodeArrangementKey,
+    left_owners: &[NodeBandOwner],
+    right_owners: &[NodeBandOwner],
+    segments: &[NodeExplicitVerticalStepSegment],
+) -> bool {
+    left_owners.iter().copied().any(|left_owner| {
+        right_owners.iter().copied().any(|right_owner| {
+            let Some(left_rank) = raised_step_band_rank(left_owner.kind()) else {
+                return false;
+            };
+            let Some(right_rank) = raised_step_band_rank(right_owner.kind()) else {
+                return false;
+            };
+            match left_rank.cmp(&right_rank) {
+                std::cmp::Ordering::Less => {
+                    owner_has_explicit_vertical_step_side_at_key(key, left_owner, true, segments)
+                        && owner_has_explicit_vertical_step_side_at_key(
+                            key,
+                            right_owner,
+                            false,
+                            segments,
+                        )
+                }
+                std::cmp::Ordering::Greater => {
+                    owner_has_explicit_vertical_step_side_at_key(key, left_owner, false, segments)
+                        && owner_has_explicit_vertical_step_side_at_key(
+                            key,
+                            right_owner,
+                            true,
+                            segments,
+                        )
+                }
+                std::cmp::Ordering::Equal => false,
+            }
+        })
+    })
+}
+
+fn owner_has_explicit_vertical_step_side_at_key(
+    key: NodeArrangementKey,
+    owner: NodeBandOwner,
+    lower_side: bool,
+    segments: &[NodeExplicitVerticalStepSegment],
+) -> bool {
+    segments.iter().copied().any(|segment| {
+        key.lies_on_segment(segment.start(), segment.end())
+            && owner_matches_explicit_vertical_step_side(owner, lower_side, segment)
+    })
+}
+
+fn owner_matches_explicit_vertical_step_side(
+    owner: NodeBandOwner,
+    lower_side: bool,
+    segment: NodeExplicitVerticalStepSegment,
+) -> bool {
+    let segment_owner = segment.owner();
+    let opposite_owner = segment.opposite_owner();
+    let Some(owner_rank) = raised_step_band_rank(segment_owner.kind()) else {
+        return false;
+    };
+    let Some(opposite_rank) = raised_step_band_rank(opposite_owner.kind()) else {
+        return false;
+    };
+    match owner_rank.cmp(&opposite_rank) {
+        std::cmp::Ordering::Less => {
+            (lower_side && owner == segment_owner) || (!lower_side && owner == opposite_owner)
+        }
+        std::cmp::Ordering::Greater => {
+            (lower_side && owner == opposite_owner) || (!lower_side && owner == segment_owner)
+        }
+        std::cmp::Ordering::Equal => false,
     }
 }
 

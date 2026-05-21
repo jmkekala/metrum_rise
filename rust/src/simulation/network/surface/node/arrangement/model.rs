@@ -295,6 +295,12 @@ impl NodeArrangementVertexId {
     }
 }
 
+impl NodeArrangementEdgeId {
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl NodeOwnedRegionId {
     pub(crate) fn index(self) -> usize {
         self.0
@@ -364,6 +370,10 @@ impl NodeOwnedRegion {
 
     pub(crate) fn holes(&self) -> &[Vec<NodeArrangementVertexId>] {
         &self.holes
+    }
+
+    pub(crate) fn boundary_edges(&self) -> &[NodeArrangementEdgeId] {
+        &self.boundary_edges
     }
 
     pub(crate) fn area_m2(&self) -> f32 {

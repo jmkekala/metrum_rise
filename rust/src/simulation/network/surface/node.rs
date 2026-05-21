@@ -36,7 +36,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const VERTICAL_STEP_MIN_SPAN_M: f32 = 1.0e-6;
 const VISUAL_DOMINANT_HANDOFF_REJECTION_RATIO: f32 = 3.0;
 
 pub(crate) mod arrangement;
