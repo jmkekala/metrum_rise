@@ -17,10 +17,8 @@ use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    band_semantics::ordered_raised_step_kinds, edge::VISUAL_MIN_SPAN_LENGTH_M,
-    terrain_clip_edge_kind_for_band,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M, band_semantics::ordered_raised_step_kinds, edge::VISUAL_MIN_SPAN_LENGTH_M,
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,

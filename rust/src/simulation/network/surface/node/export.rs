@@ -4,6 +4,7 @@ use super::*;
 
 mod footprint_loops;
 mod raised_step_support;
+mod terrain_clip_loops;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn node_surface_regions_from_arrangement(
@@ -201,47 +202,6 @@ impl RoadSurfaceSystem {
         (!polygons.is_empty())
             .then_some(polygons)
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
-    }
-
-    fn terrain_clip_boundary_loops_from_earthwork_segments(
-        segment_loops: &[Vec<RoadSurfaceEarthworkBoundarySegment>],
-    ) -> Vec<RoadSurfaceTerrainClipLoop> {
-        let mut loops = Vec::new();
-        for segment_loop in segment_loops {
-            if segment_loop.len() < 3 {
-                continue;
-            }
-            let points = segment_loop
-                .iter()
-                .map(|segment| segment.inner_start)
-                .collect::<Vec<_>>();
-            if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
-                continue;
-            }
-            let source_edges = segment_loop
-                .iter()
-                .copied()
-                .map(|segment| RoadSurfaceTerrainClipSourceEdge {
-                    start: segment.inner_start,
-                    end: segment.inner_end,
-                    kind: match segment.source {
-                        super::RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                            owner_kind,
-                            ..
-                        } => terrain_clip_edge_kind_for_band(owner_kind),
-                        super::RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
-                            RoadSurfaceTerrainClipEdgeKind::FootprintBoundary
-                        }
-                    },
-                    source: segment.source,
-                })
-                .collect();
-            loops.push(RoadSurfaceTerrainClipLoop {
-                points_world: points,
-                source_edges,
-            });
-        }
-        loops
     }
 
     fn visual_polygon_from_arrangement_face(
