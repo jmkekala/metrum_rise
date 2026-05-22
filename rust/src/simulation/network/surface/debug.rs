@@ -227,7 +227,7 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for section in sections {
-                let profile = self.section_profile_world_points(section, 0.18);
+                let profile = self.section_profile_world_points(section);
                 if let (Some(first), Some(last)) = (profile.first(), profile.last()) {
                     data.section_lines.push(*first);
                     data.section_lines.push(*last);
@@ -235,8 +235,8 @@ impl RoadSurfaceSystem {
             }
 
             for pair in sections.windows(2) {
-                let profile_a = self.section_profile_world_points(&pair[0], 0.12);
-                let profile_b = self.section_profile_world_points(&pair[1], 0.12);
+                let profile_a = self.section_profile_world_points(&pair[0]);
+                let profile_b = self.section_profile_world_points(&pair[1]);
                 if profile_a.len() < 2 || profile_a.len() != profile_b.len() {
                     continue;
                 }
@@ -250,11 +250,7 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for boundary_loop in &piece.outer_boundary_loops {
-                let points: Vec<Vector3> = boundary_loop
-                    .points_world
-                    .iter()
-                    .map(|point| *point + Vector3::UP * 0.22)
-                    .collect();
+                let points = &boundary_loop.points_world;
                 if points.len() < 2 {
                     continue;
                 }
@@ -273,11 +269,7 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for boundary_loop in &piece.outer_boundary_loops {
-                let points: Vec<Vector3> = boundary_loop
-                    .points_world
-                    .iter()
-                    .map(|point| *point + Vector3::UP * 0.24)
-                    .collect();
+                let points = &boundary_loop.points_world;
                 if points.len() < 2 {
                     continue;
                 }
@@ -296,22 +288,22 @@ impl RoadSurfaceSystem {
             let corners = [
                 Vector3::new(
                     min.x,
-                    terrain.sample_visual_height_world(min.x, min.z) * config::HEIGHT_SCALE + 0.35,
+                    terrain.sample_visual_height_world(min.x, min.z) * config::HEIGHT_SCALE,
                     min.z,
                 ),
                 Vector3::new(
                     max.x,
-                    terrain.sample_visual_height_world(max.x, min.z) * config::HEIGHT_SCALE + 0.35,
+                    terrain.sample_visual_height_world(max.x, min.z) * config::HEIGHT_SCALE,
                     min.z,
                 ),
                 Vector3::new(
                     max.x,
-                    terrain.sample_visual_height_world(max.x, max.z) * config::HEIGHT_SCALE + 0.35,
+                    terrain.sample_visual_height_world(max.x, max.z) * config::HEIGHT_SCALE,
                     max.z,
                 ),
                 Vector3::new(
                     min.x,
-                    terrain.sample_visual_height_world(min.x, max.z) * config::HEIGHT_SCALE + 0.35,
+                    terrain.sample_visual_height_world(min.x, max.z) * config::HEIGHT_SCALE,
                     max.z,
                 ),
             ];

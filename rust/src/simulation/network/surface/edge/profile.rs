@@ -149,25 +149,22 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn section_profile_world_points(
         &self,
         section: &RoadSurfaceSection,
-        y_lift_m: f32,
     ) -> Vec<Vector3> {
         let Some(first_band) = section.bands.first() else {
             return Vec::new();
         };
 
         let mut points = Vec::with_capacity(section.bands.len() + 1);
-        let mut first_point = self.section_boundary_world_point(
+        let first_point = self.section_boundary_world_point(
             section,
             first_band.lateral_start_m,
             first_band.height_start_m,
         );
-        first_point.y += y_lift_m;
         points.push(first_point);
 
         for band in &section.bands {
-            let mut point =
+            let point =
                 self.section_boundary_world_point(section, band.lateral_end_m, band.height_end_m);
-            point.y += y_lift_m;
             points.push(point);
         }
 

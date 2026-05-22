@@ -7,6 +7,7 @@ use super::band_semantics::ordered_raised_step_kinds;
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
 use super::height::NodeHeightFieldError;
+use super::keys::SurfaceHeightMmKey;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     NodeFootprintBoundaryVertexSource, PreviewRoadSurfaceResult, RoadSurfaceBand,
@@ -946,6 +947,39 @@ fn compile_committed_preview_reference(
         })
         .collect();
     (preview, compiled_sections, compiled_visual_node_pieces)
+}
+
+fn assert_preview_vertices_use_solved_section_height_keys(preview: &PreviewRoadSurfaceResult) {
+    let solved_height_keys = preview
+        .compiled_sections
+        .iter()
+        .flat_map(|section| section.bands.iter())
+        .flat_map(|band| {
+            [
+                SurfaceHeightMmKey::from_m_f32(band.height_start_m),
+                SurfaceHeightMmKey::from_m_f32(band.height_end_m),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !solved_height_keys.is_empty(),
+        "preview height-key regression check requires compiled section bands"
+    );
+    assert!(
+        !preview.surface_vertices.is_empty(),
+        "preview height-key regression check requires preview mesh vertices"
+    );
+
+    for vertex in &preview.surface_vertices {
+        let key = SurfaceHeightMmKey::from_m_f32(vertex.y);
+        assert!(
+            solved_height_keys.contains(&key),
+            "preview mesh vertex height must come from solved section geometry without render lift: y={:.6} key={} solved_keys={:?}",
+            vertex.y,
+            key.as_i64(),
+            solved_height_keys
+        );
+    }
 }
 
 fn triangle_centroid_xz(triangle: [Vector3; 3]) -> Vector2 {
@@ -7032,6 +7066,7 @@ fn preview_matches_committed_sections_on_flat_terrain() {
     assert!(preview.is_valid);
     assert_eq!(preview.compiled_sections, committed_sections);
     assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
+    assert_preview_vertices_use_solved_section_height_keys(&preview);
 }
 
 #[test]

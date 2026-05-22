@@ -11,9 +11,8 @@ use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
-// Preview validation and editor-only mesh lift.
+// Preview validation thresholds.
 const PREVIEW_MAX_GRADE: f32 = 0.41;
-const PREVIEW_MESH_LIFT_M: f32 = 0.05;
 
 /// Temporary preview compile output for one road-tool stroke.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,7 +26,7 @@ pub struct PreviewRoadSurfaceResult {
     pub compiled_sections: Vec<RoadSurfaceSection>,
     /// Explicit visual node pieces for the temporary preview edge endpoints.
     pub compiled_visual_node_pieces: Vec<RoadSurfaceVisualNodePiece>,
-    /// Triangulated top-surface preview mesh vertices, lifted slightly for editor visibility.
+    /// Triangulated top-surface preview mesh vertices from the solved section geometry.
     pub surface_vertices: Vec<Vector3>,
     /// Preview validity after grade and bridge / tunnel clearance checks.
     pub is_valid: bool,
@@ -114,8 +113,8 @@ impl RoadSurfaceSystem {
 
         let mut vertices = Vec::new();
         for pair in sections.windows(2) {
-            let profile_a = self.section_profile_world_points(&pair[0], PREVIEW_MESH_LIFT_M);
-            let profile_b = self.section_profile_world_points(&pair[1], PREVIEW_MESH_LIFT_M);
+            let profile_a = self.section_profile_world_points(&pair[0]);
+            let profile_b = self.section_profile_world_points(&pair[1]);
             if profile_a.len() < 2 || profile_a.len() != profile_b.len() {
                 continue;
             }
