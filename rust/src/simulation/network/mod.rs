@@ -27,6 +27,59 @@ use render::road::RoadRenderer;
 use surface::RoadSurfaceSystem;
 use types::*;
 
+pub(in crate::simulation::network) fn build_surface_edge(
+    start_node: u32,
+    end_node: u32,
+    points: Vec<Vector3>,
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+    class: EdgeClass,
+) -> graph::Edge {
+    let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
+    let mut allowed_types = TransitFlags::NONE;
+    if fwd_lanes > 0 || bkw_lanes > 0 {
+        allowed_types |= TransitFlags::CAR;
+    }
+    if is_walkway || fwd_lanes > 0 || bkw_lanes > 0 {
+        allowed_types |= TransitFlags::FOOT;
+    }
+    let vehicle_frontage_access = if is_walkway {
+        VehicleFrontageAccess::SameSideOnly
+    } else {
+        VehicleFrontageAccess::BothSides
+    };
+    let physical_length = points
+        .windows(2)
+        .map(|segment| segment[0].distance_to(segment[1]))
+        .sum();
+
+    graph::Edge {
+        start_node,
+        end_node,
+        primary_type: if is_walkway {
+            TransitType::Foot
+        } else {
+            TransitType::Road
+        },
+        allowed_types,
+        class,
+        width: ((fwd_lanes + bkw_lanes) as f32 * config::LANE_WIDTH).max(2.0),
+        fwd_lanes,
+        bkw_lanes,
+        speed_limit: 50.0,
+        base_cost: 0.0,
+        physical_length,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: points.clone(),
+        physical_geometry: points,
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access,
+    }
+}
+
 /// Top-level road network manager for pathfinding integration and coordinate conversion.
 ///
 /// Use this struct for all road edits. It ensures the CCH graph is rebuilt after structural changes.
@@ -199,46 +252,7 @@ impl TransitNetwork {
             return;
         }
 
-        let is_walkway = fwd == 0 && bkw == 0;
-        let mut allowed_types = TransitFlags::NONE;
-        if fwd > 0 || bkw > 0 {
-            allowed_types |= TransitFlags::CAR;
-        }
-        // Pedestrians (and therefore sidewalks) on walkways and all standard roads.
-        if is_walkway || fwd > 0 || bkw > 0 {
-            allowed_types |= TransitFlags::FOOT;
-        }
-        let vehicle_frontage_access = if is_walkway {
-            VehicleFrontageAccess::SameSideOnly
-        } else {
-            VehicleFrontageAccess::BothSides
-        };
-
-        let edge_id = graph.add_edge(graph::Edge {
-            start_node: start,
-            end_node: end,
-            primary_type: if is_walkway {
-                TransitType::Foot
-            } else {
-                TransitType::Road
-            },
-            allowed_types,
-            width: ((fwd + bkw) as f32 * config::LANE_WIDTH).max(2.0),
-            class,
-            fwd_lanes: fwd,
-            bkw_lanes: bkw,
-            speed_limit: 50.0,
-            base_cost: 0.0,
-            physical_length: 0.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: points.clone(),
-            physical_geometry: points,
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access,
-        });
+        let edge_id = graph.add_edge(build_surface_edge(start, end, points, fwd, bkw, class));
 
         let (cost, length) =
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));

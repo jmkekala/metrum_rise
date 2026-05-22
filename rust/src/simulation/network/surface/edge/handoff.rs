@@ -1,9 +1,8 @@
 //! Visual span/node handoff distances and material-conflict ownership growth.
 
 use super::super::{CompiledNodeKind, IncidentEdgeSide, RoadSurfaceSystem, SAMPLE_EPSILON_M};
-use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use crate::simulation::network::types::EdgeClass;
 
 // Visual span/node ownership handoff guards.
 const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
@@ -13,26 +12,13 @@ const VISUAL_CONFLICT_SIN_EPSILON: f32 = 1.0e-3;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
-        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
-            return edge.width.max(2.0) * 0.5;
-        }
-
-        let sidewalk_total = if edge.allowed_types & TransitFlags::FOOT != 0 {
-            config::SIDEWALK_WIDTH
-        } else {
-            0.0
-        };
-        edge.width.max(config::LANE_WIDTH) * 0.5 + sidewalk_total
+        Self::visual_profile_half_widths_for_edge(edge).0
     }
 
     pub(in crate::simulation::network::surface) fn visual_carriageway_half_width_m(
         edge: &Edge,
     ) -> f32 {
-        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
-            0.0
-        } else {
-            edge.width.max(config::LANE_WIDTH) * 0.5
-        }
+        Self::visual_profile_half_widths_for_edge(edge).1
     }
 
     pub(in crate::simulation::network::surface) fn visual_node_handoff_limit_m(edge: &Edge) -> f32 {

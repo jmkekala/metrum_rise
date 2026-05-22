@@ -11,6 +11,15 @@ use godot::prelude::{Vector2, Vector3};
 const CURB_BAND_WIDTH_M: f32 = 0.15;
 pub(in crate::simulation::network::surface::edge) const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
+#[derive(Clone, Copy)]
+struct EdgeLateralBandSpec {
+    kind: RoadSurfaceBandKind,
+    lateral_start_m: f32,
+    lateral_end_m: f32,
+    height_offset_start_m: f32,
+    height_offset_end_m: f32,
+}
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::edge) fn build_lateral_bands(
         &self,
@@ -28,15 +37,46 @@ impl RoadSurfaceSystem {
             });
             base_height_m + offset_m
         };
+
+        let mut bands = Vec::new();
+        Self::for_each_lateral_band_spec(edge, |spec| {
+            bands.push(RoadSurfaceBand {
+                kind: spec.kind,
+                lateral_start_m: spec.lateral_start_m,
+                lateral_end_m: spec.lateral_end_m,
+                height_start_m: boundary_height_m(spec.lateral_start_m, spec.height_offset_start_m),
+                height_end_m: boundary_height_m(spec.lateral_end_m, spec.height_offset_end_m),
+            });
+        });
+        bands
+    }
+
+    pub(in crate::simulation::network::surface) fn visual_profile_half_widths_for_edge(
+        edge: &Edge,
+    ) -> (f32, f32) {
+        let mut roadbed_half_width_m = 0.0_f32;
+        let mut carriageway_half_width_m = 0.0_f32;
+        Self::for_each_lateral_band_spec(edge, |spec| {
+            let band_half_width_m = spec.lateral_start_m.abs().max(spec.lateral_end_m.abs());
+            roadbed_half_width_m = roadbed_half_width_m.max(band_half_width_m);
+            if spec.kind == RoadSurfaceBandKind::Carriageway {
+                carriageway_half_width_m = carriageway_half_width_m.max(band_half_width_m);
+            }
+        });
+        (roadbed_half_width_m, carriageway_half_width_m)
+    }
+
+    fn for_each_lateral_band_spec(edge: &Edge, mut emit: impl FnMut(EdgeLateralBandSpec)) {
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
             let half_width = edge.width.max(2.0) * 0.5;
-            return vec![RoadSurfaceBand {
+            emit(EdgeLateralBandSpec {
                 kind: RoadSurfaceBandKind::Footpath,
                 lateral_start_m: -half_width,
                 lateral_end_m: half_width,
-                height_start_m: boundary_height_m(-half_width, 0.0),
-                height_end_m: boundary_height_m(half_width, 0.0),
-            }];
+                height_offset_start_m: 0.0,
+                height_offset_end_m: 0.0,
+            });
+            return;
         }
 
         let half_carriageway = edge.width.max(config::LANE_WIDTH) * 0.5;
@@ -56,63 +96,54 @@ impl RoadSurfaceSystem {
         } else {
             0.0
         };
-        let mut bands = Vec::new();
         if sidewalk_width > 0.0 {
-            bands.push(RoadSurfaceBand {
+            emit(EdgeLateralBandSpec {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 lateral_start_m: -(half_carriageway + curb_width + sidewalk_width),
                 lateral_end_m: -(half_carriageway + curb_width),
-                height_start_m: boundary_height_m(
-                    -(half_carriageway + curb_width + sidewalk_width),
-                    raised_offset_m,
-                ),
-                height_end_m: boundary_height_m(-(half_carriageway + curb_width), raised_offset_m),
+                height_offset_start_m: raised_offset_m,
+                height_offset_end_m: raised_offset_m,
             });
         }
 
-        bands.push(RoadSurfaceBand {
+        emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: -(half_carriageway + curb_width),
             lateral_end_m: -half_carriageway,
-            height_start_m: boundary_height_m(-(half_carriageway + curb_width), raised_offset_m),
-            height_end_m: boundary_height_m(-half_carriageway, raised_offset_m),
+            height_offset_start_m: raised_offset_m,
+            height_offset_end_m: raised_offset_m,
         });
-        bands.push(RoadSurfaceBand {
+        emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::Carriageway,
             lateral_start_m: -half_carriageway,
             lateral_end_m: 0.0,
-            height_start_m: boundary_height_m(-half_carriageway, 0.0),
-            height_end_m: boundary_height_m(0.0, 0.0),
+            height_offset_start_m: 0.0,
+            height_offset_end_m: 0.0,
         });
-        bands.push(RoadSurfaceBand {
+        emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::Carriageway,
             lateral_start_m: 0.0,
             lateral_end_m: half_carriageway,
-            height_start_m: boundary_height_m(0.0, 0.0),
-            height_end_m: boundary_height_m(half_carriageway, 0.0),
+            height_offset_start_m: 0.0,
+            height_offset_end_m: 0.0,
         });
-        bands.push(RoadSurfaceBand {
+        emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: half_carriageway,
             lateral_end_m: half_carriageway + curb_width,
-            height_start_m: boundary_height_m(half_carriageway, raised_offset_m),
-            height_end_m: boundary_height_m(half_carriageway + curb_width, raised_offset_m),
+            height_offset_start_m: raised_offset_m,
+            height_offset_end_m: raised_offset_m,
         });
 
         if sidewalk_width > 0.0 {
-            bands.push(RoadSurfaceBand {
+            emit(EdgeLateralBandSpec {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 lateral_start_m: half_carriageway + curb_width,
                 lateral_end_m: half_carriageway + curb_width + sidewalk_width,
-                height_start_m: boundary_height_m(half_carriageway + curb_width, raised_offset_m),
-                height_end_m: boundary_height_m(
-                    half_carriageway + curb_width + sidewalk_width,
-                    raised_offset_m,
-                ),
+                height_offset_start_m: raised_offset_m,
+                height_offset_end_m: raised_offset_m,
             });
         }
-
-        bands
     }
 
     pub(in crate::simulation::network::surface) fn section_profile_world_points(

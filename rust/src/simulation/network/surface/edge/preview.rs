@@ -5,10 +5,9 @@ use super::super::{
 };
 use super::input::PREVIEW_CLEARANCE_M;
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{
-    EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
-};
+use crate::simulation::network::build_surface_edge;
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -63,7 +62,7 @@ impl RoadSurfaceSystem {
         let mut graph = RegionGraph::new();
         let start_node = graph.add_node(prepared_points[0], NodeType::Junction);
         let end_node = graph.add_node(*prepared_points.last().unwrap(), NodeType::Junction);
-        let edge_idx = graph.add_edge(Self::build_preview_edge(
+        let edge_idx = graph.add_edge(build_surface_edge(
             start_node,
             end_node,
             prepared_points.clone(),
@@ -105,59 +104,6 @@ impl RoadSurfaceSystem {
             compiled_visual_node_pieces,
             surface_vertices,
             is_valid,
-        }
-    }
-
-    fn build_preview_edge(
-        start_node: u32,
-        end_node: u32,
-        points: Vec<Vector3>,
-        fwd_lanes: u8,
-        bkw_lanes: u8,
-        class: EdgeClass,
-    ) -> Edge {
-        let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
-        let mut allowed_types = TransitFlags::NONE;
-        if fwd_lanes > 0 || bkw_lanes > 0 {
-            allowed_types |= TransitFlags::CAR;
-        }
-        if is_walkway || fwd_lanes > 0 || bkw_lanes > 0 {
-            allowed_types |= TransitFlags::FOOT;
-        }
-        let vehicle_frontage_access = if is_walkway {
-            VehicleFrontageAccess::SameSideOnly
-        } else {
-            VehicleFrontageAccess::BothSides
-        };
-        let physical_length = points
-            .windows(2)
-            .map(|segment| segment[0].distance_to(segment[1]))
-            .sum();
-
-        Edge {
-            start_node,
-            end_node,
-            primary_type: if is_walkway {
-                TransitType::Foot
-            } else {
-                TransitType::Road
-            },
-            allowed_types,
-            class,
-            width: ((fwd_lanes + bkw_lanes) as f32 * config::LANE_WIDTH).max(2.0),
-            fwd_lanes,
-            bkw_lanes,
-            speed_limit: 50.0,
-            base_cost: 0.0,
-            physical_length,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: points.clone(),
-            physical_geometry: points,
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access,
         }
     }
 
