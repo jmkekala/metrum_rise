@@ -194,6 +194,139 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
     );
 }
 
+#[test]
+fn span_profile_band_count_mismatch_rejects_partial_output() {
+    let single_band = vec![RoadSurfaceBand {
+        kind: RoadSurfaceBandKind::Carriageway,
+        lateral_start_m: -2.0,
+        lateral_end_m: 2.0,
+        height_start_m: 0.0,
+        height_end_m: 0.0,
+    }];
+    let split_bands = vec![
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Carriageway,
+            lateral_start_m: -2.0,
+            lateral_end_m: 0.0,
+            height_start_m: 0.0,
+            height_end_m: 0.0,
+        },
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            lateral_start_m: 0.0,
+            lateral_end_m: 2.0,
+            height_start_m: CURB_STEP_HEIGHT_M,
+            height_end_m: CURB_STEP_HEIGHT_M,
+        },
+    ];
+
+    assert_rejects_invalid_span_profile(
+        |edge_idx| {
+            vec![
+                span_profile_test_section(edge_idx, 0.0, single_band.clone()),
+                span_profile_test_section(edge_idx, 5.0, single_band),
+                span_profile_test_section(edge_idx, 35.0, split_bands.clone()),
+                span_profile_test_section(edge_idx, 40.0, split_bands),
+            ]
+        },
+        "band count mismatch",
+    );
+}
+
+#[test]
+fn span_profile_band_kind_mismatch_rejects_partial_output() {
+    let sidewalk_bands = vec![
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Carriageway,
+            lateral_start_m: -2.0,
+            lateral_end_m: 0.0,
+            height_start_m: 0.0,
+            height_end_m: 0.0,
+        },
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            lateral_start_m: 0.0,
+            lateral_end_m: 2.0,
+            height_start_m: CURB_STEP_HEIGHT_M,
+            height_end_m: CURB_STEP_HEIGHT_M,
+        },
+    ];
+    let curb_bands = vec![
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::Carriageway,
+            lateral_start_m: -2.0,
+            lateral_end_m: 0.0,
+            height_start_m: 0.0,
+            height_end_m: 0.0,
+        },
+        RoadSurfaceBand {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            lateral_start_m: 0.0,
+            lateral_end_m: 2.0,
+            height_start_m: CURB_STEP_HEIGHT_M,
+            height_end_m: CURB_STEP_HEIGHT_M,
+        },
+    ];
+
+    assert_rejects_invalid_span_profile(
+        |edge_idx| {
+            vec![
+                span_profile_test_section(edge_idx, 0.0, sidewalk_bands.clone()),
+                span_profile_test_section(edge_idx, 5.0, sidewalk_bands),
+                span_profile_test_section(edge_idx, 35.0, curb_bands.clone()),
+                span_profile_test_section(edge_idx, 40.0, curb_bands),
+            ]
+        },
+        "band kind mismatch",
+    );
+}
+
+fn span_profile_test_section(
+    edge_idx: usize,
+    s_m: f32,
+    bands: Vec<RoadSurfaceBand>,
+) -> RoadSurfaceSection {
+    RoadSurfaceSection {
+        edge_idx,
+        s_m,
+        center_xz: Vector2::new(s_m, 0.0),
+        center_height_m: 0.0,
+        tangent_xz: Vector2::new(1.0, 0.0),
+        lateral_xz: Vector2::new(0.0, 1.0),
+        bands,
+    }
+}
+
+fn assert_rejects_invalid_span_profile(
+    sections_for_edge: impl FnOnce(usize) -> Vec<RoadSurfaceSection>,
+    reason: &str,
+) {
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(40.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        a,
+        b,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+        5.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    surface
+        .compiled_sections
+        .insert(edge_idx, sections_for_edge(edge_idx));
+
+    assert!(
+        surface
+            .compile_visual_span_piece(&graph, &flat_terrain(64, 64), edge_idx)
+            .is_none(),
+        "span region resolution must reject {reason} instead of emitting partial top-surface or terrain-clip output"
+    );
+}
+
 fn test_edge(
     start_node: u32,
     end_node: u32,

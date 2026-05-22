@@ -8,7 +8,7 @@ use super::model::{
 };
 use super::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource,
-    RoadSurfaceEarthworkGeometryError, RoadSurfaceEarthworkSupportPolicy,
+    RoadSurfaceEarthworkGeometryError,
 };
 use crate::simulation::network::types::EdgeClass;
 use godot::prelude::Vector2;
@@ -20,20 +20,9 @@ impl RoadSurfaceSystem {
         edge_class: EdgeClass,
     ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
     {
-        let support_policy = RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class);
         let mut candidate_segments = Vec::new();
         for region in regions {
-            let source = RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
-                edge_idx: region.edge_idx,
-                edge_class,
-                support_policy,
-                owner: region.owner,
-                role: region.role,
-                start_section_index: region.start_section_index,
-                end_section_index: region.end_section_index,
-                start_s_m: region.start_s_m,
-                end_s_m: region.end_s_m,
-            };
+            let source = region.support_boundary_source(edge_class);
             Self::push_region_polygon_boundary_segments(
                 &region.polygon,
                 source,
@@ -67,7 +56,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn owned_region_boundary_segment_loops(
+    pub(in crate::simulation::network::surface) fn owned_region_boundary_segment_loops(
         candidate_segments: Vec<RoadSurfaceEarthworkBoundarySegment>,
     ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
     {
@@ -274,6 +263,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::RoadSurfaceEarthworkSupportPolicy;
     use godot::prelude::Vector3;
 
     fn test_earthwork_source() -> RoadSurfaceEarthworkFaceSource {
