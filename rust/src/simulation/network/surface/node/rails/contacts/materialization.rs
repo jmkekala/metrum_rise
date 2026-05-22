@@ -19,8 +19,6 @@ use super::{
     quantized_proper_segment_intersection, road_point_from_key, road_point_key,
     shared_generated_contour_edges, shared_generated_contour_points,
 };
-use std::collections::BTreeSet;
-
 mod authority;
 mod emission;
 
