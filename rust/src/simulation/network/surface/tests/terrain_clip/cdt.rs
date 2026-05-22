@@ -1,0 +1,365 @@
+//! Road-touched terrain CDT tests.
+
+use super::*;
+
+#[test]
+fn surface_terrain_cdt_authored_piece_matrix_preserves_owned_sources() {
+    {
+        let terrain = coarse_hillside_world_terrain(161, 161, 1.0);
+        let points = grounded_polyline_points_from_terrain(
+            &terrain,
+            Vector2::new(-40.0, -24.0),
+            Vector2::new(40.0, -24.0),
+            20,
+        );
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        assert!(
+            surface
+                .compiled_visual_span_pieces()
+                .contains_key(&edge_idx)
+        );
+        assert_eq!(
+            surface
+                .compiled_visual_node_pieces()
+                .values()
+                .filter(|piece| piece.kind == RoadSurfaceVisualNodePieceKind::Terminal)
+                .count(),
+            2,
+            "straight road should cover span plus both terminal footprints"
+        );
+        assert_surface_terrain_cdt_contract(
+            "straight span with terminal footprints on authored hillside",
+            &surface,
+            &graph,
+            &terrain,
+            (-56.0, -44.0, 56.0, 4.0),
+            false,
+        );
+    }
+
+    {
+        let terrain = flat_terrain(161, 161);
+        let center_xz = Vector2::new(0.0, 0.0);
+        let west_xz = Vector2::new(-36.0, 0.0);
+        let north_xz = Vector2::new(0.0, 36.0);
+        let center_pos = Vector3::new(
+            center_xz.x,
+            terrain_height_m(&terrain, center_xz.x, center_xz.y),
+            center_xz.y,
+        );
+        let west_points = grounded_polyline_points_from_terrain(&terrain, west_xz, center_xz, 12);
+        let north_points = grounded_polyline_points_from_terrain(&terrain, center_xz, north_xz, 12);
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(west_points[0], NodeType::Junction);
+        let center = graph.add_node(center_pos, NodeType::Junction);
+        let north = graph.add_node(*north_points.last().unwrap(), NodeType::Junction);
+        graph.add_edge(test_edge(
+            west,
+            center,
+            west_points,
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            north,
+            north_points,
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        assert_eq!(
+            surface
+                .compiled_visual_node_pieces()
+                .get(&center)
+                .unwrap()
+                .kind,
+            RoadSurfaceVisualNodePieceKind::Bend
+        );
+        assert_surface_terrain_cdt_contract(
+            "bend footprint",
+            &surface,
+            &graph,
+            &terrain,
+            (-52.0, -16.0, 16.0, 52.0),
+            false,
+        );
+    }
+
+    {
+        let terrain = flat_terrain(129, 129);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        for endpoint in [
+            Vector3::new(-40.0, 0.0, 0.0),
+            Vector3::new(40.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 40.0),
+        ] {
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            let (start, end, points) = if endpoint.x < 0.0 {
+                (node, center, vec![endpoint, Vector3::new(0.0, 0.0, 0.0)])
+            } else {
+                (center, node, vec![Vector3::new(0.0, 0.0, 0.0), endpoint])
+            };
+            graph.add_edge(test_edge(
+                start,
+                end,
+                points,
+                10.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        assert_eq!(
+            surface
+                .compiled_visual_node_pieces()
+                .get(&center)
+                .unwrap()
+                .kind,
+            RoadSurfaceVisualNodePieceKind::JunctionN
+        );
+        assert_surface_terrain_cdt_contract(
+            "flat JunctionN footprint",
+            &surface,
+            &graph,
+            &terrain,
+            (-56.0, -24.0, 56.0, 56.0),
+            false,
+        );
+    }
+
+    {
+        let terrain = flat_terrain(129, 129);
+        let road_y = 3.0;
+        let center_pos = Vector3::new(0.0, road_y, 0.0);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(center_pos, NodeType::Junction);
+        for endpoint in [
+            Vector3::new(-40.0, road_y, 0.0),
+            Vector3::new(40.0, road_y, 0.0),
+            Vector3::new(0.0, road_y, 40.0),
+        ] {
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            let (start, end, points) = if endpoint.x < 0.0 {
+                (node, center, vec![endpoint, center_pos])
+            } else {
+                (center, node, vec![center_pos, endpoint])
+            };
+            graph.add_edge(test_edge(
+                start,
+                end,
+                points,
+                10.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        assert_eq!(
+            surface
+                .compiled_visual_node_pieces()
+                .get(&center)
+                .unwrap()
+                .kind,
+            RoadSurfaceVisualNodePieceKind::JunctionN
+        );
+        assert_surface_terrain_cdt_contract(
+            "elevated Standard JunctionN footprint over flat authored terrain",
+            &surface,
+            &graph,
+            &terrain,
+            (-56.0, -24.0, 56.0, 56.0),
+            false,
+        );
+    }
+}
+
+#[test]
+fn terrain_cdt_preserves_source_samples_inside_road_hole() {
+    let outer = vec![
+        TerrainCdtVertex::new(0.0, 0.0, 0.0),
+        TerrainCdtVertex::new(4.0, 0.0, 0.0),
+        TerrainCdtVertex::new(4.0, 0.0, 4.0),
+        TerrainCdtVertex::new(0.0, 0.0, 4.0),
+    ];
+    let hole = vec![
+        TerrainCdtVertex::new(1.0, 0.0, 1.0),
+        TerrainCdtVertex::new(1.0, 0.0, 3.0),
+        TerrainCdtVertex::new(3.0, 0.0, 3.0),
+        TerrainCdtVertex::new(3.0, 0.0, 1.0),
+    ];
+    let hole_sample = TerrainCdtVertex::new(2.0, 0.0, 2.0);
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-1.0, -1.0, 5.0, 5.0, [0.0; 4]),
+        vec![
+            TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+                10,
+                10,
+                0,
+                false,
+                outer,
+                Vec::new(),
+            ),
+            TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+                11,
+                10,
+                1,
+                true,
+                hole,
+                Vec::new(),
+            ),
+        ],
+        vec![hole_sample],
+    ))
+    .expect("CDT should accept road footprint holes as constrained terrain islands");
+
+    assert!(
+        mesh.vertices
+            .iter()
+            .any(
+                |vertex| (vertex.x - hole_sample.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                    && (vertex.z - hole_sample.z).abs() <= f64::from(SAMPLE_EPSILON_M)
+            ),
+        "source terrain sample inside a road footprint hole must not be rejected as road-owned"
+    );
+}
+
+#[test]
+fn terrain_clip_loops_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
+    let terrain = flat_terrain(257, 257);
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    for angle_degrees in [0.0_f32, 23.0, 61.0, 137.0, 211.0, 304.0] {
+        let angle = angle_degrees.to_radians();
+        let endpoint = Vector3::new(angle.cos() * 64.0, 0.0, angle.sin() * 64.0);
+        let node = graph.add_node(endpoint, NodeType::Junction);
+        graph.add_edge(test_edge(
+            center,
+            node,
+            vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
+            14.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let (road_loops, _) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -96.0, -96.0, 96.0, 96.0)
+        .expect("arbitrary multiway terrain clip export should succeed");
+    assert!(
+        !road_loops.is_empty(),
+        "expected arbitrary multiway node to produce terrain clip loops"
+    );
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-96.0, -96.0, 96.0, 96.0, [0.0; 4]),
+        road_loops,
+        Vec::new(),
+    ))
+    .expect("unioned terrain clip footprint must be accepted by the terrain CDT");
+
+    assert_eq!(
+        mesh.stats.invalid_constraint_edges, 0,
+        "terrain CDT must not see crossing constraints from arbitrary-angle piece loops"
+    );
+}
+
+#[test]
+fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
+    for (case_name, edge_class, points) in [
+        (
+            "bridge endpoint abutments",
+            EdgeClass::Bridge,
+            vec![
+                Vector3::new(-24.0, 6.0, 0.0),
+                Vector3::new(0.0, 6.0, 0.0),
+                Vector3::new(24.0, 6.0, 0.0),
+            ],
+        ),
+        (
+            "tunnel visible portals",
+            EdgeClass::Tunnel,
+            vec![
+                Vector3::new(-24.0, 0.0, 0.0),
+                Vector3::new(-10.0, -6.0, 0.0),
+                Vector3::new(10.0, -6.0, 0.0),
+                Vector3::new(24.0, 0.0, 0.0),
+            ],
+        ),
+    ] {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            edge_class,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .unwrap_or_else(|| panic!("{case_name}: span should compile"));
+        assert!(!span_piece.span_earthwork_support_regions.is_empty());
+        assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, edge_class);
+        assert!(
+            span_piece
+                .span_earthwork_support_regions
+                .iter()
+                .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+            "{case_name}: support regions must stay out of the midspan"
+        );
+        let (road_loops, source_count) = surface
+            .terrain_cdt_road_loops_for_world_bounds(&graph, -8.0, -12.0, 8.0, 12.0)
+            .expect("bridge/tunnel midspan query should not fail terrain clip export");
+        assert!(
+            road_loops.is_empty() && source_count == 0,
+            "{case_name}: bridge/tunnel midspans must not feed road-touched terrain CDT"
+        );
+    }
+}

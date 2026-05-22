@@ -18,7 +18,7 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
     RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey, arrangement, backend, height,
-    input, node, ownership, rails, segments, triangulation, validation,
+    input, node, ownership, rails, segments, validation,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};

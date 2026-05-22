@@ -1,0 +1,225 @@
+//! Shared XZ vertex height authority tests.
+
+use super::*;
+
+#[test]
+fn shared_xz_vertices_keep_distinct_owner_source_heights() {
+    let regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            1,
+            0.25,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+        ),
+    ];
+
+    validate_shared_source_height_agreement(&regions)
+        .expect("different owner/source contexts are explicit seams, not height corrections");
+
+    assert_eq!(regions[0].shape[0][0].height_m, 0.0);
+    assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+}
+
+#[test]
+fn shared_xz_vertices_without_explicit_seam_are_not_height_constrained() {
+    let regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            1,
+            0.25,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+        ),
+    ];
+
+    validate_explicit_material_seam_heights(&regions)
+        .expect("missing explicit seam must not trigger coincident-XZ height correction");
+
+    assert_eq!(regions[0].shape[0][0].height_m, 0.0);
+    assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+}
+
+#[test]
+fn junctionn_same_material_shared_vertices_reject_height_conflict() {
+    let mut regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::Carriageway,
+            9,
+            0.0,
+            vec![manual_heighted_vertex(-1.0, 0.0, 2.0)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Carriageway,
+            14,
+            0.0,
+            vec![manual_heighted_vertex(-1.0, 0.0, 1.0)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(-1.0, 0.0, 0.25)],
+        ),
+    ];
+
+    assert!(matches!(
+        apply_junctionn_height_authority_normalization(&mut regions),
+        Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
+    ));
+
+    assert_eq!(regions[0].shape[0][0].height_m, 2.0);
+    assert_eq!(
+        regions[1].shape[0][0].height_m, 1.0,
+        "same-material owner priority must not rewrite conflicting sampled heights"
+    );
+    assert_eq!(
+        regions[2].shape[0][0].height_m, 0.25,
+        "different materials must not be pulled into the same-material tie-break"
+    );
+}
+
+#[test]
+fn junctionn_same_material_raised_step_contact_allows_vertical_height_split() {
+    let seam = manual_seam_constraint(
+        88,
+        NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        false,
+        true,
+    );
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.25)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions).expect(
+        "explicit same-material raised-step contacts are height splits, not shared-height corrections",
+    );
+
+    assert_eq!(regions[0].shape[0][0].height_m, 1.0);
+    assert_eq!(regions[1].shape[0][0].height_m, 1.25);
+}
+
+#[test]
+fn junctionn_same_material_shared_vertices_share_authority_when_height_keys_match() {
+    let mut regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::Carriageway,
+            9,
+            0.0,
+            vec![manual_heighted_vertex(-1.0, 0.0, 2.0004)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Carriageway,
+            14,
+            0.0,
+            vec![manual_heighted_vertex(-1.0, 0.0, 2.00049)],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("matching height keys may share deterministic same-material authority");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(regions[1].shape[0][0].height_m).as_i64(),
+        2000
+    );
+    assert_eq!(
+        regions[1].shape[0][0]
+            .grade_authority
+            .expect("carrier should record deterministic same-material authority")
+            .decision,
+        NodeGradeCarrierDecision::SameMaterialVertex
+    );
+}
+
+#[test]
+fn junctionn_node_grade_carrier_does_not_adopt_explicit_material_seam_for_same_material_vertex() {
+    let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let other_sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 5);
+    let seam = manual_owned_pair_seam_constraint(77, curb_owner, sidewalk_owner, true);
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk_owner.owner_index(),
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            other_sidewalk_owner.owner_index(),
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 2.0)],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb_owner.owner_index(),
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.0)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("unconstrained same-material vertex should remain independently heighted");
+
+    assert_eq!(
+        regions[0].shape[0][0].height_m, 1.0,
+        "explicit curb/sidewalk seam containment must outrank same-material tie-breaks"
+    );
+    assert_eq!(
+        regions[1].shape[0][0].height_m, 2.0,
+        "unconstrained same-material vertices must not be pulled to explicit seam height"
+    );
+    assert!(regions[1].shape[0][0].grade_authority.is_none());
+    assert_eq!(regions[2].shape[0][0].height_m, 1.0);
+    validate_explicit_material_seam_heights(&regions)
+        .expect("preserved seam heights should still validate");
+}
+
+#[test]
+fn shared_xz_vertices_reject_same_source_height_conflict() {
+    let regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.25,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+        ),
+    ];
+
+    assert!(matches!(
+        validate_shared_source_height_agreement(&regions),
+        Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
+    ));
+}
