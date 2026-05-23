@@ -16,6 +16,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_junction_rejected_w
     let accepted_canonical_rejection = report.contains("shared_source_height_conflict")
         || report.contains("source_height_field_conflict")
         || report.contains("vertex_outside_height_field")
+        || report.contains("missing_owned_region_carrier_support")
         || report.contains("\"height_conflict\"")
         || report.contains("missing_raised_step_vertical_face")
         || report.contains("MissingRaisedStepVerticalFace")

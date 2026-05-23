@@ -49,11 +49,16 @@ impl NodeResolvedHeightAuthorityMap {
                 .flat_map(|contour| contour.iter().copied())
             {
                 let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-                let height = field.evaluate_authorized_height(
-                    region.owner,
-                    region.claim_priority,
-                    point_xz,
-                )?;
+                let height = field
+                    .evaluate_authorized_height(region.owner, region.claim_priority, point_xz)
+                    .map_err(|error| {
+                        missing_owned_region_carrier_support_error(
+                            error,
+                            region.owner,
+                            field,
+                            point_xz,
+                        )
+                    })?;
                 map.insert(
                     region.owner,
                     field.id,
@@ -131,6 +136,29 @@ impl NodeResolvedHeightAuthorityMap {
             claim_priority,
         };
         self.heights_by_key.get(&key).copied()
+    }
+}
+
+fn missing_owned_region_carrier_support_error(
+    error: NodeHeightFieldError,
+    owner: NodeBandOwner,
+    field: &NodeBandHeightField,
+    point_xz: RoadVec2,
+) -> NodeHeightFieldError {
+    match error {
+        NodeHeightFieldError::VertexOutsideHeightField { .. } => {
+            let key = NodeHeightPointKey::from_point(point_xz);
+            NodeHeightFieldError::MissingOwnedRegionCarrierSupport {
+                mouth_order_index: field.id.mouth_order_index(),
+                band_index: field.id.band_index(),
+                source_kind: field.kind,
+                height_field_id: field.id,
+                owner,
+                point_x_mm: key.x_mm(),
+                point_z_mm: key.z_mm(),
+            }
+        }
+        other => other,
     }
 }
 

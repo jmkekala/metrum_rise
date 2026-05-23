@@ -112,6 +112,15 @@ pub(crate) enum NodeHeightFieldError {
         axis: &'static str,
         raw_parameter: f64,
     },
+    MissingOwnedRegionCarrierSupport {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        owner: NodeBandOwner,
+        point_x_mm: i64,
+        point_z_mm: i64,
+    },
     SourceHeightFieldConflict {
         mouth_order_index: usize,
         band_index: usize,

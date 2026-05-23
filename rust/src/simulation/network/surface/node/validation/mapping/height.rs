@@ -222,6 +222,27 @@ impl NodeGeometryDiagnostic {
                 axis: Some(*axis),
                 raw_parameter: Some(*raw_parameter),
             },
+            NodeHeightFieldError::MissingOwnedRegionCarrierSupport {
+                mouth_order_index,
+                band_index,
+                source_kind,
+                height_field_id,
+                owner,
+                point_x_mm,
+                point_z_mm,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "missing_owned_region_carrier_support",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: Some(*source_kind),
+                height_field_id: Some(*height_field_id),
+                owner: Some(*owner),
+                point_x_mm: Some(*point_x_mm),
+                point_z_mm: Some(*point_z_mm),
+                axis: None,
+                raw_parameter: None,
+            },
             NodeHeightFieldError::TerminalCapGeneration { error } => {
                 NodeGeometryDiagnosticKind::HeightFieldFailure {
                     reason: error.reason.diagnostic_reason(),

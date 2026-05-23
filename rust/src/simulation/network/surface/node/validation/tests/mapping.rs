@@ -48,6 +48,50 @@ fn maps_vertex_outside_height_field_to_source_rich_blocking_debug_record() {
 }
 
 #[test]
+fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_record() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
+    let height_field_id = NodeBandHeightFieldId::new(2, 5, RoadSurfaceBandKind::Sidewalk);
+    let report = NodeValidationReport::from_height_field_error(
+        2,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeHeightFieldError::MissingOwnedRegionCarrierSupport {
+            mouth_order_index: 2,
+            band_index: 5,
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            height_field_id,
+            owner,
+            point_x_mm: -17_850,
+            point_z_mm: -54_396,
+        },
+    );
+
+    assert!(report.has_blocking_diagnostics());
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+    assert!(matches!(
+        diagnostic.kind,
+        NodeGeometryDiagnosticKind::HeightFieldFailure {
+            reason: "missing_owned_region_carrier_support",
+            mouth_order_index: Some(2),
+            band_index: Some(5),
+            source_kind: Some(RoadSurfaceBandKind::Sidewalk),
+            height_field_id: Some(id),
+            owner: Some(mapped_owner),
+            point_x_mm: Some(-17_850),
+            point_z_mm: Some(-54_396),
+            axis: None,
+            raw_parameter: None,
+            ..
+        } if id == height_field_id && mapped_owner == owner
+    ));
+    let dump = report.debug_dump();
+    assert!(dump.contains("missing_owned_region_carrier_support"));
+    assert!(dump.contains("height_field_id"));
+    assert!(dump.contains("owner"));
+}
+
+#[test]
 fn maps_missing_grade_authority_to_blocking_node_grade_diagnostic() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 4);
     let height_field_id = NodeBandHeightFieldId::new(2, 3, RoadSurfaceBandKind::Sidewalk);

@@ -310,7 +310,14 @@ fn junctionn_canonical_height_authority_rejects_vertex_outside_explicit_carrier(
 
     assert!(matches!(
         NodeHeightSolution::from_ownership_and_input(&input, &ownership),
-        Err(NodeHeightFieldError::VertexOutsideHeightField { .. })
+        Err(NodeHeightFieldError::MissingOwnedRegionCarrierSupport {
+            mouth_order_index: 0,
+            band_index: 0,
+            source_kind: RoadSurfaceBandKind::Carriageway,
+            point_x_mm: 11_000,
+            point_z_mm: 1_000,
+            ..
+        })
     ));
 }
 
