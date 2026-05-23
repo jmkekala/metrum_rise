@@ -184,7 +184,9 @@ fn junctionn_reports_unmaterialized_raised_step_authority_before_height_validati
     let dump = report.debug_dump();
     assert!(dump.contains("\"kind\":\"unmaterialized_raised_step_authority\""));
     assert!(dump.contains("\"backend\":\"canonical_keys\""));
-    assert!(dump.contains("source_constraint_indices: [41]"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&dump).expect("diagnostic dump must be valid JSON");
+    assert_eq!(parsed["diagnostics"][0]["source_constraint_indices"][0], 41);
 }
 
 #[test]

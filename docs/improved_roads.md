@@ -138,13 +138,17 @@ section says whether the runtime has reached it yet.
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
   the old unscoped height evaluator
+- road-geometry diagnostic dumps now serialize stage, backend, owner, height-field, point / edge,
+  residual, seam, and constraint metadata as queryable JSON fields instead of an opaque Rust debug
+  blob; remaining work is filling any missing-artifact coverage gaps before adding the full
+  conflict matrix
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
 ### Open ROAD-01 Work
 
-- finish structured diagnostics for missing source rails, missing carrier support, rejected
-  residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices
+- finish missing-artifact diagnostic coverage for missing source rails, missing carrier support,
+  rejected residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices
 - complete the conflict-first Bend / JunctionN test matrix: acute, obtuse, right-angle, 4-way,
   arbitrary `N > 4`, reversed edge direction, and equivalent edit order
 - complete terrain / road agreement tests for authored and extreme DEM cases, including retaining

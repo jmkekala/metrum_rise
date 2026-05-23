@@ -89,6 +89,16 @@ fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_recor
     assert!(dump.contains("missing_owned_region_carrier_support"));
     assert!(dump.contains("height_field_id"));
     assert!(dump.contains("owner"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&dump).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["kind"], "height_field_failure");
+    assert_eq!(diagnostic["reason"], "missing_owned_region_carrier_support");
+    assert_eq!(diagnostic["owner"]["kind"], "Sidewalk");
+    assert_eq!(diagnostic["owner"]["owner_index"], 17);
+    assert_eq!(diagnostic["height_field_id"]["mouth_order_index"], 2);
+    assert_eq!(diagnostic["height_field_id"]["band_index"], 5);
+    assert!(diagnostic.get("detail").is_none());
 }
 
 #[test]
@@ -264,6 +274,15 @@ fn maps_boolean_residual_to_structured_debug_record() {
             .debug_dump()
             .contains("\"kind\":\"rejected_residual\"")
     );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["stage"], "boolean_ownership");
+    assert_eq!(diagnostic["backend"], "i_overlay");
+    assert_eq!(diagnostic["residual"]["type"], "non_road");
+    assert_eq!(diagnostic["shape_count"], 2);
+    assert_eq!(diagnostic["area_m2"], 0.5);
+    assert!(diagnostic.get("detail").is_none());
 }
 
 #[test]

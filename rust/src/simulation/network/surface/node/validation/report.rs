@@ -5,6 +5,7 @@ use super::super::height::NodeHeightAuthoritySource;
 use super::super::keys::SurfaceXzKey;
 use super::super::triangulation::NodeTriangulationSolution;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use serde_json::{Value, json};
 use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -345,15 +346,32 @@ impl NodeValidationReport {
 
 impl NodeGeometryDiagnostic {
     pub(super) fn debug_record(&self) -> String {
-        format!(
-            "{{\"node_id\":{},\"piece_kind\":\"{:?}\",\"stage\":\"{}\",\"backend\":\"{}\",\"kind\":\"{}\",\"detail\":\"{:?}\"}}",
-            self.node_id,
-            self.piece_kind,
-            self.stage.as_str(),
-            self.backend.as_str(),
-            self.kind.as_str(),
-            self.kind
-        )
+        let mut record = json!({
+            "node_id": self.node_id,
+            "piece_kind": format!("{:?}", self.piece_kind),
+            "stage": self.stage.as_str(),
+            "backend": self.backend.as_str(),
+            "kind": self.kind.as_str(),
+        });
+        if let (Some(record), Some(detail)) =
+            (record.as_object_mut(), self.kind.detail_value().as_object())
+        {
+            record.extend(
+                detail
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
+        serde_json::to_string(&record).unwrap_or_else(|_| {
+            format!(
+                "{{\"node_id\":{},\"piece_kind\":\"{:?}\",\"stage\":\"{}\",\"backend\":\"{}\",\"kind\":\"{}\"}}",
+                self.node_id,
+                self.piece_kind,
+                self.stage.as_str(),
+                self.backend.as_str(),
+                self.kind.as_str()
+            )
+        })
     }
 }
 
@@ -384,6 +402,346 @@ impl NodeGeometryBackend {
 }
 
 impl NodeGeometryDiagnosticKind {
+    fn detail_value(&self) -> Value {
+        match self {
+            Self::RejectedResidual {
+                residual,
+                shape_count,
+                area_m2,
+            } => json!({
+                "residual": residual.detail_value(),
+                "shape_count": shape_count,
+                "area_m2": area_m2,
+            }),
+            Self::NonExplicitBoundaryVertex {
+                region_index,
+                x_mm,
+                z_mm,
+                min_boundary_distance_mm,
+            } => json!({
+                "region_index": region_index,
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "min_boundary_distance_mm": min_boundary_distance_mm,
+            }),
+            Self::HeightConflict {
+                x_mm,
+                z_mm,
+                existing_height_mm,
+                incoming_height_mm,
+            } => json!({
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "existing_height_mm": existing_height_mm,
+                "incoming_height_mm": incoming_height_mm,
+            }),
+            Self::SourceHeightFieldConflict {
+                mouth_order_index,
+                band_index,
+                source_kind,
+                height_field_id,
+                owner,
+                existing_authority,
+                incoming_authority,
+                x_mm,
+                z_mm,
+                existing_height_mm,
+                incoming_height_mm,
+            } => json!({
+                "mouth_order_index": mouth_order_index,
+                "band_index": band_index,
+                "source_kind": band_kind_value(*source_kind),
+                "height_field_id": height_field_id_value(*height_field_id),
+                "owner": optional_owner_value(*owner),
+                "existing_authority": authority_value(*existing_authority),
+                "incoming_authority": authority_value(*incoming_authority),
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "existing_height_mm": existing_height_mm,
+                "incoming_height_mm": incoming_height_mm,
+            }),
+            Self::SharedSourceHeightConflict {
+                x_mm,
+                z_mm,
+                kind,
+                owner,
+                opposite_owner,
+                height_field_id,
+                incoming_owner,
+                incoming_height_field_id,
+                constraint_index,
+                existing_authority,
+                incoming_authority,
+                existing_height_mm,
+                incoming_height_mm,
+            } => json!({
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "surface_kind": band_kind_value(*kind),
+                "owner": owner_value(*owner),
+                "opposite_owner": optional_owner_value(*opposite_owner),
+                "height_field_id": optional_height_field_id_value(*height_field_id),
+                "incoming_owner": owner_value(*incoming_owner),
+                "incoming_height_field_id": optional_height_field_id_value(*incoming_height_field_id),
+                "constraint_index": constraint_index,
+                "existing_authority": optional_authority_value(*existing_authority),
+                "incoming_authority": optional_authority_value(*incoming_authority),
+                "existing_height_mm": existing_height_mm,
+                "incoming_height_mm": incoming_height_mm,
+            }),
+            Self::CrossRegionHeightConflict {
+                edge_start_x_key,
+                edge_start_z_key,
+                edge_end_x_key,
+                edge_end_z_key,
+                edge_start_x_mm,
+                edge_start_z_mm,
+                edge_end_x_mm,
+                edge_end_z_mm,
+                conflict_x_key,
+                conflict_z_key,
+                conflict_x_mm,
+                conflict_z_mm,
+                existing_region_index,
+                existing_owner,
+                existing_owner_index,
+                existing_start_height_mm,
+                existing_end_height_mm,
+                existing_conflict_height_mm,
+                incoming_region_index,
+                incoming_owner,
+                incoming_owner_index,
+                incoming_start_height_mm,
+                incoming_end_height_mm,
+                incoming_conflict_height_mm,
+                matching_explicit_step_segments,
+                non_matching_explicit_step_segments,
+            } => json!({
+                "edge_start_x_key": edge_start_x_key,
+                "edge_start_z_key": edge_start_z_key,
+                "edge_end_x_key": edge_end_x_key,
+                "edge_end_z_key": edge_end_z_key,
+                "edge_start_x_mm": edge_start_x_mm,
+                "edge_start_z_mm": edge_start_z_mm,
+                "edge_end_x_mm": edge_end_x_mm,
+                "edge_end_z_mm": edge_end_z_mm,
+                "conflict_x_key": conflict_x_key,
+                "conflict_z_key": conflict_z_key,
+                "conflict_x_mm": conflict_x_mm,
+                "conflict_z_mm": conflict_z_mm,
+                "existing_region_index": existing_region_index,
+                "existing_owner": band_owner_parts(*existing_owner, *existing_owner_index),
+                "existing_start_height_mm": existing_start_height_mm,
+                "existing_end_height_mm": existing_end_height_mm,
+                "existing_conflict_height_mm": existing_conflict_height_mm,
+                "incoming_region_index": incoming_region_index,
+                "incoming_owner": band_owner_parts(*incoming_owner, *incoming_owner_index),
+                "incoming_start_height_mm": incoming_start_height_mm,
+                "incoming_end_height_mm": incoming_end_height_mm,
+                "incoming_conflict_height_mm": incoming_conflict_height_mm,
+                "matching_explicit_step_segments": step_segments_value(matching_explicit_step_segments),
+                "non_matching_explicit_step_segments": step_segments_value(non_matching_explicit_step_segments),
+            }),
+            Self::HeightFieldFailure {
+                reason,
+                mouth_order_index,
+                band_index,
+                kind,
+                source_kind,
+                height_field_id,
+                owner,
+                point_x_mm,
+                point_z_mm,
+                axis,
+                raw_parameter,
+            } => json!({
+                "reason": reason,
+                "mouth_order_index": mouth_order_index,
+                "band_index": band_index,
+                "region_kind": optional_band_kind_value(*kind),
+                "source_kind": optional_band_kind_value(*source_kind),
+                "height_field_id": optional_height_field_id_value(*height_field_id),
+                "owner": optional_owner_value(*owner),
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "axis": axis,
+                "raw_parameter": raw_parameter,
+            }),
+            Self::MissingGradeAuthority {
+                region_index,
+                contour_index,
+                x_mm,
+                z_mm,
+                owner,
+                owner_index,
+                height_field_id,
+                height_mm,
+            } => json!({
+                "region_index": region_index,
+                "contour_index": contour_index,
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "height_field_id": height_field_id_value(*height_field_id),
+                "height_mm": height_mm,
+            }),
+            Self::OpenBoundary {
+                region_index,
+                vertex_index,
+                degree,
+            } => json!({
+                "region_index": region_index,
+                "vertex_index": vertex_index,
+                "degree": degree,
+            }),
+            Self::DuplicateExposedEdge {
+                region_index,
+                start_x_mm,
+                start_z_mm,
+                end_x_mm,
+                end_z_mm,
+                count,
+            } => json!({
+                "region_index": region_index,
+                "start_x_mm": start_x_mm,
+                "start_z_mm": start_z_mm,
+                "end_x_mm": end_x_mm,
+                "end_z_mm": end_z_mm,
+                "count": count,
+            }),
+            Self::InvalidConstraint {
+                region_index,
+                constraint_index,
+                reason,
+            } => json!({
+                "region_index": region_index,
+                "constraint_index": constraint_index,
+                "reason": format!("{:?}", reason),
+            }),
+            Self::TriangleCoverageMismatch {
+                region_index,
+                missing_area_m2,
+                extra_area_m2,
+            } => json!({
+                "region_index": region_index,
+                "missing_area_m2": missing_area_m2,
+                "extra_area_m2": extra_area_m2,
+            }),
+            Self::TriangleOverlap {
+                region_index,
+                overlap_area_m2,
+            } => json!({
+                "region_index": region_index,
+                "overlap_area_m2": overlap_area_m2,
+            }),
+            Self::SeamConstraintFailure {
+                region_index,
+                owner,
+                owner_index,
+                opposite_owner,
+                opposite_owner_index,
+                start_x_mm,
+                start_z_mm,
+                end_x_mm,
+                end_z_mm,
+                reason,
+            } => json!({
+                "region_index": region_index,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "opposite_owner": band_owner_parts(*opposite_owner, *opposite_owner_index),
+                "start_x_mm": start_x_mm,
+                "start_z_mm": start_z_mm,
+                "end_x_mm": end_x_mm,
+                "end_z_mm": end_z_mm,
+                "reason": format!("{:?}", reason),
+            }),
+            Self::AmbiguousOwnedBoundaryEdge {
+                region_index,
+                owner,
+                owner_index,
+                opposite_owners,
+                start_x_mm,
+                start_z_mm,
+                end_x_mm,
+                end_z_mm,
+            } => json!({
+                "region_index": region_index,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "opposite_owners": opposite_owners
+                    .iter()
+                    .map(|(kind, owner_index)| band_owner_parts(*kind, *owner_index))
+                    .collect::<Vec<_>>(),
+                "start_x_mm": start_x_mm,
+                "start_z_mm": start_z_mm,
+                "end_x_mm": end_x_mm,
+                "end_z_mm": end_z_mm,
+            }),
+            Self::UnmaterializedRaisedStepAuthority {
+                region_index,
+                owner,
+                owner_index,
+                opposite_owner,
+                opposite_owner_index,
+                start_x_mm,
+                start_z_mm,
+                end_x_mm,
+                end_z_mm,
+                source_constraint_indices,
+            } => json!({
+                "region_index": region_index,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "opposite_owner": band_owner_parts(*opposite_owner, *opposite_owner_index),
+                "start_x_mm": start_x_mm,
+                "start_z_mm": start_z_mm,
+                "end_x_mm": end_x_mm,
+                "end_z_mm": end_z_mm,
+                "source_constraint_indices": source_constraint_indices,
+            }),
+            Self::NonCanonicalOwnedRegionVertex {
+                owner,
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                canonical_x_key,
+                canonical_z_key,
+                canonical_x_mm,
+                canonical_z_mm,
+            } => json!({
+                "owner": owner_value(*owner),
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "canonical_x_key": canonical_x_key,
+                "canonical_z_key": canonical_z_key,
+                "canonical_x_mm": canonical_x_mm,
+                "canonical_z_mm": canonical_z_mm,
+            }),
+            Self::AmbiguousCanonicalOwnedRegionVertex {
+                owner,
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                candidates,
+            } => json!({
+                "owner": owner_value(*owner),
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "candidates": candidates
+                    .iter()
+                    .map(canonical_point_value)
+                    .collect::<Vec<_>>(),
+            }),
+            Self::BackendFailure { reason } => json!({
+                "reason": reason,
+            }),
+        }
+    }
+
     fn as_str(&self) -> &'static str {
         match self {
             Self::RejectedResidual { .. } => "rejected_residual",
@@ -412,6 +770,101 @@ impl NodeGeometryDiagnosticKind {
             Self::BackendFailure { .. } => "backend_failure",
         }
     }
+}
+
+impl NodeRejectedResidualKind {
+    fn detail_value(&self) -> Value {
+        match self {
+            Self::Asphalt => json!({"type": "asphalt"}),
+            Self::Band(kind) => json!({
+                "type": "band",
+                "kind": band_kind_value(*kind),
+            }),
+            Self::NonRoad => json!({"type": "non_road"}),
+        }
+    }
+}
+
+fn band_kind_value(kind: RoadSurfaceBandKind) -> Value {
+    json!(format!("{:?}", kind))
+}
+
+fn optional_band_kind_value(kind: Option<RoadSurfaceBandKind>) -> Value {
+    kind.map(band_kind_value).unwrap_or(Value::Null)
+}
+
+fn owner_value(owner: NodeBandOwner) -> Value {
+    band_owner_parts(owner.kind(), owner.owner_index())
+}
+
+fn optional_owner_value(owner: Option<NodeBandOwner>) -> Value {
+    owner.map(owner_value).unwrap_or(Value::Null)
+}
+
+fn band_owner_parts(kind: RoadSurfaceBandKind, owner_index: usize) -> Value {
+    json!({
+        "kind": band_kind_value(kind),
+        "owner_index": owner_index,
+    })
+}
+
+fn height_field_id_value(height_field_id: NodeBandHeightFieldId) -> Value {
+    json!({
+        "mouth_order_index": height_field_id.mouth_order_index(),
+        "band_index": height_field_id.band_index(),
+        "debug": format!("{:?}", height_field_id),
+    })
+}
+
+fn optional_height_field_id_value(height_field_id: Option<NodeBandHeightFieldId>) -> Value {
+    height_field_id
+        .map(height_field_id_value)
+        .unwrap_or(Value::Null)
+}
+
+fn authority_value(authority: NodeHeightAuthoritySource) -> Value {
+    json!(format!("{:?}", authority))
+}
+
+fn optional_authority_value(authority: Option<NodeHeightAuthoritySource>) -> Value {
+    authority.map(authority_value).unwrap_or(Value::Null)
+}
+
+fn canonical_point_value(point: &NodeCanonicalPointDiagnostic) -> Value {
+    json!({
+        "x_key": point.x_key,
+        "z_key": point.z_key,
+        "x_mm": point.x_mm,
+        "z_mm": point.z_mm,
+    })
+}
+
+fn step_segments_value(segments: &[NodeExplicitStepSegmentDiagnostic]) -> Value {
+    json!(
+        segments
+            .iter()
+            .map(|segment| {
+                json!({
+                    "segment_index": segment.segment_index,
+                    "start_x_key": segment.start_x_key,
+                    "start_z_key": segment.start_z_key,
+                    "end_x_key": segment.end_x_key,
+                    "end_z_key": segment.end_z_key,
+                    "start_x_mm": segment.start_x_mm,
+                    "start_z_mm": segment.start_z_mm,
+                    "end_x_mm": segment.end_x_mm,
+                    "end_z_mm": segment.end_z_mm,
+                    "owner": band_owner_parts(segment.owner, segment.owner_index),
+                    "opposite_owner": band_owner_parts(
+                        segment.opposite_owner,
+                        segment.opposite_owner_index,
+                    ),
+                    "owners_match_regions": segment.owners_match_regions,
+                    "edge_lies_on_segment": segment.edge_lies_on_segment,
+                })
+            })
+            .collect::<Vec<_>>()
+    )
 }
 
 pub(super) fn push_validation_diagnostic(
