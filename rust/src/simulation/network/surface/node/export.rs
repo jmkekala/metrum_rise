@@ -85,9 +85,10 @@ impl RoadSurfaceSystem {
         {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
+        let footprint_shapes = Self::footprint_shapes_from_owned_regions(&owned_regions)?;
         let footprint_boundary_point_loops =
-            Self::footprint_boundary_point_loops_from_arrangement_edges(
-                arrangement,
+            Self::footprint_boundary_point_loops_from_footprint_shapes(
+                &footprint_shapes,
                 &mut boundary_export_sources,
             )?;
         let mut earthwork_boundary_segments =

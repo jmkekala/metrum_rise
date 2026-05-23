@@ -26,11 +26,35 @@ impl NodeFootprintBoundaryExportSources {
         &self,
         key: arrangement::NodeArrangementKey,
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        let final_edge_candidates = self
+            .boundary_edge_height_candidates_at_key(key)
+            .filter(|candidate| candidate.final_footprint_boundary)
+            .map(|candidate| candidate.height)
+            .collect::<Vec<_>>();
+        if !final_edge_candidates.is_empty() {
+            if let Some(height_mm) =
+                final_footprint_boundary_raised_step_height_mm(&final_edge_candidates)
+            {
+                return Ok(Some(height_mm));
+            }
+            return self.boundary_height_mm_from_candidates(key, final_edge_candidates);
+        }
         let exact_candidates = self
             .direct_height_candidates_at_key(key)
             .into_iter()
-            .chain(self.boundary_edge_height_candidates_at_key(key))
+            .chain(
+                self.boundary_edge_height_candidates_at_key(key)
+                    .map(|candidate| candidate.height),
+            )
             .collect::<Vec<_>>();
+        self.boundary_height_mm_from_candidates(key, exact_candidates)
+    }
+
+    fn boundary_height_mm_from_candidates(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        exact_candidates: Vec<NodeFootprintBoundaryHeightCandidate>,
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
         if exact_candidates.is_empty() {
             return Ok(None);
         }
@@ -95,7 +119,10 @@ impl NodeFootprintBoundaryExportSources {
         let exact_candidates = self
             .direct_height_candidates_at_key(key)
             .into_iter()
-            .chain(self.boundary_edge_height_candidates_at_key(key))
+            .chain(
+                self.boundary_edge_height_candidates_at_key(key)
+                    .map(|candidate| candidate.height),
+            )
             .collect::<Vec<_>>();
         if !exact_candidates.is_empty() {
             return self.unique_height_candidate_at_key(key, exact_candidates);
@@ -202,10 +229,15 @@ impl NodeFootprintBoundaryExportSources {
         self.direct_vertex_sources
             .entry(point_key)
             .and_modify(|current| {
-                debug_assert!(
-                    node_footprint_direct_vertices_share_source_identity(candidate, *current),
-                    "test helper must not hide direct boundary source ambiguity"
-                );
+                if !node_footprint_direct_vertices_share_source_identity(candidate, *current) {
+                    debug_assert!(
+                        node_footprint_direct_vertices_share_boundary_point_authority(
+                            point_key, candidate, *current
+                        ),
+                        "test helper must not hide direct boundary source ambiguity"
+                    );
+                    *current = candidate;
+                }
             })
             .or_insert(candidate);
     }
@@ -217,20 +249,19 @@ impl NodeFootprintBoundaryExportSources {
     ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
         self.direct_height_candidates_at_key(key)
             .into_iter()
-            .chain(self.boundary_edge_height_candidates_at_key(key))
+            .chain(
+                self.boundary_edge_height_candidates_at_key(key)
+                    .map(|candidate| candidate.height),
+            )
             .collect()
     }
 
     fn boundary_edge_height_candidates_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
-    ) -> impl Iterator<Item = NodeFootprintBoundaryHeightCandidate> + '_ {
+    ) -> impl Iterator<Item = NodeFootprintBoundaryEdgeHeightCandidate> + '_ {
         self.source_edges.iter().filter_map(move |source_edge| {
-            if !arrangement_key_lies_exactly_on_segment(
-                key,
-                source_edge.start_key,
-                source_edge.end_key,
-            ) {
+            if !arrangement_key_lies_on_segment(key, source_edge.start_key, source_edge.end_key) {
                 return None;
             }
             let parameter = arrangement_key_segment_parameter_xz(
@@ -243,20 +274,23 @@ impl NodeFootprintBoundaryExportSources {
                 source_edge.end_point_key,
                 parameter,
             );
-            Some(NodeFootprintBoundaryHeightCandidate {
-                height_mm,
-                source: NodeFootprintBoundaryDirectVertex {
-                    source: node_footprint_boundary_vertex_source_for_edge_point(
-                        source_edge,
-                        ArrangementBoundaryPointKey {
-                            x_key: key.x_key(),
-                            z_key: key.z_key(),
-                            y_mm: height_mm,
-                        },
-                    )?,
-                    owner_kind: source_edge.owner_kind,
-                    owner_index: source_edge.owner_index,
+            Some(NodeFootprintBoundaryEdgeHeightCandidate {
+                height: NodeFootprintBoundaryHeightCandidate {
+                    height_mm,
+                    source: NodeFootprintBoundaryDirectVertex {
+                        source: node_footprint_boundary_vertex_source_for_edge_point(
+                            source_edge,
+                            ArrangementBoundaryPointKey {
+                                x_key: key.x_key(),
+                                z_key: key.z_key(),
+                                y_mm: height_mm,
+                            },
+                        )?,
+                        owner_kind: source_edge.owner_kind,
+                        owner_index: source_edge.owner_index,
+                    },
                 },
+                final_footprint_boundary: source_edge.final_footprint_boundary,
             })
         })
     }
@@ -289,4 +323,46 @@ impl NodeFootprintBoundaryExportSources {
         }
         candidates
     }
+}
+
+fn final_footprint_boundary_raised_step_height_mm(
+    candidates: &[NodeFootprintBoundaryHeightCandidate],
+) -> Option<i64> {
+    let mut heights = candidates
+        .iter()
+        .map(|candidate| candidate.height_mm)
+        .collect::<Vec<_>>();
+    heights.sort_unstable();
+    heights.dedup();
+    let [lower_height_mm, raised_height_mm] = heights.as_slice() else {
+        return None;
+    };
+    let lower_height_mm = *lower_height_mm;
+    let raised_height_mm = *raised_height_mm;
+    let lower_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == lower_height_mm)
+        .collect::<Vec<_>>();
+    let raised_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == raised_height_mm)
+        .collect::<Vec<_>>();
+    if lower_candidates.is_empty() || raised_candidates.is_empty() {
+        return None;
+    }
+    for lower in &lower_candidates {
+        let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
+        for raised in &raised_candidates {
+            if !raised_step_kinds_can_contact(lower.source.owner_kind, raised.source.owner_kind) {
+                return None;
+            }
+            let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
+            if lower_rank >= raised_rank {
+                return None;
+            }
+        }
+    }
+    Some(raised_height_mm)
 }

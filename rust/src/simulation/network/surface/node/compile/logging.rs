@@ -159,6 +159,26 @@ impl RoadSurfaceSystem {
                     "missing_earthwork_boundary_source",
                 )
             }
+            NodeBoundaryExportError::MissingEarthworkBoundarySegmentSource {
+                start_x_key,
+                start_z_key,
+                end_x_key,
+                end_z_key,
+                nearby_source_edges,
+            } => {
+                let _ = (
+                    *start_x_key,
+                    *start_z_key,
+                    *end_x_key,
+                    *end_z_key,
+                    nearby_source_edges,
+                );
+                NodeValidationReport::from_boundary_export_error(
+                    arrangement.node_id(),
+                    arrangement.piece_kind(),
+                    "missing_earthwork_boundary_segment_source",
+                )
+            }
             NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),

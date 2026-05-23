@@ -63,6 +63,83 @@ fn boundary_only_vertex_source_records_explicit_interpolation() {
 }
 
 #[test]
+fn source_edge_endpoint_dust_authorizes_boundary_segment() {
+    let start_source = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 3,
+        grade_authority_index: 30,
+    };
+    let end_source = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 3,
+        grade_authority_index: 31,
+    };
+    let start_point_key = ArrangementBoundaryPointKey {
+        x_key: 37_978_775,
+        z_key: 3_650_000,
+        y_mm: 120,
+    };
+    let source_end_point_key = ArrangementBoundaryPointKey {
+        x_key: 37_978_772,
+        z_key: 5_000_000,
+        y_mm: 120,
+    };
+    let final_end_point_key = ArrangementBoundaryPointKey {
+        x_key: 37_978_771,
+        z_key: 5_000_000,
+        y_mm: 120,
+    };
+    let source_edge = NodeEarthworkBoundarySourceEdge {
+        start_point_key,
+        end_point_key: source_end_point_key,
+        start_key: start_point_key.xz_key(),
+        end_key: source_end_point_key.xz_key(),
+        final_footprint_boundary: false,
+        node_id: 11,
+        kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+        height_field_id: arrangement::NodeBandHeightFieldId::new(
+            0,
+            5,
+            RoadSurfaceBandKind::Sidewalk,
+        ),
+        start_source,
+        end_source,
+    };
+    let mut segments = Vec::new();
+
+    push_sourced_node_earthwork_boundary_segments(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        NodeFootprintBoundaryPoint::new(start_point_key),
+        NodeFootprintBoundaryPoint::new(final_end_point_key),
+        &[source_edge],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &[],
+        &mut segments,
+    )
+    .expect("source endpoint overlay dust should preserve source-backed boundary ownership");
+
+    assert_eq!(segments.len(), 1);
+    assert!(matches!(
+        segments[0].source,
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: NodeFootprintBoundaryVertexSource::Direct(_),
+                end: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                    height_mm: 120,
+                    ..
+                },
+            }),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
     let source_edge = test_source_edge(
         Vector3::new(0.0, 0.0, 0.0),

@@ -201,7 +201,9 @@ fn canonicalized_same_material_boundary_point_sources(
         for right in candidates.iter().copied().skip(left_index + 1) {
             if left.owner_kind == right.owner_kind
                 && left.owner_index == right.owner_index
-                && !node_footprint_direct_vertices_share_source_identity(left, right)
+                && !node_footprint_direct_vertices_share_boundary_point_authority(
+                    point_key, left, right,
+                )
             {
                 return Err(ambiguous_footprint_boundary_point_source_error(
                     point_key, left, right,

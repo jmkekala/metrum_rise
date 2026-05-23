@@ -163,19 +163,6 @@ pub(crate) fn arrangement_key_lies_on_segment(
     )
 }
 
-/// Returns the overlay-grid tolerant segment parameter for node arrangement keys.
-pub(crate) fn arrangement_key_overlay_segment_parameter(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> Option<SurfaceSegmentParameter> {
-    overlay_segment_parameter(
-        arrangement_key(point),
-        arrangement_key(start),
-        arrangement_key(end),
-    )
-}
-
 /// Converts an overlay point into the shared XZ key type.
 pub(crate) fn overlay_point_key(point: NodeOverlayPoint) -> SurfaceXzKey {
     SurfaceXzKey::from_overlay_point(point)

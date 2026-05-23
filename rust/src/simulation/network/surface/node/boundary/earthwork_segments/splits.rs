@@ -112,7 +112,19 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
             explicit_vertical_step_segments,
         )?;
         let Some(source) = source else {
-            return Err(NodeBoundaryExportError::MissingEarthworkBoundarySource);
+            return Err(
+                NodeBoundaryExportError::MissingEarthworkBoundarySegmentSource {
+                    start_x_key: sub_start_split.point_key.x_key,
+                    start_z_key: sub_start_split.point_key.z_key,
+                    end_x_key: sub_end_split.point_key.x_key,
+                    end_z_key: sub_end_split.point_key.z_key,
+                    nearby_source_edges: nearby_source_edges_for_missing_segment(
+                        sub_start_split.point_key.xz_key(),
+                        sub_end_split.point_key.xz_key(),
+                        source_edges,
+                    ),
+                },
+            );
         };
         segments.push(RoadSurfaceEarthworkBoundarySegment {
             inner_start: sub_start,
@@ -121,6 +133,38 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
         });
     }
     Ok(())
+}
+
+fn nearby_source_edges_for_missing_segment(
+    start_key: arrangement::NodeArrangementKey,
+    end_key: arrangement::NodeArrangementKey,
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+) -> Vec<((i64, i64), (i64, i64), RoadSurfaceBandKind, usize, bool)> {
+    const DIAGNOSTIC_OVERLAY_KEY_MARGIN: i64 = 1024;
+    let min_x = start_key.x_key().min(end_key.x_key()) - DIAGNOSTIC_OVERLAY_KEY_MARGIN;
+    let max_x = start_key.x_key().max(end_key.x_key()) + DIAGNOSTIC_OVERLAY_KEY_MARGIN;
+    let min_z = start_key.z_key().min(end_key.z_key()) - DIAGNOSTIC_OVERLAY_KEY_MARGIN;
+    let max_z = start_key.z_key().max(end_key.z_key()) + DIAGNOSTIC_OVERLAY_KEY_MARGIN;
+    source_edges
+        .iter()
+        .filter(|edge| {
+            let edge_min_x = edge.start_key.x_key().min(edge.end_key.x_key());
+            let edge_max_x = edge.start_key.x_key().max(edge.end_key.x_key());
+            let edge_min_z = edge.start_key.z_key().min(edge.end_key.z_key());
+            let edge_max_z = edge.start_key.z_key().max(edge.end_key.z_key());
+            edge_min_x <= max_x && edge_max_x >= min_x && edge_min_z <= max_z && edge_max_z >= min_z
+        })
+        .take(12)
+        .map(|edge| {
+            (
+                (edge.start_key.x_key(), edge.start_key.z_key()),
+                (edge.end_key.x_key(), edge.end_key.z_key()),
+                edge.owner_kind,
+                edge.owner_index,
+                edge.final_footprint_boundary,
+            )
+        })
+        .collect()
 }
 
 impl NodeFootprintBoundarySplitPoint {

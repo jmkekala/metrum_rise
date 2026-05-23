@@ -24,7 +24,15 @@ pub(super) fn reject_same_owner_same_height_source_conflicts(
             {
                 continue;
             }
-            if !node_footprint_direct_vertices_share_source_identity(left.source, right.source) {
+            if !node_footprint_direct_vertices_share_boundary_point_authority(
+                ArrangementBoundaryPointKey {
+                    x_key: key.x_key(),
+                    z_key: key.z_key(),
+                    y_mm: left.height_mm,
+                },
+                left.source,
+                right.source,
+            ) {
                 return Err(ambiguous_footprint_boundary_point_source_error(
                     ArrangementBoundaryPointKey {
                         x_key: key.x_key(),

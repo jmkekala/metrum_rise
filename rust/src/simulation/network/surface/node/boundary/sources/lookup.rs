@@ -26,14 +26,7 @@ pub(in crate::simulation::network::surface::node::boundary) fn node_footprint_bo
             source_edge.end_source,
         ));
     }
-    if !arrangement_key_lies_exactly_on_segment(
-        point_key.xz_key(),
-        source_edge.start_key,
-        source_edge.end_key,
-    ) {
-        return None;
-    }
-    let parameter = arrangement_key_segment_parameter_xz(
+    let parameter = arrangement_key_segment_parameter_xz_with_endpoint_dust(
         point_key.xz_key(),
         source_edge.start_key,
         source_edge.end_key,

@@ -31,17 +31,10 @@ pub(super) fn node_earthwork_source_edge_for_subsegment(
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
 ) -> Option<NodeEarthworkBoundarySourceCandidate> {
-    if !arrangement_key_lies_exactly_on_segment(
-        start_point_key.xz_key(),
-        source_edge.start_key,
-        source_edge.end_key,
-    ) || !arrangement_key_lies_exactly_on_segment(
-        end_point_key.xz_key(),
-        source_edge.start_key,
-        source_edge.end_key,
-    ) {
-        return None;
-    }
+    let start_source =
+        node_footprint_boundary_vertex_source_for_edge_point(source_edge, start_point_key)?;
+    let end_source =
+        node_footprint_boundary_vertex_source_for_edge_point(source_edge, end_point_key)?;
     Some(NodeEarthworkBoundarySourceCandidate {
         face_source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
             node_id: source_edge.node_id,
@@ -49,14 +42,8 @@ pub(super) fn node_earthwork_source_edge_for_subsegment(
             owner_kind: source_edge.owner_kind,
             owner_index: source_edge.owner_index,
             boundary_source: Some(NodeFootprintBoundarySegmentSource {
-                start: node_footprint_boundary_vertex_source_for_edge_point(
-                    source_edge,
-                    start_point_key,
-                )?,
-                end: node_footprint_boundary_vertex_source_for_edge_point(
-                    source_edge,
-                    end_point_key,
-                )?,
+                start: start_source,
+                end: end_source,
             }),
         },
         height_field_id: Some(source_edge.height_field_id),

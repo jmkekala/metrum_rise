@@ -242,6 +242,55 @@ fn same_height_boundary_point_with_distinct_source_identity_is_rejected() {
 }
 
 #[test]
+fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_edge() {
+    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let direct = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+            top_surface_source_index: 122,
+            grade_authority_index: 42,
+        }),
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    let mut direct_vertex_sources = BTreeMap::new();
+    direct_vertex_sources.insert(point_key, direct);
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(point_key, vec![direct]);
+    let mut sources = NodeFootprintBoundaryExportSources {
+        source_edges: vec![test_source_edge(
+            Vector3::new(0.0, 0.12, 0.0),
+            Vector3::new(2.0, 0.12, 0.0),
+            121,
+            53,
+            121,
+            37,
+        )],
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .height_mm_at_key(point_key.xz_key())
+        .expect("same-owner direct point and interpolated source edge prove one boundary point");
+
+    assert_eq!(height_mm, Some(point_key.y_mm));
+    assert!(matches!(
+        sources.direct_vertex_sources.get(&point_key),
+        Some(NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: 1_000_000,
+                z_key: 0,
+                y_mm: 120,
+            },
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        })
+    ));
+}
+
+#[test]
 fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
     let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
     let first_start = NodeFootprintBoundaryDirectSource {
@@ -295,4 +344,140 @@ fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
         .expect("reversed interpolation endpoints preserve the same undirected source identity");
 
     assert_eq!(height_mm, Some(point_key.y_mm));
+}
+
+#[test]
+fn same_height_boundary_point_accepts_adjacent_interpolation_source_cluster() {
+    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let first_start = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 1237,
+        grade_authority_index: 1189,
+    };
+    let shared = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 1237,
+        grade_authority_index: 1432,
+    };
+    let shared_second = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 1238,
+        grade_authority_index: 1432,
+    };
+    let second_end = NodeFootprintBoundaryDirectSource {
+        top_surface_source_index: 1238,
+        grade_authority_index: 1168,
+    };
+    let first = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start: first_start,
+            owning_segment_end: shared,
+            height_mm: point_key.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    let second = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start: shared_second,
+            owning_segment_end: second_end,
+            height_mm: point_key.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    let mut direct_vertex_sources = BTreeMap::new();
+    direct_vertex_sources.insert(point_key, first);
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(point_key, vec![first, second]);
+    let mut sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .height_mm_at_key(point_key.xz_key())
+        .expect("same-owner adjacent source edges sharing one source vertex canonicalize");
+
+    assert_eq!(height_mm, Some(point_key.y_mm));
+    assert!(matches!(
+        sources.direct_vertex_sources.get(&point_key),
+        Some(NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: 1_000_000,
+                z_key: 0,
+                y_mm: 120,
+            },
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        })
+    ));
+}
+
+#[test]
+fn same_height_boundary_point_accepts_same_owner_interpolation_cluster() {
+    let point_key = ArrangementBoundaryPointKey {
+        x_key: 572_943_237,
+        z_key: 5_000_000,
+        y_mm: 120,
+    };
+    let first = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1237,
+                grade_authority_index: 1189,
+            },
+            owning_segment_end: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1237,
+                grade_authority_index: 1432,
+            },
+            height_mm: point_key.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    let second = NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1269,
+                grade_authority_index: 1461,
+            },
+            owning_segment_end: NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 1268,
+                grade_authority_index: 1444,
+            },
+            height_mm: point_key.y_mm,
+        },
+        owner_kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 5,
+    };
+    let mut direct_vertex_sources = BTreeMap::new();
+    direct_vertex_sources.insert(point_key, first);
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(point_key, vec![first, second]);
+    let mut sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        direct_vertex_sources,
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .height_mm_at_key(point_key.xz_key())
+        .expect("same-owner post-boolean interpolation point should canonicalize by key");
+
+    assert_eq!(height_mm, Some(point_key.y_mm));
+    assert!(matches!(
+        sources.direct_vertex_sources.get(&point_key),
+        Some(NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                x_key: 572_943_237,
+                z_key: 5_000_000,
+                y_mm: 120,
+            },
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        })
+    ));
 }

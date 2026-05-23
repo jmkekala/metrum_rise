@@ -57,7 +57,7 @@ fn direct_boundary_segment_with_adjacent_material_endpoint_owners_uses_raised_ow
 }
 
 #[test]
-fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_is_rejected() {
+fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_uses_canonical_owner() {
     let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
     let end = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 0.12, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
@@ -85,7 +85,7 @@ fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_is_reject
     );
     let mut segments = Vec::new();
 
-    let error = push_sourced_node_earthwork_boundary_segments(
+    push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
         NodeFootprintBoundaryPoint::new(start),
@@ -97,11 +97,16 @@ fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_is_reject
         &[],
         &mut segments,
     )
-    .expect_err("same-material direct endpoint sources must reject endpoint owner ambiguity");
+    .expect("same-material endpoint owners should canonicalize to one boundary owner");
 
+    assert_eq!(segments.len(), 1);
     assert!(matches!(
-        error,
-        NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource { .. }
+        segments[0].source,
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            owner_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner_index: 4,
+            ..
+        }
     ));
 }
 

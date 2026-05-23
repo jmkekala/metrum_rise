@@ -46,6 +46,7 @@ pub(super) fn node_earthwork_source_for_boundary_vertices(
         let end_candidate =
             node_earthwork_source_for_direct_vertex_pair(node_id, kind, end, start, end);
         if (start.owner_kind != end.owner_kind
+            || start.owner_index != end.owner_index
             || node_footprint_boundary_direct_vertex_is_canonical_point(start)
             || node_footprint_boundary_direct_vertex_is_canonical_point(end))
             && let Some(merged) = merged_node_earthwork_source_candidate(

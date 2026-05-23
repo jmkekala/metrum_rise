@@ -146,40 +146,69 @@ pub(in crate::simulation::network::surface::tests) fn boundary_export_step_debug
 ) -> String {
     if matches!(
         error,
-        super::node::boundary::NodeBoundaryExportError::DegenerateOuterBoundaryLoop
+        super::node::boundary::NodeBoundaryExportError::EmptyOuterBoundary
     ) {
-        let mut degree = BTreeMap::<(i64, i64), usize>::new();
-        let mut exposed = Vec::new();
-        for edge in arrangement
+        let (bad_degree, bad_point_degree, first_edges) =
+            exposed_boundary_degree_debug(arrangement);
+        let exposed_edges = arrangement
             .edges()
             .iter()
             .filter(|edge| edge.exposed_boundary())
-        {
-            let Some(start) = arrangement.vertices().get(edge.start().index()) else {
-                continue;
-            };
-            let Some(end) = arrangement.vertices().get(edge.end().index()) else {
-                continue;
-            };
-            let start_key = (start.key().x_key(), start.key().z_key(), start.height_mm());
-            let end_key = (end.key().x_key(), end.key().z_key(), end.height_mm());
-            exposed.push((start_key, end_key));
-            *degree
-                .entry((start.key().x_key(), start.key().z_key()))
-                .or_default() += 1;
-            *degree
-                .entry((end.key().x_key(), end.key().z_key()))
-                .or_default() += 1;
-        }
-        let bad_degree = degree
-            .into_iter()
-            .filter(|(_, count)| *count != 2)
-            .take(24)
+            .count();
+        let region_summaries = arrangement
+            .regions()
+            .iter()
+            .take(16)
+            .map(|region| {
+                (
+                    region.owner(),
+                    region.outer_loop().len(),
+                    region.holes().len(),
+                    region.boundary_edges().len(),
+                    region.area_m2(),
+                )
+            })
             .collect::<Vec<_>>();
         return format!(
+            "regions={} faces={} edges={} exposed_edges={} bad_xz_degrees={bad_degree:?} bad_point_degrees={bad_point_degree:?} first_edges={first_edges:?} first_regions={region_summaries:?}",
+            arrangement.regions().len(),
+            arrangement.faces().len(),
+            arrangement.edges().len(),
+            exposed_edges,
+        );
+    }
+    if matches!(
+        error,
+        super::node::boundary::NodeBoundaryExportError::DegenerateOuterBoundaryLoop
+    ) {
+        let (bad_degree, _, first_edges) = exposed_boundary_degree_debug(arrangement);
+        return format!(
             "exposed_edge_count={} bad_xz_degrees={bad_degree:?} first_edges={:?}",
-            exposed.len(),
-            exposed.into_iter().take(24).collect::<Vec<_>>()
+            arrangement
+                .edges()
+                .iter()
+                .filter(|edge| edge.exposed_boundary())
+                .count(),
+            first_edges
+        );
+    }
+    if let super::node::boundary::NodeBoundaryExportError::MissingEarthworkBoundarySegmentSource {
+        start_x_key,
+        start_z_key,
+        end_x_key,
+        end_z_key,
+        nearby_source_edges,
+    } = error
+    {
+        let (bad_degree, bad_point_degree, first_edges) =
+            exposed_boundary_degree_debug(arrangement);
+        return format!(
+            "missing_segment=(({start_x_key},{start_z_key}),({end_x_key},{end_z_key})) nearby_source_edges={nearby_source_edges:?} exposed_edge_count={} bad_xz_degrees={bad_degree:?} bad_point_degrees={bad_point_degree:?} first_edges={first_edges:?}",
+            arrangement
+                .edges()
+                .iter()
+                .filter(|edge| edge.exposed_boundary())
+                .count(),
         );
     }
     let super::node::boundary::NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
@@ -216,7 +245,74 @@ pub(in crate::simulation::network::surface::tests) fn boundary_export_step_debug
         })
         .copied()
         .collect::<Vec<_>>();
+    let exposed_edges_at_key = arrangement
+        .edges()
+        .iter()
+        .filter(|edge| edge.exposed_boundary())
+        .filter_map(|edge| {
+            let start = arrangement.vertices().get(edge.start().index())?;
+            let end = arrangement.vertices().get(edge.end().index())?;
+            super::segments::arrangement_key_lies_on_segment(key, start.key(), end.key()).then_some(
+                (
+                    edge.owner(),
+                    (start.key().x_key(), start.height_mm(), start.key().z_key()),
+                    (end.key().x_key(), end.height_mm(), end.key().z_key()),
+                ),
+            )
+        })
+        .take(12)
+        .collect::<Vec<_>>();
     format!(
-        "boundary_key={key:?} owner_pair_segments={owner_pair_segments:?} key_segments={key_segments:?}"
+        "boundary_key={key:?} owner_pair_segments={owner_pair_segments:?} key_segments={key_segments:?} exposed_edges_at_key={exposed_edges_at_key:?}"
+    )
+}
+
+fn exposed_boundary_degree_debug(
+    arrangement: &NodeArrangement,
+) -> (
+    Vec<((i64, i64), usize)>,
+    Vec<((i64, i64, i64), usize)>,
+    Vec<((i64, i64, i64), (i64, i64, i64))>,
+) {
+    let mut degree = BTreeMap::<(i64, i64), usize>::new();
+    let mut point_degree = BTreeMap::<(i64, i64, i64), usize>::new();
+    let mut exposed = Vec::new();
+    for edge in arrangement
+        .edges()
+        .iter()
+        .filter(|edge| edge.exposed_boundary())
+    {
+        let Some(start) = arrangement.vertices().get(edge.start().index()) else {
+            continue;
+        };
+        let Some(end) = arrangement.vertices().get(edge.end().index()) else {
+            continue;
+        };
+        let start_key = (start.key().x_key(), start.key().z_key(), start.height_mm());
+        let end_key = (end.key().x_key(), end.key().z_key(), end.height_mm());
+        exposed.push((start_key, end_key));
+        *degree
+            .entry((start.key().x_key(), start.key().z_key()))
+            .or_default() += 1;
+        *degree
+            .entry((end.key().x_key(), end.key().z_key()))
+            .or_default() += 1;
+        *point_degree.entry(start_key).or_default() += 1;
+        *point_degree.entry(end_key).or_default() += 1;
+    }
+    let bad_degree = degree
+        .into_iter()
+        .filter(|(_, count)| *count != 2)
+        .take(24)
+        .collect::<Vec<_>>();
+    let bad_point_degree = point_degree
+        .into_iter()
+        .filter(|(_, count)| *count != 2)
+        .take(24)
+        .collect::<Vec<_>>();
+    (
+        bad_degree,
+        bad_point_degree,
+        exposed.into_iter().take(24).collect(),
     )
 }
