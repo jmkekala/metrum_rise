@@ -131,21 +131,18 @@ section says whether the runtime has reached it yet.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
   curb / shoulder and sidewalk ownership, but diagnostics for missing evidence are not yet complete
   enough to replace every downstream height failure
-- source-authorized support materialization exists for several exact source-rail, owner-pair, and
-  raised-step cases, but it is not complete for every final `JunctionN` owned-region vertex created
-  by boolean clipping, noding, or contour cleanup
-- height evaluation is strict and owner-scoped. When a final owned vertex lacks explicit support, it
-  may still fail as `vertex_outside_height_field`; the target behavior is an earlier structured
-  missing-materialization / missing-carrier diagnostic naming the final edge and source constraint
+- source-authorized post-boolean support materialization is shipped for the current exact
+  source-rail, owner-pair / opposite-owner, raised-step, noded constraint interpolation, and
+  same-millimetre duplicate-source cluster cases
+- a pre-height-evaluation height-field completeness gate now resolves every final owned-region
+  vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
+  missing final carrier reports structured missing-carrier diagnostics instead of leaking through
+  the old unscoped height evaluator
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
 ### Open ROAD-01 Work
 
-- complete source-authorized post-boolean vertex materialization for every rendered
-  `Terminal`, `Bend`, and especially `JunctionN` owned-region vertex
-- guarantee that every final seam, footprint, and rendered region vertex has exactly one
-  `NodeBandHeightFieldId` before height evaluation
 - finish structured diagnostics for missing source rails, missing carrier support, rejected
   residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices
 - complete the conflict-first Bend / JunctionN test matrix: acute, obtuse, right-angle, 4-way,

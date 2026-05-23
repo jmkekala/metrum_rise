@@ -33,14 +33,11 @@ impl NodeHeightSolution {
         validate_input_ownership_pair(input, ownership)?;
         let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
         register_owned_region_contour_support(&mut fields, ownership)?;
+        let resolved_authority = pre_height_field_completeness_gate(ownership, &fields)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
-        let resolved_authority = (ownership.piece_kind
-            == RoadSurfaceVisualNodePieceKind::JunctionN)
-            .then(|| NodeResolvedHeightAuthorityMap::from_ownership(ownership, &fields))
-            .transpose()?;
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(region, &fields, resolved_authority.as_ref())?;
+            let region = heighted_region(region, &fields, Some(&resolved_authority))?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
@@ -57,6 +54,13 @@ impl NodeHeightSolution {
             regions,
         })
     }
+}
+
+fn pre_height_field_completeness_gate(
+    ownership: &NodeBooleanOwnership,
+    fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+) -> Result<NodeResolvedHeightAuthorityMap, NodeHeightFieldError> {
+    NodeResolvedHeightAuthorityMap::from_ownership(ownership, fields)
 }
 
 pub(super) fn register_owned_region_contour_support(

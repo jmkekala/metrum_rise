@@ -43,12 +43,7 @@ impl NodeResolvedHeightAuthorityMap {
         };
         for region in &ownership.owned_regions {
             let field = height_field_for_region(region, fields)?;
-            for point in region
-                .shape
-                .iter()
-                .flat_map(|contour| contour.iter().copied())
-            {
-                let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+            for point_xz in pre_height_completeness_points(region) {
                 let height = field
                     .evaluate_authorized_height(region.owner, region.claim_priority, point_xz)
                     .map_err(|error| {
@@ -137,6 +132,25 @@ impl NodeResolvedHeightAuthorityMap {
         };
         self.heights_by_key.get(&key).copied()
     }
+}
+
+fn pre_height_completeness_points(region: &NodeBooleanOwnedRegion) -> Vec<RoadVec2> {
+    let mut points_by_key = BTreeMap::new();
+    for point in region
+        .shape
+        .iter()
+        .flat_map(|contour| contour.iter().copied())
+    {
+        let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+        points_by_key.insert(NodeHeightPointKey::from_point(point_xz), point_xz);
+    }
+    for constraint in &region.seam_constraints {
+        for point_xz in [constraint.start_xz, constraint.end_xz] {
+            let point_xz = quantize_road_vec2_to_overlay_grid(point_xz);
+            points_by_key.insert(NodeHeightPointKey::from_point(point_xz), point_xz);
+        }
+    }
+    points_by_key.into_values().collect()
 }
 
 fn missing_owned_region_carrier_support_error(

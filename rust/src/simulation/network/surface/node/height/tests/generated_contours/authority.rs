@@ -53,6 +53,76 @@ fn junctionn_canonical_height_authority_prefers_owner_generated_carrier_over_bas
 }
 
 #[test]
+fn bend_pre_height_gate_uses_owner_generated_carrier_before_heighting_region() {
+    let input = conflicting_manual_input();
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let source = (RoadSurfaceBandKind::Carriageway, 0, 0);
+    let contour_points = vec![
+        RoadVec2::new(2.0, 0.5),
+        RoadVec2::new(8.0, 0.5),
+        RoadVec2::new(8.0, 1.5),
+        RoadVec2::new(2.0, 1.5),
+    ];
+    let rails = manual_rail_contours(
+        77,
+        RoadSurfaceVisualNodePieceKind::Bend,
+        vec![NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band { kind: source.0 },
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            owner: Some(owner),
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            backend_polyline: road_points_to_polyline(contour_points.clone(), true),
+            points_xz: contour_points,
+            height_points_world: Some(vec![
+                RoadVec3::new(2.0, 9.0, 0.5),
+                RoadVec3::new(8.0, 9.0, 0.5),
+                RoadVec3::new(8.0, 9.0, 1.5),
+                RoadVec3::new(2.0, 9.0, 1.5),
+            ]),
+        }],
+    );
+    let mut region = manual_region(RoadSurfaceBandKind::Carriageway, 0, 20.0);
+    region.claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
+    region.shape = vec![vec![[2.0, 0.5], [8.0, 0.5], [8.0, 1.5], [2.0, 1.5]]];
+    let owned_regions = vec![region];
+    let ownership = NodeBooleanOwnership {
+        node_id: 77,
+        piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+        footprint_shapes: Vec::new(),
+        asphalt_shapes: Vec::new(),
+        non_road_shapes: Vec::new(),
+        owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+            77,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &owned_regions,
+            &Vec::new(),
+            &[],
+        ),
+        owned_regions,
+    };
+
+    let solution =
+        NodeHeightSolution::from_ownership_input_and_rails(&input, Some(&rails), &ownership)
+            .expect("pre-height gate must use owner-generated Bend carrier");
+    let region = solution
+        .regions
+        .first()
+        .expect("test ownership should produce one heighted region");
+
+    assert!(region.shape.iter().flatten().all(|vertex| {
+        vertex.height_authority
+            == Some(NodeHeightAuthoritySource::GeneratedContour {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            })
+            && SurfaceHeightMmKey::from_m_f64(vertex.height_m)
+                == SurfaceHeightMmKey::from_m_f64(9.0)
+    }));
+}
+
+#[test]
 fn junctionn_canonical_height_authority_scopes_generated_carriers_to_owned_region_claim() {
     let mut field = NodeBandHeightField::from_interval(
         0,
