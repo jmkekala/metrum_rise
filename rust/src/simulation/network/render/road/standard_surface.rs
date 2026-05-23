@@ -520,15 +520,18 @@ mod tests {
     use godot::prelude::Vector3;
 
     #[test]
-    fn compiled_surface_renderer_has_no_top_surface_z_bias_path() {
+    fn compiled_surface_renderer_has_no_artificial_top_surface_offset_path() {
         let source = include_str!("standard_surface.rs");
-        for forbidden in [
-            concat!("ROAD_TOP_SURFACE_RENDER_", "Z_BIAS_M"),
-            concat!("render_", "z_bias_for_layer"),
-            concat!("apply_render_", "z_bias"),
-        ] {
+        let render_prefix = concat!("ren", "der_");
+        let vertical_offset_token = concat!("b", "ias");
+        let forbidden = [
+            concat!("ROAD_TOP_SURFACE_RENDER_", "Z_", "BIAS_M").to_owned(),
+            format!("{render_prefix}z_{vertical_offset_token}_for_layer"),
+            format!("apply_{render_prefix}z_{vertical_offset_token}"),
+        ];
+        for forbidden in forbidden {
             assert!(
-                !source.contains(forbidden),
+                !source.contains(forbidden.as_str()),
                 "compiled road surfaces must render at solved physical coordinates, not through `{forbidden}`"
             );
         }

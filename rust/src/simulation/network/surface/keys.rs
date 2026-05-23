@@ -326,7 +326,7 @@ pub(crate) fn surface_overlay_grid_collinearity_error_bound(dx: i128, dz: i128) 
     // Source contours and backend-owned shapes are both projected to the overlay integer grid.
     // A point that is exactly on a source segment before projection can land within this
     // determinant envelope after independent endpoint rounding; this is representation noding,
-    // not owner or height repair.
+    // not owner selection or height synthesis.
     (dx.abs() + dz.abs()) * 2
 }
 

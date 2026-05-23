@@ -1,3 +1,5 @@
+//! Arrangement diagnostic tests for node boolean ownership.
+
 use super::*;
 
 #[test]

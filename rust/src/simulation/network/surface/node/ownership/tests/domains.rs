@@ -1,3 +1,5 @@
+//! Boolean ownership domain tests.
+
 use super::*;
 
 #[test]

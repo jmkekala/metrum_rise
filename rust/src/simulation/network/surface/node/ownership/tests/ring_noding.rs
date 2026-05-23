@@ -1,3 +1,5 @@
+//! Owned-region ring noding tests.
+
 use super::*;
 
 #[test]

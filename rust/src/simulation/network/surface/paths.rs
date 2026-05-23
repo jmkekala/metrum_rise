@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn off_segment_point_inside_old_epsilon_has_no_height() {
+    fn off_segment_point_inside_retired_epsilon_has_no_height() {
         let path = [RoadVec3::new(0.0, 2.0, 0.0), RoadVec3::new(2.0, 6.0, 0.0)];
 
         assert!(

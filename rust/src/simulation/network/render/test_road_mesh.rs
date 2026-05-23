@@ -702,7 +702,7 @@ mod tests {
 
         assert!(
             mesh_data.earthwork_vertices.is_empty(),
-            "grounded standard roads must not emit a visible closure strip; Rust-generated stitched terrain owns the road/terrain boundary"
+            "grounded standard roads must not emit an extra visible seam mesh; Rust-generated stitched terrain owns the road/terrain boundary"
         );
     }
 

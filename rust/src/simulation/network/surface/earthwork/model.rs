@@ -4,6 +4,7 @@ use super::super::{
     NodeFootprintBoundarySegmentSource, RoadSurfaceBandKind, RoadSurfaceSpanBandOwner,
     RoadSurfaceSpanRegionRole, RoadSurfaceVisualNodePieceKind,
     band_semantics::band_kind_sort_key,
+    edge::edge_class_sort_key,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use crate::simulation::network::types::EdgeClass;
@@ -152,14 +153,6 @@ impl RoadSurfaceEarthworkFaceSource {
                 std::cmp::Ordering::Greater
             }
         }
-    }
-}
-
-fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
-    match edge_class {
-        EdgeClass::Standard => 0,
-        EdgeClass::Bridge => 1,
-        EdgeClass::Tunnel => 2,
     }
 }
 

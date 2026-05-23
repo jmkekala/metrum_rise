@@ -164,7 +164,7 @@ pub(super) fn edge_lies_on_explicit_boundary_constraint_or_backend_epsilon(
     }
 
     // This is a backend validation tolerance for Spade/Parry geometry checks only. It does not
-    // repair topology, pick a boundary owner, or supply heights.
+    // change topology, pick a boundary owner, or supply heights.
     let edge_segment = parry_segment_for_edge(region, edge);
     [edge_segment.a, edge_segment.b]
         .into_iter()

@@ -1,7 +1,7 @@
 //! Visual node-piece compilation orchestration.
 
+use super::super::edge::edge_class_sort_key;
 use super::*;
-use crate::simulation::network::types::EdgeClass;
 
 mod logging;
 mod pieces;

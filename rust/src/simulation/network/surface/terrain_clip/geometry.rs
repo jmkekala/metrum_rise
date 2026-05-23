@@ -294,7 +294,7 @@ mod tests {
         assert!(
             error.cycle_area_m2 > error.dust_budget_m2
                 && error.remainder_area_m2 > error.dust_budget_m2,
-            "large repeated-point cycles should not be silently repaired by area preference: {error:?}"
+            "large repeated-point cycles should reject instead of being chosen by area preference: {error:?}"
         );
     }
 

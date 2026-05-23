@@ -181,11 +181,3 @@ impl RoadSurfaceSystem {
         sources
     }
 }
-
-fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
-    match edge_class {
-        EdgeClass::Standard => 0,
-        EdgeClass::Bridge => 1,
-        EdgeClass::Tunnel => 2,
-    }
-}

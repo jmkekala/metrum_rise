@@ -1,3 +1,5 @@
+//! Seam materialization test router.
+
 use super::*;
 
 mod exact_edges;

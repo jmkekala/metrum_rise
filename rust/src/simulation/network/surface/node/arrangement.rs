@@ -18,4 +18,7 @@ pub(crate) use model::{
     NodeOwnedRegion, NodeOwnedRegionId,
 };
 pub(crate) use seams::{NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous};
-pub(crate) use steps::{NodeExplicitVerticalStepSegment, owners_form_explicit_vertical_step_pair};
+pub(crate) use steps::{
+    NodeExplicitVerticalStepSegment, explicit_vertical_step_segments_authorize_height_side_at_key,
+    owners_form_explicit_vertical_step_pair,
+};
