@@ -129,6 +129,45 @@ fn duplicate_owner_source_candidate_cluster_preserves_same_mm_overlay_key() {
 }
 
 #[test]
+fn duplicate_owner_source_candidate_cluster_accepts_hill_junction_drift() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let first_candidate = (-52_302_017, -49_839_396);
+    let second_candidate = (-52_302_004, -49_839_347);
+    let third_candidate = (-52_301_976, -49_839_236);
+    let drifted_vertex = (-52_301_986, -49_839_418);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(drifted_vertex),
+            overlay_point_from_key((-53_000_000, -50_000_000)),
+            overlay_point_from_key((-53_000_000, -49_000_000)),
+        ],
+    )];
+    let owner_points = vec![first_candidate, second_candidate, third_candidate];
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner: BTreeMap::new(),
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points)],
+        )),
+        height_points_by_source: BTreeMap::new(),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("sub-quarter-mm source cluster should preserve same-mm overlay ownership");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&drifted_vertex));
+}
+
+#[test]
 fn ambiguous_owner_source_candidates_preserve_explicit_segment_point() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let first_candidate = (1_000_000, 0);

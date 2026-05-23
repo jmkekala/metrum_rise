@@ -10,7 +10,9 @@ use super::topology_keys::{
 use super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use std::collections::{BTreeMap, BTreeSet};
 
-const SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS: i64 = 32;
+// Same-owner source points inside this sub-quarter-millimeter span are one canonical
+// source duplicate cluster; wider same-mm collisions remain blocking ambiguity.
+const SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS: i64 = 256;
 
 pub(super) struct NodeRailCanonicalPointSet {
     pub(super) all_points: Vec<NodeOwnershipPointKey>,
