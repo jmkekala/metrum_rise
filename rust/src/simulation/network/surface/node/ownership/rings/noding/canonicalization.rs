@@ -112,6 +112,9 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
         if source_points.binary_search(&key).is_ok() {
             continue;
         }
+        if rail_points.source_authorizes_same_mm_duplicate_cluster(owner, key, source_points) {
+            continue;
+        }
         let canonical = rail_points.canonicalized_point_for_owner(owner, key)?;
         if canonical == key {
             continue;

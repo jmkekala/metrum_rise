@@ -45,6 +45,13 @@ pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_r
                 if source_height_points.binary_search(&point).is_ok() {
                     continue;
                 }
+                if rail_points.source_authorizes_same_mm_duplicate_cluster(
+                    region.owner,
+                    point,
+                    source_height_points,
+                ) {
+                    continue;
+                }
                 if rail_points.owner_source_authorizes_point(region.owner, point)? {
                     continue;
                 }

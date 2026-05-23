@@ -168,6 +168,52 @@ fn duplicate_owner_source_candidate_cluster_accepts_hill_junction_drift() {
 }
 
 #[test]
+fn source_height_rail_authorizes_same_mm_hill_junction_cluster() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let first_candidate = (-36_231_967, -58_182_291);
+    let second_candidate = (-36_231_967, -58_182_290);
+    let third_candidate = (-36_231_843, -58_181_910);
+    let drifted_vertex = (-36_231_956, -58_182_294);
+    let source_key = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    let owner_points = vec![first_candidate, second_candidate, third_candidate];
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(drifted_vertex),
+            overlay_point_from_key((-37_000_000, -59_000_000)),
+            overlay_point_from_key((-37_000_000, -58_000_000)),
+        ],
+    )];
+    regions[0].source_mouth_order_index = source_key.1;
+    regions[0].source_band_index = Some(source_key.2);
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        segments_by_owner: BTreeMap::new(),
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points.clone())],
+        )),
+        height_points_by_source: BTreeMap::from([(source_key, owner_points)]),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("source-height rail must authorize the same-mm JunctionN ownership vertex");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&drifted_vertex));
+    assert!(
+        validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
+            .is_ok()
+    );
+}
+
+#[test]
 fn ambiguous_owner_source_candidates_preserve_explicit_segment_point() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let first_candidate = (1_000_000, 0);

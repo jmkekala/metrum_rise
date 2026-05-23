@@ -26,6 +26,26 @@ impl NodeBandHeightField {
         }
     }
 
+    pub(super) fn register_owned_region_source_handoff(
+        &mut self,
+        owner: NodeBandOwner,
+        claim_priority: NodeGeneratedContourClaimPriority,
+        point_xz: RoadVec2,
+    ) {
+        if self
+            .patches
+            .iter()
+            .any(|patch| patch.source_handoff_height_at(point_xz).is_some())
+        {
+            self.source_handoff_keys
+                .insert(NodeAuthorizedSourceHandoffKey {
+                    owner,
+                    claim_priority,
+                    point: height_source_point_key(point_xz),
+                });
+        }
+    }
+
     pub(super) fn register_generated_contour_source_handoffs(
         &mut self,
         contour: &NodeGeneratedContour,

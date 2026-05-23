@@ -70,6 +70,30 @@ impl NodeRailCanonicalPointSet {
         }
     }
 
+    pub(in crate::simulation::network::surface::node::ownership) fn source_authorizes_same_mm_duplicate_cluster(
+        &self,
+        owner: NodeBandOwner,
+        point: NodeOwnershipPointKey,
+        source_points: &[NodeOwnershipPointKey],
+    ) -> bool {
+        let Some(candidates) = self.canonical_candidates_for_owner(owner, point) else {
+            return false;
+        };
+        if candidates.len() < 2 || candidates.contains(&point) || source_points.is_empty() {
+            return false;
+        }
+        let point_mm_key = ownership_mm_key(point);
+        if candidates
+            .iter()
+            .any(|candidate| ownership_mm_key(*candidate) != point_mm_key)
+        {
+            return false;
+        }
+        candidates
+            .iter()
+            .all(|candidate| source_points.binary_search(candidate).is_ok())
+    }
+
     fn canonical_point_for_owner(
         &self,
         owner: NodeBandOwner,

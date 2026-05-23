@@ -96,6 +96,11 @@ pub(super) fn register_owned_region_contour_support(
         {
             let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
             field.register_contour_edge_support(region.owner, region.claim_priority, point_xz);
+            field.register_owned_region_source_handoff(
+                region.owner,
+                region.claim_priority,
+                point_xz,
+            );
         }
     }
     Ok(())
@@ -192,7 +197,7 @@ fn height_fields_by_source_for_ownership(
         }
     }
     if let Some(rails) = rails {
-        extend_height_fields_with_generated_contours(rails, &mut fields)?;
+        extend_height_fields_with_generated_contours(rails, &mut fields, ownership)?;
     }
     Ok(fields)
 }
@@ -260,6 +265,7 @@ fn rail_generation_error_to_height_error(error: NodeRailGenerationError) -> Node
 pub(super) fn extend_height_fields_with_generated_contours(
     rails: &NodeRailContourSet,
     fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    ownership: Option<&NodeBooleanOwnership>,
 ) -> Result<(), NodeHeightFieldError> {
     for contour in &rails.contours {
         let NodeGeneratedContourKind::Band { kind } = contour.kind else {
@@ -304,11 +310,43 @@ pub(super) fn extend_height_fields_with_generated_contours(
                 source_kind: field.kind,
             });
         }
-        field.extend_with_generated_contour(contour)?;
+        if let Err(error) = field.extend_with_generated_contour(contour) {
+            if matches!(
+                error,
+                NodeHeightFieldError::InvalidHeightCarrierContour { .. }
+                    | NodeHeightFieldError::MissingGeneratedContourHeightPoints { .. }
+            ) && generated_contour_is_superseded_by_post_boolean_region(contour, ownership)
+            {
+                continue;
+            }
+            return Err(error);
+        }
     }
     Ok(())
 }
 
 fn generated_contour_requires_height_field(contour: &NodeGeneratedContour) -> bool {
     contour.owner.is_some() || contour.height_points_world.is_some()
+}
+
+fn generated_contour_is_superseded_by_post_boolean_region(
+    contour: &NodeGeneratedContour,
+    ownership: Option<&NodeBooleanOwnership>,
+) -> bool {
+    let (Some(ownership), NodeGeneratedContourKind::Band { kind }, Some(owner), band_index) = (
+        ownership,
+        contour.kind,
+        contour.owner,
+        contour.source_band_index,
+    ) else {
+        return false;
+    };
+    ownership.owned_regions.iter().any(|region| {
+        region.kind == kind
+            && region.owner == owner
+            && region.claim_priority == contour.claim_priority
+            && region.source_mouth_order_index == contour.source_mouth_order_index
+            && region.source_band_index == band_index
+            && !region.shape.is_empty()
+    })
 }

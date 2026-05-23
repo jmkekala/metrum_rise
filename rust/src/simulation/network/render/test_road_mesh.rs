@@ -1614,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_two_way_diagonal_width_change_rejects_invalid_junction_surface() {
+    fn test_two_way_diagonal_width_change_compiles_source_authorized_junction_surface() {
         let main = [Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)];
         let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::ZERO];
         let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 3, 3), (&branch, 1, 1)]);
@@ -1634,7 +1634,10 @@ mod tests {
             0.25,
             VisibleSurface::Road,
         );
-        assert!(branch_throat < 0.7);
+        assert!(
+            branch_throat >= 0.7,
+            "source-authorized diagonal width-change junction should keep the branch throat visibly owned; branch_throat={branch_throat:.3}"
+        );
     }
 
     #[test]

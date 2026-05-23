@@ -18,7 +18,7 @@ use super::{
     OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, band_semantics::ordered_raised_step_kinds, edge::VISUAL_MIN_SPAN_LENGTH_M,
+    SAMPLE_EPSILON_M, band_semantics::ordered_raised_step_kinds,
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
@@ -32,7 +32,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const VISUAL_DOMINANT_HANDOFF_REJECTION_RATIO: f32 = 3.0;
 
 pub(crate) mod arrangement;
 mod arrangement_faces;

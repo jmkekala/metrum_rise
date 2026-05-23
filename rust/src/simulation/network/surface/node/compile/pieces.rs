@@ -72,12 +72,6 @@ impl RoadSurfaceSystem {
         if incidents.len() < 3 {
             return None;
         }
-        if incidents
-            .iter()
-            .any(|incident| self.incident_edge_visual_handoff_is_overconstrained(graph, *incident))
-        {
-            return None;
-        }
         let Some(mouths) = self.build_ordered_piece_mouths(incidents) else {
             return None;
         };
