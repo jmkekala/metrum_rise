@@ -13,15 +13,16 @@ pub(in crate::simulation::network::surface::tests) fn assert_junction_rejected_w
         "{label} unexpectedly compiled after same-XZ height disagreement"
     );
     let report = canonical_junction_pipeline_report(surface, graph, node_id);
-    let accepted_height_rejection = report.contains("shared_source_height_conflict")
+    let accepted_canonical_rejection = report.contains("shared_source_height_conflict")
         || report.contains("source_height_field_conflict")
         || report.contains("vertex_outside_height_field")
         || report.contains("\"height_conflict\"")
         || report.contains("missing_raised_step_vertical_face")
-        || report.contains("MissingRaisedStepVerticalFace");
+        || report.contains("MissingRaisedStepVerticalFace")
+        || report.contains("AmbiguousEarthworkBoundarySegmentSource");
     assert!(
-        accepted_height_rejection,
-        "{label} must reject with a canonical height diagnostic: {report}"
+        accepted_canonical_rejection,
+        "{label} must reject with a canonical height/provenance diagnostic: {report}"
     );
 }
 

@@ -205,6 +205,11 @@ impl NodeArrangement {
                         continue;
                     }
                     let crosses_band_kind = !owners_share_band_kind(&left.owners, &right.owners);
+                    if crosses_band_kind
+                        && !self.has_boundary_edge_at_key_between(key, &left.owners, &right.owners)
+                    {
+                        continue;
+                    }
                     let has_explicit_material_seam = crosses_band_kind
                         && (self.has_explicit_material_seam_at_key_between(
                             key,
@@ -248,6 +253,20 @@ impl NodeArrangement {
                 && (self.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
                     || !self.edge_has_owner_pair_source_constraint(edge))
                 && self.edge_touches_key(edge, key)
+                && edge.opposite_owner.is_some_and(|opposite_owner| {
+                    owner_sets_match_edge(left_owners, right_owners, edge.owner, opposite_owner)
+                })
+        })
+    }
+
+    fn has_boundary_edge_at_key_between(
+        &self,
+        key: NodeArrangementKey,
+        left_owners: &[NodeBandOwner],
+        right_owners: &[NodeBandOwner],
+    ) -> bool {
+        self.edges.iter().any(|edge| {
+            self.edge_touches_key(edge, key)
                 && edge.opposite_owner.is_some_and(|opposite_owner| {
                     owner_sets_match_edge(left_owners, right_owners, edge.owner, opposite_owner)
                 })

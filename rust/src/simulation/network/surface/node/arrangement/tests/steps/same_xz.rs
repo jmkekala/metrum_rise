@@ -221,3 +221,61 @@ fn arrangement_accepts_height_ranked_step_endpoint_grouping() {
         .reject_implicit_material_height_conflicts()
         .expect("separate canonical step endpoints should authorize the ranked height split");
 }
+
+#[test]
+fn arrangement_ignores_same_xz_height_split_without_final_boundary_contact() {
+    let lower_left = owner(RoadSurfaceBandKind::Carriageway, 0);
+    let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let lower_right = owner(RoadSurfaceBandKind::Carriageway, 2);
+    let start = RoadVec2::new(0.0, 0.0);
+    let end = RoadVec2::new(1.0, 0.0);
+    let step = NodeRegionSeamConstraint {
+        constraint_index: 88,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        owner: Some(lower_left),
+        opposite_owner: Some(raised),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: end,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Carriageway,
+                lower_left,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(0.0, 1.0, 0.0),
+                ],
+                vec![step.clone()],
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Carriageway,
+                lower_right,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(-1.0, 0.0, 0.0),
+                    height_vertex(0.0, -1.0, 0.0),
+                ],
+                Vec::new(),
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                raised,
+                vec![
+                    height_vertex(0.0, 0.0, 0.12),
+                    height_vertex(1.0, 0.0, 0.12),
+                    height_vertex(1.0, -1.0, 0.12),
+                ],
+                vec![step],
+            ),
+        ],
+    };
+
+    NodeArrangement::from_height_solution(&heights)
+        .expect("point-only coincidence is not a final owned boundary height conflict");
+}

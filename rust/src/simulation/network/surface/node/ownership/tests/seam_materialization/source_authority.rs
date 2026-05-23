@@ -63,6 +63,67 @@ fn reowned_raised_step_contact_does_not_inherit_source_pair_shared_height_contra
 }
 
 #[test]
+fn junctionn_materializes_reowned_curb_sidewalk_step_from_source_polyline_coverage() {
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let source_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+    let final_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 2);
+    let start = RoadVec2::new(0.0, 0.0);
+    let middle = RoadVec2::new(1.0, 0.0);
+    let end = RoadVec2::new(2.0, 0.0);
+    let mut regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb,
+            vec![[0.0, 0.0], [2.0, 0.0], [0.0, -1.0]],
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            final_sidewalk,
+            vec![[0.0, 0.0], [2.0, 1.0], [2.0, 0.0]],
+        ),
+    ];
+    let rail_constraints = vec![NodeRailConstraint {
+        constraint_index: 53,
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(1),
+        source_boundary_index: Some(1),
+        owner: Some(curb),
+        opposite_owner: Some(source_sidewalk),
+        points_xz: vec![start, middle, end],
+    }];
+
+    materialize_noded_region_seam_constraints(
+        &mut regions,
+        &Vec::new(),
+        &rail_constraints,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    );
+
+    for region in &regions {
+        assert!(
+            region.seam_constraints.iter().any(|constraint| {
+                ownership_key_from_road_point(constraint.start_xz)
+                    == ownership_key_from_road_point(start)
+                    && ownership_key_from_road_point(constraint.end_xz)
+                        == ownership_key_from_road_point(end)
+                    && ((constraint.owner == Some(curb)
+                        && constraint.opposite_owner == Some(final_sidewalk))
+                        || (constraint.owner == Some(final_sidewalk)
+                            && constraint.opposite_owner == Some(curb)))
+                    && !constraint.constrains_shared_height
+                    && constraint.is_material_transition
+                    && matches!(
+                        constraint.seam_source,
+                        NodeSeamSource::RaisedStepContact { .. }
+                    )
+            }),
+            "source-authorized curb-sidewalk polyline must materialize the final noded JunctionN edge"
+        );
+    }
+}
+
+#[test]
 fn materializes_cross_material_contact_from_exact_final_owner_band_contour_edge() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);

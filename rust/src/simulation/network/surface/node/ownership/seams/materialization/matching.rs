@@ -150,6 +150,12 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
     {
         return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
     }
+    if constraint.kind == NodeRailConstraintKind::RaisedStepContact
+        && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+        && !materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner)
+    {
+        return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+    }
     matches!(
         piece_kind,
         RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::Terminal
