@@ -42,6 +42,12 @@ fn surface_terrain_cdt_authored_piece_matrix_preserves_owned_sources() {
             2,
             "straight road should cover span plus both terminal footprints"
         );
+        assert_terrain_clip_loops_cover_node_top_footprint_bounds(
+            "straight terminal footprint terrain clip coverage",
+            &surface,
+            &graph,
+            (-56.0, -44.0, 56.0, 4.0),
+        );
         assert_surface_terrain_cdt_contract(
             "straight span with terminal footprints on authored hillside",
             &surface,
@@ -203,6 +209,70 @@ fn surface_terrain_cdt_authored_piece_matrix_preserves_owned_sources() {
             false,
         );
     }
+}
+
+fn assert_terrain_clip_loops_cover_node_top_footprint_bounds(
+    case_name: &str,
+    surface: &RoadSurfaceSystem,
+    graph: &RegionGraph,
+    bounds: (f32, f32, f32, f32),
+) {
+    let (min_x, min_z, max_x, max_z) = bounds;
+    let (road_loops, _) = surface
+        .terrain_cdt_road_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z)
+        .unwrap_or_else(|err| panic!("{case_name}: terrain clip export failed: {err:?}"));
+    let clip_bounds = xz_bounds(
+        road_loops
+            .iter()
+            .flat_map(|road_loop| road_loop.vertices.iter())
+            .map(|vertex| (vertex.x as f32, vertex.z as f32)),
+    )
+    .expect("terrain clip should export road loops");
+    let top_bounds = xz_bounds(
+        surface
+            .compiled_visual_node_pieces()
+            .values()
+            .filter(|piece| piece.kind == RoadSurfaceVisualNodePieceKind::Terminal)
+            .flat_map(|piece| {
+                piece
+                    .road_surface_polygons
+                    .iter()
+                    .chain(piece.curb_surface_polygons.iter())
+                    .chain(piece.sidewalk_surface_polygons.iter())
+            })
+            .flat_map(|polygon| polygon.points_world.iter())
+            .map(|point| (point.x, point.z)),
+    )
+    .expect("straight road should have terminal top polygons");
+    let raw_terminal_clip_bounds = xz_bounds(
+        surface
+            .compiled_visual_node_pieces()
+            .values()
+            .filter(|piece| piece.kind == RoadSurfaceVisualNodePieceKind::Terminal)
+            .flat_map(|piece| piece.terrain_clip_boundary_loops.iter())
+            .flat_map(|boundary_loop| boundary_loop.points_world.iter())
+            .map(|point| (point.x, point.z)),
+    )
+    .expect("straight road should have terminal terrain clip loops");
+    let epsilon = 0.001;
+    assert!(
+        clip_bounds.0 <= top_bounds.0 + epsilon
+            && clip_bounds.1 <= top_bounds.1 + epsilon
+            && clip_bounds.2 >= top_bounds.2 - epsilon
+            && clip_bounds.3 >= top_bounds.3 - epsilon,
+        "{case_name}: terrain clip bounds {clip_bounds:?} must cover terminal top bounds {top_bounds:?}; raw terminal clip bounds {raw_terminal_clip_bounds:?}"
+    );
+}
+
+fn xz_bounds(points: impl IntoIterator<Item = (f32, f32)>) -> Option<(f32, f32, f32, f32)> {
+    points.into_iter().fold(None, |bounds, (x, z)| {
+        Some(match bounds {
+            Some((min_x, min_z, max_x, max_z)) => {
+                (min_x.min(x), min_z.min(z), max_x.max(x), max_z.max(z))
+            }
+            None => (x, z, x, z),
+        })
+    })
 }
 
 #[test]

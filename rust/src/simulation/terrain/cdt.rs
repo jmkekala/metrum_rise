@@ -18,6 +18,7 @@ const MAX_SEAM_QUALITY_SAMPLES: usize = 8;
 const MAX_TIE_IN_SAMPLE_DIAGNOSTICS: usize = 8;
 const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
+const MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M: f32 = 0.5;
 const MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M: f64 = 0.05;
 
 type SpadeCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
@@ -632,6 +633,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         &canonical.vertices,
         &triangles,
         &canonical.road_constraint_sources,
+        &canonical.retaining_wall_required_sources,
     );
     let mut terrain_triangles = Vec::new();
     let mut terrain_triangle_sources = Vec::new();
@@ -722,6 +724,7 @@ struct CanonicalTerrainCdtInput {
     accepted_seam_edges: usize,
     merged_subbudget_seam_edges: usize,
     retaining_wall_required_seam_edges: usize,
+    retaining_wall_required_sources: Vec<TerrainCdtRoadBoundarySource>,
     blocking_degenerate_seam_edges: usize,
     seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
     tie_in_widened_source_samples: usize,
@@ -762,6 +765,7 @@ fn canonicalize_input(
     let mut accepted_seam_edges = 0usize;
     let mut merged_subbudget_seam_edges = 0usize;
     let mut retaining_wall_required_seam_edges = 0usize;
+    let mut retaining_wall_required_sources = Vec::new();
     let mut blocking_degenerate_seam_edges = 0usize;
     let mut seam_quality_samples = Vec::new();
     let mut tie_in_widened_source_samples = 0usize;
@@ -864,6 +868,9 @@ fn canonicalize_input(
                 tie_in_widened_max_y_delta_m.max(tie_in_sample.height_delta_m);
             tie_in_widened_max_slope_ratio =
                 tie_in_widened_max_slope_ratio.max(tie_in_sample.slope_ratio);
+            if tie_in_sample.height_delta_m >= MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M {
+                retaining_wall_required_sources.push(tie_in_sample.seam_source);
+            }
             insert_tie_in_widened_sample(&mut tie_in_widened_samples, tie_in_sample);
             continue;
         }
@@ -886,6 +893,7 @@ fn canonicalize_input(
     for edge in &road_constraint_edges {
         insert_constraint(*edge, &mut constraint_set);
     }
+    sort_dedup_terrain_cdt_boundary_sources(&mut retaining_wall_required_sources);
 
     Ok(CanonicalTerrainCdtInput {
         vertices,
@@ -896,6 +904,7 @@ fn canonicalize_input(
         accepted_seam_edges,
         merged_subbudget_seam_edges,
         retaining_wall_required_seam_edges,
+        retaining_wall_required_sources,
         blocking_degenerate_seam_edges,
         seam_quality_samples,
         tie_in_widened_source_samples,
@@ -2099,6 +2108,7 @@ fn terrain_face_diagnostics(
     vertices: &[TerrainCdtVertex],
     triangles: &[[usize; 3]],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+    retaining_wall_required_sources: &[TerrainCdtRoadBoundarySource],
 ) -> TerrainCdtDiagnostics {
     let mut diagnostics = TerrainCdtDiagnostics {
         emitted_faces: Vec::new(),
@@ -2122,7 +2132,7 @@ fn terrain_face_diagnostics(
         ];
         let sources = terrain_triangle_road_sources(triangle, road_constraint_sources);
         let touches_road_seam = !sources.is_empty();
-        let kind = classify_terrain_tie_in_face(points, touches_road_seam);
+        let kind = classify_terrain_tie_in_face(points, &sources, retaining_wall_required_sources);
         let metrics = terrain_face_sample(points, kind, sources);
         diagnostics.emitted_faces.push(TerrainCdtEmittedFace {
             triangle: *triangle,
@@ -2186,10 +2196,17 @@ fn terrain_triangle_road_sources(
 
 fn classify_terrain_tie_in_face(
     points: [TerrainCdtVertex; 3],
-    touches_road_seam: bool,
+    sources: &[TerrainCdtRoadBoundarySource],
+    retaining_wall_required_sources: &[TerrainCdtRoadBoundarySource],
 ) -> TerrainCdtTieInKind {
-    if !touches_road_seam {
+    if sources.is_empty() {
         return TerrainCdtTieInKind::OrdinaryTerrain;
+    }
+    if terrain_sources_include_retaining_wall_required_source(
+        sources,
+        retaining_wall_required_sources,
+    ) {
+        return TerrainCdtTieInKind::RetainingWall;
     }
     let metrics = terrain_face_sample(points, TerrainCdtTieInKind::OrdinaryTerrain, Vec::new());
     if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
@@ -2197,6 +2214,19 @@ fn classify_terrain_tie_in_face(
     } else {
         TerrainCdtTieInKind::OrdinaryTerrain
     }
+}
+
+fn terrain_sources_include_retaining_wall_required_source(
+    sources: &[TerrainCdtRoadBoundarySource],
+    retaining_wall_required_sources: &[TerrainCdtRoadBoundarySource],
+) -> bool {
+    sources.iter().copied().any(|source| {
+        retaining_wall_required_sources
+            .binary_search_by(|required_source| {
+                terrain_cdt_boundary_source_cmp(*required_source, source)
+            })
+            .is_ok()
+    })
 }
 
 fn widening_tie_in_sample_against_any_road_loop(
@@ -2995,6 +3025,46 @@ mod tests {
 
         assert_eq!(mesh.tie_in_widened_samples.len(), 1);
         assert_eq!(mesh.tie_in_widened_samples[0].seam_source, source);
+    }
+
+    #[test]
+    fn cdt_promotes_high_delta_omitted_tie_in_source_to_retaining_wall() {
+        let source = TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
+            node_id: 1,
+            node_kind: TerrainCdtNodePieceKind::Terminal,
+            owner_kind: TerrainCdtRoadBandKind::Sidewalk,
+            owner_index: 0,
+            boundary_source: None,
+        };
+        let road = vec![
+            TerrainCdtVertex::new(48.0, 1.2, 48.0),
+            TerrainCdtVertex::new(52.0, 1.2, 48.0),
+            TerrainCdtVertex::new(52.0, 1.2, 52.0),
+            TerrainCdtVertex::new(48.0, 1.2, 52.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 100.0, 100.0, [0.0; 4]),
+            vec![sourced_road_loop(1, 0, road, source)],
+            vec![TerrainCdtVertex::new(50.0, 0.0, 47.99)],
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("high-delta sourced tie-in widening should triangulate");
+
+        assert_eq!(mesh.stats.tie_in_widened_source_samples, 1);
+        assert!(mesh.stats.retaining_wall_faces > 0);
+        assert!(
+            mesh.retaining_wall_triangle_sources
+                .iter()
+                .any(|sources| sources.contains(&source)),
+            "source-required retaining walls must preserve the omitted terminal sidewalk source"
+        );
+        assert!(
+            mesh.emitted_faces.iter().any(|face| {
+                face.kind == TerrainCdtTieInKind::RetainingWall && face.sources.contains(&source)
+            }),
+            "first-class emitted retaining-wall faces must carry the required seam source"
+        );
     }
 
     #[test]

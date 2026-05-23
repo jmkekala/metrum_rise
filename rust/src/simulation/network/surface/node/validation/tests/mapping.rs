@@ -223,6 +223,42 @@ fn maps_boolean_residual_to_structured_debug_record() {
 }
 
 #[test]
+fn maps_ambiguous_canonical_owned_region_vertex_to_source_rich_debug_record() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let report = NodeValidationReport::from_boolean_ownership_error(
+        2,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex {
+            owner,
+            point_x_key: -62_874_250,
+            point_z_key: -60_856_125,
+            candidates: vec![(-62_874_000, -60_856_000), (-62_874_500, -60_856_250)],
+        },
+    );
+
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::BooleanOwnership);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::IOverlay);
+    assert!(matches!(
+        &diagnostic.kind,
+        NodeGeometryDiagnosticKind::AmbiguousCanonicalOwnedRegionVertex {
+            owner: diagnostic_owner,
+            point_x_key: -62_874_250,
+            point_z_key: -60_856_125,
+            candidates,
+            ..
+        } if *diagnostic_owner == owner
+            && candidates.len() == 2
+            && candidates[0].x_key == -62_874_000
+            && candidates[1].x_key == -62_874_500
+    ));
+    let dump = report.debug_dump();
+    assert!(dump.contains("\"kind\":\"ambiguous_canonical_owned_region_vertex\""));
+    assert!(dump.contains("point_x_mm"));
+    assert!(dump.contains("candidates"));
+}
+
+#[test]
 fn maps_arrangement_seam_diagnostic_to_structured_debug_record() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);

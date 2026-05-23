@@ -2,6 +2,7 @@
 
 use super::super::arrangement::{NodeBandHeightFieldId, NodeBandOwner};
 use super::super::height::NodeHeightAuthoritySource;
+use super::super::keys::SurfaceXzKey;
 use super::super::triangulation::NodeTriangulationSolution;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::fmt::Write as _;
@@ -209,6 +210,25 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_z_mm: i64,
         source_constraint_indices: Vec<usize>,
     },
+    NonCanonicalOwnedRegionVertex {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        canonical_x_key: i64,
+        canonical_z_key: i64,
+        canonical_x_mm: i64,
+        canonical_z_mm: i64,
+    },
+    AmbiguousCanonicalOwnedRegionVertex {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        candidates: Vec<NodeCanonicalPointDiagnostic>,
+    },
     BackendFailure {
         reason: &'static str,
     },
@@ -237,6 +257,14 @@ pub(crate) enum NodeSeamConstraintFailureReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NodeCanonicalPointDiagnostic {
+    pub(crate) x_key: i64,
+    pub(crate) z_key: i64,
+    pub(crate) x_mm: i64,
+    pub(crate) z_mm: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NodeExplicitStepSegmentDiagnostic {
     pub(crate) segment_index: usize,
     pub(crate) start_x_key: i64,
@@ -253,6 +281,17 @@ pub(crate) struct NodeExplicitStepSegmentDiagnostic {
     pub(crate) opposite_owner_index: usize,
     pub(crate) owners_match_regions: bool,
     pub(crate) edge_lies_on_segment: bool,
+}
+
+impl NodeCanonicalPointDiagnostic {
+    pub(crate) fn from_key(point: (i64, i64)) -> Self {
+        Self {
+            x_key: point.0,
+            z_key: point.1,
+            x_mm: SurfaceXzKey::coordinate_key_to_mm(point.0),
+            z_mm: SurfaceXzKey::coordinate_key_to_mm(point.1),
+        }
+    }
 }
 
 impl NodeValidationReport {
@@ -365,6 +404,10 @@ impl NodeGeometryDiagnosticKind {
             Self::AmbiguousOwnedBoundaryEdge { .. } => "ambiguous_owned_boundary_edge",
             Self::UnmaterializedRaisedStepAuthority { .. } => {
                 "unmaterialized_raised_step_authority"
+            }
+            Self::NonCanonicalOwnedRegionVertex { .. } => "noncanonical_owned_region_vertex",
+            Self::AmbiguousCanonicalOwnedRegionVertex { .. } => {
+                "ambiguous_canonical_owned_region_vertex"
             }
             Self::BackendFailure { .. } => "backend_failure",
         }

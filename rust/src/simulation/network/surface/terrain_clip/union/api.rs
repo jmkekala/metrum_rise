@@ -1,6 +1,7 @@
 //! Terrain-clip union public entry points.
 
 use super::*;
+use i_overlay::core::fill_rule::FillRule;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_export(
@@ -41,7 +42,12 @@ impl RoadSurfaceSystem {
         }
 
         let contours = Self::overlay_contours_from_terrain_clip_boundary_loops(boundary_loops);
-        let Some(mut shapes) = Self::overlay_union_contours(&contours) else {
+        // Terrain clip input is occupied road footprint. Node exporters may emit final outer
+        // contours with either winding at vertical-step boundaries, while real holes still cancel
+        // against enclosing contours under the non-zero rule.
+        let Some(mut shapes) =
+            Self::overlay_union_contours_with_fill_rule(&contours, FillRule::NonZero)
+        else {
             return Err(RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: boundary_loops.len(),
             });

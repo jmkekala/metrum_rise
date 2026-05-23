@@ -28,6 +28,13 @@ impl RoadSurfaceSystem {
     pub(super) fn overlay_union_contours(
         contours: &[NodeOverlayContour],
     ) -> Option<NodeOverlayShapes> {
+        Self::overlay_union_contours_with_fill_rule(contours, FillRule::Positive)
+    }
+
+    pub(super) fn overlay_union_contours_with_fill_rule(
+        contours: &[NodeOverlayContour],
+        fill_rule: FillRule,
+    ) -> Option<NodeOverlayShapes> {
         if contours.is_empty() {
             return Some(Vec::new());
         }
@@ -40,7 +47,7 @@ impl RoadSurfaceSystem {
             Self::int_overlay_options(),
             Default::default(),
         );
-        let shapes = overlay.overlay(OverlayRule::Union, FillRule::Positive);
+        let shapes = overlay.overlay(OverlayRule::Union, fill_rule);
         Some(Self::filter_overlay_shapes_by_area(
             Self::overlay_shapes_from_int_shapes(shapes, origin),
         ))
