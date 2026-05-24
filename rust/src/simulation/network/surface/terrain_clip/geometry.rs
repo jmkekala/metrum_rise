@@ -4,7 +4,7 @@ use super::super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour,
     NodeOverlayPoint, RoadSurfaceSystem,
     backend::ROAD_OVERLAY_COORDINATE_SCALE,
-    keys::SurfaceXzKey,
+    keys::{SurfaceHeightMmKey, SurfaceXzKey},
     segments::{exact_line_parameter, overlay_point_key},
 };
 use super::model::{
@@ -75,6 +75,28 @@ impl RoadSurfaceSystem {
 
     pub(super) fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {
         Self::terrain_clip_world_key(a) == Self::terrain_clip_world_key(b)
+    }
+
+    pub(super) fn canonical_numeric_dust_boundary_point(a: Vector3, b: Vector3) -> Option<Vector3> {
+        if !Self::overlay_heights_equal(a.y, b.y) {
+            return None;
+        }
+        let dx = f64::from(a.x) - f64::from(b.x);
+        let dz = f64::from(a.z) - f64::from(b.z);
+        let dust_width_m = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
+        if dx * dx + dz * dz > dust_width_m * dust_width_m {
+            return None;
+        }
+
+        let a_key = Self::terrain_clip_world_key(a);
+        let b_key = Self::terrain_clip_world_key(b);
+        let key = if a_key <= b_key { a_key } else { b_key };
+        let point = key.to_road_xz();
+        Some(Vector3::new(
+            point.x as f32,
+            SurfaceHeightMmKey::from_m_f32(a.y).as_i64() as f32 / 1000.0,
+            point.y as f32,
+        ))
     }
 
     pub(super) fn overlay_line_parameter(

@@ -139,14 +139,33 @@ section says whether the runtime has reached it yet.
   source-edge endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source
   clusters, final-footprint raised-step boundary pairs, JunctionN curb / shoulder mouth-band
   edge contacts, same-material endpoint paths backed by explicit material-step provenance, and
-  final owned-region seam endpoints backed by explicit source-rail interpolation
+  final owned-region seam endpoints backed by explicit source-rail interpolation. Collapsed
+  direct material-step edges may be emitted only when both endpoint sides carry distributed
+  material-transition point sources and at least one side carries explicit height-split evidence.
+  Source-scoped same-millimetre height rails now take precedence over owner-wide candidate lookup
+  so unrelated same-owner source vertices cannot block a region's own post-boolean vertex
+  materialization.
+  General source-segment authorization for same-millimetre boolean vertices is now explicit:
+  a post-boolean vertex may be canonicalized to a nearby source rail only when exactly one
+  owner- and height-field-scoped source segment authorizes one canonical projection inside the
+  deterministic overlay dust budget. That projection is the legal carrier for the boolean vertex.
+  Multiple adjacent source-segment representations for the same owner/source/height-field may
+  collapse only when the boolean vertex is itself one of the canonical projections and every other
+  projection remains inside that same deterministic dust budget, or when every projection is backed
+  by a connected source-segment endpoint cluster inside the same dust budget and the vertex is
+  canonicalized to the deterministic source projection for that endpoint cluster. If two
+  off-carrier mid-segment source rails match, even inside the same millimetre or around a unique
+  source point, the compile fails with a structured ambiguous source-segment diagnostic.
+  Owner-wide nearest-point selection, arbitrary rounding, and global coordinate snapping remain
+  forbidden.
 - a pre-height-evaluation height-field completeness gate now resolves every final owned-region
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
   the old unscoped height evaluator
 - road-geometry diagnostic dumps now serialize stage, backend, owner, height-field, point / edge,
   residual, seam, and constraint metadata as queryable JSON fields instead of an opaque Rust debug
-  blob; remaining work is filling any missing-artifact coverage gaps before extending the
+  blob. Edge centerline dumps include precise replay coordinates alongside readable rounded
+  coordinates; remaining work is filling any missing-artifact coverage gaps before extending the
   generated conflict matrix into 4-way and arbitrary-`N` cases
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
@@ -876,6 +895,17 @@ node_non_road  = node_footprint - node_asphalt
 9. Build the canonical node arrangement from every accepted region. Every seam vertex and outer
    footprint vertex is inserted before triangulation and receives one owner and one
    `NodeBandHeightFieldId`.
+   Same-millimetre post-boolean vertices that are not exact source points must resolve through
+   source-segment authorization before this step: the region's explicit source band, owner, and
+   height field must identify exactly one canonical source projection within the overlay dust
+   budget. That projection becomes the canonical arrangement key. Adjacent source-segment
+   representations may preserve the boolean key only when the key is already on the authorized
+   carrier and the remaining projections are inside the same dust budget. Adjacent endpoint dust may
+   instead materialize to the deterministic source projection for a connected source-endpoint
+   cluster. If no source carrier matches, or if two off-carrier mid-segment source rails match the
+   same boolean vertex for that
+   owner/source/height-field, the node compile fails with diagnostics instead of rounding, welding,
+   preserving a backend crossing, or choosing the nearest owner-wide point.
 10. Triangulate owned regions with Spade CDT using the arrangement vertices and seam constraints as
    input.
 11. Sample each emitted triangle vertex from that triangle's owning `NodeOwnedRegion`. Cross-region
@@ -1613,6 +1643,9 @@ Implementation phases:
    - evaluate heights only at already-known canonical arrangement vertices
    - treat source-rail and terminal-cap contour split vertices as explicit carrier points when the
      owned boundary was canonicalized to that carrier
+   - permit source-segment materialization for backend-created same-millimetre boolean vertices
+     only when the owning source band and height field identify one canonical projection inside the
+     deterministic overlay dust budget
    - reject vertices outside their explicit carrier; do not fall back to parametric band sampling
    - reject same-XZ height conflicts instead of welding, averaging, nearest sampling, owner-priority
      selection, or min/max selection

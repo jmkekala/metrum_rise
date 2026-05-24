@@ -121,6 +121,18 @@ pub(crate) struct NodeBooleanOwnedRegion {
     pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct NodeSourceSegmentAuthorizationCandidate {
+    pub(crate) source_kind: RoadSurfaceBandKind,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: usize,
+    pub(crate) canonical_point: NodeOwnershipPointKey,
+    pub(crate) segment_start: NodeOwnershipPointKey,
+    pub(crate) segment_end: NodeOwnershipPointKey,
+    pub(crate) distance_key_units_sq: i64,
+    pub(crate) dust_budget_key_units: i64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NodeBooleanOwnershipError {
     EmptyContourSet {
@@ -161,6 +173,15 @@ pub(crate) enum NodeBooleanOwnershipError {
         point_x_key: i64,
         point_z_key: i64,
         candidates: Vec<NodeOwnershipPointKey>,
+    },
+    AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        source_kind: RoadSurfaceBandKind,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        candidates: Vec<NodeSourceSegmentAuthorizationCandidate>,
     },
 }
 
@@ -280,7 +301,8 @@ impl NodeBooleanOwnership {
                 &rails.constraints,
             );
         }
-        for _ in 0..2 {
+        let mut final_boundary_vertices_stable = false;
+        for _ in 0..8 {
             if !materialize_final_boundary_vertices_for_height(
                 rails.node_id,
                 &mut owned_regions,
@@ -290,8 +312,14 @@ impl NodeBooleanOwnership {
                 constraint_overlap_mode,
                 rails.piece_kind,
             )? {
+                final_boundary_vertices_stable = true;
                 break;
             }
+        }
+        if !final_boundary_vertices_stable {
+            return Err(NodeBooleanOwnershipError::BooleanOperationFailed {
+                stage: "final_boundary_vertex_materialization",
+            });
         }
         validate_non_road_regions_have_explicit_profile_seam_rails(
             &owned_regions,
@@ -480,6 +508,7 @@ fn materialize_final_boundary_vertices_for_height(
     constraint_overlap_mode: ConstraintOverlapMode,
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> Result<bool, NodeBooleanOwnershipError> {
+    let previous_region_points = owned_region_point_keys(owned_regions);
     let regions_changed = materialize_final_footprint_vertices_in_owned_regions(
         owned_regions,
         footprint_shapes,
@@ -488,6 +517,8 @@ fn materialize_final_boundary_vertices_for_height(
     if !regions_changed {
         return Ok(false);
     }
+    *footprint_shapes = final_footprint_shapes_from_owned_regions(node_id, owned_regions)?;
+    canonicalize_footprint_shapes_with_final_points(footprint_shapes, owned_regions);
     rebuild_owned_region_seam_constraints(
         owned_regions,
         footprint_shapes,
@@ -502,7 +533,19 @@ fn materialize_final_boundary_vertices_for_height(
         footprint_shapes,
         rail_constraints,
     );
-    Ok(true)
+    Ok(owned_region_point_keys(owned_regions) != previous_region_points)
+}
+
+fn owned_region_point_keys(owned_regions: &[NodeBooleanOwnedRegion]) -> Vec<NodeOwnershipPointKey> {
+    let mut points = owned_regions
+        .iter()
+        .flat_map(|region| region.shape.iter())
+        .flat_map(|contour| contour.iter().copied())
+        .map(ownership_key_from_overlay_point)
+        .collect::<Vec<_>>();
+    points.sort_unstable();
+    points.dedup();
+    points
 }
 
 fn final_footprint_shapes_from_owned_regions(
@@ -545,7 +588,7 @@ fn rebuild_owned_region_seam_constraints(
 fn materialize_final_footprint_vertices_in_owned_regions(
     owned_regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
-    arrangement: &NodeOwnedRegionArrangement,
+    _arrangement: &NodeOwnedRegionArrangement,
 ) -> bool {
     let final_footprint_points = final_footprint_point_keys(footprint_shapes);
     let final_footprint_edges = final_footprint_edge_keys(footprint_shapes);
@@ -553,14 +596,10 @@ fn materialize_final_footprint_vertices_in_owned_regions(
         return false;
     }
     let mut changed = false;
-    for (region_index, region) in owned_regions.iter_mut().enumerate() {
+    for region in owned_regions.iter_mut() {
         for contour in &mut region.shape {
-            let materialized = materialized_contour_with_final_footprint_points(
-                contour,
-                region_index,
-                &final_footprint_edges,
-                arrangement,
-            );
+            let materialized =
+                materialized_contour_with_final_footprint_points(contour, &final_footprint_edges);
             if contour_point_keys(&materialized) == contour_point_keys(contour) {
                 continue;
             }
@@ -605,9 +644,7 @@ fn final_footprint_edge_keys(
 
 fn materialized_contour_with_final_footprint_points(
     contour: &NodeOverlayContour,
-    region_index: usize,
     final_footprint_edges: &[(NodeOwnershipPointKey, NodeOwnershipPointKey)],
-    arrangement: &NodeOwnedRegionArrangement,
 ) -> NodeOverlayContour {
     if contour.len() < 2 {
         return contour.clone();
@@ -619,12 +656,12 @@ fn materialized_contour_with_final_footprint_points(
         if start == end {
             continue;
         }
-        if !region_edge_is_exposed_final_footprint_boundary(arrangement, region_index, start, end) {
+        let mut edge_points =
+            supported_final_footprint_boundary_points_for_edge(start, end, final_footprint_edges);
+        if edge_points.is_empty() {
             materialized.push(start);
             continue;
         }
-        let mut edge_points =
-            supported_final_footprint_boundary_points_for_edge(start, end, final_footprint_edges);
         edge_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
         edge_points.dedup();
         materialized.push(start);
@@ -669,24 +706,6 @@ fn footprint_edges_overlap(
         || point_key_lies_on_segment(left_end, right_start, right_end)
         || point_key_lies_on_segment(right_start, left_start, left_end)
         || point_key_lies_on_segment(right_end, left_start, left_end)
-}
-
-fn region_edge_is_exposed_final_footprint_boundary(
-    arrangement: &NodeOwnedRegionArrangement,
-    region_index: usize,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    arrangement
-        .edges()
-        .iter()
-        .filter(|edge| edge.region_index == region_index && edge.opposite_owner.is_none())
-        .any(|edge| {
-            let edge_start = (edge.start.x_key, edge.start.z_key);
-            let edge_end = (edge.end.x_key, edge.end.z_key);
-            point_key_lies_on_segment(start, edge_start, edge_end)
-                && point_key_lies_on_segment(end, edge_start, edge_end)
-        })
 }
 
 fn dedup_materialized_contour(points: &mut Vec<NodeOwnershipPointKey>) {

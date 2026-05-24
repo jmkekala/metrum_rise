@@ -20,7 +20,7 @@ use crate::simulation::network::surface::node::height::{
 };
 use crate::simulation::network::surface::ownership::{
     NodeBooleanOwnership, NodeBooleanOwnershipError, NodeOwnedRegionArrangementDiagnostic,
-    NodeOwnedRegionArrangementKey,
+    NodeOwnedRegionArrangementKey, NodeSourceSegmentAuthorizationCandidate,
 };
 use crate::simulation::network::surface::rails::{
     NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailContourSet,

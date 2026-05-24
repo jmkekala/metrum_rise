@@ -322,6 +322,68 @@ fn maps_ambiguous_canonical_owned_region_vertex_to_source_rich_debug_record() {
 }
 
 #[test]
+fn maps_ambiguous_source_segment_authorization_to_source_rich_debug_record() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let report = NodeValidationReport::from_boolean_ownership_error(
+        2,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeBooleanOwnershipError::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
+            owner,
+            point_x_key: -39_339_253,
+            point_z_key: -57_072_177,
+            source_kind: RoadSurfaceBandKind::Carriageway,
+            source_mouth_order_index: 1,
+            source_band_index: 2,
+            candidates: vec![
+                NodeSourceSegmentAuthorizationCandidate {
+                    source_kind: RoadSurfaceBandKind::Carriageway,
+                    source_mouth_order_index: 1,
+                    source_band_index: 2,
+                    canonical_point: (-39_339_263, -57_072_175),
+                    segment_start: (-39_339_263, -57_072_175),
+                    segment_end: (-39_340_263, -57_072_175),
+                    distance_key_units_sq: 104,
+                    dust_budget_key_units: 256,
+                },
+                NodeSourceSegmentAuthorizationCandidate {
+                    source_kind: RoadSurfaceBandKind::Carriageway,
+                    source_mouth_order_index: 1,
+                    source_band_index: 2,
+                    canonical_point: (-39_339_147, -57_071_688),
+                    segment_start: (-39_339_147, -57_071_688),
+                    segment_end: (-39_339_147, -57_070_688),
+                    distance_key_units_sq: 250_000,
+                    dust_budget_key_units: 256,
+                },
+            ],
+        },
+    );
+
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::BooleanOwnership);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::IOverlay);
+    assert!(matches!(
+        &diagnostic.kind,
+        NodeGeometryDiagnosticKind::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
+            owner: diagnostic_owner,
+            point_x_key: -39_339_253,
+            point_z_key: -57_072_177,
+            source_kind: RoadSurfaceBandKind::Carriageway,
+            source_mouth_order_index: 1,
+            source_band_index: 2,
+            candidates,
+            ..
+        } if *diagnostic_owner == owner
+            && candidates.len() == 2
+            && candidates[0].canonical_point == (-39_339_263, -57_072_175)
+    ));
+    let dump = report.debug_dump();
+    assert!(dump.contains("\"kind\":\"ambiguous_source_segment_authorization\""));
+    assert!(dump.contains("dust_budget_key_units"));
+    assert!(dump.contains("segment_start"));
+}
+
+#[test]
 fn maps_arrangement_seam_diagnostic_to_structured_debug_record() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);

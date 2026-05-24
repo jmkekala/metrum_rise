@@ -174,8 +174,14 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"geometry_world\": ");
         Self::append_vector3_list_literal(dump, &edge.geometry);
         dump.push_str(",\n");
+        dump.push_str("      \"geometry_world_precise\": ");
+        Self::append_vector3_precise_list_literal(dump, &edge.geometry);
+        dump.push_str(",\n");
         dump.push_str("      \"physical_geometry_world\": ");
         Self::append_vector3_list_literal(dump, &edge.physical_geometry);
+        dump.push_str(",\n");
+        dump.push_str("      \"physical_geometry_world_precise\": ");
+        Self::append_vector3_precise_list_literal(dump, &edge.physical_geometry);
         dump.push_str(",\n");
         let _ = writeln!(dump, "      \"sections\": [");
 

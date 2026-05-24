@@ -350,7 +350,9 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
 
     assert!(dump.contains("ROAD_GEOMETRY_DUMP_BEGIN"));
     assert!(dump.contains("\"edge_idx\": 0"));
+    assert!(dump.contains("\"geometry_world_precise\""));
     assert!(dump.contains("\"physical_geometry_world\""));
+    assert!(dump.contains("\"physical_geometry_world_precise\""));
     assert!(dump.contains("\"sections\""));
     assert!(dump.contains("\"span_ownership\""));
     assert!(dump.contains("\"owned_region_count\""));

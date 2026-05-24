@@ -2,26 +2,43 @@
 
 use super::super::RoadSurfaceBandKind;
 use super::super::arrangement::NodeBandOwner;
-use super::super::rails::{NodeGeneratedContourKind, NodeRailConstraint, NodeRailContourSet};
+use super::super::backend::road_vec3_xz;
+use super::super::rails::{
+    NodeGeneratedContourKind, NodeRailConstraint, NodeRailContourSet, NodeRailHeightCarrierPaths,
+};
 use super::topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, ownership_key_from_overlay_point,
     ownership_key_from_road_point, ownership_mm_key, point_key_lies_on_segment,
 };
-use super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
+use super::{
+    NodeBooleanOwnedRegion, NodeBooleanOwnershipError, NodeSourceSegmentAuthorizationCandidate,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Same-owner source points inside this sub-quarter-millimeter span are one canonical
 // source duplicate cluster; wider same-mm collisions remain blocking ambiguity.
 const SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS: i64 = 256;
+const SOURCE_SEGMENT_AUTHORIZATION_DUST_BUDGET_UNITS: i64 = 256;
+
+type NodeRailHeightSourceKey = (RoadSurfaceBandKind, usize, usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) struct NodeRailSourceSegmentAuthority {
+    pub(super) owner: NodeBandOwner,
+    pub(super) source: NodeRailHeightSourceKey,
+    pub(super) segment: OwnedRegionEdgeKey,
+}
 
 pub(super) struct NodeRailCanonicalPointSet {
     pub(super) all_points: Vec<NodeOwnershipPointKey>,
     pub(super) points_by_owner: BTreeMap<NodeBandOwner, Vec<NodeOwnershipPointKey>>,
     pub(super) segments_by_owner: BTreeMap<NodeBandOwner, Vec<OwnedRegionEdgeKey>>,
+    pub(super) source_segments_by_owner:
+        BTreeMap<NodeBandOwner, Vec<NodeRailSourceSegmentAuthority>>,
     pub(super) canonical_points_by_mm_key_by_owner:
         BTreeMap<NodeBandOwner, BTreeMap<NodeOwnershipPointKey, BTreeSet<NodeOwnershipPointKey>>>,
     pub(super) height_points_by_source:
-        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeOwnershipPointKey>>,
+        BTreeMap<NodeRailHeightSourceKey, Vec<NodeOwnershipPointKey>>,
     pub(super) paths_by_owner: BTreeMap<NodeBandOwner, Vec<Vec<NodeOwnershipPointKey>>>,
 }
 

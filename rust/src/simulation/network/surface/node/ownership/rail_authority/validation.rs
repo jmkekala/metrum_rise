@@ -36,6 +36,13 @@ pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_r
             })
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let source_key = region.source_band_index.map(|source_band_index| {
+            (
+                region.kind,
+                region.source_mouth_order_index,
+                source_band_index,
+            )
+        });
         for contour in &region.shape {
             for point in contour
                 .iter()
@@ -45,11 +52,20 @@ pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_r
                 if source_height_points.binary_search(&point).is_ok() {
                     continue;
                 }
-                if rail_points.source_authorizes_same_mm_duplicate_cluster(
-                    region.owner,
-                    point,
-                    source_height_points,
-                ) {
+                if rail_points
+                    .source_authorizes_same_mm_duplicate_cluster(point, source_height_points)
+                {
+                    continue;
+                }
+                if rail_points
+                    .source_canonicalized_point_for_owner(
+                        region.owner,
+                        point,
+                        source_key,
+                        source_height_points,
+                    )?
+                    .is_some()
+                {
                     continue;
                 }
                 if rail_points.owner_source_authorizes_point(region.owner, point)? {

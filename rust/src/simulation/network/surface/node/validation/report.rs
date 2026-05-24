@@ -3,6 +3,7 @@
 use super::super::arrangement::{NodeBandHeightFieldId, NodeBandOwner};
 use super::super::height::NodeHeightAuthoritySource;
 use super::super::keys::SurfaceXzKey;
+use super::super::ownership::NodeSourceSegmentAuthorizationCandidate;
 use super::super::triangulation::NodeTriangulationSolution;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use serde_json::{Value, json};
@@ -229,6 +230,17 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         point_x_mm: i64,
         point_z_mm: i64,
         candidates: Vec<NodeCanonicalPointDiagnostic>,
+    },
+    AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        source_kind: RoadSurfaceBandKind,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        candidates: Vec<NodeSourceSegmentAuthorizationCandidate>,
     },
     BackendFailure {
         reason: &'static str,
@@ -736,6 +748,32 @@ impl NodeGeometryDiagnosticKind {
                     .map(canonical_point_value)
                     .collect::<Vec<_>>(),
             }),
+            Self::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
+                owner,
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                source_kind,
+                source_mouth_order_index,
+                source_band_index,
+                candidates,
+            } => json!({
+                "owner": owner_value(*owner),
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "source": {
+                    "kind": band_kind_value(*source_kind),
+                    "mouth_order_index": source_mouth_order_index,
+                    "band_index": source_band_index,
+                },
+                "candidates": candidates
+                    .iter()
+                    .map(source_segment_authorization_candidate_value)
+                    .collect::<Vec<_>>(),
+            }),
             Self::BackendFailure { reason } => json!({
                 "reason": reason,
             }),
@@ -766,6 +804,9 @@ impl NodeGeometryDiagnosticKind {
             Self::NonCanonicalOwnedRegionVertex { .. } => "noncanonical_owned_region_vertex",
             Self::AmbiguousCanonicalOwnedRegionVertex { .. } => {
                 "ambiguous_canonical_owned_region_vertex"
+            }
+            Self::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex { .. } => {
+                "ambiguous_source_segment_authorization"
             }
             Self::BackendFailure { .. } => "backend_failure",
         }
@@ -836,6 +877,29 @@ fn canonical_point_value(point: &NodeCanonicalPointDiagnostic) -> Value {
         "z_key": point.z_key,
         "x_mm": point.x_mm,
         "z_mm": point.z_mm,
+    })
+}
+
+fn source_segment_authorization_candidate_value(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+) -> Value {
+    json!({
+        "source": {
+            "kind": band_kind_value(candidate.source_kind),
+            "mouth_order_index": candidate.source_mouth_order_index,
+            "band_index": candidate.source_band_index,
+        },
+        "canonical": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            candidate.canonical_point,
+        )),
+        "segment_start": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            candidate.segment_start,
+        )),
+        "segment_end": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            candidate.segment_end,
+        )),
+        "distance_key_units_sq": candidate.distance_key_units_sq,
+        "dust_budget_key_units": candidate.dust_budget_key_units,
     })
 }
 

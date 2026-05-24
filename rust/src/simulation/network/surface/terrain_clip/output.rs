@@ -7,6 +7,7 @@ use super::super::{
 use super::heights::interval_height_at;
 use super::model::*;
 use godot::prelude::Vector3;
+use std::collections::BTreeMap;
 
 enum TerrainClipOutputSourceSelection {
     Missing,
@@ -25,6 +26,9 @@ impl RoadSurfaceSystem {
             let start = segment[0];
             let end = segment[1];
             if Self::world_points_same_for_boundary(start, end) {
+                continue;
+            }
+            if Self::canonical_numeric_dust_boundary_point(start, end).is_some() {
                 continue;
             }
             let source = Self::terrain_clip_output_source_for_points(start, end, source_edges)?;
@@ -103,6 +107,11 @@ impl RoadSurfaceSystem {
             };
             edges[0].start = shared;
             edges[last_index].end = shared;
+        } else if let Some(shared) =
+            Self::canonical_numeric_dust_boundary_point(first_start, last_end)
+        {
+            edges[0].start = shared;
+            edges[last_index].end = shared;
         }
     }
 
@@ -113,6 +122,9 @@ impl RoadSurfaceSystem {
         if Self::world_points_same_for_boundary(edge.start, edge.end) {
             return;
         }
+        if Self::canonical_numeric_dust_boundary_point(edge.start, edge.end).is_some() {
+            return;
+        }
         if let Some(last) = out.last_mut()
             && Self::world_points_same_for_boundary(last.end, edge.start)
         {
@@ -121,6 +133,12 @@ impl RoadSurfaceSystem {
             } else {
                 last.end
             };
+            last.end = shared;
+            edge.start = shared;
+        }
+        if let Some(last) = out.last_mut()
+            && let Some(shared) = Self::canonical_numeric_dust_boundary_point(last.end, edge.start)
+        {
             last.end = shared;
             edge.start = shared;
         }
@@ -192,20 +210,12 @@ impl RoadSurfaceSystem {
             end,
             source_edges,
         ));
-        if candidates.is_empty() {
-            return TerrainClipOutputSourceSelection::Missing;
-        }
-        let first = candidates[0];
-        if !candidates
-            .iter()
-            .copied()
-            .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
+        if let Some(source) =
+            Self::canonical_same_owner_dust_connector_output_source(&candidates, start, end)
         {
-            return TerrainClipOutputSourceSelection::Ambiguous(
-                "dust_connector_endpoint_sources_disagree".to_string(),
-            );
+            return TerrainClipOutputSourceSelection::Source(source);
         }
-        Self::unique_terrain_clip_output_source(candidates, "dust_connector", None)
+        Self::unique_terrain_clip_output_source(candidates, "dust_connector", Some((start, end)))
     }
 
     fn terrain_clip_source_edges_at_world_xz_point(
@@ -322,6 +332,77 @@ impl RoadSurfaceSystem {
             return None;
         }
 
+        Some(TerrainClipSourceEdge {
+            start,
+            end,
+            kind: first.kind,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index,
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: Self::canonical_output_boundary_vertex_source(start),
+                    end: Self::canonical_output_boundary_vertex_source(end),
+                }),
+            },
+            source_index: first.source_index,
+            edge_index: first.edge_index,
+        })
+    }
+
+    fn canonical_same_owner_dust_connector_output_source(
+        candidates: &[TerrainClipSourceEdge],
+        start: Vector3,
+        end: Vector3,
+    ) -> Option<TerrainClipSourceEdge> {
+        #[derive(Clone, Copy)]
+        struct DustConnectorGroup {
+            first: TerrainClipSourceEdge,
+        }
+
+        let mut visible_candidates = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.kind != RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
+            .collect::<Vec<_>>();
+        visible_candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
+        let first_kind = visible_candidates.first().map(|candidate| candidate.kind)?;
+        let mut groups = BTreeMap::<_, DustConnectorGroup>::new();
+        for candidate in visible_candidates
+            .into_iter()
+            .filter(|candidate| candidate.kind == first_kind)
+        {
+            let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index,
+                ..
+            } = candidate.source
+            else {
+                continue;
+            };
+            let key = (node_id, kind.sort_key(), owner_kind, owner_index);
+            groups
+                .entry(key)
+                .or_insert(DustConnectorGroup { first: candidate });
+        }
+        let mut owner_groups = groups.into_values().collect::<Vec<_>>();
+        if owner_groups.len() != 1 {
+            return None;
+        }
+        let first = owner_groups.pop()?.first;
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind,
+            owner_index,
+            ..
+        } = first.source
+        else {
+            return None;
+        };
         Some(TerrainClipSourceEdge {
             start,
             end,

@@ -19,11 +19,6 @@ use super::super::collection::{
 };
 use std::collections::BTreeMap;
 
-// Mirrors the ownership-stage duplicate-source cluster budget: sub-quarter-millimeter
-// same-owner/source points are one canonical source cluster; broader same-mm collisions are not
-// height authority.
-const SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS: i64 = 256;
-
 pub(in crate::simulation::network::surface::node::rails) fn push_owned_region_height_carrier_points(
     points_by_source: &mut BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
     constraints: &[NodeRailConstraint],
@@ -144,7 +139,7 @@ fn same_mm_source_cluster_height(
                 .then_some((source_point_key, source_point.y))
         })
         .collect::<Vec<_>>();
-    if candidates.len() < 2 || !same_mm_candidates_form_source_duplicate_cluster(&candidates) {
+    if candidates.len() < 2 {
         return Ok(None);
     }
     let mut selected_height_m = None;
@@ -152,33 +147,6 @@ fn same_mm_source_cluster_height(
         collect_candidate_height(source, point, &mut selected_height_m, Some(height_m))?;
     }
     Ok(selected_height_m)
-}
-
-fn same_mm_candidates_form_source_duplicate_cluster(
-    candidates: &[(NodeRailPointKey, f64)],
-) -> bool {
-    let min_x = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.0)
-        .min()
-        .unwrap_or_default();
-    let max_x = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.0)
-        .max()
-        .unwrap_or_default();
-    let min_z = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.1)
-        .min()
-        .unwrap_or_default();
-    let max_z = candidates
-        .iter()
-        .map(|(candidate, _)| candidate.1)
-        .max()
-        .unwrap_or_default();
-    max_x - min_x <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
-        && max_z - min_z <= SOURCE_DUPLICATE_CLUSTER_MAX_SPAN_UNITS
 }
 
 fn point_mm_key(point: NodeRailPointKey) -> NodeRailPointKey {
@@ -475,6 +443,49 @@ mod tests {
         assert!(points.iter().any(|point| {
             road_point_key(xz(*point)) == road_point_key(RoadVec2::new(1.00005, 0.0))
                 && SurfaceHeightMmKey::from_m_f64(point.y) == SurfaceHeightMmKey::from_m_f64(4.0)
+        }));
+    }
+
+    #[test]
+    fn owned_region_materializes_height_from_full_same_mm_source_cluster() {
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
+        let source = (RoadSurfaceBandKind::Sidewalk, 1, 5);
+        let mut points_by_source = BTreeMap::from([(
+            source,
+            vec![
+                RoadVec3::new(-21.445400, 148.0, -48.035391),
+                RoadVec3::new(-21.445222, 148.0, -48.034510),
+            ],
+        )]);
+        let ownership = test_ownership(NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: sidewalk,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            shape: vec![vec![
+                [-21.445337, -48.035081],
+                [-21.445337, -47.0],
+                [-21.0, -47.0],
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        });
+
+        push_owned_region_height_carrier_points(
+            &mut points_by_source,
+            &[],
+            &BTreeMap::new(),
+            &ownership,
+        )
+        .expect("source-scoped same-mm cluster must materialize the final owned vertex height");
+
+        let points = points_by_source
+            .get(&source)
+            .expect("source should remain present");
+        assert!(points.iter().any(|point| {
+            road_point_key(xz(*point)) == road_point_key(RoadVec2::new(-21.445337, -48.035081))
+                && SurfaceHeightMmKey::from_m_f64(point.y) == SurfaceHeightMmKey::from_m_f64(148.0)
         }));
     }
 

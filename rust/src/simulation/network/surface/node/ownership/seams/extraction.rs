@@ -13,8 +13,8 @@ use super::ConstraintOverlapMode;
 use super::predicates::{
     canonicalize_seam_constraints, constraint_applies_to_owner,
     constraint_constrains_shared_height, constraint_is_material_transition,
-    edge_lies_on_constraint, point_lies_on_point_constraint, seam_source_from_constraint,
-    shape_edge_carries_full_seam_constraint,
+    edge_lies_on_constraint, point_lies_on_point_constraint, point_lies_on_source_segment,
+    seam_source_from_constraint, shape_edge_carries_full_seam_constraint,
 };
 use std::collections::BTreeSet;
 
@@ -132,7 +132,11 @@ pub(in crate::simulation::network::surface::node::ownership) fn seam_constraints
             for constraint in rail_constraints
                 .iter()
                 .filter(|constraint| constraint_applies_to_owner(constraint, owner))
-                .filter(|constraint| point_lies_on_point_constraint(point, constraint))
+                .filter(|constraint| {
+                    point_lies_on_point_constraint(point, constraint)
+                        || (constraint_is_material_transition(constraint)
+                            && point_lies_on_source_segment(point, constraint))
+                })
             {
                 let point_xz = overlay_point_to_road(point);
                 push_region_seam_constraint(&mut seams, constraint, owner, point_xz, point_xz);

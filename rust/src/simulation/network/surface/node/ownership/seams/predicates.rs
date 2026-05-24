@@ -295,6 +295,21 @@ pub(super) fn point_lies_on_point_constraint(
     })
 }
 
+pub(super) fn point_lies_on_source_segment(
+    point: NodeOverlayPoint,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if constraint.points_xz.len() < 2 {
+        return false;
+    }
+    let point = ownership_key_from_overlay_point(point);
+    constraint.points_xz.windows(2).any(|segment| {
+        let start = ownership_key_from_road_point(segment[0]);
+        let end = ownership_key_from_road_point(segment[1]);
+        start != end && point_key_lies_on_segment(point, start, end)
+    })
+}
+
 pub(super) fn seam_source_from_constraint(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,

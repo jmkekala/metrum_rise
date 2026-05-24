@@ -1,8 +1,9 @@
 //! Tests for node boolean ownership.
 
 use super::rail_authority::{
-    NodeRailCanonicalPointSet, canonical_points_by_mm_key_by_owner, constraint_authority_owners,
-    insert_open_source_segments, validate_owned_region_vertices_against_source_authority,
+    NodeRailCanonicalPointSet, NodeRailSourceSegmentAuthority, canonical_points_by_mm_key_by_owner,
+    constraint_authority_owners, insert_open_source_segments,
+    validate_owned_region_vertices_against_source_authority,
 };
 use super::rings::{
     canonicalize_final_owned_region_boundary_edges,
@@ -110,6 +111,8 @@ fn test_rail_canonical_points_from_constraints(
 
     let mut points_by_owner = BTreeMap::<NodeBandOwner, Vec<NodeOwnershipPointKey>>::new();
     let mut segments_by_owner = BTreeMap::<NodeBandOwner, Vec<OwnedRegionEdgeKey>>::new();
+    let mut source_segments_by_owner =
+        BTreeMap::<NodeBandOwner, Vec<NodeRailSourceSegmentAuthority>>::new();
     for constraint in rail_constraints {
         let path = constraint
             .points_xz
@@ -123,6 +126,24 @@ fn test_rail_canonical_points_from_constraints(
                 .or_default()
                 .extend(path.iter().copied());
             insert_open_source_segments(&mut segments_by_owner, owner, &path);
+            if let Some(source_band_index) = constraint.source_band_index {
+                for segment in path.windows(2) {
+                    if segment[0] == segment[1] {
+                        continue;
+                    }
+                    source_segments_by_owner.entry(owner).or_default().push(
+                        NodeRailSourceSegmentAuthority {
+                            owner,
+                            source: (
+                                owner.kind(),
+                                constraint.source_mouth_order_index,
+                                source_band_index,
+                            ),
+                            segment: OwnedRegionEdgeKey::new(segment[0], segment[1]),
+                        },
+                    );
+                }
+            }
         }
     }
     for points in points_by_owner.values_mut() {
@@ -133,11 +154,16 @@ fn test_rail_canonical_points_from_constraints(
         segments.sort_unstable();
         segments.dedup();
     }
+    for segments in source_segments_by_owner.values_mut() {
+        segments.sort_unstable();
+        segments.dedup();
+    }
     let canonical_points_by_mm_key_by_owner = canonical_points_by_mm_key_by_owner(&points_by_owner);
     NodeRailCanonicalPointSet {
         all_points,
         points_by_owner,
         segments_by_owner,
+        source_segments_by_owner,
         canonical_points_by_mm_key_by_owner,
         height_points_by_source: BTreeMap::new(),
         paths_by_owner: BTreeMap::new(),

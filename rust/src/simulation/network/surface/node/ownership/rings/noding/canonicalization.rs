@@ -58,6 +58,13 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
                 source_band_index,
             ))
         });
+        let source_key = region.source_band_index.map(|source_band_index| {
+            (
+                region.kind,
+                region.source_mouth_order_index,
+                source_band_index,
+            )
+        });
         let mut preserved_points = source_height_points.cloned().unwrap_or_default();
         preserved_points.sort_unstable();
         preserved_points.dedup();
@@ -66,10 +73,26 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
             .unwrap_or(owner_points);
         let mut source_points = preserved_points.clone();
         for point in authority_points.iter().copied() {
-            source_points.push(rail_points.canonicalized_point_for_owner(region.owner, point)?);
+            if let Some(point) = region_noding_point_for_owner_source(
+                region.owner,
+                source_key,
+                &preserved_points,
+                point,
+                rail_points,
+            )? {
+                source_points.push(point);
+            }
         }
         for point in rail_points.all_points.iter().copied() {
-            source_points.push(rail_points.canonicalized_point_for_owner(region.owner, point)?);
+            if let Some(point) = region_noding_point_for_owner_source(
+                region.owner,
+                source_key,
+                &preserved_points,
+                point,
+                rail_points,
+            )? {
+                source_points.push(point);
+            }
         }
         source_points.sort_unstable();
         source_points.dedup();
@@ -87,6 +110,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
             canonicalize_owned_region_contour_to_owner_source_points(
                 contour,
                 region.owner,
+                source_key,
                 &preserved_points,
                 rail_points,
             )?;
@@ -101,9 +125,35 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
     Ok(())
 }
 
+fn region_noding_point_for_owner_source(
+    owner: NodeBandOwner,
+    source: Option<(RoadSurfaceBandKind, usize, usize)>,
+    preserved_source_points: &[NodeOwnershipPointKey],
+    point: NodeOwnershipPointKey,
+    rail_points: &NodeRailCanonicalPointSet,
+) -> Result<Option<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
+    if preserved_source_points.binary_search(&point).is_ok() {
+        return Ok(Some(point));
+    }
+    if let Some(canonical) = rail_points.source_canonicalized_point_for_owner(
+        owner,
+        point,
+        source,
+        preserved_source_points,
+    )? {
+        return Ok(Some(canonical));
+    }
+    match rail_points.canonicalized_point_for_owner(owner, point) {
+        Ok(canonical) => Ok(Some(canonical)),
+        Err(NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn canonicalize_owned_region_contour_to_owner_source_points(
     contour: &mut NodeOverlayContour,
     owner: NodeBandOwner,
+    source: Option<(RoadSurfaceBandKind, usize, usize)>,
     source_points: &[NodeOwnershipPointKey],
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
@@ -112,7 +162,12 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
         if source_points.binary_search(&key).is_ok() {
             continue;
         }
-        if rail_points.source_authorizes_same_mm_duplicate_cluster(owner, key, source_points) {
+        if let Some(canonical) =
+            rail_points.source_canonicalized_point_for_owner(owner, key, source, source_points)?
+        {
+            if canonical != key {
+                *point = overlay_point_from_key(canonical);
+            }
             continue;
         }
         let canonical = rail_points.canonicalized_point_for_owner(owner, key)?;

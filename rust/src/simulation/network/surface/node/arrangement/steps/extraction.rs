@@ -116,6 +116,14 @@ impl NodeArrangement {
                 return Some(opposite_owner);
             }
             if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
+                && self.edge_has_distributed_material_transition_point_sources_for_opposite(
+                    edge,
+                    opposite_owner,
+                )
+            {
+                return Some(opposite_owner);
+            }
+            if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
                 && self.edge_has_distributed_endpoint_source_constraints_for_opposite(
                     edge,
                     opposite_owner,
@@ -277,6 +285,68 @@ impl NodeArrangement {
             && self
                 .endpoint_source_constraint_opposite_owners(edge.owner, end)
                 .contains(&opposite_owner)
+    }
+
+    fn edge_has_distributed_material_transition_point_sources_for_opposite(
+        &self,
+        edge: &NodeArrangementEdge,
+        opposite_owner: NodeBandOwner,
+    ) -> bool {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        self.owner_pair_has_material_transition_point_sources_at_key(
+            edge.owner,
+            opposite_owner,
+            start,
+        ) && self.owner_pair_has_material_transition_point_sources_at_key(
+            edge.owner,
+            opposite_owner,
+            end,
+        )
+    }
+
+    fn owner_pair_has_material_transition_point_sources_at_key(
+        &self,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        key: NodeArrangementKey,
+    ) -> bool {
+        self.owner_has_material_transition_source_at_key(owner, opposite_owner, key, false)
+            && self.owner_has_material_transition_source_at_key(opposite_owner, owner, key, false)
+            && (self.owner_has_material_transition_source_at_key(owner, opposite_owner, key, true)
+                || self.owner_has_material_transition_source_at_key(
+                    opposite_owner,
+                    owner,
+                    key,
+                    true,
+                ))
+    }
+
+    fn owner_has_material_transition_source_at_key(
+        &self,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        key: NodeArrangementKey,
+        require_height_split: bool,
+    ) -> bool {
+        self.regions
+            .iter()
+            .filter(|region| region.owner == owner)
+            .flat_map(|region| region.seam_constraints.iter())
+            .any(|constraint| {
+                constraint.is_material_transition
+                    && (!require_height_split || !constraint.constrains_shared_height)
+                    && super::super::build::seam_constraint_can_source_region_owner_for_pair(
+                        constraint,
+                        owner,
+                        opposite_owner,
+                    )
+                    && seam_constraint_covers_key(constraint, key)
+            })
     }
 
     pub(in crate::simulation::network::surface::node::arrangement) fn has_explicit_vertical_step_at_key_between(

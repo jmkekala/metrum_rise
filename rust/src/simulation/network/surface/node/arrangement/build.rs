@@ -8,7 +8,8 @@ use super::super::height::{
 use super::super::keys::SurfaceHeightMmKey;
 use super::edges::collect_pending_region_edge_support;
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
-use super::seams::NodeSeamSource;
+use super::seams::{NodeRegionSeamConstraint, NodeSeamSource, seam_constraint_covers_key};
+use super::steps::owners_form_explicit_vertical_step_pair;
 use super::{
     NodeArrangement, NodeArrangementError, NodeArrangementKey, NodeArrangementVertex,
     NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
@@ -227,8 +228,12 @@ impl NodeArrangement {
                             &left.owners,
                             &right.owners,
                         );
-                    let has_explicit_vertical_step = self
-                        .has_explicit_vertical_step_at_key_between(
+                    let has_explicit_vertical_step =
+                        self.has_explicit_vertical_step_at_key_between(
+                            key,
+                            &left.owners,
+                            &right.owners,
+                        ) || self.has_explicit_vertical_step_point_sources_at_key_between(
                             key,
                             &left.owners,
                             &right.owners,
@@ -281,6 +286,65 @@ impl NodeArrangement {
                     owner_sets_match_edge(left_owners, right_owners, edge.owner, opposite_owner)
                 })
         })
+    }
+
+    fn has_explicit_vertical_step_point_sources_at_key_between(
+        &self,
+        key: NodeArrangementKey,
+        left_owners: &[NodeBandOwner],
+        right_owners: &[NodeBandOwner],
+    ) -> bool {
+        left_owners.iter().copied().any(|left_owner| {
+            right_owners.iter().copied().any(|right_owner| {
+                owners_form_explicit_vertical_step_pair(left_owner, right_owner)
+                    && self.owner_has_arrangement_material_transition_source_at_key(
+                        left_owner,
+                        right_owner,
+                        key,
+                        false,
+                    )
+                    && self.owner_has_arrangement_material_transition_source_at_key(
+                        right_owner,
+                        left_owner,
+                        key,
+                        false,
+                    )
+                    && (self.owner_has_arrangement_material_transition_source_at_key(
+                        left_owner,
+                        right_owner,
+                        key,
+                        true,
+                    ) || self.owner_has_arrangement_material_transition_source_at_key(
+                        right_owner,
+                        left_owner,
+                        key,
+                        true,
+                    ))
+            })
+        })
+    }
+
+    fn owner_has_arrangement_material_transition_source_at_key(
+        &self,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        key: NodeArrangementKey,
+        require_height_split: bool,
+    ) -> bool {
+        self.regions
+            .iter()
+            .filter(|region| region.owner == owner)
+            .flat_map(|region| region.seam_constraints.iter())
+            .any(|constraint| {
+                constraint.is_material_transition
+                    && (!require_height_split || !constraint.constrains_shared_height)
+                    && seam_constraint_can_source_region_owner_for_pair(
+                        constraint,
+                        owner,
+                        opposite_owner,
+                    )
+                    && seam_constraint_covers_key(constraint, key)
+            })
     }
 }
 
@@ -339,6 +403,20 @@ fn owner_sets_match_edge(
 ) -> bool {
     (left_owners.contains(&edge_owner) && right_owners.contains(&opposite_owner))
         || (left_owners.contains(&opposite_owner) && right_owners.contains(&edge_owner))
+}
+
+pub(super) fn seam_constraint_can_source_region_owner_for_pair(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    _opposite_owner: NodeBandOwner,
+) -> bool {
+    match (constraint.owner, constraint.opposite_owner) {
+        (Some(left), Some(right)) => left == owner || right == owner,
+        (Some(constraint_owner), None) | (None, Some(constraint_owner)) => {
+            constraint_owner == owner
+        }
+        (None, None) => true,
+    }
 }
 
 pub(super) fn canonical_sources<T>(sources: impl IntoIterator<Item = T>) -> Vec<T>
