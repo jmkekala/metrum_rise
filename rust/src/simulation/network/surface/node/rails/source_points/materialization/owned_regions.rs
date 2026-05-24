@@ -1,6 +1,9 @@
 //! Height-carrier point materialization from boolean-owned rail regions.
 
-use super::super::super::super::backend::{RoadVec3, overlay_point_to_road, road_vec3_xz as xz};
+use super::super::super::super::backend::{
+    RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
+    road_vec3_xz as xz,
+};
 use super::super::super::super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::super::super::super::ownership::NodeBooleanOwnership;
 use super::super::super::contours::height_for_key_on_generated_edge;
@@ -37,12 +40,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_owned_region_he
             region.source_mouth_order_index,
             source_band_index,
         );
-        for point_xz in region
-            .shape
-            .iter()
-            .flat_map(|contour| contour.iter().copied())
-            .map(overlay_point_to_road)
-        {
+        for point_xz in owned_region_height_carrier_support_points(region) {
             let point = road_point_key(point_xz);
             if source_has_height_point(points_by_source, source, point) {
                 continue;
@@ -61,6 +59,28 @@ pub(in crate::simulation::network::surface::node::rails) fn push_owned_region_he
         }
     }
     push_materialized_height_carrier_points(points_by_source, materialized)
+}
+
+fn owned_region_height_carrier_support_points(
+    region: &super::super::super::super::ownership::NodeBooleanOwnedRegion,
+) -> Vec<RoadVec2> {
+    let mut points_by_key = BTreeMap::new();
+    for point_xz in region
+        .shape
+        .iter()
+        .flat_map(|contour| contour.iter().copied())
+        .map(overlay_point_to_road)
+        .chain(
+            region
+                .seam_constraints
+                .iter()
+                .flat_map(|constraint| [constraint.start_xz, constraint.end_xz]),
+        )
+        .map(quantize_road_vec2_to_overlay_grid)
+    {
+        points_by_key.insert(road_point_key(point_xz), point_xz);
+    }
+    points_by_key.into_values().collect()
 }
 
 fn height_for_source_key(
@@ -243,7 +263,9 @@ fn height_on_world_points_key(
 mod tests {
     use super::super::super::super::super::RoadSurfaceBandKind;
     use super::super::super::super::super::RoadSurfaceVisualNodePieceKind;
-    use super::super::super::super::super::arrangement::NodeBandOwner;
+    use super::super::super::super::super::arrangement::{
+        NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
+    };
     use super::super::super::super::super::backend::RoadVec2;
     use super::super::super::super::super::ownership::{
         NodeBooleanOwnedRegion, NodeOwnedRegionArrangement,
@@ -355,6 +377,65 @@ mod tests {
         assert!(points.iter().any(|point| {
             road_point_key(xz(*point)) == road_point_key(RoadVec2::new(0.0, 1.0))
                 && SurfaceHeightMmKey::from_m_f64(point.y) == SurfaceHeightMmKey::from_m_f64(1.0)
+        }));
+    }
+
+    #[test]
+    fn owned_region_materializes_height_for_source_authorized_seam_endpoint() {
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 11);
+        let source = (RoadSurfaceBandKind::Sidewalk, 1, 5);
+        let constraints = [NodeRailConstraint {
+            constraint_index: 0,
+            kind: NodeRailConstraintKind::BandContour {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            source_boundary_index: None,
+            owner: Some(sidewalk),
+            opposite_owner: None,
+            points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(10.0, 0.0)],
+        }];
+        let mut points_by_source = BTreeMap::from([(
+            source,
+            vec![RoadVec3::new(0.0, 1.0, 0.0), RoadVec3::new(10.0, 3.0, 0.0)],
+        )]);
+        let ownership = test_ownership(NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: sidewalk,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            shape: vec![vec![[5.0, 1.0], [6.0, 1.0], [6.0, 2.0]]],
+            area_m2: 0.5,
+            seam_constraints: vec![NodeRegionSeamConstraint {
+                constraint_index: 0,
+                seam_source: NodeSeamSource::SidewalkOuter {
+                    owner_index: sidewalk.owner_index(),
+                },
+                owner: Some(sidewalk),
+                opposite_owner: None,
+                constrains_shared_height: true,
+                is_material_transition: true,
+                start_xz: RoadVec2::new(5.0, 0.0),
+                end_xz: RoadVec2::new(6.0, 0.0),
+            }],
+        });
+
+        push_owned_region_height_carrier_points(
+            &mut points_by_source,
+            &constraints,
+            &BTreeMap::new(),
+            &ownership,
+        )
+        .expect("source-authorized seam endpoints must materialize final owned vertex height");
+
+        let points = points_by_source
+            .get(&source)
+            .expect("source should remain present");
+        assert!(points.iter().any(|point| {
+            road_point_key(xz(*point)) == road_point_key(RoadVec2::new(5.0, 0.0))
+                && SurfaceHeightMmKey::from_m_f64(point.y) == SurfaceHeightMmKey::from_m_f64(2.0)
         }));
     }
 

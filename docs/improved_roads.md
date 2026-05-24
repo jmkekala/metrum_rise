@@ -138,7 +138,8 @@ section says whether the runtime has reached it yet.
   source-rail, owner-pair / opposite-owner, raised-step, noded constraint interpolation,
   source-edge endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source
   clusters, final-footprint raised-step boundary pairs, JunctionN curb / shoulder mouth-band
-  edge contacts, and same-material endpoint paths backed by explicit material-step provenance
+  edge contacts, same-material endpoint paths backed by explicit material-step provenance, and
+  final owned-region seam endpoints backed by explicit source-rail interpolation
 - a pre-height-evaluation height-field completeness gate now resolves every final owned-region
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
