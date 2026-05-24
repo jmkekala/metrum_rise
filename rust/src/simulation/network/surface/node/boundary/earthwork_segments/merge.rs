@@ -5,16 +5,20 @@ use super::*;
 pub(super) fn ambiguous_earthwork_boundary_segment_source_error(
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
-    existing_source: RoadSurfaceEarthworkFaceSource,
-    incoming_source: RoadSurfaceEarthworkFaceSource,
+    existing: NodeEarthworkBoundarySourceCandidate,
+    incoming: NodeEarthworkBoundarySourceCandidate,
 ) -> NodeBoundaryExportError {
     NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource {
         start_x_key: start_point_key.x_key,
         start_z_key: start_point_key.z_key,
+        start_y_mm: start_point_key.y_mm,
         end_x_key: end_point_key.x_key,
         end_z_key: end_point_key.z_key,
-        existing_source,
-        incoming_source,
+        end_y_mm: end_point_key.y_mm,
+        existing_height_field_id: existing.height_field_id,
+        incoming_height_field_id: incoming.height_field_id,
+        existing_source: existing.face_source,
+        incoming_source: incoming.face_source,
     }
 }
 
@@ -131,7 +135,19 @@ fn merged_node_earthwork_boundary_source(
                         b_owner_kind,
                         b_owner_index,
                         b_height_field_id,
-                    )?;
+                    )
+                    .or_else(|| {
+                        (start_identity_matches && end_identity_matches).then(|| {
+                            canonical_matching_provenance_earthwork_boundary_owner(
+                                a_owner_kind,
+                                a_owner_index,
+                                a_height_field_id,
+                                b_owner_kind,
+                                b_owner_index,
+                                b_height_field_id,
+                            )
+                        })?
+                    })?;
                 return Some((
                     owner_kind,
                     owner_index,
@@ -148,6 +164,44 @@ fn merged_node_earthwork_boundary_source(
                         },
                     }),
                     height_field_id,
+                ));
+            }
+            let start_has_canonical_point =
+                node_earthwork_boundary_vertex_sources_include_canonical_point_at(
+                    start_point_key,
+                    a.start,
+                    b.start,
+                );
+            let end_has_canonical_point =
+                node_earthwork_boundary_vertex_sources_include_canonical_point_at(
+                    end_point_key,
+                    a.end,
+                    b.end,
+                );
+            if matching_owner
+                && ((start_has_canonical_point && !end_matches)
+                    || (end_has_canonical_point && !start_matches))
+            {
+                return Some((
+                    a_owner_kind,
+                    a_owner_index,
+                    Some(NodeFootprintBoundarySegmentSource {
+                        start: if start_identity_matches {
+                            a.start
+                        } else {
+                            canonical_boundary_point_source(start_point_key)
+                        },
+                        end: if end_identity_matches {
+                            a.end
+                        } else {
+                            canonical_boundary_point_source(end_point_key)
+                        },
+                    }),
+                    if a_height_field_id == b_height_field_id {
+                        a_height_field_id
+                    } else {
+                        None
+                    },
                 ));
             }
             if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
@@ -167,8 +221,16 @@ fn merged_node_earthwork_boundary_source(
                     owner_kind,
                     owner_index,
                     Some(NodeFootprintBoundarySegmentSource {
-                        start: canonical_boundary_point_source(start_point_key),
-                        end: canonical_boundary_point_source(end_point_key),
+                        start: if start_identity_matches {
+                            a.start
+                        } else {
+                            canonical_boundary_point_source(start_point_key)
+                        },
+                        end: if end_identity_matches {
+                            a.end
+                        } else {
+                            canonical_boundary_point_source(end_point_key)
+                        },
                     }),
                     height_field_id,
                 ));
@@ -253,6 +315,30 @@ fn canonical_earthwork_boundary_owner(
     )
 }
 
+fn canonical_matching_provenance_earthwork_boundary_owner(
+    a_owner_kind: RoadSurfaceBandKind,
+    a_owner_index: usize,
+    a_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+    b_owner_kind: RoadSurfaceBandKind,
+    b_owner_index: usize,
+    b_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+) -> Option<(
+    RoadSurfaceBandKind,
+    usize,
+    Option<arrangement::NodeBandHeightFieldId>,
+)> {
+    let a_rank = raised_step_band_rank(a_owner_kind)?;
+    let b_rank = raised_step_band_rank(b_owner_kind)?;
+    if a_rank == b_rank {
+        return None;
+    }
+    Some(if a_rank > b_rank {
+        (a_owner_kind, a_owner_index, a_height_field_id)
+    } else {
+        (b_owner_kind, b_owner_index, b_height_field_id)
+    })
+}
+
 fn canonical_adjacent_material_earthwork_boundary_owner(
     a_owner_kind: RoadSurfaceBandKind,
     a_owner_index: usize,
@@ -311,4 +397,21 @@ fn node_earthwork_boundary_vertex_sources_share_identity_at_point(
         }
         _ => false,
     }
+}
+
+fn node_earthwork_boundary_vertex_sources_include_canonical_point_at(
+    point_key: ArrangementBoundaryPointKey,
+    a: NodeFootprintBoundaryVertexSource,
+    b: NodeFootprintBoundaryVertexSource,
+) -> bool {
+    matches!(
+        (a, b),
+        (
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm },
+            _
+        ) | (
+            _,
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm }
+        ) if x_key == point_key.x_key && z_key == point_key.z_key && y_mm == point_key.y_mm
+    )
 }

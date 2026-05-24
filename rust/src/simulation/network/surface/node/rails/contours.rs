@@ -36,8 +36,7 @@ pub(super) use emit::{
     push_path_band_contour, push_path_strip_contours,
 };
 pub(super) use height_points::{
-    align_height_points_to_contour, align_height_points_to_source_contours,
-    height_for_key_on_generated_edge,
+    align_height_points_to_source_contours, height_for_key_on_generated_edge,
 };
 pub(super) use paths::{
     append_world_path_points, append_world_path_xz, clean_generated_constraint_path,

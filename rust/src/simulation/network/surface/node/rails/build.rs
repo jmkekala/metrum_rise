@@ -157,18 +157,21 @@ impl NodeRailContourSet {
         append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
+            source_constraint_count,
             &mut constraints,
         );
         append_generated_material_point_contact_constraints(&contours, &mut constraints);
         append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
+            source_constraint_count,
             &mut constraints,
         );
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         append_generated_same_band_contact_constraints(
             input.piece_kind,
             &contours,
+            source_constraint_count,
             &mut constraints,
         );
         node_generated_contact_contours(&mut contours, &mut constraints)?;

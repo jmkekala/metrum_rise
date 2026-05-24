@@ -93,12 +93,7 @@ pub(super) fn register_owned_region_contour_support(
                 source_kind: field.kind,
             });
         }
-        for point in region
-            .shape
-            .iter()
-            .flat_map(|contour| contour.iter().copied())
-        {
-            let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
+        for point_xz in pre_height_completeness_points(region) {
             field.register_contour_edge_support(region.owner, region.claim_priority, point_xz);
             field.register_owned_region_source_handoff(
                 region.owner,

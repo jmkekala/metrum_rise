@@ -183,7 +183,7 @@ fn arrangement_face_boundary_overlap_interval(
     (end > start).then_some((start, end))
 }
 
-pub(super) fn arrangement_face_boundary_interval_existing_point_at(
+pub(super) fn arrangement_face_boundary_interval_point_at(
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     interval: ArrangementFaceBoundaryInterval,
     parameter: ArrangementSegmentParameter,
@@ -204,6 +204,14 @@ pub(super) fn arrangement_face_boundary_interval_existing_point_at(
             parameter,
         )
     })
+    .or_else(|| {
+        arrangement_face_boundary_interpolated_point_at(
+            segment_start,
+            segment_end,
+            interval,
+            parameter,
+        )
+    })
 }
 
 fn arrangement_boundary_endpoint_at_parameter(
@@ -214,6 +222,34 @@ fn arrangement_boundary_endpoint_at_parameter(
 ) -> Option<ArrangementBoundaryPointKey> {
     let endpoint_t = boundary_segment_parameter_xz(endpoint, segment_start, segment_end)?;
     (endpoint_t.cmp(&parameter) == std::cmp::Ordering::Equal).then_some(endpoint)
+}
+
+fn arrangement_face_boundary_interpolated_point_at(
+    segment_start: ArrangementBoundaryPointKey,
+    segment_end: ArrangementBoundaryPointKey,
+    interval: ArrangementFaceBoundaryInterval,
+    parameter: ArrangementSegmentParameter,
+) -> Option<ArrangementBoundaryPointKey> {
+    if parameter < interval.start || parameter > interval.end {
+        return None;
+    }
+    let target = ArrangementBoundaryPointKey {
+        x_key: parameter.interpolate_i64(segment_start.x_key, segment_end.x_key),
+        z_key: parameter.interpolate_i64(segment_start.z_key, segment_end.z_key),
+        y_mm: 0,
+    };
+    let edge_parameter =
+        boundary_segment_parameter_xz(target, interval.edge_start, interval.edge_end)?;
+    if edge_parameter < ArrangementSegmentParameter::zero()
+        || edge_parameter > ArrangementSegmentParameter::one()
+    {
+        return None;
+    }
+    Some(ArrangementBoundaryPointKey {
+        x_key: target.x_key,
+        z_key: target.z_key,
+        y_mm: edge_parameter.interpolate_i64(interval.edge_start.y_mm, interval.edge_end.y_mm),
+    })
 }
 
 pub(super) fn arrangement_key_boundary_point(

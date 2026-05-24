@@ -92,3 +92,52 @@ fn generated_contour_source_handoff_mismatched_explicit_vertex_keeps_generated_o
     );
     assert!((height.height_m - 0.25).abs() <= 1.0e-6);
 }
+
+#[test]
+fn side_join_source_handoff_height_dust_does_not_use_source_interval() {
+    let source_support = [RoadVec3::new(5.0, 0.8005, 0.0)];
+    let mut field = NodeBandHeightField::from_interval(
+        0,
+        &manual_interval(0, RoadSurfaceBandKind::Sidewalk, 0.0, 1.0),
+        Some(&source_support),
+    )
+    .expect("manual interval is a valid source height carrier");
+    let mut contour = generated_band_contour(
+        RoadSurfaceBandKind::Sidewalk,
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(5.0, 0.0),
+            RoadVec2::new(10.0, 0.0),
+            RoadVec2::new(10.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(5.0, 0.7995, 0.0),
+            RoadVec3::new(10.0, 1.0, 0.0),
+            RoadVec3::new(10.0, 1.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ]),
+    );
+    contour.purpose = NodeGeneratedContourPurpose::JunctionSideJoin;
+    contour.claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
+
+    field
+        .extend_with_generated_contour(&contour)
+        .expect("side-join contour with explicit heights should remain valid");
+    let height = field
+        .evaluate_authorized_height(
+            NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            NodeGeneratedContourClaimPriority::SideJoin,
+            RoadVec2::new(5.0, 0.0),
+        )
+        .expect("side-join should own its explicitly heighted split vertex");
+    assert_eq!(
+        height.authority,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        }
+    );
+    assert!((height.height_m - 0.7995).abs() <= 1.0e-6);
+}

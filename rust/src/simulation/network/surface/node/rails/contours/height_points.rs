@@ -117,3 +117,50 @@ pub(in crate::simulation::network::surface::node::rails) fn height_for_key_on_ge
     let t = numerator as f64 / denominator as f64;
     Some(start_height_m + (end_height_m - start_height_m) * t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn align_height_points_rejects_planar_source_contour_interior_vertex() {
+        let source = vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 2.0, 0.0),
+            RoadVec3::new(2.0, 4.0, 2.0),
+            RoadVec3::new(0.0, 2.0, 2.0),
+        ];
+        assert!(
+            align_height_points_to_source_contours(
+                &[RoadVec2::new(1.0, 1.0)],
+                &[source.as_slice()],
+            )
+            .is_none(),
+            "generated contour height ownership must come from explicit vertices or source edges"
+        );
+    }
+
+    #[test]
+    fn align_height_points_rejects_conflicting_source_contour_planes() {
+        let lower = vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ];
+        let raised = vec![
+            RoadVec3::new(0.0, 1.0, 0.0),
+            RoadVec3::new(2.0, 1.0, 0.0),
+            RoadVec3::new(2.0, 1.0, 2.0),
+            RoadVec3::new(0.0, 1.0, 2.0),
+        ];
+
+        assert!(
+            align_height_points_to_source_contours(
+                &[RoadVec2::new(1.0, 1.0)],
+                &[lower.as_slice(), raised.as_slice()],
+            )
+            .is_none()
+        );
+    }
+}

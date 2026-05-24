@@ -1,6 +1,7 @@
 //! Height-source diagnostic extraction helpers.
 
 use super::*;
+use crate::simulation::network::surface::keys::SurfaceXzKey;
 
 pub(in crate::simulation::network::surface::tests) fn arrangement_key_from_overlay_keys(
     x_key: i64,
@@ -57,6 +58,109 @@ pub(in crate::simulation::network::surface::tests) fn source_rail_debug_for_heig
         ));
     }
     parts.join(" ")
+}
+
+pub(in crate::simulation::network::surface::tests) fn ownership_debug_for_height_conflict(
+    error: &super::height::NodeHeightFieldError,
+    rails: &super::rails::NodeRailContourSet,
+    ownership: &super::ownership::NodeBooleanOwnership,
+) -> String {
+    let super::height::NodeHeightFieldError::SharedSourceHeightConflict {
+        point_x_mm,
+        point_z_mm,
+        owner,
+        incoming_owner,
+        ..
+    } = error
+    else {
+        return String::new();
+    };
+    let point_xz =
+        super::backend::RoadVec2::new(*point_x_mm as f64 / 1000.0, *point_z_mm as f64 / 1000.0);
+    let point_key = SurfaceXzKey::from_road_xz(point_xz);
+    let rail_constraints_at_key = rails
+        .constraints
+        .iter()
+        .filter(|constraint| {
+            constraint.points_xz.iter().any(|point| {
+                let key = SurfaceXzKey::from_road_xz(*point);
+                key.x_mm() == *point_x_mm && key.z_mm() == *point_z_mm
+            }) || constraint.points_xz.windows(2).any(|segment| {
+                let start = SurfaceXzKey::from_road_xz(segment[0]);
+                let end = SurfaceXzKey::from_road_xz(segment[1]);
+                super::segments::key_lies_on_segment(point_key, start, end)
+            })
+        })
+        .take(24)
+        .map(|constraint| {
+            format!(
+                "#{} {:?} owner={:?} opposite={:?} source=({},{:?}) point_count={} first={:?} last={:?}",
+                constraint.constraint_index,
+                constraint.kind,
+                constraint.owner,
+                constraint.opposite_owner,
+                constraint.source_mouth_order_index,
+                constraint.source_band_index,
+                constraint.points_xz.len(),
+                constraint
+                    .points_xz
+                    .first()
+                    .map(|point| SurfaceXzKey::from_road_xz(*point).raw_tuple()),
+                constraint
+                    .points_xz
+                    .last()
+                    .map(|point| SurfaceXzKey::from_road_xz(*point).raw_tuple()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let owned_regions_at_key = ownership
+        .owned_regions
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| region.owner == *owner || region.owner == *incoming_owner)
+        .filter_map(|(region_index, region)| {
+            let has_vertex = region.shape.iter().flatten().any(|point| {
+                let key = SurfaceXzKey::from_overlay_point(*point);
+                key == point_key || (key.x_mm() == *point_x_mm && key.z_mm() == *point_z_mm)
+            });
+            if !has_vertex {
+                return None;
+            }
+            let seams = region
+                .seam_constraints
+                .iter()
+                .filter(|constraint| {
+                    let start = SurfaceXzKey::from_road_xz(constraint.start_xz);
+                    let end = SurfaceXzKey::from_road_xz(constraint.end_xz);
+                    start == point_key
+                        || end == point_key
+                        || (start.x_mm() == *point_x_mm && start.z_mm() == *point_z_mm)
+                        || (end.x_mm() == *point_x_mm && end.z_mm() == *point_z_mm)
+                })
+                .map(|constraint| {
+                    format!(
+                        "#{} {:?} owner={:?} opposite={:?} shared={} material={} start={:?} end={:?}",
+                        constraint.constraint_index,
+                        constraint.seam_source,
+                        constraint.owner,
+                        constraint.opposite_owner,
+                        constraint.constrains_shared_height,
+                        constraint.is_material_transition,
+                        SurfaceXzKey::from_road_xz(constraint.start_xz).raw_tuple(),
+                        SurfaceXzKey::from_road_xz(constraint.end_xz).raw_tuple(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some(format!(
+                "region={region_index} owner={:?} kind={:?} seams={seams:?}",
+                region.owner, region.kind
+            ))
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "height_conflict_point={:?} rail_constraints_at_key={rail_constraints_at_key:?} owned_regions_at_key={owned_regions_at_key:?}",
+        point_key.raw_tuple()
+    )
 }
 
 pub(in crate::simulation::network::surface::tests) fn world_path_debug(

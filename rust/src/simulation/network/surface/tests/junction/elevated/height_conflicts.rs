@@ -1,9 +1,9 @@
-//! Elevated junction direct height-conflict rejection tests.
+//! Elevated junction height-authority regression tests.
 
 use super::*;
 
 #[test]
-fn elevated_four_way_junction_rejects_same_material_height_conflict_after_endpoint_profile_solve() {
+fn elevated_four_way_junction_compiles_after_endpoint_profile_solve() {
     let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(
@@ -58,12 +58,7 @@ fn elevated_four_way_junction_rejects_same_material_height_conflict_after_endpoi
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_canonical_height_diagnostic(
-        &surface,
-        &graph,
-        center,
-        "elevated 4-way JunctionN after endpoint profile solve",
-    );
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]
@@ -134,8 +129,7 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
 }
 
 #[test]
-fn elevated_three_way_junction_rejects_same_material_height_conflict_after_endpoint_profile_solve()
-{
+fn elevated_three_way_junction_compiles_after_endpoint_profile_solve() {
     let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(
@@ -189,12 +183,7 @@ fn elevated_three_way_junction_rejects_same_material_height_conflict_after_endpo
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_canonical_height_diagnostic(
-        &surface,
-        &graph,
-        center,
-        "elevated 3-way JunctionN after endpoint profile solve",
-    );
+    assert_compiled_junction_piece(&surface, &graph, center);
 }
 
 #[test]

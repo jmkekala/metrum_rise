@@ -1,7 +1,7 @@
 //! Generated contour topology helpers for node rails.
 
 use super::super::backend::polyline_to_road_points;
-use super::contours::{align_height_points_to_contour, cleaned_closed_contour};
+use super::contours::{align_height_points_to_source_contours, cleaned_closed_contour};
 use super::geometry::{road_point_from_key, road_point_key};
 use super::owners::generated_contour_band_kind;
 use super::{
@@ -49,7 +49,7 @@ pub(super) fn set_generated_contour_from_keys(
     contour.backend_polyline = polyline;
     if let Some(height_points_world) = contour.height_points_world.as_deref() {
         contour.height_points_world =
-            align_height_points_to_contour(&contour.points_xz, height_points_world);
+            align_height_points_to_source_contours(&contour.points_xz, &[height_points_world]);
     }
     update_generated_band_contour_constraint(contour, constraints);
     Ok(())

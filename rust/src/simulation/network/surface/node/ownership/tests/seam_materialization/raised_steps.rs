@@ -305,6 +305,62 @@ fn materializes_same_kind_reowned_raised_step_contact_as_exact_owned_edge_pair()
 }
 
 #[test]
+fn materializes_same_material_owned_boundary_as_explicit_height_split() {
+    let first_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let second_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let start = RoadVec2::new(0.0, 0.0);
+    let end = RoadVec2::new(2.0, 0.0);
+    let mut regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            first_sidewalk,
+            vec![[0.0, 0.0], [2.0, 0.0], [0.0, -1.0]],
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            second_sidewalk,
+            vec![[0.0, 0.0], [2.0, 0.0], [0.0, 1.0]],
+        ),
+    ];
+    for region in &mut regions {
+        region.seam_constraints.push(NodeRegionSeamConstraint {
+            constraint_index: 208,
+            seam_source: NodeSeamSource::FootprintBoundary {
+                owner_index: region.owner.owner_index(),
+            },
+            owner: Some(region.owner),
+            opposite_owner: None,
+            constrains_shared_height: false,
+            is_material_transition: false,
+            start_xz: start,
+            end_xz: end,
+        });
+    }
+
+    materialize_noded_region_seam_constraints(
+        &mut regions,
+        &Vec::new(),
+        &[],
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    );
+
+    for region in &regions {
+        assert!(region.seam_constraints.iter().any(|constraint| {
+            ownership_key_from_road_point(constraint.start_xz)
+                == ownership_key_from_road_point(start)
+                && ownership_key_from_road_point(constraint.end_xz)
+                    == ownership_key_from_road_point(end)
+                && ((constraint.owner == Some(first_sidewalk)
+                    && constraint.opposite_owner == Some(second_sidewalk))
+                    || (constraint.owner == Some(second_sidewalk)
+                        && constraint.opposite_owner == Some(first_sidewalk)))
+                && !constraint.constrains_shared_height
+                && constraint.is_material_transition
+        }));
+    }
+}
+
+#[test]
 fn asphalt_curb_shape_seams_use_exact_constraint_spans() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);

@@ -115,6 +115,63 @@ fn junctionn_arrangement_vertices_preserve_node_grade_authority() {
 }
 
 #[test]
+fn arrangement_contour_removes_immediate_backtracking_spur() {
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 3);
+    let heights = NodeHeightSolution {
+        node_id: 41,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![test_height_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            vec![
+                height_vertex(0.0, 0.0, 0.0),
+                height_vertex(1.0, 0.0, 0.0),
+                height_vertex(1.001, 0.05, 0.0),
+                height_vertex(1.0, 0.0, 0.0),
+                height_vertex(0.0, 1.0, 0.0),
+            ],
+            Vec::new(),
+        )],
+    };
+
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("zero-area backtracking spur should canonicalize before CDT");
+
+    assert_eq!(arrangement.regions()[0].outer_loop().len(), 3);
+}
+
+#[test]
+fn arrangement_contour_preserves_same_millimetre_distinct_canonical_keys() {
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 3);
+    let heights = NodeHeightSolution {
+        node_id: 42,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![test_height_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            vec![
+                height_vertex(0.0000, 0.0, 0.0),
+                height_vertex(0.0004, 0.4, 0.0),
+                height_vertex(0.0004, 0.0, 0.0),
+                height_vertex(1.0000, 0.0, 0.0),
+                height_vertex(1.0000, 1.0, 0.0),
+                height_vertex(0.0000, 1.0, 0.0),
+            ],
+            Vec::new(),
+        )],
+    };
+
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("same-millimetre canonical vertices must remain distinct");
+
+    assert_eq!(
+        arrangement.regions()[0].outer_loop().len(),
+        6,
+        "arrangement cleanup must not collapse distinct canonical XZ keys just because they share a millimetre bucket"
+    );
+}
+
+#[test]
 fn arrangement_rejects_heighted_vertex_without_node_grade_authority() {
     let owner = owner(RoadSurfaceBandKind::Sidewalk, 4);
     let field = NodeBandHeightFieldId::new(0, 4, RoadSurfaceBandKind::Sidewalk);

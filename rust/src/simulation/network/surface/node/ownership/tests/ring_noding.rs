@@ -80,3 +80,38 @@ fn owned_region_rings_are_noded_before_explicit_seam_validation() {
             && !edge.source_constraint_indices.is_empty()
     }));
 }
+
+#[test]
+fn owner_source_points_are_materialized_on_overlay_grid_edges_before_height_evaluation() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 8);
+    let source_point = RoadVec2::new(5.0, 5.000001);
+    let constraints = [NodeRailConstraint {
+        constraint_index: 0,
+        kind: NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::Carriageway,
+        },
+        source_mouth_order_index: 0,
+        source_band_index: Some(0),
+        source_boundary_index: None,
+        owner: Some(carriageway),
+        opposite_owner: None,
+        points_xz: vec![source_point],
+    }];
+    let rail_canonical_points = test_rail_canonical_points_from_constraints(&constraints);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![[0.0, 0.0], [10.0, 10.0], [10.0, 12.0], [0.0, 2.0]],
+    )];
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("source-authorized rail point should canonicalize onto owned edge");
+
+    let source_key = ownership_key_from_road_point(source_point);
+    assert!(
+        regions[0].shape[0]
+            .iter()
+            .any(|point| ownership_key_from_overlay_point(*point) == source_key),
+        "source-authorized split point must be present before height-field completeness runs"
+    );
+}

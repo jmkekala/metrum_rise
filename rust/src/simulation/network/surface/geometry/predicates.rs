@@ -52,13 +52,15 @@ impl RoadSurfaceSystem {
         if points.len() < 3 {
             return 0.0;
         }
-        let mut signed_area = 0.0;
+        let origin = points[0];
+        let mut double_area = 0.0;
         for index in 0..points.len() {
-            let current = points[index];
-            let next = points[(index + 1) % points.len()];
-            signed_area += current.x * next.z - next.x * current.z;
+            let current = points[index] - origin;
+            let next = points[(index + 1) % points.len()] - origin;
+            double_area +=
+                f64::from(current.x) * f64::from(next.z) - f64::from(next.x) * f64::from(current.z);
         }
-        signed_area * 0.5
+        (double_area * 0.5) as f32
     }
 
     pub(super) fn polygon_has_strict_edge_crossing_xz(points: &[Vector3]) -> bool {

@@ -128,23 +128,25 @@ section says whether the runtime has reached it yet.
 - `Bend` / `JunctionN` conflict throats use pairwise material-conflict distances and emit raw
   full-roadbed / carriageway corridor authority before per-band owner clipping. The generated flat
   Bend and 3-way `JunctionN` angle matrix now covers acute, right-angle, obtuse, and near-parallel
-  cases, with representative reversed-edge-direction and equivalent-edit-order compile coverage;
-  elevated variants, 4-way / arbitrary `N > 4`, and exact raw-polygon identity checks remain open.
+  cases, with representative reversed-edge-direction and equivalent-edit-order compile coverage.
+  Generated elevated Bend and 3-way `JunctionN` variants now cover the same matrix; 4-way /
+  arbitrary `N > 4` and exact raw-polygon identity checks remain open.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
   curb / shoulder and sidewalk ownership, but diagnostics for missing evidence are not yet complete
   enough to replace every downstream height failure
 - source-authorized post-boolean support materialization is shipped for the current exact
   source-rail, owner-pair / opposite-owner, raised-step, noded constraint interpolation,
   source-edge endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source
-  clusters, and final-footprint raised-step boundary pairs
+  clusters, final-footprint raised-step boundary pairs, JunctionN curb / shoulder mouth-band
+  edge contacts, and same-material endpoint paths backed by explicit material-step provenance
 - a pre-height-evaluation height-field completeness gate now resolves every final owned-region
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
   the old unscoped height evaluator
 - road-geometry diagnostic dumps now serialize stage, backend, owner, height-field, point / edge,
   residual, seam, and constraint metadata as queryable JSON fields instead of an opaque Rust debug
-  blob; remaining work is filling any missing-artifact coverage gaps before extending the flat
-  conflict matrix into elevated and arbitrary-`N` cases
+  blob; remaining work is filling any missing-artifact coverage gaps before extending the
+  generated conflict matrix into 4-way and arbitrary-`N` cases
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
@@ -152,8 +154,8 @@ section says whether the runtime has reached it yet.
 
 - finish missing-artifact diagnostic coverage for missing source rails, missing carrier support,
   rejected residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices
-- extend the conflict-first Bend / JunctionN test matrix from generated flat Bend / 3-way cases to
-  elevated variants, 4-way, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
+- extend the conflict-first Bend / JunctionN test matrix from generated flat and elevated Bend /
+  3-way cases to 4-way, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
 - complete terrain / road agreement tests for authored and extreme DEM cases, including retaining
   wall and widened tie-in combinations
 - keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,

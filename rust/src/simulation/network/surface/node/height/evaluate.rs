@@ -1,7 +1,9 @@
 //! Region vertex height evaluation against authorized fields.
 
+use super::super::keys::SurfaceSegmentParameter;
 use super::model::*;
 use super::*;
+use std::collections::BTreeSet;
 
 pub(super) fn owner_scoped_outside_height_error(
     error: NodeHeightFieldError,
@@ -134,7 +136,7 @@ impl NodeResolvedHeightAuthorityMap {
     }
 }
 
-fn pre_height_completeness_points(region: &NodeBooleanOwnedRegion) -> Vec<RoadVec2> {
+pub(super) fn pre_height_completeness_points(region: &NodeBooleanOwnedRegion) -> Vec<RoadVec2> {
     let mut points_by_key = BTreeMap::new();
     for point in region
         .shape
@@ -183,13 +185,14 @@ pub(super) fn heighted_region(
 ) -> Result<NodeHeightedRegion, NodeHeightFieldError> {
     let field = height_field_for_region(region, fields)?;
     let shape = heighted_shape(&region.shape, region, field, resolved_authority)?;
+    let area_m2 = heighted_shape_area_m2(&shape);
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
         owner: region.owner,
         height_field_id: field.id,
         shape,
-        area_m2: region.area_m2,
+        area_m2,
         seam_constraints: region.seam_constraints.clone(),
     })
 }
@@ -248,7 +251,7 @@ pub(super) fn heighted_contour(
     field: &NodeBandHeightField,
     resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedContour, NodeHeightFieldError> {
-    contour
+    source_authorized_contour_points(contour, region)
         .iter()
         .copied()
         .map(|point| heighted_vertex(point, region, field, resolved_authority))
@@ -307,4 +310,178 @@ pub(super) fn heighted_vertex(
             },
         )),
     })
+}
+
+fn source_authorized_contour_points(
+    contour: &NodeOverlayContour,
+    region: &NodeBooleanOwnedRegion,
+) -> NodeOverlayContour {
+    if contour.len() < 2 || region.seam_constraints.is_empty() {
+        return contour.clone();
+    }
+    let source_keys = material_transition_constraint_point_keys(region);
+    let protected_original_keys = original_contour_vertex_keys(contour);
+    let mut output = Vec::with_capacity(contour.len());
+    for index in 0..contour.len() {
+        let start = contour[index];
+        let end = contour[(index + 1) % contour.len()];
+        output.push(start);
+        output.extend(source_authorized_points_for_contour_edge(
+            region, start, end,
+        ));
+    }
+    remove_subbudget_non_source_contour_points(output, &source_keys, &protected_original_keys)
+}
+
+fn material_transition_constraint_point_keys(
+    region: &NodeBooleanOwnedRegion,
+) -> BTreeSet<SurfaceXzKey> {
+    region
+        .seam_constraints
+        .iter()
+        .filter(|constraint| constraint.is_material_transition)
+        .flat_map(|constraint| [constraint.start_xz, constraint.end_xz])
+        .map(|point_xz| SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point_xz)))
+        .collect()
+}
+
+fn original_contour_vertex_keys(contour: &NodeOverlayContour) -> BTreeSet<SurfaceXzKey> {
+    contour
+        .iter()
+        .copied()
+        .map(SurfaceXzKey::from_overlay_point)
+        .collect()
+}
+
+fn source_authorized_points_for_contour_edge(
+    region: &NodeBooleanOwnedRegion,
+    start: NodeOverlayPoint,
+    end: NodeOverlayPoint,
+) -> Vec<NodeOverlayPoint> {
+    let start_key = SurfaceXzKey::from_overlay_point(start);
+    let end_key = SurfaceXzKey::from_overlay_point(end);
+    if start_key == end_key {
+        return Vec::new();
+    }
+    let mut insertions = Vec::<(SurfaceSegmentParameter, SurfaceXzKey)>::new();
+    for constraint in &region.seam_constraints {
+        if !constraint.is_material_transition {
+            continue;
+        }
+        for point_xz in [constraint.start_xz, constraint.end_xz] {
+            let point_key =
+                SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point_xz));
+            if point_key == start_key
+                || point_key == end_key
+                || insertions.iter().any(|(_, key)| *key == point_key)
+            {
+                continue;
+            }
+            let Some(parameter) = point_key.overlay_segment_parameter(start_key, end_key) else {
+                continue;
+            };
+            if parameter <= SurfaceSegmentParameter::zero()
+                || parameter >= SurfaceSegmentParameter::one()
+            {
+                continue;
+            }
+            insertions.push((parameter, point_key));
+        }
+    }
+    insertions.sort_by_key(|(parameter, key)| (*parameter, *key));
+    insertions
+        .into_iter()
+        .map(|(_, key)| {
+            let point = key.to_road_xz();
+            [point.x, point.y]
+        })
+        .collect()
+}
+
+fn remove_subbudget_non_source_contour_points(
+    mut points: NodeOverlayContour,
+    source_keys: &BTreeSet<SurfaceXzKey>,
+    protected_original_keys: &BTreeSet<SurfaceXzKey>,
+) -> NodeOverlayContour {
+    loop {
+        if points.len() < 3 {
+            return points;
+        }
+        let mut removed = false;
+        for index in 0..points.len() {
+            let previous = if index == 0 {
+                points.len() - 1
+            } else {
+                index - 1
+            };
+            let next = (index + 1) % points.len();
+            let current_key = SurfaceXzKey::from_overlay_point(points[index]);
+            let previous_key = SurfaceXzKey::from_overlay_point(points[previous]);
+            let next_key = SurfaceXzKey::from_overlay_point(points[next]);
+            if source_keys.contains(&current_key)
+                || protected_original_keys.contains(&current_key)
+                || (!source_keys.contains(&previous_key) && !source_keys.contains(&next_key))
+            {
+                continue;
+            }
+            let local_points = [points[previous], points[index], points[next]];
+            if local_triangle_area_m2(local_points)
+                > local_overlay_numeric_area_budget_m2(local_points)
+            {
+                continue;
+            }
+            points.remove(index);
+            removed = true;
+            break;
+        }
+        if !removed {
+            return points;
+        }
+    }
+}
+
+fn local_triangle_area_m2(points: [NodeOverlayPoint; 3]) -> f32 {
+    (((points[0][0] * points[1][1] - points[1][0] * points[0][1])
+        + (points[1][0] * points[2][1] - points[2][0] * points[1][1])
+        + (points[2][0] * points[0][1] - points[0][0] * points[2][1]))
+        * 0.5)
+        .abs() as f32
+}
+
+fn local_overlay_numeric_area_budget_m2(points: [NodeOverlayPoint; 3]) -> f32 {
+    let perimeter_m = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(start, end)| {
+            let dx = start[0] - end[0];
+            let dz = start[1] - end[1];
+            (dx * dx + dz * dz).sqrt() as f32
+        })
+        .sum::<f32>();
+    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
+}
+
+fn heighted_shape_area_m2(shape: &NodeHeightedShape) -> f32 {
+    let Some((outer, holes)) = shape.split_first() else {
+        return 0.0;
+    };
+    let holes_area = holes
+        .iter()
+        .map(|hole| heighted_contour_area_m2(hole).abs())
+        .sum::<f64>();
+    (heighted_contour_area_m2(outer).abs() - holes_area).max(0.0) as f32
+}
+
+fn heighted_contour_area_m2(contour: &NodeHeightedContour) -> f64 {
+    if contour.len() < 3 {
+        return 0.0;
+    }
+    let mut signed_area = 0.0;
+    for index in 0..contour.len() {
+        let current = contour[index].point_xz;
+        let next = contour[(index + 1) % contour.len()].point_xz;
+        signed_area += current.x * next.y - next.x * current.y;
+    }
+    signed_area * 0.5
 }

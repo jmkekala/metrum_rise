@@ -1,9 +1,8 @@
 //! Terrain-clip output edge sourcing.
 
 use super::super::{
-    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkFaceSource, RoadSurfaceSystem, band_semantics::raised_step_band_rank,
-    keys::SurfaceHeightMmKey,
+    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, RoadSurfaceSystem,
+    earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceHeightMmKey,
 };
 use super::heights::interval_height_at;
 use super::model::*;
@@ -259,8 +258,11 @@ impl RoadSurfaceSystem {
             .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
         {
             if let Some((start, end)) = canonical_segment
-                && let Some(source) =
-                    Self::canonical_node_boundary_output_source(provenance_candidates, start, end)
+                && let Some(source) = Self::canonical_same_owner_node_boundary_output_source(
+                    provenance_candidates,
+                    start,
+                    end,
+                )
             {
                 return TerrainClipOutputSourceSelection::Source(source);
             }
@@ -285,73 +287,61 @@ impl RoadSurfaceSystem {
         TerrainClipOutputSourceSelection::Source(first)
     }
 
-    fn canonical_node_boundary_output_source(
+    fn canonical_same_owner_node_boundary_output_source(
         candidates: &[TerrainClipSourceEdge],
         start: Vector3,
         end: Vector3,
     ) -> Option<TerrainClipSourceEdge> {
         let first = *candidates.first()?;
-        if first.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff {
-            return None;
-        }
         let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
             node_id,
             kind,
-            owner_kind: _,
-            owner_index: _,
+            owner_kind,
+            owner_index,
             ..
         } = first.source
         else {
             return None;
         };
-        let mut owners = Vec::new();
-        for candidate in candidates.iter().copied() {
-            let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                node_id: candidate_node_id,
-                kind: candidate_kind,
-                owner_kind: candidate_owner_kind,
-                owner_index: candidate_owner_index,
-                ..
-            } = candidate.source
-            else {
-                return None;
-            };
-            if candidate_node_id != node_id
-                || candidate_kind != kind
-                || candidate.kind != terrain_clip_edge_kind_for_band(candidate_owner_kind)
-            {
-                return None;
-            }
-            owners.push((candidate_owner_kind, candidate_owner_index));
-        }
-        owners.sort();
-        owners.dedup();
-        let (canonical_owner_kind, canonical_owner_index) =
-            canonical_node_boundary_output_owner(&owners)?;
-        let canonical_kind = terrain_clip_edge_kind_for_band(canonical_owner_kind);
-        if !candidates
-            .iter()
-            .any(|candidate| candidate.kind == canonical_kind)
-        {
+        if !candidates.iter().copied().all(|candidate| {
+            candidate.kind == first.kind
+                && matches!(
+                    candidate.source,
+                    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                        node_id: candidate_node_id,
+                        kind: candidate_kind,
+                        owner_kind: candidate_owner_kind,
+                        owner_index: candidate_owner_index,
+                        ..
+                    } if candidate_node_id == node_id
+                        && candidate_kind == kind
+                        && candidate_owner_kind == owner_kind
+                        && candidate_owner_index == owner_index
+                )
+        }) {
             return None;
         }
+
         Some(TerrainClipSourceEdge {
+            start,
+            end,
+            kind: first.kind,
             source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id,
                 kind,
-                owner_kind: canonical_owner_kind,
-                owner_index: canonical_owner_index,
+                owner_kind,
+                owner_index,
                 boundary_source: Some(NodeFootprintBoundarySegmentSource {
-                    start: Self::canonical_terrain_clip_boundary_point_source(start),
-                    end: Self::canonical_terrain_clip_boundary_point_source(end),
+                    start: Self::canonical_output_boundary_vertex_source(start),
+                    end: Self::canonical_output_boundary_vertex_source(end),
                 }),
             },
-            kind: canonical_kind,
-            ..first
+            source_index: first.source_index,
+            edge_index: first.edge_index,
         })
     }
 
-    fn canonical_terrain_clip_boundary_point_source(
+    fn canonical_output_boundary_vertex_source(
         point: Vector3,
     ) -> NodeFootprintBoundaryVertexSource {
         let key = Self::terrain_clip_world_key(point);
@@ -360,49 +350,6 @@ impl RoadSurfaceSystem {
             z_key: key.z_key(),
             y_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
         }
-    }
-}
-
-fn canonical_node_boundary_output_owner(
-    owners: &[(RoadSurfaceBandKind, usize)],
-) -> Option<(RoadSurfaceBandKind, usize)> {
-    let mut owner_kinds = owners
-        .iter()
-        .map(|(owner_kind, _)| *owner_kind)
-        .collect::<Vec<_>>();
-    owner_kinds.sort();
-    owner_kinds.dedup();
-    match owner_kinds.as_slice() {
-        [owner_kind] => {
-            if owners.len() <= 1 {
-                return None;
-            }
-            let owner_index = owners
-                .iter()
-                .filter(|(candidate_kind, _)| candidate_kind == owner_kind)
-                .map(|(_, owner_index)| *owner_index)
-                .min()?;
-            Some((*owner_kind, owner_index))
-        }
-        [a_owner_kind, b_owner_kind] => {
-            let a_rank = raised_step_band_rank(*a_owner_kind)?;
-            let b_rank = raised_step_band_rank(*b_owner_kind)?;
-            if a_rank.abs_diff(b_rank) != 1 {
-                return None;
-            }
-            let owner_kind = if a_rank > b_rank {
-                *a_owner_kind
-            } else {
-                *b_owner_kind
-            };
-            let owner_index = owners
-                .iter()
-                .filter(|(candidate_kind, _)| *candidate_kind == owner_kind)
-                .map(|(_, owner_index)| *owner_index)
-                .min()?;
-            Some((owner_kind, owner_index))
-        }
-        _ => None,
     }
 }
 

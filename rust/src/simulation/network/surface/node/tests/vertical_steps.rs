@@ -15,7 +15,7 @@ fn vertical_step_export_uses_exact_canonical_arrangement_keys() {
 }
 
 #[test]
-fn vertical_step_export_rejects_unsplit_arrangement_edge_endpoint() {
+fn vertical_step_export_splits_unsplit_boundary_interval_at_authorized_step_endpoint() {
     let lower_owner = owner(RoadSurfaceBandKind::Carriageway, 0);
     let raised_owner = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
     let lower_height = height_field(lower_owner);
@@ -129,9 +129,10 @@ fn vertical_step_export_rejects_unsplit_arrangement_edge_endpoint() {
         RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
 
     assert_eq!(segments.len(), 1);
-    assert!(
-        faces.is_empty(),
-        "a split on one owner must not synthesize a midpoint on the other owner's unsplit edge"
+    assert_eq!(
+        faces.len(),
+        2,
+        "a canonical step subsegment may split an existing solved boundary interval without changing ownership"
     );
 }
 
@@ -152,7 +153,7 @@ fn vertical_step_export_uses_generic_curb_sidewalk_owner_pair() {
 }
 
 #[test]
-fn vertical_step_export_requires_raised_owner_height_at_both_endpoints() {
+fn vertical_step_export_rejects_non_positive_signed_step_height() {
     let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support_and_heights(
         RoadSurfaceBandKind::Carriageway,
         RoadSurfaceBandKind::CurbOrShoulder,
@@ -170,7 +171,77 @@ fn vertical_step_export_requires_raised_owner_height_at_both_endpoints() {
     assert_eq!(segments.len(), 1);
     assert!(
         faces.is_empty(),
-        "material-rank raised-step authority must not emit an inverted physical step"
+        "material-rank raised-step authority must not emit a non-positive signed physical step"
+    );
+}
+
+#[test]
+fn vertical_step_export_keeps_tapered_zero_height_step_endpoint() {
+    let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support_and_heights(
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadSurfaceBandKind::Sidewalk,
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(2.0, 0.0),
+        0.0,
+        0.0,
+        0.0,
+        0.12,
+    );
+
+    let faces =
+        RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
+
+    assert_eq!(segments.len(), 1);
+    assert_eq!(
+        faces.len(),
+        1,
+        "a source-authorized step may taper to zero height at one endpoint without hidden height repair"
+    );
+}
+
+#[test]
+fn vertical_step_export_rejects_zero_height_step_interval() {
+    let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support_and_heights(
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadSurfaceBandKind::Sidewalk,
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(2.0, 0.0),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    );
+
+    let faces =
+        RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
+
+    assert_eq!(segments.len(), 1);
+    assert!(
+        faces.is_empty(),
+        "a canonical step must have positive height somewhere on the interval before emitting a face"
+    );
+}
+
+#[test]
+fn vertical_step_export_rejects_crossed_step_endpoint() {
+    let (arrangement, segments) = arrangement_with_owner_pair_vertical_step_support_and_heights(
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadSurfaceBandKind::Sidewalk,
+        RoadVec2::new(0.0, 0.0),
+        RoadVec2::new(2.0, 0.0),
+        0.002,
+        0.0,
+        0.0,
+        0.006,
+    );
+
+    let faces =
+        RoadSurfaceSystem::raised_step_face_polygons_from_arrangement(&arrangement, &segments);
+
+    assert_eq!(segments.len(), 1);
+    assert!(
+        faces.is_empty(),
+        "a canonical step with one inverted endpoint must not emit a twisted face"
     );
 }
 

@@ -54,12 +54,18 @@ impl RoadSurfaceSystem {
             start_kind,
             end_kind,
         );
-        let start_profile_plane = matches!(start_kind, Some(CompiledNodeKind::JunctionN))
-            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node)))
-            .flatten();
-        let end_profile_plane = matches!(end_kind, Some(CompiledNodeKind::JunctionN))
-            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node)))
-            .flatten();
+        let start_profile_plane = matches!(
+            start_kind,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
+        )
+        .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node)))
+        .flatten();
+        let end_profile_plane = matches!(
+            end_kind,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
+        )
+        .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node)))
+        .flatten();
         let sample_distances = self.build_section_sample_distances(
             graph,
             edge_idx,

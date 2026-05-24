@@ -1,16 +1,20 @@
 //! Final owned-boundary extraction and arrangement export for node ownership.
 
-use super::super::arrangement::{NodeBandOwner, NodeSeamSource, seam_constraints_are_ambiguous};
+use super::super::arrangement::{
+    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous,
+};
 use super::super::rails::NodeRailConstraint;
 use super::super::{NodeOverlayShapes, RoadSurfaceVisualNodePieceKind};
-use super::rings::{noded_owned_region_edge_points, owned_region_global_points};
 use super::seams::{
     junctionn_unmaterialized_raised_step_authority_indices_for_edge,
+    materialized_endpoint_pair_constraint_indices_for_owned_edge,
     owned_boundary_requires_explicit_seam, owned_source_constraints_for_edge,
     source_constraints_materialize_raised_step_authority,
 };
 use super::topology_keys::{
     OwnedRegionEdgeKey, canonical_source_indices, ownership_key_from_overlay_point,
+    ownership_key_from_road_point, point_key_lies_exactly_on_segment, point_key_lies_on_segment,
+    segment_parameter_key,
 };
 use super::{
     NodeBooleanOwnedRegion, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
@@ -66,6 +70,34 @@ impl NodeOwnedRegionArrangement {
                     OwnedRegionEdgeNeighbor::Exposed
                     | OwnedRegionEdgeNeighbor::Ambiguous { .. } => None,
                 };
+                let endpoint_pair_source_constraint_indices = if source_constraints.is_empty() {
+                    if let Some(opposite_owner) = opposite_owner {
+                        canonical_source_indices(
+                            endpoint_pair_constraint_indices_from_region_seams(
+                                edge_key.start,
+                                edge_key.end,
+                                regions,
+                                edge_ref.owner,
+                                opposite_owner,
+                            )
+                            .into_iter()
+                            .chain(
+                                materialized_endpoint_pair_constraint_indices_for_owned_edge(
+                                    edge_key.start,
+                                    edge_key.end,
+                                    rail_constraints,
+                                    edge_ref.owner,
+                                    opposite_owner,
+                                    piece_kind,
+                                ),
+                            ),
+                        )
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
                 if let Some(opposite_owner) = opposite_owner {
                     if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
                         let source_constraint_indices =
@@ -78,6 +110,7 @@ impl NodeOwnedRegionArrangement {
                                 opposite_owner,
                             );
                         if !source_constraint_indices.is_empty()
+                            && endpoint_pair_source_constraint_indices.is_empty()
                             && !source_constraints_materialize_raised_step_authority(
                                 &source_constraints,
                                 &source_constraint_indices,
@@ -95,7 +128,9 @@ impl NodeOwnedRegionArrangement {
                                     source_constraint_indices,
                                 },
                             );
-                        } else if source_constraints.is_empty() {
+                        } else if source_constraints.is_empty()
+                            && endpoint_pair_source_constraint_indices.is_empty()
+                        {
                             diagnostics.push(
                                 NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
                                     region_index: edge_ref.region_index,
@@ -121,11 +156,19 @@ impl NodeOwnedRegionArrangement {
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
+                    .or_else(|| {
+                        (!endpoint_pair_source_constraint_indices.is_empty()).then(|| {
+                            NodeSeamSource::RaisedStepContact {
+                                owner_index: edge_ref.owner.owner_index(),
+                            }
+                        })
+                    })
                     .unwrap_or_else(|| NodeSeamSource::for_owner(edge_ref.owner));
                 let source_constraint_indices = canonical_source_indices(
                     source_constraints
                         .iter()
-                        .map(|constraint| constraint.constraint_index),
+                        .map(|constraint| constraint.constraint_index)
+                        .chain(endpoint_pair_source_constraint_indices),
                 );
                 edges.push(NodeOwnedRegionArrangementEdge {
                     region_index: edge_ref.region_index,
@@ -149,6 +192,76 @@ impl NodeOwnedRegionArrangement {
     }
 }
 
+fn endpoint_pair_constraint_indices_from_region_seams(
+    start: (i64, i64),
+    end: (i64, i64),
+    regions: &[NodeBooleanOwnedRegion],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    let start_indices = source_authorized_region_seam_endpoint_constraint_indices(
+        start,
+        regions,
+        owner,
+        opposite_owner,
+    );
+    if start_indices.is_empty() {
+        return Vec::new();
+    }
+    let end_indices = source_authorized_region_seam_endpoint_constraint_indices(
+        end,
+        regions,
+        owner,
+        opposite_owner,
+    );
+    if end_indices.is_empty() {
+        return Vec::new();
+    }
+    canonical_source_indices(start_indices.into_iter().chain(end_indices))
+}
+
+fn source_authorized_region_seam_endpoint_constraint_indices(
+    key: (i64, i64),
+    regions: &[NodeBooleanOwnedRegion],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    regions
+        .iter()
+        .flat_map(|region| region.seam_constraints.iter())
+        .filter(|constraint| constraint.is_material_transition)
+        .filter(|constraint| region_seam_has_exact_endpoint_key(constraint, key))
+        .filter(|constraint| {
+            region_seam_authorizes_same_kind_handoff(constraint, owner, opposite_owner)
+        })
+        .map(|constraint| constraint.constraint_index)
+        .collect()
+}
+
+fn region_seam_has_exact_endpoint_key(
+    constraint: &NodeRegionSeamConstraint,
+    key: (i64, i64),
+) -> bool {
+    ownership_key_from_road_point(constraint.start_xz) == key
+        || ownership_key_from_road_point(constraint.end_xz) == key
+}
+
+fn region_seam_authorizes_same_kind_handoff(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    let (Some(source_owner), Some(source_opposite_owner)) =
+        (constraint.owner, constraint.opposite_owner)
+    else {
+        return false;
+    };
+    (source_owner == owner && source_opposite_owner.kind() == opposite_owner.kind())
+        || (source_opposite_owner == owner && source_owner.kind() == opposite_owner.kind())
+        || (source_owner == opposite_owner && source_opposite_owner.kind() == owner.kind())
+        || (source_opposite_owner == opposite_owner && source_owner.kind() == owner.kind())
+}
+
 pub(super) struct OwnedRegionBoundaryRefs {
     pub(super) edges: BTreeMap<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>,
 }
@@ -157,7 +270,8 @@ pub(super) fn owned_region_boundary_refs(
     regions: &[NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
 ) -> OwnedRegionBoundaryRefs {
-    let global_points = owned_region_global_points(regions, footprint_shapes);
+    let region_points = owned_region_point_keys(regions);
+    let footprint_edges = final_footprint_edge_keys(footprint_shapes);
     let mut edges = BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>::new();
     for (region_index, region) in regions.iter().enumerate() {
         for contour in &region.shape {
@@ -171,7 +285,12 @@ pub(super) fn owned_region_boundary_refs(
                 if start == end {
                     continue;
                 }
-                let points = noded_owned_region_edge_points(start, end, &global_points);
+                let points = noded_owned_region_boundary_edge_points(
+                    start,
+                    end,
+                    &region_points,
+                    &footprint_edges,
+                );
                 for segment in points.windows(2) {
                     if segment[0] == segment[1] {
                         continue;
@@ -190,6 +309,99 @@ pub(super) fn owned_region_boundary_refs(
     }
 
     OwnedRegionBoundaryRefs { edges }
+}
+
+fn owned_region_point_keys(regions: &[NodeBooleanOwnedRegion]) -> Vec<(i64, i64)> {
+    let mut points = regions
+        .iter()
+        .flat_map(|region| region.shape.iter())
+        .flat_map(|contour| contour.iter().copied())
+        .map(ownership_key_from_overlay_point)
+        .collect::<Vec<_>>();
+    points.sort_unstable();
+    points.dedup();
+    points
+}
+
+fn final_footprint_edge_keys(
+    footprint_shapes: &NodeOverlayShapes,
+) -> Vec<((i64, i64), (i64, i64))> {
+    let mut edges = Vec::new();
+    for contour in footprint_shapes
+        .iter()
+        .flat_map(|shape| shape.iter())
+        .filter(|contour| contour.len() >= 2)
+    {
+        for index in 0..contour.len() {
+            let start = ownership_key_from_overlay_point(contour[index]);
+            let end = ownership_key_from_overlay_point(contour[(index + 1) % contour.len()]);
+            if start != end {
+                edges.push((start, end));
+            }
+        }
+    }
+    edges
+}
+
+fn noded_owned_region_boundary_edge_points(
+    start: (i64, i64),
+    end: (i64, i64),
+    region_points: &[(i64, i64)],
+    footprint_edges: &[((i64, i64), (i64, i64))],
+) -> Vec<(i64, i64)> {
+    let mut split_points = region_points
+        .iter()
+        .copied()
+        .filter(|point| *point != start && *point != end)
+        .filter(|point| point_key_lies_exactly_on_segment(*point, start, end))
+        .collect::<Vec<_>>();
+    split_points.extend(supported_final_footprint_boundary_points_for_edge(
+        start,
+        end,
+        footprint_edges,
+    ));
+    split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
+    split_points.dedup();
+
+    let mut points = Vec::with_capacity(split_points.len() + 2);
+    points.push(start);
+    points.extend(split_points);
+    points.push(end);
+    points
+}
+
+fn supported_final_footprint_boundary_points_for_edge(
+    start: (i64, i64),
+    end: (i64, i64),
+    final_footprint_edges: &[((i64, i64), (i64, i64))],
+) -> Vec<(i64, i64)> {
+    let mut points = Vec::new();
+    for (edge_start, edge_end) in final_footprint_edges {
+        if !footprint_edges_overlap(start, end, *edge_start, *edge_end) {
+            continue;
+        }
+        points.extend(
+            [*edge_start, *edge_end]
+                .into_iter()
+                .filter(|point| *point != start && *point != end)
+                .filter(|point| point_key_lies_on_segment(*point, start, end)),
+        );
+    }
+    points.sort_by_key(|point| segment_parameter_key(start, end, *point));
+    points.dedup();
+    points
+}
+
+fn footprint_edges_overlap(
+    left_start: (i64, i64),
+    left_end: (i64, i64),
+    right_start: (i64, i64),
+    right_end: (i64, i64),
+) -> bool {
+    point_key_lies_on_segment(left_start, right_start, right_end)
+        || point_key_lies_on_segment(left_end, right_start, right_end)
+        || point_key_lies_on_segment(right_start, left_start, left_end)
+        || point_key_lies_on_segment(right_end, left_start, left_end)
 }
 
 pub(super) fn canonical_owned_region_edge_refs(

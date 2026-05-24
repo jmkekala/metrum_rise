@@ -42,6 +42,77 @@ fn arrangement_rejects_same_material_same_xz_height_conflict_without_explicit_st
 }
 
 #[test]
+fn arrangement_accepts_same_material_same_xz_split_with_endpoint_material_path() {
+    let first_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let second_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 2);
+    let first_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let second_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let key = RoadVec2::new(0.0, 0.0);
+    let first_step = NodeRegionSeamConstraint {
+        constraint_index: 31,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        owner: Some(first_curb),
+        opposite_owner: Some(sidewalk),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: key,
+        end_xz: key,
+    };
+    let second_step = NodeRegionSeamConstraint {
+        constraint_index: 32,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
+        owner: Some(second_curb),
+        opposite_owner: Some(sidewalk),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: key,
+        end_xz: key,
+    };
+    let mut arrangement = NodeArrangement::new(12, RoadSurfaceVisualNodePieceKind::JunctionN);
+    let first_vertex = arrangement
+        .insert_vertex(
+            key,
+            1.0,
+            [first_curb],
+            first_height,
+            [first_step.seam_source],
+        )
+        .expect("first same-material endpoint should insert");
+    let second_vertex = arrangement
+        .insert_vertex(
+            key,
+            1.25,
+            [second_curb],
+            second_height,
+            [second_step.seam_source],
+        )
+        .expect("second same-material endpoint should insert");
+    arrangement.push_region(
+        first_curb,
+        first_height,
+        vec![first_vertex],
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        vec![first_step],
+    );
+    arrangement.push_region(
+        second_curb,
+        second_height,
+        vec![second_vertex],
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        vec![second_step],
+    );
+
+    arrangement
+        .reject_implicit_material_height_conflicts()
+        .expect("source-authored material endpoint path should authorize the same-material split");
+}
+
+#[test]
 fn arrangement_accepts_same_material_same_xz_height_split_with_explicit_vertical_step() {
     let lower = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
     let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
@@ -92,6 +163,67 @@ fn arrangement_accepts_same_material_same_xz_height_split_with_explicit_vertical
         NodeArrangementKey::from_point(end),
         lower,
         raised,
+    )
+    .expect("test segment is non-degenerate");
+
+    assert!(
+        arrangement
+            .explicit_vertical_step_segments()
+            .contains(&expected)
+    );
+}
+
+#[test]
+fn arrangement_accepts_same_material_owned_boundary_as_source_authorized_height_split() {
+    let first = owner(RoadSurfaceBandKind::Sidewalk, 0);
+    let second = owner(RoadSurfaceBandKind::Sidewalk, 5);
+    let start = RoadVec2::new(1.0, 0.0);
+    let end = RoadVec2::new(1.0, 1.0);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 77,
+        seam_source: NodeSeamSource::SidewalkOuter { owner_index: 0 },
+        owner: Some(first),
+        opposite_owner: Some(second),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: end,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                first,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 1.0, 0.0),
+                    height_vertex(0.0, 1.0, 0.0),
+                ],
+                vec![seam.clone()],
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                second,
+                vec![
+                    height_vertex(1.0, 0.0, 0.5),
+                    height_vertex(2.0, 0.0, 0.5),
+                    height_vertex(2.0, 1.0, 0.5),
+                    height_vertex(1.0, 1.0, 0.5),
+                ],
+                vec![seam],
+            ),
+        ],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("post-boolean same-material seam should authorize split sidewalk heights");
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(start),
+        NodeArrangementKey::from_point(end),
+        first,
+        second,
     )
     .expect("test segment is non-degenerate");
 

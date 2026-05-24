@@ -29,6 +29,8 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
     );
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -70,6 +72,8 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
     );
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -114,6 +118,8 @@ fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
     );
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),

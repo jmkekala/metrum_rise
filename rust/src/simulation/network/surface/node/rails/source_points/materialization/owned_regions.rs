@@ -306,6 +306,59 @@ mod tests {
     }
 
     #[test]
+    fn owned_region_materializes_height_from_closed_band_contour_edge() {
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 2);
+        let source = (RoadSurfaceBandKind::Sidewalk, 0, 5);
+        let constraints = [NodeRailConstraint {
+            constraint_index: 0,
+            kind: NodeRailConstraintKind::BandContour {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            source_boundary_index: None,
+            owner: Some(sidewalk),
+            opposite_owner: None,
+            points_xz: vec![
+                RoadVec2::new(0.0, 2.0),
+                RoadVec2::new(2.0, 2.0),
+                RoadVec2::new(2.0, 0.0),
+                RoadVec2::new(0.0, 0.0),
+            ],
+        }];
+        let mut points_by_source = BTreeMap::from([(
+            source,
+            vec![RoadVec3::new(0.0, 2.0, 2.0), RoadVec3::new(0.0, 0.0, 0.0)],
+        )]);
+        let ownership = test_ownership(NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: sidewalk,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            shape: vec![vec![[0.0, 1.0], [1.0, 1.0], [0.0, 1.5]]],
+            area_m2: 0.25,
+            seam_constraints: Vec::new(),
+        });
+
+        push_owned_region_height_carrier_points(
+            &mut points_by_source,
+            &constraints,
+            &BTreeMap::new(),
+            &ownership,
+        )
+        .expect("closed band contour edge must materialize final owned vertex height");
+
+        let points = points_by_source
+            .get(&source)
+            .expect("source should remain present");
+        assert!(points.iter().any(|point| {
+            road_point_key(xz(*point)) == road_point_key(RoadVec2::new(0.0, 1.0))
+                && SurfaceHeightMmKey::from_m_f64(point.y) == SurfaceHeightMmKey::from_m_f64(1.0)
+        }));
+    }
+
+    #[test]
     fn owned_region_materializes_height_from_same_mm_source_cluster() {
         let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 2);
         let source = (RoadSurfaceBandKind::Sidewalk, 1, 5);
@@ -420,7 +473,26 @@ fn height_on_constraint_key(
             return Some(height_m);
         }
     }
+    if constraint_height_path_is_closed(constraint)
+        && points.len() > 2
+        && let (Some(start), Some(end)) = (points.last().copied(), points.first().copied())
+        && let (Some(start_height_m), Some(end_height_m)) = (
+            known_height(heights_by_key, start),
+            known_height(heights_by_key, end),
+        )
+        && let Some(height_m) =
+            height_for_key_on_generated_edge(point, start, end, start_height_m, end_height_m)
+    {
+        return Some(height_m);
+    }
     None
+}
+
+fn constraint_height_path_is_closed(constraint: &NodeRailConstraint) -> bool {
+    matches!(
+        constraint.kind,
+        NodeRailConstraintKind::FullRoadbedContour | NodeRailConstraintKind::BandContour { .. }
+    )
 }
 
 fn surrounding_known_constraint_height_segment(

@@ -250,6 +250,33 @@ fn protected_span_handoff_dust_stays_owned() {
 }
 
 #[test]
+fn protected_material_transition_dust_stays_owned() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let shape = vec![vec![[0.0, 0.0], [0.0001, 0.0], [0.0, 0.0001]]];
+    let constraints = vec![NodeRailConstraint {
+        constraint_index: 9,
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(1),
+        source_boundary_index: Some(1),
+        owner: Some(carriageway),
+        opposite_owner: Some(curb),
+        points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(0.0001, 0.0)],
+    }];
+
+    assert!(
+        !owned_shape_is_discardable_numeric_dust(
+            &shape,
+            RoadSurfaceSystem::overlay_shape_area_m2(&shape),
+            curb,
+            &constraints,
+        ),
+        "material-transition dust must remain owned so asphalt and sidewalk cannot become directly adjacent"
+    );
+}
+
+#[test]
 fn unprotected_numeric_dust_can_still_be_discarded() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 3);
     let shape = vec![vec![[0.0, 0.0], [0.0001, 0.0], [0.0, 0.0001]]];
@@ -260,4 +287,61 @@ fn unprotected_numeric_dust_can_still_be_discarded() {
         owner,
         &[],
     ));
+}
+
+#[test]
+fn unsupported_asphalt_adjacent_sidewalk_sliver_stays_rejected() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+    let regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::Carriageway,
+            carriageway,
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
+        NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: sidewalk,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+            source_mouth_order_index: 1,
+            source_band_index: Some(1),
+            shape: vec![vec![[0.0, 0.0], [0.1, 0.0], [0.0, 0.002]]],
+            area_m2: 0.0001,
+            seam_constraints: Vec::new(),
+        },
+    ];
+    let arrangement = unsupported_asphalt_contact_arrangement(sidewalk, carriageway, 1);
+
+    assert_eq!(regions.len(), 2);
+    let report = NodeValidationReport::from_owned_region_arrangement_diagnostics(&arrangement)
+        .expect("missing seam diagnostic must be surfaced instead of repaired");
+    assert!(report.has_blocking_diagnostics());
+    assert!(report.debug_dump().contains("\"reason\":\"Missing\""));
+}
+
+fn unsupported_asphalt_contact_arrangement(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    region_index: usize,
+) -> NodeOwnedRegionArrangement {
+    let start = NodeOwnedRegionArrangementKey { x_key: 0, z_key: 0 };
+    let end = NodeOwnedRegionArrangementKey {
+        x_key: 1_000_000,
+        z_key: 0,
+    };
+    NodeOwnedRegionArrangement {
+        node_id: 7,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        region_count: 2,
+        edges: Vec::new(),
+        diagnostics: vec![
+            NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+            },
+        ],
+    }
 }

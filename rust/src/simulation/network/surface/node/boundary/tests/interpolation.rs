@@ -141,7 +141,7 @@ fn source_edge_endpoint_dust_authorizes_boundary_segment() {
 
 #[test]
 fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
-    let source_edge = test_source_edge(
+    let mut source_edge = test_source_edge(
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(2.0, 0.0, 0.0),
         3,
@@ -149,6 +149,7 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
         3,
         31,
     );
+    source_edge.final_footprint_boundary = true;
     let start_source = source_edge.start_source;
     let end_source = source_edge.end_source;
     let unsupported_point = Vector3::new(1.0, 0.0, 0.0002);
@@ -168,6 +169,8 @@ fn numeric_cleanup_support_ignores_contour_only_interpolation_sources() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -221,6 +224,8 @@ fn missing_boundary_height_rejects_subbudget_run() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -284,6 +289,8 @@ fn missing_boundary_height_interpolation_rejects_contour_only_endpoint_source() 
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -339,6 +346,8 @@ fn missing_boundary_height_interpolation_rejects_overbudget_same_owner_connector
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -376,6 +385,8 @@ fn missing_boundary_height_interpolation_rejects_overbudget_run() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),

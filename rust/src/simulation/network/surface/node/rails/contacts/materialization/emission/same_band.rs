@@ -8,12 +8,23 @@ use super::super::authority::{
 use super::super::*;
 use std::collections::BTreeSet;
 
+type SameMaterialHeightSplitConstraint = (
+    NodeBandOwner,
+    NodeBandOwner,
+    NodeRailPointKey,
+    NodeRailPointKey,
+    usize,
+    Option<usize>,
+);
+
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
+    source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
 ) {
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
+    let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
             let left = &contours[left_index];
@@ -33,6 +44,16 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             let Some(right_kind) = generated_contour_band_kind(right) else {
                 continue;
             };
+            if kind == right_kind {
+                collect_same_material_height_splits(
+                    left,
+                    right,
+                    left_owner,
+                    right_owner,
+                    &mut same_material_height_splits,
+                );
+                continue;
+            }
             let Some(contact_kind) =
                 generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
             else {
@@ -182,10 +203,14 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             }
         }
     }
+    let source_constraints = super::source_authority_constraints_for_generated_contacts(
+        constraints,
+        source_constraint_count,
+    );
     collect_source_authorized_raised_step_contacts(
         piece_kind,
         contours,
-        constraints,
+        &source_constraints,
         &mut contact_edges,
     );
 
@@ -210,6 +235,170 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 road_point_from_key(contact.start),
                 road_point_from_key(contact.end),
             ],
+        });
+    }
+    append_same_material_height_split_constraints(constraints, same_material_height_splits);
+}
+
+fn collect_same_material_height_splits(
+    left: &NodeGeneratedContour,
+    right: &NodeGeneratedContour,
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+    contacts: &mut BTreeSet<SameMaterialHeightSplitConstraint>,
+) {
+    let mut edges = BTreeSet::new();
+    for edge in shared_generated_contour_edges(left, right) {
+        insert_same_material_height_split(
+            contacts,
+            left_owner,
+            right_owner,
+            edge.start,
+            edge.end,
+            left.source_mouth_order_index,
+            left.source_band_index,
+        );
+        edges.insert(edge);
+    }
+    for edge in generated_contact_edges_inside_contour(left, right) {
+        insert_same_material_height_split(
+            contacts,
+            left_owner,
+            right_owner,
+            edge.start,
+            edge.end,
+            left.source_mouth_order_index,
+            left.source_band_index,
+        );
+        edges.insert(edge);
+    }
+    for edge in generated_contact_edges_inside_contour(right, left) {
+        insert_same_material_height_split(
+            contacts,
+            left_owner,
+            right_owner,
+            edge.start,
+            edge.end,
+            right.source_mouth_order_index,
+            right.source_band_index,
+        );
+        edges.insert(edge);
+    }
+    for edge in generated_contact_edges_from_overlay_intersection(left, right) {
+        let (source_mouth_order_index, source_band_index) =
+            same_material_height_split_source_name(left, right, left_owner, right_owner);
+        insert_same_material_height_split(
+            contacts,
+            left_owner,
+            right_owner,
+            edge.start,
+            edge.end,
+            source_mouth_order_index,
+            source_band_index,
+        );
+        edges.insert(edge);
+    }
+    let shared_edge_points = edges
+        .iter()
+        .flat_map(|edge| [edge.start, edge.end])
+        .collect::<BTreeSet<_>>();
+    let mut points = shared_generated_contour_points(left, right);
+    points.extend(generated_contact_points_from_contour_intersections(
+        left, right,
+    ));
+    points.sort_unstable();
+    points.dedup();
+    for point in points {
+        if shared_edge_points.contains(&point) {
+            continue;
+        }
+        let (source_mouth_order_index, source_band_index) =
+            same_material_height_split_source_name(left, right, left_owner, right_owner);
+        insert_same_material_height_split(
+            contacts,
+            left_owner,
+            right_owner,
+            point,
+            point,
+            source_mouth_order_index,
+            source_band_index,
+        );
+    }
+}
+
+fn same_material_height_split_source_name(
+    left: &NodeGeneratedContour,
+    right: &NodeGeneratedContour,
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+) -> (usize, Option<usize>) {
+    if left_owner <= right_owner {
+        (left.source_mouth_order_index, left.source_band_index)
+    } else {
+        (right.source_mouth_order_index, right.source_band_index)
+    }
+}
+
+fn insert_same_material_height_split(
+    contacts: &mut BTreeSet<SameMaterialHeightSplitConstraint>,
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+) {
+    let (owner, opposite_owner) = if left_owner <= right_owner {
+        (left_owner, right_owner)
+    } else {
+        (right_owner, left_owner)
+    };
+    let (start, end) = if end < start {
+        (end, start)
+    } else {
+        (start, end)
+    };
+    contacts.insert((
+        owner,
+        opposite_owner,
+        start,
+        end,
+        source_mouth_order_index,
+        source_band_index,
+    ));
+}
+
+fn append_same_material_height_split_constraints(
+    constraints: &mut Vec<NodeRailConstraint>,
+    contacts: BTreeSet<SameMaterialHeightSplitConstraint>,
+) {
+    for (owner, opposite_owner, start, end, source_mouth_order_index, source_band_index) in contacts
+    {
+        if constraints.iter().any(|constraint| {
+            constraint.kind == NodeRailConstraintKind::RaisedStepContact
+                && owners_match_unordered(
+                    constraint.owner,
+                    constraint.opposite_owner,
+                    owner,
+                    opposite_owner,
+                )
+                && constraint.points_xz.len() == 2
+                && GeneratedContourEdgeKey::new(
+                    road_point_key(constraint.points_xz[0]),
+                    road_point_key(constraint.points_xz[1]),
+                ) == GeneratedContourEdgeKey::new(start, end)
+        }) {
+            continue;
+        }
+        constraints.push(NodeRailConstraint {
+            constraint_index: constraints.len(),
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index,
+            source_band_index,
+            source_boundary_index: None,
+            owner: Some(owner),
+            opposite_owner: Some(opposite_owner),
+            points_xz: vec![road_point_from_key(start), road_point_from_key(end)],
         });
     }
 }

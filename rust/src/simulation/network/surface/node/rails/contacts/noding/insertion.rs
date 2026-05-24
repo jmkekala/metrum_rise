@@ -4,8 +4,8 @@ use super::super::{
     GeneratedContourDirectedEdge, NodeGeneratedContour, NodeRailConstraint,
     NodeRailGenerationError, NodeRailPointKey, RoadVec3, generated_contour_keys,
     generated_point_key_lies_on_segment, generated_segment_parameter_key,
-    height_for_key_on_generated_edge, remove_generated_contour_spikes, road_point_from_key,
-    road_point_key, set_generated_contour_from_keys,
+    height_for_key_on_generated_edge, road_point_from_key, road_point_key,
+    set_generated_contour_from_keys,
 };
 use super::{ContactEdgeInsertions, ContactInsertionsByIndex, ContactNodingCandidate};
 use std::collections::BTreeSet;
@@ -104,7 +104,7 @@ fn insert_keys_on_generated_contour_edges(
     if !inserted_any {
         return Ok(false);
     }
-    remove_generated_contour_spikes(&mut new_keys);
+    remove_generated_contour_spikes_with_height_points(&mut new_keys, new_height_points.as_mut());
     if new_keys == keys {
         return Ok(false);
     }
@@ -172,4 +172,73 @@ fn sorted_edge_insertions(
     insertions.sort_by_key(|point| generated_segment_parameter_key(start, end, *point));
     insertions.dedup();
     insertions
+}
+
+fn remove_generated_contour_spikes_with_height_points(
+    keys: &mut Vec<NodeRailPointKey>,
+    mut height_points: Option<&mut Vec<RoadVec3>>,
+) {
+    let mut index = 1;
+    while index < keys.len() {
+        if keys[index - 1] == keys[index] {
+            keys.remove(index);
+            if let Some(height_points) = height_points.as_mut() {
+                height_points.remove(index);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    loop {
+        if keys.len() < 3 {
+            return;
+        }
+        let mut removed = false;
+        for index in 0..keys.len() {
+            let previous = if index == 0 {
+                keys.len() - 1
+            } else {
+                index - 1
+            };
+            let next = if index + 1 == keys.len() {
+                0
+            } else {
+                index + 1
+            };
+            if keys[previous] == keys[next] {
+                keys.remove(index);
+                if let Some(height_points) = height_points.as_mut() {
+                    height_points.remove(index);
+                }
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spike_removal_preserves_matching_height_points() {
+        let mut keys = vec![(0, 0), (1, 0), (0, 0), (0, 2)];
+        let mut heights = vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 1.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 2.0, 2.0),
+        ];
+
+        remove_generated_contour_spikes_with_height_points(&mut keys, Some(&mut heights));
+
+        assert_eq!(keys, vec![(0, 0), (0, 0)]);
+        assert_eq!(heights.len(), keys.len());
+        assert_eq!(heights[1].x, 0.0);
+        assert_eq!(heights[1].y, 0.0);
+    }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 pub(super) fn apply_junctionn_same_material_seam_height_normalization(
     regions: &mut [NodeHeightedRegion],
-) {
+) -> Result<(), NodeHeightFieldError> {
     let mut candidates_by_key =
         BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
@@ -31,6 +31,17 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
         }
     }
 
+    for (key, candidates) in &candidates_by_key {
+        let Some(first) = candidates.first().copied() else {
+            continue;
+        };
+        reject_same_material_height_conflict(
+            first.owner.kind(),
+            key.point,
+            candidates.iter().copied(),
+        )?;
+    }
+
     let selected_by_key = candidates_by_key
         .into_iter()
         .filter_map(|(key, candidates)| {
@@ -39,7 +50,7 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
         .collect::<BTreeMap<_, _>>();
 
     if selected_by_key.is_empty() {
-        return;
+        return Ok(());
     }
 
     for region in regions {
@@ -69,6 +80,7 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
             }
         }
     }
+    Ok(())
 }
 
 pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(

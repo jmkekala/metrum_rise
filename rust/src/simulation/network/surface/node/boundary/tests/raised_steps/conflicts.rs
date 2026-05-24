@@ -42,6 +42,8 @@ fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -106,6 +108,8 @@ fn raised_step_footprint_height_accepts_multiple_explicit_raised_owners_with_ord
     direct_vertex_source_candidates.insert(raised_point, vec![raised_a, raised_b]);
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),

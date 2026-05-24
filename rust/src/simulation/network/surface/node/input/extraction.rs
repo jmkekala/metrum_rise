@@ -70,7 +70,9 @@ impl NodeInputMouth {
             profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
         let mut boundary_rails = boundary_rails(mouth);
         let mut band_intervals = band_intervals(mouth);
-        if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
+        if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal
+            || !mouth.uses_explicit_band_domain_paths
+        {
             replace_profile_paths_with_chords(&mut boundary_rails, &mut band_intervals);
         }
         quantize_profile_rails_xz(&mut mouth_rails);

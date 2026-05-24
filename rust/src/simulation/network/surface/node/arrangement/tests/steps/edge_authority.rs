@@ -186,6 +186,77 @@ fn explicit_vertical_step_segments_require_source_for_same_kind_junction_edge() 
 }
 
 #[test]
+fn explicit_vertical_step_segments_use_distributed_endpoint_pair_sources() {
+    let lower = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
+    let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let start = RoadVec2::new(1.0, 0.0);
+    let end = RoadVec2::new(1.0, 1.0);
+    let start_source = NodeRegionSeamConstraint {
+        constraint_index: 94,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        owner: Some(lower),
+        opposite_owner: Some(raised),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: start,
+    };
+    let end_source = NodeRegionSeamConstraint {
+        constraint_index: 95,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 1 },
+        owner: Some(lower),
+        opposite_owner: Some(raised),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: end,
+        end_xz: end,
+    };
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                lower,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 1.0, 0.0),
+                    height_vertex(0.0, 1.0, 0.0),
+                ],
+                vec![start_source],
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                raised,
+                vec![
+                    height_vertex(1.0, 0.0, 0.12),
+                    height_vertex(2.0, 0.0, 0.12),
+                    height_vertex(2.0, 1.0, 0.12),
+                    height_vertex(1.0, 1.0, 0.12),
+                ],
+                vec![end_source],
+            ),
+        ],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("distributed endpoint sources should authorize same-kind split vertices");
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(start),
+        NodeArrangementKey::from_point(end),
+        lower,
+        raised,
+    )
+    .expect("test segment is non-degenerate");
+
+    assert!(
+        arrangement
+            .explicit_vertical_step_segments()
+            .contains(&expected)
+    );
+}
+
+#[test]
 fn explicit_vertical_step_segments_include_direct_sidewalk_contacts() {
     let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
     let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);

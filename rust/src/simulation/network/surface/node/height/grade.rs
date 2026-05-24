@@ -4,9 +4,9 @@ use super::super::RoadSurfaceBandKind;
 use super::super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
 };
-use super::super::backend::RoadVec2;
+use super::super::backend::{RoadVec2, quantize_road_vec2_to_overlay_grid};
 use super::super::keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey};
-use super::super::segments::road_xz_lies_exactly_on_segment;
+use super::super::segments::key_lies_on_segment;
 use super::model::{
     NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightedRegion, NodeHeightedVertex,
 };
@@ -53,7 +53,7 @@ pub(crate) fn apply_junctionn_height_authority_normalization(
     apply_junctionn_same_owner_canonical_vertex_height_normalization(regions);
     apply_junctionn_same_material_shared_edge_height_normalization(regions)?;
     apply_junctionn_same_material_vertex_height_normalization(regions)?;
-    apply_junctionn_same_material_seam_height_normalization(regions);
+    apply_junctionn_same_material_seam_height_normalization(regions)?;
     apply_junctionn_explicit_material_seam_height_normalization(regions);
     Ok(())
 }
@@ -63,6 +63,9 @@ mod tests {
     use super::super::super::RoadSurfaceBandKind;
     use super::super::super::arrangement::NodeBandHeightFieldId;
     use super::super::super::backend::RoadVec2;
+    use super::super::super::rails::{
+        NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose,
+    };
     use super::super::model::{NodeHeightedRegion, NodeHeightedVertex};
     use super::*;
 
@@ -110,10 +113,53 @@ mod tests {
         assert_eq!(regions[1].shape[0][0].height_m, 1.0);
     }
 
+    #[test]
+    fn carrier_rejects_same_owner_generated_contour_height_conflict() {
+        let mut regions = vec![
+            manual_region_with_authority(
+                RoadSurfaceBandKind::Sidewalk,
+                5,
+                151.379,
+                Some(NodeHeightAuthoritySource::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                    claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                }),
+            ),
+            manual_region_with_authority(
+                RoadSurfaceBandKind::Sidewalk,
+                5,
+                151.378,
+                Some(NodeHeightAuthoritySource::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                }),
+            ),
+        ];
+
+        assert!(matches!(
+            apply_junctionn_height_authority_normalization(&mut regions),
+            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
+        ));
+    }
+
     fn manual_region(
         kind: RoadSurfaceBandKind,
         owner_index: usize,
         height_m: f64,
+    ) -> NodeHeightedRegion {
+        manual_region_with_authority(
+            kind,
+            owner_index,
+            height_m,
+            Some(NodeHeightAuthoritySource::SourceInterval),
+        )
+    }
+
+    fn manual_region_with_authority(
+        kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        height_m: f64,
+        authority: Option<NodeHeightAuthoritySource>,
     ) -> NodeHeightedRegion {
         let owner = NodeBandOwner::new(kind, owner_index);
         let height_field_id = NodeBandHeightFieldId::new(owner_index, owner_index, kind);
@@ -125,15 +171,13 @@ mod tests {
                 point_xz: RoadVec2::new(-1.0, 0.0),
                 height_m,
                 height_field_id,
-                height_authority: Some(NodeHeightAuthoritySource::SourceInterval),
+                height_authority: authority,
                 grade_authority: Some(NodeGradeVertexAuthority::new(
                     RoadVec2::new(-1.0, 0.0),
                     height_m,
                     owner,
                     height_field_id,
-                    NodeGradeCarrierDecision::SourceCarrier {
-                        authority: Some(NodeHeightAuthoritySource::SourceInterval),
-                    },
+                    NodeGradeCarrierDecision::SourceCarrier { authority },
                 )),
             }]],
             area_m2: 1.0,

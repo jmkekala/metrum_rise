@@ -25,10 +25,7 @@ use super::constraints::{
     generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
 };
 use super::contours::height_for_key_on_generated_edge;
-use super::geometry::{
-    quantized_proper_segment_intersection, remove_generated_contour_spikes, road_point_from_key,
-    road_point_key,
-};
+use super::geometry::{quantized_proper_segment_intersection, road_point_from_key, road_point_key};
 use super::owners::generated_contour_band_kind;
 use super::topology::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, NodeRailPointKey,

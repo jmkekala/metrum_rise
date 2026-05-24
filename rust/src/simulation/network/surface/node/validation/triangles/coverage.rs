@@ -3,7 +3,7 @@
 use super::super::super::triangulation::{
     NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulationSolution,
 };
-use super::super::super::{NodeOverlayContour, RoadSurfaceSystem};
+use super::super::super::{NodeOverlayContour, NodeOverlayShape, RoadSurfaceSystem};
 use super::super::report::{
     NodeGeometryBackend, NodeGeometryDiagnostic, NodeGeometryDiagnosticKind,
     push_validation_diagnostic,
@@ -47,17 +47,18 @@ pub(super) fn validate_triangle_area_coverage(
     };
     let union_area = triangle_shapes
         .iter()
-        .map(RoadSurfaceSystem::overlay_shape_area_m2)
-        .sum::<f32>();
+        .map(overlay_shape_area_m2_f64)
+        .sum::<f64>();
     let triangle_area_sum = region
         .triangles
         .iter()
         .filter(|triangle| triangle_indices_valid(triangle, region.vertices.len()))
-        .map(|triangle| triangle_area_m2(region, triangle))
-        .sum::<f32>();
+        .map(|triangle| triangle_area_m2_f64(region, triangle))
+        .sum::<f64>();
     let overlap_area_m2 = (triangle_area_sum - union_area).max(0.0);
-    let area_budget_m2 =
-        RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_shapes);
+    let area_budget_m2 = f64::from(RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(
+        &triangle_shapes,
+    ));
     if overlap_area_m2 > area_budget_m2 {
         push_validation_diagnostic(
             solution,
@@ -65,12 +66,12 @@ pub(super) fn validate_triangle_area_coverage(
             NodeGeometryBackend::IOverlay,
             NodeGeometryDiagnosticKind::TriangleOverlap {
                 region_index,
-                overlap_area_m2,
+                overlap_area_m2: overlap_area_m2 as f32,
             },
         );
     }
 
-    let area_delta = union_area - region.area_m2;
+    let area_delta = union_area - f64::from(region.area_m2);
     if area_delta.abs() > area_budget_m2 {
         push_validation_diagnostic(
             solution,
@@ -78,11 +79,22 @@ pub(super) fn validate_triangle_area_coverage(
             NodeGeometryBackend::IOverlay,
             NodeGeometryDiagnosticKind::TriangleCoverageMismatch {
                 region_index,
-                missing_area_m2: (-area_delta).max(0.0),
-                extra_area_m2: area_delta.max(0.0),
+                missing_area_m2: (-area_delta).max(0.0) as f32,
+                extra_area_m2: area_delta.max(0.0) as f32,
             },
         );
     }
+}
+
+fn overlay_shape_area_m2_f64(shape: &NodeOverlayShape) -> f64 {
+    let Some((outer, holes)) = shape.split_first() else {
+        return 0.0;
+    };
+    let holes_area = holes
+        .iter()
+        .map(|hole| RoadSurfaceSystem::overlay_contour_area_f64(hole).abs())
+        .sum::<f64>();
+    (RoadSurfaceSystem::overlay_contour_area_f64(outer).abs() - holes_area).max(0.0)
 }
 
 fn triangle_contour(
@@ -103,9 +115,12 @@ fn triangle_contour(
     contour
 }
 
-fn triangle_area_m2(region: &NodeTriangulatedRegion, triangle: &NodeTriangulatedTriangle) -> f32 {
+fn triangle_area_m2_f64(
+    region: &NodeTriangulatedRegion,
+    triangle: &NodeTriangulatedTriangle,
+) -> f64 {
     let points = triangle
         .vertices
         .map(|index| region.vertices[index].point_world);
-    (RoadSurfaceSystem::road_triangle_double_area_xz_m2(points) * 0.5) as f32
+    RoadSurfaceSystem::road_triangle_double_area_xz_m2(points) * 0.5
 }

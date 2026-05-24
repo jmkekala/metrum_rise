@@ -103,6 +103,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
         &mut cleaned_regions,
         rail_canonical_points,
     )?;
+    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
     for region in &mut cleaned_regions {
         region.seam_constraints =
             seam_constraints_for_shape(&region.shape, region.owner, rail_constraints, overlap_mode);

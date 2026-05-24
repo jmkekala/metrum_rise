@@ -1,8 +1,9 @@
 //! Canonical segment membership, parameter, and interpolation helpers.
 
+#[cfg(test)]
+use super::backend::RoadVec2;
 use super::{
     NodeOverlayPoint, arrangement,
-    backend::RoadVec2,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
 };
 
@@ -132,11 +133,13 @@ pub(crate) fn raw_tuple_segment_parameter_key(
 }
 
 /// Converts a road-space XZ point into the shared XZ key type.
+#[cfg(test)]
 pub(crate) fn road_xz_key(point: RoadVec2) -> SurfaceXzKey {
     SurfaceXzKey::from_road_xz(point)
 }
 
 /// Returns whether a road-space XZ point lies exactly on a road-space XZ segment.
+#[cfg(test)]
 pub(crate) fn road_xz_lies_exactly_on_segment(
     point: RoadVec2,
     start: RoadVec2,

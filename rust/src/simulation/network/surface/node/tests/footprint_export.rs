@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn node_export_uses_final_owned_top_boundary_vertices() {
+fn node_export_uses_final_boolean_footprint_boundary_vertices() {
     let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
     let height_field_id = height_field(owner);
     let heights = NodeHeightSolution {
@@ -56,18 +56,18 @@ fn node_export_uses_final_owned_top_boundary_vertices() {
 
     let regions =
         RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
-            .expect("footprint export should use final owned top contour vertices");
+            .expect("footprint export should use final boolean footprint contour vertices");
 
     assert!(
-        !regions.outer_boundary_loops.iter().any(|polygon| {
+        regions.outer_boundary_loops.iter().any(|polygon| {
             footprint_loop_contains_xz(&polygon.points_world, RoadVec2::new(0.5, 0.0))
         }),
-        "node footprint export must consume final owned top vertices, not stale boolean-only contour points"
+        "node footprint export must consume final boolean node_footprint vertices"
     );
 }
 
 #[test]
-fn node_export_ignores_stale_post_triangulation_footprint_vertices() {
+fn node_export_rejects_unsupported_final_boolean_footprint_vertices() {
     let owner = owner(RoadSurfaceBandKind::Carriageway, 6);
     let height_field_id = height_field(owner);
     let heights = NodeHeightSolution {
@@ -117,20 +117,18 @@ fn node_export_ignores_stale_post_triangulation_footprint_vertices() {
         RoadVec2::new(0.2, 0.6),
     ]);
 
-    let regions =
+    let error =
         RoadSurfaceSystem::node_surface_regions_from_arrangement(&arrangement, &footprint_shapes)
-            .expect("footprint export should consume final owned top vertices");
+            .expect_err("unsupported final footprint vertices must not be hidden by top triangles");
 
     assert!(
-        regions.outer_boundary_loops.iter().any(|polygon| {
-            footprint_loop_contains_xz(&polygon.points_world, RoadVec2::new(1.0, 0.0))
-        }),
-        "final top vertex must be exported with its explicit source height"
-    );
-    assert!(
-        !regions.outer_boundary_loops.iter().any(|polygon| {
-            footprint_loop_contains_xz(&polygon.points_world, RoadVec2::new(0.2, 0.2))
-        }),
-        "stale footprint vertices must not trigger post-triangulation height sampling"
+        matches!(
+            error,
+            NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                x_key: 200000,
+                z_key: 200000
+            }
+        ),
+        "unsupported final node_footprint vertices must fail before terrain seam export: {error:?}"
     );
 }

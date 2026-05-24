@@ -7,7 +7,7 @@ use super::super::geometry::{
 use super::super::{
     GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair, NodeBandOwner, NodeGeneratedContour,
     NodeGeneratedContourClaimPriority, NodeRailConstraint, NodeRailConstraintKind,
-    NodeRailPointKey, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    NodeRailPointKey, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
     generated_constraint_contains_key_segment, generated_constraint_directed_edges,
     generated_contour_band_kind, generated_contour_directed_edges,
 };
@@ -158,9 +158,19 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         return Vec::new();
     }
 
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend
-        || target.claim_priority != NodeGeneratedContourClaimPriority::SideJoin
-    {
+    let can_reown_target_edge = match piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => {
+            target.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+        }
+        RoadSurfaceVisualNodePieceKind::JunctionN => {
+            target_owner.kind() == RoadSurfaceBandKind::CurbOrShoulder
+                && target.claim_priority == NodeGeneratedContourClaimPriority::MouthBand
+                && Some(target.claim_priority)
+                    == source_authorized_target_claim_priority(contours, target_owner)
+        }
+        RoadSurfaceVisualNodePieceKind::Terminal => false,
+    };
+    if !can_reown_target_edge {
         return Vec::new();
     }
 
@@ -174,7 +184,9 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         let Some(pair) = GeneratedRaisedStepOwnerPair::new(source_owner, target_owner) else {
             continue;
         };
-        pairs.push((pair.owner, pair.opposite_owner, false));
+        let include_edge = piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+            && pair.owner.kind() != pair.opposite_owner.kind();
+        pairs.push((pair.owner, pair.opposite_owner, include_edge));
     }
     pairs.sort_unstable();
     pairs.dedup();
@@ -192,7 +204,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
     }
 }
 
-fn source_authorized_target_claim_priority(
+pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn source_authorized_target_claim_priority(
     contours: &[NodeGeneratedContour],
     owner: NodeBandOwner,
 ) -> Option<NodeGeneratedContourClaimPriority> {

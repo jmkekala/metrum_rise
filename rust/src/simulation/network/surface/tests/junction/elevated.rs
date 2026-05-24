@@ -4,6 +4,7 @@ use super::*;
 
 mod boundary_sources;
 mod current_oblique;
+mod generated;
 mod height_conflicts;
 mod latest_oblique;
 mod logged_rejections;

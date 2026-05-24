@@ -228,14 +228,14 @@ impl SurfaceXzKey {
 
     fn inside_segment_bounds(self, start: Self, end: Self, include_endpoints: bool) -> bool {
         let inside_x = if start.x_key == end.x_key {
-            self.x_key == start.x_key
+            true
         } else if include_endpoints {
             self.x_key >= start.x_key.min(end.x_key) && self.x_key <= start.x_key.max(end.x_key)
         } else {
             self.x_key > start.x_key.min(end.x_key) && self.x_key < start.x_key.max(end.x_key)
         };
         let inside_z = if start.z_key == end.z_key {
-            self.z_key == start.z_key
+            true
         } else if include_endpoints {
             self.z_key >= start.z_key.min(end.z_key) && self.z_key <= start.z_key.max(end.z_key)
         } else {
@@ -395,6 +395,25 @@ mod tests {
         assert!(!near_middle.lies_exactly_on_segment(start, end));
         assert!(!start.lies_on_open_segment(start, end));
         assert!(exact_middle.lies_on_open_segment(start, end));
+    }
+
+    #[test]
+    fn segment_predicates_accept_overlay_grid_dust_on_axis_aligned_segments() {
+        let vertical_start = SurfaceXzKey::from_raw_keys(-3_650_000, 7_999_216);
+        let vertical_end = SurfaceXzKey::from_raw_keys(-3_650_000, 5_999_412);
+        let near_vertical_middle = SurfaceXzKey::from_raw_keys(-3_650_001, 6_666_014);
+        let beyond_vertical_end = SurfaceXzKey::from_raw_keys(-3_650_001, 5_000_000);
+
+        assert!(near_vertical_middle.lies_on_segment(vertical_start, vertical_end));
+        assert!(!near_vertical_middle.lies_exactly_on_segment(vertical_start, vertical_end));
+        assert!(!beyond_vertical_end.lies_on_segment(vertical_start, vertical_end));
+
+        let horizontal_start = SurfaceXzKey::from_raw_keys(5_999_412, -3_650_000);
+        let horizontal_end = SurfaceXzKey::from_raw_keys(7_999_216, -3_650_000);
+        let near_horizontal_middle = SurfaceXzKey::from_raw_keys(6_666_014, -3_650_001);
+
+        assert!(near_horizontal_middle.lies_on_segment(horizontal_start, horizontal_end));
+        assert!(!near_horizontal_middle.lies_exactly_on_segment(horizontal_start, horizontal_end));
     }
 
     #[test]

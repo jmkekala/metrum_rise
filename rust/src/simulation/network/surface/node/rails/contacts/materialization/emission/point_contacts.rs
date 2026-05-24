@@ -54,6 +54,7 @@ fn insert_generated_material_point_constraint(
 pub(in crate::simulation::network::surface::node::rails) fn append_source_authorized_raised_step_point_contacts(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
+    source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
 ) {
     let mut existing = constraints
@@ -61,10 +62,14 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
         .filter_map(generated_same_band_contact_constraint_key)
         .collect::<BTreeSet<_>>();
     let mut contacts = BTreeSet::<GeneratedSameBandContactConstraint>::new();
+    let source_constraints = super::source_authority_constraints_for_generated_contacts(
+        constraints,
+        source_constraint_count,
+    );
     collect_source_authorized_raised_step_contacts(
         piece_kind,
         contours,
-        constraints,
+        &source_constraints,
         &mut contacts,
     );
 

@@ -111,6 +111,122 @@ fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_uses_cano
 }
 
 #[test]
+fn boundary_segment_endpoints_can_use_source_edge_interpolation_provenance() {
+    let source_edges = vec![
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        ),
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            Vector3::new(0.0, 0.0, 2.0),
+            Vector3::new(2.0, 0.0, 2.0),
+            4,
+            40,
+            4,
+            41,
+        ),
+    ];
+    let mut segments = Vec::new();
+
+    push_sourced_node_earthwork_boundary_segments(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        test_boundary_point(Vector3::new(1.0, 0.0, 0.0)),
+        test_boundary_point(Vector3::new(1.0, 0.0, 2.0)),
+        &source_edges,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &[],
+        &mut segments,
+    )
+    .expect(
+        "post-boolean boundary endpoints on source edges should preserve interpolation provenance",
+    );
+
+    assert_eq!(segments.len(), 1);
+    assert!(matches!(
+        segments[0].source,
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                    height_mm: 0,
+                    ..
+                },
+                end: NodeFootprintBoundaryVertexSource::BoundaryInterpolation { height_mm: 0, .. },
+            }),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_owner_ambiguity() {
+    let source_edges = vec![
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            6,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            7,
+            70,
+            7,
+            71,
+        ),
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            3,
+            30,
+            3,
+            31,
+        ),
+        test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            Vector3::new(0.0, 0.0, 2.0),
+            Vector3::new(2.0, 0.0, 2.0),
+            4,
+            40,
+            4,
+            41,
+        ),
+    ];
+    let mut segments = Vec::new();
+
+    let result = push_sourced_node_earthwork_boundary_segments(
+        11,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        test_boundary_point(Vector3::new(1.0, 0.0, 0.0)),
+        test_boundary_point(Vector3::new(1.0, 0.0, 2.0)),
+        &source_edges,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &[],
+        &mut segments,
+    );
+
+    assert!(matches!(
+        result,
+        Err(NodeBoundaryExportError::MissingEarthworkBoundarySegmentSource { .. })
+    ));
+    assert!(segments.is_empty());
+}
+
+#[test]
 fn direct_boundary_segment_with_raised_step_connector_uses_raised_owner() {
     let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
     let end = ArrangementBoundaryPointKey::from_world(Vector3::new(0.15, 0.0, 0.0));

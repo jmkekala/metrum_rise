@@ -91,16 +91,24 @@ impl RoadSurfaceSystem {
             NodeBoundaryExportError::AmbiguousEarthworkBoundarySegmentSource {
                 start_x_key,
                 start_z_key,
+                start_y_mm,
                 end_x_key,
                 end_z_key,
+                end_y_mm,
+                existing_height_field_id,
+                incoming_height_field_id,
                 existing_source,
                 incoming_source,
             } => {
                 let _ = (
                     *start_x_key,
                     *start_z_key,
+                    *start_y_mm,
                     *end_x_key,
                     *end_z_key,
+                    *end_y_mm,
+                    *existing_height_field_id,
+                    *incoming_height_field_id,
                     *existing_source,
                     *incoming_source,
                 );

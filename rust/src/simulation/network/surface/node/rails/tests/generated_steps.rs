@@ -67,6 +67,7 @@ fn generated_raised_step_owner_pair_splits_carriageway_boundary_at_overlay_conta
     append_generated_same_band_contact_constraints(
         RoadSurfaceVisualNodePieceKind::Bend,
         &contours,
+        constraints.len(),
         &mut constraints,
     );
 
@@ -151,6 +152,7 @@ fn generated_raised_step_owner_pair_splits_curb_sidewalk_boundary_at_overlay_con
     append_generated_same_band_contact_constraints(
         RoadSurfaceVisualNodePieceKind::Bend,
         &contours,
+        constraints.len(),
         &mut constraints,
     );
 
@@ -245,6 +247,7 @@ fn generated_raised_step_owner_pair_uses_source_authority_union_for_split_domain
     append_generated_same_band_contact_constraints(
         RoadSurfaceVisualNodePieceKind::Bend,
         &contours,
+        constraints.len(),
         &mut constraints,
     );
 

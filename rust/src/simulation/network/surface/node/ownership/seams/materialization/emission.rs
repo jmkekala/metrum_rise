@@ -90,11 +90,7 @@ fn push_materialized_endpoint_pair_region_seam_constraint(
         seam_source: seam_source_from_materialized_constraint_kind(kind, owner, opposite_owner),
         owner: Some(owner),
         opposite_owner: Some(opposite_owner),
-        constrains_shared_height: materialized_constraint_kind_constrains_shared_height(
-            kind,
-            owner,
-            opposite_owner,
-        ),
+        constrains_shared_height: false,
         is_material_transition: materialized_constraint_kind_is_material_transition(kind),
         start_xz,
         end_xz,

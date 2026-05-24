@@ -4,11 +4,20 @@ use super::arrangement_faces::*;
 use super::boundary_edges::*;
 use super::*;
 
+pub(in crate::simulation::network::surface::node) struct RoadSurfaceRaisedStepFace {
+    pub(in crate::simulation::network::surface::node) polygon: RoadSurfaceVisualPolygon,
+    pub(in crate::simulation::network::surface::node) source: RoadSurfaceVerticalFaceSource,
+    pub(in crate::simulation::network::surface::node) lower_edge:
+        (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+    pub(in crate::simulation::network::surface::node) upper_edge:
+        (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn raised_step_face_polygons_from_arrangement(
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
-    ) -> Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)> {
+    ) -> Vec<RoadSurfaceRaisedStepFace> {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for (step_index, segment) in explicit_vertical_step_segments.iter().copied().enumerate() {
@@ -60,31 +69,31 @@ impl RoadSurfaceSystem {
             (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
             (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
         )>,
-        faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+        faces: &mut Vec<RoadSurfaceRaisedStepFace>,
     ) {
         for (lower_interval, raised_interval, start_t, end_t) in shared_intervals {
-            let Some(lower_start_key) = arrangement_face_boundary_interval_existing_point_at(
+            let Some(lower_start_key) = arrangement_face_boundary_interval_point_at(
                 lower_segment_key,
                 lower_interval,
                 start_t,
             ) else {
                 continue;
             };
-            let Some(lower_end_key) = arrangement_face_boundary_interval_existing_point_at(
+            let Some(lower_end_key) = arrangement_face_boundary_interval_point_at(
                 lower_segment_key,
                 lower_interval,
                 end_t,
             ) else {
                 continue;
             };
-            let Some(raised_start_key) = arrangement_face_boundary_interval_existing_point_at(
+            let Some(raised_start_key) = arrangement_face_boundary_interval_point_at(
                 raised_segment_key,
                 raised_interval,
                 start_t,
             ) else {
                 continue;
             };
-            let Some(raised_end_key) = arrangement_face_boundary_interval_existing_point_at(
+            let Some(raised_end_key) = arrangement_face_boundary_interval_point_at(
                 raised_segment_key,
                 raised_interval,
                 end_t,
@@ -112,13 +121,15 @@ impl RoadSurfaceSystem {
             if !emitted.insert(dedup_key) {
                 continue;
             }
-            faces.push((
-                face,
-                RoadSurfaceVerticalFaceSource::CanonicalStep {
+            faces.push(RoadSurfaceRaisedStepFace {
+                polygon: face,
+                source: RoadSurfaceVerticalFaceSource::CanonicalStep {
                     explicit_vertical_step_index: step_index,
                     segment,
                 },
-            ));
+                lower_edge: (lower_start_key, lower_end_key),
+                upper_edge: (raised_start_key, raised_end_key),
+            });
         }
     }
 
@@ -145,8 +156,11 @@ impl RoadSurfaceSystem {
         {
             return None;
         }
-        if raised_start.y <= lower_start.y + SAMPLE_EPSILON_M
-            || raised_end.y <= lower_end.y + SAMPLE_EPSILON_M
+        let start_height_delta_mm = raised_start_key.y_mm - lower_start_key.y_mm;
+        let end_height_delta_mm = raised_end_key.y_mm - lower_end_key.y_mm;
+        if start_height_delta_mm < 0
+            || end_height_delta_mm < 0
+            || (start_height_delta_mm == 0 && end_height_delta_mm == 0)
         {
             return None;
         }

@@ -63,6 +63,75 @@ fn reowned_raised_step_contact_does_not_inherit_source_pair_shared_height_contra
 }
 
 #[test]
+fn endpoint_pair_raised_step_contacts_do_not_constrain_full_edge_shared_height() {
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 10);
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let start = RoadVec2::new(0.0, 0.0);
+    let end = RoadVec2::new(2.0, 0.0);
+    let mut regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb,
+            vec![[0.0, 0.0], [2.0, 0.0], [0.0, -1.0]],
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            vec![[0.0, 0.0], [2.0, 1.0], [2.0, 0.0]],
+        ),
+    ];
+    let rail_constraints = vec![
+        NodeRailConstraint {
+            constraint_index: 70,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: None,
+            source_boundary_index: None,
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            points_xz: vec![start, start],
+        },
+        NodeRailConstraint {
+            constraint_index: 71,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: None,
+            source_boundary_index: None,
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            points_xz: vec![end, end],
+        },
+    ];
+
+    materialize_noded_region_seam_constraints(
+        &mut regions,
+        &Vec::new(),
+        &rail_constraints,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    );
+
+    for region in &regions {
+        assert!(
+            region.seam_constraints.iter().any(|constraint| {
+                let constraint_start = ownership_key_from_road_point(constraint.start_xz);
+                let constraint_end = ownership_key_from_road_point(constraint.end_xz);
+                ((constraint_start == ownership_key_from_road_point(start)
+                    && constraint_end == ownership_key_from_road_point(end))
+                    || (constraint_start == ownership_key_from_road_point(end)
+                        && constraint_end == ownership_key_from_road_point(start)))
+                    && ((constraint.owner == Some(curb)
+                        && constraint.opposite_owner == Some(sidewalk))
+                        || (constraint.owner == Some(sidewalk)
+                            && constraint.opposite_owner == Some(curb)))
+                    && !constraint.constrains_shared_height
+                    && constraint.is_material_transition
+            }),
+            "endpoint-pair seam evidence must not impose a full-edge shared height"
+        );
+    }
+}
+
+#[test]
 fn junctionn_materializes_reowned_curb_sidewalk_step_from_source_polyline_coverage() {
     let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
     let source_sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);

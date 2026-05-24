@@ -57,23 +57,22 @@ fn resolve_same_material_shared_edge_height_agreement(
         if candidates.len() < 2 {
             continue;
         }
-        reject_same_material_height_conflict(
-            edge.kind,
-            edge.start,
-            candidates
-                .iter()
-                .copied()
-                .map(|candidate| candidate.endpoint_candidate(edge.start)),
-        )?;
-        reject_same_material_height_conflict(
-            edge.kind,
-            edge.end,
-            candidates
-                .iter()
-                .copied()
-                .map(|candidate| candidate.endpoint_candidate(edge.end)),
-        )?;
         for endpoint in [edge.start, edge.end] {
+            if candidates
+                .iter()
+                .copied()
+                .any(|candidate| candidate.endpoint_has_explicit_height_split(endpoint))
+            {
+                continue;
+            }
+            reject_same_material_height_conflict(
+                edge.kind,
+                endpoint,
+                candidates
+                    .iter()
+                    .copied()
+                    .map(|candidate| candidate.endpoint_candidate(endpoint)),
+            )?;
             let selected = candidates
                 .iter()
                 .copied()

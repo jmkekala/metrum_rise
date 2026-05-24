@@ -117,3 +117,75 @@ impl NodeBandHeightField {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn same_owner_generated_contour_conflict_is_rejected() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+        let field = test_field(RoadSurfaceBandKind::Sidewalk, 5);
+
+        assert!(matches!(
+            field.agreed_height(
+                RoadVec2::new(0.037962, 0.004996),
+                Some(owner),
+                vec![
+                    NodeAuthorizedHeightCandidate {
+                        authority: NodeHeightAuthoritySource::GeneratedContour {
+                            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                        },
+                        height_m: 151.379,
+                    },
+                    NodeAuthorizedHeightCandidate {
+                        authority: NodeHeightAuthoritySource::GeneratedContour {
+                            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                        },
+                        height_m: 151.378,
+                    },
+                ],
+            ),
+            Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn mixed_authority_height_conflict_is_still_rejected() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+        let field = test_field(RoadSurfaceBandKind::Sidewalk, 5);
+
+        assert!(matches!(
+            field.agreed_height(
+                RoadVec2::new(0.0, 0.0),
+                Some(owner),
+                vec![
+                    NodeAuthorizedHeightCandidate {
+                        authority: NodeHeightAuthoritySource::SourceInterval,
+                        height_m: 1.0,
+                    },
+                    NodeAuthorizedHeightCandidate {
+                        authority: NodeHeightAuthoritySource::GeneratedContour {
+                            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                        },
+                        height_m: 2.0,
+                    },
+                ],
+            ),
+            Err(NodeHeightFieldError::SourceHeightFieldConflict { .. })
+        ));
+    }
+
+    fn test_field(kind: RoadSurfaceBandKind, band_index: usize) -> NodeBandHeightField {
+        NodeBandHeightField {
+            id: NodeBandHeightFieldId::new(0, band_index, kind),
+            kind,
+            patches: Vec::new(),
+            source_handoff_keys: BTreeSet::new(),
+        }
+    }
+}

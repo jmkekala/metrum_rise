@@ -53,18 +53,7 @@ fn logged_regenerated_elevated_hill_three_way_compiles_full_pipeline() {
                 == 3
         })
         .expect("edit path must create the regenerated elevated hill 3-way junction node");
-    let piece = network
-        .road_surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .unwrap_or_else(|| {
-            panic!(
-                "regenerated elevated hill 3-way JunctionN must compile full pipeline: {}",
-                canonical_junction_pipeline_report(&network.road_surface, &graph, center)
-            )
-        });
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert_node_piece_uses_band_owned_regions(piece);
+    let piece = assert_compiled_junction_piece(&network.road_surface, &graph, center);
     assert_node_earthwork_faces_have_footprint_provenance(piece);
 }
 
@@ -183,16 +172,6 @@ fn logged_latest_elevated_hill_right_angle_three_way_compiles_full_pipeline() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .unwrap_or_else(|| {
-            panic!(
-                "latest elevated hill right-angle 3-way JunctionN must compile full pipeline: {}",
-                canonical_junction_pipeline_report(&surface, &graph, center)
-            )
-        });
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert_node_piece_uses_band_owned_regions(piece);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
     assert_node_earthwork_faces_have_footprint_provenance(piece);
 }

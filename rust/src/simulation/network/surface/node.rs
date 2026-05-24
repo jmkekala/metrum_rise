@@ -28,7 +28,7 @@ pub(super) use super::{
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
@@ -60,3 +60,4 @@ pub(crate) use piece::{
     NodeSurfaceRegionResult, NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource,
     RoadSurfaceVerticalFaceSource,
 };
+pub(in crate::simulation::network::surface::node) use vertical_faces::RoadSurfaceRaisedStepFace;

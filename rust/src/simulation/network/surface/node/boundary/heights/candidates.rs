@@ -22,22 +22,31 @@ impl NodeFootprintBoundaryExportSources {
         Ok(Some(candidate.height_mm))
     }
 
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn boundary_height_mm_at_key(
         &self,
         key: arrangement::NodeArrangementKey,
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        self.boundary_height_mm_at_key_with_context(key, false)
+    }
+
+    fn boundary_height_mm_at_key_with_context(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        allow_final_context_raised_step: bool,
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
         let final_edge_candidates = self
             .boundary_edge_height_candidates_at_key(key)
             .filter(|candidate| candidate.final_footprint_boundary)
             .map(|candidate| candidate.height)
+            .chain(self.final_boundary_vertex_height_candidates_at_key(key))
             .collect::<Vec<_>>();
-        if !final_edge_candidates.is_empty() {
-            if let Some(height_mm) =
-                final_footprint_boundary_raised_step_height_mm(&final_edge_candidates)
-            {
-                return Ok(Some(height_mm));
-            }
-            return self.boundary_height_mm_from_candidates(key, final_edge_candidates);
+        if let Some(height_mm) = self.boundary_height_mm_from_final_candidates(
+            key,
+            final_edge_candidates,
+            allow_final_context_raised_step,
+        )? {
+            return Ok(Some(height_mm));
         }
         let exact_candidates = self
             .direct_height_candidates_at_key(key)
@@ -48,6 +57,88 @@ impl NodeFootprintBoundaryExportSources {
             )
             .collect::<Vec<_>>();
         self.boundary_height_mm_from_candidates(key, exact_candidates)
+    }
+
+    pub(in crate::simulation::network::surface) fn boundary_height_mm_at_contour_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        let direct_final_context_candidates = self
+            .direct_height_candidates_at_key(key)
+            .into_iter()
+            .filter(|candidate| {
+                self.direct_candidate_has_final_boundary_context(
+                    candidate,
+                    key,
+                    previous_key,
+                    next_key,
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(height_mm) = self.boundary_height_mm_from_final_candidates(
+            key,
+            direct_final_context_candidates,
+            true,
+        )? {
+            return Ok(Some(height_mm));
+        }
+        let final_context_candidates = self
+            .final_boundary_context_height_candidates_at_key(key, previous_key, next_key)
+            .into_iter()
+            .chain(
+                self.boundary_edge_height_candidates_at_key(key)
+                    .filter(|candidate| candidate.final_footprint_boundary)
+                    .filter(|candidate| {
+                        self.final_source_edge_supports_boundary_context(
+                            candidate,
+                            previous_key,
+                            next_key,
+                        )
+                    })
+                    .map(|candidate| candidate.height),
+            )
+            .collect::<Vec<_>>();
+        if let Some(height_mm) =
+            self.boundary_height_mm_from_final_candidates(key, final_context_candidates, true)?
+        {
+            return Ok(Some(height_mm));
+        }
+        self.boundary_height_mm_at_key_with_context(key, true)
+    }
+
+    fn boundary_height_mm_from_final_candidates(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        final_candidates: Vec<NodeFootprintBoundaryHeightCandidate>,
+        allow_final_context_raised_step: bool,
+    ) -> Result<Option<i64>, NodeBoundaryExportError> {
+        if final_candidates.is_empty() {
+            return Ok(None);
+        }
+        let mut heights = final_candidates
+            .iter()
+            .map(|candidate| candidate.height_mm)
+            .collect::<Vec<_>>();
+        heights.sort_unstable();
+        heights.dedup();
+        if let Some(height_mm) = raised_step_footprint_height_mm(
+            key,
+            &final_candidates,
+            &heights,
+            &self.explicit_vertical_step_segments,
+            &self.source_edges,
+        ) {
+            return Ok(Some(height_mm));
+        }
+        if allow_final_context_raised_step
+            && let Some(height_mm) =
+                final_context_raised_step_footprint_height_mm(&final_candidates, &heights)
+        {
+            return Ok(Some(height_mm));
+        }
+        self.boundary_height_mm_from_candidates(key, final_candidates)
     }
 
     fn boundary_height_mm_from_candidates(
@@ -102,13 +193,6 @@ impl NodeFootprintBoundaryExportSources {
                 incoming_source: incoming.source.source,
             },
         )
-    }
-
-    pub(in crate::simulation::network::surface) fn reject_boundary_vertex_height_conflict(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> Result<(), NodeBoundaryExportError> {
-        self.boundary_height_mm_at_key(key).map(|_| ())
     }
 
     #[cfg(test)]
@@ -261,31 +345,33 @@ impl NodeFootprintBoundaryExportSources {
         key: arrangement::NodeArrangementKey,
     ) -> impl Iterator<Item = NodeFootprintBoundaryEdgeHeightCandidate> + '_ {
         self.source_edges.iter().filter_map(move |source_edge| {
-            if !arrangement_key_lies_on_segment(key, source_edge.start_key, source_edge.end_key) {
-                return None;
-            }
-            let parameter = arrangement_key_segment_parameter_xz(
-                key,
-                source_edge.start_key,
-                source_edge.end_key,
+            let key_point = ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: 0,
+            };
+            let parameter = boundary_segment_parameter_xz_on_segment(
+                key_point,
+                source_edge.start_point_key,
+                source_edge.end_point_key,
             )?;
             let height_mm = interpolated_segment_height_mm(
                 source_edge.start_point_key,
                 source_edge.end_point_key,
                 parameter,
             );
+            let point_key = ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: height_mm,
+            };
+            let source =
+                node_footprint_boundary_vertex_source_for_edge_point(source_edge, point_key)?;
             Some(NodeFootprintBoundaryEdgeHeightCandidate {
                 height: NodeFootprintBoundaryHeightCandidate {
                     height_mm,
                     source: NodeFootprintBoundaryDirectVertex {
-                        source: node_footprint_boundary_vertex_source_for_edge_point(
-                            source_edge,
-                            ArrangementBoundaryPointKey {
-                                x_key: key.x_key(),
-                                z_key: key.z_key(),
-                                y_mm: height_mm,
-                            },
-                        )?,
+                        source,
                         owner_kind: source_edge.owner_kind,
                         owner_index: source_edge.owner_index,
                     },
@@ -293,6 +379,120 @@ impl NodeFootprintBoundaryExportSources {
                 final_footprint_boundary: source_edge.final_footprint_boundary,
             })
         })
+    }
+
+    fn final_boundary_context_height_candidates_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        _previous_key: arrangement::NodeArrangementKey,
+        _next_key: arrangement::NodeArrangementKey,
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        let mut candidates = Vec::new();
+        candidates.extend(self.final_boundary_vertex_height_candidates_at_key(key));
+        self.push_final_height_edge_candidates_at_key(&mut candidates, key, true);
+        candidates
+    }
+
+    fn push_final_height_edge_candidates_at_key(
+        &self,
+        candidates: &mut Vec<NodeFootprintBoundaryHeightCandidate>,
+        key: arrangement::NodeArrangementKey,
+        require_exact_support: bool,
+    ) {
+        for source_edge in &self.final_height_edges {
+            let supports_key = if require_exact_support {
+                final_height_edge_supports_key_exactly(source_edge, key)
+            } else {
+                final_height_edge_supports_key(source_edge, key)
+            };
+            if !supports_key {
+                continue;
+            }
+            let height_mm = final_height_edge_height_mm_at_key(source_edge, key);
+            let point_key = ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: height_mm,
+            };
+            let candidate = NodeFootprintBoundaryHeightCandidate {
+                height_mm,
+                source: NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                        x_key: point_key.x_key,
+                        z_key: point_key.z_key,
+                        y_mm: point_key.y_mm,
+                    },
+                    owner_kind: source_edge.owner_kind,
+                    owner_index: source_edge.owner_index,
+                },
+            };
+            if !candidates.iter().any(|existing| {
+                node_footprint_height_candidates_share_source_identity(*existing, candidate)
+            }) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    fn final_source_edge_supports_boundary_context(
+        &self,
+        candidate: &NodeFootprintBoundaryEdgeHeightCandidate,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        self.source_edges.iter().any(|source_edge| {
+            source_edge.final_footprint_boundary
+                && source_edge.owner_kind == candidate.height.source.owner_kind
+                && source_edge.owner_index == candidate.height.source.owner_index
+                && (final_source_edge_supports_key(source_edge, previous_key)
+                    || final_source_edge_supports_key(source_edge, next_key))
+        })
+    }
+
+    fn direct_candidate_has_final_boundary_context(
+        &self,
+        candidate: &NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        if !matches!(
+            candidate.source.source,
+            NodeFootprintBoundaryVertexSource::Direct(_)
+        ) {
+            return false;
+        }
+        self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+                && (final_height_edge_supports_key(source_edge, previous_key)
+                    || final_height_edge_supports_key(source_edge, next_key))
+        })
+    }
+
+    fn final_boundary_vertex_height_candidates_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        let mut candidates = Vec::new();
+        for (point_key, sources) in &self.final_vertex_sources {
+            if point_key.x_key != key.x_key() || point_key.z_key != key.z_key() {
+                continue;
+            }
+            for source in sources {
+                let candidate = NodeFootprintBoundaryHeightCandidate {
+                    height_mm: point_key.y_mm,
+                    source: *source,
+                };
+                if !candidates.iter().any(|existing| {
+                    node_footprint_height_candidates_share_source_identity(*existing, candidate)
+                }) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates
     }
 
     fn direct_height_candidates_at_key(
@@ -325,33 +525,97 @@ impl NodeFootprintBoundaryExportSources {
     }
 }
 
-fn final_footprint_boundary_raised_step_height_mm(
+fn final_height_edge_supports_key(
+    source_edge: &NodeFinalFootprintBoundaryHeightEdge,
+    key: arrangement::NodeArrangementKey,
+) -> bool {
+    let point_key = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    final_boundary_segment_parameter_xz_on_segment(
+        point_key,
+        source_edge.start_point_key,
+        source_edge.end_point_key,
+    )
+    .is_some()
+}
+
+fn final_height_edge_supports_key_exactly(
+    source_edge: &NodeFinalFootprintBoundaryHeightEdge,
+    key: arrangement::NodeArrangementKey,
+) -> bool {
+    let point_key = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    arrangement_key_lies_exactly_on_segment(
+        point_key.xz_key(),
+        source_edge.start_point_key.xz_key(),
+        source_edge.end_point_key.xz_key(),
+    )
+}
+
+fn final_height_edge_height_mm_at_key(
+    source_edge: &NodeFinalFootprintBoundaryHeightEdge,
+    key: arrangement::NodeArrangementKey,
+) -> i64 {
+    let point_key = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    let parameter = final_boundary_segment_parameter_xz_on_segment(
+        point_key,
+        source_edge.start_point_key,
+        source_edge.end_point_key,
+    )
+    .expect("final height edge supports queried key");
+    interpolated_segment_height_mm(
+        source_edge.start_point_key,
+        source_edge.end_point_key,
+        parameter,
+    )
+}
+
+fn final_source_edge_supports_key(
+    source_edge: &NodeEarthworkBoundarySourceEdge,
+    key: arrangement::NodeArrangementKey,
+) -> bool {
+    let point_key = ArrangementBoundaryPointKey {
+        x_key: key.x_key(),
+        z_key: key.z_key(),
+        y_mm: 0,
+    };
+    final_boundary_segment_parameter_xz_on_segment(
+        point_key,
+        source_edge.start_point_key,
+        source_edge.end_point_key,
+    )
+    .is_some()
+}
+
+fn final_context_raised_step_footprint_height_mm(
     candidates: &[NodeFootprintBoundaryHeightCandidate],
+    heights: &[i64],
 ) -> Option<i64> {
-    let mut heights = candidates
-        .iter()
-        .map(|candidate| candidate.height_mm)
-        .collect::<Vec<_>>();
-    heights.sort_unstable();
-    heights.dedup();
-    let [lower_height_mm, raised_height_mm] = heights.as_slice() else {
+    let [lower_height_mm, raised_height_mm] = heights else {
         return None;
     };
-    let lower_height_mm = *lower_height_mm;
-    let raised_height_mm = *raised_height_mm;
     let lower_candidates = candidates
         .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == lower_height_mm)
+        .filter(|candidate| candidate.height_mm == *lower_height_mm)
         .collect::<Vec<_>>();
     let raised_candidates = candidates
         .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == raised_height_mm)
+        .filter(|candidate| candidate.height_mm == *raised_height_mm)
         .collect::<Vec<_>>();
     if lower_candidates.is_empty() || raised_candidates.is_empty() {
         return None;
     }
+
     for lower in &lower_candidates {
         let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
         for raised in &raised_candidates {
@@ -364,5 +628,5 @@ fn final_footprint_boundary_raised_step_height_mm(
             }
         }
     }
-    Some(raised_height_mm)
+    Some(*raised_height_mm)
 }

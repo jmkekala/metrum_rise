@@ -26,11 +26,29 @@ pub(in crate::simulation::network::surface::node::boundary) fn node_footprint_bo
             source_edge.end_source,
         ));
     }
-    let parameter = arrangement_key_segment_parameter_xz_with_endpoint_dust(
-        point_key.xz_key(),
-        source_edge.start_key,
-        source_edge.end_key,
-    )?;
+    let parameter = boundary_segment_parameter_xz_on_segment(
+        point_key,
+        source_edge.start_point_key,
+        source_edge.end_point_key,
+    )
+    .or_else(|| {
+        if source_edge.final_footprint_boundary {
+            final_boundary_segment_parameter_xz_on_segment(
+                point_key,
+                source_edge.start_point_key,
+                source_edge.end_point_key,
+            )
+        } else {
+            None
+        }
+    })
+    .or_else(|| {
+        endpoint_dust_segment_parameter(
+            boundary_point_surface_key(point_key),
+            boundary_point_surface_key(source_edge.start_point_key),
+            boundary_point_surface_key(source_edge.end_point_key),
+        )
+    })?;
     let expected_height_mm = interpolated_segment_height_mm(
         source_edge.start_point_key,
         source_edge.end_point_key,

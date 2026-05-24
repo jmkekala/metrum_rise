@@ -30,6 +30,8 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
     );
     let mut missing_authority = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -46,6 +48,8 @@ fn raised_step_footprint_height_requires_explicit_step_authority() {
 
     let mut authorized = NodeFootprintBoundaryExportSources {
         source_edges: vec![lower_edge, raised_edge],
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -107,6 +111,8 @@ fn explicit_step_segment_authorizes_raised_boundary_height_at_endpoint() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -184,6 +190,8 @@ fn raised_step_height_accepts_equivalent_same_height_plateau_candidates() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
@@ -253,6 +261,8 @@ fn raised_step_height_accepts_separate_explicit_endpoint_step_groups() {
     );
     let sources = NodeFootprintBoundaryExportSources {
         source_edges: Vec::new(),
+        final_height_edges: Vec::new(),
+        final_vertex_sources: BTreeMap::new(),
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),

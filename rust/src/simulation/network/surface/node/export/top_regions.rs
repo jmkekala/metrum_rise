@@ -72,6 +72,9 @@ impl RoadSurfaceSystem {
         let Some(triangle) = Self::arrangement_face_world_triangle(arrangement, vertex_ids) else {
             return Ok(None);
         };
+        if Self::signed_polygon_area_xz(&triangle).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+            return Ok(None);
+        }
         let Some(region) = arrangement.regions().get(face.region().index()) else {
             return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
         };
@@ -117,13 +120,8 @@ impl RoadSurfaceSystem {
         face: &arrangement::NodeArrangementFace,
     ) -> Option<[arrangement::NodeArrangementVertexId; 3]> {
         let mut vertices = face.vertices();
-        let triangle = [
-            Self::arrangement_vertex_flat_world(arrangement, vertices[0])?,
-            Self::arrangement_vertex_flat_world(arrangement, vertices[1])?,
-            Self::arrangement_vertex_flat_world(arrangement, vertices[2])?,
-        ];
-        let signed_area = Self::signed_polygon_area_xz(&triangle);
-        if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+        let signed_area = arrangement_face_signed_area_xz_m2(arrangement, vertices)?;
+        if signed_area.abs() <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
             return None;
         }
         if signed_area < 0.0 {
@@ -136,28 +134,24 @@ impl RoadSurfaceSystem {
         arrangement: &NodeArrangement,
         vertices: [arrangement::NodeArrangementVertexId; 3],
     ) -> Option<[Vector3; 3]> {
+        let road_triangle = [
+            Self::arrangement_vertex_canonical_world(arrangement, vertices[0])?,
+            Self::arrangement_vertex_canonical_world(arrangement, vertices[1])?,
+            Self::arrangement_vertex_canonical_world(arrangement, vertices[2])?,
+        ];
+        let area_3d_m2 = (road_triangle[1] - road_triangle[0])
+            .cross(road_triangle[2] - road_triangle[0])
+            .length()
+            * 0.5;
+        if area_3d_m2 < f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+            return None;
+        }
         let triangle = [
             Self::arrangement_vertex_world(arrangement, vertices[0])?,
             Self::arrangement_vertex_world(arrangement, vertices[1])?,
             Self::arrangement_vertex_world(arrangement, vertices[2])?,
         ];
-        let area_3d_m2 = (triangle[1] - triangle[0])
-            .cross(triangle[2] - triangle[0])
-            .length()
-            * 0.5;
-        if area_3d_m2 < NODE_OVERLAY_MIN_AREA_M2 {
-            return None;
-        }
         Some(triangle)
-    }
-
-    fn arrangement_vertex_flat_world(
-        arrangement: &NodeArrangement,
-        vertex_id: arrangement::NodeArrangementVertexId,
-    ) -> Option<Vector3> {
-        let vertex = arrangement.vertices().get(vertex_id.index())?;
-        let point_xz = vertex.point_xz();
-        Some(backend::road_xz_with_height_to_godot(point_xz, 0.0))
     }
 
     pub(super) fn arrangement_vertex_world(
@@ -166,8 +160,45 @@ impl RoadSurfaceSystem {
     ) -> Option<Vector3> {
         let vertex = arrangement.vertices().get(vertex_id.index())?;
         Some(backend::road_xz_with_height_to_godot(
-            vertex.point_xz(),
+            arrangement_vertex_canonical_xz(vertex),
             vertex.height_m(),
         ))
     }
+
+    fn arrangement_vertex_canonical_world(
+        arrangement: &NodeArrangement,
+        vertex_id: arrangement::NodeArrangementVertexId,
+    ) -> Option<backend::RoadVec3> {
+        let vertex = arrangement.vertices().get(vertex_id.index())?;
+        let point_xz = arrangement_vertex_canonical_xz(vertex);
+        Some(backend::RoadVec3::new(
+            point_xz.x,
+            vertex.height_m(),
+            point_xz.y,
+        ))
+    }
+}
+
+fn arrangement_vertex_canonical_xz(
+    vertex: &arrangement::NodeArrangementVertex,
+) -> backend::RoadVec2 {
+    let key = vertex.key();
+    keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key()).to_road_xz()
+}
+
+fn arrangement_face_signed_area_xz_m2(
+    arrangement: &NodeArrangement,
+    vertices: [arrangement::NodeArrangementVertexId; 3],
+) -> Option<f64> {
+    let points = [
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[0].index())?),
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[1].index())?),
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[2].index())?),
+    ];
+    Some(
+        ((points[0].x * points[1].y - points[1].x * points[0].y)
+            + (points[1].x * points[2].y - points[2].x * points[1].y)
+            + (points[2].x * points[0].y - points[0].x * points[2].y))
+            * 0.5,
+    )
 }

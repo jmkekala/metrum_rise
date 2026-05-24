@@ -75,7 +75,7 @@ pub(super) fn noded_owned_region_edge_points_with_rail_paths(
     if require_rail_path {
         return vec![start, end];
     }
-    noded_owned_region_edge_points(start, end, global_points)
+    noded_owned_region_source_edge_points(start, end, global_points)
 }
 
 pub(in crate::simulation::network::surface::node::ownership) fn dedup_consecutive_overlay_points(
@@ -96,6 +96,27 @@ pub(in crate::simulation::network::surface::node::ownership) fn noded_owned_regi
         .copied()
         .filter(|point| *point != start && *point != end)
         .filter(|point| point_key_lies_exactly_on_segment(*point, start, end))
+        .collect::<Vec<_>>();
+    split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
+    split_points.dedup();
+
+    let mut points = Vec::with_capacity(split_points.len() + 2);
+    points.push(start);
+    points.extend(split_points);
+    points.push(end);
+    points
+}
+
+fn noded_owned_region_source_edge_points(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    source_points: &[NodeOwnershipPointKey],
+) -> Vec<NodeOwnershipPointKey> {
+    let mut split_points = source_points
+        .iter()
+        .copied()
+        .filter(|point| *point != start && *point != end)
+        .filter(|point| point_key_lies_on_segment(*point, start, end))
         .collect::<Vec<_>>();
     split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
     split_points.dedup();

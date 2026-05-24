@@ -117,7 +117,7 @@ impl NodeArrangement {
             });
         }
 
-        contour
+        let mut loop_vertices = contour
             .iter()
             .map(|vertex| {
                 let grade_authority = vertex.grade_authority.ok_or_else(|| {
@@ -139,6 +139,84 @@ impl NodeArrangement {
                     grade_authority,
                 )
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        clean_arrangement_loop_vertices(&mut loop_vertices, &self.vertices);
+        if loop_vertices.len() < 3 {
+            return Err(NodeArrangementError::DegenerateRegionContour {
+                region_index,
+                contour_index,
+            });
+        }
+        Ok(loop_vertices)
     }
+}
+
+fn clean_arrangement_loop_vertices(
+    loop_vertices: &mut Vec<NodeArrangementVertexId>,
+    vertices: &[NodeArrangementVertex],
+) {
+    loop {
+        let starting_len = loop_vertices.len();
+        remove_consecutive_identical_arrangement_vertices(loop_vertices, vertices);
+        remove_immediate_backtracking_arrangement_vertices(loop_vertices, vertices);
+        if loop_vertices.len() == starting_len {
+            break;
+        }
+        if loop_vertices.len() < 3 {
+            break;
+        }
+    }
+}
+
+fn remove_consecutive_identical_arrangement_vertices(
+    loop_vertices: &mut Vec<NodeArrangementVertexId>,
+    vertices: &[NodeArrangementVertex],
+) {
+    loop_vertices.dedup_by(|left, right| {
+        arrangement_vertices_share_exact_key_height_and_field(*left, *right, vertices)
+    });
+    if loop_vertices.len() >= 2
+        && arrangement_vertices_share_exact_key_height_and_field(
+            loop_vertices[0],
+            *loop_vertices
+                .last()
+                .expect("arrangement loop has last vertex"),
+            vertices,
+        )
+    {
+        loop_vertices.pop();
+    }
+}
+
+fn remove_immediate_backtracking_arrangement_vertices(
+    loop_vertices: &mut Vec<NodeArrangementVertexId>,
+    vertices: &[NodeArrangementVertex],
+) {
+    if loop_vertices.len() < 3 {
+        return;
+    }
+    let Some(index) = (0..loop_vertices.len()).find(|index| {
+        let previous = loop_vertices[(*index + loop_vertices.len() - 1) % loop_vertices.len()];
+        let next = loop_vertices[(*index + 1) % loop_vertices.len()];
+        arrangement_vertices_share_exact_key_height_and_field(previous, next, vertices)
+    }) else {
+        return;
+    };
+    loop_vertices.remove(index);
+}
+
+fn arrangement_vertices_share_exact_key_height_and_field(
+    left: NodeArrangementVertexId,
+    right: NodeArrangementVertexId,
+    vertices: &[NodeArrangementVertex],
+) -> bool {
+    let Some(left) = vertices.get(left.index()) else {
+        return false;
+    };
+    let Some(right) = vertices.get(right.index()) else {
+        return false;
+    };
+    left.key() == right.key()
+        && left.height_mm() == right.height_mm()
+        && left.height_field_id() == right.height_field_id()
 }

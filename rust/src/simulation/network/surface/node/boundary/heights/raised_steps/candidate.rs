@@ -97,4 +97,13 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
     )
     .is_some()
     .then_some(*raised_height_mm)
+    .or_else(|| {
+        same_kind_explicit_vertical_step_footprint_height_mm(
+            key,
+            candidates,
+            *lower_height_mm,
+            *raised_height_mm,
+            explicit_vertical_step_segments,
+        )
+    })
 }

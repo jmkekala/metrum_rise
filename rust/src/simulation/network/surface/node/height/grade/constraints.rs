@@ -48,6 +48,10 @@ impl SameMaterialSharedEdgeCandidate {
             vertex_has_explicit_shared_material_seam(start, seam_constraints);
         let mut end_has_explicit_shared_material_seam =
             vertex_has_explicit_shared_material_seam(end, seam_constraints);
+        let mut start_has_explicit_height_split =
+            vertex_has_explicit_height_split(start, seam_constraints);
+        let mut end_has_explicit_height_split =
+            vertex_has_explicit_height_split(end, seam_constraints);
         if end_key < start_key {
             std::mem::swap(&mut start_key, &mut end_key);
             std::mem::swap(&mut start_height_m, &mut end_height_m);
@@ -55,6 +59,10 @@ impl SameMaterialSharedEdgeCandidate {
             std::mem::swap(
                 &mut start_has_explicit_shared_material_seam,
                 &mut end_has_explicit_shared_material_seam,
+            );
+            std::mem::swap(
+                &mut start_has_explicit_height_split,
+                &mut end_has_explicit_height_split,
             );
         }
         Some((
@@ -70,10 +78,12 @@ impl SameMaterialSharedEdgeCandidate {
                 start_height_m,
                 start_height_authority,
                 start_has_explicit_shared_material_seam,
+                start_has_explicit_height_split,
                 end: end_key,
                 end_height_m,
                 end_height_authority,
                 end_has_explicit_shared_material_seam,
+                end_has_explicit_height_split,
             },
         ))
     }
@@ -103,6 +113,15 @@ impl SameMaterialSharedEdgeCandidate {
             height_m,
             height_authority,
             has_explicit_shared_material_seam,
+        }
+    }
+
+    pub(super) fn endpoint_has_explicit_height_split(self, point: SurfaceXzKey) -> bool {
+        if point == self.start {
+            self.start_has_explicit_height_split
+        } else {
+            debug_assert_eq!(point, self.end);
+            self.end_has_explicit_height_split
         }
     }
 }
@@ -166,6 +185,13 @@ pub(super) fn vertex_has_explicit_shared_material_seam(
         .any(|constraint| constraint.is_material_transition)
 }
 
+pub(super) fn vertex_has_explicit_height_split(
+    vertex: &NodeHeightedVertex,
+    seam_constraints: &[NodeRegionSeamConstraint],
+) -> bool {
+    !explicit_height_split_constraints_for_vertex(vertex.point_xz, seam_constraints).is_empty()
+}
+
 pub(super) fn edge_has_explicit_height_split(
     start_xz: RoadVec2,
     end_xz: RoadVec2,
@@ -209,16 +235,27 @@ pub(super) fn explicit_height_split_constraints_for_vertex(
 }
 
 fn explicit_height_split_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
-    constraint.is_material_transition
-        && !constraint.constrains_shared_height
-        && matches!(
-            constraint.seam_source,
-            NodeSeamSource::RaisedStepContact { .. }
-        )
+    if !constraint.is_material_transition || constraint.constrains_shared_height {
+        return false;
+    }
+    if matches!(
+        constraint.seam_source,
+        NodeSeamSource::RaisedStepContact { .. }
+    ) {
+        return true;
+    }
+    matches!(
+        (constraint.owner, constraint.opposite_owner),
+        (Some(owner), Some(opposite_owner)) if owner.kind() == opposite_owner.kind()
+    )
 }
 
 fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
-    road_xz_lies_exactly_on_segment(point, start, end)
+    key_lies_on_segment(
+        SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point)),
+        SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(start)),
+        SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(end)),
+    )
 }
 
 pub(super) fn push_unique_same_material_candidate<K: Ord>(

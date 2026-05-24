@@ -97,6 +97,8 @@ fn generated_contact_edge_intersection_noding_candidates(
     NodeRailPointKey,
 )> {
     let mut candidates = Vec::new();
+    let left_keys = generated_contour_keys(left);
+    let right_keys = generated_contour_keys(right);
     for left_edge in generated_contour_directed_edges(left) {
         for right_edge in generated_contour_directed_edges(right) {
             let Some(intersection) = quantized_proper_segment_intersection(
@@ -107,6 +109,9 @@ fn generated_contact_edge_intersection_noding_candidates(
             ) else {
                 continue;
             };
+            if left_keys.contains(&intersection) && right_keys.contains(&intersection) {
+                continue;
+            }
             if !generated_contact_noding_point_has_explicit_roles(
                 left,
                 right,

@@ -57,10 +57,12 @@ pub(super) struct SameMaterialSharedEdgeCandidate {
     pub(super) start_height_m: f64,
     pub(super) start_height_authority: Option<NodeHeightAuthoritySource>,
     pub(super) start_has_explicit_shared_material_seam: bool,
+    pub(super) start_has_explicit_height_split: bool,
     pub(super) end: SurfaceXzKey,
     pub(super) end_height_m: f64,
     pub(super) end_height_authority: Option<NodeHeightAuthoritySource>,
     pub(super) end_has_explicit_shared_material_seam: bool,
+    pub(super) end_has_explicit_height_split: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

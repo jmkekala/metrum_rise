@@ -127,6 +127,61 @@ pub(super) fn explicit_vertical_step_endpoint_group_authorizes_footprint_height_
     )
 }
 
+pub(super) fn same_kind_explicit_vertical_step_footprint_height_mm(
+    key: arrangement::NodeArrangementKey,
+    candidates: &[NodeFootprintBoundaryHeightCandidate],
+    lower_height_mm: i64,
+    raised_height_mm: i64,
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+) -> Option<i64> {
+    let lower_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == lower_height_mm)
+        .collect::<Vec<_>>();
+    let raised_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.height_mm == raised_height_mm)
+        .collect::<Vec<_>>();
+    if lower_candidates.is_empty() || raised_candidates.is_empty() {
+        return None;
+    }
+
+    let mut authorized_pairs = Vec::<(
+        NodeFootprintBoundaryDirectVertex,
+        NodeFootprintBoundaryDirectVertex,
+    )>::new();
+    for lower in &lower_candidates {
+        for raised in &raised_candidates {
+            if !explicit_same_kind_vertical_step_authorizes_footprint_height_pair(
+                key,
+                lower.source,
+                raised.source,
+                explicit_vertical_step_segments,
+            ) {
+                continue;
+            }
+            authorized_pairs.push((lower.source, raised.source));
+        }
+    }
+    if authorized_pairs.is_empty() {
+        return None;
+    }
+
+    let all_lower_authorized = lower_candidates.iter().all(|candidate| {
+        authorized_pairs
+            .iter()
+            .any(|(lower, _)| *lower == candidate.source)
+    });
+    let all_raised_authorized = raised_candidates.iter().all(|candidate| {
+        authorized_pairs
+            .iter()
+            .any(|(_, raised)| *raised == candidate.source)
+    });
+    (all_lower_authorized && all_raised_authorized).then_some(raised_height_mm)
+}
+
 #[cfg(test)]
 pub(super) fn ordered_raised_step_footprint_candidates(
     left: NodeFootprintBoundaryHeightCandidate,

@@ -264,20 +264,22 @@ fn terrain_clip_sources_same_provenance(
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id: node_id_a,
                 kind: kind_a,
-                owner_kind: _,
-                owner_index: _,
+                owner_kind: owner_kind_a,
+                owner_index: owner_index_a,
                 boundary_source: boundary_source_a,
             },
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id: node_id_b,
                 kind: kind_b,
-                owner_kind: _,
-                owner_index: _,
+                owner_kind: owner_kind_b,
+                owner_index: owner_index_b,
                 boundary_source: boundary_source_b,
             },
         ) => {
             node_id_a == node_id_b
                 && kind_a == kind_b
+                && owner_kind_a == owner_kind_b
+                && owner_index_a == owner_index_b
                 && terrain_clip_boundary_sources_same_undirected(
                     boundary_source_a,
                     boundary_source_b,

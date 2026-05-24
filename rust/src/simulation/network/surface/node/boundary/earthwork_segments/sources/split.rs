@@ -61,8 +61,8 @@ pub(super) fn node_earthwork_source_for_boundary_vertices(
         return Err(ambiguous_earthwork_boundary_segment_source_error(
             start_point_key,
             end_point_key,
-            start_candidate,
-            end_candidate,
+            NodeEarthworkBoundarySourceCandidate::from_face_source(start_candidate),
+            NodeEarthworkBoundarySourceCandidate::from_face_source(end_candidate),
         ));
     };
 

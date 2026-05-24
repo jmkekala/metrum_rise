@@ -77,6 +77,9 @@ fn protected_constraints_for_owner(
                 constraint.kind,
                 NodeRailConstraintKind::SpanHandoff { .. }
                     | NodeRailConstraintKind::FootprintSeam { .. }
+                    | NodeRailConstraintKind::AsphaltBoundary { .. }
+                    | NodeRailConstraintKind::RaisedStepContact
+                    | NodeRailConstraintKind::BandBoundary { .. }
             )
         })
         .collect()

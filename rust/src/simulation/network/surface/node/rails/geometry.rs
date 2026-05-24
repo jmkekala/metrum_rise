@@ -5,35 +5,6 @@ use super::super::keys::SurfaceXzKey;
 use super::super::segments::raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment;
 use super::topology::NodeRailPointKey;
 
-pub(super) fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
-    keys.dedup();
-    loop {
-        if keys.len() < 3 {
-            return;
-        }
-        let mut removed = false;
-        for index in 0..keys.len() {
-            let previous = if index == 0 {
-                keys.len() - 1
-            } else {
-                index - 1
-            };
-            let next = if index + 1 == keys.len() {
-                0
-            } else {
-                index + 1
-            };
-            if keys[previous] == keys[next] {
-                keys.remove(index);
-                removed = true;
-                break;
-            }
-        }
-        if !removed {
-            return;
-        }
-    }
-}
 fn generated_triangle_double_area(
     a: NodeRailPointKey,
     b: NodeRailPointKey,

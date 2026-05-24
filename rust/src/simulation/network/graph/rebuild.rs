@@ -37,7 +37,7 @@ struct JunctionProfileIncident {
     at_start: bool,
 }
 
-/// Node-local profile plane used to make incident JunctionN mouth rails height-compatible.
+/// Node-local profile plane used to make incident Bend/JunctionN mouth rails height-compatible.
 #[derive(Clone, Copy)]
 pub(crate) struct JunctionEndpointProfilePlane {
     origin: Vector3,
@@ -359,7 +359,7 @@ impl RegionGraph {
         // Adjacency is unchanged — no rebuild needed.
     }
 
-    /// Adapts newly authored edge endpoints to existing JunctionN grade/profile anchors.
+    /// Adapts newly authored edge endpoints to existing Bend/JunctionN grade/profile anchors.
     ///
     /// The node compiler consumes the resulting edge profiles as source authority; it still
     /// rejects any contradictory mouth heights that remain after this edit-stage solve.
@@ -407,7 +407,7 @@ impl RegionGraph {
         node_ids.sort_unstable();
         for node_id in node_ids {
             let incidents = &incidents_by_node[&node_id];
-            if incidents.len() < 3 {
+            if incidents.len() < 2 {
                 continue;
             }
             let stable_incidents = incidents
@@ -495,7 +495,7 @@ impl RegionGraph {
         incidents_by_node
     }
 
-    /// Builds the canonical endpoint profile plane for a JunctionN node from incident edge mouths.
+    /// Builds the canonical endpoint profile plane for a Bend/JunctionN node from incident edge mouths.
     pub(crate) fn junction_endpoint_profile_plane(
         &self,
         node_id: u32,
@@ -510,7 +510,7 @@ impl RegionGraph {
         let incidents_by_node =
             self.build_junction_profile_incidents(&valid_node_ids, Some(&affected_nodes));
         let incidents = incidents_by_node.get(&node_id)?;
-        (incidents.len() >= 3)
+        (incidents.len() >= 2)
             .then(|| self.solve_junction_profile_plane(node_id, incidents))
             .flatten()
     }

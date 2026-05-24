@@ -216,12 +216,15 @@ pub(super) fn side_join_band_contributes_footprint(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     side_join_band: &NodeInputSideJoinBand,
 ) -> bool {
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+    if !matches!(
+        piece_kind,
+        RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::JunctionN
+    ) {
         return false;
     }
     match side_join_band.boundary_mode {
         NodeInputSideJoinBandBoundaryMode::MaterialBand
-        | NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
-        | NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap => true,
+        | NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap => true,
+        NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap => false,
     }
 }

@@ -26,6 +26,7 @@ use super::predicates::{
     canonicalize_seam_constraints, constraint_is_material_transition, constraint_is_point_contact,
     edge_lies_on_constraint_polyline_on_overlay_grid, edge_lies_on_single_constraint_segment,
 };
+pub(in crate::simulation::network::surface::node::ownership) use candidates::materialized_endpoint_pair_constraint_indices_for_owned_edge;
 use candidates::{OwnedEdgeSeamCandidate, materialized_seam_candidates_for_owned_edge};
 use emission::push_candidate_region_seam_constraint;
 
@@ -84,6 +85,25 @@ pub(in crate::simulation::network::surface::node::ownership) fn materialize_node
                     start_xz,
                     end_xz,
                 );
+            }
+            if edge_ref.owner.kind() == opposite_owner.kind() && edge_ref.owner != opposite_owner {
+                let source_constraints = owned_source_constraints_for_edge(
+                    edge_key.start,
+                    edge_key.end,
+                    &region.seam_constraints,
+                );
+                if let Some(source) = source_constraints.first() {
+                    additions[edge_ref.region_index].push(NodeRegionSeamConstraint {
+                        constraint_index: source.constraint_index,
+                        seam_source: source.seam_source,
+                        owner: Some(edge_ref.owner),
+                        opposite_owner: Some(opposite_owner),
+                        constrains_shared_height: false,
+                        is_material_transition: true,
+                        start_xz,
+                        end_xz,
+                    });
+                }
             }
         }
     }

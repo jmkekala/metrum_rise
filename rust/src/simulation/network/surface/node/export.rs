@@ -1,6 +1,7 @@
 //! Node surface export from canonical arrangement output.
 
 use super::*;
+use std::collections::BTreeMap;
 
 mod assembly;
 mod footprint_loops;
@@ -12,8 +13,9 @@ mod top_regions;
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
-        _footprint_shapes: &super::NodeOverlayShapes,
+        footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
+        reject_unauthorized_arrangement_height_splits(arrangement)?;
         let mut node_grade_authorities = arrangement
             .vertices()
             .iter()
@@ -36,10 +38,6 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            if Self::signed_polygon_area_xz(&polygon.points_world).abs() <= NODE_OVERLAY_MIN_AREA_M2
-            {
-                continue;
-            }
             owned_region_exports.push((
                 NodeOwnedRegion {
                     kind: owner.kind(),
@@ -71,7 +69,12 @@ impl RoadSurfaceSystem {
         Self::retain_raised_step_faces_with_owned_top_support(
             &mut raised_step_faces,
             &owned_regions,
+            &node_top_surface_sources,
         );
+        let mut raised_step_faces = raised_step_faces
+            .into_iter()
+            .map(|face| (face.polygon, face.source))
+            .collect::<Vec<_>>();
 
         if owned_regions.is_empty() {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
@@ -85,10 +88,9 @@ impl RoadSurfaceSystem {
         {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
-        let footprint_shapes = Self::footprint_shapes_from_owned_regions(&owned_regions)?;
         let footprint_boundary_point_loops =
             Self::footprint_boundary_point_loops_from_footprint_shapes(
-                &footprint_shapes,
+                footprint_shapes,
                 &mut boundary_export_sources,
             )?;
         let mut earthwork_boundary_segments =
@@ -101,7 +103,9 @@ impl RoadSurfaceSystem {
         Self::orient_earthwork_boundary_segment_loops_by_nesting(&mut earthwork_boundary_segments)
             .map_err(|_| NodeBoundaryExportError::DegenerateOuterBoundaryLoop)?;
         let mut outer_boundary_loops =
-            Self::outer_boundary_polygons_from_arrangement_regions(arrangement)?;
+            Self::outer_boundary_polygons_from_footprint_boundary_point_loops(
+                &footprint_boundary_point_loops,
+            )?;
         let mut terrain_clip_boundary_loops =
             Self::terrain_clip_boundary_loops_from_earthwork_segments(&earthwork_boundary_segments);
 
@@ -126,4 +130,185 @@ impl RoadSurfaceSystem {
             owned_regions,
         })
     }
+}
+
+fn reject_unauthorized_arrangement_height_splits(
+    arrangement: &NodeArrangement,
+) -> Result<(), NodeBoundaryExportError> {
+    let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+    let mut vertices_by_key = BTreeMap::<arrangement::NodeArrangementKey, Vec<_>>::new();
+    for vertex in arrangement.vertices() {
+        vertices_by_key
+            .entry(vertex.key())
+            .or_default()
+            .push(vertex);
+    }
+
+    let mut conflicts_by_owner_pair =
+        BTreeMap::<(arrangement::NodeBandOwner, arrangement::NodeBandOwner), Vec<_>>::new();
+    for (key, vertices) in vertices_by_key {
+        for left_index in 0..vertices.len() {
+            for right in vertices.iter().copied().skip(left_index + 1) {
+                let left = vertices[left_index];
+                if left.height_mm() == right.height_mm() {
+                    continue;
+                }
+                for left_owner in left.owners() {
+                    for right_owner in right.owners() {
+                        if left_owner == right_owner {
+                            continue;
+                        }
+                        if arrangement_height_split_authorized(
+                            arrangement,
+                            key,
+                            left.height_mm(),
+                            *left_owner,
+                            right.height_mm(),
+                            *right_owner,
+                            &explicit_vertical_step_segments,
+                        ) {
+                            continue;
+                        }
+                        let owner_pair = if left_owner <= right_owner {
+                            (*left_owner, *right_owner)
+                        } else {
+                            (*right_owner, *left_owner)
+                        };
+                        conflicts_by_owner_pair
+                            .entry(owner_pair)
+                            .or_default()
+                            .push((
+                                key,
+                                left.height_mm(),
+                                *left_owner,
+                                right.height_mm(),
+                                *right_owner,
+                            ));
+                    }
+                }
+            }
+        }
+    }
+
+    for conflicts in conflicts_by_owner_pair.into_values() {
+        let mut keys = conflicts
+            .iter()
+            .map(|(key, _, _, _, _)| *key)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.len() < 2 {
+            continue;
+        }
+        let (key, existing_y_mm, existing_owner, incoming_y_mm, incoming_owner) = conflicts[0];
+        return Err(
+            NodeBoundaryExportError::ConflictingFootprintBoundaryHeight {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                existing_y_mm,
+                incoming_y_mm,
+                existing_owner_kind: existing_owner.kind(),
+                existing_owner_index: existing_owner.owner_index(),
+                existing_source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: key.x_key(),
+                    z_key: key.z_key(),
+                    y_mm: existing_y_mm,
+                },
+                incoming_owner_kind: incoming_owner.kind(),
+                incoming_owner_index: incoming_owner.owner_index(),
+                incoming_source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                    x_key: key.x_key(),
+                    z_key: key.z_key(),
+                    y_mm: incoming_y_mm,
+                },
+            },
+        );
+    }
+    Ok(())
+}
+
+fn arrangement_height_split_authorized(
+    arrangement: &NodeArrangement,
+    key: arrangement::NodeArrangementKey,
+    left_height_mm: i64,
+    left_owner: arrangement::NodeBandOwner,
+    right_height_mm: i64,
+    right_owner: arrangement::NodeBandOwner,
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+) -> bool {
+    let (lower_owner, raised_owner) = if left_height_mm <= right_height_mm {
+        (left_owner, right_owner)
+    } else {
+        (right_owner, left_owner)
+    };
+    explicit_vertical_step_segments.iter().any(|segment| {
+        arrangement_key_lies_exactly_on_step_segment(key, segment.start(), segment.end())
+            && ((segment.owner() == lower_owner && segment.opposite_owner() == raised_owner)
+                || (segment.owner() == raised_owner && segment.opposite_owner() == lower_owner))
+    }) || exposed_final_boundary_authorizes_raised_step_endpoint(
+        arrangement,
+        key,
+        left_height_mm,
+        left_owner,
+        right_height_mm,
+        right_owner,
+    )
+}
+
+fn exposed_final_boundary_authorizes_raised_step_endpoint(
+    arrangement: &NodeArrangement,
+    key: arrangement::NodeArrangementKey,
+    left_height_mm: i64,
+    left_owner: arrangement::NodeBandOwner,
+    right_height_mm: i64,
+    right_owner: arrangement::NodeBandOwner,
+) -> bool {
+    let (lower_owner, raised_owner) = if left_height_mm <= right_height_mm {
+        (left_owner, right_owner)
+    } else {
+        (right_owner, left_owner)
+    };
+    let Some(lower_rank) = band_semantics::raised_step_band_rank(lower_owner.kind()) else {
+        return false;
+    };
+    let Some(raised_rank) = band_semantics::raised_step_band_rank(raised_owner.kind()) else {
+        return false;
+    };
+    if lower_rank >= raised_rank
+        || !band_semantics::raised_step_kinds_can_contact(lower_owner.kind(), raised_owner.kind())
+    {
+        return false;
+    }
+
+    let mut raised_exposed = false;
+    let mut lower_exposed = false;
+    for edge in arrangement
+        .edges()
+        .iter()
+        .filter(|edge| edge.exposed_boundary())
+    {
+        let Some(start) = arrangement.vertices().get(edge.start().index()) else {
+            continue;
+        };
+        let Some(end) = arrangement.vertices().get(edge.end().index()) else {
+            continue;
+        };
+        if !arrangement_key_lies_exactly_on_step_segment(key, start.key(), end.key()) {
+            continue;
+        }
+        raised_exposed |= edge.owner() == raised_owner;
+        lower_exposed |= edge.owner() == lower_owner;
+    }
+    raised_exposed && !lower_exposed
+}
+
+fn arrangement_key_lies_exactly_on_step_segment(
+    point: arrangement::NodeArrangementKey,
+    start: arrangement::NodeArrangementKey,
+    end: arrangement::NodeArrangementKey,
+) -> bool {
+    let point = super::keys::SurfaceXzKey::from_raw_keys(point.x_key(), point.z_key());
+    let start = super::keys::SurfaceXzKey::from_raw_keys(start.x_key(), start.z_key());
+    let end = super::keys::SurfaceXzKey::from_raw_keys(end.x_key(), end.z_key());
+    super::segments::key_lies_exactly_on_segment(point, start, end)
 }

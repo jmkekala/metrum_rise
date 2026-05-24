@@ -189,15 +189,18 @@ fn side_join_bands(
             | RoadSurfaceBandKind::Sidewalk => NodeInputSideJoinBandBoundaryMode::MaterialBand,
             _ => NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap,
         };
-        push_side_join_band(
+        let Some(next_inner_path_world) = pushed_side_join_band(
             &mut join_bands,
             from_layer.band_index,
             from_layer.band_kind,
             boundary_mode,
             band_inner_path_world,
             band_outer_path_world.clone(),
-        )?;
-        inner_path_world = Some(band_outer_path_world);
+        )?
+        else {
+            break;
+        };
+        inner_path_world = Some(next_inner_path_world);
     }
     Ok(join_bands)
 }
@@ -239,31 +242,37 @@ fn side_join_band_inner_path(
     )
 }
 
-fn push_side_join_band(
+fn pushed_side_join_band(
     join_bands: &mut Vec<NodeInputSideJoinBand>,
     source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
     boundary_mode: NodeInputSideJoinBandBoundaryMode,
     inner_path_world: Vec<RoadVec3>,
     outer_path_world: Vec<RoadVec3>,
-) -> Result<(), SideJoinGenerationError> {
+) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     if inner_path_world.len() < 2 || outer_path_world.len() < 2 {
-        return Ok(());
+        return Ok(None);
     }
 
     let mut contour_world = inner_path_world.clone();
     contour_world.extend(outer_path_world.iter().rev().copied());
     remove_repeated_road_vec3_xz_points(&mut contour_world)
         .map_err(SideJoinGenerationError::from_path_height_error)?;
-    join_bands.push(NodeInputSideJoinBand {
+    let mut join_band = NodeInputSideJoinBand {
         source_band_index,
         band_kind,
         boundary_mode,
         inner_path_world,
         outer_path_world,
         contour_world,
-    });
-    Ok(())
+    };
+    quantize_side_join_band_xz(&mut join_band);
+    if !side_join_band_has_quantized_area(&join_band) {
+        return Ok(None);
+    }
+    let next_inner_path_world = join_band.outer_path_world.clone();
+    join_bands.push(join_band);
+    Ok(Some(next_inner_path_world))
 }
 
 fn quantize_side_join_band_xz(join_band: &mut NodeInputSideJoinBand) {

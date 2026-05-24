@@ -2,8 +2,8 @@
 
 use super::super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
 use super::seams::{
-    seam_constraint_covers_edge, seam_constraint_covers_key, seam_constraint_matches_owner_pair,
-    seam_constraint_opposite_owner_for_edge_owner,
+    NodeRegionSeamConstraint, seam_constraint_covers_edge, seam_constraint_covers_key,
+    seam_constraint_matches_owner_pair, seam_constraint_opposite_owner_for_edge_owner,
 };
 use super::{
     NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner, NodeSeamSource,

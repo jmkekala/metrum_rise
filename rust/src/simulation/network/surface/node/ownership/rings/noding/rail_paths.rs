@@ -73,7 +73,7 @@ fn rail_path_candidate_can_node_owned_edge(candidate: &[NodeOwnershipPointKey]) 
         .expect("candidate length was checked above");
     candidate[1..candidate.len() - 1]
         .iter()
-        .all(|point| point_key_lies_on_segment(*point, start, end))
+        .all(|point| point_key_lies_exactly_on_segment(*point, start, end))
 }
 
 fn dedup_consecutive_ownership_keys(points: &mut Vec<NodeOwnershipPointKey>) {

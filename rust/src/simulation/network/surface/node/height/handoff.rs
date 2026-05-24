@@ -32,11 +32,7 @@ impl NodeBandHeightField {
         claim_priority: NodeGeneratedContourClaimPriority,
         point_xz: RoadVec2,
     ) {
-        if self
-            .patches
-            .iter()
-            .any(|patch| patch.source_handoff_height_at(point_xz).is_some())
-        {
+        if self.source_handoff_candidate_at(point_xz).is_some() {
             self.source_handoff_keys
                 .insert(NodeAuthorizedSourceHandoffKey {
                     owner,
@@ -57,12 +53,15 @@ impl NodeBandHeightField {
         };
         for point in points_world {
             let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
-            let Some(source_height_m) = self.source_interval_height_at(point_xz)? else {
+            let Some(source_candidate) = self.source_handoff_candidate_at(point_xz) else {
                 continue;
             };
-            let source_height_key = SurfaceHeightMmKey::from_m_f64(source_height_m);
+            let source_height_key = SurfaceHeightMmKey::from_m_f64(source_candidate.height_m);
             let contour_height_key = SurfaceHeightMmKey::from_m_f64(point.y);
-            if source_height_key != contour_height_key {
+            if !generated_contour_source_handoff_height_keys_match(
+                source_height_key,
+                contour_height_key,
+            ) {
                 continue;
             }
             self.source_handoff_keys
@@ -75,17 +74,27 @@ impl NodeBandHeightField {
         Ok(())
     }
 
-    fn source_interval_height_at(
+    pub(super) fn source_handoff_candidate_at(
         &self,
         point_xz: RoadVec2,
-    ) -> Result<Option<f64>, NodeHeightFieldError> {
+    ) -> Option<NodeAuthorizedHeightCandidate> {
         for patch in &self.patches {
-            match patch.source_handoff_height_at(point_xz) {
-                Some(height_m) => return Ok(Some(height_m)),
-                None => continue,
+            if let Some(height_m) = patch.source_handoff_height_at(point_xz) {
+                return Some(NodeAuthorizedHeightCandidate {
+                    authority: patch.authority.source(),
+                    height_m,
+                });
             }
         }
-        Ok(None)
+        for patch in &self.patches {
+            if let Some(height_m) = patch.generated_material_band_handoff_height_at(point_xz) {
+                return Some(NodeAuthorizedHeightCandidate {
+                    authority: patch.authority.source(),
+                    height_m,
+                });
+            }
+        }
+        None
     }
 
     pub(super) fn source_handoff_authorized(
@@ -101,6 +110,37 @@ impl NodeBandHeightField {
                 point: height_source_point_key(point_xz),
             })
     }
+}
+
+impl NodeBandHeightPatch {
+    fn generated_material_band_handoff_height_at(&self, point_xz: RoadVec2) -> Option<f64> {
+        let NodeHeightPatchAuthorityRole::GeneratedContour {
+            purpose,
+            claim_priority,
+        } = self.authority.role
+        else {
+            return None;
+        };
+        if claim_priority != NodeGeneratedContourClaimPriority::MouthBand
+            || !matches!(
+                purpose,
+                NodeGeneratedContourPurpose::CarriagewayCorridor
+                    | NodeGeneratedContourPurpose::NonRoadBand
+            )
+        {
+            return None;
+        }
+        self.contour_edge_support_heights
+            .get(&height_source_point_key(point_xz))
+            .copied()
+    }
+}
+
+fn generated_contour_source_handoff_height_keys_match(
+    source: SurfaceHeightMmKey,
+    contour: SurfaceHeightMmKey,
+) -> bool {
+    source == contour
 }
 
 pub(super) fn source_handoff_support_heights(

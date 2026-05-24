@@ -3,16 +3,14 @@
 use super::super::*;
 
 impl RoadSurfaceSystem {
-    pub(super) fn outer_boundary_polygons_from_arrangement_regions(
-        arrangement: &NodeArrangement,
+    pub(super) fn outer_boundary_polygons_from_footprint_boundary_point_loops(
+        loops: &[Vec<super::super::boundary::NodeFootprintBoundaryPoint>],
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
         let mut polygons = Vec::new();
-        for region in arrangement.regions() {
-            let points = region
-                .outer_loop()
+        for point_loop in loops {
+            let points = point_loop
                 .iter()
-                .copied()
-                .filter_map(|vertex_id| Self::arrangement_vertex_world(arrangement, vertex_id))
+                .map(|point| point.point_world())
                 .collect::<Vec<_>>();
             if points.len() < 3 {
                 continue;

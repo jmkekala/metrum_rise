@@ -125,6 +125,14 @@ impl NodeBandHeightField {
     ) -> Result<NodeEvaluatedHeight, NodeHeightFieldError> {
         let mut outside_error = None;
         for target_rank in (1..=4).rev() {
+            if target_rank == 4 && self.source_handoff_authorized(owner, claim_priority, point_xz) {
+                if let Some(candidate) = self.source_handoff_candidate_at(point_xz) {
+                    return Ok(NodeEvaluatedHeight {
+                        height_m: candidate.height_m,
+                        authority: candidate.authority,
+                    });
+                }
+            }
             let mut candidates = Vec::new();
             for patch in &self.patches {
                 let Some(authority_rank) =
@@ -132,16 +140,6 @@ impl NodeBandHeightField {
                 else {
                     continue;
                 };
-                if target_rank == 4
-                    && self.source_handoff_authorized(owner, claim_priority, point_xz)
-                    && let Some(height_m) = patch.source_handoff_height_at(point_xz)
-                {
-                    candidates.push(NodeAuthorizedHeightCandidate {
-                        authority: patch.authority.source(),
-                        height_m,
-                    });
-                    continue;
-                }
                 if authority_rank != target_rank {
                     continue;
                 }

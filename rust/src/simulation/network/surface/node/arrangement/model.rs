@@ -328,6 +328,10 @@ impl NodeArrangementVertex {
         self.height_field_id
     }
 
+    pub(crate) fn owners(&self) -> &[NodeBandOwner] {
+        &self.owners
+    }
+
     pub(crate) fn grade_authority(&self) -> NodeGradeVertexAuthority {
         self.grade_authority
     }

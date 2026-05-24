@@ -163,9 +163,10 @@ impl NodeArrangement {
         let (edge_owners, edge_use_counts) =
             collect_pending_region_edge_support(&pending_regions, &arrangement.vertices);
 
-        for pending in pending_regions {
+        for pending in pending_regions.iter().cloned() {
             let boundary_edges = arrangement.push_boundary_edges_for_pending_region(
                 &pending,
+                &pending_regions,
                 &edge_owners,
                 &edge_use_counts,
             );
@@ -220,13 +221,22 @@ impl NodeArrangement {
                             &left.owners,
                             &right.owners,
                         ));
+                    let has_same_material_endpoint_path = !crosses_band_kind
+                        && self.has_explicit_material_seam_endpoint_path_at_key_between(
+                            key,
+                            &left.owners,
+                            &right.owners,
+                        );
                     let has_explicit_vertical_step = self
                         .has_explicit_vertical_step_at_key_between(
                             key,
                             &left.owners,
                             &right.owners,
                         );
-                    if !has_explicit_material_seam && !has_explicit_vertical_step {
+                    if !has_explicit_material_seam
+                        && !has_same_material_endpoint_path
+                        && !has_explicit_vertical_step
+                    {
                         return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                             key,
                             existing_height_mm: left.height_key.0,

@@ -18,8 +18,8 @@ pub(super) fn merge_node_earthwork_source_candidate(
         return Err(ambiguous_earthwork_boundary_segment_source_error(
             start_point_key,
             end_point_key,
-            existing.face_source,
-            candidate.face_source,
+            existing,
+            candidate,
         ));
     };
     *source = Some(merged);

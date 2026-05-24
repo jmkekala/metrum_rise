@@ -128,6 +128,7 @@ impl NodeArrangement {
     pub(super) fn push_boundary_edges_for_pending_region(
         &mut self,
         pending: &PendingArrangementRegion,
+        all_pending_regions: &[PendingArrangementRegion],
         edge_owners: &BTreeMap<NodeArrangementEdgeKey, Vec<NodeArrangementEdgeOwner>>,
         edge_use_counts: &BTreeMap<NodeArrangementEdgeKey, usize>,
     ) -> Vec<NodeArrangementEdgeId> {
@@ -144,9 +145,26 @@ impl NodeArrangement {
             let source_constraints =
                 source_constraints_for_edge(edge, &pending.seam_constraints, &self.vertices);
             let selected_source_constraint = selected_edge_source_constraint(&source_constraints);
+            let endpoint_pair_source_constraint_indices = if source_constraints.is_empty() {
+                opposite_owner
+                    .map(|opposite_owner| {
+                        endpoint_pair_constraint_indices_from_pending_region_seams(
+                            edge,
+                            all_pending_regions,
+                            &self.vertices,
+                            pending.owner,
+                            opposite_owner,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             if let Some(opposite_owner) = opposite_owner {
                 if owners_require_explicit_boundary_seam(pending.owner, opposite_owner) {
-                    if source_constraints.is_empty() {
+                    if source_constraints.is_empty()
+                        && endpoint_pair_source_constraint_indices.is_empty()
+                    {
                         self.diagnostics
                             .push(NodeArrangementDiagnostic::MissingSeamConstraint {
                                 region_index: pending.region_index,
@@ -169,15 +187,24 @@ impl NodeArrangement {
             }
             let seam_source = selected_source_constraint
                 .map(|constraint| constraint.seam_source)
+                .or_else(|| {
+                    (!endpoint_pair_source_constraint_indices.is_empty()).then(|| {
+                        NodeSeamSource::RaisedStepContact {
+                            owner_index: pending.owner.owner_index(),
+                        }
+                    })
+                })
                 .unwrap_or_else(|| NodeSeamSource::for_owner(pending.owner));
             let constrains_shared_height = selected_source_constraint
                 .is_some_and(|constraint| constraint.constrains_shared_height);
             let is_material_transition = selected_source_constraint
-                .is_some_and(|constraint| constraint.is_material_transition);
+                .is_some_and(|constraint| constraint.is_material_transition)
+                || !endpoint_pair_source_constraint_indices.is_empty();
             let source_constraint_indices = canonical_sources(
                 source_constraints
                     .iter()
-                    .map(|constraint| constraint.constraint_index),
+                    .map(|constraint| constraint.constraint_index)
+                    .chain(endpoint_pair_source_constraint_indices),
             );
             boundary_edges.push(self.push_edge(
                 edge.start,
@@ -258,6 +285,82 @@ fn source_constraints_for_edge<'a>(
     matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+fn endpoint_pair_constraint_indices_from_pending_region_seams(
+    edge: PendingArrangementEdge,
+    regions: &[PendingArrangementRegion],
+    vertices: &[NodeArrangementVertex],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    let Some(start) = vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+        return Vec::new();
+    };
+    let Some(end) = vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+        return Vec::new();
+    };
+    let start_indices = source_authorized_region_seam_endpoint_constraint_indices(
+        start,
+        regions,
+        owner,
+        opposite_owner,
+    );
+    if start_indices.is_empty() {
+        return Vec::new();
+    }
+    let end_indices = source_authorized_region_seam_endpoint_constraint_indices(
+        end,
+        regions,
+        owner,
+        opposite_owner,
+    );
+    if end_indices.is_empty() {
+        return Vec::new();
+    }
+    canonical_sources(start_indices.into_iter().chain(end_indices))
+}
+
+fn source_authorized_region_seam_endpoint_constraint_indices(
+    key: NodeArrangementKey,
+    regions: &[PendingArrangementRegion],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    regions
+        .iter()
+        .flat_map(|region| region.seam_constraints.iter())
+        .filter(|constraint| constraint.is_material_transition)
+        .filter(|constraint| region_seam_has_exact_endpoint_key(constraint, key))
+        .filter(|constraint| {
+            region_seam_authorizes_same_kind_handoff(constraint, owner, opposite_owner)
+        })
+        .map(|constraint| constraint.constraint_index)
+        .collect()
+}
+
+fn region_seam_has_exact_endpoint_key(
+    constraint: &NodeRegionSeamConstraint,
+    key: NodeArrangementKey,
+) -> bool {
+    NodeArrangementKey::from_point(constraint.start_xz) == key
+        || NodeArrangementKey::from_point(constraint.end_xz) == key
+}
+
+fn region_seam_authorizes_same_kind_handoff(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    let (Some(source_owner), Some(source_opposite_owner)) =
+        (constraint.owner, constraint.opposite_owner)
+    else {
+        return false;
+    };
+    (source_owner == owner && source_opposite_owner.kind() == opposite_owner.kind())
+        || (source_opposite_owner == owner && source_owner.kind() == opposite_owner.kind())
+        || (source_owner == opposite_owner && source_opposite_owner.kind() == owner.kind())
+        || (source_opposite_owner == opposite_owner && source_owner.kind() == owner.kind())
 }
 
 fn selected_edge_source_constraint<'a>(

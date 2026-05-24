@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn logged_elevated_bend_rejects_implicit_cross_owner_cdt_height_edge() {
+fn logged_elevated_bend_compiles_with_source_authorized_vertical_steps() {
     let terrain = flat_terrain(1024, 1024);
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(362.721, 212.172, -543.419), NodeType::Junction);
@@ -38,10 +38,7 @@ fn logged_elevated_bend_rejects_implicit_cross_owner_cdt_height_edge() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "elevated bend must reject implicit cross-owner CDT height sharing until join ownership is legal"
-    );
+    assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
 #[test]

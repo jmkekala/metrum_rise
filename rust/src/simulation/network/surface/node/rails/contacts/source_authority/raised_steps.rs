@@ -1,18 +1,20 @@
 //! Source-authorized raised-step contact collection.
 
 use super::super::geometry::{
-    generated_directed_edge_segments_inside_shape_edges,
+    generated_contour_boundary_contains_key, generated_directed_edge_segments_inside_shape_edges,
     generated_shape_boundary_segments_on_source_edge,
 };
 use super::super::{
     GeneratedContourDirectedEdge, GeneratedRaisedStepOwnerPair, NodeGeneratedContour,
-    NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceVisualNodePieceKind,
-    generated_constraint_directed_edges, generated_constraint_touches_key,
-    generated_point_key_lies_on_segment, quantized_proper_segment_intersection, road_point_key,
+    NodeGeneratedContourClaimPriority, NodeRailConstraint, NodeRailConstraintKind,
+    NodeRailPointKey, RoadSurfaceVisualNodePieceKind, generated_constraint_directed_edges,
+    generated_constraint_touches_key, generated_point_key_lies_on_segment,
+    quantized_proper_segment_intersection, road_point_key,
 };
 use super::target_groups::{
     collect_source_authorized_exact_group_overlap_contacts, source_authorized_contact_segments,
-    source_authorized_raised_step_target_pairs, source_authorized_target_groups,
+    source_authorized_raised_step_target_pairs, source_authorized_target_claim_priority,
+    source_authorized_target_groups,
 };
 use super::types::{
     GeneratedRaisedStepEndpointSource, GeneratedSameBandContactConstraint,
@@ -77,6 +79,13 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
             &target_groups,
             contacts,
         );
+        collect_junctionn_source_authorized_mouth_band_endpoint_handoffs(
+            piece_kind,
+            contours,
+            source_constraint,
+            &target_groups,
+            contacts,
+        );
     }
 
     for (point, sources) in source_authority.sources_by_contact_point() {
@@ -104,6 +113,63 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
             }
         }
     }
+}
+
+fn collect_junctionn_source_authorized_mouth_band_endpoint_handoffs(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &[NodeGeneratedContour],
+    source_constraint: &RaisedStepSourceConstraint<'_>,
+    target_groups: &[super::types::SourceAuthorizedTargetGroup],
+    contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+) {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN {
+        return;
+    }
+    for point in generated_constraint_endpoint_keys(source_constraint.constraint) {
+        for replaced_owner_index in 0..source_constraint.source.owners.len() {
+            let replaced_owner = source_constraint.source.owners[replaced_owner_index];
+            let retained_owner = source_constraint.source.owners[1 - replaced_owner_index];
+            for target_group in target_groups {
+                let target_owner = target_group.key.owner;
+                if target_owner == replaced_owner
+                    || source_constraint.source.owners.contains(&target_owner)
+                    || target_owner.kind() != replaced_owner.kind()
+                    || target_group.key.claim_priority
+                        != NodeGeneratedContourClaimPriority::MouthBand
+                    || Some(target_group.key.claim_priority)
+                        != source_authorized_target_claim_priority(contours, target_owner)
+                    || !target_group_contains_boundary_key(contours, target_group, point)
+                {
+                    continue;
+                }
+                let Some(pair) = GeneratedRaisedStepOwnerPair::new(retained_owner, target_owner)
+                else {
+                    continue;
+                };
+                contacts.insert(GeneratedSameBandContactConstraint {
+                    kind: NodeRailConstraintKind::RaisedStepContact,
+                    owner: pair.owner,
+                    opposite_owner: pair.opposite_owner,
+                    start: point,
+                    end: point,
+                    source_mouth_order_index: source_constraint.source.source_mouth_order_index,
+                    source_band_index: source_constraint.source.source_band_index,
+                });
+            }
+        }
+    }
+}
+
+fn target_group_contains_boundary_key(
+    contours: &[NodeGeneratedContour],
+    target_group: &super::types::SourceAuthorizedTargetGroup,
+    point: NodeRailPointKey,
+) -> bool {
+    target_group.contour_indices.iter().any(|contour_index| {
+        contours
+            .get(*contour_index)
+            .is_some_and(|contour| generated_contour_boundary_contains_key(contour, point))
+    })
 }
 
 fn deterministic_contact_source_name(

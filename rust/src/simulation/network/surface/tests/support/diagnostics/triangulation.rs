@@ -1,6 +1,7 @@
 //! Triangulation diagnostic extraction helpers.
 
 use super::*;
+use crate::simulation::network::surface::keys::SurfaceXzKey;
 
 pub(in crate::simulation::network::surface::tests) fn triangulation_height_conflict_debug(
     heights: &super::height::NodeHeightSolution,
@@ -57,6 +58,80 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_duplicate_ex
     })
 }
 
+pub(in crate::simulation::network::surface::tests) fn triangulation_open_boundary_debug(
+    triangulation: &crate::simulation::network::surface::triangulation::NodeTriangulationSolution,
+    report: &NodeValidationReport,
+) -> Option<String> {
+    let region_indices = report
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            if let NodeGeometryDiagnosticKind::OpenBoundary { region_index, .. } = diagnostic.kind {
+                Some(region_index)
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    if region_indices.is_empty() {
+        return None;
+    }
+    let open_regions = region_indices
+        .into_iter()
+        .filter_map(|region_index| {
+            let region = triangulation.regions.get(region_index)?;
+            let mut degree = BTreeMap::<(i64, i64), usize>::new();
+            let mut incident_edges = BTreeMap::<(i64, i64), Vec<((i64, i64), (i64, i64))>>::new();
+            for constraint in &region.boundary_constraints {
+                let Some(start) = region.vertices.get(constraint[0]) else {
+                    continue;
+                };
+                let Some(end) = region.vertices.get(constraint[1]) else {
+                    continue;
+                };
+                let start_key = road_vec3_raw_xz(start.point_world);
+                let end_key = road_vec3_raw_xz(end.point_world);
+                if start_key == end_key {
+                    continue;
+                }
+                *degree.entry(start_key).or_default() += 1;
+                *degree.entry(end_key).or_default() += 1;
+                incident_edges
+                    .entry(start_key)
+                    .or_default()
+                    .push((start_key, end_key));
+                incident_edges
+                    .entry(end_key)
+                    .or_default()
+                    .push((start_key, end_key));
+            }
+            let bad_points = degree
+                .into_iter()
+                .filter(|(_, degree)| *degree != 2)
+                .take(12)
+                .map(|(point, degree)| {
+                    (
+                        point,
+                        raw_xz_to_mm(point),
+                        degree,
+                        incident_edges.remove(&point).unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some((
+                region_index,
+                region.owner,
+                region.height_field_id,
+                region.vertices.len(),
+                region.boundary_constraints.len(),
+                region.triangles.len(),
+                bad_points,
+            ))
+        })
+        .collect::<Vec<_>>();
+    Some(format!("open_boundary_debug={open_regions:?}"))
+}
+
 pub(in crate::simulation::network::surface::tests) fn triangulation_regions_for_exposed_edge(
     triangulation: &crate::simulation::network::surface::triangulation::NodeTriangulationSolution,
     start_mm: (i64, i64),
@@ -88,6 +163,18 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_regions_for_
         }
     }
     matches
+}
+
+fn road_vec3_raw_xz(point: super::backend::RoadVec3) -> (i64, i64) {
+    let key = SurfaceXzKey::from_world_xz(point);
+    (key.x_key(), key.z_key())
+}
+
+fn raw_xz_to_mm(point: (i64, i64)) -> (i64, i64) {
+    (
+        SurfaceXzKey::coordinate_key_to_mm(point.0),
+        SurfaceXzKey::coordinate_key_to_mm(point.1),
+    )
 }
 
 pub(in crate::simulation::network::surface::tests) fn normalized_test_world_mm_edge_key(

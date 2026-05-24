@@ -35,11 +35,19 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
         BTreeMap::<ArrangementSegmentParameter, NodeFootprintBoundarySplitPoint>::new();
     split_points.insert(
         ArrangementSegmentParameter::zero(),
-        node_footprint_boundary_split_point_from_boundary_point(start, direct_vertex_sources),
+        node_footprint_boundary_split_point_from_boundary_point(
+            start,
+            direct_vertex_sources,
+            source_edges,
+        )?,
     );
     split_points.insert(
         ArrangementSegmentParameter::one(),
-        node_footprint_boundary_split_point_from_boundary_point(end, direct_vertex_sources),
+        node_footprint_boundary_split_point_from_boundary_point(
+            end,
+            direct_vertex_sources,
+            source_edges,
+        )?,
     );
     for source_edge in source_edges {
         for (split_key, split_point_key, split_source) in [
@@ -179,12 +187,63 @@ fn node_footprint_boundary_split_point_from_boundary_point(
         ArrangementBoundaryPointKey,
         NodeFootprintBoundaryDirectVertex,
     >,
-) -> NodeFootprintBoundarySplitPoint {
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+) -> Result<NodeFootprintBoundarySplitPoint, NodeBoundaryExportError> {
     let point_key = point.point_key;
-    NodeFootprintBoundarySplitPoint {
-        point_key,
-        source: node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources),
+    let source =
+        match node_footprint_boundary_vertex_source_at_point(point_key, direct_vertex_sources) {
+            Some(source) => Some(source),
+            None => node_footprint_boundary_split_source_from_edges(point_key, source_edges)?,
+        };
+    Ok(NodeFootprintBoundarySplitPoint { point_key, source })
+}
+
+fn node_footprint_boundary_split_source_from_edges(
+    point_key: ArrangementBoundaryPointKey,
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+) -> Result<Option<NodeFootprintBoundaryDirectVertex>, NodeBoundaryExportError> {
+    let final_source =
+        node_footprint_boundary_split_source_from_matching_edges(point_key, source_edges, true)?;
+    if final_source.is_some() {
+        return Ok(final_source);
     }
+    node_footprint_boundary_split_source_from_matching_edges(point_key, source_edges, false)
+}
+
+fn node_footprint_boundary_split_source_from_matching_edges(
+    point_key: ArrangementBoundaryPointKey,
+    source_edges: &[NodeEarthworkBoundarySourceEdge],
+    final_footprint_boundary: bool,
+) -> Result<Option<NodeFootprintBoundaryDirectVertex>, NodeBoundaryExportError> {
+    let mut source = None;
+    for source_edge in source_edges
+        .iter()
+        .filter(|edge| edge.final_footprint_boundary == final_footprint_boundary)
+    {
+        let Some(vertex_source) =
+            node_footprint_boundary_vertex_source_for_edge_point(source_edge, point_key)
+        else {
+            continue;
+        };
+        if let Err(error) = merge_node_footprint_boundary_point_source(
+            point_key,
+            &mut source,
+            NodeFootprintBoundaryDirectVertex {
+                source: vertex_source,
+                owner_kind: source_edge.owner_kind,
+                owner_index: source_edge.owner_index,
+            },
+        ) {
+            if matches!(
+                error,
+                NodeBoundaryExportError::AmbiguousFootprintBoundaryPointSource { .. }
+            ) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+    }
+    Ok(source)
 }
 
 pub(in crate::simulation::network::surface::node::boundary) fn insert_node_footprint_boundary_split_point(

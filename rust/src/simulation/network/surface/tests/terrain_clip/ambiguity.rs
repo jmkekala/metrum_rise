@@ -70,7 +70,7 @@ fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
 }
 
 #[test]
-fn terrain_clip_union_materializes_same_material_node_owner_boundary_source() {
+fn terrain_clip_union_rejects_same_material_node_owner_boundary_source_ambiguity() {
     let y = 8.0;
     let points = vec![
         Vector3::new(0.0, y, 0.0),
@@ -99,8 +99,51 @@ fn terrain_clip_union_materializes_same_material_node_owner_boundary_source() {
     let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[
         loop_for_owner(2, 20),
         loop_for_owner(1, 21),
+    ]);
+
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { context, .. }) =
+        unioned
+    else {
+        panic!("same-material different-owner overlap must reject provenance, got {unioned:?}");
+    };
+    assert!(
+        context.contains("sources_disagree"),
+        "ambiguous same-material owner diagnostic should name provenance disagreement: {context}"
+    );
+}
+
+#[test]
+fn terrain_clip_union_materializes_same_node_owner_adjacent_boundary_sources() {
+    let y = 8.0;
+    let points = vec![
+        Vector3::new(0.0, y, 0.0),
+        Vector3::new(2.0, y, 0.0),
+        Vector3::new(2.0, y, 1.0),
+        Vector3::new(0.0, y, 1.0),
+    ];
+    let loop_for_source = |top_surface_source_index| RoadSurfaceTerrainClipLoop {
+        source_edges: points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .enumerate()
+            .map(|(index, (&start, &end))| {
+                same_material_node_owner_source_edge(
+                    start,
+                    end,
+                    6,
+                    top_surface_source_index,
+                    index * 2,
+                    index * 2 + 1,
+                )
+            })
+            .collect(),
+        points_world: points.clone(),
+    };
+    let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[
+        loop_for_source(421),
+        loop_for_source(422),
     ])
-    .expect("same-material node owner overlap should canonicalize the output source");
+    .expect("same node owner boundary-source overlap should canonicalize the output source");
 
     assert_eq!(unioned.len(), 1);
     assert!(
@@ -113,19 +156,19 @@ fn terrain_clip_union_materializes_same_material_node_owner_boundary_source() {
                     node_id: 1,
                     kind: RoadSurfaceVisualNodePieceKind::JunctionN,
                     owner_kind: RoadSurfaceBandKind::Sidewalk,
-                    owner_index: 1,
+                    owner_index: 6,
                     boundary_source: Some(NodeFootprintBoundarySegmentSource {
                         start: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
                         end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
                     }),
                 }
             )),
-        "same-material overlap must preserve canonical boundary-point provenance: {unioned:?}"
+        "same-owner output segment must keep canonical node boundary provenance: {unioned:?}"
     );
 }
 
 #[test]
-fn terrain_clip_union_materializes_adjacent_node_owner_boundary_source() {
+fn terrain_clip_union_rejects_adjacent_node_owner_boundary_source_ambiguity() {
     let y = 8.0;
     let points = vec![
         Vector3::new(0.0, y, 0.0),
@@ -156,30 +199,16 @@ fn terrain_clip_union_materializes_adjacent_node_owner_boundary_source() {
     let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[
         loop_for_owner(RoadSurfaceBandKind::CurbOrShoulder, 13, 20),
         loop_for_owner(RoadSurfaceBandKind::Sidewalk, 12, 21),
-    ])
-    .expect("adjacent node owner overlap should canonicalize the output source");
+    ]);
 
-    assert!(
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { context, .. }) =
         unioned
-            .iter()
-            .flat_map(|loop_| loop_.source_edges.iter())
-            .all(|edge| {
-                edge.kind == RoadSurfaceTerrainClipEdgeKind::SidewalkOuter
-                    && matches!(
-                        edge.source,
-                        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                            node_id: 1,
-                            kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-                            owner_kind: RoadSurfaceBandKind::Sidewalk,
-                            owner_index: 12,
-                            boundary_source: Some(NodeFootprintBoundarySegmentSource {
-                                start: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
-                                end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
-                            }),
-                        }
-                    )
-            }),
-        "adjacent raised-step overlap must preserve canonical sidewalk boundary provenance: {unioned:?}"
+    else {
+        panic!("adjacent different-owner overlap must reject provenance, got {unioned:?}");
+    };
+    assert!(
+        context.contains("sources_disagree"),
+        "ambiguous adjacent owner diagnostic should name provenance disagreement: {context}"
     );
 }
 

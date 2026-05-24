@@ -4,6 +4,7 @@ use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, arrangement,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
+    band_semantics::raised_step_band_rank,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
     piece::{
         NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
@@ -14,10 +15,7 @@ use super::{
 use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
-pub(super) use super::segments::{
-    arrangement_key, arrangement_key_lies_on_segment as arrangement_key_lies_on_segment_xz,
-    key_lies_exactly_on_segment,
-};
+pub(super) use super::segments::{arrangement_key, key_lies_exactly_on_segment};
 
 mod earthwork_segments;
 mod heights;
@@ -97,6 +95,14 @@ struct NodeEarthworkBoundarySourceEdge {
     end_source: NodeFootprintBoundaryDirectSource,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NodeFinalFootprintBoundaryHeightEdge {
+    start_point_key: ArrangementBoundaryPointKey,
+    end_point_key: ArrangementBoundaryPointKey,
+    owner_kind: RoadSurfaceBandKind,
+    owner_index: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NodeFootprintBoundaryDirectVertex {
     source: NodeFootprintBoundaryVertexSource,
@@ -118,6 +124,9 @@ struct NodeFootprintBoundaryEdgeHeightCandidate {
 
 pub(super) struct NodeFootprintBoundaryExportSources {
     source_edges: Vec<NodeEarthworkBoundarySourceEdge>,
+    final_height_edges: Vec<NodeFinalFootprintBoundaryHeightEdge>,
+    final_vertex_sources:
+        BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
     direct_vertex_sources: BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
     direct_vertex_source_candidates:
         BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
@@ -160,8 +169,12 @@ pub(crate) enum NodeBoundaryExportError {
     AmbiguousEarthworkBoundarySegmentSource {
         start_x_key: i64,
         start_z_key: i64,
+        start_y_mm: i64,
         end_x_key: i64,
         end_z_key: i64,
+        end_y_mm: i64,
+        existing_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
+        incoming_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
         existing_source: RoadSurfaceEarthworkFaceSource,
         incoming_source: RoadSurfaceEarthworkFaceSource,
     },
@@ -241,14 +254,6 @@ fn arrangement_key_lies_exactly_on_segment(
     )
 }
 
-fn arrangement_key_lies_on_segment(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> bool {
-    arrangement_key_lies_on_segment_xz(point, start, end)
-}
-
 fn arrangement_key_segment_parameter_xz(
     point: arrangement::NodeArrangementKey,
     start: arrangement::NodeArrangementKey,
@@ -258,20 +263,6 @@ fn arrangement_key_segment_parameter_xz(
     let start_key = arrangement_key(start);
     let end_key = arrangement_key(end);
     overlay_segment_parameter(point_key, start_key, end_key)
-}
-
-fn arrangement_key_segment_parameter_xz_with_endpoint_dust(
-    point: arrangement::NodeArrangementKey,
-    start: arrangement::NodeArrangementKey,
-    end: arrangement::NodeArrangementKey,
-) -> Option<ArrangementSegmentParameter> {
-    arrangement_key_segment_parameter_xz(point, start, end).or_else(|| {
-        endpoint_dust_segment_parameter(
-            arrangement_key(point),
-            arrangement_key(start),
-            arrangement_key(end),
-        )
-    })
 }
 
 fn endpoint_dust_segment_parameter(
@@ -438,22 +429,64 @@ fn merge_node_footprint_boundary_point_source(
     if node_footprint_direct_vertices_share_source_identity(existing, candidate) {
         return Ok(());
     }
-    if node_footprint_direct_vertices_share_boundary_point_authority(point_key, existing, candidate)
+    if let Some(merged) =
+        canonical_node_footprint_boundary_point_source(point_key, existing, candidate)
     {
-        *source = Some(NodeFootprintBoundaryDirectVertex {
-            source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
-                x_key: point_key.x_key,
-                z_key: point_key.z_key,
-                y_mm: point_key.y_mm,
-            },
-            owner_kind: existing.owner_kind,
-            owner_index: existing.owner_index,
-        });
+        *source = Some(merged);
         return Ok(());
     }
     Err(ambiguous_footprint_boundary_point_source_error(
         point_key, existing, candidate,
     ))
+}
+
+fn canonical_node_footprint_boundary_point_source(
+    point_key: ArrangementBoundaryPointKey,
+    a: NodeFootprintBoundaryDirectVertex,
+    b: NodeFootprintBoundaryDirectVertex,
+) -> Option<NodeFootprintBoundaryDirectVertex> {
+    let (owner_kind, owner_index) = canonical_node_footprint_boundary_point_owner(point_key, a, b)?;
+    Some(NodeFootprintBoundaryDirectVertex {
+        source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+            x_key: point_key.x_key,
+            z_key: point_key.z_key,
+            y_mm: point_key.y_mm,
+        },
+        owner_kind,
+        owner_index,
+    })
+}
+
+fn canonical_node_footprint_boundary_point_owner(
+    point_key: ArrangementBoundaryPointKey,
+    a: NodeFootprintBoundaryDirectVertex,
+    b: NodeFootprintBoundaryDirectVertex,
+) -> Option<(RoadSurfaceBandKind, usize)> {
+    if a.owner_kind == b.owner_kind {
+        if a.owner_index != b.owner_index
+            || !node_footprint_boundary_vertex_sources_share_boundary_point_authority(
+                point_key, a.source, b.source,
+            )
+        {
+            return None;
+        }
+        return Some((a.owner_kind, a.owner_index));
+    }
+
+    let a_rank = raised_step_band_rank(a.owner_kind)?;
+    let b_rank = raised_step_band_rank(b.owner_kind)?;
+    let sources_share_authority =
+        node_footprint_boundary_vertex_sources_share_boundary_point_authority(
+            point_key, a.source, b.source,
+        );
+    if !sources_share_authority || a_rank.abs_diff(b_rank) != 1 {
+        return None;
+    }
+    Some(if a_rank > b_rank {
+        (a.owner_kind, a.owner_index)
+    } else {
+        (b.owner_kind, b.owner_index)
+    })
 }
 
 pub(super) fn boundary_segment_parameter_xz(
@@ -466,6 +499,24 @@ pub(super) fn boundary_segment_parameter_xz(
         boundary_point_surface_key(start),
         boundary_point_surface_key(end),
     )
+}
+
+fn boundary_segment_parameter_xz_on_segment(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<ArrangementSegmentParameter> {
+    arrangement_key_lies_exactly_on_segment(point.xz_key(), start.xz_key(), end.xz_key())
+        .then(|| boundary_segment_parameter_xz(point, start, end))
+        .flatten()
+}
+
+fn final_boundary_segment_parameter_xz_on_segment(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<ArrangementSegmentParameter> {
+    arrangement_key_segment_parameter_xz(point.xz_key(), start.xz_key(), end.xz_key())
 }
 
 pub(super) fn interpolated_segment_height_mm(

@@ -17,36 +17,27 @@ pub(super) fn apply_junctionn_same_owner_canonical_vertex_height_normalization(
                 owner: region.owner,
                 height_field_id: vertex.height_field_id,
             };
+            let candidate = SameMaterialVertexHeightCandidate {
+                owner: region.owner,
+                height_field_id: vertex.height_field_id,
+                height_m: vertex.height_m,
+                height_authority: vertex.height_authority,
+                has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
+                    vertex,
+                    &region.seam_constraints,
+                ),
+            };
             heights_by_key
                 .entry(key.clone())
                 .and_modify(|selected| {
-                    let candidate = SameMaterialVertexHeightCandidate {
-                        owner: region.owner,
-                        height_field_id: vertex.height_field_id,
-                        height_m: vertex.height_m,
-                        height_authority: vertex.height_authority,
-                        has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
-                            vertex,
-                            &region.seam_constraints,
-                        ),
-                    };
                     if same_material_vertex_height_candidate_key(candidate)
                         < same_material_vertex_height_candidate_key(*selected)
                     {
                         *selected = candidate;
                     }
                 })
-                .or_insert(SameMaterialVertexHeightCandidate {
-                    owner: region.owner,
-                    height_field_id: vertex.height_field_id,
-                    height_m: vertex.height_m,
-                    height_authority: vertex.height_authority,
-                    has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
-                        vertex,
-                        &region.seam_constraints,
-                    ),
-                });
-            let (sample_count, heights) = samples_by_key.entry(key).or_default();
+                .or_insert(candidate);
+            let (sample_count, heights) = samples_by_key.entry(key.clone()).or_default();
             *sample_count += 1;
             let height_mm = SurfaceHeightMmKey::from_m_f64(vertex.height_m).as_i64();
             if !heights.contains(&height_mm) {
@@ -70,10 +61,13 @@ pub(super) fn apply_junctionn_same_owner_canonical_vertex_height_normalization(
             let Some((sample_count, heights)) = samples_by_key.get(&key) else {
                 continue;
             };
-            if *sample_count < 2 || heights.len() != 1 {
+            if *sample_count < 2 {
                 continue;
             }
-            if let Some(selected) = heights_by_key.get(&key) {
+            if heights.len() != 1 {
+                continue;
+            }
+            if let Some(selected) = heights_by_key.get(&key).copied() {
                 set_vertex_grade_height(
                     owner,
                     vertex,
@@ -150,6 +144,9 @@ fn reject_same_material_vertex_height_group_conflicts(
         if contexts.len() < 2 {
             continue;
         }
+        if !key.explicit_seams.is_empty() {
+            continue;
+        }
         reject_same_material_height_conflict(
             key.kind,
             key.point,
@@ -188,6 +185,9 @@ fn apply_same_material_vertex_height_groups(
                 .get(&key)
                 .is_none_or(|contexts| contexts.len() < 2)
             {
+                continue;
+            }
+            if !key.explicit_seams.is_empty() {
                 continue;
             }
             if let Some(selected) = groups.selected_by_key.get(&key) {

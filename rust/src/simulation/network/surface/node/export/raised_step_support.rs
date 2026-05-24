@@ -1,23 +1,23 @@
 //! Raised-step vertical face support checks against final owned top surfaces.
 
 use super::super::{
-    NodeOwnedRegion, RoadSurfaceVerticalFaceSource, arrangement::NodeBandOwner, keys, segments,
+    ArrangementBoundaryPointKey, NodeOwnedRegion, NodeTopSurfacePolygonSource,
+    RoadSurfaceRaisedStepFace, RoadSurfaceVerticalFaceSource, arrangement::NodeBandOwner, keys,
+    segments,
 };
 use crate::simulation::network::surface::{
-    RoadSurfaceSystem, RoadSurfaceVisualPolygon, band_semantics::ordered_raised_step_kinds,
+    RoadSurfaceSystem, band_semantics::ordered_raised_step_kinds,
 };
-use godot::prelude::Vector3;
 use std::collections::BTreeMap;
 
 impl RoadSurfaceSystem {
     pub(super) fn retain_raised_step_faces_with_owned_top_support(
-        raised_step_faces: &mut Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
+        raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
         owned_regions: &[NodeOwnedRegion],
+        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
     ) {
-        let top_edges = owned_top_boundary_edges(owned_regions);
-        raised_step_faces.retain(|(face, source)| {
-            raised_step_face_has_owned_top_support(face, *source, &top_edges)
-        });
+        let top_edges = owned_top_boundary_edges(owned_regions, node_top_surface_sources);
+        raised_step_faces.retain(|face| raised_step_face_has_owned_top_support(face, &top_edges));
     }
 }
 
@@ -39,15 +39,16 @@ struct NodeTopSupportEdge {
     key: NodeTopSupportEdgeKey,
 }
 
-fn owned_top_boundary_edges(owned_regions: &[NodeOwnedRegion]) -> Vec<NodeTopSupportEdge> {
+fn owned_top_boundary_edges(
+    owned_regions: &[NodeOwnedRegion],
+    node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+) -> Vec<NodeTopSupportEdge> {
     let mut top_edges = Vec::new();
-    for region in owned_regions {
+    for (region, source) in owned_regions.iter().zip(node_top_surface_sources) {
         let owner = NodeBandOwner::new(region.kind, region.owner_index);
         let mut edge_counts = BTreeMap::<NodeTopSupportEdgeKey, usize>::new();
-        for edge in visual_polygon_edges(&region.polygon) {
-            if let Some(edge_key) = NodeTopSupportEdgeKey::from_points(edge[0], edge[1]) {
-                *edge_counts.entry(edge_key).or_default() += 1;
-            }
+        for edge_key in top_source_boundary_edges(source) {
+            *edge_counts.entry(edge_key).or_default() += 1;
         }
         top_edges.extend(
             edge_counts.into_iter().filter_map(|(key, count)| {
@@ -58,36 +59,33 @@ fn owned_top_boundary_edges(owned_regions: &[NodeOwnedRegion]) -> Vec<NodeTopSup
     top_edges
 }
 
-fn visual_polygon_edges(polygon: &RoadSurfaceVisualPolygon) -> Vec<[Vector3; 2]> {
-    let mut edges = Vec::new();
-    if polygon.triangles_world.is_empty() {
-        let points = &polygon.points_world;
-        if points.len() >= 2 {
-            for index in 0..points.len() {
-                edges.push([points[index], points[(index + 1) % points.len()]]);
-            }
-        }
-        return edges;
+fn top_source_boundary_edges(source: &NodeTopSurfacePolygonSource) -> Vec<NodeTopSupportEdgeKey> {
+    if source.vertex_keys.len() != source.vertex_height_mm.len() {
+        return Vec::new();
     }
-    for triangle in &polygon.triangles_world {
-        for edge_index in 0..3 {
-            edges.push([triangle[edge_index], triangle[(edge_index + 1) % 3]]);
-        }
+    let mut edges = Vec::new();
+    for index in 0..source.vertex_keys.len() {
+        let next = (index + 1) % source.vertex_keys.len();
+        edges.push(NodeTopSupportEdgeKey::from_source_vertices(
+            source.vertex_keys[index],
+            source.vertex_height_mm[index],
+            source.vertex_keys[next],
+            source.vertex_height_mm[next],
+        ));
     }
     edges
 }
 
 fn raised_step_face_has_owned_top_support(
-    face: &RoadSurfaceVisualPolygon,
-    source: RoadSurfaceVerticalFaceSource,
+    face: &RoadSurfaceRaisedStepFace,
     top_edges: &[NodeTopSupportEdge],
 ) -> bool {
-    let Some((lower_owner, raised_owner)) = vertical_face_lower_and_raised_owners(source) else {
+    let Some((lower_owner, raised_owner)) = vertical_face_lower_and_raised_owners(face.source)
+    else {
         return false;
     };
-    let Some((lower_edge, upper_edge)) = vertical_face_horizontal_edge_keys(face) else {
-        return false;
-    };
+    let lower_edge = NodeTopSupportEdgeKey::from_boundary_points(face.lower_edge);
+    let upper_edge = NodeTopSupportEdgeKey::from_boundary_points(face.upper_edge);
     top_edges
         .iter()
         .any(|top_edge| top_edge.owner == lower_owner && top_edge.contains(lower_edge))
@@ -110,46 +108,53 @@ fn vertical_face_lower_and_raised_owners(
     })
 }
 
-fn vertical_face_horizontal_edge_keys(
-    face: &RoadSurfaceVisualPolygon,
-) -> Option<(NodeTopSupportEdgeKey, NodeTopSupportEdgeKey)> {
-    let [a, b, c, d] = face.points_world.as_slice() else {
-        return None;
-    };
-    let first = NodeTopSupportEdgeKey::from_points(*a, *d)?;
-    let second = NodeTopSupportEdgeKey::from_points(*b, *c)?;
-    let first_avg_y_mm = first.start.y_mm + first.end.y_mm;
-    let second_avg_y_mm = second.start.y_mm + second.end.y_mm;
-    Some(if first_avg_y_mm <= second_avg_y_mm {
-        (first, second)
-    } else {
-        (second, first)
-    })
-}
-
 impl NodeTopSupportEdgeKey {
-    fn from_points(start: Vector3, end: Vector3) -> Option<Self> {
-        let start = NodeTopSupportVertexKey::from_point(start);
-        let end = NodeTopSupportVertexKey::from_point(end);
-        if start == end {
-            return None;
-        }
-        Some(if start <= end {
+    fn from_source_vertices(
+        start_key: super::super::arrangement::NodeArrangementKey,
+        start_y_mm: i64,
+        end_key: super::super::arrangement::NodeArrangementKey,
+        end_y_mm: i64,
+    ) -> Self {
+        let start = NodeTopSupportVertexKey::from_source(start_key, start_y_mm);
+        let end = NodeTopSupportVertexKey::from_source(end_key, end_y_mm);
+        if start <= end {
             Self { start, end }
         } else {
             Self {
                 start: end,
                 end: start,
             }
-        })
+        }
+    }
+
+    fn from_boundary_points(
+        edge: (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+    ) -> Self {
+        let start = NodeTopSupportVertexKey::from_boundary_point(edge.0);
+        let end = NodeTopSupportVertexKey::from_boundary_point(edge.1);
+        if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        }
     }
 }
 
 impl NodeTopSupportVertexKey {
-    fn from_point(point: Vector3) -> Self {
+    fn from_source(key: super::super::arrangement::NodeArrangementKey, y_mm: i64) -> Self {
         Self {
-            xz: keys::SurfaceXzKey::from_godot_world_xz(point),
-            y_mm: keys::SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+            xz: keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key()),
+            y_mm,
+        }
+    }
+
+    fn from_boundary_point(point: ArrangementBoundaryPointKey) -> Self {
+        Self {
+            xz: keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key),
+            y_mm: point.y_mm,
         }
     }
 }

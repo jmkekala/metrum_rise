@@ -58,6 +58,9 @@ fn rail_constraint_owner_kinds_authorize_owned_edge(
     else {
         return false;
     };
+    if constraint.source_boundary_index.is_none() {
+        return false;
+    }
     if ![constraint_owner, constraint_opposite_owner]
         .into_iter()
         .any(|constraint_owner| constraint_owner == owner || constraint_owner == opposite_owner)
@@ -129,7 +132,11 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
         return true;
     }
     if matches!(constraint.kind, NodeRailConstraintKind::BandContour { .. }) {
-        return false;
+        return rail_constraint_band_contour_authorizes_owned_edge(
+            constraint,
+            owner,
+            opposite_owner,
+        ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
     }
     let exact_owner_pair =
         rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner);
@@ -169,4 +176,42 @@ fn materialized_edge_requires_exact_constraint_span(
 ) -> bool {
     matches!(constraint.kind, NodeRailConstraintKind::RaisedStepContact)
         && raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::simulation::network::surface::RoadSurfaceBandKind;
+
+    use super::*;
+
+    #[test]
+    fn bend_band_contour_materializes_noded_collinear_contact_edge() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 8);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 7);
+        let constraint = NodeRailConstraint {
+            constraint_index: 28,
+            kind: NodeRailConstraintKind::BandContour {
+                kind: RoadSurfaceBandKind::CurbOrShoulder,
+            },
+            source_mouth_order_index: 0,
+            source_band_index: Some(2),
+            source_boundary_index: None,
+            owner: Some(curb),
+            opposite_owner: None,
+            points_xz: vec![
+                road_point_from_key((6_148_780, 3_650_000)),
+                road_point_from_key((7_031_089, 5_178_204)),
+                road_point_from_key((7_361_216, 5_750_000)),
+            ],
+        };
+
+        assert!(owned_edge_lies_on_rail_constraint(
+            (6_951_609, 5_040_541),
+            (7_361_216, 5_750_000),
+            &constraint,
+            carriageway,
+            curb,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        ));
+    }
 }

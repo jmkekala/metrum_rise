@@ -90,6 +90,47 @@ fn junctionn_same_material_shared_vertices_reject_height_conflict() {
 }
 
 #[test]
+fn junctionn_same_material_point_seam_selects_canonical_height_owner() {
+    let seam = manual_seam_constraint(
+        91,
+        NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+        true,
+        false,
+    );
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Carriageway,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.0004)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Carriageway,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 1.00049)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("explicit same-material point seam should select a canonical height owner");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(regions[0].shape[0][0].height_m),
+        SurfaceHeightMmKey::from_m_f64(regions[1].shape[0][0].height_m)
+    );
+    assert_eq!(
+        regions[1].shape[0][0]
+            .grade_authority
+            .expect("point seam selection should record grade authority")
+            .decision,
+        NodeGradeCarrierDecision::SameMaterialSeam
+    );
+}
+
+#[test]
 fn junctionn_same_material_raised_step_contact_allows_vertical_height_split() {
     let seam = manual_seam_constraint(
         88,
@@ -116,6 +157,42 @@ fn junctionn_same_material_raised_step_contact_allows_vertical_height_split() {
 
     apply_junctionn_height_authority_normalization(&mut regions).expect(
         "explicit same-material raised-step contacts are height splits, not shared-height corrections",
+    );
+
+    assert_eq!(regions[0].shape[0][0].height_m, 1.0);
+    assert_eq!(regions[1].shape[0][0].height_m, 1.25);
+}
+
+#[test]
+fn junctionn_same_material_point_seam_uses_canonical_segment_membership() {
+    let mut seam = manual_seam_constraint(
+        89,
+        NodeSeamSource::RaisedStepContact { owner_index: 0 },
+        false,
+        true,
+    );
+    seam.start_xz = RoadVec2::new(0.0, 0.0);
+    seam.end_xz = RoadVec2::new(0.01, 0.01);
+    let vertex = RoadVec2::new(0.005, 0.005001);
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(vertex.x, vertex.y, 1.0)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(vertex.x, vertex.y, 1.25)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions).expect(
+        "canonical quantized seam membership should keep source-authorized point height splits",
     );
 
     assert_eq!(regions[0].shape[0][0].height_m, 1.0);
@@ -152,6 +229,51 @@ fn junctionn_same_material_shared_vertices_share_authority_when_height_keys_matc
             .expect("carrier should record deterministic same-material authority")
             .decision,
         NodeGradeCarrierDecision::SameMaterialVertex
+    );
+}
+
+#[test]
+fn junctionn_explicit_material_seam_does_not_prefer_generated_contour_height() {
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let seam = manual_owned_pair_seam_constraint(37, curb, sidewalk, true);
+    let mut mouth_band_vertex = manual_heighted_vertex(0.0, 0.0, 1.001);
+    mouth_band_vertex.height_authority = Some(NodeHeightAuthoritySource::GeneratedContour {
+        purpose: NodeGeneratedContourPurpose::NonRoadBand,
+        claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+    });
+    let mut side_join_vertex = manual_heighted_vertex(0.0, 0.0, 1.0);
+    side_join_vertex.height_authority = Some(NodeHeightAuthoritySource::GeneratedContour {
+        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+    });
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk.owner_index(),
+            0.0,
+            vec![mouth_band_vertex],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk.owner_index(),
+            0.0,
+            vec![side_join_vertex],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("explicit material seam vertices must not use generated-contour priority repair");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(regions[0].shape[0][0].height_m).as_i64(),
+        1001
+    );
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(regions[1].shape[0][0].height_m).as_i64(),
+        1000
     );
 }
 

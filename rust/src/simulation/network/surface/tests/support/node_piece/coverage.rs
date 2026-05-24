@@ -104,12 +104,24 @@ pub(in crate::simulation::network::surface::tests) fn assert_node_piece_uses_ban
         piece.sidewalk_surface_polygons.len(),
         "sidewalk polygons must be derived from sidewalk-owned node regions"
     );
+    let degenerate_owned_regions = piece
+        .owned_regions
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| !RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world))
+        .map(|(index, region)| {
+            (
+                index,
+                region.kind,
+                region.owner_index,
+                RoadSurfaceSystem::signed_polygon_area_xz(&region.polygon.points_world),
+                region.polygon.points_world.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        piece
-            .owned_regions
-            .iter()
-            .all(|region| RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world)),
-        "owned node regions must be non-degenerate before triangulation"
+        degenerate_owned_regions.is_empty(),
+        "owned node regions must be non-degenerate before triangulation; degenerate_owned_regions={degenerate_owned_regions:?}"
     );
     assert_node_top_surface_sources_have_grade_authority(piece);
     assert_node_terrain_clip_sources_have_footprint_provenance(piece);

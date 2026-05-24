@@ -99,6 +99,7 @@ fn generated_contact_rejects_non_exact_owner_pair_authority() {
     append_generated_same_band_contact_constraints(
         RoadSurfaceVisualNodePieceKind::Bend,
         &contours,
+        constraints.len(),
         &mut constraints,
     );
 
@@ -162,6 +163,7 @@ fn bend_side_join_point_contact_reowns_exact_source_rail_by_band_kind() {
     append_source_authorized_raised_step_point_contacts(
         RoadSurfaceVisualNodePieceKind::JunctionN,
         &contours,
+        junction_constraints.len(),
         &mut junction_constraints,
     );
     assert!(!junction_constraints.iter().any(|constraint| {
@@ -177,6 +179,7 @@ fn bend_side_join_point_contact_reowns_exact_source_rail_by_band_kind() {
     append_source_authorized_raised_step_point_contacts(
         RoadSurfaceVisualNodePieceKind::Bend,
         &contours,
+        constraints.len(),
         &mut constraints,
     );
 
@@ -211,6 +214,284 @@ fn bend_side_join_point_contact_reowns_exact_source_rail_by_band_kind() {
 }
 
 #[test]
+fn junction_mouth_band_point_contact_reowns_exact_source_endpoint_by_band_kind() {
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 7);
+    let source_sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let target_sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 6);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        0,
+        Some(2),
+        Some(target_sidewalk_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("target sidewalk contour is valid");
+    constraints.push(NodeRailConstraint {
+        constraint_index: constraints.len(),
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(2),
+        source_boundary_index: Some(1),
+        owner: Some(curb_owner),
+        opposite_owner: Some(source_sidewalk_owner),
+        points_xz: vec![RoadVec2::new(-1.0, 0.0), RoadVec2::new(0.0, 0.0)],
+    });
+
+    append_source_authorized_raised_step_point_contacts(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &contours,
+        constraints.len(),
+        &mut constraints,
+    );
+
+    let point = road_point_key(RoadVec2::new(0.0, 0.0));
+    assert!(constraints.iter().any(|constraint| {
+        constraint.kind == NodeRailConstraintKind::RaisedStepContact
+            && owners_match_unordered(
+                constraint.owner,
+                constraint.opposite_owner,
+                curb_owner,
+                target_sidewalk_owner,
+            )
+            && constraint.points_xz.len() == 2
+            && road_point_key(constraint.points_xz[0]) == point
+            && road_point_key(constraint.points_xz[1]) == point
+    }));
+}
+
+#[test]
+fn junction_mouth_band_edge_contact_reowns_exact_source_rail_by_band_kind() {
+    let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let source_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let target_curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 2);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(1),
+        Some(target_curb_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(2.0, 0.5),
+            RoadVec2::new(4.0, 0.5),
+            RoadVec2::new(4.0, 1.5),
+            RoadVec2::new(2.0, 1.5),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("target curb mouth-band contour is valid");
+    constraints.push(NodeRailConstraint {
+        constraint_index: constraints.len(),
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(1),
+        source_boundary_index: Some(1),
+        owner: Some(asphalt_owner),
+        opposite_owner: Some(source_curb_owner),
+        points_xz: vec![RoadVec2::new(0.0, 1.0), RoadVec2::new(4.0, 1.0)],
+    });
+
+    append_source_authorized_raised_step_point_contacts(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &contours,
+        constraints.len(),
+        &mut constraints,
+    );
+
+    let start = road_point_key(RoadVec2::new(2.0, 1.0));
+    let end = road_point_key(RoadVec2::new(4.0, 1.0));
+    assert!(constraints.iter().any(|constraint| {
+        constraint.kind == NodeRailConstraintKind::RaisedStepContact
+            && owners_match_unordered(
+                constraint.owner,
+                constraint.opposite_owner,
+                asphalt_owner,
+                target_curb_owner,
+            )
+            && constraint.points_xz.len() == 2
+            && GeneratedContourEdgeKey::new(
+                road_point_key(constraint.points_xz[0]),
+                road_point_key(constraint.points_xz[1]),
+            ) == GeneratedContourEdgeKey::new(start, end)
+    }));
+}
+
+#[test]
+fn same_material_point_contact_emits_height_split_constraint() {
+    let first_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let second_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(1),
+        Some(first_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(0.0, 1.0),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("first curb contour is valid");
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(4),
+        Some(second_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(-1.0, 0.0),
+            RoadVec2::new(0.0, -1.0),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("second curb contour is valid");
+
+    append_generated_same_band_contact_constraints(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &contours,
+        constraints.len(),
+        &mut constraints,
+    );
+
+    let point = road_point_key(RoadVec2::new(0.0, 0.0));
+    assert!(constraints.iter().any(|constraint| {
+        constraint.kind == NodeRailConstraintKind::RaisedStepContact
+            && owners_match_unordered(
+                constraint.owner,
+                constraint.opposite_owner,
+                first_owner,
+                second_owner,
+            )
+            && constraint.points_xz.len() == 2
+            && road_point_key(constraint.points_xz[0]) == point
+            && road_point_key(constraint.points_xz[1]) == point
+    }));
+}
+
+#[test]
+fn same_material_edge_contact_emits_height_split_constraint() {
+    let first_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let second_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(1),
+        Some(first_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("first curb contour is valid");
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(4),
+        Some(second_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, -1.0),
+            RoadVec2::new(0.0, -1.0),
+        ],
+        None,
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("second curb contour is valid");
+
+    append_generated_same_band_contact_constraints(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &contours,
+        constraints.len(),
+        &mut constraints,
+    );
+
+    let start = road_point_key(RoadVec2::new(0.0, 0.0));
+    let end = road_point_key(RoadVec2::new(1.0, 0.0));
+    assert!(constraints.iter().any(|constraint| {
+        constraint.kind == NodeRailConstraintKind::RaisedStepContact
+            && owners_match_unordered(
+                constraint.owner,
+                constraint.opposite_owner,
+                first_owner,
+                second_owner,
+            )
+            && constraint.points_xz.len() == 2
+            && GeneratedContourEdgeKey::new(
+                road_point_key(constraint.points_xz[0]),
+                road_point_key(constraint.points_xz[1]),
+            ) == GeneratedContourEdgeKey::new(start, end)
+    }));
+}
+
+#[test]
 fn source_authorized_point_contact_uses_deterministic_source_name() {
     let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
@@ -241,6 +522,7 @@ fn source_authorized_point_contact_uses_deterministic_source_name() {
     append_source_authorized_raised_step_point_contacts(
         RoadSurfaceVisualNodePieceKind::Bend,
         &[],
+        constraints.len(),
         &mut constraints,
     );
 

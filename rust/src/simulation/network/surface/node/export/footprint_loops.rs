@@ -1,4 +1,4 @@
-//! Footprint boundary loop export from final owned top-surface footprints.
+//! Footprint boundary loop export from the final boolean road-owned footprint.
 
 use super::super::{
     NodeOverlayShapes,
@@ -16,27 +16,6 @@ use godot::prelude::Vector3;
 use std::collections::BTreeSet;
 
 impl RoadSurfaceSystem {
-    pub(super) fn footprint_shapes_from_owned_regions(
-        owned_regions: &[super::NodeOwnedRegion],
-    ) -> Result<NodeOverlayShapes, NodeBoundaryExportError> {
-        let contours = owned_regions
-            .iter()
-            .map(|region| {
-                region
-                    .polygon
-                    .points_world
-                    .iter()
-                    .map(|point| [f64::from(point.x), f64::from(point.z)])
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let shapes = Self::overlay_union_contours(&contours)
-            .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)?;
-        (!shapes.is_empty())
-            .then_some(shapes)
-            .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
-    }
-
     pub(super) fn footprint_boundary_point_loops_from_footprint_shapes(
         footprint_shapes: &NodeOverlayShapes,
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
@@ -45,24 +24,7 @@ impl RoadSurfaceSystem {
         let mut emitted_loop_identities = BTreeSet::<Vec<ArrangementBoundaryPointKey>>::new();
         for shape in footprint_shapes {
             for contour in shape {
-                let mut points = Vec::with_capacity(contour.len());
-                for point in contour {
-                    let key = NodeArrangementKey::from_point(RoadVec2::new(point[0], point[1]));
-                    let Some(height_mm) = boundary_export_sources.boundary_height_mm_at_key(key)?
-                    else {
-                        return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                            x_key: key.x_key(),
-                            z_key: key.z_key(),
-                        });
-                    };
-                    points.push(NodeFootprintBoundaryPoint::new(
-                        ArrangementBoundaryPointKey {
-                            x_key: key.x_key(),
-                            z_key: key.z_key(),
-                            y_mm: height_mm,
-                        },
-                    ));
-                }
+                let points = footprint_boundary_xz_point_loop_from_contour(contour);
                 push_valid_footprint_boundary_point_loops(
                     points,
                     boundary_export_sources,
@@ -87,10 +49,10 @@ fn push_valid_footprint_boundary_point_loops(
     remove_subbudget_unsupported_numeric_boundary_vertices(
         &mut points,
         |current_point_key, local_points| {
-            boundary_export_sources
-                .has_exact_final_owned_footprint_boundary_support_at_point(current_point_key)
-                || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                    > boundary_points_numeric_area_budget_m2(&local_points)
+            boundary_export_sources.has_exact_final_owned_footprint_boundary_support_at_xz_key(
+                current_point_key.xz_key(),
+            ) || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                > boundary_points_numeric_area_budget_m2(&local_points)
         },
     );
     let points = canonicalize_footprint_boundary_point_loop(points);
@@ -108,23 +70,166 @@ fn push_valid_footprint_boundary_point_loops(
         {
             continue;
         }
-        if !emitted_loop_identities.insert(footprint_boundary_point_loop_identity(&split_points)) {
-            continue;
-        }
-        for point in &split_points {
-            boundary_export_sources.reject_boundary_vertex_height_conflict(point.xz_key())?;
-            if !boundary_export_sources
-                .has_exact_final_owned_footprint_boundary_support_at_point(point.point_key)
+        let heighted_points =
+            resolve_footprint_boundary_point_heights(split_points, boundary_export_sources)?;
+        for split_points in post_height_footprint_boundary_point_loops(heighted_points) {
+            if !emitted_loop_identities
+                .insert(footprint_boundary_point_loop_identity(&split_points))
             {
-                return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
-                    x_key: point.point_key.x_key,
-                    z_key: point.point_key.z_key,
-                });
+                continue;
             }
+            for index in 0..split_points.len() {
+                let point = split_points[index];
+                let previous_key = split_points[if index == 0 {
+                    split_points.len() - 1
+                } else {
+                    index - 1
+                }]
+                .xz_key();
+                let next_key = split_points[(index + 1) % split_points.len()].xz_key();
+                boundary_export_sources.boundary_height_mm_at_contour_key(
+                    point.xz_key(),
+                    previous_key,
+                    next_key,
+                )?;
+                if !boundary_export_sources
+                    .has_exact_final_owned_footprint_boundary_support_at_point(point.point_key)
+                {
+                    return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                        x_key: point.point_key.x_key,
+                        z_key: point.point_key.z_key,
+                    });
+                }
+            }
+            loops.push(split_points);
         }
-        loops.push(split_points);
     }
     Ok(())
+}
+
+fn footprint_boundary_xz_point_loop_from_contour(
+    contour: &[[f64; 2]],
+) -> Vec<NodeFootprintBoundaryPoint> {
+    contour
+        .iter()
+        .map(|point| {
+            let key = NodeArrangementKey::from_point(RoadVec2::new(point[0], point[1]));
+            NodeFootprintBoundaryPoint::new(ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: 0,
+            })
+        })
+        .collect()
+}
+
+fn resolve_footprint_boundary_point_heights(
+    points: Vec<NodeFootprintBoundaryPoint>,
+    boundary_export_sources: &NodeFootprintBoundaryExportSources,
+) -> Result<Vec<NodeFootprintBoundaryPoint>, NodeBoundaryExportError> {
+    let mut resolved = Vec::with_capacity(points.len());
+    for index in 0..points.len() {
+        let point = points[index];
+        let key = point.xz_key();
+        let previous_key = points[if index == 0 {
+            points.len() - 1
+        } else {
+            index - 1
+        }]
+        .xz_key();
+        let next_key = points[(index + 1) % points.len()].xz_key();
+        let Some(height_mm) = boundary_export_sources.boundary_height_mm_at_contour_key(
+            key,
+            previous_key,
+            next_key,
+        )?
+        else {
+            return Err(NodeBoundaryExportError::MissingFootprintBoundaryHeight {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+            });
+        };
+        resolved.push(NodeFootprintBoundaryPoint::new(
+            ArrangementBoundaryPointKey {
+                x_key: key.x_key(),
+                z_key: key.z_key(),
+                y_mm: height_mm,
+            },
+        ));
+    }
+    Ok(canonicalize_footprint_boundary_point_loop(resolved))
+}
+
+fn post_height_footprint_boundary_point_loops(
+    points: Vec<NodeFootprintBoundaryPoint>,
+) -> Vec<Vec<NodeFootprintBoundaryPoint>> {
+    same_winding_boundary_point_loops_from_loop(&points)
+        .into_iter()
+        .flat_map(|points| {
+            let mut points = canonicalize_footprint_boundary_point_loop(points);
+            remove_subbudget_same_xz_footprint_boundary_vertices(&mut points);
+            points = canonicalize_footprint_boundary_point_loop(points);
+            same_winding_boundary_point_loops_from_loop(&points)
+        })
+        .filter_map(|mut points| {
+            remove_subbudget_same_xz_footprint_boundary_vertices(&mut points);
+            let points = canonicalize_footprint_boundary_point_loop(points);
+            if points.len() < 3 {
+                return None;
+            }
+            if signed_footprint_boundary_point_loop_area_xz(&points).abs()
+                <= footprint_boundary_point_loop_numeric_area_budget_m2(&points)
+            {
+                return None;
+            }
+            Some(points)
+        })
+        .collect()
+}
+
+fn remove_subbudget_same_xz_footprint_boundary_vertices(
+    points: &mut Vec<NodeFootprintBoundaryPoint>,
+) {
+    loop {
+        if points.len() < 4 {
+            return;
+        }
+        let mut removed = false;
+        for index in 0..points.len() {
+            let previous = if index == 0 {
+                points.len() - 1
+            } else {
+                index - 1
+            };
+            let next = if index + 1 == points.len() {
+                0
+            } else {
+                index + 1
+            };
+            if points[previous].xz_key() != points[index].xz_key()
+                && points[index].xz_key() != points[next].xz_key()
+                && points[previous].xz_key() != points[next].xz_key()
+            {
+                continue;
+            }
+            let local_points = [
+                points[previous].point_world(),
+                points[index].point_world(),
+                points[next].point_world(),
+            ];
+            if RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                > boundary_points_numeric_area_budget_m2(&local_points)
+            {
+                continue;
+            }
+            points.remove(index);
+            removed = true;
+            break;
+        }
+        if !removed {
+            return;
+        }
+    }
 }
 
 fn canonicalize_footprint_boundary_point_loop(

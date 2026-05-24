@@ -17,12 +17,10 @@ mod rail_paths;
 
 pub(in crate::simulation::network::surface::node::ownership) use canonicalization::{
     canonicalize_final_owned_region_boundary_edges, canonicalize_owned_region_rings,
-    canonicalize_owned_region_rings_with_rail_point_set, owned_region_global_points,
+    canonicalize_owned_region_rings_with_rail_point_set,
 };
+pub(in crate::simulation::network::surface::node::ownership) use edges::dedup_consecutive_overlay_points;
 #[cfg(test)]
 use edges::noded_owned_region_edge_points_with_rail_paths;
-pub(in crate::simulation::network::surface::node::ownership) use edges::{
-    dedup_consecutive_overlay_points, noded_owned_region_edge_points,
-};
 use edges::{noded_owned_region_contour, noded_owned_region_contour_with_rail_paths};
 use rail_paths::rail_path_points_between;
