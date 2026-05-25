@@ -188,15 +188,18 @@ section says whether the runtime has reached it yet.
   instead of an opaque Rust debug blob. Missing source rails, missing carrier provenance, missing
   carrier support, rejected residuals, open boundaries, duplicate exposed edges, non-explicit
   boundary vertices, ambiguous carrier provenance, and source-segment height-support failures now
-  have focused diagnostic coverage. Generated 4-way `JunctionN`, arbitrary `N > 4`, and exact
-  canonical raw-polygon identity checks remain the next ROAD-01 conflict-matrix expansion.
+  have focused diagnostic coverage. Exact canonical raw-polygon identity helpers now compare
+  exported top polygons by canonical raw keys / height fields / grade authorities plus
+  carrier-provenance closure records, with an initial generated 3-way equivalent-edit-order seed.
+  Generated 4-way `JunctionN`, arbitrary `N > 4`, and broader raw-polygon identity coverage remain
+  the next ROAD-01 conflict-matrix expansion.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
 ### Open ROAD-01 Work
 
 - extend the conflict-first Bend / JunctionN test matrix from generated flat and elevated Bend /
-  3-way cases to 4-way, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
+  3-way cases to 4-way, arbitrary `N > 4`, and broader exact canonical raw-polygon identity checks
 - complete terrain / road agreement tests for authored and extreme DEM cases, including retaining
   wall and widened tie-in combinations
 - keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
@@ -229,8 +232,8 @@ Target invariant:
 - keep expanding focused diagnostics for missing source rails, missing carrier support, rejected
   residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
   ambiguous carrier provenance
-- generated 4-way `JunctionN`, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
-  remain the next conflict-matrix expansion
+- generated 4-way `JunctionN`, arbitrary `N > 4`, and broader exact canonical raw-polygon identity
+  checks remain the next conflict-matrix expansion
 
 Data ownership:
 
@@ -320,6 +323,9 @@ Implementation phases:
    Once hilly 3-way junctions pass without repair fallbacks, add generated 4-way `JunctionN`,
    arbitrary `N > 4`, and exact canonical raw-polygon identity checks. These tests must compare
    canonical keys / stable IDs, not float coordinate equality.
+   **Seeded:** exact raw-polygon identity helpers now compare canonical top-polygon keys, height
+   fields, grade authorities, and carrier-provenance closure records. A generated flat 3-way
+   equivalent-edit-order test uses this path; 4-way / arbitrary-N expansion remains open.
 
 Performance rule:
 
