@@ -1,6 +1,5 @@
 //! Height-carrier materialization from explicit node carrier provenance.
 
-use super::super::super::super::segments::raw_tuple_key_lies_on_segment;
 use super::super::super::contours::height_for_key_on_generated_edge;
 use super::super::super::geometry::road_point_key;
 use super::super::super::topology::NodeRailPointKey;
@@ -14,6 +13,7 @@ use super::super::collection::{
 };
 use crate::simulation::network::surface::keys::SurfaceXzKey;
 use crate::simulation::network::surface::node::backend::{RoadVec3, road_vec3_xz as xz};
+use crate::simulation::network::surface::node::height::constrained_height_triangles_from_vertices;
 use crate::simulation::network::surface::node::ownership::{
     NodeBooleanOwnership, NodeCarrierProvenanceOrigin, NodeSourceCarrierSegmentId,
 };
@@ -81,13 +81,6 @@ fn height_for_carrier_provenance(
                 source_segment_id,
             )?
             else {
-                if generated_contour_with_source_contains_point(
-                    rails,
-                    source_segment_id,
-                    canonical_point,
-                ) {
-                    return Ok(None);
-                }
                 return Err(NodeRailGenerationError::MissingCarrierProvenanceHeight {
                     kind: source.0,
                     mouth_order_index: source.1,
@@ -100,9 +93,33 @@ fn height_for_carrier_provenance(
             Ok(Some(height_m))
         }
         NodeCarrierProvenanceOrigin::SourceIntersection { .. }
-        | NodeCarrierProvenanceOrigin::GeneratedCarrierVertex { .. }
-        | NodeCarrierProvenanceOrigin::GeneratedCarrierSurface { .. } => Ok(None),
+        | NodeCarrierProvenanceOrigin::GeneratedCarrierVertex { .. } => Ok(None),
+        NodeCarrierProvenanceOrigin::GeneratedCarrierSurface { contour_index, .. } => Ok(
+            height_for_generated_carrier_surface(point, contour_index, rails),
+        ),
     }
+}
+
+fn height_for_generated_carrier_surface(
+    point: NodeRailPointKey,
+    contour_index: usize,
+    rails: &NodeRailContourSet,
+) -> Option<f64> {
+    let contour = rails.contours.get(contour_index)?;
+    let triangles =
+        constrained_height_triangles_from_vertices(contour.height_points_world.as_ref()?).ok()?;
+    let point_xz = SurfaceXzKey::from_raw_tuple(point).to_road_xz();
+    let mut heights = triangles
+        .iter()
+        .filter_map(|triangle| triangle.height_at(point_xz))
+        .collect::<Vec<_>>();
+    heights.sort_by_key(|height| {
+        crate::simulation::network::surface::keys::SurfaceHeightMmKey::from_m_f64(*height)
+    });
+    heights.dedup_by_key(|height| {
+        crate::simulation::network::surface::keys::SurfaceHeightMmKey::from_m_f64(*height)
+    });
+    (heights.len() == 1).then_some(heights[0])
 }
 
 fn height_for_explicit_source_segment(
@@ -258,68 +275,6 @@ fn height_for_segment_from_generated_contours(
         .next()
 }
 
-fn generated_contour_with_source_contains_point(
-    rails: &NodeRailContourSet,
-    source_segment_id: NodeSourceCarrierSegmentId,
-    point: NodeRailPointKey,
-) -> bool {
-    rails.contours.iter().any(|contour| {
-        contour.owner == Some(source_segment_id.owner)
-            && contour.source_mouth_order_index == source_segment_id.source_mouth_order_index
-            && contour.source_band_index == Some(source_segment_id.source_band_index)
-            && contour.height_points_world.is_some()
-            && matches!(
-                contour.kind,
-                NodeGeneratedContourKind::Band { kind }
-                    if kind == source_segment_id.source_kind
-            )
-            && key_polygon_contains_point(
-                &contour
-                    .points_xz
-                    .iter()
-                    .copied()
-                    .map(road_point_key)
-                    .collect::<Vec<_>>(),
-                point,
-            )
-    })
-}
-
-fn key_polygon_contains_point(polygon: &[NodeRailPointKey], point: NodeRailPointKey) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    for edge in polygon.windows(2) {
-        if raw_tuple_key_lies_on_segment(point, edge[0], edge[1]) {
-            return true;
-        }
-    }
-    if let (Some(first), Some(last)) = (polygon.first().copied(), polygon.last().copied())
-        && raw_tuple_key_lies_on_segment(point, last, first)
-    {
-        return true;
-    }
-
-    let px = point.0 as f64;
-    let pz = point.1 as f64;
-    let mut inside = false;
-    for index in 0..polygon.len() {
-        let start = polygon[index];
-        let end = polygon[(index + 1) % polygon.len()];
-        let start_z = start.1 as f64;
-        let end_z = end.1 as f64;
-        if (start_z > pz) == (end_z > pz) {
-            continue;
-        }
-        let edge_x_at_point_z =
-            (end.0 - start.0) as f64 * (pz - start_z) / (end_z - start_z) + start.0 as f64;
-        if px < edge_x_at_point_z {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
 fn height_for_segment_from_source_paths(
     point: NodeRailPointKey,
     segment_start: NodeRailPointKey,
@@ -386,7 +341,9 @@ mod tests {
     use super::*;
     use crate::simulation::network::surface::node::arrangement::NodeBandOwner;
     use crate::simulation::network::surface::node::backend::RoadVec2;
-    use crate::simulation::network::surface::node::ownership::NodeOwnedRegionArrangementKey;
+    use crate::simulation::network::surface::node::ownership::{
+        NodeOwnedRegionArrangementKey, NodeSourceCarrierRegistry,
+    };
     use crate::simulation::network::surface::{
         RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
     };
@@ -425,6 +382,7 @@ mod tests {
             }],
             height_carrier_paths_by_source: BTreeMap::new(),
             height_carrier_points_by_source: BTreeMap::new(),
+            source_carriers: NodeSourceCarrierRegistry::default(),
         };
         let mut heights_by_key = BTreeMap::new();
         heights_by_key.insert(road_point_key(RoadVec2::new(0.0, 0.0)), 10.0);

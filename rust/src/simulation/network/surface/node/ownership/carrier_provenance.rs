@@ -1,14 +1,18 @@
 //! Node-local carrier provenance closure for boolean-owned region vertices.
 
-use super::rail_authority::{NodeRailCanonicalPointSet, NodeRailSourceSegmentAuthority};
+use super::rail_authority::{
+    NodeRailCanonicalPointSet, NodeRailSourceSegmentAuthority, NodeRailSourceSegmentMaterialization,
+};
 use super::topology_keys::{
-    NodeOwnershipPointKey, OwnedRegionEdgeKey, ownership_key_from_overlay_point,
-    ownership_key_from_road_point, ownership_mm_key, point_key_lies_on_segment,
+    NodeOwnershipPointKey, ownership_key_from_overlay_point, ownership_key_from_road_point,
+    ownership_mm_key, point_key_lies_on_segment,
 };
 use super::*;
-use crate::simulation::network::surface::node::backend::road_vec3_xz;
+use crate::simulation::network::surface::keys::SurfaceHeightMmKey;
+use crate::simulation::network::surface::node::backend::{RoadVec3, road_vec3_xz};
 use crate::simulation::network::surface::node::rails::{
-    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailHeightCarrierPaths,
+    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailConstraint, NodeRailConstraintKind,
+    NodeRailHeightCarrierPaths,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +29,6 @@ pub(super) struct NodeCarrierProvenanceContext<'a> {
     source_height_points: BTreeMap<NodeCarrierSourceKey, BTreeSet<NodeOwnershipPointKey>>,
     final_point_contexts: BTreeMap<NodeOwnershipPointKey, Vec<NodeCarrierPointContext>>,
     rails: &'a NodeRailContourSet,
-    paths_by_source: &'a BTreeMap<NodeCarrierSourceKey, NodeRailHeightCarrierPaths>,
     rail_points: &'a NodeRailCanonicalPointSet,
 }
 
@@ -38,7 +41,6 @@ impl<'a> NodeCarrierProvenanceContext<'a> {
             source_height_points: source_height_points_by_key(rails),
             final_point_contexts: BTreeMap::new(),
             rails,
-            paths_by_source: &rails.height_carrier_paths_by_source,
             rail_points,
         }
     }
@@ -52,7 +54,6 @@ impl<'a> NodeCarrierProvenanceContext<'a> {
             source_height_points: source_height_points_by_key(rails),
             final_point_contexts: final_point_contexts_by_key(regions),
             rails,
-            paths_by_source: &rails.height_carrier_paths_by_source,
             rail_points,
         }
     }
@@ -67,6 +68,7 @@ impl<'a> NodeCarrierProvenanceContext<'a> {
             region.kind,
             region.source_mouth_order_index,
             region.source_band_index,
+            region.claim_priority,
             point,
         )
     }
@@ -77,6 +79,7 @@ impl<'a> NodeCarrierProvenanceContext<'a> {
         kind: RoadSurfaceBandKind,
         source_mouth_order_index: usize,
         source_band_index: Option<usize>,
+        claim_priority: NodeGeneratedContourClaimPriority,
         point: NodeOwnershipPointKey,
     ) -> Result<Option<NodeCarrierProvenanceOrigin>, NodeBooleanOwnershipError> {
         let Some(source_band_index) = source_band_index else {
@@ -85,11 +88,11 @@ impl<'a> NodeCarrierProvenanceContext<'a> {
         provenance_origin_for_point(
             owner,
             (kind, source_mouth_order_index, source_band_index),
+            claim_priority,
             point,
             &self.source_height_points,
             &self.final_point_contexts,
             self.rails,
-            self.paths_by_source,
             self.rail_points,
         )
     }
@@ -231,11 +234,11 @@ fn owned_region_support_point_keys(region: &NodeBooleanOwnedRegion) -> Vec<NodeO
 fn provenance_origin_for_point(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     source_height_points: &BTreeMap<NodeCarrierSourceKey, BTreeSet<NodeOwnershipPointKey>>,
     final_point_contexts: &BTreeMap<NodeOwnershipPointKey, Vec<NodeCarrierPointContext>>,
     rails: &NodeRailContourSet,
-    paths_by_source: &BTreeMap<NodeCarrierSourceKey, NodeRailHeightCarrierPaths>,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<Option<NodeCarrierProvenanceOrigin>, NodeBooleanOwnershipError> {
     if source_height_points
@@ -244,64 +247,110 @@ fn provenance_origin_for_point(
     {
         return Ok(Some(NodeCarrierProvenanceOrigin::SourceVertex));
     }
-    if let Some(origin) = generated_carrier_vertex_origin(owner, source, point, rails) {
+    if let Some(origin) =
+        generated_carrier_vertex_origin(owner, source, claim_priority, point, rails)
+    {
         return Ok(Some(origin));
     }
-    match source_segment_provenance_for_point(owner, source, point, paths_by_source, rail_points) {
+    if let Some(origin) = source_intersection_origin(
+        owner,
+        source,
+        claim_priority,
+        point,
+        final_point_contexts,
+        rails,
+    ) {
+        return Ok(Some(origin));
+    }
+    match source_segment_provenance_for_point(
+        owner,
+        source,
+        claim_priority,
+        point,
+        source_height_points,
+        rails,
+        rail_points,
+    ) {
         Ok(Some(origin)) => return Ok(Some(origin)),
         Ok(None) => {}
         Err(error) => return Err(error),
     }
-    if let Some(origin) =
-        source_intersection_origin(owner, source, point, final_point_contexts, rails)
-    {
-        return Ok(Some(origin));
-    }
     Ok(generated_carrier_surface_origin(
-        owner, source, point, rails,
+        owner,
+        source,
+        claim_priority,
+        point,
+        rails,
     ))
 }
 
 fn source_segment_provenance_for_point(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
-    paths_by_source: &BTreeMap<NodeCarrierSourceKey, NodeRailHeightCarrierPaths>,
+    source_height_points: &BTreeMap<NodeCarrierSourceKey, BTreeSet<NodeOwnershipPointKey>>,
+    rails: &NodeRailContourSet,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<Option<NodeCarrierProvenanceOrigin>, NodeBooleanOwnershipError> {
-    let mut candidates = rail_points
+    let source_authorities = rail_points
+        .source_carriers
         .source_segments_by_owner
         .get(&owner)
         .into_iter()
         .flatten()
         .filter(|authority| authority.source == source)
-        .filter_map(|authority| source_segment_authorization_candidate(point, *authority))
+        .filter(|authority| {
+            authority.materialization == NodeRailSourceSegmentMaterialization::DirectHeight
+        })
+        .copied()
         .collect::<Vec<_>>();
-    candidates.extend(source_path_segment_authorization_candidates(
-        point,
-        owner,
-        source,
-        paths_by_source,
-    ));
+    let endpoint_degrees = source_segment_authority_endpoint_degrees(&source_authorities);
+    let mut candidates = source_authorities
+        .iter()
+        .copied()
+        .filter_map(|authority| source_segment_authorization_candidate(point, authority))
+        .filter(|candidate| {
+            source_segment_candidate_has_height_support(
+                candidate,
+                source,
+                source_height_points,
+                rails,
+            )
+        })
+        .collect::<Vec<_>>();
     candidates.sort_unstable();
     candidates.dedup();
     if candidates.is_empty() {
         return Ok(None);
     }
-    let mut canonical_points = candidates
-        .iter()
-        .map(|candidate| candidate.canonical_point)
-        .collect::<Vec<_>>();
-    canonical_points.sort_unstable();
-    canonical_points.dedup();
-    if let Some(candidate) = on_carrier_candidate_for_point(point, &candidates) {
-        return Ok(Some(source_segment_origin(candidate)));
-    }
-    if canonical_points.len() == 1 {
+    if candidates.len() == 1 {
         return Ok(Some(source_segment_origin(candidates[0])));
     }
-    if let Some(candidate) = connected_endpoint_cluster_candidate(point, &candidates) {
+    if let Some(candidate) = collinear_duplicate_carrier_candidate(point, &candidates) {
         return Ok(Some(source_segment_origin(candidate)));
+    }
+    if let Some(candidate) = source_intersection_with_connected_secondary_cluster_candidate(
+        point,
+        &candidates,
+        &endpoint_degrees,
+    ) {
+        return Ok(Some(source_segment_origin(candidate)));
+    }
+    if let Some(candidate) =
+        connected_endpoint_cluster_candidate(point, &candidates, &endpoint_degrees)
+    {
+        return Ok(Some(source_segment_origin(candidate)));
+    }
+    if let Some(origin) = generated_source_carrier_intersection_origin(
+        owner,
+        source,
+        claim_priority,
+        point,
+        &candidates,
+        rails,
+    ) {
+        return Ok(Some(origin));
     }
     Err(
         NodeBooleanOwnershipError::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex {
@@ -316,24 +365,423 @@ fn source_segment_provenance_for_point(
     )
 }
 
-fn on_carrier_candidate_for_point(
+fn generated_source_carrier_intersection_origin(
+    owner: NodeBandOwner,
+    source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
-) -> Option<NodeSourceSegmentAuthorizationCandidate> {
-    let mut on_carrier = candidates
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.canonical_point == point)
-        .collect::<Vec<_>>();
-    if on_carrier.is_empty()
+    rails: &NodeRailContourSet,
+) -> Option<NodeCarrierProvenanceOrigin> {
+    if candidates.len() < 2
+        || !generated_source_surface_contains_point(owner, source, claim_priority, point, rails)
         || !candidates
             .iter()
             .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+        || !source_carrier_intersection_heights_match(source, candidates, rails)
     {
         return None;
     }
-    on_carrier.sort_unstable();
-    on_carrier.first().copied()
+    Some(NodeCarrierProvenanceOrigin::SourceIntersection {
+        peer_count: candidates.len(),
+    })
+}
+
+fn source_carrier_intersection_heights_match(
+    source: NodeCarrierSourceKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+    rails: &NodeRailContourSet,
+) -> bool {
+    let mut height_keys = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let Some(height_m) = source_segment_candidate_height(source, candidate, rails) else {
+            return false;
+        };
+        height_keys.push(SurfaceHeightMmKey::from_m_f64(height_m));
+    }
+    let Some(reference) = height_keys.first().copied() else {
+        return false;
+    };
+    height_keys.iter().all(|height| *height == reference)
+}
+
+fn source_segment_candidate_height(
+    source: NodeCarrierSourceKey,
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    rails: &NodeRailContourSet,
+) -> Option<f64> {
+    let source_point_heights = source_point_heights_by_key(source, rails)?;
+    if let Some(height_m) = height_for_keyed_segment(
+        candidate.canonical_point,
+        candidate.segment_start,
+        candidate.segment_end,
+        &source_point_heights,
+    ) {
+        return Some(height_m);
+    }
+    if let Some(paths) = rails.height_carrier_paths_by_source.get(&source)
+        && let Some(height_m) = height_from_source_paths(candidate, paths)
+    {
+        return Some(height_m);
+    }
+    if let Some(height_m) = height_from_source_constraints(candidate, rails, &source_point_heights)
+    {
+        return Some(height_m);
+    }
+    height_from_generated_contours(candidate, rails)
+}
+
+fn source_point_heights_by_key(
+    source: NodeCarrierSourceKey,
+    rails: &NodeRailContourSet,
+) -> Option<BTreeMap<NodeOwnershipPointKey, f64>> {
+    let mut heights_by_key = BTreeMap::new();
+    for point in rails.height_carrier_points_by_source.get(&source)? {
+        let key = ownership_key_from_road_point(road_vec3_xz(*point));
+        if let Some(existing) = heights_by_key.get(&key).copied()
+            && SurfaceHeightMmKey::from_m_f64(existing) != SurfaceHeightMmKey::from_m_f64(point.y)
+        {
+            return None;
+        }
+        heights_by_key.insert(key, point.y);
+    }
+    Some(heights_by_key)
+}
+
+fn height_for_keyed_segment(
+    point: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+    heights_by_key: &BTreeMap<NodeOwnershipPointKey, f64>,
+) -> Option<f64> {
+    let start_height_m = heights_by_key.get(&segment_start).copied()?;
+    let end_height_m = heights_by_key.get(&segment_end).copied()?;
+    height_on_key_segment(
+        point,
+        segment_start,
+        segment_end,
+        start_height_m,
+        end_height_m,
+    )
+}
+
+fn height_from_source_paths(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    paths: &NodeRailHeightCarrierPaths,
+) -> Option<f64> {
+    let mut path = Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
+    path.extend(paths.start_path_world.iter().copied());
+    path.extend(paths.end_path_world.iter().rev().copied());
+    height_from_world_path(candidate, &path, true)
+}
+
+fn height_from_source_constraints(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    rails: &NodeRailContourSet,
+    heights_by_key: &BTreeMap<NodeOwnershipPointKey, f64>,
+) -> Option<f64> {
+    rails
+        .constraints
+        .iter()
+        .filter(|constraint| source_constraint_matches_candidate(candidate, constraint))
+        .filter_map(|constraint| {
+            let path = constraint
+                .points_xz
+                .iter()
+                .copied()
+                .map(ownership_key_from_road_point)
+                .collect::<Vec<_>>();
+            let segment_index = path.windows(2).position(|segment| {
+                segment_matches_keys(
+                    segment[0],
+                    segment[1],
+                    candidate.segment_start,
+                    candidate.segment_end,
+                )
+            })?;
+            height_from_supported_path_segment(
+                candidate.canonical_point,
+                &path,
+                heights_by_key,
+                segment_index,
+            )
+        })
+        .next()
+}
+
+fn source_constraint_matches_candidate(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    constraint.kind != NodeRailConstraintKind::RaisedStepContact
+        && constraint.source_mouth_order_index == candidate.source_mouth_order_index
+        && constraint.source_band_index == Some(candidate.source_band_index)
+        && [constraint.owner, constraint.opposite_owner]
+            .contains(&Some(candidate.source_segment_id.owner))
+        && candidate.source_segment_id.owner.kind() == candidate.source_kind
+}
+
+fn height_from_supported_path_segment(
+    point: NodeOwnershipPointKey,
+    path: &[NodeOwnershipPointKey],
+    heights_by_key: &BTreeMap<NodeOwnershipPointKey, f64>,
+    segment_index: usize,
+) -> Option<f64> {
+    let (start, start_height_m) = (0..=segment_index).rev().find_map(|candidate_index| {
+        let point = path[candidate_index];
+        heights_by_key
+            .get(&point)
+            .copied()
+            .map(|height| (point, height))
+    })?;
+    let (end, end_height_m) = (segment_index + 1..path.len()).find_map(|candidate_index| {
+        let point = path[candidate_index];
+        heights_by_key
+            .get(&point)
+            .copied()
+            .map(|height| (point, height))
+    })?;
+    height_on_key_segment(point, start, end, start_height_m, end_height_m)
+}
+
+fn height_from_generated_contours(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    rails: &NodeRailContourSet,
+) -> Option<f64> {
+    rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            generated_contour_matches_source(
+                candidate.source_segment_id.owner,
+                (
+                    candidate.source_kind,
+                    candidate.source_mouth_order_index,
+                    candidate.source_band_index,
+                ),
+                contour,
+            )
+        })
+        .filter_map(|contour| {
+            height_from_world_path(candidate, contour.height_points_world.as_deref()?, true)
+        })
+        .next()
+}
+
+fn height_from_world_path(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    path: &[RoadVec3],
+    closed: bool,
+) -> Option<f64> {
+    for segment in path.windows(2) {
+        if world_segment_matches_candidate(candidate, segment[0], segment[1]) {
+            return height_on_world_segment(candidate.canonical_point, segment[0], segment[1]);
+        }
+    }
+    if closed
+        && path.len() > 2
+        && let (Some(start), Some(end)) = (path.last().copied(), path.first().copied())
+        && world_segment_matches_candidate(candidate, start, end)
+    {
+        return height_on_world_segment(candidate.canonical_point, start, end);
+    }
+    None
+}
+
+fn world_segment_matches_candidate(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    start: RoadVec3,
+    end: RoadVec3,
+) -> bool {
+    segment_matches_keys(
+        ownership_key_from_road_point(road_vec3_xz(start)),
+        ownership_key_from_road_point(road_vec3_xz(end)),
+        candidate.segment_start,
+        candidate.segment_end,
+    )
+}
+
+fn height_on_world_segment(
+    point: NodeOwnershipPointKey,
+    start: RoadVec3,
+    end: RoadVec3,
+) -> Option<f64> {
+    height_on_key_segment(
+        point,
+        ownership_key_from_road_point(road_vec3_xz(start)),
+        ownership_key_from_road_point(road_vec3_xz(end)),
+        start.y,
+        end.y,
+    )
+}
+
+fn height_on_key_segment(
+    point: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+    start_height_m: f64,
+    end_height_m: f64,
+) -> Option<f64> {
+    if segment_start == segment_end || !point_key_lies_on_segment(point, segment_start, segment_end)
+    {
+        return None;
+    }
+    let dx = segment_end.0 - segment_start.0;
+    let dz = segment_end.1 - segment_start.1;
+    let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
+    if denominator == 0 {
+        return None;
+    }
+    let numerator = if dx.abs() >= dz.abs() {
+        point.0 - segment_start.0
+    } else {
+        point.1 - segment_start.1
+    };
+    let t = numerator as f64 / denominator as f64;
+    Some(start_height_m + (end_height_m - start_height_m) * t)
+}
+
+fn source_segment_candidate_has_height_support(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    source: NodeCarrierSourceKey,
+    source_height_points: &BTreeMap<NodeCarrierSourceKey, BTreeSet<NodeOwnershipPointKey>>,
+    rails: &NodeRailContourSet,
+) -> bool {
+    source_height_points.get(&source).is_some_and(|points| {
+        points.contains(&candidate.segment_start) && points.contains(&candidate.segment_end)
+    }) || source_height_paths_contain_segment(
+        source,
+        candidate.segment_start,
+        candidate.segment_end,
+        rails,
+    ) || generated_height_contours_contain_segment(candidate, rails)
+        || source_constraints_contain_supported_segment(candidate, source_height_points, rails)
+}
+
+fn source_height_paths_contain_segment(
+    source: NodeCarrierSourceKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+    rails: &NodeRailContourSet,
+) -> bool {
+    let Some(paths) = rails.height_carrier_paths_by_source.get(&source) else {
+        return false;
+    };
+    let mut path = Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
+    path.extend(
+        paths
+            .start_path_world
+            .iter()
+            .copied()
+            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
+    );
+    path.extend(
+        paths
+            .end_path_world
+            .iter()
+            .rev()
+            .copied()
+            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
+    );
+    path_contains_segment(&path, segment_start, segment_end, true)
+}
+
+fn generated_height_contours_contain_segment(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    rails: &NodeRailContourSet,
+) -> bool {
+    rails.contours.iter().any(|contour| {
+        generated_contour_matches_source(
+            candidate.source_segment_id.owner,
+            (
+                candidate.source_kind,
+                candidate.source_mouth_order_index,
+                candidate.source_band_index,
+            ),
+            contour,
+        ) && contour.height_points_world.as_ref().is_some_and(|points| {
+            let path = points
+                .iter()
+                .copied()
+                .map(|point| ownership_key_from_road_point(road_vec3_xz(point)))
+                .collect::<Vec<_>>();
+            path_contains_segment(&path, candidate.segment_start, candidate.segment_end, true)
+        })
+    })
+}
+
+fn source_constraints_contain_supported_segment(
+    candidate: &NodeSourceSegmentAuthorizationCandidate,
+    source_height_points: &BTreeMap<NodeCarrierSourceKey, BTreeSet<NodeOwnershipPointKey>>,
+    rails: &NodeRailContourSet,
+) -> bool {
+    let source = (
+        candidate.source_kind,
+        candidate.source_mouth_order_index,
+        candidate.source_band_index,
+    );
+    let Some(height_points) = source_height_points.get(&source) else {
+        return false;
+    };
+    rails.constraints.iter().any(|constraint| {
+        constraint.source_mouth_order_index == candidate.source_mouth_order_index
+            && constraint.source_band_index == Some(candidate.source_band_index)
+            && [constraint.owner, constraint.opposite_owner]
+                .contains(&Some(candidate.source_segment_id.owner))
+            && candidate.source_segment_id.owner.kind() == candidate.source_kind
+            && {
+                let path = constraint
+                    .points_xz
+                    .iter()
+                    .copied()
+                    .map(ownership_key_from_road_point)
+                    .collect::<Vec<_>>();
+                path.windows(2).enumerate().any(|(index, segment)| {
+                    segment_matches_keys(
+                        segment[0],
+                        segment[1],
+                        candidate.segment_start,
+                        candidate.segment_end,
+                    ) && path[..=index]
+                        .iter()
+                        .any(|point| height_points.contains(point))
+                        && path[index + 1..]
+                            .iter()
+                            .any(|point| height_points.contains(point))
+                })
+            }
+    })
+}
+
+fn path_contains_segment(
+    path: &[NodeOwnershipPointKey],
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+    closed: bool,
+) -> bool {
+    if path
+        .windows(2)
+        .any(|segment| segment_matches_keys(segment[0], segment[1], segment_start, segment_end))
+    {
+        return true;
+    }
+    if !closed || path.len() <= 2 {
+        return false;
+    }
+    let (Some(first), Some(last)) = (path.first().copied(), path.last().copied()) else {
+        return false;
+    };
+    segment_matches_keys(last, first, segment_start, segment_end)
+}
+
+fn segment_matches_keys(
+    left_start: NodeOwnershipPointKey,
+    left_end: NodeOwnershipPointKey,
+    right_start: NodeOwnershipPointKey,
+    right_end: NodeOwnershipPointKey,
+) -> bool {
+    (left_start == right_start && left_end == right_end)
+        || (left_start == right_end && left_end == right_start)
 }
 
 fn projection_is_inside_same_dust_cluster(
@@ -346,9 +794,116 @@ fn projection_is_inside_same_dust_cluster(
         })
 }
 
+fn collinear_duplicate_carrier_candidate(
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+) -> Option<NodeSourceSegmentAuthorizationCandidate> {
+    if !candidates
+        .iter()
+        .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+    {
+        return None;
+    }
+    let reference = candidates
+        .iter()
+        .filter(|candidate| candidate.canonical_point == point)
+        .min_by_key(|candidate| {
+            (
+                candidate.distance_key_units_sq,
+                candidate.canonical_point,
+                candidate.source_segment_id,
+            )
+        })?;
+    if !candidates.iter().all(|candidate| {
+        source_segment_line_is_inside_dust(
+            candidate.segment_start,
+            reference.segment_start,
+            reference.segment_end,
+        ) && source_segment_line_is_inside_dust(
+            candidate.segment_end,
+            reference.segment_start,
+            reference.segment_end,
+        )
+    }) {
+        return None;
+    }
+    Some(*reference)
+}
+
+fn source_intersection_with_connected_secondary_cluster_candidate(
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+    endpoint_degrees: &BTreeMap<NodeOwnershipPointKey, usize>,
+) -> Option<NodeSourceSegmentAuthorizationCandidate> {
+    if !candidates
+        .iter()
+        .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+    {
+        return None;
+    }
+    let reference = candidates
+        .iter()
+        .filter(|candidate| candidate.canonical_point == point)
+        .min_by_key(|candidate| {
+            (
+                candidate.distance_key_units_sq,
+                candidate.canonical_point,
+                candidate.source_segment_id,
+            )
+        })?;
+    let secondary = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.source_segment_id != reference.source_segment_id)
+        .collect::<Vec<_>>();
+    if secondary.len() < 2
+        || connected_endpoint_cluster_candidate(point, &secondary, endpoint_degrees).is_none()
+    {
+        return None;
+    }
+    Some(*reference)
+}
+
+fn source_segment_line_is_inside_dust(
+    point: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+) -> bool {
+    let Some((cross_sq, length_sq)) = point_line_distance_ratio(point, segment_start, segment_end)
+    else {
+        return false;
+    };
+    let dust_budget_sq = i128::from(
+        SOURCE_SEGMENT_AUTHORIZATION_DUST_BUDGET_UNITS
+            * SOURCE_SEGMENT_AUTHORIZATION_DUST_BUDGET_UNITS,
+    );
+    cross_sq <= dust_budget_sq * length_sq
+}
+
+fn point_line_distance_ratio(
+    point: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+) -> Option<(i128, i128)> {
+    if segment_start == segment_end {
+        return None;
+    }
+    let dx = i128::from(segment_end.0 - segment_start.0);
+    let dz = i128::from(segment_end.1 - segment_start.1);
+    let length_sq = dx * dx + dz * dz;
+    if length_sq == 0 {
+        return None;
+    }
+    let px = i128::from(point.0 - segment_start.0);
+    let pz = i128::from(point.1 - segment_start.1);
+    let cross = px * dz - pz * dx;
+    Some((cross * cross, length_sq))
+}
+
 fn connected_endpoint_cluster_candidate(
     point: NodeOwnershipPointKey,
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
+    endpoint_degrees: &BTreeMap<NodeOwnershipPointKey, usize>,
 ) -> Option<NodeSourceSegmentAuthorizationCandidate> {
     if !candidates
         .iter()
@@ -363,7 +918,11 @@ fn connected_endpoint_cluster_candidate(
     projections.sort_unstable();
     projections.dedup();
     if projections.is_empty()
-        || !projection_cluster_has_connected_source_endpoint_path(&projections, candidates)
+        || !projection_cluster_has_connected_source_endpoint_path(
+            &projections,
+            candidates,
+            endpoint_degrees,
+        )
     {
         return None;
     }
@@ -376,12 +935,12 @@ fn connected_endpoint_cluster_candidate(
 fn projection_cluster_has_connected_source_endpoint_path(
     projections: &[NodeOwnershipPointKey],
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
+    endpoint_degrees: &BTreeMap<NodeOwnershipPointKey, usize>,
 ) -> bool {
     if projections.len() <= 1 {
         return true;
     }
     let mut adjacency = vec![Vec::<usize>::new(); projections.len()];
-    let endpoint_degrees = source_segment_endpoint_degrees(candidates);
     for candidate in candidates {
         let Some(start_index) = projection_index_near_key(projections, candidate.segment_start)
         else {
@@ -404,12 +963,12 @@ fn projection_cluster_has_connected_source_endpoint_path(
                 && !source_segment_candidates_have_dust_endpoint_bridge(
                     left,
                     right,
-                    &endpoint_degrees,
+                    endpoint_degrees,
                 )
                 && !source_segment_candidates_have_projection_endpoint_bridge(
                     left,
                     right,
-                    &endpoint_degrees,
+                    endpoint_degrees,
                 )
             {
                 continue;
@@ -445,13 +1004,13 @@ fn projection_cluster_has_connected_source_endpoint_path(
     visited.into_iter().all(|entry| entry)
 }
 
-fn source_segment_endpoint_degrees(
-    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+fn source_segment_authority_endpoint_degrees(
+    authorities: &[NodeRailSourceSegmentAuthority],
 ) -> BTreeMap<NodeOwnershipPointKey, usize> {
     let mut endpoint_degrees = BTreeMap::new();
-    for candidate in candidates {
-        *endpoint_degrees.entry(candidate.segment_start).or_default() += 1;
-        *endpoint_degrees.entry(candidate.segment_end).or_default() += 1;
+    for authority in authorities {
+        *endpoint_degrees.entry(authority.segment.start).or_default() += 1;
+        *endpoint_degrees.entry(authority.segment.end).or_default() += 1;
     }
     endpoint_degrees
 }
@@ -577,61 +1136,10 @@ fn source_segment_origin(
     }
 }
 
-fn source_path_segment_authorization_candidates(
-    point: NodeOwnershipPointKey,
-    owner: NodeBandOwner,
-    source: NodeCarrierSourceKey,
-    paths_by_source: &BTreeMap<NodeCarrierSourceKey, NodeRailHeightCarrierPaths>,
-) -> Vec<NodeSourceSegmentAuthorizationCandidate> {
-    let Some(paths) = paths_by_source.get(&source) else {
-        return Vec::new();
-    };
-    let mut path = Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
-    path.extend(
-        paths
-            .start_path_world
-            .iter()
-            .copied()
-            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
-    );
-    path.extend(
-        paths
-            .end_path_world
-            .iter()
-            .rev()
-            .copied()
-            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
-    );
-    let mut candidates = Vec::new();
-    for segment in path.windows(2) {
-        let authority = NodeRailSourceSegmentAuthority {
-            owner,
-            source,
-            segment: OwnedRegionEdgeKey::new(segment[0], segment[1]),
-        };
-        if let Some(candidate) = source_segment_authorization_candidate(point, authority) {
-            candidates.push(candidate);
-        }
-    }
-    if path.len() > 2
-        && let (Some(first), Some(last)) = (path.first().copied(), path.last().copied())
-        && first != last
-    {
-        let authority = NodeRailSourceSegmentAuthority {
-            owner,
-            source,
-            segment: OwnedRegionEdgeKey::new(first, last),
-        };
-        if let Some(candidate) = source_segment_authorization_candidate(point, authority) {
-            candidates.push(candidate);
-        }
-    }
-    candidates
-}
-
 fn generated_carrier_vertex_origin(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     rails: &NodeRailContourSet,
 ) -> Option<NodeCarrierProvenanceOrigin> {
@@ -639,7 +1147,9 @@ fn generated_carrier_vertex_origin(
         .contours
         .iter()
         .enumerate()
-        .filter(|(_, contour)| generated_contour_matches_source(owner, source, contour))
+        .filter(|(_, contour)| {
+            generated_contour_matches_context(owner, source, claim_priority, contour)
+        })
         .filter(|(_, contour)| generated_contour_emits_point(contour, point))
         .map(
             |(contour_index, contour)| NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
@@ -654,6 +1164,7 @@ fn generated_carrier_vertex_origin(
 fn generated_carrier_surface_origin(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     rails: &NodeRailContourSet,
 ) -> Option<NodeCarrierProvenanceOrigin> {
@@ -661,7 +1172,9 @@ fn generated_carrier_surface_origin(
         .contours
         .iter()
         .enumerate()
-        .filter(|(_, contour)| generated_contour_matches_source(owner, source, contour))
+        .filter(|(_, contour)| {
+            generated_contour_matches_context(owner, source, claim_priority, contour)
+        })
         .filter(|(_, contour)| generated_contour_contains_point(contour, point))
         .map(
             |(contour_index, contour)| NodeCarrierProvenanceOrigin::GeneratedCarrierSurface {
@@ -671,6 +1184,16 @@ fn generated_carrier_surface_origin(
             },
         )
         .min()
+}
+
+fn generated_contour_matches_context(
+    owner: NodeBandOwner,
+    source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    contour: &NodeGeneratedContour,
+) -> bool {
+    contour.claim_priority == claim_priority
+        && generated_contour_matches_source(owner, source, contour)
 }
 
 fn generated_contour_matches_source(
@@ -707,6 +1230,7 @@ fn generated_contour_emits_point(
 fn source_intersection_origin(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     final_point_contexts: &BTreeMap<NodeOwnershipPointKey, Vec<NodeCarrierPointContext>>,
     rails: &NodeRailContourSet,
@@ -721,7 +1245,9 @@ fn source_intersection_origin(
                     != NodeBandHeightFieldId::new(source.1, source.2, source.0)
         })
         .count();
-    if peer_count == 0 || !generated_source_surface_contains_point(owner, source, point, rails) {
+    if peer_count == 0
+        || !generated_source_surface_contains_point(owner, source, claim_priority, point, rails)
+    {
         return None;
     }
     Some(NodeCarrierProvenanceOrigin::SourceIntersection { peer_count })
@@ -730,11 +1256,12 @@ fn source_intersection_origin(
 fn generated_source_surface_contains_point(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
     point: NodeOwnershipPointKey,
     rails: &NodeRailContourSet,
 ) -> bool {
     rails.contours.iter().any(|contour| {
-        generated_contour_matches_source(owner, source, contour)
+        generated_contour_matches_context(owner, source, claim_priority, contour)
             && generated_contour_contains_point(contour, point)
     })
 }
@@ -853,11 +1380,7 @@ fn source_segment_authorization_candidate(
         return None;
     }
     Some(NodeSourceSegmentAuthorizationCandidate {
-        source_segment_id: source_carrier_segment_id(
-            authority.owner,
-            authority.source,
-            authority.segment,
-        ),
+        source_segment_id: authority.source_segment_id,
         source_kind: authority.source.0,
         source_mouth_order_index: authority.source.1,
         source_band_index: authority.source.2,

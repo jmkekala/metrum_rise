@@ -7,7 +7,10 @@ use super::vertices::canonical_height_vertices;
 use super::*;
 
 impl NodeBandHeightTriangle {
-    pub(super) fn height_at(&self, point_xz: RoadVec2) -> Option<f64> {
+    pub(in crate::simulation::network::surface::node) fn height_at(
+        &self,
+        point_xz: RoadVec2,
+    ) -> Option<f64> {
         let a = height_source_point_key(self.a_xz);
         let b = height_source_point_key(self.b_xz);
         let c = height_source_point_key(self.c_xz);
@@ -147,7 +150,7 @@ pub(super) fn height_triangles_from_contour(
     })
 }
 
-pub(super) fn constrained_height_triangles_from_vertices(
+pub(in crate::simulation::network::surface::node) fn constrained_height_triangles_from_vertices(
     points: &[RoadVec3],
 ) -> Result<Vec<NodeBandHeightTriangle>, HeightCarrierContourError> {
     let vertices = canonical_height_vertices(points)?;

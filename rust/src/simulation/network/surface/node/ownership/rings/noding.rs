@@ -2,7 +2,6 @@
 
 use super::super::super::NodeOverlayContour;
 use super::super::super::NodeOverlayShapes;
-use super::super::super::RoadSurfaceBandKind;
 use super::super::super::arrangement::NodeBandOwner;
 use super::super::super::rails::NodeGeneratedContourClaimPriority;
 use super::super::rail_authority::NodeRailCanonicalPointSet;

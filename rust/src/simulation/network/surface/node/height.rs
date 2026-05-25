@@ -45,3 +45,4 @@ pub(crate) use model::{
     NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightSolution, NodeHeightedRegion,
     NodeHeightedVertex,
 };
+pub(in crate::simulation::network::surface::node) use triangles::constrained_height_triangles_from_vertices;

@@ -21,73 +21,12 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonical_points
 }
 
 #[cfg(test)]
-pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_region_vertices_against_source_authority(
+pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_region_vertices_against_carrier_closure(
     regions: &[NodeBooleanOwnedRegion],
+    rails: &NodeRailContourSet,
     rail_points: &NodeRailCanonicalPointSet,
-) -> Result<(), NodeBooleanOwnershipError> {
-    for region in regions {
-        let source_height_points = region
-            .source_band_index
-            .and_then(|source_band_index| {
-                rail_points.height_points_by_source.get(&(
-                    region.kind,
-                    region.source_mouth_order_index,
-                    source_band_index,
-                ))
-            })
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let source_key = region.source_band_index.map(|source_band_index| {
-            (
-                region.kind,
-                region.source_mouth_order_index,
-                source_band_index,
-            )
-        });
-        for contour in &region.shape {
-            for point in contour
-                .iter()
-                .copied()
-                .map(ownership_key_from_overlay_point)
-            {
-                if source_height_points.binary_search(&point).is_ok() {
-                    continue;
-                }
-                if rail_points
-                    .source_authorizes_same_mm_duplicate_cluster(point, source_height_points)
-                {
-                    continue;
-                }
-                if rail_points
-                    .source_canonicalized_point_for_owner(
-                        region.owner,
-                        point,
-                        source_key,
-                        source_height_points,
-                    )?
-                    .is_some()
-                {
-                    continue;
-                }
-                if rail_points.owner_source_authorizes_point(region.owner, point)? {
-                    continue;
-                }
-                let Some(canonical) =
-                    rail_points.canonical_conflict_for_owner(region.owner, point)?
-                else {
-                    continue;
-                };
-                return Err(NodeBooleanOwnershipError::NonCanonicalOwnedRegionVertex {
-                    owner: region.owner,
-                    point_x_key: point.0,
-                    point_z_key: point.1,
-                    canonical_x_key: canonical.0,
-                    canonical_z_key: canonical.1,
-                });
-            }
-        }
-    }
-    Ok(())
+) -> Result<NodeCarrierProvenanceClosure, NodeBooleanOwnershipError> {
+    NodeCarrierProvenanceClosure::from_owned_regions(regions, rails, rail_points)
 }
 
 pub(in crate::simulation::network::surface::node::ownership) fn constraint_authority_owners(

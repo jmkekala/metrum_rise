@@ -1,6 +1,7 @@
 //! Shared fixtures for node-height tests.
 
 use super::*;
+use crate::simulation::network::surface::ownership::NodeSourceCarrierRegistry;
 
 pub(super) fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
     IncidentMouthBand {
@@ -74,6 +75,12 @@ pub(super) fn manual_rail_contours(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: Vec<NodeGeneratedContour>,
 ) -> NodeRailContourSet {
+    let source_carriers = NodeSourceCarrierRegistry::from_rail_parts(
+        &contours,
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
     NodeRailContourSet {
         node_id,
         piece_kind,
@@ -81,6 +88,7 @@ pub(super) fn manual_rail_contours(
         constraints: Vec::new(),
         height_carrier_paths_by_source: BTreeMap::new(),
         height_carrier_points_by_source: BTreeMap::new(),
+        source_carriers,
     }
 }
 pub(super) fn terminal_cap_band_for_height_test(

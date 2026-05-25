@@ -2,6 +2,7 @@
 
 use super::super::input::NodeArrangementInput;
 use super::super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
+use super::super::ownership::NodeSourceCarrierRegistry;
 use super::super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
 use super::bands::{
     push_band_contour, push_full_roadbed_contour, push_raw_carriageway_corridor_contour,
@@ -203,6 +204,12 @@ impl NodeRailContourSet {
             &validation_constraints,
             source_constraint_count,
         )?;
+        let source_carriers = NodeSourceCarrierRegistry::from_rail_parts(
+            &contours,
+            &constraints,
+            &height_carrier_paths_by_source,
+            &height_carrier_points_by_source,
+        );
         Ok(Self {
             node_id: input.node_id,
             piece_kind: input.piece_kind,
@@ -210,6 +217,7 @@ impl NodeRailContourSet {
             constraints,
             height_carrier_paths_by_source,
             height_carrier_points_by_source,
+            source_carriers,
         })
     }
 }

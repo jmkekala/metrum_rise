@@ -21,6 +21,8 @@ mod rings;
 mod seams;
 mod topology_keys;
 
+pub(crate) use rail_authority::NodeSourceCarrierRegistry;
+
 use domains::{
     ResidualKind, asphalt_authority_domains, asphalt_owner_domains, overlay_contour_from_domain,
     overlay_contours_for_domains, overlay_difference, overlay_intersect, overlay_union,
@@ -243,14 +245,6 @@ pub(crate) enum NodeBooleanOwnershipError {
     UnownedNonRoadResidual {
         shape_count: usize,
         area_m2: f32,
-    },
-    #[cfg(test)]
-    NonCanonicalOwnedRegionVertex {
-        owner: NodeBandOwner,
-        point_x_key: i64,
-        point_z_key: i64,
-        canonical_x_key: i64,
-        canonical_z_key: i64,
     },
     AmbiguousCanonicalOwnedRegionVertex {
         owner: NodeBandOwner,
@@ -745,6 +739,7 @@ fn materialize_final_footprint_vertices_in_owned_regions(
         let region_kind = region.kind;
         let region_source_mouth_order_index = region.source_mouth_order_index;
         let region_source_band_index = region.source_band_index;
+        let region_claim_priority = region.claim_priority;
         for contour in &mut region.shape {
             let materialized = materialized_contour_with_final_footprint_points(
                 contour,
@@ -752,6 +747,7 @@ fn materialize_final_footprint_vertices_in_owned_regions(
                 region_kind,
                 region_source_mouth_order_index,
                 region_source_band_index,
+                region_claim_priority,
                 &final_footprint_edges,
                 carrier_context,
             )?;
@@ -803,6 +799,7 @@ fn materialized_contour_with_final_footprint_points(
     region_kind: RoadSurfaceBandKind,
     region_source_mouth_order_index: usize,
     region_source_band_index: Option<usize>,
+    region_claim_priority: NodeGeneratedContourClaimPriority,
     final_footprint_edges: &[(NodeOwnershipPointKey, NodeOwnershipPointKey)],
     carrier_context: &NodeCarrierProvenanceContext<'_>,
 ) -> Result<NodeOverlayContour, NodeBooleanOwnershipError> {
@@ -824,6 +821,7 @@ fn materialized_contour_with_final_footprint_points(
             region_kind,
             region_source_mouth_order_index,
             region_source_band_index,
+            region_claim_priority,
             carrier_context,
         )?;
         if edge_points.is_empty() {
@@ -850,6 +848,7 @@ fn supported_final_footprint_boundary_points_for_edge(
     region_kind: RoadSurfaceBandKind,
     region_source_mouth_order_index: usize,
     region_source_band_index: Option<usize>,
+    region_claim_priority: NodeGeneratedContourClaimPriority,
     carrier_context: &NodeCarrierProvenanceContext<'_>,
 ) -> Result<Vec<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
     let mut points = Vec::new();
@@ -874,6 +873,7 @@ fn supported_final_footprint_boundary_points_for_edge(
                 region_kind,
                 region_source_mouth_order_index,
                 region_source_band_index,
+                region_claim_priority,
                 point,
             )?
             .is_some()

@@ -241,18 +241,6 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_z_mm: i64,
         source_constraint_indices: Vec<usize>,
     },
-    #[cfg(test)]
-    NonCanonicalOwnedRegionVertex {
-        owner: NodeBandOwner,
-        point_x_key: i64,
-        point_z_key: i64,
-        point_x_mm: i64,
-        point_z_mm: i64,
-        canonical_x_key: i64,
-        canonical_z_key: i64,
-        canonical_x_mm: i64,
-        canonical_z_mm: i64,
-    },
     AmbiguousCanonicalOwnedRegionVertex {
         owner: NodeBandOwner,
         point_x_key: i64,
@@ -824,28 +812,6 @@ impl NodeGeometryDiagnosticKind {
                 "end_z_mm": end_z_mm,
                 "source_constraint_indices": source_constraint_indices,
             }),
-            #[cfg(test)]
-            Self::NonCanonicalOwnedRegionVertex {
-                owner,
-                point_x_key,
-                point_z_key,
-                point_x_mm,
-                point_z_mm,
-                canonical_x_key,
-                canonical_z_key,
-                canonical_x_mm,
-                canonical_z_mm,
-            } => json!({
-                "owner": owner_value(*owner),
-                "point_x_key": point_x_key,
-                "point_z_key": point_z_key,
-                "point_x_mm": point_x_mm,
-                "point_z_mm": point_z_mm,
-                "canonical_x_key": canonical_x_key,
-                "canonical_z_key": canonical_z_key,
-                "canonical_x_mm": canonical_x_mm,
-                "canonical_z_mm": canonical_z_mm,
-            }),
             Self::AmbiguousCanonicalOwnedRegionVertex {
                 owner,
                 point_x_key,
@@ -963,8 +929,6 @@ impl NodeGeometryDiagnosticKind {
             Self::UnmaterializedRaisedStepAuthority { .. } => {
                 "unmaterialized_raised_step_authority"
             }
-            #[cfg(test)]
-            Self::NonCanonicalOwnedRegionVertex { .. } => "noncanonical_owned_region_vertex",
             Self::AmbiguousCanonicalOwnedRegionVertex { .. } => {
                 "ambiguous_canonical_owned_region_vertex"
             }

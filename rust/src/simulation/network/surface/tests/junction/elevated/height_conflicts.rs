@@ -187,7 +187,7 @@ fn elevated_three_way_junction_compiles_after_endpoint_profile_solve() {
 }
 
 #[test]
-fn skewed_elevated_four_way_junction_rejects_same_material_height_conflict() {
+fn skewed_elevated_four_way_junction_compiles_with_explicit_height_carriers() {
     let terrain = planar_world_terrain(256, 256, 1.0, 148.0, -0.080, -0.035);
     let mut graph = RegionGraph::new();
     let center_xz = Vector2::new(14.096, -65.592);
@@ -237,10 +237,5 @@ fn skewed_elevated_four_way_junction_rejects_same_material_height_conflict() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_junction_rejected_with_canonical_height_diagnostic(
-        &surface,
-        &graph,
-        center,
-        "skewed elevated 4-way JunctionN",
-    );
+    assert_compiled_junction_piece(&surface, &graph, center);
 }

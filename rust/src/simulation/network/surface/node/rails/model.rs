@@ -3,7 +3,9 @@
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{RoadPolyline, RoadVec2, RoadVec3};
 use super::super::joins::SideJoinGenerationError;
-use super::super::ownership::{NodeBooleanOwnership, NodeSourceCarrierSegmentId};
+use super::super::ownership::{
+    NodeBooleanOwnership, NodeSourceCarrierRegistry, NodeSourceCarrierSegmentId,
+};
 use super::super::terminal::TerminalCapGenerationError;
 use super::source_points::push_owned_region_height_carrier_points;
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
@@ -58,6 +60,7 @@ pub(crate) struct NodeRailContourSet {
         BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
     pub(crate) height_carrier_points_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    pub(crate) source_carriers: NodeSourceCarrierRegistry,
 }
 
 #[derive(Clone, Debug)]

@@ -1,9 +1,9 @@
 //! Tests for node boolean ownership.
 
 use super::rail_authority::{
-    NodeRailCanonicalPointSet, NodeRailSourceSegmentAuthority, canonical_points_by_mm_key_by_owner,
-    constraint_authority_owners, insert_open_source_segments,
-    validate_owned_region_vertices_against_source_authority,
+    NodeRailCanonicalPointSet, NodeRailSourceSegmentAuthority, NodeSourceCarrierRegistry,
+    canonical_points_by_mm_key_by_owner, constraint_authority_owners,
+    validate_owned_region_vertices_against_carrier_closure,
 };
 use super::rings::{
     canonicalize_final_owned_region_boundary_edges,
@@ -14,10 +14,10 @@ use super::seams::{
 };
 use super::topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
-    ownership_key_from_overlay_point, ownership_key_from_road_point,
+    ownership_key_from_overlay_point, ownership_key_from_road_point, road_point_from_key,
 };
 use super::*;
-use crate::simulation::network::surface::backend::{RoadVec2, road_points_to_polyline};
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, road_points_to_polyline};
 use crate::simulation::network::surface::input::NodeArrangementInput;
 use crate::simulation::network::surface::rails::{
     NodeGeneratedContour, NodeGeneratedContourKind, NodeGeneratedContourPurpose,
@@ -110,9 +110,10 @@ fn test_rail_canonical_points_from_constraints(
     all_points.dedup();
 
     let mut points_by_owner = BTreeMap::<NodeBandOwner, Vec<NodeOwnershipPointKey>>::new();
-    let mut segments_by_owner = BTreeMap::<NodeBandOwner, Vec<OwnedRegionEdgeKey>>::new();
     let mut source_segments_by_owner =
         BTreeMap::<NodeBandOwner, Vec<NodeRailSourceSegmentAuthority>>::new();
+    let mut height_points_by_source =
+        BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<NodeOwnershipPointKey>>::new();
     for constraint in rail_constraints {
         let path = constraint
             .points_xz
@@ -125,22 +126,26 @@ fn test_rail_canonical_points_from_constraints(
                 .entry(owner)
                 .or_default()
                 .extend(path.iter().copied());
-            insert_open_source_segments(&mut segments_by_owner, owner, &path);
             if let Some(source_band_index) = constraint.source_band_index {
                 for segment in path.windows(2) {
                     if segment[0] == segment[1] {
                         continue;
                     }
+                    let source = (
+                        owner.kind(),
+                        constraint.source_mouth_order_index,
+                        source_band_index,
+                    );
+                    height_points_by_source
+                        .entry(source)
+                        .or_default()
+                        .extend(path.iter().copied());
                     source_segments_by_owner.entry(owner).or_default().push(
-                        NodeRailSourceSegmentAuthority {
+                        NodeRailSourceSegmentAuthority::new(
                             owner,
-                            source: (
-                                owner.kind(),
-                                constraint.source_mouth_order_index,
-                                source_band_index,
-                            ),
-                            segment: OwnedRegionEdgeKey::new(segment[0], segment[1]),
-                        },
+                            source,
+                            OwnedRegionEdgeKey::new(segment[0], segment[1]),
+                        ),
                     );
                 }
             }
@@ -150,23 +155,44 @@ fn test_rail_canonical_points_from_constraints(
         points.sort_unstable();
         points.dedup();
     }
-    for segments in segments_by_owner.values_mut() {
-        segments.sort_unstable();
-        segments.dedup();
-    }
     for segments in source_segments_by_owner.values_mut() {
         segments.sort_unstable();
         segments.dedup();
+    }
+    for points in height_points_by_source.values_mut() {
+        points.sort_unstable();
+        points.dedup();
     }
     let canonical_points_by_mm_key_by_owner = canonical_points_by_mm_key_by_owner(&points_by_owner);
     NodeRailCanonicalPointSet {
         all_points,
         points_by_owner,
-        segments_by_owner,
-        source_segments_by_owner,
+        source_carriers: NodeSourceCarrierRegistry {
+            source_segments_by_owner,
+            height_points_by_source,
+        },
         canonical_points_by_mm_key_by_owner,
-        height_points_by_source: BTreeMap::new(),
         paths_by_owner: BTreeMap::new(),
+    }
+}
+
+fn test_rail_contour_set_from_constraints(
+    rail_constraints: Vec<NodeRailConstraint>,
+) -> NodeRailContourSet {
+    let source_carriers = NodeSourceCarrierRegistry::from_rail_parts(
+        &[],
+        &rail_constraints,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
+    NodeRailContourSet {
+        node_id: 42,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        contours: Vec::new(),
+        constraints: rail_constraints,
+        height_carrier_paths_by_source: BTreeMap::new(),
+        height_carrier_points_by_source: BTreeMap::new(),
+        source_carriers,
     }
 }
 

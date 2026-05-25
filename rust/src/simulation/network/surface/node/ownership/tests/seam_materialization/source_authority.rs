@@ -294,8 +294,4 @@ fn projected_material_boundary_canonicalizes_source_authorized_endpoint() {
         .collect::<BTreeSet<_>>();
     assert!(curb_points.contains(&ownership_key_from_road_point(source_start)));
     assert!(!curb_points.contains(&ownership_key_from_overlay_point(drifted_start)));
-    assert!(
-        validate_owned_region_vertices_against_source_authority(&regions, &rail_canonical_points)
-            .is_ok()
-    );
 }

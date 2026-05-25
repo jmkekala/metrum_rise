@@ -52,30 +52,36 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
             .map(Vec::as_slice)
             .unwrap_or(&rail_points.all_points);
         let source_height_points = region.source_band_index.and_then(|source_band_index| {
-            rail_points.height_points_by_source.get(&(
+            rail_points.source_carriers.height_points((
                 region.kind,
                 region.source_mouth_order_index,
                 source_band_index,
             ))
         });
-        let source_key = region.source_band_index.map(|source_band_index| {
-            (
-                region.kind,
-                region.source_mouth_order_index,
-                source_band_index,
+        let has_source_carrier = region.source_band_index.is_some_and(|source_band_index| {
+            rail_points.source_carriers.has_source_carrier(
+                region.owner,
+                (
+                    region.kind,
+                    region.source_mouth_order_index,
+                    source_band_index,
+                ),
             )
         });
         let mut preserved_points = source_height_points.cloned().unwrap_or_default();
         preserved_points.sort_unstable();
         preserved_points.dedup();
-        let authority_points = source_height_points
-            .map(Vec::as_slice)
-            .unwrap_or(owner_points);
+        let authority_points = if let Some(source_height_points) = source_height_points {
+            source_height_points.as_slice()
+        } else if has_source_carrier {
+            &[]
+        } else {
+            owner_points
+        };
         let mut source_points = preserved_points.clone();
         for point in authority_points.iter().copied() {
             if let Some(point) = region_noding_point_for_owner_source(
                 region.owner,
-                source_key,
                 &preserved_points,
                 point,
                 rail_points,
@@ -83,15 +89,18 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
                 source_points.push(point);
             }
         }
-        for point in rail_points.all_points.iter().copied() {
-            if let Some(point) = region_noding_point_for_owner_source(
-                region.owner,
-                source_key,
-                &preserved_points,
-                point,
-                rail_points,
-            )? {
-                source_points.push(point);
+        let uses_generated_join_or_cap =
+            region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap;
+        if !has_source_carrier || uses_generated_join_or_cap {
+            for point in rail_points.all_points.iter().copied() {
+                if let Some(point) = region_noding_point_for_owner_source(
+                    region.owner,
+                    &preserved_points,
+                    point,
+                    rail_points,
+                )? {
+                    source_points.push(point);
+                }
             }
         }
         source_points.sort_unstable();
@@ -110,8 +119,8 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
             canonicalize_owned_region_contour_to_owner_source_points(
                 contour,
                 region.owner,
-                source_key,
                 &preserved_points,
+                has_source_carrier,
                 rail_points,
             )?;
             *contour = noded_owned_region_contour_with_rail_paths(
@@ -127,21 +136,12 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
 
 fn region_noding_point_for_owner_source(
     owner: NodeBandOwner,
-    source: Option<(RoadSurfaceBandKind, usize, usize)>,
     preserved_source_points: &[NodeOwnershipPointKey],
     point: NodeOwnershipPointKey,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<Option<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
     if preserved_source_points.binary_search(&point).is_ok() {
         return Ok(Some(point));
-    }
-    if let Some(canonical) = rail_points.source_canonicalized_point_for_owner(
-        owner,
-        point,
-        source,
-        preserved_source_points,
-    )? {
-        return Ok(Some(canonical));
     }
     match rail_points.canonicalized_point_for_owner(owner, point) {
         Ok(canonical) => Ok(Some(canonical)),
@@ -153,8 +153,8 @@ fn region_noding_point_for_owner_source(
 fn canonicalize_owned_region_contour_to_owner_source_points(
     contour: &mut NodeOverlayContour,
     owner: NodeBandOwner,
-    source: Option<(RoadSurfaceBandKind, usize, usize)>,
     source_points: &[NodeOwnershipPointKey],
+    has_source_carrier: bool,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
     for point in contour.iter_mut() {
@@ -162,15 +162,13 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
         if source_points.binary_search(&key).is_ok() {
             continue;
         }
-        if let Some(canonical) =
-            rail_points.source_canonicalized_point_for_owner(owner, key, source, source_points)?
-        {
-            if canonical != key {
-                *point = overlay_point_from_key(canonical);
-            }
+        if has_source_carrier {
             continue;
         }
-        let canonical = rail_points.canonicalized_point_for_owner(owner, key)?;
+        let canonical = match rail_points.canonicalized_point_for_owner(owner, key) {
+            Ok(canonical) => canonical,
+            Err(error) => return Err(error),
+        };
         if canonical == key {
             continue;
         }

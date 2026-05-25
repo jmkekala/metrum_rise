@@ -162,12 +162,14 @@ section says whether the runtime has reached it yet.
   owned-region support points are classified by owner, source band, `NodeBandHeightFieldId`, and
   canonical key as exact source vertices, explicit source-segment projections with stable
   source-carrier segment IDs, source / source intersections, generated carrier vertices, generated
-  carrier-surface support inside generator-declared cap / join / contour surfaces, or bounded
-  unprovenanced backend dust that is discarded before it can become a height obligation. Raw
-  source-path interior containment is not carrier provenance. Height support materialization now
-  consumes closure records instead of scanning final regions for owner-wide or nearest candidate
-  repairs, and a recorded source segment that cannot produce height support reports a structured
-  missing-carrier-provenance-height diagnostic.
+  carrier-surface support inside matching claim-scoped generator-declared cap / join / contour
+  surfaces, or bounded unprovenanced backend dust that is discarded before it can become a height
+  obligation. Raw source-path interior containment is not carrier provenance. Height support
+  materialization now consumes closure records instead of scanning final regions for owner-wide or
+  nearest candidate repairs. A recorded source segment that cannot produce height support reports a
+  structured missing-carrier-provenance-height diagnostic, and generated carrier-surface support
+  materializes from the generator's declared height contour so same-key generated-surface conflicts
+  remain hard source-height conflicts.
 - the live height-carrier materialization audit is complete. Initial mouth / cap carrier points are
   declared during rail construction, but post-boolean support is materialized only from closure
   records. The old pre-closure source-constraint point materializer has been deleted; explicit
@@ -183,11 +185,11 @@ section says whether the runtime has reached it yet.
   the old unscoped height evaluator
 - road-geometry diagnostic dumps now serialize stage, backend, owner, source band, height-field,
   canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON fields
-  instead of an opaque Rust debug blob. Missing carrier provenance, missing carrier support, and
-  source-segment height-support failures have focused diagnostic coverage; missing source rails,
-  rejected residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
-  ambiguous carrier provenance still need the remaining focused diagnostic expansion before the
-  ROAD-01 conflict matrix is considered complete.
+  instead of an opaque Rust debug blob. Missing source rails, missing carrier provenance, missing
+  carrier support, rejected residuals, open boundaries, duplicate exposed edges, non-explicit
+  boundary vertices, ambiguous carrier provenance, and source-segment height-support failures now
+  have focused diagnostic coverage. Generated 4-way `JunctionN`, arbitrary `N > 4`, and exact
+  canonical raw-polygon identity checks remain the next ROAD-01 conflict-matrix expansion.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
@@ -245,8 +247,8 @@ Data ownership:
   - source / source or owner/source intersection where participating final regions carry explicit
     source and height-field contexts
   - generated cap / join / contour vertex emitted by the generator with its owning carrier
-  - generated cap / join / contour surface support inside a generator-declared carrier surface,
-    never raw source-path interior containment
+  - generated cap / join / contour surface support inside a matching owner / source / height-field /
+    claim-priority generator-declared carrier surface, never raw source-path interior containment
   - connected endpoint dust cluster whose source endpoint and projected canonical point are both
     deterministic
 
@@ -262,6 +264,9 @@ Implementation phases:
    curb rail, footprint rail, generated terminal cap rail, and generated contour segment with
    owner, source band, height field, canonical endpoint keys, and stable segment ID. The registry
    is per-node and sorted by stable source identity, so lookup cost is local to the compiled node.
+   **Implemented:** the node-local source-carrier registry now owns source-height points and
+   source-segment authorities, and every authority carries its stable source-carrier segment ID at
+   registration time.
 
 3. Classify every owned-region output vertex.
    After boolean ownership and before height evaluation, walk each final owned region and classify
@@ -275,15 +280,18 @@ Implementation phases:
    Replace reverse searches over final owned-region points with direct materialization from the
    classified carrier record. Source vertices reuse their source height. Source-segment projections
    interpolate only along the identified source segment and only inside the deterministic overlay
-   dust budget. Generated cap / join / contour vertices use the generator-declared carrier surface.
-   No code in this phase may try unrelated constraints, owner-wide candidate sets, terrain samples,
-   or nearest height fields.
+   dust budget. Generated cap / join / contour vertices and claim-scoped surface support use only
+   the generator-declared carrier surface and materialize from its declared height contour. No code
+   in this phase may try unrelated constraints, owner-wide candidate sets, terrain samples, or
+   nearest height fields.
 
 5. Rewrite validation around the closure map.
    The existing missing-carrier and height-field gates stay, but they should validate the explicit
    closure map instead of asking whether a point can be retroactively justified. Diagnostics must
    include stage, backend, node ID, piece kind, owner, source band, height field, canonical key,
    origin kind, source segment ID where present, residual, and ambiguity candidates.
+   **Implemented:** the remaining rail-authority validation helper now builds the carrier closure
+   directly, and source ambiguity / missing-carrier diagnostics are asserted at closure level.
 
 6. Remove the patch materializers from live reachability.
    After the closure map owns all legal materialization, delete or shrink the current repair
@@ -298,6 +306,9 @@ Implementation phases:
      heuristic source-authority validator
    - `rails/source_points/materialization/constraints.rs` has been deleted; do not reintroduce
      pre-closure source-constraint point materialization
+   **Implemented:** the live point-set path no longer carries the old same-mm duplicate-source,
+   source-segment projection, endpoint-bridge, or owner-wide source repair policies; source-segment
+   projection and endpoint dust decisions are made only by carrier closure.
 
 7. Keep the hard-failure gates.
    Do not remove `missing_owned_region_carrier_support`, source-height conflict diagnostics,

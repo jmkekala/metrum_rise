@@ -262,7 +262,7 @@ pub(super) enum NodeHeightPatchAuthorityRole {
     },
 }
 
-pub(super) struct NodeBandHeightTriangle {
+pub(in crate::simulation::network::surface::node) struct NodeBandHeightTriangle {
     pub(super) a_xz: RoadVec2,
     pub(super) b_xz: RoadVec2,
     pub(super) c_xz: RoadVec2,
@@ -289,7 +289,7 @@ pub(super) enum NodeHeightPatchEvaluation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HeightCarrierContourError {
+pub(in crate::simulation::network::surface::node) enum HeightCarrierContourError {
     TooFewVertices,
     DegenerateContour,
     ConflictingDuplicateHeightVertex,

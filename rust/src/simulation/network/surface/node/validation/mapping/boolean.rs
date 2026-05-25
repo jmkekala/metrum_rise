@@ -42,24 +42,6 @@ impl NodeGeometryDiagnostic {
                     reason: "missing_band_owner",
                 }
             }
-            #[cfg(test)]
-            NodeBooleanOwnershipError::NonCanonicalOwnedRegionVertex {
-                owner,
-                point_x_key,
-                point_z_key,
-                canonical_x_key,
-                canonical_z_key,
-            } => NodeGeometryDiagnosticKind::NonCanonicalOwnedRegionVertex {
-                owner: *owner,
-                point_x_key: *point_x_key,
-                point_z_key: *point_z_key,
-                point_x_mm: SurfaceXzKey::coordinate_key_to_mm(*point_x_key),
-                point_z_mm: SurfaceXzKey::coordinate_key_to_mm(*point_z_key),
-                canonical_x_key: *canonical_x_key,
-                canonical_z_key: *canonical_z_key,
-                canonical_x_mm: SurfaceXzKey::coordinate_key_to_mm(*canonical_x_key),
-                canonical_z_mm: SurfaceXzKey::coordinate_key_to_mm(*canonical_z_key),
-            },
             NodeBooleanOwnershipError::AmbiguousCanonicalOwnedRegionVertex {
                 owner,
                 point_x_key,

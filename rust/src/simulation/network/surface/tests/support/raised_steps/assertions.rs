@@ -15,8 +15,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_face_lo
         .iter()
         .filter_map(vertical_face_lower_edge_for_test)
         .filter(|edge| {
-            test_xz_key_lies_on_segment(test_xz_key(edge[0]), start_key, end_key)
-                && test_xz_key_lies_on_segment(test_xz_key(edge[1]), start_key, end_key)
+            test_xz_key_lies_on_segment_or_dust(edge[0], start, end, start_key, end_key)
+                && test_xz_key_lies_on_segment_or_dust(edge[1], start, end, start_key, end_key)
         })
         .map(|edge| Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length())
         .sum::<f32>();
@@ -25,6 +25,31 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_face_lo
         covered_length + 0.001 >= expected_length,
         "raised-step face lower edge must cover expected segment; label={label} start={start:?} end={end:?} covered={covered_length:.4} expected={expected_length:.4}"
     );
+}
+
+fn test_xz_key_lies_on_segment_or_dust(
+    point: Vector3,
+    start: Vector3,
+    end: Vector3,
+    start_key: (i64, i64),
+    end_key: (i64, i64),
+) -> bool {
+    if test_xz_key_lies_on_segment(test_xz_key(point), start_key, end_key) {
+        return true;
+    }
+    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let length_sq = segment.length_squared();
+    if length_sq <= f32::EPSILON {
+        return false;
+    }
+    let point_offset = Vector2::new(point.x - start.x, point.z - start.z);
+    let t = point_offset.dot(segment) / length_sq;
+    if !(-0.001..=1.001).contains(&t) {
+        return false;
+    }
+    let projection = Vector2::new(start.x, start.z) + segment * t;
+    let distance = (Vector2::new(point.x, point.z) - projection).length();
+    distance <= 0.001
 }
 
 pub(in crate::simulation::network::surface::tests) fn assert_top_raised_step_owner_boundaries_have_vertical_faces(
