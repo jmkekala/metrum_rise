@@ -188,9 +188,128 @@ section says whether the runtime has reached it yet.
   [`Spade CDT Terrain-Patch Hardcut`](#spade-cdt-terrain-patch-hardcut)
 - the node pipeline phase plan lives under
   [`Library-Backed Node Rework Plan`](#library-backed-node-rework-plan)
+- the near-term carrier provenance replacement for post-boolean repair lives under
+  [`General Carrier-Provenance Closure Plan`](#general-carrier-provenance-closure-plan)
 - Bend / JunctionN candidate ownership rules live under
   [`Conflict-First Node Candidate Hardcut`](#conflict-first-node-candidate-hardcut)
 - black-box coverage requirements live under [`Test Contract`](#test-contract)
+
+### General Carrier-Provenance Closure Plan
+
+This is the near-term ROAD-01 implementation plan for replacing the current post-boolean support
+materialization patches. It is not a second geometry contract beside the library-backed rework; it
+is the missing provenance layer that makes the current `Terminal`, `Bend`, and `JunctionN`
+pipeline obey the node band grade carrier hardcut while the broader backend cleanup continues.
+
+Target invariant:
+
+- every final owned-region boundary vertex has exactly one explicit carrier provenance before
+  height evaluation
+- provenance is scoped by band owner, source band, `NodeBandHeightFieldId`, and canonical key
+- generated boolean vertices are legal only when their creating source segment, source
+  intersection, endpoint cluster, generated cap, or generated join is explicit
+- owner-wide lookup, nearest-source lookup, first-match lookup, same-millimetre guesswork,
+  averaging, min/max repair, old-road priority, and terrain fallback remain forbidden
+- missing or ambiguous provenance fails before CDT, terrain clipping, render export, or earthwork
+  export
+
+Data ownership:
+
+- keep the provenance records inside `simulation::network::surface::node`, close to the current
+  ownership / rail / height stages; do not create a project-wide schema dump
+- assign stable source-carrier segment IDs while building node source rails, before `i_overlay`
+  ownership output is validated
+- carry only node-local data in the closure map: owner, source band, height field, source segment
+  ID, canonical point key, and deterministic origin kind
+- acceptable origin kinds are:
+  - source vertex
+  - source-segment projection with canonical parameter and overlay-dust residual
+  - source / source intersection where both sides explicitly authorize the same height field
+  - generated cap / join / contour vertex emitted by the generator with its owning carrier
+  - connected endpoint dust cluster whose source endpoint and projected canonical point are both
+    deterministic
+
+Implementation phases:
+
+1. Capture failing coverage before changing behavior.
+   Add focused Rust regressions for the regenerated hilly 3-way failure shape and the 500 m
+   multi-junction edit pattern. The tests must assert structured diagnostics first, then become
+   passing closure tests when the implementation lands. They must not depend on Godot rendering.
+
+2. Build the node-local source-carrier registry.
+   During rail construction, register every explicit mouth rail, material seam rail, sidewalk /
+   curb rail, footprint rail, generated terminal cap rail, and generated contour segment with
+   owner, source band, height field, canonical endpoint keys, and stable segment ID. The registry
+   is per-node and sorted by stable source identity, so lookup cost is local to the compiled node.
+
+3. Classify every owned-region output vertex.
+   After boolean ownership and before height evaluation, walk each final owned region and classify
+   every boundary / seam vertex against only the carriers authorized for that region's owner,
+   source band, and height field. Exact source vertices preserve their source identity. Backend
+   split vertices must resolve to exactly one legal source segment, generated contour, or generated
+   intersection. Zero matches report missing carrier provenance. More than one independent match
+   reports ambiguous carrier provenance.
+
+4. Materialize height support from provenance only.
+   Replace reverse searches over final owned-region points with direct materialization from the
+   classified carrier record. Source vertices reuse their source height. Source-segment projections
+   interpolate only along the identified source segment and only inside the deterministic overlay
+   dust budget. Generated cap / join / contour vertices use the generator-declared carrier surface.
+   No code in this phase may try unrelated constraints, owner-wide candidate sets, terrain samples,
+   or nearest height fields.
+
+5. Rewrite validation around the closure map.
+   The existing missing-carrier and height-field gates stay, but they should validate the explicit
+   closure map instead of asking whether a point can be retroactively justified. Diagnostics must
+   include stage, backend, node ID, piece kind, owner, source band, height field, canonical key,
+   origin kind, source segment ID where present, residual, and ambiguity candidates.
+
+6. Remove the patch materializers from live reachability.
+   After the closure map owns all legal materialization, delete or shrink the current repair
+   scaffolding:
+   - `rails/source_points/materialization/owned_regions.rs` should stop scanning final regions and
+     guessing height support from paths, same-mm clusters, or arbitrary constraints
+   - `ownership/rail_authority/point_set.rs` should lose same-mm duplicate-source policy,
+     source-segment projection cluster policy, endpoint bridge policy, and owner-wide point
+     authorization that is not source / height-field scoped
+   - `ownership/rail_authority/validation.rs` should become a closure-map validator, not a
+     heuristic source-authority validator
+   - `rails/source_points/materialization/constraints.rs` may keep only direct explicit-constraint
+     carrier materialization that is represented in the closure map
+
+7. Keep the hard-failure gates.
+   Do not remove `missing_owned_region_carrier_support`, source-height conflict diagnostics,
+   open-boundary diagnostics, duplicate exposed-edge diagnostics, or non-explicit boundary-vertex
+   diagnostics. These gates are the guardrails that prevented the current failures from becoming
+   hidden render corruption.
+
+8. Expand the conflict matrix only after closure passes hilly 3-way cases.
+   Once hilly 3-way junctions pass without repair fallbacks, add generated 4-way `JunctionN`,
+   arbitrary `N > 4`, and exact canonical raw-polygon identity checks. These tests must compare
+   canonical keys / stable IDs, not float coordinate equality.
+
+Performance rule:
+
+- closure lookup is per-node and bounded by local source-carrier count; it must not scan the road
+  network, terrain chunks, or unrelated compiled pieces
+- a node may build a small local carrier index keyed by canonical point / segment bounds, but the
+  index belongs to that node compile and is discarded or cached with the node piece
+- the intended cost is `O((V + S) log S)` or better per compiled node, where `V` is final
+  owned-region vertex count and `S` is node-local source-carrier segment count
+
+Acceptance gates:
+
+- `cargo check --manifest-path rust/Cargo.toml`
+- focused surface tests for the regenerated elevated 3-way, the 500 m multi-junction case, flat
+  3-way, elevated Bend, Terminal, 4-way, and arbitrary `N > 4`
+- diagnostic tests for missing source rails, missing carrier support, rejected residuals, open
+  boundaries, duplicate exposed edges, non-explicit boundary vertices, and ambiguous carrier
+  provenance
+- deterministic rebuild tests comparing canonical closure records across repeated compile and
+  equivalent edit order
+- `cargo test --manifest-path rust/Cargo.toml surface -- --nocapture`
+- `cargo fmt --manifest-path rust/Cargo.toml --check`
+- `git diff --check`
 
 ## Accepted Geometry Backends
 
