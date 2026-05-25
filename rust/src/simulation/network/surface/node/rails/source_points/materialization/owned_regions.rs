@@ -1,9 +1,13 @@
 //! Height-carrier materialization from explicit node carrier provenance.
 
+use super::super::super::super::segments::raw_tuple_key_lies_on_segment;
 use super::super::super::contours::height_for_key_on_generated_edge;
 use super::super::super::geometry::road_point_key;
 use super::super::super::topology::NodeRailPointKey;
-use super::super::super::{NodeRailGenerationError, NodeRailHeightCarrierPaths};
+use super::super::super::{
+    NodeGeneratedContourKind, NodeRailContourSet, NodeRailGenerationError,
+    NodeRailHeightCarrierPaths,
+};
 use super::super::NodeRailHeightSourceKey;
 use super::super::collection::{
     push_materialized_height_carrier_points, source_has_height_point, source_height_points_by_key,
@@ -11,14 +15,13 @@ use super::super::collection::{
 use crate::simulation::network::surface::keys::SurfaceXzKey;
 use crate::simulation::network::surface::node::backend::{RoadVec3, road_vec3_xz as xz};
 use crate::simulation::network::surface::node::ownership::{
-    NodeBooleanOwnership, NodeCarrierProvenanceOrigin,
+    NodeBooleanOwnership, NodeCarrierProvenanceOrigin, NodeSourceCarrierSegmentId,
 };
 use std::collections::BTreeMap;
 
 pub(in crate::simulation::network::surface::node::rails) fn push_owned_region_height_carrier_points(
     points_by_source: &mut BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
-    _constraints: &[super::super::super::NodeRailConstraint],
-    paths_by_source: &BTreeMap<NodeRailHeightSourceKey, NodeRailHeightCarrierPaths>,
+    rails: &NodeRailContourSet,
     ownership: &NodeBooleanOwnership,
 ) -> Result<(), NodeRailGenerationError> {
     let mut materialized = Vec::new();
@@ -32,13 +35,8 @@ pub(in crate::simulation::network::surface::node::rails) fn push_owned_region_he
         if source_has_height_point(points_by_source, source, point) {
             continue;
         }
-        let Some(height_m) = height_for_carrier_provenance(
-            source,
-            point,
-            record.origin,
-            points_by_source,
-            paths_by_source,
-        )?
+        let Some(height_m) =
+            height_for_carrier_provenance(source, point, record.origin, points_by_source, rails)?
         else {
             continue;
         };
@@ -53,7 +51,7 @@ fn height_for_carrier_provenance(
     point: NodeRailPointKey,
     origin: NodeCarrierProvenanceOrigin,
     points_by_source: &BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
-    paths_by_source: &BTreeMap<NodeRailHeightSourceKey, NodeRailHeightCarrierPaths>,
+    rails: &NodeRailContourSet,
 ) -> Result<Option<f64>, NodeRailGenerationError> {
     match origin {
         NodeCarrierProvenanceOrigin::SourceVertex => {
@@ -66,19 +64,44 @@ fn height_for_carrier_provenance(
                 .copied())
         }
         NodeCarrierProvenanceOrigin::SourceSegment {
+            source_segment_id,
             canonical_point,
             segment_start,
             segment_end,
             ..
-        } => height_for_explicit_source_segment(
-            source,
-            canonical_point.raw_tuple(),
-            segment_start.raw_tuple(),
-            segment_end.raw_tuple(),
-            points_by_source,
-            paths_by_source,
-        ),
-        NodeCarrierProvenanceOrigin::SourceSurface => Ok(None),
+        } => {
+            let canonical_point = canonical_point.raw_tuple();
+            let Some(height_m) = height_for_explicit_source_segment(
+                source,
+                canonical_point,
+                segment_start.raw_tuple(),
+                segment_end.raw_tuple(),
+                points_by_source,
+                rails,
+                source_segment_id,
+            )?
+            else {
+                if generated_contour_with_source_contains_point(
+                    rails,
+                    source_segment_id,
+                    canonical_point,
+                ) {
+                    return Ok(None);
+                }
+                return Err(NodeRailGenerationError::MissingCarrierProvenanceHeight {
+                    kind: source.0,
+                    mouth_order_index: source.1,
+                    band_index: source.2,
+                    point_x_key: point.0,
+                    point_z_key: point.1,
+                    source_segment_id,
+                });
+            };
+            Ok(Some(height_m))
+        }
+        NodeCarrierProvenanceOrigin::SourceIntersection { .. }
+        | NodeCarrierProvenanceOrigin::GeneratedCarrierVertex { .. }
+        | NodeCarrierProvenanceOrigin::GeneratedCarrierSurface { .. } => Ok(None),
     }
 }
 
@@ -88,7 +111,8 @@ fn height_for_explicit_source_segment(
     segment_start: NodeRailPointKey,
     segment_end: NodeRailPointKey,
     points_by_source: &BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
-    paths_by_source: &BTreeMap<NodeRailHeightSourceKey, NodeRailHeightCarrierPaths>,
+    rails: &NodeRailContourSet,
+    source_segment_id: NodeSourceCarrierSegmentId,
 ) -> Result<Option<f64>, NodeRailGenerationError> {
     let source_points = points_by_source
         .get(&source)
@@ -108,15 +132,116 @@ fn height_for_explicit_source_segment(
         ));
     }
 
-    let Some(paths) = paths_by_source.get(&source) else {
-        return Ok(None);
-    };
-    Ok(height_for_segment_from_source_paths(
+    if let Some(paths) = rails.height_carrier_paths_by_source.get(&source)
+        && let Some(height_m) =
+            height_for_segment_from_source_paths(point, segment_start, segment_end, paths)
+    {
+        return Ok(Some(height_m));
+    }
+    if let Some(height_m) = height_for_segment_from_generated_contours(
         point,
         segment_start,
         segment_end,
-        paths,
-    ))
+        rails,
+        source_segment_id,
+    ) {
+        return Ok(Some(height_m));
+    }
+    Ok(None)
+}
+
+fn height_for_segment_from_generated_contours(
+    point: NodeRailPointKey,
+    segment_start: NodeRailPointKey,
+    segment_end: NodeRailPointKey,
+    rails: &NodeRailContourSet,
+    source_segment_id: NodeSourceCarrierSegmentId,
+) -> Option<f64> {
+    rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.owner == Some(source_segment_id.owner)
+                && contour.source_mouth_order_index == source_segment_id.source_mouth_order_index
+                && contour.source_band_index == Some(source_segment_id.source_band_index)
+                && matches!(
+                    contour.kind,
+                    NodeGeneratedContourKind::Band { kind }
+                        if kind == source_segment_id.source_kind
+                )
+        })
+        .filter_map(|contour| {
+            height_for_segment_from_world_path(
+                point,
+                segment_start,
+                segment_end,
+                contour.height_points_world.as_ref()?,
+                true,
+            )
+        })
+        .next()
+}
+
+fn generated_contour_with_source_contains_point(
+    rails: &NodeRailContourSet,
+    source_segment_id: NodeSourceCarrierSegmentId,
+    point: NodeRailPointKey,
+) -> bool {
+    rails.contours.iter().any(|contour| {
+        contour.owner == Some(source_segment_id.owner)
+            && contour.source_mouth_order_index == source_segment_id.source_mouth_order_index
+            && contour.source_band_index == Some(source_segment_id.source_band_index)
+            && contour.height_points_world.is_some()
+            && matches!(
+                contour.kind,
+                NodeGeneratedContourKind::Band { kind }
+                    if kind == source_segment_id.source_kind
+            )
+            && key_polygon_contains_point(
+                &contour
+                    .points_xz
+                    .iter()
+                    .copied()
+                    .map(road_point_key)
+                    .collect::<Vec<_>>(),
+                point,
+            )
+    })
+}
+
+fn key_polygon_contains_point(polygon: &[NodeRailPointKey], point: NodeRailPointKey) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    for edge in polygon.windows(2) {
+        if raw_tuple_key_lies_on_segment(point, edge[0], edge[1]) {
+            return true;
+        }
+    }
+    if let (Some(first), Some(last)) = (polygon.first().copied(), polygon.last().copied())
+        && raw_tuple_key_lies_on_segment(point, last, first)
+    {
+        return true;
+    }
+
+    let px = point.0 as f64;
+    let pz = point.1 as f64;
+    let mut inside = false;
+    for index in 0..polygon.len() {
+        let start = polygon[index];
+        let end = polygon[(index + 1) % polygon.len()];
+        let start_z = start.1 as f64;
+        let end_z = end.1 as f64;
+        if (start_z > pz) == (end_z > pz) {
+            continue;
+        }
+        let edge_x_at_point_z =
+            (end.0 - start.0) as f64 * (pz - start_z) / (end_z - start_z) + start.0 as f64;
+        if px < edge_x_at_point_z {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 fn height_for_segment_from_source_paths(

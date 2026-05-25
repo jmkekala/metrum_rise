@@ -161,6 +161,65 @@ fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_recor
 }
 
 #[test]
+fn maps_missing_carrier_provenance_height_to_source_segment_debug_record() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
+    let height_field_id = NodeBandHeightFieldId::new(2, 5, RoadSurfaceBandKind::Sidewalk);
+    let source_segment_id = NodeSourceCarrierSegmentId {
+        owner,
+        source_kind: RoadSurfaceBandKind::Sidewalk,
+        source_mouth_order_index: 2,
+        source_band_index: 5,
+        segment_start: NodeOwnedRegionArrangementKey::from_ownership_key((-1_785_000, -5_439_600)),
+        segment_end: NodeOwnedRegionArrangementKey::from_ownership_key((-1_785_000, -5_430_000)),
+    };
+    let report = NodeValidationReport::from_height_field_error(
+        2,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeHeightFieldError::MissingCarrierProvenanceHeight {
+            mouth_order_index: 2,
+            band_index: 5,
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            height_field_id,
+            point_x_key: -1_785_000,
+            point_z_key: -5_439_600,
+            point_x_mm: -17_850,
+            point_z_mm: -54_396,
+            source_segment_id,
+        },
+    );
+
+    assert!(report.has_blocking_diagnostics());
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+    assert!(matches!(
+        diagnostic.kind,
+        NodeGeometryDiagnosticKind::MissingCarrierProvenanceHeight {
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            source_mouth_order_index: 2,
+            source_band_index: 5,
+            height_field_id: mapped_height_field_id,
+            source_segment_id: mapped_source_segment_id,
+            ..
+        } if mapped_height_field_id == height_field_id
+            && mapped_source_segment_id == source_segment_id
+    ));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["kind"], "missing_carrier_provenance_height");
+    assert_eq!(diagnostic["source_segment_id"]["owner"]["owner_index"], 17);
+    assert_eq!(
+        diagnostic["source_segment_id"]["source"]["kind"],
+        "Sidewalk"
+    );
+    assert_eq!(
+        diagnostic["source_segment_id"]["segment_start"]["x_key"],
+        -1_785_000
+    );
+}
+
+#[test]
 fn maps_missing_grade_authority_to_blocking_node_grade_diagnostic() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 4);
     let height_field_id = NodeBandHeightFieldId::new(2, 3, RoadSurfaceBandKind::Sidewalk);
@@ -429,6 +488,20 @@ fn maps_ambiguous_source_segment_authorization_to_source_rich_debug_record() {
             source_band_index: 2,
             candidates: vec![
                 NodeSourceSegmentAuthorizationCandidate {
+                    source_segment_id: NodeSourceCarrierSegmentId {
+                        owner,
+                        source_kind: RoadSurfaceBandKind::Carriageway,
+                        source_mouth_order_index: 1,
+                        source_band_index: 2,
+                        segment_start: NodeOwnedRegionArrangementKey::from_ownership_key((
+                            -39_339_263,
+                            -57_072_175,
+                        )),
+                        segment_end: NodeOwnedRegionArrangementKey::from_ownership_key((
+                            -39_340_263,
+                            -57_072_175,
+                        )),
+                    },
                     source_kind: RoadSurfaceBandKind::Carriageway,
                     source_mouth_order_index: 1,
                     source_band_index: 2,
@@ -439,6 +512,20 @@ fn maps_ambiguous_source_segment_authorization_to_source_rich_debug_record() {
                     dust_budget_key_units: 256,
                 },
                 NodeSourceSegmentAuthorizationCandidate {
+                    source_segment_id: NodeSourceCarrierSegmentId {
+                        owner,
+                        source_kind: RoadSurfaceBandKind::Carriageway,
+                        source_mouth_order_index: 1,
+                        source_band_index: 2,
+                        segment_start: NodeOwnedRegionArrangementKey::from_ownership_key((
+                            -39_339_147,
+                            -57_071_688,
+                        )),
+                        segment_end: NodeOwnedRegionArrangementKey::from_ownership_key((
+                            -39_339_147,
+                            -57_070_688,
+                        )),
+                    },
                     source_kind: RoadSurfaceBandKind::Carriageway,
                     source_mouth_order_index: 1,
                     source_band_index: 2,
@@ -472,6 +559,7 @@ fn maps_ambiguous_source_segment_authorization_to_source_rich_debug_record() {
     ));
     let dump = report.debug_dump();
     assert!(dump.contains("\"kind\":\"ambiguous_source_segment_authorization\""));
+    assert!(dump.contains("source_segment_id"));
     assert!(dump.contains("dust_budget_key_units"));
     assert!(dump.contains("segment_start"));
 }

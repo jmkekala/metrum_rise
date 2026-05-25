@@ -34,6 +34,11 @@ impl NodeGeometryDiagnostic {
                     reason: "conflicting_height_carrier_point",
                 }
             }
+            NodeRailGenerationError::MissingCarrierProvenanceHeight { .. } => {
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "missing_carrier_provenance_height",
+                }
+            }
             NodeRailGenerationError::NonCanonicalGeneratedContactEndpoint { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
                     reason: "noncanonical_generated_contact_endpoint",

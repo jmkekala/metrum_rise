@@ -125,6 +125,17 @@ pub(crate) enum NodeHeightFieldError {
         point_x_mm: i64,
         point_z_mm: i64,
     },
+    MissingCarrierProvenanceHeight {
+        mouth_order_index: usize,
+        band_index: usize,
+        source_kind: RoadSurfaceBandKind,
+        height_field_id: NodeBandHeightFieldId,
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        source_segment_id: NodeSourceCarrierSegmentId,
+    },
     SourceHeightFieldConflict {
         mouth_order_index: usize,
         band_index: usize,

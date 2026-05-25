@@ -3,7 +3,7 @@
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{RoadPolyline, RoadVec2, RoadVec3};
 use super::super::joins::SideJoinGenerationError;
-use super::super::ownership::NodeBooleanOwnership;
+use super::super::ownership::{NodeBooleanOwnership, NodeSourceCarrierSegmentId};
 use super::super::terminal::TerminalCapGenerationError;
 use super::source_points::push_owned_region_height_carrier_points;
 use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
@@ -142,12 +142,7 @@ impl NodeRailContourSet {
     {
         let mut points_by_source = self.height_carrier_points_by_source.clone();
         if let Some(ownership) = ownership {
-            push_owned_region_height_carrier_points(
-                &mut points_by_source,
-                &self.constraints,
-                &self.height_carrier_paths_by_source,
-                ownership,
-            )?;
+            push_owned_region_height_carrier_points(&mut points_by_source, self, ownership)?;
         }
         Ok(points_by_source)
     }
@@ -207,6 +202,14 @@ pub(crate) enum NodeRailGenerationError {
         point_z_key: i64,
         existing_height_mm: i64,
         incoming_height_mm: i64,
+    },
+    MissingCarrierProvenanceHeight {
+        kind: RoadSurfaceBandKind,
+        mouth_order_index: usize,
+        band_index: usize,
+        point_x_key: i64,
+        point_z_key: i64,
+        source_segment_id: NodeSourceCarrierSegmentId,
     },
     NonCanonicalGeneratedContactEndpoint {
         kind: NodeRailConstraintKind,

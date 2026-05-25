@@ -7,7 +7,7 @@ use super::backend::{
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
-use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
+use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership, NodeSourceCarrierSegmentId};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeGeneratedContourPurpose, NodeRailContourSet, NodeRailGenerationError,

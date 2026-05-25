@@ -273,6 +273,27 @@ impl NodeGeometryDiagnostic {
                 axis: None,
                 raw_parameter: None,
             },
+            NodeHeightFieldError::MissingCarrierProvenanceHeight {
+                mouth_order_index,
+                band_index,
+                source_kind,
+                height_field_id,
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                source_segment_id,
+            } => NodeGeometryDiagnosticKind::MissingCarrierProvenanceHeight {
+                point_x_key: *point_x_key,
+                point_z_key: *point_z_key,
+                point_x_mm: *point_x_mm,
+                point_z_mm: *point_z_mm,
+                source_kind: *source_kind,
+                source_mouth_order_index: *mouth_order_index,
+                source_band_index: *band_index,
+                height_field_id: *height_field_id,
+                source_segment_id: *source_segment_id,
+            },
             NodeHeightFieldError::TerminalCapGeneration { error } => {
                 NodeGeometryDiagnosticKind::HeightFieldFailure {
                     reason: error.reason.diagnostic_reason(),

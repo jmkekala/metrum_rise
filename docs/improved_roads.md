@@ -160,10 +160,14 @@ section says whether the runtime has reached it yet.
   forbidden.
 - the general node-local carrier provenance closure is now live before height evaluation. Final
   owned-region support points are classified by owner, source band, `NodeBandHeightFieldId`, and
-  canonical key as exact source vertices, explicit source-segment projections, generated source
-  surfaces, or bounded unprovenanced backend dust that is discarded before it can become a height
-  obligation. Height support materialization now consumes those closure records instead of scanning
-  final regions for owner-wide or nearest candidate repairs.
+  canonical key as exact source vertices, explicit source-segment projections with stable
+  source-carrier segment IDs, source / source intersections, generated carrier vertices, generated
+  carrier-surface support inside generator-declared cap / join / contour surfaces, or bounded
+  unprovenanced backend dust that is discarded before it can become a height obligation. Raw
+  source-path interior containment is not carrier provenance. Height support materialization now
+  consumes closure records instead of scanning final regions for owner-wide or nearest candidate
+  repairs, and a recorded source segment that cannot produce height support reports a structured
+  missing-carrier-provenance-height diagnostic.
 - shared final vertices for the same owner/source height field now resolve through one canonical
   height authority independent of claim-priority lookup. Side-join carriers can therefore
   supersede lower-priority mouth-band carriers at the same canonical key without leaving two
@@ -174,11 +178,11 @@ section says whether the runtime has reached it yet.
   the old unscoped height evaluator
 - road-geometry diagnostic dumps now serialize stage, backend, owner, source band, height-field,
   canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON fields
-  instead of an opaque Rust debug blob. Missing source rails, missing carrier support, rejected
-  residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices have
-  focused diagnostic coverage. Edge centerline dumps include precise replay coordinates alongside
-  readable rounded coordinates; remaining ROAD-01 work now moves to the generated 4-way /
-  arbitrary-`N` conflict matrix and exact raw-polygon identity checks.
+  instead of an opaque Rust debug blob. Missing carrier provenance, missing carrier support, and
+  source-segment height-support failures have focused diagnostic coverage; missing source rails,
+  rejected residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
+  ambiguous carrier provenance still need the remaining focused diagnostic expansion before the
+  ROAD-01 conflict matrix is considered complete.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
@@ -232,8 +236,12 @@ Data ownership:
 - acceptable origin kinds are:
   - source vertex
   - source-segment projection with canonical parameter and overlay-dust residual
-  - source / source intersection where both sides explicitly authorize the same height field
+  - stable source-carrier segment ID attached to every source-segment projection
+  - source / source or owner/source intersection where participating final regions carry explicit
+    source and height-field contexts
   - generated cap / join / contour vertex emitted by the generator with its owning carrier
+  - generated cap / join / contour surface support inside a generator-declared carrier surface,
+    never raw source-path interior containment
   - connected endpoint dust cluster whose source endpoint and projected canonical point are both
     deterministic
 

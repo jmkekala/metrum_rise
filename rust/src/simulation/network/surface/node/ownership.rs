@@ -4,8 +4,8 @@ use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
 };
 use super::rails::{
-    NodeGeneratedContourClaimPriority, NodeRailConstraint, NodeRailConstraintKind,
-    NodeRailContourSet,
+    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailContourSet,
 };
 use super::{
     NodeOverlayContour, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
@@ -38,9 +38,9 @@ use seams::{
 };
 use std::collections::BTreeMap;
 use topology_keys::{
-    NodeOwnershipPointKey, overlay_point_from_key, ownership_key_from_overlay_point,
-    ownership_key_from_road_point, ownership_mm_key, point_key_lies_on_segment,
-    segment_parameter_key,
+    NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
+    ownership_key_from_overlay_point, ownership_key_from_road_point, ownership_mm_key,
+    point_key_lies_on_segment, segment_parameter_key,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,17 +156,41 @@ pub(crate) struct NodeCarrierProvenanceRecord {
 pub(crate) enum NodeCarrierProvenanceOrigin {
     SourceVertex,
     SourceSegment {
+        source_segment_id: NodeSourceCarrierSegmentId,
         canonical_point: NodeOwnedRegionArrangementKey,
         segment_start: NodeOwnedRegionArrangementKey,
         segment_end: NodeOwnedRegionArrangementKey,
         distance_key_units_sq: i64,
         dust_budget_key_units: i64,
     },
-    SourceSurface,
+    SourceIntersection {
+        peer_count: usize,
+    },
+    GeneratedCarrierVertex {
+        contour_index: usize,
+        purpose: NodeGeneratedContourPurpose,
+        claim_priority: NodeGeneratedContourClaimPriority,
+    },
+    GeneratedCarrierSurface {
+        contour_index: usize,
+        purpose: NodeGeneratedContourPurpose,
+        claim_priority: NodeGeneratedContourClaimPriority,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct NodeSourceCarrierSegmentId {
+    pub(crate) owner: NodeBandOwner,
+    pub(crate) source_kind: RoadSurfaceBandKind,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: usize,
+    pub(crate) segment_start: NodeOwnedRegionArrangementKey,
+    pub(crate) segment_end: NodeOwnedRegionArrangementKey,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeSourceSegmentAuthorizationCandidate {
+    pub(crate) source_segment_id: NodeSourceCarrierSegmentId,
     pub(crate) source_kind: RoadSurfaceBandKind,
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: usize,
@@ -175,6 +199,21 @@ pub(crate) struct NodeSourceSegmentAuthorizationCandidate {
     pub(crate) segment_end: NodeOwnershipPointKey,
     pub(crate) distance_key_units_sq: i64,
     pub(crate) dust_budget_key_units: i64,
+}
+
+fn source_carrier_segment_id(
+    owner: NodeBandOwner,
+    source: (RoadSurfaceBandKind, usize, usize),
+    segment: OwnedRegionEdgeKey,
+) -> NodeSourceCarrierSegmentId {
+    NodeSourceCarrierSegmentId {
+        owner,
+        source_kind: source.0,
+        source_mouth_order_index: source.1,
+        source_band_index: source.2,
+        segment_start: NodeOwnedRegionArrangementKey::from_ownership_key(segment.start),
+        segment_end: NodeOwnedRegionArrangementKey::from_ownership_key(segment.end),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -229,6 +229,27 @@ fn rail_generation_error_to_height_error(error: NodeRailGenerationError) -> Node
                 incoming_height_mm,
             }
         }
+        NodeRailGenerationError::MissingCarrierProvenanceHeight {
+            kind,
+            mouth_order_index,
+            band_index,
+            point_x_key,
+            point_z_key,
+            source_segment_id,
+        } => {
+            let key = SurfaceXzKey::from_raw_keys(point_x_key, point_z_key);
+            NodeHeightFieldError::MissingCarrierProvenanceHeight {
+                mouth_order_index,
+                band_index,
+                source_kind: kind,
+                height_field_id: NodeBandHeightFieldId::new(mouth_order_index, band_index, kind),
+                point_x_key,
+                point_z_key,
+                point_x_mm: key.x_mm(),
+                point_z_mm: key.z_mm(),
+                source_segment_id,
+            }
+        }
         NodeRailGenerationError::InvalidHeightCarrier { reason, .. } => {
             NodeHeightFieldError::RailHeightCarrierGeneration { reason }
         }

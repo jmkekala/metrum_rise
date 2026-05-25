@@ -3,7 +3,9 @@
 use super::super::arrangement::{NodeBandHeightFieldId, NodeBandOwner};
 use super::super::height::NodeHeightAuthoritySource;
 use super::super::keys::SurfaceXzKey;
-use super::super::ownership::NodeSourceSegmentAuthorizationCandidate;
+use super::super::ownership::{
+    NodeSourceCarrierSegmentId, NodeSourceSegmentAuthorizationCandidate,
+};
 use super::super::triangulation::NodeTriangulationSolution;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use serde_json::{Value, json};
@@ -280,6 +282,17 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         source_mouth_order_index: usize,
         source_band_index: usize,
         height_field_id: NodeBandHeightFieldId,
+    },
+    MissingCarrierProvenanceHeight {
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        source_kind: RoadSurfaceBandKind,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        height_field_id: NodeBandHeightFieldId,
+        source_segment_id: NodeSourceCarrierSegmentId,
     },
     BackendFailure {
         reason: &'static str,
@@ -900,6 +913,29 @@ impl NodeGeometryDiagnosticKind {
                 },
                 "height_field_id": height_field_id_value(*height_field_id),
             }),
+            Self::MissingCarrierProvenanceHeight {
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                source_kind,
+                source_mouth_order_index,
+                source_band_index,
+                height_field_id,
+                source_segment_id,
+            } => json!({
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "source": {
+                    "kind": band_kind_value(*source_kind),
+                    "mouth_order_index": source_mouth_order_index,
+                    "band_index": source_band_index,
+                },
+                "height_field_id": height_field_id_value(*height_field_id),
+                "source_segment_id": source_carrier_segment_id_value(source_segment_id),
+            }),
             Self::BackendFailure { reason } => json!({
                 "reason": reason,
             }),
@@ -936,6 +972,7 @@ impl NodeGeometryDiagnosticKind {
                 "ambiguous_source_segment_authorization"
             }
             Self::MissingCarrierProvenance { .. } => "missing_carrier_provenance",
+            Self::MissingCarrierProvenanceHeight { .. } => "missing_carrier_provenance_height",
             Self::BackendFailure { .. } => "backend_failure",
         }
     }
@@ -1020,6 +1057,7 @@ fn source_segment_authorization_candidate_value(
     candidate: &NodeSourceSegmentAuthorizationCandidate,
 ) -> Value {
     json!({
+        "source_segment_id": source_carrier_segment_id_value(&candidate.source_segment_id),
         "source": {
             "kind": band_kind_value(candidate.source_kind),
             "mouth_order_index": candidate.source_mouth_order_index,
@@ -1036,6 +1074,23 @@ fn source_segment_authorization_candidate_value(
         )),
         "distance_key_units_sq": candidate.distance_key_units_sq,
         "dust_budget_key_units": candidate.dust_budget_key_units,
+    })
+}
+
+fn source_carrier_segment_id_value(id: &NodeSourceCarrierSegmentId) -> Value {
+    json!({
+        "owner": owner_value(id.owner),
+        "source": {
+            "kind": band_kind_value(id.source_kind),
+            "mouth_order_index": id.source_mouth_order_index,
+            "band_index": id.source_band_index,
+        },
+        "segment_start": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            id.segment_start.raw_tuple(),
+        )),
+        "segment_end": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            id.segment_end.raw_tuple(),
+        )),
     })
 }
 

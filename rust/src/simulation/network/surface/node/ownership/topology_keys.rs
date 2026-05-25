@@ -37,7 +37,7 @@ impl NodeOwnedRegionArrangementKey {
         Self::from_ownership_key(ownership_key_from_road_point(point))
     }
 
-    pub(super) fn from_ownership_key(point: NodeOwnershipPointKey) -> Self {
+    pub(crate) fn from_ownership_key(point: NodeOwnershipPointKey) -> Self {
         Self {
             x_key: point.0,
             z_key: point.1,

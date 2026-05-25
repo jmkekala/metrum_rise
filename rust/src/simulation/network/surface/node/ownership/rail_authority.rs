@@ -14,7 +14,9 @@ use super::topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, ownership_key_from_road_point, ownership_mm_key,
     point_key_lies_on_segment,
 };
-use super::{NodeBooleanOwnershipError, NodeSourceSegmentAuthorizationCandidate};
+use super::{
+    NodeBooleanOwnershipError, NodeSourceSegmentAuthorizationCandidate, source_carrier_segment_id,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Same-owner source points inside this sub-quarter-millimeter span are one canonical

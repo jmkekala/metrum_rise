@@ -277,6 +277,11 @@ fn source_segment_authorization_candidate(
         return None;
     }
     Some(NodeSourceSegmentAuthorizationCandidate {
+        source_segment_id: source_carrier_segment_id(
+            authority.owner,
+            authority.source,
+            authority.segment,
+        ),
         source_kind: authority.source.0,
         source_mouth_order_index: authority.source.1,
         source_band_index: authority.source.2,
