@@ -5,8 +5,8 @@ use super::super::super::contours::height_for_key_on_generated_edge;
 use super::super::super::geometry::road_point_key;
 use super::super::super::topology::NodeRailPointKey;
 use super::super::super::{
-    NodeGeneratedContourKind, NodeRailContourSet, NodeRailGenerationError,
-    NodeRailHeightCarrierPaths,
+    NodeGeneratedContourKind, NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
+    NodeRailGenerationError, NodeRailHeightCarrierPaths,
 };
 use super::super::NodeRailHeightSourceKey;
 use super::super::collection::{
@@ -138,6 +138,16 @@ fn height_for_explicit_source_segment(
     {
         return Ok(Some(height_m));
     }
+    if let Some(height_m) = height_for_segment_from_source_constraints(
+        point,
+        segment_start,
+        segment_end,
+        rails,
+        source_segment_id,
+        &heights_by_key,
+    ) {
+        return Ok(Some(height_m));
+    }
     if let Some(height_m) = height_for_segment_from_generated_contours(
         point,
         segment_start,
@@ -148,6 +158,72 @@ fn height_for_explicit_source_segment(
         return Ok(Some(height_m));
     }
     Ok(None)
+}
+
+fn height_for_segment_from_source_constraints(
+    point: NodeRailPointKey,
+    segment_start: NodeRailPointKey,
+    segment_end: NodeRailPointKey,
+    rails: &NodeRailContourSet,
+    source_segment_id: NodeSourceCarrierSegmentId,
+    heights_by_key: &BTreeMap<NodeRailPointKey, f64>,
+) -> Option<f64> {
+    rails
+        .constraints
+        .iter()
+        .filter(|constraint| constraint_matches_source_segment(source_segment_id, constraint))
+        .filter_map(|constraint| {
+            let keys = constraint_point_keys(constraint);
+            let segment_index = keys.windows(2).position(|segment| {
+                (segment[0] == segment_start && segment[1] == segment_end)
+                    || (segment[0] == segment_end && segment[1] == segment_start)
+            })?;
+            height_for_path_segment_point(point, &keys, heights_by_key, segment_index)
+        })
+        .next()
+}
+
+fn constraint_matches_source_segment(
+    source_segment_id: NodeSourceCarrierSegmentId,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    constraint.kind != NodeRailConstraintKind::RaisedStepContact
+        && constraint.source_mouth_order_index == source_segment_id.source_mouth_order_index
+        && constraint.source_band_index == Some(source_segment_id.source_band_index)
+        && [constraint.owner, constraint.opposite_owner].contains(&Some(source_segment_id.owner))
+        && source_segment_id.owner.kind() == source_segment_id.source_kind
+}
+
+fn constraint_point_keys(constraint: &NodeRailConstraint) -> Vec<NodeRailPointKey> {
+    constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(road_point_key)
+        .collect()
+}
+
+fn height_for_path_segment_point(
+    point: NodeRailPointKey,
+    keys: &[NodeRailPointKey],
+    heights_by_key: &BTreeMap<NodeRailPointKey, f64>,
+    segment_index: usize,
+) -> Option<f64> {
+    let (start, start_height_m) = (0..=segment_index).rev().find_map(|candidate_index| {
+        let point = keys[candidate_index];
+        heights_by_key
+            .get(&point)
+            .copied()
+            .map(|height| (point, height))
+    })?;
+    let (end, end_height_m) = (segment_index + 1..keys.len()).find_map(|candidate_index| {
+        let point = keys[candidate_index];
+        heights_by_key
+            .get(&point)
+            .copied()
+            .map(|height| (point, height))
+    })?;
+    height_for_key_on_generated_edge(point, start, end, start_height_m, end_height_m)
 }
 
 fn height_for_segment_from_generated_contours(
@@ -303,4 +379,83 @@ fn height_on_world_segment_key(
         start.y,
         end.y,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::node::arrangement::NodeBandOwner;
+    use crate::simulation::network::surface::node::backend::RoadVec2;
+    use crate::simulation::network::surface::node::ownership::NodeOwnedRegionArrangementKey;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
+    };
+
+    #[test]
+    fn source_constraint_height_materializes_only_from_recorded_source_segment() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 7);
+        let source_segment_id = NodeSourceCarrierSegmentId {
+            owner,
+            source_kind: RoadSurfaceBandKind::Carriageway,
+            source_mouth_order_index: 3,
+            source_band_index: 1,
+            segment_start: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(2.0, 0.0)),
+            segment_end: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(3.0, 0.0)),
+        };
+        let rails = NodeRailContourSet {
+            node_id: 1,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            contours: Vec::new(),
+            constraints: vec![NodeRailConstraint {
+                constraint_index: 0,
+                kind: NodeRailConstraintKind::BandContour {
+                    kind: RoadSurfaceBandKind::Carriageway,
+                },
+                source_mouth_order_index: 3,
+                source_band_index: Some(1),
+                source_boundary_index: None,
+                owner: Some(owner),
+                opposite_owner: None,
+                points_xz: vec![
+                    RoadVec2::new(0.0, 0.0),
+                    RoadVec2::new(2.0, 0.0),
+                    RoadVec2::new(3.0, 0.0),
+                    RoadVec2::new(5.0, 0.0),
+                ],
+            }],
+            height_carrier_paths_by_source: BTreeMap::new(),
+            height_carrier_points_by_source: BTreeMap::new(),
+        };
+        let mut heights_by_key = BTreeMap::new();
+        heights_by_key.insert(road_point_key(RoadVec2::new(0.0, 0.0)), 10.0);
+        heights_by_key.insert(road_point_key(RoadVec2::new(5.0, 0.0)), 15.0);
+
+        let height_m = height_for_segment_from_source_constraints(
+            road_point_key(RoadVec2::new(2.0, 0.0)),
+            road_point_key(RoadVec2::new(2.0, 0.0)),
+            road_point_key(RoadVec2::new(3.0, 0.0)),
+            &rails,
+            source_segment_id,
+            &heights_by_key,
+        )
+        .expect("recorded source segment should materialize from its explicit source constraint");
+
+        assert_eq!(height_m, 12.0);
+
+        let wrong_source_segment_id = NodeSourceCarrierSegmentId {
+            source_band_index: 2,
+            ..source_segment_id
+        };
+        assert_eq!(
+            height_for_segment_from_source_constraints(
+                road_point_key(RoadVec2::new(2.0, 0.0)),
+                road_point_key(RoadVec2::new(2.0, 0.0)),
+                road_point_key(RoadVec2::new(3.0, 0.0)),
+                &rails,
+                wrong_source_segment_id,
+                &heights_by_key,
+            ),
+            None
+        );
+    }
 }

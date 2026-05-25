@@ -20,7 +20,6 @@ use super::contours::{push_boundary_constraint, push_span_handoff_constraint};
 use super::owners::{boundary_owners, owners_by_mouth};
 use super::source_points::{
     interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
-    push_source_constraint_height_carrier_points,
 };
 use super::{
     NodeRailContourSet, NodeRailGenerationError, NodeRailHeightCarrierPaths, RoadSurfaceBandKind,
@@ -203,10 +202,6 @@ impl NodeRailContourSet {
             &contours,
             &validation_constraints,
             source_constraint_count,
-        )?;
-        push_source_constraint_height_carrier_points(
-            &mut height_carrier_points_by_source,
-            &validation_constraints[..source_constraint_count],
         )?;
         Ok(Self {
             node_id: input.node_id,

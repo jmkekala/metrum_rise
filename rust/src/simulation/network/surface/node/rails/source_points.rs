@@ -9,7 +9,5 @@ use super::super::RoadSurfaceBandKind;
 type NodeRailHeightSourceKey = (RoadSurfaceBandKind, usize, usize);
 
 pub(super) use collection::push_band_height_carrier_points;
-pub(super) use materialization::{
-    push_owned_region_height_carrier_points, push_source_constraint_height_carrier_points,
-};
+pub(super) use materialization::push_owned_region_height_carrier_points;
 pub(super) use paths::{interval_height_carrier_paths, interval_height_carrier_points};

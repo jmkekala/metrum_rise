@@ -168,6 +168,11 @@ section says whether the runtime has reached it yet.
   consumes closure records instead of scanning final regions for owner-wide or nearest candidate
   repairs, and a recorded source segment that cannot produce height support reports a structured
   missing-carrier-provenance-height diagnostic.
+- the live height-carrier materialization audit is complete. Initial mouth / cap carrier points are
+  declared during rail construction, but post-boolean support is materialized only from closure
+  records. The old pre-closure source-constraint point materializer has been deleted; explicit
+  source constraints can now supply height only when the closure record names the matching stable
+  source-carrier segment ID.
 - shared final vertices for the same owner/source height field now resolve through one canonical
   height authority independent of claim-priority lookup. Side-join carriers can therefore
   supersede lower-priority mouth-band carriers at the same canonical key without leaving two
@@ -217,8 +222,8 @@ pipeline obey the node band grade carrier hardcut while the broader backend clea
 
 Target invariant:
 
-- keep auditing the closure-map implementation so every remaining live materialization path is
-  either represented in carrier provenance or removed from production reachability
+- keep every live height-carrier materialization path represented in carrier provenance, and keep
+  removed pre-closure patch materializers out of production reachability
 - keep expanding focused diagnostics for missing source rails, missing carrier support, rejected
   residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
   ambiguous carrier provenance
@@ -283,15 +288,16 @@ Implementation phases:
 6. Remove the patch materializers from live reachability.
    After the closure map owns all legal materialization, delete or shrink the current repair
    scaffolding:
-   - `rails/source_points/materialization/owned_regions.rs` should stop scanning final regions and
-     guessing height support from paths, same-mm clusters, or arbitrary constraints
+   - `rails/source_points/materialization/owned_regions.rs` should remain driven by closure records;
+     it may consume source paths, explicit source constraints, or generated contours only through
+     the stable source-carrier segment ID named by the record
    - `ownership/rail_authority/point_set.rs` should lose same-mm duplicate-source policy,
      source-segment projection cluster policy, endpoint bridge policy, and owner-wide point
      authorization that is not source / height-field scoped
    - `ownership/rail_authority/validation.rs` should become a closure-map validator, not a
      heuristic source-authority validator
-   - `rails/source_points/materialization/constraints.rs` may keep only direct explicit-constraint
-     carrier materialization that is represented in the closure map
+   - `rails/source_points/materialization/constraints.rs` has been deleted; do not reintroduce
+     pre-closure source-constraint point materialization
 
 7. Keep the hard-failure gates.
    Do not remove `missing_owned_region_carrier_support`, source-height conflict diagnostics,

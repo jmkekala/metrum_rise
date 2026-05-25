@@ -7,7 +7,7 @@ use super::super::NodeRailGenerationError;
 use super::super::geometry::road_point_key;
 use super::super::topology::NodeRailPointKey;
 use super::NodeRailHeightSourceKey;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub(in crate::simulation::network::surface::node::rails) fn push_band_height_carrier_points(
     points_by_source: &mut BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
@@ -58,35 +58,6 @@ pub(super) fn source_height_points_by_key(
     source_height_points_by_matching_key(source, points, |_| true)
 }
 
-pub(super) fn unambiguous_source_height_points_by_key_subset(
-    points: &[RoadVec3],
-    keys: &[NodeRailPointKey],
-) -> BTreeMap<NodeRailPointKey, f64> {
-    let keys = keys.iter().copied().collect::<BTreeSet<_>>();
-    let mut heights_by_key = BTreeMap::<NodeRailPointKey, Option<f64>>::new();
-    for point in points {
-        let key = road_point_key(xz(*point));
-        if !keys.contains(&key) {
-            continue;
-        }
-        match heights_by_key.get_mut(&key) {
-            Some(Some(existing_height_m))
-                if SurfaceHeightMmKey::from_m_f64(*existing_height_m)
-                    == SurfaceHeightMmKey::from_m_f64(point.y) => {}
-            Some(height_m) => {
-                *height_m = None;
-            }
-            None => {
-                heights_by_key.insert(key, Some(point.y));
-            }
-        }
-    }
-    heights_by_key
-        .into_iter()
-        .filter_map(|(key, height_m)| height_m.map(|height_m| (key, height_m)))
-        .collect()
-}
-
 fn source_height_points_by_matching_key(
     source: NodeRailHeightSourceKey,
     points: &[RoadVec3],
@@ -116,13 +87,6 @@ fn source_height_points_by_matching_key(
         }
     }
     Ok(heights_by_key)
-}
-
-pub(super) fn known_height(
-    heights_by_key: &BTreeMap<NodeRailPointKey, f64>,
-    point: NodeRailPointKey,
-) -> Option<f64> {
-    heights_by_key.get(&point).copied()
 }
 
 pub(super) fn source_has_height_point(
