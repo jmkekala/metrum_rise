@@ -162,6 +162,55 @@ fn flat_t_junction_equivalent_edit_order_preserves_exact_raw_polygon_identity() 
     assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
 }
 
+#[test]
+fn flat_four_way_junction_equivalent_edit_order_preserves_exact_raw_polygon_identity() {
+    let forward = compile_generated_flat_four_way_junction_raw_identity(
+        73.0,
+        244.0,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Forward,
+    );
+    let reverse = compile_generated_flat_four_way_junction_raw_identity(
+        73.0,
+        244.0,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Reverse,
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+}
+
+#[test]
+fn flat_five_way_junction_equivalent_edit_order_preserves_exact_raw_polygon_identity() {
+    let endpoint_angle_degrees = [0.0, 37.0, 118.0, 203.0, 291.0];
+    let forward = compile_generated_flat_multiway_junction_raw_identity(
+        &endpoint_angle_degrees,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Forward,
+    );
+    let reverse = compile_generated_flat_multiway_junction_raw_identity(
+        &endpoint_angle_degrees,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Reverse,
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+}
+
+#[test]
+fn flat_six_way_junction_equivalent_edit_order_preserves_exact_raw_polygon_identity() {
+    let endpoint_angle_degrees = [0.0, 23.0, 61.0, 137.0, 211.0, 304.0];
+    let forward = compile_generated_flat_multiway_junction_raw_identity(
+        &endpoint_angle_degrees,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Forward,
+    );
+    let reverse = compile_generated_flat_multiway_junction_raw_identity(
+        &endpoint_angle_degrees,
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Reverse,
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+}
+
 fn compile_generated_flat_bend(
     angle_degrees: f32,
     edge_direction: GeneratedEdgeDirection,
@@ -241,6 +290,62 @@ fn compile_generated_flat_t_junction_raw_identity(
     if !surface.compiled_visual_node_pieces().contains_key(&center) {
         panic!(
             "generated flat JunctionN did not compile for raw identity; angle_degrees={angle_degrees} edge_direction={edge_direction:?} edit_order={edit_order:?}: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+    assert_compiled_junction_piece(&surface, &graph, center);
+    canonical_node_raw_polygon_identity(&surface, &graph, center)
+}
+
+fn compile_generated_flat_multiway_junction_raw_identity(
+    endpoint_angle_degrees: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+) -> CanonicalNodeRawPolygonIdentity {
+    let (graph, center) = generated_multiway_junction_graph(
+        endpoint_angle_degrees,
+        edge_direction,
+        edit_order,
+        GeneratedEndpointProfileMode::UseAuthoredPoints,
+        flat_generated_point_at_xz,
+        flat_generated_edge_points,
+    );
+    let terrain = flat_terrain(2048, 2048);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "generated flat multiway JunctionN did not compile for raw identity; endpoint_angle_degrees={endpoint_angle_degrees:?} edge_direction={edge_direction:?} edit_order={edit_order:?}: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+    assert_compiled_junction_piece(&surface, &graph, center);
+    canonical_node_raw_polygon_identity(&surface, &graph, center)
+}
+
+fn compile_generated_flat_four_way_junction_raw_identity(
+    first_branch_angle_degrees: f32,
+    second_branch_angle_degrees: f32,
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+) -> CanonicalNodeRawPolygonIdentity {
+    let (graph, center) = generated_four_way_junction_graph(
+        first_branch_angle_degrees,
+        second_branch_angle_degrees,
+        edge_direction,
+        edit_order,
+        GeneratedEndpointProfileMode::UseAuthoredPoints,
+        flat_generated_point_at_xz,
+        flat_generated_edge_points,
+    );
+    let terrain = flat_terrain(2048, 2048);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "generated flat 4-way JunctionN did not compile for raw identity; first_branch_angle_degrees={first_branch_angle_degrees} second_branch_angle_degrees={second_branch_angle_degrees} edge_direction={edge_direction:?} edit_order={edit_order:?}: {}",
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }

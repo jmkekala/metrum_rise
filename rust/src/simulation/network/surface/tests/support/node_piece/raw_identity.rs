@@ -75,28 +75,21 @@ fn canonical_top_polygon_identities(
                 region.owner_index, source.owner_index,
                 "owned region owner must match top-source owner"
             );
-            let polygon_keys = region
-                .polygon
-                .points_world
-                .iter()
-                .copied()
-                .map(world_point_raw_key)
-                .collect::<Vec<_>>();
             let vertex_keys = source
                 .vertex_keys
                 .iter()
                 .copied()
                 .map(arrangement_key_tuple)
                 .collect::<Vec<_>>();
-            assert_eq!(
-                polygon_keys, vertex_keys,
-                "exported top polygon points must match canonical arrangement keys"
+            assert_exported_polygon_points_track_canonical_keys(
+                &region.polygon.points_world,
+                &source.vertex_keys,
             );
             CanonicalNodeTopPolygonIdentity {
                 kind: source.kind,
                 owner_index: source.owner_index,
                 height_field_id: source.height_field_id,
-                polygon_keys,
+                polygon_keys: vertex_keys.clone(),
                 vertex_keys,
                 vertex_height_mm: source.vertex_height_mm.clone(),
                 vertex_grade_authorities: source
@@ -162,6 +155,32 @@ fn grade_authority_for_source(
 fn world_point_raw_key(point: Vector3) -> (i64, i64) {
     let key = SurfaceXzKey::from_road_xz(backend::godot_vec3_xz_to_road(point));
     (key.x_key(), key.z_key())
+}
+
+fn assert_exported_polygon_points_track_canonical_keys(
+    points_world: &[Vector3],
+    vertex_keys: &[NodeArrangementKey],
+) {
+    assert_eq!(
+        points_world.len(),
+        vertex_keys.len(),
+        "exported top polygon point count must match canonical arrangement key count"
+    );
+    for (point_index, (&point, &key)) in points_world.iter().zip(vertex_keys).enumerate() {
+        let actual = world_point_raw_key(point);
+        let expected = arrangement_key_tuple(key);
+        let x_tolerance = display_float_key_tolerance(expected.0);
+        let z_tolerance = display_float_key_tolerance(expected.1);
+        assert!(
+            (actual.0 - expected.0).abs() <= x_tolerance
+                && (actual.1 - expected.1).abs() <= z_tolerance,
+            "exported top polygon point {point_index} must track canonical arrangement key within f32 display precision: actual={actual:?} expected={expected:?} tolerance=({x_tolerance},{z_tolerance})"
+        );
+    }
+}
+
+fn display_float_key_tolerance(raw_key: i64) -> i64 {
+    ((raw_key.unsigned_abs() as f64) * f64::from(f32::EPSILON)).ceil() as i64 + 2
 }
 
 fn arrangement_key_tuple(key: NodeArrangementKey) -> (i64, i64) {

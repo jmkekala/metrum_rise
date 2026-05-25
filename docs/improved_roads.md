@@ -129,8 +129,10 @@ section says whether the runtime has reached it yet.
   full-roadbed / carriageway corridor authority before per-band owner clipping. The generated flat
   Bend and 3-way `JunctionN` angle matrix now covers acute, right-angle, obtuse, and near-parallel
   cases, with representative reversed-edge-direction and equivalent-edit-order compile coverage.
-  Generated elevated Bend and 3-way `JunctionN` variants now cover the same matrix; 4-way /
-  arbitrary `N > 4` and exact raw-polygon identity checks remain open.
+  Generated elevated Bend and 3-way `JunctionN` variants now cover the same matrix; exact
+  raw-polygon identity checks are seeded for generated flat 3-way, 4-way, 5-way, and 6-way
+  equivalent edit orders, while broader 4-way / arbitrary-N matrices and elevated raw-identity
+  coverage remain open.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
   curb / shoulder and sidewalk ownership; missing evidence now reports as structured ownership /
   residual diagnostics instead of deferring to downstream height failures
@@ -189,17 +191,19 @@ section says whether the runtime has reached it yet.
   carrier support, rejected residuals, open boundaries, duplicate exposed edges, non-explicit
   boundary vertices, ambiguous carrier provenance, and source-segment height-support failures now
   have focused diagnostic coverage. Exact canonical raw-polygon identity helpers now compare
-  exported top polygons by canonical raw keys / height fields / grade authorities plus
-  carrier-provenance closure records, with an initial generated 3-way equivalent-edit-order seed.
-  Generated 4-way `JunctionN`, arbitrary `N > 4`, and broader raw-polygon identity coverage remain
-  the next ROAD-01 conflict-matrix expansion.
+  top-surface source records by canonical raw keys / height fields / grade authorities plus
+  carrier-provenance closure records, while bounding display `Vector3` drift to f32 upload
+  precision; initial generated flat 3-way, 4-way, 5-way, and 6-way equivalent-edit-order seeds use
+  this path. Broader generated 4-way / arbitrary-N matrices and elevated raw-polygon identity
+  coverage remain the next ROAD-01 conflict-matrix expansion.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
 ### Open ROAD-01 Work
 
 - extend the conflict-first Bend / JunctionN test matrix from generated flat and elevated Bend /
-  3-way cases to 4-way, arbitrary `N > 4`, and broader exact canonical raw-polygon identity checks
+  3-way cases to broader 4-way / arbitrary-N matrices and elevated exact canonical raw-polygon
+  identity checks
 - complete terrain / road agreement tests for authored and extreme DEM cases, including retaining
   wall and widened tie-in combinations
 - keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
@@ -324,8 +328,9 @@ Implementation phases:
    arbitrary `N > 4`, and exact canonical raw-polygon identity checks. These tests must compare
    canonical keys / stable IDs, not float coordinate equality.
    **Seeded:** exact raw-polygon identity helpers now compare canonical top-polygon keys, height
-   fields, grade authorities, and carrier-provenance closure records. A generated flat 3-way
-   equivalent-edit-order test uses this path; 4-way / arbitrary-N expansion remains open.
+   fields, grade authorities, and carrier-provenance closure records. Generated flat 3-way, 4-way,
+   5-way, and 6-way equivalent-edit-order tests use this path; broader 4-way / arbitrary-N /
+   elevated expansion remains open.
 
 Performance rule:
 

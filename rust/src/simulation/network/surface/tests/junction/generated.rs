@@ -228,6 +228,74 @@ where
     )
 }
 
+pub(in crate::simulation::network::surface::tests::junction) fn generated_four_way_junction_graph<
+    P,
+    E,
+>(
+    first_branch_angle_degrees: f32,
+    second_branch_angle_degrees: f32,
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    mut point_at_xz: P,
+    mut edge_points: E,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    let center_xz = Vector2::ZERO;
+    let west_xz = point_at_angle_degrees(180.0);
+    let east_xz = point_at_angle_degrees(0.0);
+    let first_branch_xz = point_at_angle_degrees(first_branch_angle_degrees);
+    let second_branch_xz = point_at_angle_degrees(second_branch_angle_degrees);
+    generated_center_graph(
+        center_xz,
+        &[west_xz, east_xz, first_branch_xz, second_branch_xz],
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        &mut point_at_xz,
+        &mut edge_points,
+    )
+}
+
+pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph<
+    P,
+    E,
+>(
+    endpoint_angle_degrees: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    mut point_at_xz: P,
+    mut edge_points: E,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    assert!(
+        endpoint_angle_degrees.len() >= 3,
+        "generated multiway JunctionN fixtures require at least three endpoint angles"
+    );
+    let center_xz = Vector2::ZERO;
+    let endpoint_xzs = endpoint_angle_degrees
+        .iter()
+        .copied()
+        .map(point_at_angle_degrees)
+        .collect::<Vec<_>>();
+    generated_center_graph(
+        center_xz,
+        &endpoint_xzs,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        &mut point_at_xz,
+        &mut edge_points,
+    )
+}
+
 fn generated_center_graph<P, E>(
     center_xz: Vector2,
     endpoint_xzs: &[Vector2],
