@@ -3,6 +3,7 @@
 use super::*;
 
 impl NodeRailCanonicalPointSet {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface::node::ownership) fn owner_source_authorizes_point(
         &self,
         owner: NodeBandOwner,
@@ -38,6 +39,7 @@ impl NodeRailCanonicalPointSet {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::simulation::network::surface::node::ownership) fn canonical_conflict_for_owner(
         &self,
         owner: NodeBandOwner,
@@ -70,6 +72,7 @@ impl NodeRailCanonicalPointSet {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::simulation::network::surface::node::ownership) fn source_authorizes_same_mm_duplicate_cluster(
         &self,
         point: NodeOwnershipPointKey,

@@ -477,6 +477,56 @@ fn maps_ambiguous_source_segment_authorization_to_source_rich_debug_record() {
 }
 
 #[test]
+fn carrier_provenance_closure_maps_missing_diagnostic_to_json() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
+    let height_field_id = NodeBandHeightFieldId::new(2, 5, RoadSurfaceBandKind::Sidewalk);
+    let report = NodeValidationReport::from_boolean_ownership_error(
+        2,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeBooleanOwnershipError::MissingCarrierProvenance {
+            owner,
+            point_x_key: -1_785_000,
+            point_z_key: -5_439_600,
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            source_mouth_order_index: 2,
+            source_band_index: 5,
+            height_field_id,
+        },
+    );
+
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::BooleanOwnership);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::IOverlay);
+    assert!(matches!(
+        diagnostic.kind,
+        NodeGeometryDiagnosticKind::MissingCarrierProvenance {
+            owner: mapped_owner,
+            source_kind: RoadSurfaceBandKind::Sidewalk,
+            source_mouth_order_index: 2,
+            source_band_index: 5,
+            height_field_id: mapped_height_field,
+            ..
+        } if mapped_owner == owner && mapped_height_field == height_field_id
+    ));
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["kind"], "missing_carrier_provenance");
+    assert_eq!(diagnostic["stage"], "boolean_ownership");
+    assert_eq!(diagnostic["backend"], "i_overlay");
+    assert_eq!(diagnostic["owner"]["kind"], "Sidewalk");
+    assert_eq!(diagnostic["owner"]["owner_index"], 17);
+    assert_eq!(diagnostic["source"]["kind"], "Sidewalk");
+    assert_eq!(diagnostic["source"]["mouth_order_index"], 2);
+    assert_eq!(diagnostic["source"]["band_index"], 5);
+    assert_eq!(diagnostic["height_field_id"]["mouth_order_index"], 2);
+    assert_eq!(diagnostic["height_field_id"]["band_index"], 5);
+    assert_eq!(diagnostic["point_x_mm"], -1_785);
+    assert_eq!(diagnostic["point_z_mm"], -5_440);
+}
+
+#[test]
 fn maps_arrangement_seam_diagnostic_to_structured_debug_record() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);

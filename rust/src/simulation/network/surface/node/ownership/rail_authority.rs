@@ -6,13 +6,15 @@ use super::super::backend::road_vec3_xz;
 use super::super::rails::{
     NodeGeneratedContourKind, NodeRailConstraint, NodeRailContourSet, NodeRailHeightCarrierPaths,
 };
+#[cfg(test)]
+use super::NodeBooleanOwnedRegion;
+#[cfg(test)]
+use super::topology_keys::ownership_key_from_overlay_point;
 use super::topology_keys::{
-    NodeOwnershipPointKey, OwnedRegionEdgeKey, ownership_key_from_overlay_point,
-    ownership_key_from_road_point, ownership_mm_key, point_key_lies_on_segment,
+    NodeOwnershipPointKey, OwnedRegionEdgeKey, ownership_key_from_road_point, ownership_mm_key,
+    point_key_lies_on_segment,
 };
-use super::{
-    NodeBooleanOwnedRegion, NodeBooleanOwnershipError, NodeSourceSegmentAuthorizationCandidate,
-};
+use super::{NodeBooleanOwnershipError, NodeSourceSegmentAuthorizationCandidate};
 use std::collections::{BTreeMap, BTreeSet};
 
 // Same-owner source points inside this sub-quarter-millimeter span are one canonical
@@ -49,6 +51,7 @@ mod validation;
 pub(super) use collection::canonical_points_for_rail_set;
 #[cfg(test)]
 pub(super) use collection::insert_open_source_segments;
+#[cfg(test)]
 pub(super) use validation::validate_owned_region_vertices_against_source_authority;
 #[cfg(test)]
 pub(super) use validation::{canonical_points_by_mm_key_by_owner, constraint_authority_owners};

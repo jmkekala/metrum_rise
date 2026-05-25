@@ -171,6 +171,7 @@ fn test_rail_canonical_points_from_constraints(
 }
 
 mod arrangement_diagnostics;
+mod carrier_provenance;
 mod domains;
 mod rail_authority;
 mod ring_noding;

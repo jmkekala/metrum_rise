@@ -51,6 +51,10 @@ impl NodeOwnedRegionArrangementKey {
     pub(crate) fn z_mm(self) -> i64 {
         ownership_coordinate_key_to_mm(self.z_key)
     }
+
+    pub(crate) fn raw_tuple(self) -> NodeOwnershipPointKey {
+        (self.x_key, self.z_key)
+    }
 }
 
 pub(super) fn canonical_source_indices(sources: impl IntoIterator<Item = usize>) -> Vec<usize> {

@@ -151,6 +151,72 @@ fn dirty_recompile_expanded_arbitrary_node_piece_compiles_with_explicit_height_c
 }
 
 #[test]
+fn carrier_provenance_closure_five_hundred_meter_multi_junction_edit_compiles() {
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
+    let mut graph = RegionGraph::new();
+    let node_positions = [
+        Vector3::new(-99.096, 164.529, -202.255),
+        Vector3::new(213.395, 149.180, 167.508),
+        Vector3::new(-44.146, 159.327, -137.233),
+        Vector3::new(-20.282, 153.579, -258.083),
+        Vector3::new(1.727, 151.822, -82.953),
+        Vector3::new(-42.936, 144.308, -43.106),
+        Vector3::new(45.419, 143.379, -31.253),
+        Vector3::new(135.812, 141.427, -21.842),
+        Vector3::new(112.629, 148.295, 48.275),
+        Vector3::new(38.920, 143.849, 61.654),
+        Vector3::new(162.304, 147.082, 107.054),
+        Vector3::new(225.642, 146.702, 77.249),
+    ];
+    let nodes = node_positions.map(|point| graph.add_node(point, NodeType::Junction));
+    for (start, end) in [
+        (0, 2),
+        (2, 4),
+        (4, 6),
+        (6, 8),
+        (8, 10),
+        (10, 1),
+        (2, 3),
+        (4, 5),
+        (6, 7),
+        (8, 9),
+        (10, 11),
+    ] {
+        let start_node = nodes[start];
+        let end_node = nodes[end];
+        graph.add_edge(test_edge(
+            start_node,
+            end_node,
+            vec![node_positions[start], node_positions[end]],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    for junction in [nodes[2], nodes[4], nodes[6], nodes[8], nodes[10]] {
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&junction)
+            .unwrap_or_else(|| {
+                panic!(
+                    "500 m multi-junction edit must compile every 3-way node: {}",
+                    canonical_junction_pipeline_report(&surface, &graph, junction)
+                )
+            });
+        assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+        assert_node_piece_uses_band_owned_regions(piece);
+        assert_node_earthwork_faces_have_footprint_provenance(piece);
+    }
+}
+
+#[test]
 fn dirty_recompile_removes_node_from_previous_chunks_after_topology_shrink() {
     let terrain = flat_terrain(192, 192);
     let mut graph = RegionGraph::new();

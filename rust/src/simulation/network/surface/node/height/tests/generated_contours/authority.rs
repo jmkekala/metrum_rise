@@ -101,6 +101,7 @@ fn bend_pre_height_gate_uses_owner_generated_carrier_before_heighting_region() {
             &[],
         ),
         owned_regions,
+        carrier_provenance: NodeCarrierProvenanceClosure::empty(),
     };
 
     let solution =

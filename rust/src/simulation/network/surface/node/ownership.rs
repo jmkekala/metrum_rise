@@ -1,6 +1,8 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
-use super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};
+use super::arrangement::{
+    NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
+};
 use super::rails::{
     NodeGeneratedContourClaimPriority, NodeRailConstraint, NodeRailConstraintKind,
     NodeRailContourSet,
@@ -11,6 +13,7 @@ use super::{
 };
 
 mod boundaries;
+mod carrier_provenance;
 mod contact_semantics;
 mod domains;
 mod rail_authority;
@@ -29,6 +32,7 @@ use rings::{canonicalize_owned_region_rings, clean_canonical_owned_region_shapes
 
 use rail_authority::canonical_points_for_rail_set;
 
+use carrier_provenance::NodeCarrierProvenanceContext;
 use seams::{
     ConstraintOverlapMode, materialize_noded_region_seam_constraints, seam_constraints_for_shape,
 };
@@ -48,6 +52,7 @@ pub(crate) struct NodeBooleanOwnership {
     pub(crate) non_road_shapes: NodeOverlayShapes,
     pub(crate) owned_regions: Vec<NodeBooleanOwnedRegion>,
     pub(crate) owned_region_arrangement: NodeOwnedRegionArrangement,
+    pub(crate) carrier_provenance: NodeCarrierProvenanceClosure,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +126,45 @@ pub(crate) struct NodeBooleanOwnedRegion {
     pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeCarrierProvenanceClosure {
+    pub(crate) records: Vec<NodeCarrierProvenanceRecord>,
+}
+
+impl NodeCarrierProvenanceClosure {
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct NodeCarrierProvenanceRecord {
+    pub(crate) owner: NodeBandOwner,
+    pub(crate) source_kind: RoadSurfaceBandKind,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: usize,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
+    pub(crate) point: NodeOwnedRegionArrangementKey,
+    pub(crate) origin: NodeCarrierProvenanceOrigin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum NodeCarrierProvenanceOrigin {
+    SourceVertex,
+    SourceSegment {
+        canonical_point: NodeOwnedRegionArrangementKey,
+        segment_start: NodeOwnedRegionArrangementKey,
+        segment_end: NodeOwnedRegionArrangementKey,
+        distance_key_units_sq: i64,
+        dust_budget_key_units: i64,
+    },
+    SourceSurface,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeSourceSegmentAuthorizationCandidate {
     pub(crate) source_kind: RoadSurfaceBandKind,
@@ -161,6 +205,7 @@ pub(crate) enum NodeBooleanOwnershipError {
         shape_count: usize,
         area_m2: f32,
     },
+    #[cfg(test)]
     NonCanonicalOwnedRegionVertex {
         owner: NodeBandOwner,
         point_x_key: i64,
@@ -182,6 +227,15 @@ pub(crate) enum NodeBooleanOwnershipError {
         source_mouth_order_index: usize,
         source_band_index: usize,
         candidates: Vec<NodeSourceSegmentAuthorizationCandidate>,
+    },
+    MissingCarrierProvenance {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        source_kind: RoadSurfaceBandKind,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        height_field_id: NodeBandHeightFieldId,
     },
 }
 
@@ -302,12 +356,14 @@ impl NodeBooleanOwnership {
             );
         }
         let mut final_boundary_vertices_stable = false;
+        let carrier_context = NodeCarrierProvenanceContext::new(rails, &rail_canonical_points);
         for _ in 0..8 {
             if !materialize_final_boundary_vertices_for_height(
                 rails.node_id,
                 &mut owned_regions,
                 &mut footprint_shapes,
                 &mut owned_region_arrangement,
+                &carrier_context,
                 &rails.constraints,
                 constraint_overlap_mode,
                 rails.piece_kind,
@@ -321,9 +377,33 @@ impl NodeBooleanOwnership {
                 stage: "final_boundary_vertex_materialization",
             });
         }
+        if discard_unprovenanced_numeric_dust_regions(&mut owned_regions, &carrier_context)? {
+            footprint_shapes =
+                final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
+            canonicalize_footprint_shapes_with_final_points(&mut footprint_shapes, &owned_regions);
+            rebuild_owned_region_seam_constraints(
+                &mut owned_regions,
+                &footprint_shapes,
+                &rails.constraints,
+                constraint_overlap_mode,
+                rails.piece_kind,
+            );
+            owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+                rails.node_id,
+                rails.piece_kind,
+                &owned_regions,
+                &footprint_shapes,
+                &rails.constraints,
+            );
+        }
         validate_non_road_regions_have_explicit_profile_seam_rails(
             &owned_regions,
             &rails.constraints,
+        )?;
+        let carrier_provenance = NodeCarrierProvenanceClosure::from_owned_regions(
+            &owned_regions,
+            rails,
+            &rail_canonical_points,
         )?;
         Ok(Self {
             node_id: rails.node_id,
@@ -333,6 +413,7 @@ impl NodeBooleanOwnership {
             non_road_shapes,
             owned_regions,
             owned_region_arrangement,
+            carrier_provenance,
         })
     }
 }
@@ -499,11 +580,33 @@ fn raised_step_curb_owner_for_sidewalk_constraint(
     }
 }
 
+fn discard_unprovenanced_numeric_dust_regions(
+    owned_regions: &mut Vec<NodeBooleanOwnedRegion>,
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
+) -> Result<bool, NodeBooleanOwnershipError> {
+    let mut changed = false;
+    let mut retained = Vec::with_capacity(owned_regions.len());
+    for region in owned_regions.drain(..) {
+        // A sub-cap backend sliver that cannot prove a carrier is residual overlay dust, not a
+        // renderable top surface. Larger unsupported regions still fail in carrier closure below.
+        if region.area_m2 <= crate::simulation::network::surface::NODE_OVERLAY_NUMERIC_AREA_CAP_M2
+            && carrier_context.region_has_missing_provenance(&region)?
+        {
+            changed = true;
+            continue;
+        }
+        retained.push(region);
+    }
+    *owned_regions = retained;
+    Ok(changed)
+}
+
 fn materialize_final_boundary_vertices_for_height(
     node_id: u32,
     owned_regions: &mut Vec<NodeBooleanOwnedRegion>,
     footprint_shapes: &mut NodeOverlayShapes,
     owned_region_arrangement: &mut NodeOwnedRegionArrangement,
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
     rail_constraints: &[NodeRailConstraint],
     constraint_overlap_mode: ConstraintOverlapMode,
     piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -513,7 +616,8 @@ fn materialize_final_boundary_vertices_for_height(
         owned_regions,
         footprint_shapes,
         owned_region_arrangement,
-    );
+        carrier_context,
+    )?;
     if !regions_changed {
         return Ok(false);
     }
@@ -589,17 +693,29 @@ fn materialize_final_footprint_vertices_in_owned_regions(
     owned_regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     _arrangement: &NodeOwnedRegionArrangement,
-) -> bool {
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
+) -> Result<bool, NodeBooleanOwnershipError> {
     let final_footprint_points = final_footprint_point_keys(footprint_shapes);
     let final_footprint_edges = final_footprint_edge_keys(footprint_shapes);
     if final_footprint_points.is_empty() {
-        return false;
+        return Ok(false);
     }
     let mut changed = false;
     for region in owned_regions.iter_mut() {
+        let region_owner = region.owner;
+        let region_kind = region.kind;
+        let region_source_mouth_order_index = region.source_mouth_order_index;
+        let region_source_band_index = region.source_band_index;
         for contour in &mut region.shape {
-            let materialized =
-                materialized_contour_with_final_footprint_points(contour, &final_footprint_edges);
+            let materialized = materialized_contour_with_final_footprint_points(
+                contour,
+                region_owner,
+                region_kind,
+                region_source_mouth_order_index,
+                region_source_band_index,
+                &final_footprint_edges,
+                carrier_context,
+            )?;
             if contour_point_keys(&materialized) == contour_point_keys(contour) {
                 continue;
             }
@@ -607,7 +723,7 @@ fn materialize_final_footprint_vertices_in_owned_regions(
             changed = true;
         }
     }
-    changed
+    Ok(changed)
 }
 
 fn final_footprint_point_keys(footprint_shapes: &NodeOverlayShapes) -> Vec<NodeOwnershipPointKey> {
@@ -644,10 +760,15 @@ fn final_footprint_edge_keys(
 
 fn materialized_contour_with_final_footprint_points(
     contour: &NodeOverlayContour,
+    region_owner: NodeBandOwner,
+    region_kind: RoadSurfaceBandKind,
+    region_source_mouth_order_index: usize,
+    region_source_band_index: Option<usize>,
     final_footprint_edges: &[(NodeOwnershipPointKey, NodeOwnershipPointKey)],
-) -> NodeOverlayContour {
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
+) -> Result<NodeOverlayContour, NodeBooleanOwnershipError> {
     if contour.len() < 2 {
-        return contour.clone();
+        return Ok(contour.clone());
     }
     let mut materialized = Vec::with_capacity(contour.len());
     for edge_index in 0..contour.len() {
@@ -656,8 +777,16 @@ fn materialized_contour_with_final_footprint_points(
         if start == end {
             continue;
         }
-        let mut edge_points =
-            supported_final_footprint_boundary_points_for_edge(start, end, final_footprint_edges);
+        let mut edge_points = supported_final_footprint_boundary_points_for_edge(
+            start,
+            end,
+            final_footprint_edges,
+            region_owner,
+            region_kind,
+            region_source_mouth_order_index,
+            region_source_band_index,
+            carrier_context,
+        )?;
         if edge_points.is_empty() {
             materialized.push(start);
             continue;
@@ -668,17 +797,22 @@ fn materialized_contour_with_final_footprint_points(
         materialized.extend(edge_points);
     }
     dedup_materialized_contour(&mut materialized);
-    materialized
+    Ok(materialized
         .into_iter()
         .map(overlay_point_from_key)
-        .collect()
+        .collect())
 }
 
 fn supported_final_footprint_boundary_points_for_edge(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     final_footprint_edges: &[(NodeOwnershipPointKey, NodeOwnershipPointKey)],
-) -> Vec<NodeOwnershipPointKey> {
+    region_owner: NodeBandOwner,
+    region_kind: RoadSurfaceBandKind,
+    region_source_mouth_order_index: usize,
+    region_source_band_index: Option<usize>,
+    carrier_context: &NodeCarrierProvenanceContext<'_>,
+) -> Result<Vec<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
     let mut points = Vec::new();
     for (edge_start, edge_end) in final_footprint_edges {
         if !footprint_edges_overlap(start, end, *edge_start, *edge_end) {
@@ -693,7 +827,22 @@ fn supported_final_footprint_boundary_points_for_edge(
     }
     points.sort_by_key(|point| segment_parameter_key(start, end, *point));
     points.dedup();
-    points
+    let mut supported = Vec::with_capacity(points.len());
+    for point in points {
+        if carrier_context
+            .origin_for_owned_source_point(
+                region_owner,
+                region_kind,
+                region_source_mouth_order_index,
+                region_source_band_index,
+                point,
+            )?
+            .is_some()
+        {
+            supported.push(point);
+        }
+    }
+    Ok(supported)
 }
 
 fn footprint_edges_overlap(

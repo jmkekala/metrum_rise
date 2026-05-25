@@ -1,6 +1,7 @@
 //! Canonical node pipeline diagnostic report helpers.
 
 use super::*;
+use crate::simulation::network::surface::keys::SurfaceXzKey;
 
 pub(in crate::simulation::network::surface::tests) fn canonical_junction_pipeline_report(
     surface: &RoadSurfaceSystem,
@@ -42,6 +43,14 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
     let ownership = match RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails) {
         Ok(ownership) => ownership,
         Err(error) => {
+            if let ownership::NodeBooleanOwnershipError::MissingCarrierProvenance { .. } = &error {
+                return format!(
+                    "{} error={error:?} {}",
+                    NodeValidationReport::from_boolean_ownership_error(node_id, piece_kind, &error)
+                        .debug_dump(),
+                    rail_debug_for_missing_carrier_provenance(&rails, &error)
+                );
+            }
             return format!(
                 "{} error={error:?}",
                 NodeValidationReport::from_boolean_ownership_error(node_id, piece_kind, &error)
@@ -274,6 +283,110 @@ fn owned_region_height_support_debug(
         .collect::<Vec<_>>();
     format!(
         "height_support_debug target_mm={target_mm:?} matching_regions={matching_regions:?} matching_contours={matching_contours:?}"
+    )
+}
+
+fn rail_debug_for_missing_carrier_provenance(
+    rails: &rails::NodeRailContourSet,
+    error: &ownership::NodeBooleanOwnershipError,
+) -> String {
+    let ownership::NodeBooleanOwnershipError::MissingCarrierProvenance {
+        owner,
+        point_x_key,
+        point_z_key,
+        source_kind,
+        source_mouth_order_index,
+        source_band_index,
+        ..
+    } = error
+    else {
+        return String::new();
+    };
+    let target_key = SurfaceXzKey::from_raw_keys(*point_x_key, *point_z_key);
+    let target_mm = (target_key.x_mm(), target_key.z_mm());
+    let matching_constraints = rails
+        .constraints
+        .iter()
+        .filter(|constraint| {
+            constraint.source_mouth_order_index == *source_mouth_order_index
+                && constraint.source_band_index == Some(*source_band_index)
+                && (constraint.owner == Some(*owner) || constraint.opposite_owner == Some(*owner))
+        })
+        .filter(|constraint| {
+            constraint
+                .points_xz
+                .iter()
+                .copied()
+                .any(|point| point_near_mm(road_vec2_mm(point), target_mm, 2500))
+                || constraint.points_xz.windows(2).any(|segment| {
+                    point_near_segment_bbox_mm(
+                        target_mm,
+                        road_vec2_mm(segment[0]),
+                        road_vec2_mm(segment[1]),
+                        2500,
+                    )
+                })
+        })
+        .map(|constraint| {
+            (
+                constraint.constraint_index,
+                constraint.kind,
+                constraint.owner,
+                constraint.opposite_owner,
+                constraint
+                    .points_xz
+                    .iter()
+                    .copied()
+                    .map(|point| SurfaceXzKey::from_road_xz(point).raw_tuple())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let matching_contours = rails
+        .contours
+        .iter()
+        .enumerate()
+        .filter(|(_, contour)| {
+            contour.owner == Some(*owner)
+                && contour.source_mouth_order_index == *source_mouth_order_index
+                && contour.source_band_index == Some(*source_band_index)
+                && matches!(
+                    contour.kind,
+                    rails::NodeGeneratedContourKind::Band { kind } if kind == *source_kind
+                )
+        })
+        .filter(|(_, contour)| {
+            contour
+                .points_xz
+                .iter()
+                .copied()
+                .any(|point| point_near_mm(road_vec2_mm(point), target_mm, 2500))
+                || contour.points_xz.windows(2).any(|segment| {
+                    point_near_segment_bbox_mm(
+                        target_mm,
+                        road_vec2_mm(segment[0]),
+                        road_vec2_mm(segment[1]),
+                        2500,
+                    )
+                })
+        })
+        .map(|(index, contour)| {
+            (
+                index,
+                contour.purpose,
+                contour.claim_priority,
+                contour.height_points_world.is_some(),
+                contour
+                    .points_xz
+                    .iter()
+                    .copied()
+                    .map(|point| SurfaceXzKey::from_road_xz(point).raw_tuple())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "missing_carrier_rail_debug target_mm={target_mm:?} matching_constraints={matching_constraints:?} matching_contours={matching_contours:?}"
     )
 }
 

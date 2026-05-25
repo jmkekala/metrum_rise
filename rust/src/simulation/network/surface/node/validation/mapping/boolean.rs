@@ -42,6 +42,7 @@ impl NodeGeometryDiagnostic {
                     reason: "missing_band_owner",
                 }
             }
+            #[cfg(test)]
             NodeBooleanOwnershipError::NonCanonicalOwnedRegionVertex {
                 owner,
                 point_x_key,
@@ -94,6 +95,25 @@ impl NodeGeometryDiagnostic {
                 source_mouth_order_index: *source_mouth_order_index,
                 source_band_index: *source_band_index,
                 candidates: candidates.clone(),
+            },
+            NodeBooleanOwnershipError::MissingCarrierProvenance {
+                owner,
+                point_x_key,
+                point_z_key,
+                source_kind,
+                source_mouth_order_index,
+                source_band_index,
+                height_field_id,
+            } => NodeGeometryDiagnosticKind::MissingCarrierProvenance {
+                owner: *owner,
+                point_x_key: *point_x_key,
+                point_z_key: *point_z_key,
+                point_x_mm: SurfaceXzKey::coordinate_key_to_mm(*point_x_key),
+                point_z_mm: SurfaceXzKey::coordinate_key_to_mm(*point_z_key),
+                source_kind: *source_kind,
+                source_mouth_order_index: *source_mouth_order_index,
+                source_band_index: *source_band_index,
+                height_field_id: *height_field_id,
             },
             NodeBooleanOwnershipError::EmptyContourSet { .. }
             | NodeBooleanOwnershipError::EmptyFootprint { .. } => {

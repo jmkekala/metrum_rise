@@ -8,9 +8,7 @@ use super::super::super::{
     RoadSurfaceBandKind, RoadSurfaceSystem,
 };
 use super::super::domains::overlay_union;
-use super::super::rail_authority::{
-    NodeRailCanonicalPointSet, validate_owned_region_vertices_against_source_authority,
-};
+use super::super::rail_authority::NodeRailCanonicalPointSet;
 use super::super::seams::{
     ConstraintOverlapMode, owned_shape_is_discardable_numeric_dust, seam_constraints_for_shape,
 };
@@ -108,10 +106,6 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
         region.seam_constraints =
             seam_constraints_for_shape(&region.shape, region.owner, rail_constraints, overlap_mode);
     }
-    validate_owned_region_vertices_against_source_authority(
-        &cleaned_regions,
-        rail_canonical_points,
-    )?;
     *regions = cleaned_regions;
     Ok(())
 }

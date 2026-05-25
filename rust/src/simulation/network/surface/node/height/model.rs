@@ -198,6 +198,12 @@ pub(super) struct NodeResolvedHeightAuthorityKey {
 pub(super) struct NodeResolvedHeightAuthorityMap {
     pub(super) heights_by_key:
         BTreeMap<NodeResolvedHeightAuthorityKey, NodeResolvedHeightAuthority>,
+    pub(super) raw_heights_by_key:
+        BTreeMap<NodeResolvedHeightAuthorityKey, NodeResolvedHeightAuthority>,
+    pub(super) claim_keys_by_context:
+        BTreeMap<NodeHeightVertexContextKey, BTreeSet<NodeResolvedHeightAuthorityKey>>,
+    pub(super) canonical_key_by_context:
+        BTreeMap<NodeHeightVertexContextKey, NodeResolvedHeightAuthorityKey>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

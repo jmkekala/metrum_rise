@@ -239,6 +239,7 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_z_mm: i64,
         source_constraint_indices: Vec<usize>,
     },
+    #[cfg(test)]
     NonCanonicalOwnedRegionVertex {
         owner: NodeBandOwner,
         point_x_key: i64,
@@ -268,6 +269,17 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         source_mouth_order_index: usize,
         source_band_index: usize,
         candidates: Vec<NodeSourceSegmentAuthorizationCandidate>,
+    },
+    MissingCarrierProvenance {
+        owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        source_kind: RoadSurfaceBandKind,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
+        height_field_id: NodeBandHeightFieldId,
     },
     BackendFailure {
         reason: &'static str,
@@ -799,6 +811,7 @@ impl NodeGeometryDiagnosticKind {
                 "end_z_mm": end_z_mm,
                 "source_constraint_indices": source_constraint_indices,
             }),
+            #[cfg(test)]
             Self::NonCanonicalOwnedRegionVertex {
                 owner,
                 point_x_key,
@@ -864,6 +877,29 @@ impl NodeGeometryDiagnosticKind {
                     .map(source_segment_authorization_candidate_value)
                     .collect::<Vec<_>>(),
             }),
+            Self::MissingCarrierProvenance {
+                owner,
+                point_x_key,
+                point_z_key,
+                point_x_mm,
+                point_z_mm,
+                source_kind,
+                source_mouth_order_index,
+                source_band_index,
+                height_field_id,
+            } => json!({
+                "owner": owner_value(*owner),
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
+                "point_x_mm": point_x_mm,
+                "point_z_mm": point_z_mm,
+                "source": {
+                    "kind": band_kind_value(*source_kind),
+                    "mouth_order_index": source_mouth_order_index,
+                    "band_index": source_band_index,
+                },
+                "height_field_id": height_field_id_value(*height_field_id),
+            }),
             Self::BackendFailure { reason } => json!({
                 "reason": reason,
             }),
@@ -891,6 +927,7 @@ impl NodeGeometryDiagnosticKind {
             Self::UnmaterializedRaisedStepAuthority { .. } => {
                 "unmaterialized_raised_step_authority"
             }
+            #[cfg(test)]
             Self::NonCanonicalOwnedRegionVertex { .. } => "noncanonical_owned_region_vertex",
             Self::AmbiguousCanonicalOwnedRegionVertex { .. } => {
                 "ambiguous_canonical_owned_region_vertex"
@@ -898,6 +935,7 @@ impl NodeGeometryDiagnosticKind {
             Self::AmbiguousSourceSegmentAuthorizedOwnedRegionVertex { .. } => {
                 "ambiguous_source_segment_authorization"
             }
+            Self::MissingCarrierProvenance { .. } => "missing_carrier_provenance",
             Self::BackendFailure { .. } => "backend_failure",
         }
     }

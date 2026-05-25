@@ -158,6 +158,16 @@ section says whether the runtime has reached it yet.
   source point, the compile fails with a structured ambiguous source-segment diagnostic.
   Owner-wide nearest-point selection, arbitrary rounding, and global coordinate snapping remain
   forbidden.
+- the general node-local carrier provenance closure is now live before height evaluation. Final
+  owned-region support points are classified by owner, source band, `NodeBandHeightFieldId`, and
+  canonical key as exact source vertices, explicit source-segment projections, generated source
+  surfaces, or bounded unprovenanced backend dust that is discarded before it can become a height
+  obligation. Height support materialization now consumes those closure records instead of scanning
+  final regions for owner-wide or nearest candidate repairs.
+- shared final vertices for the same owner/source height field now resolve through one canonical
+  height authority independent of claim-priority lookup. Side-join carriers can therefore
+  supersede lower-priority mouth-band carriers at the same canonical key without leaving two
+  conflicting generated heights in the node grade carrier.
 - a pre-height-evaluation height-field completeness gate now resolves every final owned-region
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
@@ -203,15 +213,13 @@ pipeline obey the node band grade carrier hardcut while the broader backend clea
 
 Target invariant:
 
-- every final owned-region boundary vertex has exactly one explicit carrier provenance before
-  height evaluation
-- provenance is scoped by band owner, source band, `NodeBandHeightFieldId`, and canonical key
-- generated boolean vertices are legal only when their creating source segment, source
-  intersection, endpoint cluster, generated cap, or generated join is explicit
-- owner-wide lookup, nearest-source lookup, first-match lookup, same-millimetre guesswork,
-  averaging, min/max repair, old-road priority, and terrain fallback remain forbidden
-- missing or ambiguous provenance fails before CDT, terrain clipping, render export, or earthwork
-  export
+- keep auditing the closure-map implementation so every remaining live materialization path is
+  either represented in carrier provenance or removed from production reachability
+- keep expanding focused diagnostics for missing source rails, missing carrier support, rejected
+  residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
+  ambiguous carrier provenance
+- generated 4-way `JunctionN`, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
+  remain the next conflict-matrix expansion
 
 Data ownership:
 

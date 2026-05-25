@@ -42,6 +42,9 @@ impl NodeResolvedHeightAuthorityMap {
     ) -> Result<Self, NodeHeightFieldError> {
         let mut map = Self {
             heights_by_key: BTreeMap::new(),
+            raw_heights_by_key: BTreeMap::new(),
+            claim_keys_by_context: BTreeMap::new(),
+            canonical_key_by_context: BTreeMap::new(),
         };
         for region in &ownership.owned_regions {
             let field = height_field_for_region(region, fields)?;
@@ -85,8 +88,18 @@ impl NodeResolvedHeightAuthorityMap {
             height_field_id,
             claim_priority,
         };
+        let context = NodeHeightVertexContextKey {
+            point,
+            owner,
+            height_field_id,
+        };
+        let incoming = NodeResolvedHeightAuthority {
+            point_xz,
+            height_m: height.height_m,
+            authority: height.authority,
+        };
         let height_mm = quantize_m(height.height_m);
-        if let Some(existing) = self.heights_by_key.get(&key) {
+        if let Some(existing) = self.raw_heights_by_key.get(&key) {
             let existing_height_mm = quantize_m(existing.height_m);
             if existing_height_mm != height_mm {
                 return Err(NodeHeightFieldError::SharedSourceHeightConflict {
@@ -105,16 +118,28 @@ impl NodeResolvedHeightAuthorityMap {
                     incoming_height_mm: height_mm,
                 });
             }
-            return Ok(());
+        } else {
+            self.raw_heights_by_key.insert(key, incoming);
         }
-        self.heights_by_key.insert(
-            key,
-            NodeResolvedHeightAuthority {
-                point_xz,
-                height_m: height.height_m,
-                authority: height.authority,
-            },
-        );
+        self.claim_keys_by_context
+            .entry(context.clone())
+            .or_default()
+            .insert(key);
+        let selected_key = match self.canonical_key_by_context.get(&context).copied() {
+            Some(existing_key) if existing_key.claim_priority <= claim_priority => existing_key,
+            _ => key,
+        };
+        self.canonical_key_by_context
+            .insert(context.clone(), selected_key);
+        let selected = *self
+            .raw_heights_by_key
+            .get(&selected_key)
+            .expect("selected canonical height authority must be inserted");
+        if let Some(claim_keys) = self.claim_keys_by_context.get(&context) {
+            for claim_key in claim_keys {
+                self.heights_by_key.insert(*claim_key, selected);
+            }
+        }
         Ok(())
     }
 
@@ -488,4 +513,71 @@ fn heighted_contour_area_m2(contour: &NodeHeightedContour) -> f64 {
         signed_area += current.x * next.y - next.x * current.y;
     }
     signed_area * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_source_vertex_uses_canonical_claim_priority_for_all_claim_lookups() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+        let field_id = NodeBandHeightFieldId::new(0, 5, RoadSurfaceBandKind::Sidewalk);
+        let point_xz = RoadVec2::new(572.636, 4.995);
+        let mut map = NodeResolvedHeightAuthorityMap {
+            heights_by_key: BTreeMap::new(),
+            raw_heights_by_key: BTreeMap::new(),
+            claim_keys_by_context: BTreeMap::new(),
+            canonical_key_by_context: BTreeMap::new(),
+        };
+        map.insert(
+            owner,
+            field_id,
+            NodeGeneratedContourClaimPriority::MouthBand,
+            point_xz,
+            NodeEvaluatedHeight {
+                height_m: 170.092,
+                authority: NodeHeightAuthoritySource::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                    claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                },
+            },
+            RoadSurfaceBandKind::Sidewalk,
+        )
+        .expect("mouth-band authority inserts");
+        map.insert(
+            owner,
+            field_id,
+            NodeGeneratedContourClaimPriority::SideJoin,
+            point_xz,
+            NodeEvaluatedHeight {
+                height_m: 170.046,
+                authority: NodeHeightAuthoritySource::GeneratedContour {
+                    purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                },
+            },
+            RoadSurfaceBandKind::Sidewalk,
+        )
+        .expect("side-join authority supersedes shared source vertex");
+
+        let mouth_lookup = map
+            .height_for_vertex(
+                owner,
+                field_id,
+                NodeGeneratedContourClaimPriority::MouthBand,
+                [point_xz.x, point_xz.y],
+            )
+            .expect("mouth-band lookup is populated");
+        let side_join_lookup = map
+            .height_for_vertex(
+                owner,
+                field_id,
+                NodeGeneratedContourClaimPriority::SideJoin,
+                [point_xz.x, point_xz.y],
+            )
+            .expect("side-join lookup is populated");
+        assert_eq!(quantize_m(mouth_lookup.height_m), 170_046);
+        assert_eq!(mouth_lookup.authority, side_join_lookup.authority);
+    }
 }

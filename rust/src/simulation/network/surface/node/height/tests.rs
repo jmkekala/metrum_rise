@@ -11,7 +11,7 @@ use super::*;
 use crate::simulation::network::surface::backend::road_points_to_polyline;
 use crate::simulation::network::surface::input::NodeInputMouth;
 use crate::simulation::network::surface::ownership::{
-    NodeBooleanOwnership, NodeOwnedRegionArrangement,
+    NodeBooleanOwnership, NodeCarrierProvenanceClosure, NodeOwnedRegionArrangement,
 };
 use crate::simulation::network::surface::rails::NodeRailContourSet;
 use crate::simulation::network::surface::terminal::{

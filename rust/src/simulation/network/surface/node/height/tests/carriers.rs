@@ -43,6 +43,7 @@ fn rejects_missing_source_band() {
             &[],
         ),
         owned_regions,
+        carrier_provenance: NodeCarrierProvenanceClosure::empty(),
     };
 
     assert!(matches!(
@@ -274,6 +275,7 @@ fn rejects_owned_region_vertex_outside_explicit_height_carrier() {
             &[],
         ),
         owned_regions,
+        carrier_provenance: NodeCarrierProvenanceClosure::empty(),
     };
 
     assert!(matches!(
@@ -310,6 +312,7 @@ fn junctionn_canonical_height_authority_rejects_vertex_outside_explicit_carrier(
             &[],
         ),
         owned_regions,
+        carrier_provenance: NodeCarrierProvenanceClosure::empty(),
     };
 
     assert!(matches!(

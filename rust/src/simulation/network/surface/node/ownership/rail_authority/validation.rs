@@ -20,6 +20,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonical_points
     by_owner
 }
 
+#[cfg(test)]
 pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_region_vertices_against_source_authority(
     regions: &[NodeBooleanOwnedRegion],
     rail_points: &NodeRailCanonicalPointSet,
