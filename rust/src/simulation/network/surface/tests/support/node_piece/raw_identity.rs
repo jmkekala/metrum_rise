@@ -12,6 +12,29 @@ pub(in crate::simulation::network::surface::tests) struct CanonicalNodeRawPolygo
     carrier_records: Vec<ownership::NodeCarrierProvenanceRecord>,
 }
 
+/// Golden signature for canonical node raw-polygon identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::simulation::network::surface::tests) struct CanonicalNodeRawPolygonGolden {
+    /// Expected compiled node-piece kind.
+    pub kind: RoadSurfaceVisualNodePieceKind,
+    /// Expected number of exported top-surface polygons.
+    pub top_polygon_count: usize,
+    /// Expected number of carrier-provenance closure records.
+    pub carrier_record_count: usize,
+    /// Expected number of source-segment provenance records.
+    pub source_segment_record_count: usize,
+    /// Stable digest of canonical polygon key sets.
+    pub polygon_key_set_digest: u64,
+    /// Stable digest of top-surface owner / height-field identities.
+    pub top_owner_height_field_digest: u64,
+    /// Stable digest of carrier owner / source / height-field identities.
+    pub carrier_owner_source_height_field_digest: u64,
+    /// Stable digest of stable source-carrier segment IDs, when present.
+    pub source_segment_id_digest: u64,
+    /// Exact stable source-carrier segment IDs for source-segment projection records.
+    pub source_segment_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CanonicalNodeTopPolygonIdentity {
     kind: RoadSurfaceBandKind,
@@ -52,6 +75,45 @@ pub(in crate::simulation::network::surface::tests) fn assert_canonical_node_raw_
         left, right,
         "canonical raw polygon identity differs between {left_label} and {right_label}\nleft={left:#?}\nright={right:#?}"
     );
+}
+
+pub(in crate::simulation::network::surface::tests) fn assert_canonical_node_raw_polygon_golden(
+    label: &str,
+    identity: &CanonicalNodeRawPolygonIdentity,
+    expected: CanonicalNodeRawPolygonGolden,
+) {
+    let actual = canonical_node_raw_polygon_golden(identity);
+    assert_eq!(
+        actual, expected,
+        "canonical raw polygon golden mismatch for {label}\nactual={actual:#?}\nexpected={expected:#?}\nexact_canonical_identity={identity:#?}"
+    );
+}
+
+fn canonical_node_raw_polygon_golden(
+    identity: &CanonicalNodeRawPolygonIdentity,
+) -> CanonicalNodeRawPolygonGolden {
+    CanonicalNodeRawPolygonGolden {
+        kind: identity.kind,
+        top_polygon_count: identity.top_polygons.len(),
+        carrier_record_count: identity.carrier_records.len(),
+        source_segment_record_count: identity
+            .carrier_records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.origin,
+                    ownership::NodeCarrierProvenanceOrigin::SourceSegment { .. }
+                )
+            })
+            .count(),
+        polygon_key_set_digest: polygon_key_set_digest(&identity.top_polygons),
+        top_owner_height_field_digest: top_owner_height_field_digest(&identity.top_polygons),
+        carrier_owner_source_height_field_digest: carrier_owner_source_height_field_digest(
+            &identity.carrier_records,
+        ),
+        source_segment_id_digest: source_segment_id_digest(&identity.carrier_records),
+        source_segment_ids: source_segment_ids(&identity.carrier_records),
+    }
 }
 
 fn canonical_top_polygon_identities(
@@ -185,4 +247,135 @@ fn display_float_key_tolerance(raw_key: i64) -> i64 {
 
 fn arrangement_key_tuple(key: NodeArrangementKey) -> (i64, i64) {
     (key.x_key(), key.z_key())
+}
+
+fn polygon_key_set_digest(polygons: &[CanonicalNodeTopPolygonIdentity]) -> u64 {
+    let mut state = DIGEST_OFFSET_BASIS;
+    for polygon in polygons {
+        digest_debug(&mut state, &polygon.kind);
+        digest_usize(&mut state, polygon.owner_index);
+        digest_debug(&mut state, &polygon.height_field_id);
+        let mut key_set = polygon.polygon_keys.clone();
+        key_set.sort_unstable();
+        digest_usize(&mut state, key_set.len());
+        for (x_key, z_key) in key_set {
+            digest_i64(&mut state, x_key);
+            digest_i64(&mut state, z_key);
+        }
+    }
+    state
+}
+
+fn top_owner_height_field_digest(polygons: &[CanonicalNodeTopPolygonIdentity]) -> u64 {
+    let mut state = DIGEST_OFFSET_BASIS;
+    for polygon in polygons {
+        digest_debug(&mut state, &polygon.kind);
+        digest_usize(&mut state, polygon.owner_index);
+        digest_debug(&mut state, &polygon.height_field_id);
+        digest_usize(&mut state, polygon.vertex_height_mm.len());
+        for height_mm in &polygon.vertex_height_mm {
+            digest_i64(&mut state, *height_mm);
+        }
+        for authority in &polygon.vertex_grade_authorities {
+            digest_debug(&mut state, authority);
+        }
+        for triangle in &polygon.triangle_grade_authorities {
+            digest_debug(&mut state, triangle);
+        }
+    }
+    state
+}
+
+fn carrier_owner_source_height_field_digest(
+    records: &[ownership::NodeCarrierProvenanceRecord],
+) -> u64 {
+    let mut state = DIGEST_OFFSET_BASIS;
+    for record in records {
+        digest_debug(&mut state, &record.owner);
+        digest_debug(&mut state, &record.source_kind);
+        digest_usize(&mut state, record.source_mouth_order_index);
+        digest_usize(&mut state, record.source_band_index);
+        digest_debug(&mut state, &record.height_field_id);
+        digest_debug(&mut state, &record.claim_priority);
+        digest_debug(&mut state, &record.point);
+        digest_debug(&mut state, &record.origin);
+    }
+    state
+}
+
+fn source_segment_id_digest(records: &[ownership::NodeCarrierProvenanceRecord]) -> u64 {
+    let mut state = DIGEST_OFFSET_BASIS;
+    for source_segment_id in source_segment_ids_from_records(records) {
+        digest_debug(&mut state, &source_segment_id);
+    }
+    state
+}
+
+fn source_segment_ids(records: &[ownership::NodeCarrierProvenanceRecord]) -> Vec<String> {
+    source_segment_ids_from_records(records)
+        .into_iter()
+        .map(|source_segment_id| format!("{source_segment_id:?}"))
+        .collect()
+}
+
+fn source_segment_ids_from_records(
+    records: &[ownership::NodeCarrierProvenanceRecord],
+) -> Vec<ownership::NodeSourceCarrierSegmentId> {
+    let mut source_segment_ids = Vec::new();
+    for record in records {
+        let ownership::NodeCarrierProvenanceOrigin::SourceSegment {
+            source_segment_id, ..
+        } = record.origin
+        else {
+            continue;
+        };
+        assert_eq!(
+            source_segment_id.owner, record.owner,
+            "source-segment provenance ID owner must match record owner"
+        );
+        assert_eq!(
+            source_segment_id.source_kind, record.source_kind,
+            "source-segment provenance ID source kind must match record source kind"
+        );
+        assert_eq!(
+            source_segment_id.source_mouth_order_index, record.source_mouth_order_index,
+            "source-segment provenance ID mouth index must match record source mouth index"
+        );
+        assert_eq!(
+            source_segment_id.source_band_index, record.source_band_index,
+            "source-segment provenance ID band index must match record source band index"
+        );
+        source_segment_ids.push(source_segment_id);
+    }
+    source_segment_ids.sort_unstable();
+    source_segment_ids
+}
+
+const DIGEST_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const DIGEST_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn digest_debug(state: &mut u64, value: &impl std::fmt::Debug) {
+    for byte in format!("{value:?}").bytes() {
+        digest_byte(state, byte);
+    }
+    digest_byte(state, 0xff);
+}
+
+fn digest_usize(state: &mut u64, value: usize) {
+    digest_u64(state, value as u64);
+}
+
+fn digest_i64(state: &mut u64, value: i64) {
+    digest_u64(state, value as u64);
+}
+
+fn digest_u64(state: &mut u64, value: u64) {
+    for byte in value.to_le_bytes() {
+        digest_byte(state, byte);
+    }
+}
+
+fn digest_byte(state: &mut u64, byte: u8) {
+    *state ^= u64::from(byte);
+    *state = state.wrapping_mul(DIGEST_PRIME);
 }

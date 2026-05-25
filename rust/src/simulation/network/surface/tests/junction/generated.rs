@@ -198,6 +198,7 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
     )
 }
 
@@ -225,6 +226,7 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
     )
 }
 
@@ -257,6 +259,7 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
     )
 }
 
@@ -264,6 +267,33 @@ pub(in crate::simulation::network::surface::tests::junction) fn generated_multiw
     P,
     E,
 >(
+    endpoint_angle_degrees: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    mut point_at_xz: P,
+    mut edge_points: E,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    generated_multiway_junction_graph_with_edge_length(
+        GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M,
+        endpoint_angle_degrees,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        &mut point_at_xz,
+        &mut edge_points,
+    )
+}
+
+pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph_with_edge_length<
+    P,
+    E,
+>(
+    edge_length_m: f32,
     endpoint_angle_degrees: &[f32],
     edge_direction: GeneratedEdgeDirection,
     edit_order: GeneratedEditOrder,
@@ -283,7 +313,7 @@ where
     let endpoint_xzs = endpoint_angle_degrees
         .iter()
         .copied()
-        .map(point_at_angle_degrees)
+        .map(|angle_degrees| point_at_angle_degrees_with_length(angle_degrees, edge_length_m))
         .collect::<Vec<_>>();
     generated_center_graph(
         center_xz,
@@ -293,6 +323,77 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
+    )
+}
+
+pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph_with_edge_widths<
+    P,
+    E,
+>(
+    edge_length_m: f32,
+    endpoint_angle_degrees: &[f32],
+    edge_widths_m: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    mut point_at_xz: P,
+    mut edge_points: E,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    assert_eq!(
+        endpoint_angle_degrees.len(),
+        edge_widths_m.len(),
+        "generated multiway width fixtures require one width per endpoint angle"
+    );
+    generated_multiway_junction_graph_with_edge_length_and_widths(
+        edge_length_m,
+        endpoint_angle_degrees,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        &mut point_at_xz,
+        &mut edge_points,
+        Some(edge_widths_m),
+    )
+}
+
+fn generated_multiway_junction_graph_with_edge_length_and_widths<P, E>(
+    edge_length_m: f32,
+    endpoint_angle_degrees: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    point_at_xz: &mut P,
+    edge_points: &mut E,
+    edge_widths_m: Option<&[f32]>,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    assert!(
+        endpoint_angle_degrees.len() >= 3,
+        "generated multiway JunctionN fixtures require at least three endpoint angles"
+    );
+    let center_xz = Vector2::ZERO;
+    let endpoint_xzs = endpoint_angle_degrees
+        .iter()
+        .copied()
+        .map(|angle_degrees| point_at_angle_degrees_with_length(angle_degrees, edge_length_m))
+        .collect::<Vec<_>>();
+    generated_center_graph(
+        center_xz,
+        &endpoint_xzs,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        point_at_xz,
+        edge_points,
+        edge_widths_m,
     )
 }
 
@@ -304,6 +405,7 @@ fn generated_center_graph<P, E>(
     endpoint_profile_mode: GeneratedEndpointProfileMode,
     point_at_xz: &mut P,
     edge_points: &mut E,
+    edge_widths_m: Option<&[f32]>,
 ) -> (RegionGraph, u32)
 where
     P: FnMut(Vector2) -> Vector3,
@@ -330,6 +432,7 @@ where
         edge_direction,
         edit_order,
         edge_points,
+        edge_widths_m,
     );
     if matches!(
         endpoint_profile_mode,
@@ -346,10 +449,14 @@ where
 }
 
 fn point_at_angle_degrees(angle_degrees: f32) -> Vector2 {
+    point_at_angle_degrees_with_length(angle_degrees, GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M)
+}
+
+fn point_at_angle_degrees_with_length(angle_degrees: f32, edge_length_m: f32) -> Vector2 {
     let angle_radians = angle_degrees.to_radians();
     Vector2::new(
-        angle_radians.cos() * GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M,
-        angle_radians.sin() * GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M,
+        angle_radians.cos() * edge_length_m,
+        angle_radians.sin() * edge_length_m,
     )
 }
 
@@ -361,12 +468,13 @@ fn add_generated_center_edges<E>(
     edge_direction: GeneratedEdgeDirection,
     edit_order: GeneratedEditOrder,
     edge_points: &mut E,
+    edge_widths_m: Option<&[f32]>,
 ) where
     E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
 {
     match edit_order {
         GeneratedEditOrder::Forward => {
-            for &(endpoint, endpoint_xz) in endpoints {
+            for (endpoint_index, &(endpoint, endpoint_xz)) in endpoints.iter().enumerate() {
                 add_generated_center_edge(
                     graph,
                     center,
@@ -374,12 +482,13 @@ fn add_generated_center_edges<E>(
                     endpoint,
                     endpoint_xz,
                     edge_direction,
+                    generated_edge_width(edge_widths_m, endpoint_index),
                     edge_points,
                 );
             }
         }
         GeneratedEditOrder::Reverse => {
-            for &(endpoint, endpoint_xz) in endpoints.iter().rev() {
+            for (endpoint_index, &(endpoint, endpoint_xz)) in endpoints.iter().enumerate().rev() {
                 add_generated_center_edge(
                     graph,
                     center,
@@ -387,6 +496,7 @@ fn add_generated_center_edges<E>(
                     endpoint,
                     endpoint_xz,
                     edge_direction,
+                    generated_edge_width(edge_widths_m, endpoint_index),
                     edge_points,
                 );
             }
@@ -401,6 +511,7 @@ fn add_generated_center_edge<E>(
     endpoint: u32,
     endpoint_xz: Vector2,
     edge_direction: GeneratedEdgeDirection,
+    edge_width_m: f32,
     edge_points: &mut E,
 ) where
     E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
@@ -418,11 +529,18 @@ fn add_generated_center_edge<E>(
         start,
         end,
         points,
-        7.0,
+        edge_width_m,
         EdgeClass::Standard,
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
+}
+
+fn generated_edge_width(edge_widths_m: Option<&[f32]>, endpoint_index: usize) -> f32 {
+    edge_widths_m
+        .and_then(|widths| widths.get(endpoint_index))
+        .copied()
+        .unwrap_or(7.0)
 }
 
 pub(in crate::simulation::network::surface::tests::junction) fn flat_generated_point_at_xz(
