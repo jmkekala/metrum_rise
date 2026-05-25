@@ -45,13 +45,15 @@ fn rejects_missing_source_band() {
         owned_regions,
     };
 
-    assert_eq!(
+    assert!(matches!(
         NodeHeightSolution::from_ownership_and_input(&input, &ownership),
         Err(NodeHeightFieldError::MissingSourceBand {
             mouth_order_index: 0,
             band_index: 99,
-        })
-    );
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner: Some(owner),
+        }) if owner == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 99)
+    ));
 }
 
 #[test]

@@ -62,6 +62,11 @@ pub(crate) enum NodeGeometryDiagnosticKind {
     },
     NonExplicitBoundaryVertex {
         region_index: usize,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        height_field_id: NodeBandHeightFieldId,
+        x_key: i64,
+        z_key: i64,
         x_mm: i64,
         z_mm: i64,
         min_boundary_distance_mm: i64,
@@ -136,6 +141,8 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         source_kind: Option<RoadSurfaceBandKind>,
         height_field_id: Option<NodeBandHeightFieldId>,
         owner: Option<NodeBandOwner>,
+        point_x_key: Option<i64>,
+        point_z_key: Option<i64>,
         point_x_mm: Option<i64>,
         point_z_mm: Option<i64>,
         axis: Option<&'static str>,
@@ -153,11 +160,31 @@ pub(crate) enum NodeGeometryDiagnosticKind {
     },
     OpenBoundary {
         region_index: usize,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        height_field_id: NodeBandHeightFieldId,
         vertex_index: Option<usize>,
+        x_key: Option<i64>,
+        z_key: Option<i64>,
+        x_mm: Option<i64>,
+        z_mm: Option<i64>,
+        start_x_key: Option<i64>,
+        start_z_key: Option<i64>,
+        end_x_key: Option<i64>,
+        end_z_key: Option<i64>,
+        start_x_mm: Option<i64>,
+        start_z_mm: Option<i64>,
+        end_x_mm: Option<i64>,
+        end_z_mm: Option<i64>,
         degree: usize,
     },
     DuplicateExposedEdge {
         region_index: Option<usize>,
+        regions: Vec<NodeBoundaryRegionDiagnostic>,
+        start_x_key: i64,
+        start_z_key: i64,
+        end_x_key: i64,
+        end_z_key: i64,
         start_x_mm: i64,
         start_z_mm: i64,
         end_x_mm: i64,
@@ -275,6 +302,14 @@ pub(crate) struct NodeCanonicalPointDiagnostic {
     pub(crate) z_key: i64,
     pub(crate) x_mm: i64,
     pub(crate) z_mm: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NodeBoundaryRegionDiagnostic {
+    pub(crate) region_index: usize,
+    pub(crate) owner: RoadSurfaceBandKind,
+    pub(crate) owner_index: usize,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -427,11 +462,20 @@ impl NodeGeometryDiagnosticKind {
             }),
             Self::NonExplicitBoundaryVertex {
                 region_index,
+                owner,
+                owner_index,
+                height_field_id,
+                x_key,
+                z_key,
                 x_mm,
                 z_mm,
                 min_boundary_distance_mm,
             } => json!({
                 "region_index": region_index,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "height_field_id": height_field_id_value(*height_field_id),
+                "x_key": x_key,
+                "z_key": z_key,
                 "x_mm": x_mm,
                 "z_mm": z_mm,
                 "min_boundary_distance_mm": min_boundary_distance_mm,
@@ -562,6 +606,8 @@ impl NodeGeometryDiagnosticKind {
                 source_kind,
                 height_field_id,
                 owner,
+                point_x_key,
+                point_z_key,
                 point_x_mm,
                 point_z_mm,
                 axis,
@@ -574,6 +620,8 @@ impl NodeGeometryDiagnosticKind {
                 "source_kind": optional_band_kind_value(*source_kind),
                 "height_field_id": optional_height_field_id_value(*height_field_id),
                 "owner": optional_owner_value(*owner),
+                "point_x_key": point_x_key,
+                "point_z_key": point_z_key,
                 "point_x_mm": point_x_mm,
                 "point_z_mm": point_z_mm,
                 "axis": axis,
@@ -599,15 +647,49 @@ impl NodeGeometryDiagnosticKind {
             }),
             Self::OpenBoundary {
                 region_index,
+                owner,
+                owner_index,
+                height_field_id,
                 vertex_index,
+                x_key,
+                z_key,
+                x_mm,
+                z_mm,
+                start_x_key,
+                start_z_key,
+                end_x_key,
+                end_z_key,
+                start_x_mm,
+                start_z_mm,
+                end_x_mm,
+                end_z_mm,
                 degree,
             } => json!({
                 "region_index": region_index,
+                "owner": band_owner_parts(*owner, *owner_index),
+                "height_field_id": height_field_id_value(*height_field_id),
                 "vertex_index": vertex_index,
+                "x_key": x_key,
+                "z_key": z_key,
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "start_x_key": start_x_key,
+                "start_z_key": start_z_key,
+                "end_x_key": end_x_key,
+                "end_z_key": end_z_key,
+                "start_x_mm": start_x_mm,
+                "start_z_mm": start_z_mm,
+                "end_x_mm": end_x_mm,
+                "end_z_mm": end_z_mm,
                 "degree": degree,
             }),
             Self::DuplicateExposedEdge {
                 region_index,
+                regions,
+                start_x_key,
+                start_z_key,
+                end_x_key,
+                end_z_key,
                 start_x_mm,
                 start_z_mm,
                 end_x_mm,
@@ -615,6 +697,14 @@ impl NodeGeometryDiagnosticKind {
                 count,
             } => json!({
                 "region_index": region_index,
+                "regions": regions
+                    .iter()
+                    .map(boundary_region_value)
+                    .collect::<Vec<_>>(),
+                "start_x_key": start_x_key,
+                "start_z_key": start_z_key,
+                "end_x_key": end_x_key,
+                "end_z_key": end_z_key,
                 "start_x_mm": start_x_mm,
                 "start_z_mm": start_z_mm,
                 "end_x_mm": end_x_mm,
@@ -877,6 +967,14 @@ fn canonical_point_value(point: &NodeCanonicalPointDiagnostic) -> Value {
         "z_key": point.z_key,
         "x_mm": point.x_mm,
         "z_mm": point.z_mm,
+    })
+}
+
+fn boundary_region_value(region: &NodeBoundaryRegionDiagnostic) -> Value {
+    json!({
+        "region_index": region.region_index,
+        "owner": band_owner_parts(region.owner, region.owner_index),
+        "height_field_id": height_field_id_value(region.height_field_id),
     })
 }
 

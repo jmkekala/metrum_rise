@@ -170,6 +170,8 @@ fn missing_owned_region_carrier_support_error(
                 source_kind: field.kind,
                 height_field_id: field.id,
                 owner,
+                point_x_key: key.x_key,
+                point_z_key: key.z_key,
                 point_x_mm: key.x_mm(),
                 point_z_mm: key.z_mm(),
             }
@@ -217,6 +219,8 @@ pub(super) fn height_field_for_region<'a>(
         .ok_or(NodeHeightFieldError::MissingSourceBand {
             mouth_order_index: key.mouth_order_index,
             band_index: key.band_index,
+            kind: region.kind,
+            owner: Some(region.owner),
         })?;
     if field.kind != region.kind {
         return Err(NodeHeightFieldError::SourceBandKindMismatch {

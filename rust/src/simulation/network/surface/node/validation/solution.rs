@@ -7,8 +7,8 @@ use super::NodeValidationEdgeKey;
 use super::boundaries::validate_boundary_constraints;
 use super::crossings::validate_constraint_crossings;
 use super::report::{
-    NodeGeometryBackend, NodeGeometryDiagnostic, NodeGeometryDiagnosticKind, NodeGeometryStage,
-    NodeValidationError, NodeValidationReport,
+    NodeBoundaryRegionDiagnostic, NodeGeometryBackend, NodeGeometryDiagnostic,
+    NodeGeometryDiagnosticKind, NodeGeometryStage, NodeValidationError, NodeValidationReport,
 };
 use super::triangles::{
     validate_cross_region_triangle_edge_heights, validate_triangle_area_coverage,
@@ -54,6 +54,23 @@ impl NodeValidationReport {
                     backend: NodeGeometryBackend::Parry2d,
                     kind: NodeGeometryDiagnosticKind::DuplicateExposedEdge {
                         region_index: None,
+                        regions: region_indices
+                            .iter()
+                            .filter_map(|region_index| {
+                                solution.regions.get(*region_index).map(|region| {
+                                    NodeBoundaryRegionDiagnostic {
+                                        region_index: *region_index,
+                                        owner: region.owner.kind(),
+                                        owner_index: region.owner.owner_index(),
+                                        height_field_id: region.height_field_id,
+                                    }
+                                })
+                            })
+                            .collect(),
+                        start_x_key: edge.start.x_key,
+                        start_z_key: edge.start.z_key,
+                        end_x_key: edge.end.x_key,
+                        end_z_key: edge.end.z_key,
                         start_x_mm: edge.start.x_mm(),
                         start_z_mm: edge.start.z_mm(),
                         end_x_mm: edge.end.x_mm(),

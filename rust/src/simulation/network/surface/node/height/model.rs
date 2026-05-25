@@ -53,6 +53,8 @@ pub(crate) enum NodeHeightFieldError {
     MissingSourceBand {
         mouth_order_index: usize,
         band_index: usize,
+        kind: RoadSurfaceBandKind,
+        owner: Option<NodeBandOwner>,
     },
     SourceBandKindMismatch {
         mouth_order_index: usize,
@@ -118,6 +120,8 @@ pub(crate) enum NodeHeightFieldError {
         source_kind: RoadSurfaceBandKind,
         height_field_id: NodeBandHeightFieldId,
         owner: NodeBandOwner,
+        point_x_key: i64,
+        point_z_key: i64,
         point_x_mm: i64,
         point_z_mm: i64,
     },

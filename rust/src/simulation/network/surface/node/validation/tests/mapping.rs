@@ -48,9 +48,56 @@ fn maps_vertex_outside_height_field_to_source_rich_blocking_debug_record() {
 }
 
 #[test]
+fn maps_missing_source_band_to_owner_scoped_debug_record() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 12);
+    let report = NodeValidationReport::from_height_field_error(
+        6,
+        RoadSurfaceVisualNodePieceKind::Bend,
+        &NodeHeightFieldError::MissingSourceBand {
+            mouth_order_index: 3,
+            band_index: 7,
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner: Some(owner),
+        },
+    );
+
+    assert!(report.has_blocking_diagnostics());
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::HeightCarrier);
+    assert!(matches!(
+        diagnostic.kind,
+        NodeGeometryDiagnosticKind::HeightFieldFailure {
+            reason: "missing_source_band",
+            mouth_order_index: Some(3),
+            band_index: Some(7),
+            kind: Some(RoadSurfaceBandKind::CurbOrShoulder),
+            source_kind: Some(RoadSurfaceBandKind::CurbOrShoulder),
+            height_field_id: None,
+            owner: Some(mapped_owner),
+            ..
+        } if mapped_owner == owner
+    ));
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["stage"], "height_evaluation");
+    assert_eq!(diagnostic["backend"], "height_carrier");
+    assert_eq!(diagnostic["reason"], "missing_source_band");
+    assert_eq!(diagnostic["region_kind"], "CurbOrShoulder");
+    assert_eq!(diagnostic["source_kind"], "CurbOrShoulder");
+    assert_eq!(diagnostic["owner"]["kind"], "CurbOrShoulder");
+    assert_eq!(diagnostic["owner"]["owner_index"], 12);
+    assert!(diagnostic["height_field_id"].is_null());
+}
+
+#[test]
 fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_record() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
     let height_field_id = NodeBandHeightFieldId::new(2, 5, RoadSurfaceBandKind::Sidewalk);
+    let point_x_key = -1_785_000;
+    let point_z_key = -5_439_600;
     let report = NodeValidationReport::from_height_field_error(
         2,
         RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -60,6 +107,8 @@ fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_recor
             source_kind: RoadSurfaceBandKind::Sidewalk,
             height_field_id,
             owner,
+            point_x_key,
+            point_z_key,
             point_x_mm: -17_850,
             point_z_mm: -54_396,
         },
@@ -78,12 +127,17 @@ fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_recor
             source_kind: Some(RoadSurfaceBandKind::Sidewalk),
             height_field_id: Some(id),
             owner: Some(mapped_owner),
+            point_x_key: Some(mapped_x_key),
+            point_z_key: Some(mapped_z_key),
             point_x_mm: Some(-17_850),
             point_z_mm: Some(-54_396),
             axis: None,
             raw_parameter: None,
             ..
-        } if id == height_field_id && mapped_owner == owner
+        } if id == height_field_id
+            && mapped_owner == owner
+            && mapped_x_key == point_x_key
+            && mapped_z_key == point_z_key
     ));
     let dump = report.debug_dump();
     assert!(dump.contains("missing_owned_region_carrier_support"));
@@ -94,10 +148,15 @@ fn maps_missing_owned_region_carrier_support_to_source_rich_blocking_debug_recor
     let diagnostic = &parsed["diagnostics"][0];
     assert_eq!(diagnostic["kind"], "height_field_failure");
     assert_eq!(diagnostic["reason"], "missing_owned_region_carrier_support");
+    assert_eq!(diagnostic["source_kind"], "Sidewalk");
     assert_eq!(diagnostic["owner"]["kind"], "Sidewalk");
     assert_eq!(diagnostic["owner"]["owner_index"], 17);
     assert_eq!(diagnostic["height_field_id"]["mouth_order_index"], 2);
     assert_eq!(diagnostic["height_field_id"]["band_index"], 5);
+    assert_eq!(diagnostic["point_x_key"], point_x_key);
+    assert_eq!(diagnostic["point_z_key"], point_z_key);
+    assert_eq!(diagnostic["point_x_mm"], -17_850);
+    assert_eq!(diagnostic["point_z_mm"], -54_396);
     assert!(diagnostic.get("detail").is_none());
 }
 
@@ -283,6 +342,40 @@ fn maps_boolean_residual_to_structured_debug_record() {
     assert_eq!(diagnostic["shape_count"], 2);
     assert_eq!(diagnostic["area_m2"], 0.5);
     assert!(diagnostic.get("detail").is_none());
+}
+
+#[test]
+fn maps_band_residual_to_material_scoped_debug_record() {
+    let report = NodeValidationReport::from_boolean_ownership_error(
+        8,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &NodeBooleanOwnershipError::UnownedBandResidual {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            shape_count: 3,
+            area_m2: 0.75,
+        },
+    );
+
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.stage, NodeGeometryStage::BooleanOwnership);
+    assert_eq!(diagnostic.backend, NodeGeometryBackend::IOverlay);
+    assert!(matches!(
+        diagnostic.kind,
+        NodeGeometryDiagnosticKind::RejectedResidual {
+            residual: NodeRejectedResidualKind::Band(RoadSurfaceBandKind::Sidewalk),
+            shape_count: 3,
+            area_m2,
+        } if area_m2 == 0.75
+    ));
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("diagnostic dump must be valid JSON");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["stage"], "boolean_ownership");
+    assert_eq!(diagnostic["backend"], "i_overlay");
+    assert_eq!(diagnostic["residual"]["type"], "band");
+    assert_eq!(diagnostic["residual"]["kind"], "Sidewalk");
+    assert_eq!(diagnostic["shape_count"], 3);
 }
 
 #[test]

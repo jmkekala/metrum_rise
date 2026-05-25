@@ -97,7 +97,7 @@ pub(super) fn validate_boundary_constraints(
         });
     }
 
-    for (_point_key, degree) in boundary_degree {
+    for (point_key, degree) in boundary_degree {
         if degree != 2 {
             push_validation_diagnostic(
                 solution,
@@ -105,7 +105,22 @@ pub(super) fn validate_boundary_constraints(
                 NodeGeometryBackend::CanonicalKeys,
                 NodeGeometryDiagnosticKind::OpenBoundary {
                     region_index,
+                    owner: region.owner.kind(),
+                    owner_index: region.owner.owner_index(),
+                    height_field_id: region.height_field_id,
                     vertex_index: None,
+                    x_key: Some(point_key.x_key),
+                    z_key: Some(point_key.z_key),
+                    x_mm: Some(point_key.x_mm()),
+                    z_mm: Some(point_key.z_mm()),
+                    start_x_key: None,
+                    start_z_key: None,
+                    end_x_key: None,
+                    end_z_key: None,
+                    start_x_mm: None,
+                    start_z_mm: None,
+                    end_x_mm: None,
+                    end_z_mm: None,
                     degree,
                 },
             );

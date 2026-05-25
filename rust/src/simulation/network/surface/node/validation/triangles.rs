@@ -12,8 +12,8 @@ use super::boundaries::{
     edge_lies_on_explicit_boundary_constraint_or_backend_epsilon,
 };
 use super::report::{
-    NodeGeometryBackend, NodeGeometryDiagnostic, NodeGeometryDiagnosticKind,
-    NodeInvalidConstraintReason, push_validation_diagnostic,
+    NodeBoundaryRegionDiagnostic, NodeGeometryBackend, NodeGeometryDiagnostic,
+    NodeGeometryDiagnosticKind, NodeInvalidConstraintReason, push_validation_diagnostic,
 };
 use super::{
     BoundarySegment, NodeValidationEdgeKey, VALIDATION_MIN_SEGMENT_LENGTH_M, edge_key_for_indices,
@@ -78,6 +78,16 @@ pub(super) fn validate_triangles(
                 NodeGeometryBackend::Parry2d,
                 NodeGeometryDiagnosticKind::DuplicateExposedEdge {
                     region_index: Some(region_index),
+                    regions: vec![NodeBoundaryRegionDiagnostic {
+                        region_index,
+                        owner: region.owner.kind(),
+                        owner_index: region.owner.owner_index(),
+                        height_field_id: region.height_field_id,
+                    }],
+                    start_x_key: edge_key.start.x_key,
+                    start_z_key: edge_key.start.z_key,
+                    end_x_key: edge_key.end.x_key,
+                    end_z_key: edge_key.end.z_key,
                     start_x_mm: edge_key.start.x_mm(),
                     start_z_mm: edge_key.start.z_mm(),
                     end_x_mm: edge_key.end.x_mm(),
@@ -120,6 +130,11 @@ pub(super) fn validate_triangles(
                     NodeGeometryBackend::Parry2d,
                     NodeGeometryDiagnosticKind::NonExplicitBoundaryVertex {
                         region_index,
+                        owner: region.owner.kind(),
+                        owner_index: region.owner.owner_index(),
+                        height_field_id: region.height_field_id,
+                        x_key: key.x_key,
+                        z_key: key.z_key,
                         x_mm: key.x_mm(),
                         z_mm: key.z_mm(),
                         min_boundary_distance_mm: distance_mm,
@@ -133,7 +148,22 @@ pub(super) fn validate_triangles(
             NodeGeometryBackend::Parry2d,
             NodeGeometryDiagnosticKind::OpenBoundary {
                 region_index,
+                owner: region.owner.kind(),
+                owner_index: region.owner.owner_index(),
+                height_field_id: region.height_field_id,
                 vertex_index: None,
+                x_key: None,
+                z_key: None,
+                x_mm: None,
+                z_mm: None,
+                start_x_key: Some(edge_key.start.x_key),
+                start_z_key: Some(edge_key.start.z_key),
+                end_x_key: Some(edge_key.end.x_key),
+                end_z_key: Some(edge_key.end.z_key),
+                start_x_mm: Some(edge_key.start.x_mm()),
+                start_z_mm: Some(edge_key.start.z_mm()),
+                end_x_mm: Some(edge_key.end.x_mm()),
+                end_z_mm: Some(edge_key.end.z_mm()),
                 degree: 1,
             },
         );

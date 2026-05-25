@@ -84,6 +84,8 @@ pub(super) fn register_owned_region_contour_support(
             .ok_or(NodeHeightFieldError::MissingSourceBand {
                 mouth_order_index: key.mouth_order_index,
                 band_index: key.band_index,
+                kind: region.kind,
+                owner: Some(region.owner),
             })?;
         if field.kind != region.kind {
             return Err(NodeHeightFieldError::SourceBandKindMismatch {

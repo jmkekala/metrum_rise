@@ -132,8 +132,8 @@ section says whether the runtime has reached it yet.
   Generated elevated Bend and 3-way `JunctionN` variants now cover the same matrix; 4-way /
   arbitrary `N > 4` and exact raw-polygon identity checks remain open.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
-  curb / shoulder and sidewalk ownership, but diagnostics for missing evidence are not yet complete
-  enough to replace every downstream height failure
+  curb / shoulder and sidewalk ownership; missing evidence now reports as structured ownership /
+  residual diagnostics instead of deferring to downstream height failures
 - source-authorized post-boolean support materialization is shipped for the current exact
   source-rail, owner-pair / opposite-owner, raised-step, noded constraint interpolation,
   source-edge endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source
@@ -162,18 +162,18 @@ section says whether the runtime has reached it yet.
   vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
   missing final carrier reports structured missing-carrier diagnostics instead of leaking through
   the old unscoped height evaluator
-- road-geometry diagnostic dumps now serialize stage, backend, owner, height-field, point / edge,
-  residual, seam, and constraint metadata as queryable JSON fields instead of an opaque Rust debug
-  blob. Edge centerline dumps include precise replay coordinates alongside readable rounded
-  coordinates; remaining work is filling any missing-artifact coverage gaps before extending the
-  generated conflict matrix into 4-way and arbitrary-`N` cases
+- road-geometry diagnostic dumps now serialize stage, backend, owner, source band, height-field,
+  canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON fields
+  instead of an opaque Rust debug blob. Missing source rails, missing carrier support, rejected
+  residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices have
+  focused diagnostic coverage. Edge centerline dumps include precise replay coordinates alongside
+  readable rounded coordinates; remaining ROAD-01 work now moves to the generated 4-way /
+  arbitrary-`N` conflict matrix and exact raw-polygon identity checks.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
   authored / extreme DEM coverage and any required closure variants remain open
 
 ### Open ROAD-01 Work
 
-- finish missing-artifact diagnostic coverage for missing source rails, missing carrier support,
-  rejected residuals, open boundaries, duplicate exposed edges, and non-explicit boundary vertices
 - extend the conflict-first Bend / JunctionN test matrix from generated flat and elevated Bend /
   3-way cases to 4-way, arbitrary `N > 4`, and exact canonical raw-polygon identity checks
 - complete terrain / road agreement tests for authored and extreme DEM cases, including retaining
