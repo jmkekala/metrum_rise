@@ -456,6 +456,7 @@ pub(crate) struct TerrainCdtMesh {
     pub(crate) retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
     pub(crate) tie_in_widened_samples: Vec<TerrainCdtTieInSample>,
     pub(crate) seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
+    pub(crate) unpreserved_road_constraint_samples: Vec<TerrainCdtInvalidConstraintSample>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -473,6 +474,9 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) accepted_faces: usize,
     pub(crate) rejected_road_faces: usize,
     pub(crate) preserved_road_constraint_edges: usize,
+    pub(crate) spade_missing_road_constraint_edges: usize,
+    pub(crate) rejected_road_constraint_edges: usize,
+    pub(crate) internal_road_constraint_edges: usize,
     pub(crate) invalid_constraint_edges: usize,
     pub(crate) max_face_y_delta_m: f32,
     pub(crate) max_face_slope_ratio: f32,
@@ -608,16 +612,26 @@ pub(crate) fn build_road_touched_terrain_patch(
 
     let mut triangles = Vec::new();
     let mut rejected_road_faces = 0usize;
+    let mut all_inner_edges = HashSet::new();
+    let mut rejected_face_edges = HashSet::new();
     for face in cdt.inner_faces() {
         let [a, b, c] = face.vertices();
         let triangle = [a.fix().index(), b.fix().index(), c.fix().index()];
-        let center = centroid([
+        let face_edges = triangle_edges(&triangle);
+        all_inner_edges.extend(face_edges);
+        let points = [
             canonical.vertices[triangle[0]],
             canonical.vertices[triangle[1]],
             canonical.vertices[triangle[2]],
-        ]);
-        if point_inside_any_road_footprint(center, &canonical.road_loops) {
+        ];
+        if terrain_triangle_is_road_owned(
+            triangle,
+            points,
+            &canonical.road_constraint_sources,
+            &canonical.road_loops,
+        ) {
             rejected_road_faces += 1;
+            rejected_face_edges.extend(face_edges);
             continue;
         }
         triangles.push(triangle);
@@ -629,6 +643,25 @@ pub(crate) fn build_road_touched_terrain_patch(
         .iter()
         .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
         .count();
+    let spade_missing_road_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .filter(|edge| !all_inner_edges.contains(&normalize_edge(edge[0], edge[1])))
+        .count();
+    let rejected_road_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .filter(|edge| {
+            let edge = normalize_edge(edge[0], edge[1]);
+            rejected_face_edges.contains(&edge) && !accepted_edges.contains(&edge)
+        })
+        .count();
+    let unpreserved_road_constraint_samples = unpreserved_road_constraint_samples(
+        &canonical.road_constraint_edges,
+        &accepted_edges,
+        &canonical.vertices,
+        &canonical.road_constraint_sources,
+    );
     let diagnostics = terrain_face_diagnostics(
         &canonical.vertices,
         &triangles,
@@ -660,6 +693,9 @@ pub(crate) fn build_road_touched_terrain_patch(
             accepted_faces: triangles.len(),
             rejected_road_faces,
             preserved_road_constraint_edges,
+            spade_missing_road_constraint_edges,
+            rejected_road_constraint_edges,
+            internal_road_constraint_edges: canonical.internal_road_constraint_edges,
             invalid_constraint_edges,
             max_face_y_delta_m: diagnostics.max_face_y_delta_m,
             max_face_slope_ratio: diagnostics.max_face_slope_ratio,
@@ -690,6 +726,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         retaining_wall_face_samples: diagnostics.retaining_wall_face_samples,
         tie_in_widened_samples: canonical.tie_in_widened_samples,
         seam_quality_samples: canonical.seam_quality_samples,
+        unpreserved_road_constraint_samples,
     })
 }
 
@@ -724,6 +761,7 @@ struct CanonicalTerrainCdtInput {
     accepted_seam_edges: usize,
     merged_subbudget_seam_edges: usize,
     retaining_wall_required_seam_edges: usize,
+    internal_road_constraint_edges: usize,
     retaining_wall_required_sources: Vec<TerrainCdtRoadBoundarySource>,
     blocking_degenerate_seam_edges: usize,
     seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
@@ -889,6 +927,12 @@ fn canonicalize_input(
         &mut road_constraint_edges,
         &mut road_constraint_sources,
     );
+    let internal_road_constraint_edges = retain_exposed_road_constraint_edges(
+        &vertices,
+        &road_loops,
+        &mut road_constraint_edges,
+        &mut road_constraint_sources,
+    );
     push_patch_boundary_constraints(input.patch, &vertices, &mut constraint_set);
     for edge in &road_constraint_edges {
         insert_constraint(*edge, &mut constraint_set);
@@ -904,6 +948,7 @@ fn canonicalize_input(
         accepted_seam_edges,
         merged_subbudget_seam_edges,
         retaining_wall_required_seam_edges,
+        internal_road_constraint_edges,
         retaining_wall_required_sources,
         blocking_degenerate_seam_edges,
         seam_quality_samples,
@@ -1662,6 +1707,50 @@ fn node_road_constraint_edges(
     *road_constraint_edges = noded_edges.into_iter().collect();
 }
 
+fn retain_exposed_road_constraint_edges(
+    vertices: &[TerrainCdtVertex],
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+    road_constraint_edges: &mut Vec<[usize; 2]>,
+    road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) -> usize {
+    let mut internal_edges = Vec::new();
+    road_constraint_edges.retain(|edge| {
+        let exposed =
+            road_constraint_edge_exposes_terrain(vertices[edge[0]], vertices[edge[1]], road_loops);
+        if !exposed {
+            internal_edges.push(*edge);
+        }
+        exposed
+    });
+    for edge in &internal_edges {
+        road_constraint_sources.remove(edge);
+    }
+    internal_edges.len()
+}
+
+fn road_constraint_edge_exposes_terrain(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    let dx = end.x - start.x;
+    let dz = end.z - start.z;
+    let length = dx.hypot(dz);
+    if length <= CDT_EPSILON_M {
+        return false;
+    }
+    let mid_x = (start.x + end.x) * 0.5;
+    let mid_z = (start.z + end.z) * 0.5;
+    let probe_distance = MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M.min(length * 0.25);
+    let nx = -dz / length * probe_distance;
+    let nz = dx / length * probe_distance;
+    let height_m = (start.height_m + end.height_m) * 0.5;
+    let left_probe = TerrainCdtVertex::new(mid_x + nx, height_m, mid_z + nz);
+    let right_probe = TerrainCdtVertex::new(mid_x - nx, height_m, mid_z - nz);
+    road_exterior_support_point(left_probe, road_loops)
+        || road_exterior_support_point(right_probe, road_loops)
+}
+
 fn split_road_constraints_at_source_samples(
     original_edges: &[[usize; 2]],
     vertices: &mut [TerrainCdtVertex],
@@ -2084,6 +2173,92 @@ fn point_inside_any_road_footprint(
                     && point_in_polygon(point, &hole_loop.vertices)
             })
         })
+}
+
+fn terrain_triangle_is_road_owned(
+    triangle: [usize; 3],
+    points: [TerrainCdtVertex; 3],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    if triangle_has_exterior_road_seam_side(triangle, points, road_constraint_sources, road_loops)
+        || (triangle_touches_road_constraint(triangle, road_constraint_sources)
+            && points
+                .iter()
+                .any(|point| road_exterior_support_point(*point, road_loops)))
+    {
+        return false;
+    }
+    point_inside_any_road_footprint(centroid(points), road_loops)
+}
+
+fn triangle_has_exterior_road_seam_side(
+    triangle: [usize; 3],
+    points: [TerrainCdtVertex; 3],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    for (start_slot, end_slot, opposite_slot) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
+        let edge = normalize_edge_array(triangle[start_slot], triangle[end_slot]);
+        if !road_constraint_sources.contains_key(&edge) {
+            continue;
+        }
+        let start = points[start_slot];
+        let end = points[end_slot];
+        let opposite = points[opposite_slot];
+        let mid_x = (start.x + end.x) * 0.5;
+        let mid_z = (start.z + end.z) * 0.5;
+        let dx = opposite.x - mid_x;
+        let dz = opposite.z - mid_z;
+        let distance = dx.hypot(dz);
+        if distance <= CDT_EPSILON_M {
+            continue;
+        }
+        let probe_distance = MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M.min(distance * 0.25);
+        let probe = TerrainCdtVertex::new(
+            mid_x + dx / distance * probe_distance,
+            (start.height_m + end.height_m + opposite.height_m) / 3.0,
+            mid_z + dz / distance * probe_distance,
+        );
+        if road_exterior_support_point(probe, road_loops) {
+            return true;
+        }
+    }
+    false
+}
+
+fn triangle_touches_road_constraint(
+    triangle: [usize; 3],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) -> bool {
+    triangle_edges(&triangle)
+        .iter()
+        .any(|edge| road_constraint_sources.contains_key(&[edge.0, edge.1]))
+}
+
+fn road_exterior_support_point(
+    point: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    !point_inside_any_road_footprint(point, road_loops)
+        && !point_on_any_road_loop_boundary(point, road_loops)
+}
+
+fn point_on_any_road_loop_boundary(
+    point: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    road_loops.iter().any(|road_loop| {
+        road_loop
+            .vertices
+            .iter()
+            .copied()
+            .zip(road_loop.vertices.iter().copied().cycle().skip(1))
+            .take(road_loop.vertices.len())
+            .any(|(start, end)| {
+                source_sample_parameter_on_road_constraint(start, end, point).is_some()
+            })
+    })
 }
 
 fn centroid(points: [TerrainCdtVertex; 3]) -> TerrainCdtVertex {
@@ -2509,6 +2684,27 @@ fn insert_invalid_constraint_sample(
             .then_with(|| a.end.z.total_cmp(&b.end.z))
     });
     samples.truncate(MAX_INVALID_CONSTRAINT_SAMPLES);
+}
+
+fn unpreserved_road_constraint_samples(
+    road_constraint_edges: &[[usize; 2]],
+    accepted_edges: &HashSet<(usize, usize)>,
+    vertices: &[TerrainCdtVertex],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) -> Vec<TerrainCdtInvalidConstraintSample> {
+    let mut samples = Vec::new();
+    for edge in road_constraint_edges {
+        if accepted_edges.contains(&normalize_edge(edge[0], edge[1])) {
+            continue;
+        }
+        insert_invalid_constraint_sample(
+            &mut samples,
+            normalize_edge_array(edge[0], edge[1]),
+            vertices,
+            road_constraint_sources,
+        );
+    }
+    samples
 }
 
 fn sort_dedup_terrain_cdt_boundary_sources(sources: &mut Vec<TerrainCdtRoadBoundarySource>) {

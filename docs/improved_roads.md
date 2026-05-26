@@ -2,8 +2,8 @@
 
 ## Purpose
 
-This document owns the shipped roadbed runtime for surface roads and the remaining road-specific
-work tracked under [`ROAD-01`](roadmap.md).
+This document owns the shipped roadbed runtime for surface roads, the completed [`ROAD-01`](roadmap.md)
+handover contract, and later road-surface hardening such as [`ROAD-02`](roadmap.md).
 
 It answers these questions:
 
@@ -28,7 +28,7 @@ Those remain owned by [`entrance_and_exit.md`](entrance_and_exit.md),
 Interpretation rules:
 
 - `current runtime` means the shipped implementation in the repository today
-- `remaining work` means the not-yet-shipped follow-up tracked under [`ROAD-01`](roadmap.md)
+- `remaining work` means the not-yet-shipped follow-up tracked under a road or earthworks roadmap ID
 - `must` means required for the owning contract
 - `should` means intended unless a better measured implementation replaces it
 - `may` means optional
@@ -124,8 +124,8 @@ section says whether the runtime has reached it yet.
 ### Partially Implemented
 
 - logged `Terminal`, 2-arm `Bend`, and generated multi-arm `JunctionN` regressions compile
-  through canonical curb / sidewalk ownership; authored arbitrary-node / terrain-agreement
-  coverage continues in the terrain and editor-regression tracks
+  through canonical curb / sidewalk ownership; authored and imported DEM terrain-agreement
+  coverage now exercises the production road-surface to terrain-CDT path
 - `Bend` / `JunctionN` conflict throats use pairwise material-conflict distances and emit raw
   full-roadbed / carriageway corridor authority before per-band owner clipping. The generated flat
   Bend and 3-way `JunctionN` angle matrix now covers acute, right-angle, obtuse, and near-parallel
@@ -205,19 +205,27 @@ section says whether the runtime has reached it yet.
   Production road-surface authored DEM coverage now includes supportive ordinary spans, steep
   along-slope spans, extreme cross-slope spans, raised retaining-wall spans, raised `Terminal` and
   `Bend` pieces near authored ridge / valley terrain, raised `JunctionN` pieces on flat and steep
-  authored terrain, and edit-order-stable emitted terrain-CDT topology. CDT seam selection now
-  breaks equidistant tie-in candidates by seam geometry before provenance identity, so source /
-  edit order cannot move the chosen tie-in point. Broader real-world DEM validation and any
-  required closure variants beyond the retaining-wall path remain open.
+  authored terrain, and edit-order-stable emitted terrain-CDT topology. Production imported-DEM
+  coverage now bakes a compact Kuopio height window and validates ordinary lower-shelf tie-ins,
+  grounded steep terrain, raised spans, raised terminals / bends, and edit-order-stable raised
+  `JunctionN` output through the full `RoadSurfaceSystem` -> terrain loop export -> CDT path.
+  Imported JunctionN terrain clipping now drops road-owned internal chords from the terrain seam
+  constraint set only after both sides classify as road-owned against the final footprint; exposed
+  seam constraints remain preserved and carry provenance. CDT seam selection now breaks
+  equidistant tie-in candidates by seam geometry before provenance identity, so source / edit
+  order cannot move the chosen tie-in point.
 
 ### Open ROAD-01 Work
 
-- extend terrain / road agreement tests across imported / real-world DEM cases, including any
-  retaining-wall, widened tie-in, or closure variants not covered by the current production
-  authored-DEM matrix
-- keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
-  adjacent-mouth connector patches, nearest-height fallback, min/max repair, averaging, or
-  render-order priority
+`ROAD-01` is complete for the current roadbed / terrain handover contract. Future road hardening
+must keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
+adjacent-mouth connector patches, nearest-height fallback, min/max repair, averaging, or
+render-order priority.
+
+Non-blocking follow-up now lives outside `ROAD-01`:
+
+- `ROAD-02`: broaden generated helper coverage for mixed sidewalk / curb / shoulder profile-mode
+  variation without weakening canonical identity, provenance, or terrain-CDT gates.
 
 ### Implementation Plan Map
 

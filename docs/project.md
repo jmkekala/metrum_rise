@@ -93,11 +93,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   generates canonical cap carriers, including side-to-end corner closures, consumed by rail
   ownership and height fields, so the retired endpoint end-band helper is no longer part of the
   ROAD-01 path.
-  `ROAD-01` remains open until that clipped topology is validated against flat, diagonal, sloped,
-  water-overlap, and junction cases.
-  `ROAD-01` is still open because the recent roads-first earthworks prototype was
-  taken far enough to prove the representation problem: the thin corridor-sheet plus
-  terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
+  `ROAD-01` is now closed for the roadbed / terrain handover: clipped topology is validated
+  against flat, diagonal, sloped, water-overlap, bridge / tunnel, terminal, bend, junction,
+  production authored DEM, and compact imported Kuopio DEM cases. The first imported DEM closure
+  failure was fixed in the terrain-CDT ownership stage by removing only road-owned internal chords
+  from the terrain seam constraint set after both sides classify against the final footprint.
   Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
   fixed-roadbed-under-later-terrain-edits follow-up, and the hardcut road geometry target is now
   road-owned top surfaces plus Rust-stitched terrain topology rather than more polishing of the
@@ -212,8 +212,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   steep along-slope and extreme cross-slope spans, raised retaining-wall spans, raised terminals
   and bends near authored ridge / valley terrain, raised multiway junctions on flat and steep
   authored terrain, and edit-order-stable emitted terrain-CDT topology through final road-owned
-  terrain loops. The remaining blocking work is broader real-world DEM validation and any richer
-  closure variants needed beyond the retaining-wall path.
+  terrain loops. Production imported DEM coverage now bakes a compact Kuopio height window and
+  validates ordinary lower-shelf tie-ins, grounded steep terrain, raised spans, raised terminals /
+  bends, raised `JunctionN`, widened tie-in diagnostics, retaining-wall provenance, and
+  edit-order-stable emitted topology through the same production path. Non-blocking generated
+  mixed profile-mode helper coverage now lives under `ROAD-02`.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

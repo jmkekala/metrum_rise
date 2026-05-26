@@ -7,6 +7,7 @@ use super::*;
 mod ambiguity;
 mod authored_dem;
 mod cdt;
+mod imported_dem;
 mod loops;
 mod road_locked;
 mod source_chains;

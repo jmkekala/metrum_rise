@@ -5,9 +5,9 @@
 This document owns the shared engineered-ground contract for local terrain overrides such as road
 cuts, embankments, flat building pads, and future retaining structures.
 
-Tracked work currently lives under [`ROAD-01`](roadmap.md), because roads are the first live
-client. Future building-pad or plot-foundation work should extend this document instead of
-duplicating the same terrain-override rules elsewhere.
+The first live road client was closed under [`ROAD-01`](roadmap.md). Future terrain closure,
+building-pad, or plot-foundation work should extend this document under its own tracked ID instead
+of duplicating the same terrain-override rules elsewhere.
 
 It answers these questions:
 
@@ -203,8 +203,9 @@ Deterministic seam contract:
     the seam
   - source-terrain sample points may be inserted as Steiner / interior points only outside road
     footprints, and their insertion order must be canonical and deterministic
-  - Spade CDT faces are classified after triangulation; faces whose centroids lie inside a
-    road-owned footprint are omitted from the visible terrain patch mesh
+  - Spade CDT faces are classified after triangulation against the final road-owned footprint;
+    ordinary non-seam faces may use centroid ownership, but faces carrying a road constraint edge
+    classify the exact seam side so narrow concave tie-ins are not lost to centroid-only ownership
   - emitted terrain triangles must preserve the CDT constraint edges at the road seam and must not
     cross a road-owned footprint loop
   - CDT triangulation failures are hard errors in debug output and must not fall back to cell
@@ -631,13 +632,18 @@ The following are current hardcut implementation rules:
   cells that touch the outer-loop-minus-hole road-owned area, so water is no longer allowed to
   render under grounded road-owned asphalt, shoulder / curb, or sidewalk
 - clipped patch topology is validated against flat, diagonal, sloped, bend, terminal,
-  `JunctionN`, and production authored DEM road cases, including steep spans, raised ridge /
-  valley terminals and bends, steep multiway junctions, edit-order-stable emitted terrain-CDT
-  topology, bridge-midspan, and tunnel-portal structural stamping
+  `JunctionN`, production authored DEM road cases, and a compact baked Kuopio imported-DEM
+  fixture, including steep spans, raised ridge / valley terminals and bends, steep multiway
+  junctions, edit-order-stable emitted terrain-CDT topology, bridge-midspan, and tunnel-portal
+  structural stamping
+- imported DEM JunctionN clipping now reports and removes road-owned internal chords from the
+  terrain seam constraint set only when both sides of the exact constraint classify as road-owned
+  against the final footprint; exposed seam constraints remain hard CDT constraints with source
+  provenance
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
-- the remaining blocker is broader real-world DEM validation and any deterministic closure variants
-  beyond the retaining-wall path that those terrains require
+- no current `ROAD-01` blocker remains for real-world DEM validation; any future terrain closure
+  variant beyond the retaining-wall path should be tracked as a new explicit earthworks item
 
 That means the remaining items below are later additions after the clipped terrain boundary itself;
 they are not a substitute for closing the road-to-terrain boundary.
