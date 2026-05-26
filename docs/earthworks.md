@@ -631,12 +631,13 @@ The following are current hardcut implementation rules:
   cells that touch the outer-loop-minus-hole road-owned area, so water is no longer allowed to
   render under grounded road-owned asphalt, shoulder / curb, or sidewalk
 - clipped patch topology is validated against flat, diagonal, sloped, bend, terminal,
-  `JunctionN`, and production authored DEM road cases, including bridge-midspan and tunnel-portal
-  structural stamping
+  `JunctionN`, and production authored DEM road cases, including steep spans, raised ridge /
+  valley terminals and bends, steep multiway junctions, edit-order-stable emitted terrain-CDT
+  topology, bridge-midspan, and tunnel-portal structural stamping
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
-- the remaining blocker is deterministic handling of over-steep road-to-terrain tie-ins and the
-  retaining / wall material variants those thresholds require
+- the remaining blocker is broader real-world DEM validation and any deterministic closure variants
+  beyond the retaining-wall path that those terrains require
 
 That means the remaining items below are later additions after the clipped terrain boundary itself;
 they are not a substitute for closing the road-to-terrain boundary.

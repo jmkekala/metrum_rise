@@ -4,58 +4,60 @@ use super::*;
 
 #[test]
 fn authored_dem_span_tie_ins_preserve_production_terrain_agreement() {
-    let terrain = planar_world_terrain(161, 161, 1.0, 18.0, 0.025, 0.018);
-    let (graph, surface) = compile_standard_span_on_terrain(
-        &terrain,
-        Vector2::new(-40.0, -18.0),
-        Vector2::new(40.0, 18.0),
-        0.0,
-        20,
-    );
-
-    let mesh = assert_production_authored_dem_cdt_contract(
-        "supportive authored cross-slope span",
-        &surface,
-        &graph,
-        &terrain,
-        (-24.0, -18.0, 24.0, 18.0),
-        2.0,
-        false,
-        false,
-    );
-    assert_eq!(
-        mesh.stats.retaining_wall_faces, 0,
-        "supportive authored DEM must stay on ordinary terrain tie-ins"
-    );
-
-    let terrain = planar_world_terrain(161, 161, 1.0, 0.0, 0.0, 0.0);
-    let (graph, surface) = compile_standard_span_on_terrain(
-        &terrain,
-        Vector2::new(-32.0, 0.0),
-        Vector2::new(32.0, 0.0),
-        3.0,
-        16,
-    );
-
-    assert_production_authored_dem_cdt_contract(
-        "raised standard span over extreme authored terrain",
-        &surface,
-        &graph,
-        &terrain,
-        (-24.0, -18.0, 24.0, 18.0),
-        2.0,
-        true,
-        true,
-    );
+    assert_authored_dem_cases(vec![
+        standard_span_case(
+            "supportive authored cross-slope span",
+            planar_world_terrain(161, 161, 1.0, 18.0, 0.025, 0.018),
+            Vector2::new(-40.0, -18.0),
+            Vector2::new(40.0, 18.0),
+            0.0,
+            20,
+            (-24.0, -18.0, 24.0, 18.0),
+            false,
+            false,
+        ),
+        standard_span_case(
+            "standard span running along a steep authored slope",
+            planar_world_terrain(181, 181, 1.0, 20.0, 0.18, 0.0),
+            Vector2::new(-44.0, -12.0),
+            Vector2::new(44.0, -12.0),
+            0.0,
+            24,
+            (-28.0, -26.0, 28.0, 2.0),
+            false,
+            false,
+        ),
+        standard_span_case(
+            "standard span crossing an extreme authored cross-slope",
+            planar_world_terrain(181, 181, 1.0, 14.0, 0.0, 0.22),
+            Vector2::new(-44.0, 0.0),
+            Vector2::new(44.0, 0.0),
+            0.0,
+            24,
+            (-28.0, -18.0, 28.0, 18.0),
+            true,
+            true,
+        ),
+        standard_span_case(
+            "raised standard span over extreme authored terrain",
+            planar_world_terrain(161, 161, 1.0, 0.0, 0.0, 0.0),
+            Vector2::new(-32.0, 0.0),
+            Vector2::new(32.0, 0.0),
+            3.0,
+            16,
+            (-24.0, -18.0, 24.0, 18.0),
+            true,
+            true,
+        ),
+    ]);
 }
 
 #[test]
 fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
     let terrain = authored_ridge_valley_terrain(181, 181, 1.0);
     let center = Vector2::new(0.0, 0.0);
-    let (mut graph, center_node) =
+    let (graph, center_node) =
         standard_node_graph_with_offset_roads(&terrain, center, 2.0, &[(-36.0, 0.0), (0.0, 36.0)]);
-    graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
@@ -67,46 +69,207 @@ fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
             .kind,
         RoadSurfaceVisualNodePieceKind::Bend
     );
-    assert_production_authored_dem_cdt_contract(
-        "raised bend over authored ridge-valley terrain",
-        &surface,
-        &graph,
-        &terrain,
-        (-52.0, -18.0, 18.0, 52.0),
-        2.0,
-        true,
-        true,
-    );
+    assert_authored_dem_case(AuthoredDemCase {
+        name: "raised bend over authored ridge-valley terrain",
+        terrain,
+        graph,
+        surface,
+        bounds: (-52.0, -18.0, 18.0, 52.0),
+        sample_step_m: 2.0,
+        expect_retaining_wall: true,
+        expect_widened_tie_in: true,
+        expected_node_piece: None,
+    });
 
-    let terrain = flat_terrain(181, 181);
-    let (mut graph, center_node) = standard_node_graph_with_offset_roads(
+    let terrain = authored_ridge_valley_terrain(181, 181, 1.0);
+    let (graph, surface, _, terminal_node) = compile_standard_span_with_nodes_on_terrain(
         &terrain,
+        Vector2::new(-44.0, -18.0),
+        Vector2::new(10.0, -18.0),
+        1.5,
+        16,
+    );
+    assert_authored_dem_case(AuthoredDemCase {
+        name: "raised terminal near authored ridge-valley terrain",
+        terrain,
+        graph,
+        surface,
+        bounds: (-8.0, -42.0, 34.0, 6.0),
+        sample_step_m: 2.0,
+        expect_retaining_wall: true,
+        expect_widened_tie_in: true,
+        expected_node_piece: Some((terminal_node, RoadSurfaceVisualNodePieceKind::Terminal)),
+    });
+
+    assert_authored_dem_cases(vec![
+        standard_node_case(
+            "raised three-way junction over authored flat DEM",
+            flat_terrain(181, 181),
+            center,
+            3.0,
+            &[(-40.0, 0.0), (40.0, 0.0), (0.0, 40.0)],
+            (-56.0, -24.0, 56.0, 56.0),
+            true,
+            true,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ),
+        standard_node_case(
+            "raised four-way junction over authored ridge-valley terrain",
+            authored_ridge_valley_terrain(181, 181, 1.0),
+            center,
+            3.0,
+            &[(-40.0, 0.0), (40.0, 0.0), (0.0, -40.0), (0.0, 40.0)],
+            (-56.0, -56.0, 56.0, 56.0),
+            true,
+            true,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ),
+    ]);
+}
+
+#[test]
+fn authored_dem_junction_edit_order_does_not_change_terrain_cdt_output() {
+    let center = Vector2::new(0.0, 0.0);
+    let first = standard_node_case(
+        "raised four-way junction over authored ridge-valley terrain",
+        authored_ridge_valley_terrain(181, 181, 1.0),
         center,
         3.0,
-        &[(-40.0, 0.0), (40.0, 0.0), (0.0, 40.0)],
+        &[(-40.0, 0.0), (40.0, 0.0), (0.0, -40.0), (0.0, 40.0)],
+        (-56.0, -56.0, 56.0, 56.0),
+        true,
+        true,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
     );
-    graph.rebuild_intersection_clips();
+    let reordered = standard_node_case(
+        "raised four-way junction over authored ridge-valley terrain with reordered edits",
+        authored_ridge_valley_terrain(181, 181, 1.0),
+        center,
+        3.0,
+        &[(0.0, 40.0), (0.0, -40.0), (40.0, 0.0), (-40.0, 0.0)],
+        (-56.0, -56.0, 56.0, 56.0),
+        true,
+        true,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    );
 
+    let first_mesh = assert_authored_dem_case(first);
+    let reordered_mesh = assert_authored_dem_case(reordered);
+    assert_eq!(
+        first_mesh.stats, reordered_mesh.stats,
+        "reordered authored-road edits changed terrain-CDT diagnostics"
+    );
+    assert_eq!(
+        canonical_emitted_face_set(&first_mesh),
+        canonical_emitted_face_set(&reordered_mesh),
+        "reordered authored-road edits changed emitted terrain topology"
+    );
+}
+
+struct AuthoredDemCase {
+    name: &'static str,
+    terrain: TerrainSystem,
+    graph: RegionGraph,
+    surface: RoadSurfaceSystem,
+    bounds: (f32, f32, f32, f32),
+    sample_step_m: f32,
+    expect_retaining_wall: bool,
+    expect_widened_tie_in: bool,
+    expected_node_piece: Option<(u32, RoadSurfaceVisualNodePieceKind)>,
+}
+
+fn assert_authored_dem_cases(cases: Vec<AuthoredDemCase>) {
+    for case in cases {
+        assert_authored_dem_case(case);
+    }
+}
+
+fn assert_authored_dem_case(case: AuthoredDemCase) -> TerrainCdtMesh {
+    if let Some((node_id, expected_kind)) = case.expected_node_piece {
+        assert_eq!(
+            case.surface
+                .compiled_visual_node_pieces()
+                .get(&node_id)
+                .unwrap_or_else(|| panic!("{}: expected compiled node piece", case.name))
+                .kind,
+            expected_kind,
+            "{}: compiled node piece kind changed",
+            case.name
+        );
+    }
+    assert_production_authored_dem_cdt_contract(
+        case.name,
+        &case.surface,
+        &case.graph,
+        &case.terrain,
+        case.bounds,
+        case.sample_step_m,
+        case.expect_retaining_wall,
+        case.expect_widened_tie_in,
+    )
+}
+
+fn standard_span_case(
+    name: &'static str,
+    terrain: TerrainSystem,
+    start_xz: Vector2,
+    end_xz: Vector2,
+    road_height_offset_m: f32,
+    segments: usize,
+    bounds: (f32, f32, f32, f32),
+    expect_retaining_wall: bool,
+    expect_widened_tie_in: bool,
+) -> AuthoredDemCase {
+    let (graph, surface) = compile_standard_span_on_terrain(
+        &terrain,
+        start_xz,
+        end_xz,
+        road_height_offset_m,
+        segments,
+    );
+    AuthoredDemCase {
+        name,
+        terrain,
+        graph,
+        surface,
+        bounds,
+        sample_step_m: 2.0,
+        expect_retaining_wall,
+        expect_widened_tie_in,
+        expected_node_piece: None,
+    }
+}
+
+fn standard_node_case(
+    name: &'static str,
+    terrain: TerrainSystem,
+    center_xz: Vector2,
+    road_height_offset_m: f32,
+    endpoint_offsets: &[(f32, f32)],
+    bounds: (f32, f32, f32, f32),
+    expect_retaining_wall: bool,
+    expect_widened_tie_in: bool,
+    expected_node_kind: RoadSurfaceVisualNodePieceKind,
+) -> AuthoredDemCase {
+    let (graph, center_node) = standard_node_graph_with_offset_roads(
+        &terrain,
+        center_xz,
+        road_height_offset_m,
+        endpoint_offsets,
+    );
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert_eq!(
-        surface
-            .compiled_visual_node_pieces()
-            .get(&center_node)
-            .unwrap()
-            .kind,
-        RoadSurfaceVisualNodePieceKind::JunctionN
-    );
-    assert_production_authored_dem_cdt_contract(
-        "raised three-way junction over authored flat DEM",
-        &surface,
-        &graph,
-        &terrain,
-        (-56.0, -24.0, 56.0, 56.0),
-        2.0,
-        true,
-        true,
-    );
+    AuthoredDemCase {
+        name,
+        terrain,
+        graph,
+        surface,
+        bounds,
+        sample_step_m: 2.0,
+        expect_retaining_wall,
+        expect_widened_tie_in,
+        expected_node_piece: Some((center_node, expected_node_kind)),
+    }
 }
 
 fn compile_standard_span_on_terrain(
@@ -116,6 +279,23 @@ fn compile_standard_span_on_terrain(
     road_height_offset_m: f32,
     segments: usize,
 ) -> (RegionGraph, RoadSurfaceSystem) {
+    let (graph, surface, _, _) = compile_standard_span_with_nodes_on_terrain(
+        terrain,
+        start_xz,
+        end_xz,
+        road_height_offset_m,
+        segments,
+    );
+    (graph, surface)
+}
+
+fn compile_standard_span_with_nodes_on_terrain(
+    terrain: &TerrainSystem,
+    start_xz: Vector2,
+    end_xz: Vector2,
+    road_height_offset_m: f32,
+    segments: usize,
+) -> (RegionGraph, RoadSurfaceSystem, u32, u32) {
     let mut points = grounded_polyline_points_from_terrain(terrain, start_xz, end_xz, segments);
     for point in &mut points {
         point.y += road_height_offset_m;
@@ -137,7 +317,7 @@ fn compile_standard_span_on_terrain(
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, terrain);
-    (graph, surface)
+    (graph, surface, start, end)
 }
 
 fn standard_node_graph_with_offset_roads(
@@ -169,6 +349,9 @@ fn standard_node_graph_with_offset_roads(
             TransitFlags::CAR | TransitFlags::FOOT,
         ));
     }
+    let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
+    graph.rebuild_intersection_clips();
 
     (graph, center)
 }

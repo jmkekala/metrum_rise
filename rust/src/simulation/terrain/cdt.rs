@@ -2310,15 +2310,19 @@ fn closest_sourced_loop_edge_distance_point_and_source(
         let dx = point.x - closest_x;
         let dz = point.z - closest_z;
         let distance_m = (dx * dx + dz * dz).sqrt();
-        if distance_m < closest_distance_m
-            || ((distance_m - closest_distance_m).abs() <= CDT_EPSILON_M
-                && closest_source
-                    .is_none_or(|current| terrain_cdt_boundary_source_cmp(source, current).is_lt()))
-        {
+        let height_m =
+            (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32;
+        let candidate_point = TerrainCdtVertex::new(closest_x, height_m, closest_z);
+        if terrain_cdt_closer_loop_point(
+            distance_m,
+            candidate_point,
+            source,
+            closest_distance_m,
+            closest_point,
+            closest_source,
+        ) {
             closest_distance_m = distance_m;
-            let height_m =
-                (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32;
-            closest_point = TerrainCdtVertex::new(closest_x, height_m, closest_z);
+            closest_point = candidate_point;
             closest_source = Some(source);
         }
     }
@@ -2326,6 +2330,41 @@ fn closest_sourced_loop_edge_distance_point_and_source(
     closest_distance_m
         .is_finite()
         .then_some((closest_distance_m, closest_point, closest_source?))
+}
+
+fn terrain_cdt_closer_loop_point(
+    candidate_distance_m: f64,
+    candidate_point: TerrainCdtVertex,
+    candidate_source: TerrainCdtRoadBoundarySource,
+    current_distance_m: f64,
+    current_point: TerrainCdtVertex,
+    current_source: Option<TerrainCdtRoadBoundarySource>,
+) -> bool {
+    if candidate_distance_m < current_distance_m - CDT_EPSILON_M {
+        return true;
+    }
+    if (candidate_distance_m - current_distance_m).abs() > CDT_EPSILON_M {
+        return false;
+    }
+    let geometry_ordering = terrain_cdt_vertex_geometry_cmp(candidate_point, current_point);
+    if !geometry_ordering.is_eq() {
+        return geometry_ordering.is_lt();
+    }
+    current_source
+        .is_none_or(|source| terrain_cdt_boundary_source_cmp(candidate_source, source).is_lt())
+}
+
+fn terrain_cdt_vertex_geometry_cmp(a: TerrainCdtVertex, b: TerrainCdtVertex) -> std::cmp::Ordering {
+    (
+        quantized_coord(a.x),
+        quantized_coord(a.z),
+        quantized_coord(f64::from(a.height_m)),
+    )
+        .cmp(&(
+            quantized_coord(b.x),
+            quantized_coord(b.z),
+            quantized_coord(f64::from(b.height_m)),
+        ))
 }
 
 fn triangle_edges(triangle: &[usize; 3]) -> [(usize, usize); 3] {
@@ -3025,6 +3064,52 @@ mod tests {
 
         assert_eq!(mesh.tie_in_widened_samples.len(), 1);
         assert_eq!(mesh.tie_in_widened_samples[0].seam_source, source);
+    }
+
+    #[test]
+    fn cdt_tie_in_widening_ties_choose_seam_geometry_before_source_identity() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]);
+        let horizontal_source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 1);
+        let vertical_source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 2);
+        let source_samples = vec![TerrainCdtVertex::new(5.0, 0.0, 5.0)];
+
+        let first = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![sourced_l_road_loop_with_notch_sources(
+                horizontal_source,
+                vertical_source,
+            )],
+            source_samples.clone(),
+        ))
+        .expect("first sourced L road loop should triangulate");
+        let second = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![sourced_l_road_loop_with_notch_sources(
+                vertical_source,
+                horizontal_source,
+            )],
+            source_samples,
+        ))
+        .expect("reordered sourced L road loop should triangulate");
+
+        assert_eq!(
+            first.stats, second.stats,
+            "source identity order must not change tie-in widening diagnostics"
+        );
+        assert_eq!(first.tie_in_widened_samples.len(), 1);
+        assert_eq!(second.tie_in_widened_samples.len(), 1);
+        assert_eq!(
+            first.tie_in_widened_samples[0].seam_point, second.tie_in_widened_samples[0].seam_point,
+            "equidistant seam candidates must choose by geometry before provenance"
+        );
+        assert!(same_coord(
+            first.tie_in_widened_samples[0].seam_point.x,
+            4.0
+        ));
+        assert!(same_coord(
+            first.tie_in_widened_samples[0].seam_point.z,
+            5.0
+        ));
     }
 
     #[test]
@@ -3894,6 +3979,40 @@ mod tests {
             vertices,
             source_edges,
         )
+    }
+
+    fn sourced_l_road_loop_with_notch_sources(
+        notch_horizontal_source: TerrainCdtRoadBoundarySource,
+        notch_vertical_source: TerrainCdtRoadBoundarySource,
+    ) -> TerrainCdtRoadLoop {
+        let fallback_source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 3);
+        let vertices = vec![
+            TerrainCdtVertex::new(2.0, 0.0, 2.0),
+            TerrainCdtVertex::new(8.0, 0.0, 2.0),
+            TerrainCdtVertex::new(8.0, 4.0, 4.0),
+            TerrainCdtVertex::new(4.0, 2.0, 4.0),
+            TerrainCdtVertex::new(4.0, 0.0, 8.0),
+            TerrainCdtVertex::new(2.0, 0.0, 8.0),
+        ];
+        let sources = [
+            fallback_source,
+            fallback_source,
+            notch_horizontal_source,
+            notch_vertical_source,
+            fallback_source,
+            fallback_source,
+        ];
+        let source_edges = vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                start,
+                end: vertices[(index + 1) % vertices.len()],
+                source: sources[index],
+            })
+            .collect();
+        TerrainCdtRoadLoop::new_with_source_edges(88, 0, vertices, source_edges)
     }
 
     fn test_node_boundary_source(
