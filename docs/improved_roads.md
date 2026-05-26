@@ -201,13 +201,16 @@ section says whether the runtime has reached it yet.
   owner/source/height-field identity digests, exact stable source-carrier segment IDs, and stable
   source-carrier segment-ID digests where source-segment projections are present; golden failures
   print the exact canonical identity vectors for audit.
-- road-touched terrain CDT reports widened near-road samples and retaining-wall classifications, but
-  authored / extreme DEM coverage and any required closure variants remain open
+- road-touched terrain CDT reports widened near-road samples and retaining-wall classifications.
+  Production road-surface authored DEM coverage now includes supportive ordinary spans, raised
+  retaining-wall spans, raised `Bend` pieces, and raised `JunctionN` pieces. Broader real-world /
+  extreme DEM validation and any required closure variants remain open.
 
 ### Open ROAD-01 Work
 
-- complete terrain / road agreement tests for authored and extreme DEM cases, including retaining
-  wall and widened tie-in combinations
+- extend terrain / road agreement tests across broader authored and extreme DEM cases, including
+  any retaining-wall, widened tie-in, or closure variants not covered by the current production
+  road-surface slice
 - keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
   adjacent-mouth connector patches, nearest-height fallback, min/max repair, averaging, or
   render-order priority

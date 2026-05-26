@@ -630,8 +630,9 @@ The following are current hardcut implementation rules:
   water meshes receive the same grouped road footprint loops after a network edit and suppress
   cells that touch the outer-loop-minus-hole road-owned area, so water is no longer allowed to
   render under grounded road-owned asphalt, shoulder / curb, or sidewalk
-- clipped patch topology is validated against flat, diagonal, sloped, bend, terminal, and
-  `JunctionN` road cases, including bridge-midspan and tunnel-portal structural stamping
+- clipped patch topology is validated against flat, diagonal, sloped, bend, terminal,
+  `JunctionN`, and production authored DEM road cases, including bridge-midspan and tunnel-portal
+  structural stamping
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
 - the remaining blocker is deterministic handling of over-steep road-to-terrain tie-ins and the

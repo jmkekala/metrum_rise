@@ -5,6 +5,7 @@ use super::super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::*;
 
 mod ambiguity;
+mod authored_dem;
 mod cdt;
 mod loops;
 mod road_locked;

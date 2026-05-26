@@ -208,8 +208,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   exported as explicit retaining-wall tie-in geometry instead of ordinary terrain. Synthetic DEM
   validation now covers supportive ordinary tie-ins, near-road source-sample widening, raised and
   lowered retaining-wall cuts, and mixed widening-plus-wall cases while preserving exact road seam
-  constraints. The remaining blocking work is authored / extreme DEM validation and any richer
-  closure variants needed beyond the retaining-wall path.
+  constraints. Production road-surface authored DEM coverage now also validates supportive spans,
+  raised retaining-wall spans, raised bends, and raised multiway junctions through final
+  road-owned terrain loops. The remaining blocking work is broader real-world / extreme DEM
+  validation and any richer closure variants needed beyond the retaining-wall path.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
