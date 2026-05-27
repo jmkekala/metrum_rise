@@ -1115,6 +1115,129 @@ mod tests {
     }
 
     #[test]
+    fn test_logged_one_way_terminal_caps_are_visible_from_asphalt() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(512, 512);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let start_point = Vector3::new(-91.794_937, 0.0, -166.171_524);
+        let end_point = Vector3::new(-169.931_305, 0.0, -185.171_753);
+        let points = vec![
+            start_point,
+            Vector3::new(-100.156_898, 0.0, -168.204_865),
+            Vector3::new(-130.863_113, 0.0, -175.671_646),
+            Vector3::new(-160.968_079, 0.0, -182.992_188),
+            end_point,
+        ];
+        let n0 = graph.add_node(start_point, NodeType::Junction);
+        let n1 = graph.add_node(end_point, NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            n0,
+            n1,
+            &points,
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            2,
+            0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 280.0);
+
+        let direction_xz =
+            Vector2::new(end_point.x - start_point.x, end_point.z - start_point.z).normalized();
+        let left_xz = Vector2::new(-direction_xz.y, direction_xz.x);
+        let length =
+            Vector2::new(end_point.x - start_point.x, end_point.z - start_point.z).length();
+        let road_half_width = 3.5;
+        let road_boundary_edges = top_surface_boundary_edges(&mesh_data.road_vertices);
+        let curb_top_boundary_edges = top_surface_boundary_edges(&mesh_data.curb_vertices);
+        let mut start_cap_triangles = 0usize;
+        let mut end_cap_triangles = 0usize;
+        let mut start_lower_length = 0.0f32;
+        let mut start_upper_length = 0.0f32;
+        let mut end_lower_length = 0.0f32;
+        let mut end_upper_length = 0.0f32;
+
+        for triangle in triangles_from_vertices(&mesh_data.raised_step_vertices) {
+            if triangle_projected_double_area(triangle).abs() >= 0.001
+                || triangle_y_delta(triangle) < 0.05
+            {
+                continue;
+            }
+            let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            let rel = Vector2::new(centroid.x - start_point.x, centroid.z - start_point.z);
+            let along = rel.dot(direction_xz);
+            let lateral = rel.dot(left_xz);
+            let visible_direction = godot_cull_back_visible_direction(triangle);
+            let visible_xz = Vector2::new(visible_direction.x, visible_direction.z);
+
+            if along.abs() <= 0.25 && lateral.abs() <= road_half_width - 0.1 {
+                assert!(
+                    visible_xz.dot(direction_xz) > 0.0,
+                    "logged one-way start terminal cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                start_cap_triangles += 1;
+            } else if (along - length).abs() <= 0.25 && lateral.abs() <= road_half_width - 0.1 {
+                assert!(
+                    visible_xz.dot(direction_xz) < 0.0,
+                    "logged one-way end terminal cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                end_cap_triangles += 1;
+            }
+        }
+
+        for edge in raised_step_face_horizontal_edges(&mesh_data.raised_step_vertices) {
+            let midpoint = (edge[0] + edge[1]) / 2.0;
+            let rel = Vector2::new(midpoint.x - start_point.x, midpoint.z - start_point.z);
+            let along = rel.dot(direction_xz);
+            let lateral = rel.dot(left_xz);
+            if lateral.abs() > road_half_width + 0.1 {
+                continue;
+            }
+
+            let edge_key = RenderEdgeKey::new(edge[0], edge[1]);
+            let matches_road = road_boundary_edges.contains(&edge_key);
+            let matches_curb_top = curb_top_boundary_edges.contains(&edge_key);
+            if along.abs() <= 0.25 || (along - length).abs() <= 0.25 {
+                assert!(
+                    matches_road ^ matches_curb_top,
+                    "logged one-way terminal cap vertical edge must close against exactly one adjacent top boundary; edge={edge:?} matches_road={matches_road} matches_curb_top={matches_curb_top}"
+                );
+            }
+
+            let edge_length = Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length();
+            match (
+                along.abs() <= 0.25,
+                (along - length).abs() <= 0.25,
+                matches_road,
+            ) {
+                (true, _, true) => start_lower_length += edge_length,
+                (true, _, false) if matches_curb_top => start_upper_length += edge_length,
+                (_, true, true) => end_lower_length += edge_length,
+                (_, true, false) if matches_curb_top => end_upper_length += edge_length,
+                _ => {}
+            }
+        }
+
+        assert!(
+            start_cap_triangles > 0 && end_cap_triangles > 0,
+            "logged one-way terminal must emit asphalt-facing cap triangles on both ends; start_cap={start_cap_triangles} end_cap={end_cap_triangles}"
+        );
+        assert!(
+            start_lower_length >= 6.9
+                && start_upper_length >= 6.9
+                && end_lower_length >= 6.9
+                && end_upper_length >= 6.9,
+            "logged one-way terminal caps must cover the full two-lane mouth; start_lower={start_lower_length:.3} start_upper={start_upper_length:.3} end_lower={end_lower_length:.3} end_upper={end_upper_length:.3}"
+        );
+    }
+
+    #[test]
     fn test_walkway_connection_keeps_road_core_owned_by_asphalt() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let walkway = [Vector3::new(-12.0, 0.0, -12.0), Vector3::ZERO];

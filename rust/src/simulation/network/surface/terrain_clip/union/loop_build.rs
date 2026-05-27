@@ -37,29 +37,63 @@ impl RoadSurfaceSystem {
                 TerrainClipSegmentPointRecovery::Degenerate => continue,
                 TerrainClipSegmentPointRecovery::Covered(points) => points,
                 TerrainClipSegmentPointRecovery::Partial => {
-                    let context = format!(
-                        "partial_coverage {}",
-                        Self::terrain_clip_missing_source_context_label(start, end, source_edges)
-                    );
-                    crate::debug_log!(
-                        "road",
-                        "terrain_clip_missing_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
-                        topology.shape_index,
-                        topology.contour_index,
-                        start[0],
-                        start[1],
-                        end[0],
-                        end[1],
-                        context
-                    );
-                    return Err(
-                        RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
-                            shape_index: topology.shape_index,
-                            start,
-                            end,
-                            context,
-                        },
-                    );
+                    match Self::terrain_clip_source_chain_points_from_source_edges(
+                        start,
+                        end,
+                        source_edges,
+                    ) {
+                        TerrainClipSourceChainRecovery::Covered(points) => points,
+                        TerrainClipSourceChainRecovery::Missing => {
+                            let context = format!(
+                                "partial_coverage {}",
+                                Self::terrain_clip_missing_source_context_label(
+                                    start,
+                                    end,
+                                    source_edges,
+                                )
+                            );
+                            crate::debug_log!(
+                                "road",
+                                "terrain_clip_missing_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
+                                topology.shape_index,
+                                topology.contour_index,
+                                start[0],
+                                start[1],
+                                end[0],
+                                end[1],
+                                context
+                            );
+                            return Err(
+                                RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                                    shape_index: topology.shape_index,
+                                    start,
+                                    end,
+                                    context,
+                                },
+                            );
+                        }
+                        TerrainClipSourceChainRecovery::Ambiguous(context) => {
+                            crate::debug_log!(
+                                "road",
+                                "terrain_clip_ambiguous_boundary_owner shape={} contour={} start=({:.3},{:.3}) end=({:.3},{:.3}) partial_coverage {}",
+                                topology.shape_index,
+                                topology.contour_index,
+                                start[0],
+                                start[1],
+                                end[0],
+                                end[1],
+                                context
+                            );
+                            return Err(
+                                RoadSurfaceTerrainClipExportError::MissingOuterBoundaryOwner {
+                                    shape_index: topology.shape_index,
+                                    start,
+                                    end,
+                                    context: format!("partial_coverage {context}"),
+                                },
+                            );
+                        }
+                    }
                 }
                 TerrainClipSegmentPointRecovery::Missing => {
                     match Self::terrain_clip_dust_connector_points_from_source_edges(

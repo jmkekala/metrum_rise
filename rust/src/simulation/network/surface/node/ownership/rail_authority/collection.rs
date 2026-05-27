@@ -43,6 +43,21 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonical_points
                 .or_default()
                 .extend(path.iter().copied());
         }
+        if let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index)) =
+            (contour.kind, contour.source_band_index)
+            && let Some(paths_for_source) = rails.height_carrier_paths_by_source.get(&(
+                kind,
+                contour.source_mouth_order_index,
+                source_band_index,
+            ))
+        {
+            for paths in paths_for_source {
+                paths_by_owner
+                    .entry(owner)
+                    .or_default()
+                    .push(height_carrier_loop_points(paths));
+            }
+        }
         paths_by_owner.entry(owner).or_default().push(path);
     }
     for constraint in &rails.constraints {
@@ -82,7 +97,7 @@ impl NodeSourceCarrierRegistry {
         constraints: &[NodeRailConstraint],
         height_carrier_paths_by_source: &BTreeMap<
             NodeRailHeightSourceKey,
-            NodeRailHeightCarrierPaths,
+            Vec<NodeRailHeightCarrierPaths>,
         >,
         height_carrier_points_by_source: &BTreeMap<NodeRailHeightSourceKey, Vec<RoadVec3>>,
     ) -> Self {
@@ -156,18 +171,20 @@ impl NodeSourceCarrierRegistry {
             owners.sort_unstable();
             owners.dedup();
         }
-        for (source, paths) in height_carrier_paths_by_source {
+        for (source, paths_for_source) in height_carrier_paths_by_source {
             let Some(owners) = owners_by_source.get(source) else {
                 continue;
             };
-            let path = height_carrier_loop_points(paths);
-            for owner in owners {
-                insert_closed_source_authority_segments(
-                    &mut source_segments_by_owner,
-                    *owner,
-                    *source,
-                    &path,
-                );
+            for paths in paths_for_source {
+                let path = height_carrier_loop_points(paths);
+                for owner in owners {
+                    insert_closed_source_authority_segments(
+                        &mut source_segments_by_owner,
+                        *owner,
+                        *source,
+                        &path,
+                    );
+                }
             }
         }
         for points in height_points_by_source.values_mut() {

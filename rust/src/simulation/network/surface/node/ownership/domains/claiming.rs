@@ -149,6 +149,7 @@ fn owned_domain_groups<'a>(
                 && group.claim_priority == domain.claim_priority
                 && group.source_mouth_order_index == domain.source_mouth_order_index
                 && group.source_band_index == domain.source_band_index
+                && domains_may_share_claim_group(group.domains[0], domain)
             {
                 group.domains.push(*domain);
                 continue;
@@ -164,4 +165,17 @@ fn owned_domain_groups<'a>(
         });
     }
     Ok(groups)
+}
+
+fn domains_may_share_claim_group(
+    existing: &NodeGeneratedContour,
+    candidate: &NodeGeneratedContour,
+) -> bool {
+    !matches!(
+        (existing.purpose, candidate.purpose),
+        (
+            NodeGeneratedContourPurpose::TerminalCap,
+            NodeGeneratedContourPurpose::TerminalCap
+        )
+    )
 }

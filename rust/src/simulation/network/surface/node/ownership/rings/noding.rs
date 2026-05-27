@@ -2,6 +2,7 @@
 
 use super::super::super::NodeOverlayContour;
 use super::super::super::NodeOverlayShapes;
+use super::super::super::RoadSurfaceVisualNodePieceKind;
 use super::super::super::arrangement::NodeBandOwner;
 use super::super::super::rails::NodeGeneratedContourClaimPriority;
 use super::super::rail_authority::NodeRailCanonicalPointSet;
@@ -16,7 +17,13 @@ mod edges;
 mod rail_paths;
 
 pub(in crate::simulation::network::surface::node::ownership) use canonicalization::{
-    canonicalize_final_owned_region_boundary_edges, canonicalize_owned_region_rings,
+    canonicalize_final_join_or_cap_owned_region_boundary_edges,
+    canonicalize_final_owned_region_boundary_edges_for_piece_kind, canonicalize_owned_region_rings,
+    canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind,
+};
+#[cfg(test)]
+pub(in crate::simulation::network::surface::node::ownership) use canonicalization::{
+    canonicalize_final_owned_region_boundary_edges,
     canonicalize_owned_region_rings_with_rail_point_set,
 };
 pub(in crate::simulation::network::surface::node::ownership) use edges::dedup_consecutive_overlay_points;

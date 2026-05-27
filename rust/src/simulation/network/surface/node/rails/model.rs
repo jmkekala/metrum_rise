@@ -57,7 +57,7 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) contours: Vec<NodeGeneratedContour>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
     pub(crate) height_carrier_paths_by_source:
-        BTreeMap<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>,
+        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>,
     pub(crate) height_carrier_points_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
     pub(crate) source_carriers: NodeSourceCarrierRegistry,

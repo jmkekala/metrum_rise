@@ -347,6 +347,7 @@ impl NodeBooleanOwnership {
             &rails.constraints,
             &rail_canonical_points,
             constraint_overlap_mode,
+            rails.piece_kind,
         )?;
         footprint_shapes =
             final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;

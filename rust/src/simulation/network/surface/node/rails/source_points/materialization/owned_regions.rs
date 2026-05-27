@@ -149,9 +149,10 @@ fn height_for_explicit_source_segment(
         ));
     }
 
-    if let Some(paths) = rails.height_carrier_paths_by_source.get(&source)
-        && let Some(height_m) =
+    if let Some(paths_for_source) = rails.height_carrier_paths_by_source.get(&source)
+        && let Some(height_m) = paths_for_source.iter().find_map(|paths| {
             height_for_segment_from_source_paths(point, segment_start, segment_end, paths)
+        })
     {
         return Ok(Some(height_m));
     }

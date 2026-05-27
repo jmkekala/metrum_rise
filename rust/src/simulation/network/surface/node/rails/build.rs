@@ -58,7 +58,7 @@ impl NodeRailContourSet {
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_paths_by_source =
-            BTreeMap::<(RoadSurfaceBandKind, usize, usize), NodeRailHeightCarrierPaths>::new();
+            BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>::new();
         let mut height_carrier_points_by_source =
             BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<_>>::new();
 
@@ -81,10 +81,10 @@ impl NodeRailContourSet {
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
                 let height_carrier_paths = interval_height_carrier_paths(interval);
-                height_carrier_paths_by_source.insert(
-                    (interval.band_kind, mouth.order_index, interval.band_index),
-                    height_carrier_paths.clone(),
-                );
+                height_carrier_paths_by_source
+                    .entry((interval.band_kind, mouth.order_index, interval.band_index))
+                    .or_default()
+                    .push(height_carrier_paths.clone());
                 push_band_height_carrier_points(
                     &mut height_carrier_points_by_source,
                     mouth.order_index,
@@ -103,6 +103,17 @@ impl NodeRailContourSet {
                 )?;
             }
             for cap_band in terminal_cap_bands {
+                height_carrier_paths_by_source
+                    .entry((
+                        cap_band.band_kind,
+                        mouth.order_index,
+                        cap_band.source_band_index,
+                    ))
+                    .or_default()
+                    .push(NodeRailHeightCarrierPaths {
+                        start_path_world: cap_band.inner_path_world.clone(),
+                        end_path_world: cap_band.outer_path_world.clone(),
+                    });
                 push_band_height_carrier_points(
                     &mut height_carrier_points_by_source,
                     mouth.order_index,

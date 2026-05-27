@@ -231,6 +231,46 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
             "opposite terminal sidewalk corner closure must not be owned by asphalt on side {side}; point={sidewalk_corner:?}"
         );
     }
+    assert_raised_step_face_lower_edge_covers(
+        &terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            center.x + lateral.x * -3.5,
+            0.0,
+            center.y + lateral.y * -3.5,
+        ),
+        backend::RoadVec3::new(center.x, 0.0, center.y),
+        "angled start terminal first carriageway asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(center.x, 0.0, center.y),
+        backend::RoadVec3::new(center.x + lateral.x * 3.5, 0.0, center.y + lateral.y * 3.5),
+        "angled start terminal second carriageway asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            center.x + lateral.x * -3.5,
+            0.0,
+            center.y + lateral.y * -3.5,
+        ),
+        backend::RoadVec3::new(center.x + lateral.x * 3.5, 0.0, center.y + lateral.y * 3.5),
+        "angled start terminal asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &end_terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            end_center.x + end_lateral.x * -3.5,
+            0.0,
+            end_center.y + end_lateral.y * -3.5,
+        ),
+        backend::RoadVec3::new(
+            end_center.x + end_lateral.x * 3.5,
+            0.0,
+            end_center.y + end_lateral.y * 3.5,
+        ),
+        "angled end terminal asphalt end cap",
+    );
 }
 
 #[test]
@@ -257,6 +297,10 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         .compiled_visual_node_pieces()
         .get(&start)
         .expect("straight terminal should compile a terminal piece");
+    let end_terminal_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("opposite straight terminal should compile a terminal piece");
     let span_piece = surface
         .compiled_visual_span_pieces()
         .get(&edge_idx)
@@ -265,7 +309,6 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         .start_mouth_profile
         .as_ref()
         .expect("terminal span should expose a start mouth profile");
-
     let left_curb_upper = start_mouth.bands[1].end_point_world;
     let left_road_lower = start_mouth.bands[2].start_point_world;
     assert_eq!(test_xz_key(left_curb_upper), test_xz_key(left_road_lower));
@@ -351,6 +394,155 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         5,
         6,
         "right sidewalk at handoff",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(0.0, 0.0, -3.5),
+        backend::RoadVec3::new(0.0, 0.0, 3.5),
+        "straight start terminal asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &end_terminal_piece.raised_step_face_polygons,
+        backend::RoadVec3::new(40.0, 0.0, 3.5),
+        backend::RoadVec3::new(40.0, 0.0, -3.5),
+        "straight end terminal asphalt end cap",
+    );
+}
+
+#[test]
+fn oblique_two_lane_terminal_caps_cover_asphalt_end_edges() {
+    let terrain = flat_terrain(256, 256);
+    let mut graph = RegionGraph::new();
+    let start_point = Vector3::new(21.162, 0.0, -160.894);
+    let end_point = Vector3::new(71.074, 0.0, -91.746);
+    let start = graph.add_node(start_point, NodeType::Junction);
+    let end = graph.add_node(end_point, NodeType::Junction);
+    let mut edge = test_edge(
+        start,
+        end,
+        vec![start_point, end_point],
+        14.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    );
+    edge.fwd_lanes = 2;
+    edge.bkw_lanes = 2;
+    graph.add_edge(edge);
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let start_terminal = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("start terminal should compile");
+    let end_terminal = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("end terminal should compile");
+    let travel = backend::RoadVec2::new(
+        f64::from(end_point.x - start_point.x),
+        f64::from(end_point.z - start_point.z),
+    )
+    .normalize();
+    let lateral = RoadSurfaceSystem::left_normal_xz(travel);
+    let start_center = backend::RoadVec2::new(f64::from(start_point.x), f64::from(start_point.z));
+    let end_center = backend::RoadVec2::new(f64::from(end_point.x), f64::from(end_point.z));
+
+    assert_raised_step_face_lower_edge_covers(
+        &start_terminal.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            start_center.x + lateral.x * -7.0,
+            0.0,
+            start_center.y + lateral.y * -7.0,
+        ),
+        backend::RoadVec3::new(
+            start_center.x + lateral.x * 7.0,
+            0.0,
+            start_center.y + lateral.y * 7.0,
+        ),
+        "oblique two-lane start terminal asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &end_terminal.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            end_center.x + lateral.x * -7.0,
+            0.0,
+            end_center.y + lateral.y * -7.0,
+        ),
+        backend::RoadVec3::new(
+            end_center.x + lateral.x * 7.0,
+            0.0,
+            end_center.y + lateral.y * 7.0,
+        ),
+        "oblique two-lane end terminal asphalt end cap",
+    );
+}
+
+#[test]
+fn logged_oblique_one_lane_terminal_caps_cover_both_end_edges() {
+    let terrain = flat_terrain(256, 256);
+    let mut graph = RegionGraph::new();
+    let start_point = Vector3::new(-101.330_170, 0.0, -27.102_081);
+    let end_point = Vector3::new(21.998_085, 0.0, 27.803_471);
+    let start = graph.add_node(start_point, NodeType::Junction);
+    let end = graph.add_node(end_point, NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![start_point, end_point],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let start_terminal = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("logged start terminal should compile");
+    let end_terminal = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("logged end terminal should compile");
+    let travel = backend::RoadVec2::new(
+        f64::from(end_point.x - start_point.x),
+        f64::from(end_point.z - start_point.z),
+    )
+    .normalize();
+    let lateral = RoadSurfaceSystem::left_normal_xz(travel);
+    let start_center = backend::RoadVec2::new(f64::from(start_point.x), f64::from(start_point.z));
+    let end_center = backend::RoadVec2::new(f64::from(end_point.x), f64::from(end_point.z));
+
+    assert_raised_step_face_lower_edge_covers(
+        &start_terminal.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            start_center.x + lateral.x * -3.5,
+            0.0,
+            start_center.y + lateral.y * -3.5,
+        ),
+        backend::RoadVec3::new(
+            start_center.x + lateral.x * 3.5,
+            0.0,
+            start_center.y + lateral.y * 3.5,
+        ),
+        "logged oblique one-lane start terminal asphalt end cap",
+    );
+    assert_raised_step_face_lower_edge_covers(
+        &end_terminal.raised_step_face_polygons,
+        backend::RoadVec3::new(
+            end_center.x + lateral.x * -3.5,
+            0.0,
+            end_center.y + lateral.y * -3.5,
+        ),
+        backend::RoadVec3::new(
+            end_center.x + lateral.x * 3.5,
+            0.0,
+            end_center.y + lateral.y * 3.5,
+        ),
+        "logged oblique one-lane end terminal asphalt end cap",
     );
 }
 

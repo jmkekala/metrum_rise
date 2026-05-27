@@ -156,11 +156,10 @@ fn height_fields_by_source_for_ownership(
             });
             let resolved_interval = rails
                 .and_then(|rails| {
-                    rails.height_carrier_paths_by_source.get(&(
-                        interval.band_kind,
-                        mouth.order_index,
-                        interval.band_index,
-                    ))
+                    rails
+                        .height_carrier_paths_by_source
+                        .get(&(interval.band_kind, mouth.order_index, interval.band_index))
+                        .and_then(|paths| paths.first())
                 })
                 .map(|paths| {
                     let mut interval = interval.clone();

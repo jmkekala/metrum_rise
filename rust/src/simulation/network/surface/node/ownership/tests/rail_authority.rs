@@ -269,6 +269,50 @@ fn source_height_rail_scope_defers_single_candidate_owner_ambiguity_to_closure()
 }
 
 #[test]
+fn source_height_rail_adopts_unique_same_mm_source_vertex() {
+    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let source_key = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    let source_candidate = (21_998_085, 27_803_471);
+    let boolean_vertex = (21_998_084, 27_803_470);
+    let mut regions = vec![test_owned_region(
+        RoadSurfaceBandKind::Carriageway,
+        carriageway,
+        vec![
+            overlay_point_from_key(boolean_vertex),
+            overlay_point_from_key((20_574_587, 31_000_916)),
+            overlay_point_from_key((16_516_749, 25_363_188)),
+        ],
+    )];
+    regions[0].source_mouth_order_index = source_key.1;
+    regions[0].source_band_index = Some(source_key.2);
+    regions[0].claim_priority = NodeGeneratedContourClaimPriority::JoinOrCap;
+    let owner_points = vec![source_candidate];
+    let rail_canonical_points = NodeRailCanonicalPointSet {
+        all_points: owner_points.clone(),
+        points_by_owner: BTreeMap::from([(carriageway, owner_points.clone())]),
+        source_carriers: NodeSourceCarrierRegistry {
+            source_segments_by_owner: BTreeMap::new(),
+            height_points_by_source: BTreeMap::from([(source_key, vec![source_candidate])]),
+        },
+        canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
+            [(carriageway, owner_points)],
+        )),
+        paths_by_owner: BTreeMap::new(),
+    };
+
+    canonicalize_owned_region_rings_with_rail_point_set(&mut regions, &rail_canonical_points)
+        .expect("unique source-scoped rail key should replace backend same-mm drift");
+
+    let contour_keys = regions[0].shape[0]
+        .iter()
+        .copied()
+        .map(ownership_key_from_overlay_point)
+        .collect::<BTreeSet<_>>();
+    assert!(contour_keys.contains(&source_candidate));
+    assert!(!contour_keys.contains(&boolean_vertex));
+}
+
+#[test]
 fn source_height_rail_defers_source_scoped_same_mm_cluster_with_unrelated_owner_candidate() {
     let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
     let unrelated_candidate = (-21_445_399, -48_035_391);

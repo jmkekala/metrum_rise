@@ -5,7 +5,7 @@ use super::super::super::keys::SurfaceXzKey;
 use super::super::super::rails::{NodeGeneratedContourClaimPriority, NodeRailConstraint};
 use super::super::super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayShape, NodeOverlayShapes,
-    RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
 use super::super::domains::overlay_union;
 use super::super::rail_authority::NodeRailCanonicalPointSet;
@@ -15,8 +15,10 @@ use super::super::seams::{
 use super::super::topology_keys::{NodeOwnershipPointKey, ownership_key_from_overlay_point};
 use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use super::noding::{
-    canonicalize_final_owned_region_boundary_edges,
-    canonicalize_owned_region_rings_with_rail_point_set, dedup_consecutive_overlay_points,
+    canonicalize_final_join_or_cap_owned_region_boundary_edges,
+    canonicalize_final_owned_region_boundary_edges_for_piece_kind,
+    canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind,
+    dedup_consecutive_overlay_points,
 };
 
 #[derive(Clone, Copy)]
@@ -52,6 +54,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
     rail_constraints: &[NodeRailConstraint],
     rail_canonical_points: &NodeRailCanonicalPointSet,
     overlap_mode: ConstraintOverlapMode,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let mut cleaned_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
@@ -72,36 +75,46 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
             }
         }
     }
-    canonicalize_owned_region_rings_with_rail_point_set(
+    canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
         rail_canonical_points,
+        piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
-    canonicalize_owned_region_rings_with_rail_point_set(
+    canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
         rail_canonical_points,
+        piece_kind,
     )?;
-    canonicalize_final_owned_region_boundary_edges(
+    canonicalize_final_owned_region_boundary_edges_for_piece_kind(
         &mut cleaned_regions,
         footprint_shapes,
         rail_canonical_points,
+        piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
-    canonicalize_final_owned_region_boundary_edges(
+    canonicalize_final_owned_region_boundary_edges_for_piece_kind(
         &mut cleaned_regions,
         footprint_shapes,
         rail_canonical_points,
+        piece_kind,
     )?;
     split_final_canonical_owned_region_self_touches(
         &mut cleaned_regions,
         rail_constraints,
         ConstraintOverlapMode::ExactCanonical,
     );
-    canonicalize_owned_region_rings_with_rail_point_set(
+    canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
         rail_canonical_points,
+        piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
+    canonicalize_final_join_or_cap_owned_region_boundary_edges(
+        &mut cleaned_regions,
+        footprint_shapes,
+        rail_canonical_points,
+    )?;
     for region in &mut cleaned_regions {
         region.seam_constraints =
             seam_constraints_for_shape(&region.shape, region.owner, rail_constraints, overlap_mode);

@@ -176,6 +176,9 @@ impl RoadSurfaceSystem {
             if cursor == end_position {
                 return (path.len() >= 2).then_some(path);
             }
+            if !Self::terrain_clip_source_loop_edge_connects_to_next(source_edges, cursor) {
+                return None;
+            }
             cursor = (cursor + 1) % source_edges.len();
             path.push(Self::terrain_clip_source_loop_vertex_key(
                 source_edges,
@@ -191,6 +194,21 @@ impl RoadSurfaceSystem {
     ) -> Option<SurfaceXzKey> {
         let source_edge = source_edges.get(position % source_edges.len())?;
         Some(Self::terrain_clip_world_key(source_edge.start))
+    }
+
+    fn terrain_clip_source_loop_edge_connects_to_next(
+        source_edges: &[TerrainClipSourceEdge],
+        position: usize,
+    ) -> bool {
+        let Some(edge) = source_edges.get(position % source_edges.len()) else {
+            return false;
+        };
+        let Some(next_vertex_key) =
+            Self::terrain_clip_source_loop_vertex_key(source_edges, position + 1)
+        else {
+            return false;
+        };
+        Self::terrain_clip_world_key(edge.end) == next_vertex_key
     }
 
     fn apply_terrain_clip_source_chain_top_envelope_heights(

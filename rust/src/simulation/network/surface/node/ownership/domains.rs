@@ -4,7 +4,7 @@ use super::super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint};
 use super::super::backend::road_vec2_to_overlay_point;
 use super::super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
-    NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
+    NodeGeneratedContourPurpose, NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
 use super::super::{NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem};
 use super::seams::ConstraintOverlapMode;

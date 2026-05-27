@@ -242,6 +242,7 @@ func _commit_segment(end_pos):
 
 	var preview := _get_compiled_preview_surface()
 	var points := current_path.curve.get_baked_points() if current_path else PackedVector3Array()
+	var committed := false
 	if points.size() > 1 and not preview.is_empty() and bool(preview.get("is_valid", false)):
 		simulation_node.add_road(points, fwd_lanes, bkw_lanes)
 		# Do NOT trigger the terrain/network visual refresh here — the road
@@ -253,22 +254,10 @@ func _commit_segment(end_pos):
 		_pending_border_checks.push_back([start_pos, end_pos])
 		# Ghost guides must be rebuilt once the road lands in the graph.
 		_ghost_guides_dirty = true
-	
-	var dist = start_pos.distance_to(end_pos)
-	
-	if draw_mode == 0:
-		start_pos = end_pos
-		control_pos = end_pos
-		current_state = State.SETTING_END
-	else:
-		start_pos = end_pos
-		# For G1 continuity, the NEW control point should be a projection 
-		# of the PREVIOUS end-tangent.
-		var final_tangent = (end_pos - control_pos).normalized()
-		if final_tangent.length() < 0.001:
-			final_tangent = (end_pos - start_pos).normalized()
-		control_pos = end_pos + final_tangent * min(dist * 0.5, 10.0)
-		current_state = State.SETTING_END
+		committed = true
+
+	if committed:
+		cancel_road()
 
 func cancel_road():
 	current_state = State.IDLE

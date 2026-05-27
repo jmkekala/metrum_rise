@@ -1,6 +1,7 @@
 //! Terminal-cap height anchors derived from endpoint profile rails.
 
 use super::*;
+use crate::simulation::network::surface::keys::SurfaceXzKey;
 
 pub(super) fn terminal_side_band_height_anchors(
     mouth: &NodeInputMouth,
@@ -39,8 +40,39 @@ pub(super) fn endpoint_boundary_world(
     mouth: &NodeInputMouth,
     boundary_index: usize,
 ) -> Option<RoadVec3> {
-    mouth
-        .boundary_rails
+    let rail = mouth.boundary_rails.get(boundary_index)?;
+    let source_boundary = endpoint_source_boundary_world(mouth, boundary_index)?;
+    Some(RoadVec3::new(
+        source_boundary.x,
+        rail.endpoint_world.y,
+        source_boundary.z,
+    ))
+}
+
+fn endpoint_source_boundary_world(
+    mouth: &NodeInputMouth,
+    boundary_index: usize,
+) -> Option<RoadVec3> {
+    let left = boundary_index
+        .checked_sub(1)
+        .and_then(|index| mouth.band_intervals.get(index))
+        .map(|band| band.endpoint_end_world);
+    let right = mouth
+        .band_intervals
         .get(boundary_index)
-        .map(|rail| rail.endpoint_world)
+        .map(|band| band.endpoint_start_world);
+
+    match (left, right) {
+        (Some(left), Some(right)) => endpoint_source_boundary_pair(left, right),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => mouth
+            .boundary_rails
+            .get(boundary_index)
+            .map(|rail| rail.endpoint_world),
+    }
+}
+
+fn endpoint_source_boundary_pair(left: RoadVec3, right: RoadVec3) -> Option<RoadVec3> {
+    (SurfaceXzKey::from_world_xz(left) == SurfaceXzKey::from_world_xz(right)).then_some(left)
 }

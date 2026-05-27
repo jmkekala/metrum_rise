@@ -485,10 +485,10 @@ fn rails_with_source_surface(source: (RoadSurfaceBandKind, usize, usize)) -> Nod
     let mut height_carrier_paths_by_source = BTreeMap::new();
     height_carrier_paths_by_source.insert(
         source,
-        NodeRailHeightCarrierPaths {
+        vec![NodeRailHeightCarrierPaths {
             start_path_world: start_path_world.clone(),
             end_path_world: end_path_world.clone(),
-        },
+        }],
     );
     let height_carrier_points_by_source = BTreeMap::from([(
         source,

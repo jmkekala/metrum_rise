@@ -29,20 +29,15 @@ pub(in crate::simulation::network::surface::node::rails) fn push_terminal_cap_ba
         return Ok(());
     }
 
-    let mut groups = BTreeMap::<GeneratedCapOrJoinGroupKey, TerminalCapBandGroup>::new();
     for (cap_band, owner) in cap_bands.iter().zip(owners) {
-        groups
-            .entry(GeneratedCapOrJoinGroupKey {
-                kind: cap_band.band_kind,
-                source_band_index: cap_band.source_band_index,
-                owner: *owner,
-                contributes_footprint: true,
-            })
-            .or_insert_with(TerminalCapBandGroup::empty)
-            .push(cap_band);
-    }
-
-    for (key, group) in groups {
+        let mut group = TerminalCapBandGroup::empty();
+        group.push(cap_band);
+        let key = GeneratedCapOrJoinGroupKey {
+            kind: cap_band.band_kind,
+            source_band_index: cap_band.source_band_index,
+            owner: *owner,
+            contributes_footprint: true,
+        };
         push_grouped_cap_or_join_candidate_contours(
             mouth,
             key,
@@ -53,15 +48,13 @@ pub(in crate::simulation::network::surface::node::rails) fn push_terminal_cap_ba
             contours,
             constraints,
         )?;
-        for cap_band in group.cap_bands {
-            push_terminal_cap_band_boundary_constraints(
-                mouth,
-                cap_band,
-                key.owner,
-                &owner_by_kind_and_source,
-                constraints,
-            )?;
-        }
+        push_terminal_cap_band_boundary_constraints(
+            mouth,
+            cap_band,
+            key.owner,
+            &owner_by_kind_and_source,
+            constraints,
+        )?;
     }
 
     Ok(())

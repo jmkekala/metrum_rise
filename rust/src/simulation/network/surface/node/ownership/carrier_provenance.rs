@@ -419,8 +419,10 @@ fn source_segment_candidate_height(
     ) {
         return Some(height_m);
     }
-    if let Some(paths) = rails.height_carrier_paths_by_source.get(&source)
-        && let Some(height_m) = height_from_source_paths(candidate, paths)
+    if let Some(paths_for_source) = rails.height_carrier_paths_by_source.get(&source)
+        && let Some(height_m) = paths_for_source
+            .iter()
+            .find_map(|paths| height_from_source_paths(candidate, paths))
     {
         return Some(height_m);
     }
@@ -664,26 +666,29 @@ fn source_height_paths_contain_segment(
     segment_end: NodeOwnershipPointKey,
     rails: &NodeRailContourSet,
 ) -> bool {
-    let Some(paths) = rails.height_carrier_paths_by_source.get(&source) else {
+    let Some(paths_for_source) = rails.height_carrier_paths_by_source.get(&source) else {
         return false;
     };
-    let mut path = Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
-    path.extend(
-        paths
-            .start_path_world
-            .iter()
-            .copied()
-            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
-    );
-    path.extend(
-        paths
-            .end_path_world
-            .iter()
-            .rev()
-            .copied()
-            .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
-    );
-    path_contains_segment(&path, segment_start, segment_end, true)
+    paths_for_source.iter().any(|paths| {
+        let mut path =
+            Vec::with_capacity(paths.start_path_world.len() + paths.end_path_world.len());
+        path.extend(
+            paths
+                .start_path_world
+                .iter()
+                .copied()
+                .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
+        );
+        path.extend(
+            paths
+                .end_path_world
+                .iter()
+                .rev()
+                .copied()
+                .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
+        );
+        path_contains_segment(&path, segment_start, segment_end, true)
+    })
 }
 
 fn generated_height_contours_contain_segment(

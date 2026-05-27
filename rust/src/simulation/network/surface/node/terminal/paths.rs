@@ -101,11 +101,8 @@ fn clean_terminal_cap_contour_world(
     contour_world: Vec<RoadVec3>,
 ) -> Result<Option<Vec<RoadVec3>>, PathHeightResolutionError> {
     let raw = road_points_to_polyline(contour_world.iter().copied().map(xz), true);
-    let mut cleaned =
+    let cleaned =
         RoadPolyline::create_from_remove_repeat(&raw, TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M);
-    if let Some(reduced) = cleaned.remove_redundant(TERMINAL_CAP_POLYLINE_POINT_EQUAL_EPS_M) {
-        cleaned = reduced;
-    }
     if cleaned.vertex_count() < 3
         || cleaned.area().abs() <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
         || cleaned.scan_for_self_intersect()
