@@ -28,7 +28,7 @@ Those remain owned by [`entrance_and_exit.md`](entrance_and_exit.md),
 Interpretation rules:
 
 - `current runtime` means the shipped implementation in the repository today
-- `remaining work` means the not-yet-shipped follow-up tracked under a road or earthworks roadmap ID
+- `future work` means a later follow-up tracked under a new road or earthworks roadmap ID
 - `must` means required for the owning contract
 - `should` means intended unless a better measured implementation replaces it
 - `may` means optional
@@ -82,9 +82,9 @@ reintroducing local patches to the retired renderer.
 
 ## Current Status
 
-This section is the implementation-status source of truth. The lower sections define the target
-contract and implementation plans; when a lower section describes a stricter requirement, this
-section says whether the runtime has reached it yet.
+This section is the shipped-runtime source of truth. The lower sections define the maintenance
+contract and guardrails that keep the implementation from drifting back toward retired roadbed
+patterns.
 
 ### Implemented Baseline
 
@@ -174,7 +174,7 @@ section says whether the runtime has reached it yet.
   exact source-owned height / provenance at canonical split keys instead of recomputing support
   from an unrelated edge interpolation.
 
-### Remaining Tracked Follow-Up
+### Future Follow-Up Boundary
 
 - Future terrain closure variants beyond the current retaining-wall path should be tracked as new
   explicit `EARTH-*` work, not reopened under `ROAD-01`.
@@ -191,24 +191,24 @@ elevated 4-way / 5-way / 6-way `JunctionN` fixtures now exercise mixed sidewalk 
 no-sidewalk curb / shoulder profile modes without weakening canonical identity, provenance, or
 terrain-CDT gates.
 
-### Implementation Plan Map
+### Contract Map
 
 - terrain CDT status and rules live under
   [`Spade CDT Terrain-Patch Hardcut`](#spade-cdt-terrain-patch-hardcut)
-- the node pipeline phase plan lives under
-  [`Library-Backed Node Rework Plan`](#library-backed-node-rework-plan)
+- the node pipeline runtime contract lives under
+  [`Library-Backed Node Runtime Contract`](#library-backed-node-runtime-contract)
 - the shipped carrier-provenance replacement for post-boolean repair lives under
-  [`General Carrier-Provenance Closure Plan`](#general-carrier-provenance-closure-plan)
+  [`General Carrier-Provenance Closure Contract`](#general-carrier-provenance-closure-contract)
 - Bend / JunctionN candidate ownership rules live under
   [`Conflict-First Node Candidate Hardcut`](#conflict-first-node-candidate-hardcut)
 - black-box coverage requirements live under [`Test Contract`](#test-contract)
 
-### General Carrier-Provenance Closure Plan
+### General Carrier-Provenance Closure Contract
 
 Status: shipped for `ROAD-01`. This section is now the maintenance contract for the closure layer
 that replaced post-boolean support materialization patches. It is not a second geometry contract
 beside the library-backed rework; it keeps the current `Terminal`, `Bend`, and `JunctionN`
-pipeline obeying the node band grade-carrier hardcut while broader backend cleanup continues.
+pipeline obeying the node band grade-carrier hardcut and the shipped `CODE-14` geometry boundary.
 
 Shipped behavior:
 
@@ -265,7 +265,7 @@ Performance rule:
 - the intended cost is `O((V + S) log S)` or better per compiled node, where `V` is final
   owned-region vertex count and `S` is node-local source-carrier segment count
 
-Future change gates:
+Maintenance gates:
 
 - `cargo check --manifest-path rust/Cargo.toml`
 - focused surface tests for the regenerated elevated 3-way, the 500 m multi-junction case, flat
@@ -294,8 +294,8 @@ Future change gates:
   `Vector2` / `Vector3` are boundary types for GDExtension input, render upload, debug output, and
   save/load interoperability, not the long-lived internal geometry representation.
 - `cavalier_contours` is the preferred backend for polyline offsetting, joins, caps, parallel
-  curves, and contour cleanup in the node rework. Road code must not continue hand-rolling offset
-  rails or corner joins once this backend is adopted.
+  curves, and contour cleanup in the node rework. Road code must not reintroduce hand-rolled
+  offset rails or corner joins where this backend owns the operation.
 - `splines` is the preferred backend for explicit longitudinal grade profiles and height
   evaluation at canonical vertices. It may evaluate heights only after ownership and seam vertices
   are known; it must not decide material ownership.
@@ -327,7 +327,8 @@ Future change gates:
 - using float vector equality as canonical topology identity. Canonical node arrangement identity
   must use explicit quantized keys / stable IDs; `glam` values are numeric working values only.
 - carrying Godot vector types through core road-surface geometry after the data has crossed into
-  the Rust simulation boundary, except as a temporary adapter while migrating existing code
+  the Rust simulation boundary, except at graph / API input, GDExtension conversion, render upload,
+  debug output, and save/load interoperability boundaries
 - hand-written offsetting, polygon cleanup, point-in-polygon, intersection, or triangulation logic
   when an accepted backend already owns that operation
 - any compatibility path that keeps the old post-overlay shared grade sampler as the source of
@@ -957,9 +958,8 @@ Elevated-junction policy:
 Runtime solve sequence for `Terminal`, `Bend`, and `JunctionN`:
 
 1. Build incident mouth rails, endpoint rails, and conflict handoff distances from solved profiles.
-   Use accepted geometry backends for offset rails, caps, joins, and contour cleanup where they are
-   adopted; remaining backend migration must preserve the same owner, seam, and height-field
-   identities.
+   Use accepted geometry backends for offset rails, caps, joins, and contour cleanup; any later
+   backend replacement must preserve the same owner, seam, and height-field identities.
 2. Build conflict-bounded full-roadbed and carriageway candidates from those canonical rails.
 3. Use `i_overlay` to produce primary XZ ownership:
 
@@ -1671,54 +1671,54 @@ The terrain CDT hardcut is the accepted baseline. Its shipped properties are:
 - Live terrain CDT uses `try_bulk_load_cdt`; malformed constraints are debug-counted and must not
   panic the simulation thread or re-enable an older terrain path.
 
-The node-piece implementation status is summarized in [`Current Status`](#current-status). Future
-changes must extend the canonical arrangement contract rather than reintroduce transitional repair
-helpers.
+The node-piece implementation status is summarized in [`Current Status`](#current-status). Changes
+in this area must extend the canonical arrangement contract rather than reintroduce transitional
+repair helpers.
 
 Acceptance for changes in this area requires `cargo check`, the relevant road-surface contract
 tests, and Godot headless load to pass.
 
-### Library-Backed Node Rework Plan
+### Library-Backed Node Runtime Contract
 
-This is a clean-cut replacement of the current node surface compiler. The implementation must not
-ship or merge with a temporary dual path where old node code remains reachable. The hardcut change
-must route `Terminal`, `Bend`, and `JunctionN` through the new arrangement builder in the same
-patch series that removes the retired helpers from runtime use.
+The node rework is shipped as a hardcut runtime. `Terminal`, `Bend`, and `JunctionN` route through
+the canonical arrangement builder, and the retired node-patch helpers must remain out of live
+reachability. The runtime must not grow a temporary dual path where old node code can decide
+rendered ownership, terrain clip loops, or height carriers.
 
-Implementation phases:
+Shipped runtime structure:
 
 1. Dependency and adapter boundary:
-   - add direct dependencies only for accepted backends used by the implementation: `glam`,
+   - direct dependencies are limited to accepted backends used by the implementation: `glam`,
      `cavalier_contours`, `splines`, `parry2d`, and optional `lyon_geom`
-   - keep `i_overlay`, `rstar`, and Spade as existing accepted backends
-   - add a small road-geometry adapter layer for converting between Godot vectors, `glam`
-     vectors, overlay contours, Spade points, and backend contour types
-   - keep Godot `Vector2` / `Vector3` out of new core geometry structs except at bridge and output
-     conversion points
+   - `i_overlay`, `rstar`, and Spade remain accepted backends
+   - the road-geometry adapter layer converts between Godot vectors, `RoadVec2` / `RoadVec3`,
+     overlay contours, Spade points, and backend contour types
+   - Godot `Vector2` / `Vector3` stay out of core geometry structs except at bridge and output
+     conversion boundaries
 
 2. Canonical identity and data model:
-   - introduce `NodeArrangement`, `NodeArrangementVertex`, `NodeArrangementEdge`, and
+   - `NodeArrangement`, `NodeArrangementVertex`, `NodeArrangementEdge`, and
      `NodeOwnedRegion` records backed by quantized keys / stable IDs
    - represent material owner, band owner, seam source, and `NodeBandHeightFieldId` explicitly on
      every arrangement vertex / edge / face
    - reject float-vector equality as topology identity; `glam` values are working coordinates only
 
 3. Input extraction:
-   - keep the existing solved edge section/profile pipeline as the source of mouth data
-   - extract mouth rails, endpoint rails, band intervals, conflict handoff distance, and solved
-     boundary heights once per incident mouth
+   - the existing solved edge section/profile pipeline remains the source of mouth data
+   - mouth rails, endpoint rails, band intervals, conflict handoff distance, and solved boundary
+     heights are extracted once per incident mouth
    - do not duplicate curb height, sidewalk width, shoulder width, or grade constants inside the
      node builder
 
 4. Rail and contour generation:
-   - use `cavalier_contours` for offsets, joins, caps, parallel curves, and contour cleanup
-   - generate full-roadbed, carriageway, curb / shoulder, sidewalk, and footprint seam rails from
-     backend-produced contours
+   - `cavalier_contours` owns offsets, joins, caps, parallel curves, and contour cleanup
+   - full-roadbed, carriageway, curb / shoulder, sidewalk, and footprint seam rails are generated
+     from backend-produced contours
    - represent every generated rail as an arrangement constraint before boolean ownership or CDT
      input is built
 
 5. Boolean ownership:
-   - use `i_overlay` for union / intersection / difference of candidate regions
+   - `i_overlay` owns union / intersection / difference of candidate regions
    - produce `node_footprint`, `node_asphalt`, and `node_non_road`
    - split `node_non_road` into explicit curb / shoulder and sidewalk regions using profile seam
      rails; reject unowned residuals
@@ -1755,21 +1755,21 @@ Implementation phases:
      duplicate exposed edges, and invalid constraints as structured road-geometry diagnostics
 
 9. Runtime integration:
-   - route `build_terminal_visual_node_piece`, `build_bend_visual_node_piece`, and
-     `build_junction_visual_node_piece` through the new arrangement builder
+   - `build_terminal_visual_node_piece`, `build_bend_visual_node_piece`, and
+     `build_junction_visual_node_piece` route through the arrangement builder
    - export render polygons, query triangles, terrain clip loops, earthwork roots, and chunk
      coverage from the same arrangement-owned mesh
-   - keep span compilation and dirty-chunk indexing unless the new node output requires a narrow
-     adapter
+   - span compilation and dirty-chunk indexing remain separate owners that consume the solved
+     piece output
 
-10. Deletion pass:
-    - remove or make unreachable post-overlay height repair, boundary snapping, shared seam
-      welding, sampled missing-boundary height export, full-roadbed closure fallback, and
-      hand-written offset / join helpers
-    - remove tests that only preserve the retired implementation shape; keep or rewrite black-box
-      contract tests
+10. Retired runtime paths:
+    - post-overlay height repair, boundary snapping, shared seam welding, sampled missing-boundary
+      height export, full-roadbed closure fallback, and hand-written offset / join helpers must
+      remain out of live reachability
+    - tests must preserve the black-box ownership / provenance / terrain contract rather than the
+      retired implementation shape
 
-Acceptance gates:
+Maintenance gates:
 
 - `cargo check --manifest-path rust/Cargo.toml`
 - focused `simulation::network::surface` tests for flat and elevated `Terminal`, `Bend`,
@@ -1835,13 +1835,13 @@ core that ignores overlapping road arms outside the core.
 
 Scope:
 
-- first target: `Terminal`, `Bend`, and `JunctionN`
+- shipped node-piece scope: `Terminal`, `Bend`, and `JunctionN`
 - `Bend` is not a separate geometry family; it is the same node-region builder with two mouths
 - `Terminal` is a one-mouth explicit band builder. The legacy sidewalk / curb end-band helper is
   not carried over by this hardcut.
 - `JunctionN` is the same node-region builder with `n >= 3` mouths
-- completed follow-up: `Span` output adapts to the same resolved-region staging shape after node
-  pieces are stable
+- `Span` output adapts to the same resolved-region staging shape while keeping span ownership
+  separate from node ownership
 - out of scope for this hardcut: lane-routing policy, pedestrian legality, building frontage rules,
   retaining-wall variants, and cosmetic sidewalk texture changes
 
