@@ -121,102 +121,63 @@ section says whether the runtime has reached it yet.
 - surface and road-touched terrain chunk ownership is indexed by compiled visual-piece coverage;
   dirty rebuilds use `old_coverage union new_coverage` and sorted contributor sets
 
-### Partially Implemented
+### Shipped Closure Hardening
 
 - logged `Terminal`, 2-arm `Bend`, and generated multi-arm `JunctionN` regressions compile
   through canonical curb / sidewalk ownership; authored and imported DEM terrain-agreement
-  coverage now exercises the production road-surface to terrain-CDT path
-- `Bend` / `JunctionN` conflict throats use pairwise material-conflict distances and emit raw
-  full-roadbed / carriageway corridor authority before per-band owner clipping. The generated flat
-  Bend and 3-way `JunctionN` angle matrix now covers acute, right-angle, obtuse, and near-parallel
-  cases, with representative reversed-edge-direction and equivalent-edit-order compile coverage.
-  Generated flat and elevated 4-way / arbitrary `N > 4` `JunctionN` variants now cover
-  representative acute, right-angle, obtuse, near-parallel, skewed, and equivalent-edit-order
-  cases. Exact raw-polygon identity checks cover generated flat 3-way, 4-way, 5-way, and 6-way
-  cases, elevated 4-way / 5-way / 6-way cases, and flat / elevated mixed-width 4-way / 5-way /
-  6-way cases. Generated flat and elevated mixed-width 4-way / 5-way / 6-way cases now also vary
-  sidewalk / curb and no-sidewalk curb / shoulder profile modes through the production
-  `TransitFlags` profile path while preserving exact raw identity under equivalent edit order.
+  coverage exercises the production road-surface to terrain-CDT path
+- `Bend` / `JunctionN` conflict throats use pairwise material-conflict distances and raw
+  full-roadbed / carriageway corridor authority before per-band owner clipping. Generated flat and
+  elevated Bend / `JunctionN` matrices cover acute, right-angle, obtuse, near-parallel, skewed,
+  reversed-edge-direction, equivalent-edit-order, arbitrary `N > 4`, mixed-width, and mixed
+  sidewalk / curb / no-sidewalk shoulder profile-mode cases.
+- exact raw-polygon identity checks compare canonical top-polygon keys, height fields, grade
+  authorities, carrier-provenance closure records, exact stable source-carrier segment IDs, and
+  stable source-carrier segment-ID digests where source-segment projections exist. Golden failures
+  print exact canonical identity vectors for audit.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
-  curb / shoulder and sidewalk ownership; missing evidence now reports as structured ownership /
-  residual diagnostics instead of deferring to downstream height failures
-- source-authorized post-boolean support materialization is shipped for the current exact
-  source-rail, owner-pair / opposite-owner, raised-step, noded constraint interpolation,
-  source-edge endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source
-  clusters, final-footprint raised-step boundary pairs, JunctionN curb / shoulder mouth-band
-  edge contacts, same-material endpoint paths backed by explicit material-step provenance, and
-  final owned-region seam endpoints backed by explicit source-rail interpolation. Collapsed
-  direct material-step edges may be emitted only when both endpoint sides carry distributed
-  material-transition point sources and at least one side carries explicit height-split evidence.
-  Source-scoped same-millimetre height rails now take precedence over owner-wide candidate lookup
-  so unrelated same-owner source vertices cannot block a region's own post-boolean vertex
-  materialization.
-  General source-segment authorization for same-millimetre boolean vertices is now explicit:
-  a post-boolean vertex may be canonicalized to a nearby source rail only when exactly one
-  owner- and height-field-scoped source segment authorizes one canonical projection inside the
-  deterministic overlay dust budget. That projection is the legal carrier for the boolean vertex.
-  Multiple adjacent source-segment representations for the same owner/source/height-field may
-  collapse only when the boolean vertex is itself one of the canonical projections and every other
-  projection remains inside that same deterministic dust budget, or when every projection is backed
-  by a connected source-segment endpoint cluster inside the same dust budget and the vertex is
-  canonicalized to the deterministic source projection for that endpoint cluster. If two
-  off-carrier mid-segment source rails match, even inside the same millimetre or around a unique
-  source point, the compile fails with a structured ambiguous source-segment diagnostic.
-  Owner-wide nearest-point selection, arbitrary rounding, and global coordinate snapping remain
-  forbidden.
-- the general node-local carrier provenance closure is now live before height evaluation. Final
-  owned-region support points are classified by owner, source band, `NodeBandHeightFieldId`, and
-  canonical key as exact source vertices, explicit source-segment projections with stable
-  source-carrier segment IDs, source / source intersections, generated carrier vertices, generated
-  carrier-surface support inside matching claim-scoped generator-declared cap / join / contour
-  surfaces, or bounded unprovenanced backend dust that is discarded before it can become a height
-  obligation. Raw source-path interior containment is not carrier provenance. Height support
-  materialization now consumes closure records instead of scanning final regions for owner-wide or
-  nearest candidate repairs. A recorded source segment that cannot produce height support reports a
-  structured missing-carrier-provenance-height diagnostic, and generated carrier-surface support
-  materializes from the generator's declared height contour so same-key generated-surface conflicts
-  remain hard source-height conflicts.
-- the live height-carrier materialization audit is complete. Initial mouth / cap carrier points are
-  declared during rail construction, but post-boolean support is materialized only from closure
-  records. The old pre-closure source-constraint point materializer has been deleted; explicit
-  source constraints can now supply height only when the closure record names the matching stable
-  source-carrier segment ID.
-- shared final vertices for the same owner/source height field now resolve through one canonical
-  height authority independent of claim-priority lookup. Side-join carriers can therefore
-  supersede lower-priority mouth-band carriers at the same canonical key without leaving two
-  conflicting generated heights in the node grade carrier.
-- a pre-height-evaluation height-field completeness gate now resolves every final owned-region
-  vertex through its owner-scoped `NodeBandHeightFieldId` before heighted region construction; a
-  missing final carrier reports structured missing-carrier diagnostics instead of leaking through
-  the old unscoped height evaluator
-- road-geometry diagnostic dumps now serialize stage, backend, owner, source band, height-field,
-  canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON fields
-  instead of an opaque Rust debug blob. Missing source rails, missing carrier provenance, missing
-  carrier support, rejected residuals, open boundaries, duplicate exposed edges, non-explicit
-  boundary vertices, ambiguous carrier provenance, and source-segment height-support failures now
-  have focused diagnostic coverage. Exact canonical raw-polygon identity helpers now compare
-  top-surface source records by canonical raw keys / height fields / grade authorities plus
-  carrier-provenance closure records, while bounding display `Vector3` drift to f32 upload
-  precision. Generated flat / elevated 4-way and arbitrary-N exact identity matrix coverage and
-  golden signatures now assert polygon counts, canonical polygon key-set digests,
-  owner/source/height-field identity digests, exact stable source-carrier segment IDs, and stable
-  source-carrier segment-ID digests where source-segment projections are present; golden failures
-  print the exact canonical identity vectors for audit.
+  curb / shoulder and sidewalk ownership; missing evidence reports structured ownership /
+  residual diagnostics instead of deferring to downstream height failures.
+- source-authorized post-boolean support materialization is closure-record driven. Exact source
+  rails, owner-pair / opposite-owner contacts, raised steps, noded constraint interpolation,
+  endpoint dust, same-owner interpolation clusters, same-millimetre duplicate-source clusters,
+  final-footprint raised-step pairs, JunctionN curb / shoulder mouth-band contacts, same-material
+  endpoint paths, and final owned-region seam endpoints all preserve explicit provenance.
+- node-local carrier provenance closure is live before height evaluation. Final owned-region
+  support points resolve through owner, source band, `NodeBandHeightFieldId`, canonical keys,
+  stable source-carrier segment IDs, generated carrier vertices / surfaces, or bounded backend dust
+  discarded before height obligation. Missing, ambiguous, or conflicting carrier support remains a
+  hard structured diagnostic, not a repair path.
+- the old pre-closure source-constraint point materializer has been deleted. Post-boolean height
+  support materializes only from closure records, and explicit source constraints can supply height
+  only when the closure record names the matching stable source-carrier segment ID.
+- shared final vertices for the same owner/source height field resolve through one canonical
+  height authority independent of claim-priority lookup. A pre-height-evaluation completeness gate
+  resolves every final owned-region vertex through its owner-scoped `NodeBandHeightFieldId` before
+  heighted region construction.
+- road-geometry diagnostic dumps serialize stage, backend, owner, source band, height-field,
+  canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON. Missing
+  source rails, missing carrier provenance, missing carrier support, rejected residuals, open
+  boundaries, duplicate exposed edges, non-explicit boundary vertices, ambiguous carrier
+  provenance, and source-segment height-support failures have focused diagnostic coverage.
 - road-touched terrain CDT reports widened near-road samples and retaining-wall classifications.
-  Production road-surface authored DEM coverage now includes supportive ordinary spans, steep
-  along-slope spans, extreme cross-slope spans, raised retaining-wall spans, raised `Terminal` and
-  `Bend` pieces near authored ridge / valley terrain, raised `JunctionN` pieces on flat and steep
-  authored terrain, and edit-order-stable emitted terrain-CDT topology. Production imported-DEM
-  coverage now bakes a compact Kuopio height window and validates ordinary lower-shelf tie-ins,
-  grounded steep terrain, raised spans, raised terminals / bends, and edit-order-stable raised
-  `JunctionN` output through the full `RoadSurfaceSystem` -> terrain loop export -> CDT path.
-  Imported JunctionN terrain clipping now drops road-owned internal chords from the terrain seam
-  constraint set only after both sides classify as road-owned against the final footprint; exposed
-  seam constraints remain preserved and carry provenance. CDT seam selection now breaks
-  equidistant tie-in candidates by seam geometry before provenance identity, so source / edit
-  order cannot move the chosen tie-in point.
+  Production authored and compact imported Kuopio DEM coverage validates ordinary tie-ins, steep
+  grounded terrain, raised retaining-wall spans, raised terminals / bends, raised `JunctionN`
+  output, final-footprint source provenance, and edit-order-stable emitted terrain-CDT topology.
+  Imported JunctionN terrain clipping drops only road-owned internal chords from terrain seam
+  constraints after both sides classify against the final footprint; exposed seam constraints
+  remain preserved with provenance.
 
-### Open ROAD-01 Work
+### Remaining Tracked Follow-Up
+
+- `CODE-14` owns the remaining road-surface geometry-boundary cleanup: long-lived road-surface
+  internals should migrate from Godot `Vector2` / `Vector3` storage to `RoadVec2` / `RoadVec3`
+  and accepted geometry backends, while Godot vectors remain boundary / upload / debug adapter
+  types.
+- Future terrain closure variants beyond the current retaining-wall path should be tracked as new
+  explicit `EARTH-*` work, not reopened under `ROAD-01`.
+
+### Post ROAD-01 Guardrails
 
 `ROAD-01` is complete for the current roadbed / terrain handover contract. Future road hardening
 must keep rejecting real ownership, seam, and carrier residuals; do not reintroduce miter patches,
@@ -234,7 +195,7 @@ terrain-CDT gates.
   [`Spade CDT Terrain-Patch Hardcut`](#spade-cdt-terrain-patch-hardcut)
 - the node pipeline phase plan lives under
   [`Library-Backed Node Rework Plan`](#library-backed-node-rework-plan)
-- the near-term carrier provenance replacement for post-boolean repair lives under
+- the shipped carrier-provenance replacement for post-boolean repair lives under
   [`General Carrier-Provenance Closure Plan`](#general-carrier-provenance-closure-plan)
 - Bend / JunctionN candidate ownership rules live under
   [`Conflict-First Node Candidate Hardcut`](#conflict-first-node-candidate-hardcut)
@@ -242,118 +203,56 @@ terrain-CDT gates.
 
 ### General Carrier-Provenance Closure Plan
 
-This is the near-term ROAD-01 implementation plan for replacing the current post-boolean support
-materialization patches. It is not a second geometry contract beside the library-backed rework; it
-is the missing provenance layer that makes the current `Terminal`, `Bend`, and `JunctionN`
-pipeline obey the node band grade carrier hardcut while the broader backend cleanup continues.
+Status: shipped for `ROAD-01`. This section is now the maintenance contract for the closure layer
+that replaced post-boolean support materialization patches. It is not a second geometry contract
+beside the library-backed rework; it keeps the current `Terminal`, `Bend`, and `JunctionN`
+pipeline obeying the node band grade-carrier hardcut while broader backend cleanup continues.
 
-Target invariant:
+Shipped behavior:
 
-- keep every live height-carrier materialization path represented in carrier provenance, and keep
-  removed pre-closure patch materializers out of production reachability
-- keep expanding focused diagnostics for missing source rails, missing carrier support, rejected
-  residuals, open boundaries, duplicate exposed edges, non-explicit boundary vertices, and
-  ambiguous carrier provenance
-- keep generated 4-way `JunctionN`, arbitrary `N > 4`, and exact canonical raw-polygon identity
-  checks in the regression suite as the closure implementation evolves
-
-Data ownership:
-
-- keep the provenance records inside `simulation::network::surface::node`, close to the current
-  ownership / rail / height stages; do not create a project-wide schema dump
-- assign stable source-carrier segment IDs while building node source rails, before `i_overlay`
+- every live height-carrier materialization path is represented in carrier provenance before height
+  evaluation
+- the closure map is node-local and owned inside `simulation::network::surface::node`, close to the
+  ownership / rail / height stages
+- source-carrier segment IDs are assigned while building node source rails, before `i_overlay`
   ownership output is validated
-- carry only node-local data in the closure map: owner, source band, height field, source segment
-  ID, canonical point key, and deterministic origin kind
-- acceptable origin kinds are:
-  - source vertex
-  - source-segment projection with canonical parameter and overlay-dust residual
-  - stable source-carrier segment ID attached to every source-segment projection
-  - source / source or owner/source intersection where participating final regions carry explicit
-    source and height-field contexts
-  - generated cap / join / contour vertex emitted by the generator with its owning carrier
-  - generated cap / join / contour surface support inside a matching owner / source / height-field /
-    claim-priority generator-declared carrier surface, never raw source-path interior containment
-  - connected endpoint dust cluster whose source endpoint and projected canonical point are both
-    deterministic
+- final owned-region boundary / seam vertices are classified against only carriers authorized for
+  their owner, source band, and `NodeBandHeightFieldId`
+- height support materializes only from closure records; source-segment projections interpolate
+  only along the named stable source-carrier segment inside the deterministic overlay dust budget
+- generated cap / join / contour vertices and claim-scoped surface support materialize only from
+  generator-declared carrier surfaces and their declared height contours
+- old pre-closure source-constraint point materialization is deleted, and old same-mm
+  duplicate-source, source-segment projection, endpoint-bridge, and owner-wide source repair
+  policies are out of live reachability
+- missing, ambiguous, or conflicting carrier support remains a hard structured diagnostic, not a
+  repair path
 
-Implementation phases:
+Allowed carrier origins:
 
-1. Capture failing coverage before changing behavior.
-   Add focused Rust regressions for the regenerated hilly 3-way failure shape and the 500 m
-   multi-junction edit pattern. The tests must assert structured diagnostics first, then become
-   passing closure tests when the implementation lands. They must not depend on Godot rendering.
+- source vertex
+- source-segment projection with canonical parameter, overlay-dust residual, and stable
+  source-carrier segment ID
+- source / source or owner/source intersection where participating final regions carry explicit
+  source and height-field contexts
+- generated cap / join / contour vertex emitted by the generator with its owning carrier
+- generated cap / join / contour surface support inside a matching owner / source / height-field /
+  claim-priority generator-declared carrier surface, never raw source-path interior containment
+- connected endpoint dust cluster whose source endpoint and projected canonical point are both
+  deterministic
 
-2. Build the node-local source-carrier registry.
-   During rail construction, register every explicit mouth rail, material seam rail, sidewalk /
-   curb rail, footprint rail, generated terminal cap rail, and generated contour segment with
-   owner, source band, height field, canonical endpoint keys, and stable segment ID. The registry
-   is per-node and sorted by stable source identity, so lookup cost is local to the compiled node.
-   **Implemented:** the node-local source-carrier registry now owns source-height points and
-   source-segment authorities, and every authority carries its stable source-carrier segment ID at
-   registration time.
+Diagnostics and coverage:
 
-3. Classify every owned-region output vertex.
-   After boolean ownership and before height evaluation, walk each final owned region and classify
-   every boundary / seam vertex against only the carriers authorized for that region's owner,
-   source band, and height field. Exact source vertices preserve their source identity. Backend
-   split vertices must resolve to exactly one legal source segment, generated contour, or generated
-   intersection. Zero matches report missing carrier provenance. More than one independent match
-   reports ambiguous carrier provenance.
-
-4. Materialize height support from provenance only.
-   Replace reverse searches over final owned-region points with direct materialization from the
-   classified carrier record. Source vertices reuse their source height. Source-segment projections
-   interpolate only along the identified source segment and only inside the deterministic overlay
-   dust budget. Generated cap / join / contour vertices and claim-scoped surface support use only
-   the generator-declared carrier surface and materialize from its declared height contour. No code
-   in this phase may try unrelated constraints, owner-wide candidate sets, terrain samples, or
-   nearest height fields.
-
-5. Rewrite validation around the closure map.
-   The existing missing-carrier and height-field gates stay, but they should validate the explicit
-   closure map instead of asking whether a point can be retroactively justified. Diagnostics must
-   include stage, backend, node ID, piece kind, owner, source band, height field, canonical key,
-   origin kind, source segment ID where present, residual, and ambiguity candidates.
-   **Implemented:** the remaining rail-authority validation helper now builds the carrier closure
-   directly, and source ambiguity / missing-carrier diagnostics are asserted at closure level.
-
-6. Remove the patch materializers from live reachability.
-   After the closure map owns all legal materialization, delete or shrink the current repair
-   scaffolding:
-   - `rails/source_points/materialization/owned_regions.rs` should remain driven by closure records;
-     it may consume source paths, explicit source constraints, or generated contours only through
-     the stable source-carrier segment ID named by the record
-   - `ownership/rail_authority/point_set.rs` should lose same-mm duplicate-source policy,
-     source-segment projection cluster policy, endpoint bridge policy, and owner-wide point
-     authorization that is not source / height-field scoped
-   - `ownership/rail_authority/validation.rs` should become a closure-map validator, not a
-     heuristic source-authority validator
-   - `rails/source_points/materialization/constraints.rs` has been deleted; do not reintroduce
-     pre-closure source-constraint point materialization
-   **Implemented:** the live point-set path no longer carries the old same-mm duplicate-source,
-   source-segment projection, endpoint-bridge, or owner-wide source repair policies; source-segment
-   projection and endpoint dust decisions are made only by carrier closure.
-
-7. Keep the hard-failure gates.
-   Do not remove `missing_owned_region_carrier_support`, source-height conflict diagnostics,
-   open-boundary diagnostics, duplicate exposed-edge diagnostics, or non-explicit boundary-vertex
-   diagnostics. These gates are the guardrails that prevented the current failures from becoming
-   hidden render corruption.
-
-8. Expand the conflict matrix only after closure passes hilly 3-way cases.
-   Once hilly 3-way junctions pass without repair fallbacks, add generated 4-way `JunctionN`,
-   arbitrary `N > 4`, and exact canonical raw-polygon identity checks. These tests must compare
-   canonical keys / stable IDs, not float coordinate equality.
-   **Implemented:** exact raw-polygon identity helpers now compare canonical top-polygon keys,
-   height fields, grade authorities, and carrier-provenance closure records. Generated flat 3-way,
-   4-way, 5-way, 6-way, flat / elevated mixed-width 4-way / 5-way / 6-way, flat / elevated
-   mixed-profile 4-way / 5-way / 6-way, elevated 4-way, elevated 5-way, and elevated 6-way
-   equivalent-edit-order tests use this path. Dedicated golden signatures assert
-   expected polygon counts, canonical polygon key-set digests, owner/source/height-field identity
-   digests, exact stable source-carrier segment IDs, and stable source-carrier segment-ID digests
-   where source-segment projections are present; failures print the exact canonical identity
-   vectors for audit.
+- focused diagnostics cover missing source rails, missing carrier provenance, missing carrier
+  support, rejected residuals, open boundaries, duplicate exposed edges, non-explicit boundary
+  vertices, ambiguous carrier provenance, source-height conflicts, and source-segment
+  height-support failures
+- generated 4-way `JunctionN`, arbitrary `N > 4`, mixed-width, mixed-profile, flat / elevated, and
+  equivalent-edit-order cases stay in the regression suite
+- exact raw-polygon identity checks compare canonical top-polygon keys, height fields, grade
+  authorities, carrier-provenance closure records, exact stable source-carrier segment IDs, and
+  source-carrier segment-ID digests where source-segment projections exist
+- golden failures print the exact canonical identity vectors for audit
 
 Performance rule:
 
@@ -364,7 +263,7 @@ Performance rule:
 - the intended cost is `O((V + S) log S)` or better per compiled node, where `V` is final
   owned-region vertex count and `S` is node-local source-carrier segment count
 
-Acceptance gates:
+Future change gates:
 
 - `cargo check --manifest-path rust/Cargo.toml`
 - focused surface tests for the regenerated elevated 3-way, the 500 m multi-junction case, flat
@@ -911,25 +810,29 @@ The node class changes the number of incident mouths. It does not change asphalt
 
 #### Node Band Grade Carrier Hardcut
 
+Status: shipped for `ROAD-01` node ownership, height, and provenance. This section is now the
+runtime contract for node-local grade carriers. Remaining geometry-backend and Godot-vector
+boundary cleanup belongs to `CODE-14` and the library-backed node rework; it is not a blocker for
+the shipped grade-carrier hardcut.
+
 `Terminal`, `Bend`, and `JunctionN` geometry must be built from one deterministic node-local
 arrangement before triangulation. Accepted geometry backends may own low-level operations such as
 offsetting, polygon booleans, spatial lookup, spline evaluation, validation, and CDT
 triangulation, but they must not erase the band owner, required seam rails, or height surface that
 will grade each rendered vertex.
 
-This is the long-term replacement for nearest-polygon, nearest-segment, full-roadbed, or
-domain-index height sampling inside node pieces. It is a hardcut replacement, not a compatibility
-shim around the current post-overlay grade sampler. A sloped or elevated junction is valid when
-every material seam is constrained and every rendered vertex is owned by the correct band-local
-height surface.
+The shipped runtime replaces nearest-polygon, nearest-segment, full-roadbed, and domain-index
+height sampling inside node pieces. It is a hardcut, not a compatibility shim. A sloped or elevated
+junction is valid when every material seam is constrained and every rendered vertex is owned by the
+correct band-local height surface.
 
-Implementation ownership:
+Runtime ownership:
 
 - keep `node.rs` responsible for incident mouth collection, endpoint-profile collection, piece
   classification, and topology
-- move offset rails, caps, contour joins, and node-outline construction to accepted geometry
-  backends where they exist; project code adapts backend output into road-owned data structures
-  instead of reimplementing those algorithms
+- accepted geometry backends may own offset rails, caps, contour joins, and node-outline
+  construction where adopted; project code adapts backend output into road-owned data structures
+  instead of letting backend primitives become ownership identity
 - keep `overlay.rs` or its replacement responsible for wrapping `i_overlay` boolean ownership,
   owner-preserving clipping, and canonical ordering; it must not be the place that invents missing
   heights after ownership is already damaged
@@ -946,7 +849,7 @@ Implementation ownership:
 - keep `Terminal` on explicit side-band / end-band topology, but record the same owned-region
   metadata so terminal, bend, and junction seam checks share one contract
 
-Minimum private data model:
+Shipped private data model:
 
 - `NodeBandHeightField`: one owner-preserving source surface for a node piece band, built from the
   visible throat profile and the graph-endpoint profile
@@ -1051,11 +954,12 @@ Elevated-junction policy:
 - the compiler must not hide an excessive grade delta by lifting sidewalks, burying asphalt, adding
   a render-only skirt, or flattening the node without updating incident mouth constraints
 
-Hardcut region solve sequence for `Terminal`, `Bend`, and `JunctionN`:
+Runtime solve sequence for `Terminal`, `Bend`, and `JunctionN`:
 
 1. Build incident mouth rails, endpoint rails, and conflict handoff distances from solved profiles.
-   Use accepted geometry backends for offset rails, caps, joins, and contour cleanup instead of
-   local ad hoc line-intersection or corner-special-case code.
+   Use accepted geometry backends for offset rails, caps, joins, and contour cleanup where they are
+   adopted; remaining backend migration must preserve the same owner, seam, and height-field
+   identities.
 2. Build conflict-bounded full-roadbed and carriageway candidates from those canonical rails.
 3. Use `i_overlay` to produce primary XZ ownership:
 
@@ -1533,13 +1437,14 @@ Preferred cache structure:
 
 ## Piece-Owned Chunk Coverage Hardcut
 
-Dirty road rebuilds must be driven by compiled visual pieces, not by graph centerline guesses.
+Status: shipped. Dirty road rebuilds are driven by compiled visual pieces, not by graph centerline
+guesses.
 
-This is the hard-cut path for surface, query, and road-touched terrain invalidation. It replaces
-any runtime path that tries to decide dirty render chunks from only an edited edge centerline, an
-edited node point, or a scan across all compiled node pieces.
+This is the runtime path for surface, query, and road-touched terrain invalidation. It replaces any
+path that tries to decide dirty render chunks from only an edited edge centerline, an edited node
+point, or a scan across all compiled node pieces.
 
-Required ownership indices:
+Shipped ownership indices:
 
 - every compiled `Span` stores its deterministic surface chunk coverage set
 - every compiled `Terminal`, `Bend`, and `JunctionN` stores its deterministic surface chunk
@@ -1564,7 +1469,7 @@ Coverage calculation rules:
 - coverage must not depend on camera position, render LOD, debug flags, thread scheduling, or
   previous cache contents
 
-Dirty rebuild algorithm:
+Runtime dirty rebuild algorithm:
 
 1. Convert the edit into dirty piece IDs: changed spans and every node piece whose incident span set
    or incident mouth profile can change.
@@ -1580,7 +1485,7 @@ Dirty rebuild algorithm:
 9. Publish the new compiled pieces and chunk cache entries only after the affected chunk entries
    are internally consistent.
 
-Required complexity bound:
+Complexity bound:
 
 - one local edit may touch only changed spans, incident node pieces, and `old_coverage union
   new_coverage`
@@ -1615,15 +1520,15 @@ Not accepted:
 
 ## Spade CDT Terrain-Patch Hardcut
 
-The next accepted representation is a Spade-backed terrain patch generator. It replaces the current
-road-touched terrain mesh builder; it does not sit beside it as a fallback.
+Status: shipped. The live road-touched terrain patch generator is Spade-backed. It replaced the old
+road-touched terrain mesh builder rather than sitting beside it as a fallback.
 
-### Target Backends
+### Shipped Backends
 
-Required rules:
+Runtime rules:
 
 - `i_overlay` is the production polygon ownership backend for boolean cleanup before triangulation
-- `spade::ConstrainedDelaunayTriangulation` is the only planned CDT backend for the production
+- `spade::ConstrainedDelaunayTriangulation` is the only accepted CDT backend for the production
   terrain-road seam
 - `i_overlay` owns polygon-region operations such as union, intersection, difference, holes,
   self-overlap cleanup, and asphalt / sidewalk / terrain ownership subtraction
@@ -1637,12 +1542,12 @@ Required rules:
   exact-predicate crate, that requires a narrow, measured spec update naming the missing predicate
 - any future replacement of `i_overlay` or Spade requires a new explicit benchmarked spec change
 
-### Target Owner And API
+### Runtime Owner And API
 
 The CDT implementation belongs in Rust simulation code, not in Godot and not in the giant Godot
 bridge layer.
 
-The target API is one deterministic terrain-patch function:
+The runtime API is one deterministic terrain-patch function:
 
 - input:
   - terrain patch world rectangle
@@ -1736,12 +1641,12 @@ CDT failures are hard failures in debug output. The implementation must not fall
 - terrain shader masks
 - Godot-side polygon clipping
 
-### Code Replacement Target
+### Runtime Replacement
 
-The Spade hardcut replaces the current road-touched terrain builder in
+The Spade hardcut is the live replacement for the old road-touched terrain builder in
 `rust/src/nodes/simulation_node.rs`.
 
-The removed live-path concepts are:
+The retired live-path concepts are:
 
 - `emit_constrained_terrain_seams`
 - terrain-cell binning used only for conservative road ownership omission
@@ -1752,9 +1657,9 @@ The Godot terrain renderer remains a thin upload bridge. It continues to choose 
 rectangular terrain patch mesh and a Rust-baked road-touched terrain patch mesh, but it must not
 clip road holes itself.
 
-### Terrain CDT Implementation Status
+### Shipped Terrain CDT Status
 
-The terrain CDT hardcut is the accepted baseline. Its required properties are:
+The terrain CDT hardcut is the accepted baseline. Its shipped properties are:
 
 - Spade is a runtime dependency, not a test-only spike.
 - The terrain CDT module has no Godot dependency.
@@ -2110,12 +2015,13 @@ Debug contract:
 - debug output must report which accepted geometry backend produced each major stage: offset /
   contour generation, boolean ownership, grade evaluation, validation, and CDT triangulation
 
-Legacy node removal target:
+Legacy node removal status:
 
-The node rework must remove the old node-patch behaviors without throwing away the useful solved
-roadbed pipeline around them.
+Status: shipped for `ROAD-01`. The live node compiler removed the old node-patch behaviors without
+throwing away the useful solved roadbed pipeline around them. This section is now a guardrail for
+future node changes.
 
-Retire these node-construction patterns:
+Retired node-construction patterns that must stay out of live reachability:
 
 - paired adjacent-mouth connector strips as final carriers or primary candidates
 - gap-by-gap node asphalt wedge assembly around the center
@@ -2141,7 +2047,7 @@ Forbid these replacement shortcuts:
 - falling back to shader masks, terrain masks, water, zoning overlays, or background-color
   coincidence for missing topology
 
-Keep and extend these target components:
+Still valid implementation components:
 
 - mouth / endpoint profile extraction from solved sections
 - conflict handoff calculation and longitudinal-grade sampling
@@ -2149,9 +2055,13 @@ Keep and extend these target components:
 - chunk invalidation based on compiled piece coverage
 - accepted geometry backends for vector math, offset / contour generation, validation, spline
   evaluation, boolean ownership, spatial lookup, and CDT triangulation
+- raw full-roadbed contours, including the rail-stage `push_full_roadbed_contour`, may remain only
+  as pre-ownership footprint / constraint input with no material owner and no rendered surface.
+  Promoting one to a rendered closure carrier for missing curb, shoulder, or sidewalk ownership is
+  the retired behavior.
 - Godot upload as a thin rendering bridge
 
-Acceptance tests for the conflict-first node hardcut:
+Regression coverage for the conflict-first node hardcut:
 
 - terminal with sidewalks emits asphalt to the graph endpoint, a U-shaped non-road end band, and
   one footprint without overlap or slab overrun
@@ -2191,11 +2101,11 @@ only on already-resolved legal regions:
 
 ## Legacy Retirement Rules
 
-The hardcut does not retire the whole roadbed runtime. It retires only the terrain-seam,
-centerline-lift, and generic node-ownership patterns that conflict with the piece/profile model.
-Node-specific removal details are owned by `Legacy node removal target` above.
+Status: shipped for `ROAD-01`. The hardcut did not retire the whole roadbed runtime. It retired
+only the terrain-seam, centerline-lift, and generic node-ownership patterns that conflict with the
+piece/profile model. Node-specific guardrails are owned by `Legacy node removal status` above.
 
-Still valid and must be extended:
+Still valid runtime components:
 
 - logical graph ownership in `rust/src/simulation/network/mod.rs` and graph modules
 - solved edge grades, section sampling, and lateral band definitions
@@ -2204,7 +2114,7 @@ Still valid and must be extended:
 - preview / commit parity
 - Godot mesh upload as a thin presentation bridge
 
-Retired patterns that must not return:
+Retired patterns that must stay out of live reachability:
 
 - centerline-only road lifting or terrain flattening
 - road-touched terrain generated from seam strips plus conservative terrain-cell omission

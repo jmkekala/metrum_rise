@@ -104,10 +104,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   corridor-sheet prototype or visible closure meshes. That rewrite now has one explicit target
   split: the logical graph stays as connectivity/routing authority,
   while the visible road system becomes a separate deterministic piece/profile carrier built from
-  `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is partially
-  live in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
-  overlays, and road-driven earthwork stamping all consume explicit visual pieces instead of a
-  node-patch carrier, but clipped terrain topology still needs visual validation and hardening.
+  `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is live in
+  the road-surface runtime: renderer output, visible-surface queries, road-surface debug overlays,
+  road-driven earthwork stamping, and clipped terrain topology all consume explicit visual pieces
+  instead of a node-patch carrier.
   `Terminal`, `Bend`, and `JunctionN` now compile explicit road / sidewalk
   polygons from mouth profiles, width changes are no longer treated as a separate visual node
   piece, cached visual polygons now carry deterministic triangles for render/query/stamp reuse,
