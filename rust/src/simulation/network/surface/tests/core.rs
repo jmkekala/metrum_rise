@@ -222,6 +222,61 @@ fn standard_edge_sections_follow_solved_edge_profile_deterministically() {
 }
 
 #[test]
+fn no_sidewalk_standard_edge_sections_keep_explicit_curb_shoulder_bands() {
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(32.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        n0,
+        n1,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(32.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR,
+    ));
+
+    let terrain = flat_terrain(64, 64);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let section = surface
+        .compiled_sections()
+        .get(&edge_idx)
+        .and_then(|sections| sections.first())
+        .expect("no-sidewalk standard edge should compile sections");
+    let band_kinds = section
+        .bands
+        .iter()
+        .map(|band| band.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        band_kinds,
+        vec![
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::CurbOrShoulder,
+        ],
+        "no-sidewalk Standard roads must keep explicit curb/shoulder carriers instead of zero-width or asphalt-only profiles"
+    );
+    for shoulder in [
+        section.bands.first().unwrap(),
+        section.bands.last().unwrap(),
+    ] {
+        assert!(
+            (shoulder.lateral_end_m - shoulder.lateral_start_m).abs() > 0.1,
+            "curb/shoulder carrier must have non-zero lateral width"
+        );
+        assert!(
+            (shoulder.height_start_m - CURB_STEP_HEIGHT_M).abs() <= 0.001
+                && (shoulder.height_end_m - CURB_STEP_HEIGHT_M).abs() <= 0.001,
+            "curb/shoulder carrier must use the solved raised profile height"
+        );
+    }
+}
+
+#[test]
 fn node_piece_classification_matches_surface_profiles() {
     let terrain = flat_terrain(64, 64);
 

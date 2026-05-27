@@ -325,6 +325,95 @@ fn flat_mixed_width_junction_matrix_preserves_exact_raw_polygon_identity() {
 }
 
 #[test]
+fn flat_mixed_profile_mode_junction_matrix_preserves_exact_raw_polygon_identity() {
+    use GeneratedEdgeProfileMode::{Shoulder, SidewalkCurb};
+
+    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [
+        (
+            [0.0, 35.0, 140.0, 252.0],
+            [7.0, 10.5, 5.5, 8.75],
+            [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder],
+        ),
+        (
+            [0.0, 90.0, 180.0, 270.0],
+            [6.0, 9.0, 7.5, 11.0],
+            [Shoulder, SidewalkCurb, SidewalkCurb, Shoulder],
+        ),
+    ] {
+        let forward =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        let reverse =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Reverse,
+            );
+        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+    }
+    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [(
+        [0.0, 11.0, 95.0, 194.0, 278.0],
+        [7.0, 12.0, 5.5, 8.0, 10.0],
+        [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder, SidewalkCurb],
+    )] {
+        let forward =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        let reverse =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Reverse,
+            );
+        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+    }
+    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [(
+        [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
+        [6.5, 9.0, 5.0, 11.0, 8.0, 7.5],
+        [
+            SidewalkCurb,
+            Shoulder,
+            SidewalkCurb,
+            Shoulder,
+            SidewalkCurb,
+            Shoulder,
+        ],
+    )] {
+        let forward =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        let reverse =
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                &endpoint_angle_degrees,
+                &edge_widths_m,
+                &edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Reverse,
+            );
+        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+    }
+}
+
+#[test]
 fn flat_arbitrary_multiway_junction_matrix_preserves_exact_raw_polygon_identity() {
     for endpoint_angle_degrees in [
         [0.0, 11.0, 95.0, 194.0, 278.0],
@@ -599,6 +688,38 @@ fn compile_generated_flat_multiway_junction_with_widths_raw_identity(
     if !surface.compiled_visual_node_pieces().contains_key(&center) {
         panic!(
             "generated flat mixed-width multiway JunctionN did not compile for raw identity; endpoint_angle_degrees={endpoint_angle_degrees:?} edge_widths_m={edge_widths_m:?} edit_order={edit_order:?}: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+    assert_compiled_junction_piece(&surface, &graph, center);
+    canonical_node_raw_polygon_identity(&surface, &graph, center)
+}
+
+fn compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+    endpoint_angle_degrees: &[f32],
+    edge_widths_m: &[f32],
+    edge_profile_modes: &[GeneratedEdgeProfileMode],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+) -> CanonicalNodeRawPolygonIdentity {
+    let (graph, center) = generated_multiway_junction_graph_with_edge_widths_and_profile_modes(
+        GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M,
+        endpoint_angle_degrees,
+        edge_widths_m,
+        edge_profile_modes,
+        edge_direction,
+        edit_order,
+        GeneratedEndpointProfileMode::UseAuthoredPoints,
+        flat_generated_point_at_xz,
+        flat_generated_edge_points,
+    );
+    let terrain = flat_terrain(2048, 2048);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "generated flat mixed-width/profile multiway JunctionN did not compile for raw identity; endpoint_angle_degrees={endpoint_angle_degrees:?} edge_widths_m={edge_widths_m:?} edge_profile_modes={edge_profile_modes:?} edge_direction={edge_direction:?} edit_order={edit_order:?}: {}",
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }

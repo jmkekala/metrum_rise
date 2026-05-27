@@ -29,11 +29,11 @@ fn span_raised_step_generation_uses_resolved_regions() {
 fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_no_curb() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_idx = graph.add_edge(test_edge(
         a,
         b,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         5.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -65,9 +65,9 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
     };
     let sections = vec![
         section_at(0.0),
-        section_at(4.0),
-        section_at(6.0),
-        section_at(10.0),
+        section_at(8.0),
+        section_at(12.0),
+        section_at(20.0),
     ];
     let mut surface = RoadSurfaceSystem::new(64.0);
     surface.compiled_sections.insert(edge_idx, sections);
@@ -94,11 +94,11 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
 fn span_vertical_steps_include_generic_non_road_owner_pairs() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+    let b = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_idx = graph.add_edge(test_edge(
         a,
         b,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         5.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -141,9 +141,9 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
         edge_idx,
         vec![
             section_at(0.0),
-            section_at(4.0),
-            section_at(6.0),
-            section_at(10.0),
+            section_at(8.0),
+            section_at(12.0),
+            section_at(20.0),
         ],
     );
 

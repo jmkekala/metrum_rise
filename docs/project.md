@@ -215,8 +215,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   terrain loops. Production imported DEM coverage now bakes a compact Kuopio height window and
   validates ordinary lower-shelf tie-ins, grounded steep terrain, raised spans, raised terminals /
   bends, raised `JunctionN`, widened tie-in diagnostics, retaining-wall provenance, and
-  edit-order-stable emitted topology through the same production path. Non-blocking generated
-  mixed profile-mode helper coverage now lives under `ROAD-02`.
+  edit-order-stable emitted topology through the same production path. `ROAD-02` generated helper
+  hardening now covers mixed sidewalk / curb and no-sidewalk curb / shoulder profile modes across
+  flat and elevated mixed-width 4-way / 5-way / 6-way `JunctionN` cases.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

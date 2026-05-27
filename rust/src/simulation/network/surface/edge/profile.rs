@@ -9,6 +9,7 @@ use godot::prelude::{Vector2, Vector3};
 
 // Standard roadbed lateral shaping.
 const CURB_BAND_WIDTH_M: f32 = 0.15;
+const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 pub(in crate::simulation::network::surface::edge) const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
 #[derive(Clone, Copy)]
@@ -80,15 +81,16 @@ impl RoadSurfaceSystem {
         }
 
         let half_carriageway = edge.width.max(config::LANE_WIDTH) * 0.5;
-        let sidewalk_total = if edge.allowed_types & TransitFlags::FOOT != 0 {
+        let has_sidewalk = edge.allowed_types & TransitFlags::FOOT != 0;
+        let sidewalk_total = if has_sidewalk {
             config::SIDEWALK_WIDTH
         } else {
             0.0
         };
-        let curb_width = if sidewalk_total > 0.0 {
+        let curb_width = if has_sidewalk {
             CURB_BAND_WIDTH_M.min(sidewalk_total)
         } else {
-            0.0
+            SHOULDER_BAND_WIDTH_M
         };
         let sidewalk_width = (sidewalk_total - curb_width).max(0.0);
         let raised_offset_m = if curb_width > 0.0 {

@@ -134,8 +134,9 @@ section says whether the runtime has reached it yet.
   representative acute, right-angle, obtuse, near-parallel, skewed, and equivalent-edit-order
   cases. Exact raw-polygon identity checks cover generated flat 3-way, 4-way, 5-way, and 6-way
   cases, elevated 4-way / 5-way / 6-way cases, and flat / elevated mixed-width 4-way / 5-way /
-  6-way cases. Mixed sidewalk/curb/shoulder profile-mode variation is not modeled by the current
-  generated helper.
+  6-way cases. Generated flat and elevated mixed-width 4-way / 5-way / 6-way cases now also vary
+  sidewalk / curb and no-sidewalk curb / shoulder profile modes through the production
+  `TransitFlags` profile path while preserving exact raw identity under equivalent edit order.
 - post-boolean `node_non_road` subdivision requires explicit profile seam-rail evidence for final
   curb / shoulder and sidewalk ownership; missing evidence now reports as structured ownership /
   residual diagnostics instead of deferring to downstream height failures
@@ -222,10 +223,10 @@ must keep rejecting real ownership, seam, and carrier residuals; do not reintrod
 adjacent-mouth connector patches, nearest-height fallback, min/max repair, averaging, or
 render-order priority.
 
-Non-blocking follow-up now lives outside `ROAD-01`:
-
-- `ROAD-02`: broaden generated helper coverage for mixed sidewalk / curb / shoulder profile-mode
-  variation without weakening canonical identity, provenance, or terrain-CDT gates.
+`ROAD-02` is complete for the current generated helper hardening scope: mixed-width flat and
+elevated 4-way / 5-way / 6-way `JunctionN` fixtures now exercise mixed sidewalk / curb and
+no-sidewalk curb / shoulder profile modes without weakening canonical identity, provenance, or
+terrain-CDT gates.
 
 ### Implementation Plan Map
 
@@ -346,8 +347,9 @@ Implementation phases:
    canonical keys / stable IDs, not float coordinate equality.
    **Implemented:** exact raw-polygon identity helpers now compare canonical top-polygon keys,
    height fields, grade authorities, and carrier-provenance closure records. Generated flat 3-way,
-   4-way, 5-way, 6-way, flat / elevated mixed-width 4-way / 5-way / 6-way, elevated 4-way, elevated
-   5-way, and elevated 6-way equivalent-edit-order tests use this path. Golden signatures assert
+   4-way, 5-way, 6-way, flat / elevated mixed-width 4-way / 5-way / 6-way, flat / elevated
+   mixed-profile 4-way / 5-way / 6-way, elevated 4-way, elevated 5-way, and elevated 6-way
+   equivalent-edit-order tests use this path. Dedicated golden signatures assert
    expected polygon counts, canonical polygon key-set digests, owner/source/height-field identity
    digests, exact stable source-carrier segment IDs, and stable source-carrier segment-ID digests
    where source-segment projections are present; failures print the exact canonical identity

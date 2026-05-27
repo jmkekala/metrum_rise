@@ -145,6 +145,8 @@ Deterministic seam contract:
 - the seam is the shared boundary between the client-owned footprint and the far-field terrain
 - for roads, the footprint includes asphalt, shoulder / curb, and sidewalk bands; the seam starts at
   the exact outer sidewalk edge, or at the exact outer shoulder edge when a profile has no sidewalk
+- no-sidewalk `Standard` road profiles still expose an explicit curb / shoulder band, so terrain
+  clipping receives a real road-owned outer seam instead of a zero-width or asphalt-only fallback
 - every seam segment must be backed on both sides by visible carriers before terrain below the
   footprint is suppressed:
   1. the client-owned top surface covers the footprint side of the seam

@@ -27,6 +27,25 @@ pub(in crate::simulation::network::surface::tests::junction) enum GeneratedEndpo
     SolveJunctionEndpointProfiles,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(in crate::simulation::network::surface::tests::junction) enum GeneratedEdgeProfileMode {
+    SidewalkCurb,
+    Shoulder,
+}
+
+impl GeneratedEdgeProfileMode {
+    fn primary_type(self) -> TransitType {
+        TransitType::Road
+    }
+
+    fn allowed_types(self) -> u8 {
+        match self {
+            Self::SidewalkCurb => TransitFlags::CAR | TransitFlags::FOOT,
+            Self::Shoulder => TransitFlags::CAR,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(in crate::simulation::network::surface::tests::junction) struct GeneratedNodeCanonicalSignature
 {
@@ -199,6 +218,7 @@ where
         &mut point_at_xz,
         &mut edge_points,
         None,
+        None,
     )
 }
 
@@ -226,6 +246,7 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
         None,
     )
 }
@@ -259,6 +280,7 @@ where
         endpoint_profile_mode,
         &mut point_at_xz,
         &mut edge_points,
+        None,
         None,
     )
 }
@@ -324,6 +346,7 @@ where
         &mut point_at_xz,
         &mut edge_points,
         None,
+        None,
     )
 }
 
@@ -361,6 +384,47 @@ where
     )
 }
 
+pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph_with_edge_widths_and_profile_modes<
+    P,
+    E,
+>(
+    edge_length_m: f32,
+    endpoint_angle_degrees: &[f32],
+    edge_widths_m: &[f32],
+    edge_profile_modes: &[GeneratedEdgeProfileMode],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    mut point_at_xz: P,
+    mut edge_points: E,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    assert_eq!(
+        endpoint_angle_degrees.len(),
+        edge_widths_m.len(),
+        "generated multiway mixed-profile fixtures require one width per endpoint angle"
+    );
+    assert_eq!(
+        endpoint_angle_degrees.len(),
+        edge_profile_modes.len(),
+        "generated multiway mixed-profile fixtures require one profile mode per endpoint angle"
+    );
+    generated_multiway_junction_graph_with_edge_length_widths_and_profile_modes(
+        edge_length_m,
+        endpoint_angle_degrees,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        &mut point_at_xz,
+        &mut edge_points,
+        Some(edge_widths_m),
+        Some(edge_profile_modes),
+    )
+}
+
 fn generated_multiway_junction_graph_with_edge_length_and_widths<P, E>(
     edge_length_m: f32,
     endpoint_angle_degrees: &[f32],
@@ -370,6 +434,34 @@ fn generated_multiway_junction_graph_with_edge_length_and_widths<P, E>(
     point_at_xz: &mut P,
     edge_points: &mut E,
     edge_widths_m: Option<&[f32]>,
+) -> (RegionGraph, u32)
+where
+    P: FnMut(Vector2) -> Vector3,
+    E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
+{
+    generated_multiway_junction_graph_with_edge_length_widths_and_profile_modes(
+        edge_length_m,
+        endpoint_angle_degrees,
+        edge_direction,
+        edit_order,
+        endpoint_profile_mode,
+        point_at_xz,
+        edge_points,
+        edge_widths_m,
+        None,
+    )
+}
+
+fn generated_multiway_junction_graph_with_edge_length_widths_and_profile_modes<P, E>(
+    edge_length_m: f32,
+    endpoint_angle_degrees: &[f32],
+    edge_direction: GeneratedEdgeDirection,
+    edit_order: GeneratedEditOrder,
+    endpoint_profile_mode: GeneratedEndpointProfileMode,
+    point_at_xz: &mut P,
+    edge_points: &mut E,
+    edge_widths_m: Option<&[f32]>,
+    edge_profile_modes: Option<&[GeneratedEdgeProfileMode]>,
 ) -> (RegionGraph, u32)
 where
     P: FnMut(Vector2) -> Vector3,
@@ -394,6 +486,7 @@ where
         point_at_xz,
         edge_points,
         edge_widths_m,
+        edge_profile_modes,
     )
 }
 
@@ -406,6 +499,7 @@ fn generated_center_graph<P, E>(
     point_at_xz: &mut P,
     edge_points: &mut E,
     edge_widths_m: Option<&[f32]>,
+    edge_profile_modes: Option<&[GeneratedEdgeProfileMode]>,
 ) -> (RegionGraph, u32)
 where
     P: FnMut(Vector2) -> Vector3,
@@ -433,6 +527,7 @@ where
         edit_order,
         edge_points,
         edge_widths_m,
+        edge_profile_modes,
     );
     if matches!(
         endpoint_profile_mode,
@@ -469,6 +564,7 @@ fn add_generated_center_edges<E>(
     edit_order: GeneratedEditOrder,
     edge_points: &mut E,
     edge_widths_m: Option<&[f32]>,
+    edge_profile_modes: Option<&[GeneratedEdgeProfileMode]>,
 ) where
     E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
 {
@@ -483,6 +579,7 @@ fn add_generated_center_edges<E>(
                     endpoint_xz,
                     edge_direction,
                     generated_edge_width(edge_widths_m, endpoint_index),
+                    generated_edge_profile_mode(edge_profile_modes, endpoint_index),
                     edge_points,
                 );
             }
@@ -497,6 +594,7 @@ fn add_generated_center_edges<E>(
                     endpoint_xz,
                     edge_direction,
                     generated_edge_width(edge_widths_m, endpoint_index),
+                    generated_edge_profile_mode(edge_profile_modes, endpoint_index),
                     edge_points,
                 );
             }
@@ -512,6 +610,7 @@ fn add_generated_center_edge<E>(
     endpoint_xz: Vector2,
     edge_direction: GeneratedEdgeDirection,
     edge_width_m: f32,
+    edge_profile_mode: GeneratedEdgeProfileMode,
     edge_points: &mut E,
 ) where
     E: FnMut(Vector2, Vector2) -> Vec<Vector3>,
@@ -531,8 +630,8 @@ fn add_generated_center_edge<E>(
         points,
         edge_width_m,
         EdgeClass::Standard,
-        TransitType::Road,
-        TransitFlags::CAR | TransitFlags::FOOT,
+        edge_profile_mode.primary_type(),
+        edge_profile_mode.allowed_types(),
     ));
 }
 
@@ -541,6 +640,16 @@ fn generated_edge_width(edge_widths_m: Option<&[f32]>, endpoint_index: usize) ->
         .and_then(|widths| widths.get(endpoint_index))
         .copied()
         .unwrap_or(7.0)
+}
+
+fn generated_edge_profile_mode(
+    edge_profile_modes: Option<&[GeneratedEdgeProfileMode]>,
+    endpoint_index: usize,
+) -> GeneratedEdgeProfileMode {
+    edge_profile_modes
+        .and_then(|profile_modes| profile_modes.get(endpoint_index))
+        .copied()
+        .unwrap_or(GeneratedEdgeProfileMode::SidewalkCurb)
 }
 
 pub(in crate::simulation::network::surface::tests::junction) fn flat_generated_point_at_xz(
