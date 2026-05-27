@@ -101,9 +101,23 @@ fn rail_constraint_role_matches_owned_edge(
     if role_owner != owner && role_owner != opposite_owner {
         return false;
     }
-    match constraint.kind {
-        NodeRailConstraintKind::RaisedStepContact => {
-            owners_form_raised_step_contact(owner, opposite_owner)
+    match (
+        constraint.kind,
+        material_contact_kind_for_owned_edge(owner, opposite_owner),
+    ) {
+        (
+            NodeRailConstraintKind::RaisedStepContact,
+            Some(NodeRailConstraintKind::RaisedStepContact),
+        ) => true,
+        (
+            NodeRailConstraintKind::FootprintSeam { adjacent_kind },
+            Some(NodeRailConstraintKind::BandBoundary {
+                left_kind,
+                right_kind,
+            }),
+        ) => {
+            adjacent_kind == role_owner.kind()
+                && (role_owner.kind() == left_kind || role_owner.kind() == right_kind)
         }
         _ => false,
     }
@@ -113,8 +127,27 @@ pub(super) fn material_contact_kind_for_owned_edge(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> Option<NodeRailConstraintKind> {
-    owners_form_raised_step_contact(owner, opposite_owner)
-        .then_some(NodeRailConstraintKind::RaisedStepContact)
+    if owners_form_raised_step_contact(owner, opposite_owner) {
+        return Some(NodeRailConstraintKind::RaisedStepContact);
+    }
+    if owners_form_sidewalk_footpath_contact(owner, opposite_owner) {
+        return Some(NodeRailConstraintKind::BandBoundary {
+            left_kind: RoadSurfaceBandKind::Sidewalk,
+            right_kind: RoadSurfaceBandKind::Footpath,
+        });
+    }
+    None
+}
+
+fn owners_form_sidewalk_footpath_contact(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (owner.kind(), opposite_owner.kind()),
+        (RoadSurfaceBandKind::Sidewalk, RoadSurfaceBandKind::Footpath)
+            | (RoadSurfaceBandKind::Footpath, RoadSurfaceBandKind::Sidewalk)
+    )
 }
 
 pub(super) fn owned_edge_lies_on_rail_constraint(

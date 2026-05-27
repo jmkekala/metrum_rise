@@ -2124,53 +2124,36 @@ Retired patterns that must stay out of live reachability:
 
 ## Test Contract
 
-Tests for the roadbed runtime must be black-box contract tests, not shape snapshots of one internal
-implementation.
+Status: shipped for ROAD-01/ROAD-02. The roadbed suite is a black-box contract suite: tests assert
+surface ownership, provenance, terrain agreement, and determinism, not shape snapshots of a single
+internal implementation.
 
-Must cover:
+Maintained coverage must continue to prove:
 
-- straight grounded road on flat terrain
-- straight grounded road on strong cross-slope
-- arbitrary-angle bend with sidewalks
-- obtuse bend with sidewalks
-- shallow-angle bend with sidewalks
-- acute 2-arm bend with sidewalks where sidewalk may split or collapse but must not overlap asphalt
-- acute 2-arm bend with no terrain/background hole inside the resolved node footprint
-- triangle network composed of three independent bends
-- pass-through split with no center bubble
-- width transition on a nearly straight corridor
-- T-junction center owned by carriageway
-- acute T-junction where sidewalk may split or collapse but must not overlap asphalt
-- acute T-junction with no terrain/background hole inside the resolved node footprint
-- 4-way junction center owned by carriageway
-- 4-way junction with one acute arm and deterministic sidewalk ownership
-- `N > 4` multi-arm node center owned by carriageway
-- `N > 4` multi-arm node with acute neighboring arms and no sidewalk-over-asphalt overlap
-- `N > 4` multi-arm node with arbitrary angles and no unjustified center-bubble growth beyond
-  pairwise material-conflict ownership
-- `N > 4` multi-arm node with no terrain/background hole inside the resolved footprint
-- car-only road with no sidewalk bands
-- footpath joining only one sidewalk side
-- bridge span above terrain without terrain flatten under the span
-- tunnel portal behavior without surface carving along the buried segment
-- preview / commit parity for the same input path
-- terrain earthwork agreement with the roadbed inside the paved footprint on supportive terrain
-  densities
-- deterministic cut / fill transition outside the paved footprint inside the earthwork margin
-- grounded hillside roads keep a laterally flat carriageway instead of following raw terrain
-  cross-slope
-- Spade CDT terrain patch with a straight diagonal road footprint fully inside one patch
-- Spade CDT terrain patch with a road footprint crossing one patch edge
-- Spade CDT terrain patch with a road footprint crossing two patch edges
-- Spade CDT terrain patch with a road footprint crossing a patch corner
-- Spade CDT terrain patch with multiple road footprint loops in the same patch
-- Spade CDT terrain patch with `Bend`, `Terminal`, and `JunctionN` footprint loops
-- Spade CDT accepted faces preserve every road seam constraint edge
-- Spade CDT rejected faces cover road-owned footprints without emitting terrain inside them
-- road-touched terrain debug counters report constraints, accepted faces, rejected faces, and hard
-  constraint failures
-- deterministic rebuild: same input graph produces the same section data and mesh indices
-- local invalidation: editing one edge does not force unrelated chunks to rebuild
+- grounded straight spans on flat terrain and strong cross-slope
+- bend nodes across arbitrary, obtuse, shallow, and acute angles with sidewalk/asphalt separation,
+  no terrain holes inside the resolved footprint, and closed triangle networks represented as three
+  independent bends
+- pass-through splits without center bubbles, and nearly straight width transitions without
+  synthetic node growth
+- T, 4-way, and `N > 4` junction ownership, including acute neighboring arms, deterministic
+  sidewalk ownership, no sidewalk-over-asphalt overlap, and no unjustified center-bubble expansion
+- no-sidewalk/car-only profiles and one-sided footpath-to-sidewalk joins
+- bridge spans that do not flatten terrain below the span, and tunnel portals that do not carve the
+  buried segment
+- preview/commit parity for equivalent input paths
+- earthwork agreement on supportive terrain densities, deterministic cut/fill outside paved
+  footprints, and laterally flat grounded carriageways on hillsides
+- authored and imported DEM terrain agreement through production `RoadSurfaceSystem` ->
+  `terrain_cdt_road_loops_for_world_bounds` -> `build_road_touched_terrain_patch`
+- Spade CDT terrain patches for straight, edge-crossing, corner-crossing, multi-loop, `Bend`,
+  `Terminal`, and `JunctionN` road-owned footprints
+- CDT preservation of every accepted road seam constraint, rejection of terrain faces inside
+  road-owned footprints, and debug counters for constraints, accepted faces, rejected faces, widened
+  tie-in samples, and hard constraint failures
+- deterministic rebuilds and equivalent edit/source orders producing stable section data, canonical
+  node identity, and canonical emitted terrain-CDT topology
+- local invalidation where editing one edge does not force unrelated chunks to rebuild
 
 ## Explicit Runtime Rule
 

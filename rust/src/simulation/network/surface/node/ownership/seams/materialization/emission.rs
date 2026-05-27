@@ -118,6 +118,11 @@ fn materialized_constraint_kind_for_owned_edge(
         return material_contact_kind_for_owned_edge(owner, opposite_owner)
             .expect("band contour authorization requires a material contact kind");
     }
+    if rail_constraint_can_materialize_for_owned_edge(constraint, owner, opposite_owner)
+        && let Some(kind) = material_contact_kind_for_owned_edge(owner, opposite_owner)
+    {
+        return kind;
+    }
     constraint.kind
 }
 
@@ -154,6 +159,10 @@ fn materialized_constraint_kind_constrains_shared_height(
         NodeRailConstraintKind::RaisedStepContact => {
             raised_step_contact_constrains_shared_height(owner, opposite_owner)
         }
+        NodeRailConstraintKind::BandBoundary {
+            left_kind,
+            right_kind,
+        } => band_boundary_constrains_shared_height(left_kind, right_kind),
         _ => false,
     }
 }

@@ -176,3 +176,52 @@ fn asphalt_curb_seams_allow_explicit_vertical_height_step() {
     validate_explicit_material_seam_heights(&regions)
         .expect("asphalt / curb contact is a vertical material step, not shared-height correction");
 }
+
+#[test]
+fn sidewalk_footpath_tie_in_uses_sidewalk_height_authority() {
+    let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let footpath_owner = NodeBandOwner::new(RoadSurfaceBandKind::Footpath, 1);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 41,
+        seam_source: NodeSeamSource::SidewalkOuter { owner_index: 0 },
+        owner: Some(sidewalk_owner),
+        opposite_owner: Some(footpath_owner),
+        constrains_shared_height: true,
+        is_material_transition: true,
+        start_xz: RoadVec2::new(0.0, 0.0),
+        end_xz: RoadVec2::new(1.0, 0.0),
+    };
+    let mut regions = vec![
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Sidewalk,
+            0,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.12)],
+            vec![seam.clone()],
+        ),
+        manual_heighted_region_with_seams(
+            RoadSurfaceBandKind::Footpath,
+            1,
+            0.0,
+            vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+            vec![seam],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("sidewalk-footpath tie-ins should use sidewalk height authority");
+
+    assert_eq!(
+        SurfaceHeightMmKey::from_m_f64(regions[0].shape[0][0].height_m),
+        SurfaceHeightMmKey::from_m_f64(regions[1].shape[0][0].height_m)
+    );
+    assert_eq!(
+        regions[1].shape[0][0]
+            .grade_authority
+            .expect("footpath tie-in should record explicit grade authority")
+            .decision,
+        NodeGradeCarrierDecision::ExplicitMaterialSeam
+    );
+    validate_explicit_material_seam_heights(&regions)
+        .expect("normalized sidewalk-footpath seam should validate as shared-height");
+}

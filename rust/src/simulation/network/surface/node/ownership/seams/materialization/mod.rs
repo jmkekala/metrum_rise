@@ -15,7 +15,8 @@ use super::super::boundaries::{
     owned_region_edge_neighbor_for_ref,
 };
 use super::super::contact_semantics::{
-    owners_form_raised_step_contact, raised_step_contact_constrains_shared_height,
+    band_boundary_constrains_shared_height, owners_form_raised_step_contact,
+    raised_step_contact_constrains_shared_height,
     raised_step_contact_requires_exact_constraint_span,
 };
 use super::super::topology_keys::{

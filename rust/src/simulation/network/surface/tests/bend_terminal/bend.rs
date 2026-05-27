@@ -49,3 +49,60 @@ fn flat_logged_curve_bend_compiles_with_explicit_point_contact_curb_ownership() 
 
     assert_compiled_bend_piece(&surface, &graph, bend);
 }
+
+#[test]
+fn triangle_network_compiles_as_three_independent_bend_pieces() {
+    let terrain = flat_terrain(192, 192);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-30.0, 0.0, -16.0), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(30.0, 0.0, -16.0), NodeType::Junction);
+    let north = graph.add_node(Vector3::new(0.0, 0.0, 36.0), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        east,
+        vec![
+            Vector3::new(-30.0, 0.0, -16.0),
+            Vector3::new(30.0, 0.0, -16.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        east,
+        north,
+        vec![Vector3::new(30.0, 0.0, -16.0), Vector3::new(0.0, 0.0, 36.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        north,
+        west,
+        vec![
+            Vector3::new(0.0, 0.0, 36.0),
+            Vector3::new(-30.0, 0.0, -16.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+    graph.rebuild_adjacency_list();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_eq!(
+        surface.compiled_visual_node_pieces().len(),
+        3,
+        "closed triangle corridors must compile as one bend piece per graph node"
+    );
+    for bend in [west, east, north] {
+        assert_compiled_bend_piece(&surface, &graph, bend);
+    }
+}

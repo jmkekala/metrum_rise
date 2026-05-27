@@ -3,7 +3,9 @@
 use super::super::super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};
 use super::super::super::rails::{NodeRailConstraint, NodeRailConstraintKind};
 use super::super::super::{NodeOverlayPoint, RoadSurfaceBandKind};
-use super::super::contact_semantics::raised_step_contact_constrains_shared_height;
+use super::super::contact_semantics::{
+    band_boundary_constrains_shared_height, raised_step_contact_constrains_shared_height,
+};
 use super::super::topology_keys::{
     NodeOwnershipPointKey, ownership_key_from_overlay_point, ownership_key_from_road_point,
     point_key_collinear_with_edge, point_key_collinear_with_edge_on_overlay_grid,
@@ -49,6 +51,10 @@ pub(super) fn constraint_constrains_shared_height(constraint: &NodeRailConstrain
             };
             raised_step_contact_constrains_shared_height(owner, opposite_owner)
         }
+        NodeRailConstraintKind::BandBoundary {
+            left_kind,
+            right_kind,
+        } => band_boundary_constrains_shared_height(left_kind, right_kind),
         _ => false,
     }
 }

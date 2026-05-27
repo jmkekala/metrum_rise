@@ -114,7 +114,8 @@ pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
     let selected_by_key = candidates_by_key
         .into_iter()
         .filter_map(|(key, candidates)| {
-            same_height_selected_candidate(&candidates).map(|selected| (key, selected.height_m))
+            selected_explicit_material_seam_height(&key, &candidates)
+                .map(|height_m| (key, height_m))
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -149,4 +150,43 @@ pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
             }
         }
     }
+}
+
+fn selected_explicit_material_seam_height(
+    key: &NodeGradeExplicitSeamHeightKey,
+    candidates: &[SameMaterialVertexHeightCandidate],
+) -> Option<f64> {
+    same_height_selected_candidate(candidates)
+        .map(|selected| selected.height_m)
+        .or_else(|| {
+            selected_sidewalk_footpath_tie_in_height(key, candidates)
+                .map(|selected| selected.height_m)
+        })
+}
+
+fn selected_sidewalk_footpath_tie_in_height(
+    key: &NodeGradeExplicitSeamHeightKey,
+    candidates: &[SameMaterialVertexHeightCandidate],
+) -> Option<SameMaterialVertexHeightCandidate> {
+    let owner = key.owner?;
+    let opposite_owner = key.opposite_owner?;
+    if !owners_form_sidewalk_footpath_contact(owner, opposite_owner) {
+        return None;
+    }
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.owner.kind() == RoadSurfaceBandKind::Sidewalk)
+        .min_by_key(|candidate| same_material_vertex_height_candidate_key(*candidate))
+}
+
+fn owners_form_sidewalk_footpath_contact(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (owner.kind(), opposite_owner.kind()),
+        (RoadSurfaceBandKind::Sidewalk, RoadSurfaceBandKind::Footpath)
+            | (RoadSurfaceBandKind::Footpath, RoadSurfaceBandKind::Sidewalk)
+    )
 }
