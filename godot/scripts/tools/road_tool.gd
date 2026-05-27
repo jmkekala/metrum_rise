@@ -37,7 +37,6 @@ var _label_world_pos: Vector3 = Vector3.ZERO
 var _ghost_enabled: bool = true  # toggled with G key
 # Cached guide data so we only call Rust when the network changes.
 var _ghost_guides_dirty: bool = true
-var _last_preview_surface: Dictionary = {}
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
 # Base angle (radians) for Shift snapping — set to the road tangent at start_pos
@@ -134,7 +133,6 @@ func _handle_click():
 			current_path.curve.bake_interval = 0.5
 			current_path.curve.up_vector_enabled = false # Prevent 'looking_at' errors on degenerate paths
 			add_child(current_path)
-			_last_preview_surface = {}
 			
 		State.SETTING_CONTROL:
 			control_pos = pos
@@ -278,7 +276,6 @@ func cancel_road():
 		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
-	_last_preview_surface = {}
 	if _info_label:
 		_info_label.visible = false
 
@@ -484,7 +481,7 @@ func _snap_to_map_border(pos: Vector3, half_w: float, half_h: float) -> Vector3:
 	return pos
 
 ## Returns preview geometry compiled through the shared Rust road-surface pipeline.
-## Falls back only to the most recent compiled result if the sim mutex is momentarily contended.
+## If the sim mutex is momentarily contended, returns an empty invalid preview instead of stale geometry.
 func _get_compiled_preview_surface() -> Dictionary:
 	if current_path == null:
 		return {}
@@ -499,9 +496,12 @@ func _get_compiled_preview_surface() -> Dictionary:
 
 	var preview = simulation_node.get_preview_road_surface(points, fwd_lanes, bkw_lanes)
 	if preview == null:
-		return _last_preview_surface
+		return {
+			"prepared_points": points,
+			"surface_vertices": PackedVector3Array(),
+			"is_valid": false
+		}
 
-	_last_preview_surface = preview
 	return preview
 
 # ── Ghost guide lines ────────────────────────────────────────────────────────
