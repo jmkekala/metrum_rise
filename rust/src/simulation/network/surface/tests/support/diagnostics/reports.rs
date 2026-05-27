@@ -1,7 +1,7 @@
 //! Canonical node pipeline diagnostic report helpers.
 
 use super::*;
-use crate::simulation::network::surface::keys::SurfaceXzKey;
+use crate::simulation::network::surface::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 
 pub(in crate::simulation::network::surface::tests) fn canonical_junction_pipeline_report(
     surface: &RoadSurfaceSystem,
@@ -135,6 +135,11 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
     match RoadSurfaceSystem::validate_node_triangulation_solution(&triangulation) {
         Ok(report) => {
             if !report.diagnostics.is_empty() {
+                if let Some(extra) =
+                    triangulation_height_conflict_debug(&heights, &ownership, &report)
+                {
+                    return format!("{} {extra}", report.debug_dump());
+                }
                 return report.debug_dump();
             }
         }
@@ -266,16 +271,23 @@ fn owned_region_height_support_debug(
                 contour_index,
                 contour.purpose,
                 contour.claim_priority,
+                contour.owner,
+                contour.source_band_index,
                 contour
                     .points_xz
                     .iter()
                     .copied()
-                    .map(road_vec2_mm)
+                    .map(|point| SurfaceXzKey::from_road_xz(point).raw_tuple())
                     .collect::<Vec<_>>(),
                 contour.height_points_world.as_ref().map(|points| {
                     points
                         .iter()
-                        .map(|point| road_vec2_mm(backend::RoadVec2::new(point.x, point.z)))
+                        .map(|point| {
+                            (
+                                SurfaceXzKey::from_world_xz(*point).raw_tuple(),
+                                SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
+                            )
+                        })
                         .collect::<Vec<_>>()
                 }),
             )

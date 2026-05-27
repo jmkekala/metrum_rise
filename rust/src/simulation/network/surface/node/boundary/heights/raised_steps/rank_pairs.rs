@@ -2,41 +2,23 @@
 
 use super::*;
 
-pub(super) fn raised_step_footprint_authorized_rank_pairs(
+pub(super) fn raised_step_footprint_authorized_height_mm(
     key: arrangement::NodeArrangementKey,
     candidates: &[NodeFootprintBoundaryHeightCandidate],
-    lower_height_mm: i64,
-    raised_height_mm: i64,
     explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
     source_edges: &[NodeEarthworkBoundarySourceEdge],
-) -> Option<Vec<(u8, u8)>> {
-    let lower_candidates = candidates
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == lower_height_mm)
-        .collect::<Vec<_>>();
-    let raised_candidates = candidates
-        .iter()
-        .copied()
-        .filter(|candidate| candidate.height_mm == raised_height_mm)
-        .collect::<Vec<_>>();
-    if lower_candidates.is_empty() || raised_candidates.is_empty() {
-        return None;
-    }
-
-    for lower in &lower_candidates {
-        let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
-        for raised in &raised_candidates {
-            let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
-            if lower_rank >= raised_rank {
-                return None;
+) -> Option<i64> {
+    let mut raised_heights = Vec::<i64>::new();
+    for left_index in 0..candidates.len() {
+        for right in candidates.iter().copied().skip(left_index + 1) {
+            let left = candidates[left_index];
+            if left.height_mm == right.height_mm {
+                continue;
             }
-        }
-    }
-
-    let mut authorized_pairs = Vec::<(u8, u8)>::new();
-    for lower in &lower_candidates {
-        for raised in &raised_candidates {
+            let Some((lower, raised)) = ordered_raised_step_footprint_candidates(left, right)
+            else {
+                continue;
+            };
             let explicit_step_authorized = explicit_vertical_step_authorizes_footprint_height_pair(
                 key,
                 lower.source,
@@ -46,8 +28,8 @@ pub(super) fn raised_step_footprint_authorized_rank_pairs(
             let terminal_source_endpoint_authorized =
                 terminal_source_edge_endpoints_authorize_footprint_height_pair(
                     key,
-                    *lower,
-                    *raised,
+                    lower,
+                    raised,
                     source_edges,
                 );
             let explicit_step_endpoint_group_authorized =
@@ -63,38 +45,17 @@ pub(super) fn raised_step_footprint_authorized_rank_pairs(
             {
                 continue;
             }
-            let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
-            let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
-            let pair = (lower_rank, raised_rank);
-            if !authorized_pairs.contains(&pair) {
-                authorized_pairs.push(pair);
+            if !raised_heights.contains(&raised.height_mm) {
+                raised_heights.push(raised.height_mm);
             }
         }
     }
-    if authorized_pairs.is_empty() {
+    raised_heights.sort_unstable();
+    raised_heights.dedup();
+    let [raised_height_mm] = raised_heights.as_slice() else {
         return None;
-    }
-
-    for lower in &lower_candidates {
-        let lower_rank = raised_step_band_rank(lower.source.owner_kind)?;
-        if !authorized_pairs
-            .iter()
-            .any(|(authorized_lower_rank, _)| lower_rank <= *authorized_lower_rank)
-        {
-            return None;
-        }
-    }
-    for raised in &raised_candidates {
-        let raised_rank = raised_step_band_rank(raised.source.owner_kind)?;
-        if !authorized_pairs
-            .iter()
-            .any(|(_, authorized_raised_rank)| raised_rank >= *authorized_raised_rank)
-        {
-            return None;
-        }
-    }
-
-    Some(authorized_pairs)
+    };
+    Some(*raised_height_mm)
 }
 
 pub(super) fn explicit_vertical_step_endpoint_group_authorizes_footprint_height_pair(
@@ -182,7 +143,6 @@ pub(super) fn same_kind_explicit_vertical_step_footprint_height_mm(
     (all_lower_authorized && all_raised_authorized).then_some(raised_height_mm)
 }
 
-#[cfg(test)]
 pub(super) fn ordered_raised_step_footprint_candidates(
     left: NodeFootprintBoundaryHeightCandidate,
     right: NodeFootprintBoundaryHeightCandidate,

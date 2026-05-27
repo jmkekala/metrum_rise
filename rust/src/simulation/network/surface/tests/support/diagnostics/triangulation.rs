@@ -9,7 +9,13 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_height_confl
     report: &NodeValidationReport,
 ) -> Option<String> {
     report.diagnostics.iter().find_map(|diagnostic| {
-        if let NodeGeometryDiagnosticKind::CrossRegionHeightConflict {
+        if let NodeGeometryDiagnosticKind::HeightConflict { x_mm, z_mm, .. } = diagnostic.kind {
+            let surface_key = SurfaceXzKey::from_raw_keys(x_mm, z_mm);
+            Some(format!(
+                "surface_vertices={:?}",
+                height_solution_vertices_at_surface_key(heights, surface_key),
+            ))
+        } else if let NodeGeometryDiagnosticKind::CrossRegionHeightConflict {
             edge_start_x_key,
             edge_start_z_key,
             edge_end_x_key,

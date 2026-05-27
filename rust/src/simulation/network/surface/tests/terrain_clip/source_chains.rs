@@ -1,14 +1,15 @@
 //! Terrain clip source-chain provenance tests.
 
 use super::*;
+use crate::simulation::network::surface::backend::RoadVec3;
 
 #[test]
 fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain() {
-    let p0 = Vector3::new(0.0, 10.0, 0.0);
-    let p1 = Vector3::new(0.45, 10.8, 0.18);
-    let p2 = Vector3::new(1.0, 11.4, 0.0);
-    let p3 = Vector3::new(1.0, 11.4, 0.5);
-    let p4 = Vector3::new(0.0, 10.0, 0.5);
+    let p0 = RoadVec3::new(0.0, 10.0, 0.0);
+    let p1 = RoadVec3::new(0.45, 10.8, 0.18);
+    let p2 = RoadVec3::new(1.0, 11.4, 0.0);
+    let p3 = RoadVec3::new(1.0, 11.4, 0.5);
+    let p4 = RoadVec3::new(0.0, 10.0, 0.5);
     let source_loop = RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0, p1),
@@ -29,10 +30,10 @@ fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain()
     );
     let points = &unioned[0].points_world;
     assert!(
-        points
-            .iter()
-            .any(|point| (point.x - p1.x).abs() <= SAMPLE_EPSILON_M
-                && (point.z - p1.z).abs() <= SAMPLE_EPSILON_M),
+        points.iter().any(
+            |point| (point.x - p1.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                && (point.z - p1.z).abs() <= f64::from(SAMPLE_EPSILON_M)
+        ),
         "source-owned split vertex must be stitched back into the unioned cutter"
     );
     assert_eq!(
@@ -44,28 +45,32 @@ fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain()
         unioned[0]
             .source_edges
             .iter()
-            .any(|edge| (edge.start.x - p0.x).abs() <= SAMPLE_EPSILON_M
-                && (edge.end.x - p1.x).abs() <= SAMPLE_EPSILON_M),
+            .any(
+                |edge| (edge.start.x - p0.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                    && (edge.end.x - p1.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+            ),
         "first split subsegment must preserve its original source edge"
     );
     assert!(
         unioned[0]
             .source_edges
             .iter()
-            .any(|edge| (edge.start.x - p1.x).abs() <= SAMPLE_EPSILON_M
-                && (edge.end.x - p2.x).abs() <= SAMPLE_EPSILON_M),
+            .any(
+                |edge| (edge.start.x - p1.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                    && (edge.end.x - p2.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+            ),
         "second split subsegment must preserve its original source edge"
     );
 }
 
 #[test]
 fn terrain_clip_union_stitches_source_chain_across_same_xz_height_step() {
-    let p0 = Vector3::new(0.0, 10.0, 0.0);
-    let p1_low = Vector3::new(0.45, 10.8, 0.18);
-    let p1_high = Vector3::new(0.45, 11.0, 0.18);
-    let p2 = Vector3::new(1.0, 11.4, 0.0);
-    let p3 = Vector3::new(1.0, 11.4, 0.5);
-    let p4 = Vector3::new(0.0, 10.0, 0.5);
+    let p0 = RoadVec3::new(0.0, 10.0, 0.0);
+    let p1_low = RoadVec3::new(0.45, 10.8, 0.18);
+    let p1_high = RoadVec3::new(0.45, 11.0, 0.18);
+    let p2 = RoadVec3::new(1.0, 11.4, 0.0);
+    let p3 = RoadVec3::new(1.0, 11.4, 0.5);
+    let p4 = RoadVec3::new(0.0, 10.0, 0.5);
     let source_loop = RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0, p1_low),
@@ -88,13 +93,13 @@ fn terrain_clip_union_stitches_source_chain_across_same_xz_height_step() {
         .points_world
         .iter()
         .find(|point| {
-            (point.x - p1_low.x).abs() <= SAMPLE_EPSILON_M
-                && (point.z - p1_low.z).abs() <= SAMPLE_EPSILON_M
+            (point.x - p1_low.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                && (point.z - p1_low.z).abs() <= f64::from(SAMPLE_EPSILON_M)
         })
         .copied()
         .expect("source chain split vertex should survive terrain clip union");
     assert!(
-        stitched.y >= p1_high.y - SAMPLE_EPSILON_M,
+        stitched.y >= p1_high.y - f64::from(SAMPLE_EPSILON_M),
         "shared XZ source chain vertex should use the highest visible road height"
     );
     assert_eq!(
@@ -108,16 +113,16 @@ fn terrain_clip_union_stitches_source_chain_across_same_xz_height_step() {
 fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
     let y = 4.0;
     let valid = [
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(1.0, y, 0.0),
-        Vector3::new(1.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(1.0, y, 0.0),
+        RoadVec3::new(1.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let unowned = [
-        Vector3::new(3.0, y, 0.0),
-        Vector3::new(4.0, y, 0.0),
-        Vector3::new(4.0, y, 1.0),
-        Vector3::new(3.0, y, 1.0),
+        RoadVec3::new(3.0, y, 0.0),
+        RoadVec3::new(4.0, y, 0.0),
+        RoadVec3::new(4.0, y, 1.0),
+        RoadVec3::new(3.0, y, 1.0),
     ];
     let raw_clip_sources = vec![
         RoadSurfaceTerrainClipLoop {
@@ -151,11 +156,11 @@ fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
 #[test]
 fn terrain_clip_union_blocks_partially_covered_source_segment() {
     let y = 5.0;
-    let p0 = Vector3::new(0.0, y, 0.0);
-    let p1 = Vector3::new(1.0, y, 0.0);
-    let p2 = Vector3::new(1.0, y, 1.0);
-    let p3 = Vector3::new(0.0, y, 1.0);
-    let mid = Vector3::new(0.5, y, 0.0);
+    let p0 = RoadVec3::new(0.0, y, 0.0);
+    let p1 = RoadVec3::new(1.0, y, 0.0);
+    let p2 = RoadVec3::new(1.0, y, 1.0);
+    let p3 = RoadVec3::new(0.0, y, 1.0);
+    let mid = RoadVec3::new(0.5, y, 0.0);
     let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0, mid),
@@ -183,11 +188,11 @@ fn terrain_clip_union_blocks_partially_covered_source_segment() {
 
 #[test]
 fn terrain_clip_source_endpoint_groups_use_key_derived_coordinates() {
-    let p0_loop = Vector3::new(0.0, 10.0004, 0.0);
-    let p0_source = Vector3::new(0.0000002, 10.00049, 0.0000002);
-    let p1 = Vector3::new(1.0, 10.0, 0.0);
-    let p2 = Vector3::new(1.0, 10.0, 1.0);
-    let p3 = Vector3::new(0.0, 10.0, 1.0);
+    let p0_loop = RoadVec3::new(0.0, 10.0004, 0.0);
+    let p0_source = RoadVec3::new(0.0000002, 10.00049, 0.0000002);
+    let p1 = RoadVec3::new(1.0, 10.0, 0.0);
+    let p2 = RoadVec3::new(1.0, 10.0, 1.0);
+    let p3 = RoadVec3::new(0.0, 10.0, 1.0);
     let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0_source, p1),
@@ -205,18 +210,17 @@ fn terrain_clip_source_endpoint_groups_use_key_derived_coordinates() {
         .source_edges
         .iter()
         .flat_map(|edge| [edge.start, edge.end])
-        .find(|point| {
-            SurfaceXzKey::from_godot_world_xz(*point) == SurfaceXzKey::from_raw_keys(0, 0)
-        })
+        .find(|point| SurfaceXzKey::from_world_xz(*point) == SurfaceXzKey::from_raw_keys(0, 0))
         .expect("origin endpoint should remain present after terrain clip union");
 
     assert_eq!(
-        SurfaceHeightMmKey::from_m_f32(origin.y),
-        SurfaceHeightMmKey::from_m_f32(10.0),
-        "same-key source endpoints must be emitted at the canonical height key, not at a majority raw Vector3"
+        SurfaceHeightMmKey::from_m_f64(origin.y),
+        SurfaceHeightMmKey::from_m_f64(10.0),
+        "same-key source endpoints must be emitted at the canonical height key, not at a majority raw RoadVec3"
     );
     assert!(
-        origin.x.abs() <= SAMPLE_EPSILON_M && origin.z.abs() <= SAMPLE_EPSILON_M,
+        origin.x.abs() <= f64::from(SAMPLE_EPSILON_M)
+            && origin.z.abs() <= f64::from(SAMPLE_EPSILON_M),
         "same-key source endpoints must be emitted at the canonical XZ key"
     );
 }
@@ -225,12 +229,12 @@ fn terrain_clip_source_endpoint_groups_use_key_derived_coordinates() {
 fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
     let y = 12.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(0.5, y, 0.0),
-        Vector3::new(0.501, y, 0.0001),
-        Vector3::new(1.0, y, 0.0),
-        Vector3::new(1.0, y, 0.1),
-        Vector3::new(0.0, y, 0.1),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(0.5, y, 0.0),
+        RoadVec3::new(0.501, y, 0.0001),
+        RoadVec3::new(1.0, y, 0.0),
+        RoadVec3::new(1.0, y, 0.1),
+        RoadVec3::new(0.0, y, 0.1),
     ];
     let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
         source_edges: vec![
@@ -255,7 +259,7 @@ fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
         clip_export.loops[0]
             .points_world
             .iter()
-            .all(|point| (point.y - y).abs() <= SAMPLE_EPSILON_M),
+            .all(|point| (point.y - y).abs() <= f64::from(SAMPLE_EPSILON_M)),
         "accepted connector must reuse canonical source endpoint heights"
     );
 }

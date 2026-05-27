@@ -2,6 +2,7 @@
 
 use super::{
     RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
+    backend::{RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road},
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};

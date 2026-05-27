@@ -2,12 +2,12 @@
 
 use super::super::{
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    backend::RoadVec3,
 };
 use super::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanRaisedStepSource, SpanRaisedStepConstraint,
     SpanRaisedStepSample, SpanResolvedRaisedStepSample,
 };
-use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
     pub(super) fn sort_span_raised_step_faces(
@@ -131,7 +131,8 @@ impl RoadSurfaceSystem {
             Self::section_boundary_world_point_static(section, boundary_lateral_m, lower_height_m);
         let raised_world =
             Self::section_boundary_world_point_static(section, boundary_lateral_m, raised_height_m);
-        let lower_direction_xz = section.lateral_xz * (lower_mid_lateral_m - boundary_lateral_m);
+        let lower_direction_xz =
+            section.lateral_xz * f64::from(lower_mid_lateral_m - boundary_lateral_m);
 
         Some(SpanResolvedRaisedStepSample {
             lower_owner,
@@ -139,7 +140,7 @@ impl RoadSurfaceSystem {
             sample: SpanRaisedStepSample {
                 lower_world,
                 raised_world,
-                lower_direction: Vector3::new(lower_direction_xz.x, 0.0, lower_direction_xz.y),
+                lower_direction: RoadVec3::new(lower_direction_xz.x, 0.0, lower_direction_xz.y),
             },
         })
     }

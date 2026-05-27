@@ -47,10 +47,10 @@ pub(in crate::simulation::network::surface::tests) fn measure_max_footprint_over
             else {
                 continue;
             };
-            let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset_m;
-            let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset_m;
+            let sample_x = section.center_xz.x + section.lateral_xz.x * f64::from(lateral_offset_m);
+            let sample_z = section.center_xz.y + section.lateral_xz.y * f64::from(lateral_offset_m);
             let visual_height_m = surface
-                .sample_paved_support_height(graph, terrain, sample_x, sample_z)
+                .sample_paved_support_height(graph, terrain, sample_x as f32, sample_z as f32)
                 .unwrap_or_else(|| {
                     panic!(
                         "paved footprint sample must have road-owned support: edge_idx={edge_idx} s_m={:.3} lateral={lateral_offset_m:.3} sample=({sample_x:.3},{sample_z:.3})",

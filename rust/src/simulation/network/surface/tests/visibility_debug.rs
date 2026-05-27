@@ -108,7 +108,7 @@ fn visible_surface_height_skips_grounded_terminal_earthwork_margin() {
 
     assert!(
         surface
-            .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+            .sample_visible_surface_height(&graph, &terrain, sample_x as f32, sample_z as f32)
             .is_none(),
         "grounded standard terminal earthwork margin stays outside visible-surface queries; Rust-generated terrain topology owns the ordinary seam"
     );
@@ -143,7 +143,7 @@ fn visible_surface_height_skips_grounded_span_earthwork_margin() {
 
     assert!(
         surface
-            .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+            .sample_visible_surface_height(&graph, &terrain, sample_x as f32, sample_z as f32)
             .is_none(),
         "grounded standard span earthwork margin stays outside visible-surface queries; Rust-generated terrain topology owns the ordinary seam"
     );

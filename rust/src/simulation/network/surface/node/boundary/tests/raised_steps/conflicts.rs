@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
-    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0)).xz_key();
     let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
     let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
     let lower_point = ArrangementBoundaryPointKey {
@@ -47,6 +47,7 @@ fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -63,9 +64,9 @@ fn unauthorized_asphalt_curb_boundary_height_conflict_still_rejects() {
 #[test]
 fn raised_step_footprint_height_accepts_multiple_explicit_raised_owners_with_order_independent_sources()
  {
-    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
-    let step_end_a = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
-    let step_end_b = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 1.0)).xz_key();
+    let key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0)).xz_key();
+    let step_end_a = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.0, 0.0)).xz_key();
+    let step_end_b = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 1.0)).xz_key();
     let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 14);
     let raised_owner_a = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 10);
     let raised_owner_b = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 13);
@@ -113,6 +114,7 @@ fn raised_step_footprint_height_accepts_multiple_explicit_raised_owners_with_ord
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
                 key,

@@ -16,6 +16,55 @@ impl NodeFinalOwnedFootprintBoundarySupport {
 }
 
 impl NodeFootprintBoundaryExportSources {
+    pub(in crate::simulation::network::surface) fn exact_final_owned_footprint_boundary_points_in_same_mm(
+        &self,
+        point_key: ArrangementBoundaryPointKey,
+    ) -> Vec<ArrangementBoundaryPointKey> {
+        let target_mm = boundary_point_xz_mm_key(point_key);
+        let mut points = Vec::new();
+        points.extend(
+            self.direct_vertex_sources
+                .iter()
+                .filter(|(_, source)| {
+                    matches!(source.source, NodeFootprintBoundaryVertexSource::Direct(_))
+                })
+                .map(|(point_key, _)| *point_key)
+                .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
+        );
+        points.extend(
+            self.final_vertex_sources
+                .keys()
+                .copied()
+                .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
+        );
+        for edge in &self.final_height_edges {
+            points.extend(
+                [edge.start_point_key, edge.end_point_key]
+                    .into_iter()
+                    .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
+            );
+        }
+        for edge in self
+            .source_edges
+            .iter()
+            .filter(|edge| edge.final_footprint_boundary)
+        {
+            points.extend(
+                [edge.start_point_key, edge.end_point_key]
+                    .into_iter()
+                    .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
+            );
+        }
+        points.sort_unstable();
+        points.dedup();
+        points
+            .into_iter()
+            .filter(|candidate| {
+                self.has_exact_final_owned_footprint_boundary_support_at_point(*candidate)
+            })
+            .collect()
+    }
+
     pub(in crate::simulation::network::surface) fn has_exact_final_owned_footprint_boundary_support_at_xz_key(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -113,6 +162,13 @@ impl NodeFootprintBoundaryExportSources {
                     .map(|_| NodeFinalOwnedFootprintBoundarySupport::ExactSourceEdge)
             })
     }
+}
+
+fn boundary_point_xz_mm_key(point_key: ArrangementBoundaryPointKey) -> (i64, i64) {
+    (
+        SurfaceXzKey::coordinate_key_to_mm(point_key.x_key),
+        SurfaceXzKey::coordinate_key_to_mm(point_key.z_key),
+    )
 }
 
 fn node_footprint_boundary_vertex_source_is_exact(

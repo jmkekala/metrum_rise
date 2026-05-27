@@ -4,13 +4,13 @@ use super::*;
 
 #[test]
 fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
-    let step_start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0)).xz_key();
+    let step_start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0)).xz_key();
     let lower_edge = test_source_edge_for_owner_and_kind(
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::Carriageway,
         0,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -20,8 +20,8 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::CurbOrShoulder,
         1,
-        Vector3::new(0.0, 0.12, 0.0),
-        Vector3::new(-1.0, 0.12, 0.0),
+        RoadVec3::new(0.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.12, 0.0),
         4,
         40,
         4,
@@ -34,6 +34,7 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -47,13 +48,13 @@ fn terminal_raised_step_footprint_height_accepts_boundary_edge_authority() {
 #[test]
 fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
     let drifted_step_start =
-        ArrangementBoundaryPointKey::from_world(Vector3::new(0.000001, 0.0, 0.0)).xz_key();
+        ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.000001, 0.0, 0.0)).xz_key();
     let lower_edge = test_source_edge_for_owner_and_kind(
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::Carriageway,
         0,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -63,8 +64,8 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::CurbOrShoulder,
         1,
-        Vector3::new(0.0, 0.12, 0.0),
-        Vector3::new(1.0, 0.12, 0.0),
+        RoadVec3::new(0.0, 0.12, 0.0),
+        RoadVec3::new(1.0, 0.12, 0.0),
         4,
         40,
         4,
@@ -77,6 +78,7 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -93,13 +95,13 @@ fn terminal_raised_step_footprint_height_rejects_endpoint_quantization_drift() {
 #[test]
 fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
     let step_midpoint =
-        ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.0)).xz_key();
+        ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.5, 0.0, 0.0)).xz_key();
     let lower_edge = test_source_edge_for_owner_and_kind(
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::Carriageway,
         0,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -109,8 +111,8 @@ fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
         RoadSurfaceVisualNodePieceKind::Terminal,
         RoadSurfaceBandKind::CurbOrShoulder,
         1,
-        Vector3::new(0.0, 0.12, 0.0),
-        Vector3::new(1.0, 0.12, 0.0),
+        RoadVec3::new(0.0, 0.12, 0.0),
+        RoadVec3::new(1.0, 0.12, 0.0),
         4,
         40,
         4,
@@ -123,6 +125,7 @@ fn terminal_raised_step_footprint_height_rejects_interior_edge_authority() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 

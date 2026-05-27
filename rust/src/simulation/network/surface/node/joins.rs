@@ -117,9 +117,9 @@ mod tests {
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     };
     use super::*;
-    use godot::prelude::{Vector2, Vector3};
+    use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 
-    fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+    fn band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
         IncidentMouthBand {
             kind,
             start_point_world: start,
@@ -127,15 +127,15 @@ mod tests {
         }
     }
 
-    fn profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+    fn profile_x(x: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
         let boundary_points_world = vec![
-            Vector3::new(x, 4.0, -4.0),
-            Vector3::new(x, 4.1, -3.0),
-            Vector3::new(x, 4.2, -1.0),
-            Vector3::new(x, 4.0, 0.0),
-            Vector3::new(x, 4.2, 1.0),
-            Vector3::new(x, 4.1, 3.0),
-            Vector3::new(x, 4.0, 4.0),
+            RoadVec3::new(x, 4.0, -4.0),
+            RoadVec3::new(x, 4.1, -3.0),
+            RoadVec3::new(x, 4.2, -1.0),
+            RoadVec3::new(x, 4.0, 0.0),
+            RoadVec3::new(x, 4.2, 1.0),
+            RoadVec3::new(x, 4.1, 3.0),
+            RoadVec3::new(x, 4.0, 4.0),
         ];
         let bands = symmetric_road_bands(&boundary_points_world);
         IncidentMouthProfile {
@@ -145,15 +145,15 @@ mod tests {
         }
     }
 
-    fn profile_z(z: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+    fn profile_z(z: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
         let boundary_points_world = vec![
-            Vector3::new(4.0, 4.0, z),
-            Vector3::new(3.0, 4.1, z),
-            Vector3::new(1.0, 4.2, z),
-            Vector3::new(0.0, 4.0, z),
-            Vector3::new(-1.0, 4.2, z),
-            Vector3::new(-3.0, 4.1, z),
-            Vector3::new(-4.0, 4.0, z),
+            RoadVec3::new(4.0, 4.0, z),
+            RoadVec3::new(3.0, 4.1, z),
+            RoadVec3::new(1.0, 4.2, z),
+            RoadVec3::new(0.0, 4.0, z),
+            RoadVec3::new(-1.0, 4.2, z),
+            RoadVec3::new(-3.0, 4.1, z),
+            RoadVec3::new(-4.0, 4.0, z),
         ];
         let bands = symmetric_road_bands(&boundary_points_world);
         IncidentMouthProfile {
@@ -163,7 +163,7 @@ mod tests {
         }
     }
 
-    fn symmetric_road_bands(boundary_points_world: &[Vector3]) -> Vec<IncidentMouthBand> {
+    fn symmetric_road_bands(boundary_points_world: &[RoadVec3]) -> Vec<IncidentMouthBand> {
         vec![
             band(
                 RoadSurfaceBandKind::Sidewalk,
@@ -202,7 +202,7 @@ mod tests {
         profile: IncidentMouthProfile,
         endpoint_profile: IncidentMouthProfile,
         direction_angle_ccw: f32,
-        direction_xz: Vector2,
+        direction_xz: RoadVec2,
         edge_idx: usize,
     ) -> OrderedIncidentPieceMouth {
         OrderedIncidentPieceMouth {
@@ -222,24 +222,24 @@ mod tests {
     fn junction_input() -> NodeArrangementInput {
         let mouths = [
             ordered_mouth(
-                profile_x(10.0, Vector2::RIGHT),
-                profile_x(0.0, Vector2::RIGHT),
+                profile_x(10.0, RoadVec2::X),
+                profile_x(0.0, RoadVec2::X),
                 0.0,
-                Vector2::RIGHT,
+                RoadVec2::X,
                 1,
             ),
             ordered_mouth(
-                profile_z(12.0, Vector2::DOWN),
-                profile_z(2.0, Vector2::DOWN),
+                profile_z(12.0, RoadVec2::Y),
+                profile_z(2.0, RoadVec2::Y),
                 std::f32::consts::FRAC_PI_2,
-                Vector2::DOWN,
+                RoadVec2::Y,
                 2,
             ),
             ordered_mouth(
-                profile_x(-10.0, Vector2::LEFT),
-                profile_x(0.0, Vector2::LEFT),
+                profile_x(-10.0, RoadVec2::NEG_X),
+                profile_x(0.0, RoadVec2::NEG_X),
                 std::f32::consts::PI,
-                Vector2::LEFT,
+                RoadVec2::NEG_X,
                 3,
             ),
         ];

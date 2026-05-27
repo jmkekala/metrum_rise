@@ -63,11 +63,16 @@ impl NodeArrangement {
             position: key,
             owners: owners.clone(),
             height_field_id,
+            source_provenance: grade_authority.source_provenance,
         };
 
-        if let Some(conflict) =
-            self.height_owner_conflict_at_key(key, height_key, &owners, height_field_id)
-        {
+        if let Some(conflict) = self.height_owner_conflict_at_key(
+            key,
+            height_key,
+            &owners,
+            height_field_id,
+            grade_authority,
+        ) {
             return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                 key,
                 existing_height_mm: conflict.0,
@@ -110,6 +115,7 @@ impl NodeArrangement {
         height_key: NodeArrangementHeightKey,
         owners: &[NodeBandOwner],
         height_field_id: NodeBandHeightFieldId,
+        grade_authority: NodeGradeVertexAuthority,
     ) -> Option<NodeArrangementHeightKey> {
         self.vertices
             .iter()
@@ -118,6 +124,10 @@ impl NodeArrangement {
                     && vertex.height_key != height_key
                     && (vertex.height_field_id == height_field_id
                         || owners_overlap(&vertex.owners, owners))
+                    && !grade_authorities_have_distinct_source_carrier_provenance(
+                        vertex.grade_authority,
+                        grade_authority,
+                    )
             })
             .map(|vertex| vertex.height_key)
     }
@@ -160,6 +170,7 @@ impl NodeArrangement {
             let pending = arrangement.pending_region(region_index, height_region)?;
             pending_regions.push(pending);
         }
+        arrangement.node_pending_region_edges(&mut pending_regions)?;
 
         let (edge_owners, edge_use_counts) =
             collect_pending_region_edge_support(&pending_regions, &arrangement.vertices);
@@ -207,6 +218,11 @@ impl NodeArrangement {
                         continue;
                     }
                     let crosses_band_kind = !owners_share_band_kind(&left.owners, &right.owners);
+                    if !crosses_band_kind
+                        && vertices_have_distinct_source_carrier_provenance(left, right)
+                    {
+                        continue;
+                    }
                     if crosses_band_kind
                         && !self.has_boundary_edge_at_key_between(key, &left.owners, &right.owners)
                     {
@@ -373,6 +389,26 @@ fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
 }
 
+fn vertices_have_distinct_source_carrier_provenance(
+    left: &NodeArrangementVertex,
+    right: &NodeArrangementVertex,
+) -> bool {
+    grade_authorities_have_distinct_source_carrier_provenance(
+        left.grade_authority,
+        right.grade_authority,
+    )
+}
+
+fn grade_authorities_have_distinct_source_carrier_provenance(
+    left: NodeGradeVertexAuthority,
+    right: NodeGradeVertexAuthority,
+) -> bool {
+    match (left.source_provenance, right.source_provenance) {
+        (Some(left), Some(right)) => left != right,
+        _ => false,
+    }
+}
+
 fn merged_node_grade_authority(
     existing: NodeGradeVertexAuthority,
     incoming: NodeGradeVertexAuthority,
@@ -384,7 +420,7 @@ fn merged_node_grade_authority(
     }
 }
 
-fn node_grade_decision_rank(decision: NodeGradeCarrierDecision) -> u8 {
+pub(super) fn node_grade_decision_rank(decision: NodeGradeCarrierDecision) -> u8 {
     match decision {
         NodeGradeCarrierDecision::ExplicitMaterialSeam => 0,
         NodeGradeCarrierDecision::SameMaterialSeam => 1,

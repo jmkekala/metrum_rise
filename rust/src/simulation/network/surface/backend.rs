@@ -5,8 +5,10 @@ use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineVertex, Polyl
 use glam::{DVec2, DVec3};
 use godot::prelude::{Vector2, Vector3};
 
-pub(crate) type RoadVec2 = DVec2;
-pub(crate) type RoadVec3 = DVec3;
+/// Road-surface 2-D numeric geometry in world XZ metres.
+pub type RoadVec2 = DVec2;
+/// Road-surface 3-D numeric geometry in world XYZ metres.
+pub type RoadVec3 = DVec3;
 pub(crate) type RoadPolyline = Polyline<f64>;
 pub(crate) type RoadPolylineVertex = PlineVertex<f64>;
 
@@ -21,12 +23,12 @@ pub(crate) fn godot_vec3_to_road(point: Vector3) -> RoadVec3 {
     RoadVec3::new(f64::from(point.x), f64::from(point.y), f64::from(point.z))
 }
 
-pub(crate) fn godot_vec3_xz_to_road(point: Vector3) -> RoadVec2 {
-    RoadVec2::new(f64::from(point.x), f64::from(point.z))
+pub(crate) fn road_vec3_to_godot(point: RoadVec3) -> Vector3 {
+    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
 }
 
-pub(crate) fn road_xz_with_height_to_godot(point_xz: RoadVec2, height_m: f64) -> Vector3 {
-    Vector3::new(point_xz.x as f32, height_m as f32, point_xz.y as f32)
+pub(crate) fn road_xz_with_height(point_xz: RoadVec2, height_m: f64) -> RoadVec3 {
+    RoadVec3::new(point_xz.x, height_m, point_xz.y)
 }
 
 pub(crate) fn overlay_point_to_road(point: NodeOverlayPoint) -> RoadVec2 {

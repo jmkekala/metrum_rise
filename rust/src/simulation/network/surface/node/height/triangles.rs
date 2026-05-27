@@ -5,6 +5,8 @@ use super::seams::*;
 use super::source_edges::*;
 use super::vertices::canonical_height_vertices;
 use super::*;
+use crate::simulation::network::surface::keys::SURFACE_MM_PER_M;
+use crate::simulation::network::surface::segments::interpolate_height_i64;
 
 impl NodeBandHeightTriangle {
     pub(in crate::simulation::network::surface::node) fn height_at(
@@ -57,9 +59,12 @@ fn triangle_edge_height_at(
         let Some(parameter) = point_key.overlay_segment_parameter(start_key, end_key) else {
             continue;
         };
-        let t = parameter.numerator as f64 / parameter.denominator as f64;
-        let height_m = start_height_m + (end_height_m - start_height_m) * t;
-        let height_mm = quantize_m(height_m);
+        let height_mm = interpolate_height_i64(
+            SurfaceHeightMmKey::from_m_f64(start_height_m).as_i64(),
+            SurfaceHeightMmKey::from_m_f64(end_height_m).as_i64(),
+            parameter,
+        );
+        let height_m = height_mm as f64 / SURFACE_MM_PER_M;
         match accepted {
             Some((accepted_height_mm, _)) if accepted_height_mm != height_mm => return None,
             Some(_) => {}

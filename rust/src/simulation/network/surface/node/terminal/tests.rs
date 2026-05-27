@@ -4,9 +4,9 @@ use super::super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
 use super::*;
-use godot::prelude::{Vector2, Vector3};
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 
-fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+fn band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
     IncidentMouthBand {
         kind,
         start_point_world: start,
@@ -14,15 +14,15 @@ fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMout
     }
 }
 
-fn symmetric_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+fn symmetric_profile_x(x: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, 4.12, -5.0),
-        Vector3::new(x, 4.12, -3.65),
-        Vector3::new(x, 4.0, -3.5),
-        Vector3::new(x, 4.0, 0.0),
-        Vector3::new(x, 4.0, 3.5),
-        Vector3::new(x, 4.12, 3.65),
-        Vector3::new(x, 4.12, 5.0),
+        RoadVec3::new(x, 4.12, -5.0),
+        RoadVec3::new(x, 4.12, -3.65),
+        RoadVec3::new(x, 4.0, -3.5),
+        RoadVec3::new(x, 4.0, 0.0),
+        RoadVec3::new(x, 4.0, 3.5),
+        RoadVec3::new(x, 4.12, 3.65),
+        RoadVec3::new(x, 4.12, 5.0),
     ];
     let bands = vec![
         band(
@@ -33,7 +33,7 @@ fn symmetric_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthPro
         band(
             RoadSurfaceBandKind::CurbOrShoulder,
             boundary_points_world[1],
-            Vector3::new(boundary_points_world[2].x, 4.12, boundary_points_world[2].z),
+            RoadVec3::new(boundary_points_world[2].x, 4.12, boundary_points_world[2].z),
         ),
         band(
             RoadSurfaceBandKind::Carriageway,
@@ -47,7 +47,7 @@ fn symmetric_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthPro
         ),
         band(
             RoadSurfaceBandKind::CurbOrShoulder,
-            Vector3::new(boundary_points_world[4].x, 4.12, boundary_points_world[4].z),
+            RoadVec3::new(boundary_points_world[4].x, 4.12, boundary_points_world[4].z),
             boundary_points_world[5],
         ),
         band(
@@ -63,11 +63,11 @@ fn symmetric_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthPro
     }
 }
 
-fn car_only_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+fn car_only_profile_x(x: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, 4.0, -3.5),
-        Vector3::new(x, 4.0, 0.0),
-        Vector3::new(x, 4.0, 3.5),
+        RoadVec3::new(x, 4.0, -3.5),
+        RoadVec3::new(x, 4.0, 0.0),
+        RoadVec3::new(x, 4.0, 3.5),
     ];
     let bands = vec![
         band(
@@ -88,9 +88,9 @@ fn car_only_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProf
     }
 }
 
-fn asymmetric_sidewalk_profile_x(x: f32, inward_direction_xz: Vector2) -> IncidentMouthProfile {
+fn asymmetric_sidewalk_profile_x(x: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
     let mut profile = symmetric_profile_x(x, inward_direction_xz);
-    profile.boundary_points_world[6] = Vector3::new(x, 4.12, 5.5);
+    profile.boundary_points_world[6] = RoadVec3::new(x, 4.12, 5.5);
     profile.bands[5].end_point_world = profile.boundary_points_world[6];
     profile
 }
@@ -102,7 +102,7 @@ fn terminal_input(profile: IncidentMouthProfile) -> NodeArrangementInput {
         boundary_points_world: profile
             .boundary_points_world
             .iter()
-            .map(|point| Vector3::new(point.x + 10.0, point.y, point.z))
+            .map(|point| RoadVec3::new(point.x + 10.0, point.y, point.z))
             .collect(),
         bands: profile
             .bands
@@ -112,8 +112,8 @@ fn terminal_input(profile: IncidentMouthProfile) -> NodeArrangementInput {
                 let end = band.end_point_world;
                 IncidentMouthBand {
                     kind: band.kind,
-                    start_point_world: Vector3::new(start.x + 10.0, start.y, start.z),
-                    end_point_world: Vector3::new(end.x + 10.0, end.y, end.z),
+                    start_point_world: RoadVec3::new(start.x + 10.0, start.y, start.z),
+                    end_point_world: RoadVec3::new(end.x + 10.0, end.y, end.z),
                 }
             })
             .collect(),
@@ -126,7 +126,7 @@ fn terminal_input(profile: IncidentMouthProfile) -> NodeArrangementInput {
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 8,
         side: IncidentEdgeSide::Start,
     };
@@ -141,7 +141,7 @@ fn terminal_input(profile: IncidentMouthProfile) -> NodeArrangementInput {
 
 #[test]
 fn terminal_cap_adapter_uses_source_band_interval_heights() {
-    let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
+    let input = terminal_input(symmetric_profile_x(0.0, RoadVec2::X));
     let mouth = &input.mouths[0];
     let cap_bands_by_mouth =
         terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
@@ -163,7 +163,7 @@ fn terminal_cap_adapter_uses_source_band_interval_heights() {
 
 #[test]
 fn terminal_cap_adapter_records_cap_source_provenance() {
-    let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
+    let input = terminal_input(symmetric_profile_x(0.0, RoadVec2::X));
     let mouth = &input.mouths[0];
     let cap_bands_by_mouth =
         terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
@@ -186,7 +186,7 @@ fn terminal_cap_adapter_records_cap_source_provenance() {
 
 #[test]
 fn terminal_cap_adapter_emits_side_corner_closures_from_source_rails() {
-    let input = terminal_input(symmetric_profile_x(0.0, Vector2::RIGHT));
+    let input = terminal_input(symmetric_profile_x(0.0, RoadVec2::X));
     let mouth = &input.mouths[0];
     let cap_bands_by_mouth =
         terminal_cap_bands_by_mouth(&input).expect("symmetric terminal cap is valid");
@@ -232,7 +232,7 @@ fn terminal_cap_adapter_emits_side_corner_closures_from_source_rails() {
 
 #[test]
 fn terminal_cap_adapter_rejects_asymmetric_paired_band_widths() {
-    let input = terminal_input(asymmetric_sidewalk_profile_x(0.0, Vector2::RIGHT));
+    let input = terminal_input(asymmetric_sidewalk_profile_x(0.0, RoadVec2::X));
     let error = terminal_cap_bands_by_mouth(&input)
         .expect_err("paired terminal caps must not silently truncate asymmetric widths");
 
@@ -246,7 +246,7 @@ fn terminal_cap_adapter_rejects_asymmetric_paired_band_widths() {
 
 #[test]
 fn car_only_terminal_emits_no_non_road_cap() {
-    let input = terminal_input(car_only_profile_x(0.0, Vector2::RIGHT));
+    let input = terminal_input(car_only_profile_x(0.0, RoadVec2::X));
     let cap_bands_by_mouth =
         terminal_cap_bands_by_mouth(&input).expect("car-only terminal has no cap bands");
 

@@ -190,14 +190,14 @@ fn source_band_height_field_uses_rail_materialized_outer_chord() {
         endpoint_profile: profile(0.0, 2.0),
         boundary_paths_world: Vec::new(),
         band_start_paths_world: vec![vec![
-            Vector3::new(10.0, 4.0, -4.0),
-            Vector3::new(5.0, 3.0, -4.0),
-            Vector3::new(0.0, 2.0, -4.0),
+            RoadVec3::new(10.0, 4.0, -4.0),
+            RoadVec3::new(5.0, 3.0, -4.0),
+            RoadVec3::new(0.0, 2.0, -4.0),
         ]],
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: true,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };

@@ -87,6 +87,8 @@ fn heighted_triangle_edge_for_indices(
 ) -> (NodeValidationEdgeKey, HeightedTriangleEdge) {
     let start = region.vertices[edge[0]].point_world;
     let end = region.vertices[edge[1]].point_world;
+    let start_source_provenance = region.vertices[edge[0]].grade_authority.source_provenance;
+    let end_source_provenance = region.vertices[edge[1]].grade_authority.source_provenance;
     let start_key = point_key_from_world(start);
     let end_key = point_key_from_world(end);
     let start_height_mm = quantize_m(start.y);
@@ -102,6 +104,8 @@ fn heighted_triangle_edge_for_indices(
                 region_index,
                 start_height_mm,
                 end_height_mm,
+                start_source_provenance,
+                end_source_provenance,
             },
         )
     } else {
@@ -115,6 +119,8 @@ fn heighted_triangle_edge_for_indices(
                 region_index,
                 start_height_mm: end_height_mm,
                 end_height_mm: start_height_mm,
+                start_source_provenance: end_source_provenance,
+                end_source_provenance: start_source_provenance,
             },
         )
     }

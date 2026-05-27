@@ -133,6 +133,7 @@ impl NodeBandHeightPatch {
         self.contour_edge_support_heights
             .get(&height_source_point_key(point_xz))
             .copied()
+            .or_else(|| self.height_on_contour_edge_at(point_xz))
     }
 }
 

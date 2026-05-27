@@ -140,10 +140,10 @@ impl RoadSurfaceSystem {
         lower_end_key: ArrangementBoundaryPointKey,
         raised_start_key: ArrangementBoundaryPointKey,
         raised_end_key: ArrangementBoundaryPointKey,
-        lower_start: Vector3,
-        lower_end: Vector3,
-        raised_start: Vector3,
-        raised_end: Vector3,
+        lower_start: RoadVec3,
+        lower_end: RoadVec3,
+        raised_start: RoadVec3,
+        raised_end: RoadVec3,
     ) -> Option<(
         (
             (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),

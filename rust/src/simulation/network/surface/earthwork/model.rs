@@ -3,12 +3,12 @@
 use super::super::{
     NodeFootprintBoundarySegmentSource, RoadSurfaceBandKind, RoadSurfaceSpanBandOwner,
     RoadSurfaceSpanRegionRole, RoadSurfaceVisualNodePieceKind,
+    backend::RoadVec3,
     band_semantics::band_kind_sort_key,
     edge::edge_class_sort_key,
     keys::{SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use crate::simulation::network::types::EdgeClass;
-use godot::prelude::Vector3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceEarthworkFaceKind {
@@ -158,8 +158,8 @@ impl RoadSurfaceEarthworkFaceSource {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RoadSurfaceEarthworkBoundarySegment {
-    pub(crate) inner_start: Vector3,
-    pub(crate) inner_end: Vector3,
+    pub(crate) inner_start: RoadVec3,
+    pub(crate) inner_end: RoadVec3,
     pub(crate) source: RoadSurfaceEarthworkFaceSource,
 }
 
@@ -167,8 +167,8 @@ pub(crate) struct RoadSurfaceEarthworkBoundarySegment {
 pub(crate) struct RoadSurfaceEarthworkRenderFace {
     pub(crate) kind: RoadSurfaceEarthworkFaceKind,
     pub(crate) source: RoadSurfaceEarthworkFaceSource,
-    pub(crate) inner_start: Vector3,
-    pub(crate) inner_end: Vector3,
+    pub(crate) inner_start: RoadVec3,
+    pub(crate) inner_end: RoadVec3,
     pub(crate) polygon: super::super::RoadSurfaceVisualPolygon,
 }
 
@@ -193,8 +193,8 @@ pub(super) struct IndexedEarthworkBoundarySegment {
 }
 
 impl EarthworkBoundaryPointKey {
-    pub(super) fn from_point(point: Vector3) -> Self {
-        Self::from_surface_key(SurfaceXzKey::from_godot_world_xz(point))
+    pub(super) fn from_point(point: RoadVec3) -> Self {
+        Self::from_surface_key(SurfaceXzKey::from_world_xz(point))
     }
 
     fn from_surface_key(key: SurfaceXzKey) -> Self {

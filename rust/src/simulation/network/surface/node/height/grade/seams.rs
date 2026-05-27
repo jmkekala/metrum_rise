@@ -24,6 +24,7 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
                     height_field_id: vertex.height_field_id,
                     height_m: vertex.height_m,
                     height_authority: vertex.height_authority,
+                    source_provenance: vertex.source_provenance,
                     has_explicit_shared_material_seam: false,
                 };
                 push_unique_same_material_candidate(&mut candidates_by_key, key, candidate);
@@ -104,6 +105,7 @@ pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
                     height_field_id: vertex.height_field_id,
                     height_m: vertex.height_m,
                     height_authority: vertex.height_authority,
+                    source_provenance: vertex.source_provenance,
                     has_explicit_shared_material_seam: true,
                 };
                 push_unique_same_material_candidate(&mut candidates_by_key, key, candidate);

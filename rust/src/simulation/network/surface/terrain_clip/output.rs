@@ -2,11 +2,10 @@
 
 use super::super::{
     NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, RoadSurfaceSystem,
-    earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceHeightMmKey,
+    backend::RoadVec3, earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceHeightMmKey,
 };
 use super::heights::interval_height_at;
 use super::model::*;
-use godot::prelude::Vector3;
 use std::collections::BTreeMap;
 
 enum TerrainClipOutputSourceSelection {
@@ -18,7 +17,7 @@ enum TerrainClipOutputSourceSelection {
 impl RoadSurfaceSystem {
     pub(super) fn append_terrain_clip_sourced_segment_points(
         out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
-        mut points: Vec<Vector3>,
+        mut points: Vec<RoadVec3>,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<(), TerrainClipOutputSourceError> {
         Self::dedup_terrain_clip_top_envelope_points(&mut points);
@@ -46,8 +45,8 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_output_source_for_points(
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<TerrainClipSourceEdge, TerrainClipOutputSourceError> {
         if let Some(source) = Self::terrain_clip_output_source_result(
@@ -76,8 +75,8 @@ impl RoadSurfaceSystem {
 
     fn terrain_clip_output_source_result(
         selection: TerrainClipOutputSourceSelection,
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     ) -> Result<Option<TerrainClipSourceEdge>, TerrainClipOutputSourceError> {
         match selection {
             TerrainClipOutputSourceSelection::Missing => Ok(None),
@@ -146,12 +145,12 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_output_source_for_segment(
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> TerrainClipOutputSourceSelection {
-        let start_overlay = [f64::from(start.x), f64::from(start.z)];
-        let end_overlay = [f64::from(end.x), f64::from(end.z)];
+        let start_overlay = [start.x, start.z];
+        let end_overlay = [end.x, end.z];
         let mut candidates = Vec::new();
         for &source_edge in source_edges {
             let Some(interval) = Self::terrain_clip_source_interval_on_segment(
@@ -174,8 +173,8 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_output_source_for_endpoint_segment(
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> TerrainClipOutputSourceSelection {
         let start_key = Self::terrain_clip_world_key(start);
@@ -201,8 +200,8 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_output_dust_connector_source(
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> TerrainClipOutputSourceSelection {
         let mut candidates = Self::terrain_clip_source_edges_at_world_xz_point(start, source_edges);
@@ -219,19 +218,16 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_clip_source_edges_at_world_xz_point(
-        point: Vector3,
+        point: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipSourceEdge> {
-        let overlay_point = [f64::from(point.x), f64::from(point.z)];
+        let overlay_point = [point.x, point.z];
         source_edges
             .iter()
             .copied()
             .filter(|&source_edge| {
-                let source_start = [
-                    f64::from(source_edge.start.x),
-                    f64::from(source_edge.start.z),
-                ];
-                let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+                let source_start = [source_edge.start.x, source_edge.start.z];
+                let source_end = [source_edge.end.x, source_edge.end.z];
                 let Some(_t) =
                     Self::overlay_segment_parameter(overlay_point, source_start, source_end)
                 else {
@@ -245,7 +241,7 @@ impl RoadSurfaceSystem {
     fn unique_terrain_clip_output_source(
         mut candidates: Vec<TerrainClipSourceEdge>,
         context: &'static str,
-        canonical_segment: Option<(Vector3, Vector3)>,
+        canonical_segment: Option<(RoadVec3, RoadVec3)>,
     ) -> TerrainClipOutputSourceSelection {
         if candidates.is_empty() {
             return TerrainClipOutputSourceSelection::Missing;
@@ -299,8 +295,8 @@ impl RoadSurfaceSystem {
 
     fn canonical_same_owner_node_boundary_output_source(
         candidates: &[TerrainClipSourceEdge],
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     ) -> Option<TerrainClipSourceEdge> {
         let first = *candidates.first()?;
         let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
@@ -353,8 +349,8 @@ impl RoadSurfaceSystem {
 
     fn canonical_same_owner_dust_connector_output_source(
         candidates: &[TerrainClipSourceEdge],
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     ) -> Option<TerrainClipSourceEdge> {
         #[derive(Clone, Copy)]
         struct DustConnectorGroup {
@@ -423,25 +419,25 @@ impl RoadSurfaceSystem {
     }
 
     fn canonical_output_boundary_vertex_source(
-        point: Vector3,
+        point: RoadVec3,
     ) -> NodeFootprintBoundaryVertexSource {
         let key = Self::terrain_clip_world_key(point);
         NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
             x_key: key.x_key(),
             z_key: key.z_key(),
-            y_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+            y_mm: SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
         }
     }
 }
 
 pub(super) enum TerrainClipOutputSourceError {
     Missing {
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     },
     Ambiguous {
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         context: String,
     },
 }

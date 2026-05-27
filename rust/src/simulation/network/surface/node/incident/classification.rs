@@ -3,8 +3,8 @@
 use super::*;
 
 impl RoadSurfaceSystem {
-    pub(super) fn normalized_angle_ccw(direction_xz: Vector2) -> f32 {
-        let angle = direction_xz.y.atan2(direction_xz.x);
+    pub(super) fn normalized_angle_ccw(direction_xz: RoadVec2) -> f32 {
+        let angle = direction_xz.y.atan2(direction_xz.x) as f32;
         if angle < 0.0 {
             angle + std::f32::consts::TAU
         } else {
@@ -14,9 +14,9 @@ impl RoadSurfaceSystem {
 
     #[cfg(test)]
     pub(in crate::simulation::network::surface) fn left_normal_xz(
-        direction_xz: Vector2,
-    ) -> Vector2 {
-        Vector2::new(-direction_xz.y, direction_xz.x)
+        direction_xz: RoadVec2,
+    ) -> RoadVec2 {
+        RoadVec2::new(-direction_xz.y, direction_xz.x)
     }
 
     pub(in crate::simulation::network::surface) fn classify_visual_node_kind(
@@ -28,7 +28,8 @@ impl RoadSurfaceSystem {
             2 => {
                 let a = incidents[0];
                 let b = incidents[1];
-                let straight = a.direction_xz.dot(b.direction_xz) <= -PASS_THROUGH_DOT_THRESHOLD;
+                let straight =
+                    a.direction_xz.dot(b.direction_xz) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD);
                 if !straight {
                     return CompiledNodeKind::Bend;
                 }
@@ -73,7 +74,7 @@ impl RoadSurfaceSystem {
         &self,
         edge: &Edge,
         side: IncidentEdgeSide,
-    ) -> Option<Vector2> {
+    ) -> Option<RoadVec2> {
         let points = self.edge_points(edge);
         if points.len() < 2 {
             return None;
@@ -83,17 +84,23 @@ impl RoadSurfaceSystem {
             IncidentEdgeSide::Start => {
                 let endpoint = points[0];
                 points.iter().skip(1).find_map(|point| {
-                    let direction = Vector2::new(point.x - endpoint.x, point.z - endpoint.z);
-                    (direction.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
-                        .then(|| direction.normalized())
+                    let direction = RoadVec2::new(
+                        f64::from(point.x - endpoint.x),
+                        f64::from(point.z - endpoint.z),
+                    );
+                    (direction.length_squared() > f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M))
+                        .then(|| direction.normalize())
                 })
             }
             IncidentEdgeSide::End => {
                 let endpoint = *points.last()?;
                 points.iter().rev().skip(1).find_map(|point| {
-                    let direction = Vector2::new(point.x - endpoint.x, point.z - endpoint.z);
-                    (direction.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
-                        .then(|| direction.normalized())
+                    let direction = RoadVec2::new(
+                        f64::from(point.x - endpoint.x),
+                        f64::from(point.z - endpoint.z),
+                    );
+                    (direction.length_squared() > f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M))
+                        .then(|| direction.normalize())
                 })
             }
         }
@@ -127,7 +134,7 @@ impl RoadSurfaceSystem {
         &self,
         graph: &RegionGraph,
         node_id: u32,
-        mut direction_for: impl FnMut(&Self, usize, &Edge, IncidentEdgeSide) -> Option<Vector2>,
+        mut direction_for: impl FnMut(&Self, usize, &Edge, IncidentEdgeSide) -> Option<RoadVec2>,
     ) -> Vec<IncidentSurfaceEdge> {
         if node_id as usize >= graph.node_adjacency_count() {
             return Vec::new();
@@ -171,7 +178,7 @@ impl RoadSurfaceSystem {
         &self,
         edge_idx: usize,
         side: IncidentEdgeSide,
-    ) -> Option<Vector2> {
+    ) -> Option<RoadVec2> {
         let piece = self.compiled_visual_span_pieces.get(&edge_idx)?;
         match side {
             IncidentEdgeSide::Start => piece

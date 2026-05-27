@@ -79,23 +79,23 @@ fn explicit_band_domain_paths_reject_mismatched_height_carrier_lengths() {
         band_start_paths_world: vec![
             Vec::new(),
             vec![
-                Vector3::new(10.0, 4.1, -2.0),
-                Vector3::new(5.0, 4.2, -2.0),
-                Vector3::new(0.0, 4.1, -2.0),
+                RoadVec3::new(10.0, 4.1, -2.0),
+                RoadVec3::new(5.0, 4.2, -2.0),
+                RoadVec3::new(0.0, 4.1, -2.0),
             ],
         ],
         band_end_paths_world: vec![
             Vec::new(),
             vec![
-                Vector3::new(10.0, 4.2, 0.0),
-                Vector3::new(7.5, 4.2, 0.0),
-                Vector3::new(2.5, 4.2, 0.0),
-                Vector3::new(0.0, 4.2, 0.0),
+                RoadVec3::new(10.0, 4.2, 0.0),
+                RoadVec3::new(7.5, 4.2, 0.0),
+                RoadVec3::new(2.5, 4.2, 0.0),
+                RoadVec3::new(0.0, 4.2, 0.0),
             ],
         ],
         uses_explicit_band_domain_paths: true,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };

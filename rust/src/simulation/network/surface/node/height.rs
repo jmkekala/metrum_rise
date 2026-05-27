@@ -7,7 +7,10 @@ use super::backend::{
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzKey};
-use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership, NodeSourceCarrierSegmentId};
+use super::ownership::{
+    NodeBooleanOwnedRegion, NodeBooleanOwnership, NodeCarrierProvenanceOrigin,
+    NodeCarrierProvenanceRecord, NodeOwnedRegionArrangementKey, NodeSourceCarrierSegmentId,
+};
 use super::rails::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
     NodeGeneratedContourPurpose, NodeRailContourSet, NodeRailGenerationError,
@@ -42,7 +45,7 @@ mod tests;
 
 pub(crate) use grade::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 pub(crate) use model::{
-    NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightSolution, NodeHeightedRegion,
-    NodeHeightedVertex,
+    NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey, NodeHeightFieldError,
+    NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex,
 };
 pub(in crate::simulation::network::surface::node) use triangles::constrained_height_triangles_from_vertices;

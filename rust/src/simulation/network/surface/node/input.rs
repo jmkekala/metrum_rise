@@ -1,14 +1,13 @@
 //! Canonical node-arrangement input extracted from solved road-surface profiles.
 
 use super::backend::{
-    RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road, godot_vec3_xz_to_road,
-    quantize_road_vec3_path_xz_to_overlay_grid, quantize_road_vec3_xz_to_overlay_grid,
+    RoadVec2, RoadVec3, quantize_road_vec3_path_xz_to_overlay_grid,
+    quantize_road_vec3_xz_to_overlay_grid, road_vec3_xz,
 };
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
-use godot::prelude::Vector3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeInputProfileKind {
@@ -126,9 +125,9 @@ mod rails;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use godot::prelude::{Vector2, Vector3};
+    use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 
-    fn test_band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+    fn test_band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
         IncidentMouthBand {
             kind,
             start_point_world: start,
@@ -136,13 +135,13 @@ mod tests {
         }
     }
 
-    fn test_profile(x: f32, direction: Vector2) -> IncidentMouthProfile {
+    fn test_profile(x: f64, direction: RoadVec2) -> IncidentMouthProfile {
         let boundary_points_world = vec![
-            Vector3::new(x, 4.0, -4.0),
-            Vector3::new(x, 4.1, -2.0),
-            Vector3::new(x, 4.2, 0.0),
-            Vector3::new(x, 4.3, 2.0),
-            Vector3::new(x, 4.4, 4.0),
+            RoadVec3::new(x, 4.0, -4.0),
+            RoadVec3::new(x, 4.1, -2.0),
+            RoadVec3::new(x, 4.2, 0.0),
+            RoadVec3::new(x, 4.3, 2.0),
+            RoadVec3::new(x, 4.4, 4.0),
         ];
         let bands = vec![
             test_band(
@@ -175,14 +174,14 @@ mod tests {
 
     fn test_mouth() -> OrderedIncidentPieceMouth {
         OrderedIncidentPieceMouth {
-            profile: test_profile(10.0, Vector2::RIGHT),
-            endpoint_profile: test_profile(0.0, Vector2::RIGHT),
+            profile: test_profile(10.0, RoadVec2::X),
+            endpoint_profile: test_profile(0.0, RoadVec2::X),
             boundary_paths_world: Vec::new(),
             band_start_paths_world: Vec::new(),
             band_end_paths_world: Vec::new(),
             uses_explicit_band_domain_paths: false,
             direction_angle_ccw: 0.0,
-            direction_xz: Vector2::RIGHT,
+            direction_xz: RoadVec2::X,
             edge_idx: 7,
             side: IncidentEdgeSide::Start,
         }

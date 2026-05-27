@@ -2,7 +2,6 @@
 
 use super::splits::push_sourced_node_earthwork_boundary_segments;
 use super::*;
-use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::simulation::network::surface) fn node_earthwork_boundary_segments_from_footprint_loops(
@@ -133,7 +132,7 @@ fn canonicalize_boundary_point_loop(
     points
 }
 
-fn boundary_point_loop_world_points(points: &[NodeFootprintBoundaryPoint]) -> Vec<Vector3> {
+fn boundary_point_loop_world_points(points: &[NodeFootprintBoundaryPoint]) -> Vec<RoadVec3> {
     points.iter().map(|point| point.point_world()).collect()
 }
 

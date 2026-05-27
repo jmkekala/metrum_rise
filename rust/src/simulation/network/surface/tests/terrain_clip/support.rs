@@ -3,8 +3,8 @@
 use super::*;
 
 pub(super) fn terrain_clip_source_edge_for_node_test(
-    start: Vector3,
-    end: Vector3,
+    start: backend::RoadVec3,
+    end: backend::RoadVec3,
     node_id: u32,
 ) -> RoadSurfaceTerrainClipSourceEdge {
     terrain_clip_source_edge_for_node_kind_test(
@@ -15,8 +15,8 @@ pub(super) fn terrain_clip_source_edge_for_node_test(
     )
 }
 pub(super) fn terrain_clip_source_edge_for_node_kind_test(
-    start: Vector3,
-    end: Vector3,
+    start: backend::RoadVec3,
+    end: backend::RoadVec3,
     node_id: u32,
     edge_kind: RoadSurfaceTerrainClipEdgeKind,
 ) -> RoadSurfaceTerrainClipSourceEdge {
@@ -34,7 +34,7 @@ pub(super) fn terrain_clip_source_edge_for_node_kind_test(
     }
 }
 pub(super) fn terrain_clip_loop_for_node_test(
-    points: &[Vector3],
+    points: &[backend::RoadVec3],
     node_id: u32,
 ) -> RoadSurfaceTerrainClipLoop {
     terrain_clip_loop_for_node_kind_test(
@@ -44,7 +44,7 @@ pub(super) fn terrain_clip_loop_for_node_test(
     )
 }
 pub(super) fn terrain_clip_loop_for_node_kind_test(
-    points: &[Vector3],
+    points: &[backend::RoadVec3],
     node_id: u32,
     edge_kind: RoadSurfaceTerrainClipEdgeKind,
 ) -> RoadSurfaceTerrainClipLoop {

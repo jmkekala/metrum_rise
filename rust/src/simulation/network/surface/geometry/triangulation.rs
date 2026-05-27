@@ -4,8 +4,8 @@ use super::*;
 
 impl RoadSurfaceSystem {
     pub(super) fn triangulate_fan_polygon_xz(
-        points_world: &[Vector3],
-    ) -> Option<Vec<[Vector3; 3]>> {
+        points_world: &[RoadVec3],
+    ) -> Option<Vec<[RoadVec3; 3]>> {
         if points_world.len() < 3 {
             return None;
         }
@@ -21,8 +21,8 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn triangulate_constrained_polygon_xz(
-        points_world: &[Vector3],
-    ) -> Option<Vec<[Vector3; 3]>> {
+        points_world: &[RoadVec3],
+    ) -> Option<Vec<[RoadVec3; 3]>> {
         if points_world.len() < 3 {
             return None;
         }
@@ -33,7 +33,7 @@ impl RoadSurfaceSystem {
 
         let vertices = points_world
             .iter()
-            .map(|point| Point2::new(f64::from(point.x), f64::from(point.z)))
+            .map(|point| Point2::new(point.x, point.z))
             .collect::<Vec<_>>();
         let constraints = (0..points_world.len())
             .map(|index| [index, (index + 1) % points_world.len()])
@@ -55,7 +55,7 @@ impl RoadSurfaceSystem {
                 points_world[b.fix().index()],
                 points_world[c.fix().index()],
             ];
-            let centroid = Vector2::new(
+            let centroid = RoadVec2::new(
                 (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
                 (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
             );

@@ -21,10 +21,10 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let mut footprint_min_x = f32::MAX;
-    let mut footprint_max_x = f32::MIN;
-    let mut footprint_min_z = f32::MAX;
-    let mut footprint_max_z = f32::MIN;
+    let mut footprint_min_x = f64::MAX;
+    let mut footprint_max_x = f64::MIN;
+    let mut footprint_min_z = f64::MAX;
+    let mut footprint_max_z = f64::MIN;
     for point in surface
         .compiled_visual_span_pieces()
         .values()
@@ -54,10 +54,10 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
         let patch_max_x = patch.world_origin_x + patch.world_size_x;
         let patch_max_z = patch.world_origin_z + patch.world_size_z;
         assert!(
-            patch.world_origin_x <= footprint_max_x
-                && patch_max_x >= footprint_min_x
-                && patch.world_origin_z <= footprint_max_z
-                && patch_max_z >= footprint_min_z,
+            f64::from(patch.world_origin_x) <= footprint_max_x
+                && f64::from(patch_max_x) >= footprint_min_x
+                && f64::from(patch.world_origin_z) <= footprint_max_z
+                && f64::from(patch_max_z) >= footprint_min_z,
             "road-locked patch ({patch_x}, {patch_z}) must overlap the road footprint, not only the earthwork envelope"
         );
     }

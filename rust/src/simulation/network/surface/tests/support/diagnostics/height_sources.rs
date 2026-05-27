@@ -204,13 +204,40 @@ pub(in crate::simulation::network::surface::tests) fn height_solution_vertices_a
                 })
                 .collect::<Vec<_>>();
             matches.push(format!(
-                "region={} kind={:?} owner={:?} field={:?} height={:.3} seams={:?}",
+                "region={} kind={:?} owner={:?} field={:?} height={:.3} authority={:?} seams={:?}",
                 region_index,
                 region.kind,
                 region.owner,
                 vertex.height_field_id,
                 vertex.height_m,
+                vertex.grade_authority,
                 touching_seams
+            ));
+        }
+    }
+    matches
+}
+
+pub(in crate::simulation::network::surface::tests) fn height_solution_vertices_at_surface_key(
+    heights: &super::height::NodeHeightSolution,
+    key: SurfaceXzKey,
+) -> Vec<String> {
+    let mut matches = Vec::new();
+    for (region_index, region) in heights.regions.iter().enumerate() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            if SurfaceXzKey::from_road_xz(vertex.point_xz) != key {
+                continue;
+            }
+            let arrangement_key = NodeArrangementKey::from_point(vertex.point_xz);
+            matches.push(format!(
+                "region={} kind={:?} owner={:?} field={:?} height={:.3} arrangement_key={:?} authority={:?}",
+                region_index,
+                region.kind,
+                region.owner,
+                vertex.height_field_id,
+                vertex.height_m,
+                arrangement_key,
+                vertex.grade_authority,
             ));
         }
     }

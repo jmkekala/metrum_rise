@@ -1,6 +1,7 @@
 //! Node-piece ownership and visible-top assertions for road-surface tests.
 
 use super::*;
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 
 mod compiled;
 mod coverage;

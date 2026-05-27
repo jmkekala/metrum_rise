@@ -1,15 +1,15 @@
 //! Terrain-clip segment and source-chain recovery.
 
+use super::super::backend::RoadVec3;
 use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceXzKey};
 use super::geometry::interpolate_height_f64;
 use super::model::*;
-use godot::prelude::Vector3;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) enum TerrainClipSourceChainRecovery {
     Missing,
     Ambiguous(String),
-    Covered(Vec<Vector3>),
+    Covered(Vec<RoadVec3>),
 }
 
 impl RoadSurfaceSystem {
@@ -64,7 +64,7 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|edge| edge.source_index)
             .collect::<BTreeSet<_>>();
-        let mut candidates = BTreeMap::<Vec<(i64, i64, i64)>, Vec<Vector3>>::new();
+        let mut candidates = BTreeMap::<Vec<(i64, i64, i64)>, Vec<RoadVec3>>::new();
         for source_index in source_indices.iter().copied() {
             let mut source_chain_edges = source_edges
                 .iter()
@@ -128,7 +128,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn terrain_clip_source_chain_point_identity(points: &[Vector3]) -> Vec<(i64, i64, i64)> {
+    fn terrain_clip_source_chain_point_identity(points: &[RoadVec3]) -> Vec<(i64, i64, i64)> {
         points
             .iter()
             .map(|point| {
@@ -194,11 +194,11 @@ impl RoadSurfaceSystem {
     }
 
     fn apply_terrain_clip_source_chain_top_envelope_heights(
-        points: &mut [Vector3],
+        points: &mut [RoadVec3],
         source_edges: &[TerrainClipSourceEdge],
     ) {
         for point in points {
-            let overlay_point = [f64::from(point.x), f64::from(point.z)];
+            let overlay_point = [point.x, point.z];
             if let Some(height) =
                 Self::terrain_clip_source_chain_top_envelope_height_from_source_edges(
                     overlay_point,
@@ -214,14 +214,11 @@ impl RoadSurfaceSystem {
     fn terrain_clip_source_chain_top_envelope_height_from_source_edges(
         point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<f32> {
+    ) -> Option<f64> {
         let mut top_height = None;
         for &source_edge in source_edges {
-            let source_start = [
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ];
-            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+            let source_start = [source_edge.start.x, source_edge.start.z];
+            let source_end = [source_edge.end.x, source_edge.end.z];
             let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
                 continue;
             };

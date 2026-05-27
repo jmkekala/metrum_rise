@@ -34,8 +34,8 @@ pub(super) fn boundary_rails(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInput
         .zip(&mouth.endpoint_profile.boundary_points_world)
         .enumerate()
         .map(|(boundary_index, (mouth_point, endpoint_point))| {
-            let mouth_world = godot_vec3_to_road(*mouth_point);
-            let endpoint_world = godot_vec3_to_road(*endpoint_point);
+            let mouth_world = *mouth_point;
+            let endpoint_world = *endpoint_point;
             NodeInputBoundaryRail {
                 boundary_index,
                 role: boundary_rail_role(boundary_index, &mouth.profile.bands),
@@ -107,15 +107,12 @@ pub(super) fn band_intervals(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInput
 }
 
 fn input_path_or_endpoints(
-    path_world: Option<&[Vector3]>,
+    path_world: Option<&[RoadVec3]>,
     mouth_world: RoadVec3,
     endpoint_world: RoadVec3,
 ) -> Vec<RoadVec3> {
     if let Some(path_world) = path_world.filter(|path| path.len() >= 2) {
-        let mut points = path_world
-            .iter()
-            .map(|point| godot_vec3_to_road(*point))
-            .collect::<Vec<_>>();
+        let mut points = path_world.to_vec();
         if let Some(first) = points.first_mut() {
             *first = mouth_world;
         }
@@ -129,11 +126,14 @@ fn input_path_or_endpoints(
 }
 
 fn band_endpoint_with_boundary_xz(
-    band_point_world: Vector3,
-    boundary_point_world: Vector3,
+    band_point_world: RoadVec3,
+    boundary_point_world: RoadVec3,
 ) -> RoadVec3 {
-    let boundary = godot_vec3_to_road(boundary_point_world);
-    RoadVec3::new(boundary.x, f64::from(band_point_world.y), boundary.z)
+    RoadVec3::new(
+        boundary_point_world.x,
+        band_point_world.y,
+        boundary_point_world.z,
+    )
 }
 
 pub(super) fn replace_profile_paths_with_chords(

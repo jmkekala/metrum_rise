@@ -3,9 +3,10 @@
 use super::*;
 use crate::simulation::network::surface::{
     IncidentMouthBand, NodeOwnedRegion, RoadSurfaceVisualNodePieceKind,
+    backend::{RoadVec2, RoadVec3},
 };
 
-fn polygon(points_world: Vec<Vector3>) -> RoadSurfaceVisualPolygon {
+fn polygon(points_world: Vec<RoadVec3>) -> RoadSurfaceVisualPolygon {
     RoadSurfaceVisualPolygon {
         points_world,
         triangles_world: Vec::new(),
@@ -36,39 +37,39 @@ fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
 
 #[test]
 fn mouth_seam_debug_matches_vertical_step_anchors_by_material() {
-    let curb_anchor = Vector3::new(0.0, 0.12, 0.0);
-    let road_anchor = Vector3::new(0.0, 0.0, 0.0);
+    let curb_anchor = RoadVec3::new(0.0, 0.12, 0.0);
+    let road_anchor = RoadVec3::new(0.0, 0.0, 0.0);
     let mouth = IncidentMouthProfile {
-        inward_direction_xz: Vector2::RIGHT,
+        inward_direction_xz: RoadVec2::X,
         boundary_points_world: vec![
-            Vector3::new(-1.0, 0.12, 0.0),
+            RoadVec3::new(-1.0, 0.12, 0.0),
             curb_anchor,
-            Vector3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
         ],
         bands: vec![
             IncidentMouthBand {
                 kind: RoadSurfaceBandKind::CurbOrShoulder,
-                start_point_world: Vector3::new(-1.0, 0.12, 0.0),
+                start_point_world: RoadVec3::new(-1.0, 0.12, 0.0),
                 end_point_world: curb_anchor,
             },
             IncidentMouthBand {
                 kind: RoadSurfaceBandKind::Carriageway,
                 start_point_world: road_anchor,
-                end_point_world: Vector3::new(1.0, 0.0, 0.0),
+                end_point_world: RoadVec3::new(1.0, 0.0, 0.0),
             },
         ],
     };
 
     let mut piece = empty_node_piece();
     piece.road_surface_polygons.push(polygon(vec![
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
-        Vector3::new(0.0, 0.0, -1.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, -1.0),
     ]));
     piece.curb_surface_polygons.push(polygon(vec![
-        Vector3::new(-1.0, 0.12, -1.0),
-        Vector3::new(1.0, 0.12, 1.0),
-        Vector3::new(-1.0, 0.12, 1.0),
+        RoadVec3::new(-1.0, 0.12, -1.0),
+        RoadVec3::new(1.0, 0.12, 1.0),
+        RoadVec3::new(-1.0, 0.12, 1.0),
     ]));
 
     let material_blind = RoadSurfaceSystem::closest_debug_top_vertex(
@@ -118,27 +119,27 @@ fn raised_step_face_debug_reports_exact_top_edge_closure() {
         kind: RoadSurfaceBandKind::Carriageway,
         owner_index: 7,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.0, -1.0),
-            Vector3::new(1.0, 0.0, -1.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(-1.0, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, -1.0),
+            RoadVec3::new(1.0, 0.0, -1.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, 0.0),
         ]),
     });
     piece.owned_regions.push(NodeOwnedRegion {
         kind: RoadSurfaceBandKind::CurbOrShoulder,
         owner_index: 11,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.12, 0.0),
-            Vector3::new(1.0, 0.12, 0.0),
-            Vector3::new(1.0, 0.12, 1.0),
-            Vector3::new(-1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 0.0),
+            RoadVec3::new(1.0, 0.12, 0.0),
+            RoadVec3::new(1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 1.0),
         ]),
     });
     piece.raised_step_face_polygons.push(polygon(vec![
-        Vector3::new(-1.0, 0.12, 0.0),
-        Vector3::new(-1.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.12, 0.0),
     ]));
 
     let mut dump = String::new();
@@ -168,27 +169,27 @@ fn raised_step_face_debug_reports_generic_curb_sidewalk_steps() {
         kind: RoadSurfaceBandKind::CurbOrShoulder,
         owner_index: 7,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.12, -1.0),
-            Vector3::new(1.0, 0.12, -1.0),
-            Vector3::new(1.0, 0.12, 0.0),
-            Vector3::new(-1.0, 0.12, 0.0),
+            RoadVec3::new(-1.0, 0.12, -1.0),
+            RoadVec3::new(1.0, 0.12, -1.0),
+            RoadVec3::new(1.0, 0.12, 0.0),
+            RoadVec3::new(-1.0, 0.12, 0.0),
         ]),
     });
     piece.owned_regions.push(NodeOwnedRegion {
         kind: RoadSurfaceBandKind::Sidewalk,
         owner_index: 11,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.18, 0.0),
-            Vector3::new(1.0, 0.18, 0.0),
-            Vector3::new(1.0, 0.18, 1.0),
-            Vector3::new(-1.0, 0.18, 1.0),
+            RoadVec3::new(-1.0, 0.18, 0.0),
+            RoadVec3::new(1.0, 0.18, 0.0),
+            RoadVec3::new(1.0, 0.18, 1.0),
+            RoadVec3::new(-1.0, 0.18, 1.0),
         ]),
     });
     piece.raised_step_face_polygons.push(polygon(vec![
-        Vector3::new(-1.0, 0.18, 0.0),
-        Vector3::new(-1.0, 0.12, 0.0),
-        Vector3::new(1.0, 0.12, 0.0),
-        Vector3::new(1.0, 0.18, 0.0),
+        RoadVec3::new(-1.0, 0.18, 0.0),
+        RoadVec3::new(-1.0, 0.12, 0.0),
+        RoadVec3::new(1.0, 0.12, 0.0),
+        RoadVec3::new(1.0, 0.18, 0.0),
     ]));
     piece
         .raised_step_face_sources
@@ -227,27 +228,27 @@ fn raised_step_face_debug_matches_canonical_step_by_source_identity() {
         kind: RoadSurfaceBandKind::Carriageway,
         owner_index: 7,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.0, -1.0),
-            Vector3::new(rendered_end_x, 0.0, -1.0),
-            Vector3::new(rendered_end_x, 0.0, 0.0),
-            Vector3::new(-1.0, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, -1.0),
+            RoadVec3::new(rendered_end_x, 0.0, -1.0),
+            RoadVec3::new(rendered_end_x, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, 0.0),
         ]),
     });
     piece.owned_regions.push(NodeOwnedRegion {
         kind: RoadSurfaceBandKind::CurbOrShoulder,
         owner_index: 11,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.12, 0.0),
-            Vector3::new(rendered_end_x, 0.12, 0.0),
-            Vector3::new(rendered_end_x, 0.12, 1.0),
-            Vector3::new(-1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 0.0),
+            RoadVec3::new(rendered_end_x, 0.12, 0.0),
+            RoadVec3::new(rendered_end_x, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 1.0),
         ]),
     });
     piece.raised_step_face_polygons.push(polygon(vec![
-        Vector3::new(-1.0, 0.12, 0.0),
-        Vector3::new(-1.0, 0.0, 0.0),
-        Vector3::new(rendered_end_x, 0.0, 0.0),
-        Vector3::new(rendered_end_x, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.0, 0.0),
+        RoadVec3::new(rendered_end_x, 0.0, 0.0),
+        RoadVec3::new(rendered_end_x, 0.12, 0.0),
     ]));
     piece
         .raised_step_face_sources
@@ -292,27 +293,27 @@ fn raised_step_face_debug_matches_canonical_step_by_original_source_index() {
         kind: RoadSurfaceBandKind::Carriageway,
         owner_index: 7,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.0, -1.0),
-            Vector3::new(1.0, 0.0, -1.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(-1.0, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, -1.0),
+            RoadVec3::new(1.0, 0.0, -1.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(-1.0, 0.0, 0.0),
         ]),
     });
     piece.owned_regions.push(NodeOwnedRegion {
         kind: RoadSurfaceBandKind::CurbOrShoulder,
         owner_index: 11,
         polygon: polygon(vec![
-            Vector3::new(-1.0, 0.12, 0.0),
-            Vector3::new(1.0, 0.12, 0.0),
-            Vector3::new(1.0, 0.12, 1.0),
-            Vector3::new(-1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 0.0),
+            RoadVec3::new(1.0, 0.12, 0.0),
+            RoadVec3::new(1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 1.0),
         ]),
     });
     piece.raised_step_face_polygons.push(polygon(vec![
-        Vector3::new(-1.0, 0.12, 0.0),
-        Vector3::new(-1.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.12, 0.0),
+        RoadVec3::new(-1.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.12, 0.0),
     ]));
     piece
         .raised_step_face_sources

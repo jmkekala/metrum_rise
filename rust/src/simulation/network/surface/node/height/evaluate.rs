@@ -5,6 +5,8 @@ use super::model::*;
 use super::*;
 use std::collections::BTreeSet;
 
+const SOURCE_ENDPOINT_DUST_KEYS: i64 = 2;
+
 pub(super) fn owner_scoped_outside_height_error(
     error: NodeHeightFieldError,
     owner: NodeBandOwner,
@@ -40,6 +42,7 @@ impl NodeResolvedHeightAuthorityMap {
         ownership: &NodeBooleanOwnership,
         fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
     ) -> Result<Self, NodeHeightFieldError> {
+        let provenance_by_key = height_carrier_provenance_by_key(ownership);
         let mut map = Self {
             heights_by_key: BTreeMap::new(),
             raw_heights_by_key: BTreeMap::new(),
@@ -66,6 +69,14 @@ impl NodeResolvedHeightAuthorityMap {
                     point_xz,
                     height,
                     region.kind,
+                    provenance_by_key
+                        .get(&resolved_height_authority_key(
+                            region.owner,
+                            field.id,
+                            region.claim_priority,
+                            point_xz,
+                        ))
+                        .copied(),
                 )?;
             }
         }
@@ -80,14 +91,10 @@ impl NodeResolvedHeightAuthorityMap {
         point_xz: RoadVec2,
         height: NodeEvaluatedHeight,
         kind: RoadSurfaceBandKind,
+        source_provenance: Option<NodeHeightCarrierProvenanceKey>,
     ) -> Result<(), NodeHeightFieldError> {
-        let point = NodeHeightPointKey::from_point(point_xz);
-        let key = NodeResolvedHeightAuthorityKey {
-            point,
-            owner,
-            height_field_id,
-            claim_priority,
-        };
+        let key = resolved_height_authority_key(owner, height_field_id, claim_priority, point_xz);
+        let point = key.point;
         let context = NodeHeightVertexContextKey {
             point,
             owner,
@@ -97,6 +104,7 @@ impl NodeResolvedHeightAuthorityMap {
             point_xz,
             height_m: height.height_m,
             authority: height.authority,
+            source_provenance,
         };
         let height_mm = quantize_m(height.height_m);
         if let Some(existing) = self.raw_heights_by_key.get(&key) {
@@ -159,6 +167,52 @@ impl NodeResolvedHeightAuthorityMap {
         };
         self.heights_by_key.get(&key).copied()
     }
+}
+
+fn resolved_height_authority_key(
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    point_xz: RoadVec2,
+) -> NodeResolvedHeightAuthorityKey {
+    NodeResolvedHeightAuthorityKey {
+        point: NodeHeightPointKey::from_point(point_xz),
+        owner,
+        height_field_id,
+        claim_priority,
+    }
+}
+
+fn height_carrier_provenance_by_key(
+    ownership: &NodeBooleanOwnership,
+) -> BTreeMap<NodeResolvedHeightAuthorityKey, NodeHeightCarrierProvenanceKey> {
+    let mut candidates_by_key =
+        BTreeMap::<NodeResolvedHeightAuthorityKey, Vec<NodeHeightCarrierProvenanceKey>>::new();
+    for record in &ownership.carrier_provenance.records {
+        let (x_key, z_key) = record.point.raw_tuple();
+        let key = NodeResolvedHeightAuthorityKey {
+            point: NodeHeightPointKey { x_key, z_key },
+            owner: record.owner,
+            height_field_id: record.height_field_id,
+            claim_priority: record.claim_priority,
+        };
+        candidates_by_key
+            .entry(key)
+            .or_default()
+            .push(NodeHeightCarrierProvenanceKey::from_record(*record));
+    }
+
+    candidates_by_key
+        .into_iter()
+        .filter_map(|(key, mut candidates)| {
+            candidates.sort_unstable();
+            candidates.dedup();
+            let [candidate] = candidates.as_slice() else {
+                return None;
+            };
+            Some((key, *candidate))
+        })
+        .collect()
 }
 
 pub(super) fn pre_height_completeness_points(region: &NodeBooleanOwnedRegion) -> Vec<RoadVec2> {
@@ -293,7 +347,7 @@ pub(super) fn heighted_vertex(
     field: &NodeBandHeightField,
     resolved_authority: Option<&NodeResolvedHeightAuthorityMap>,
 ) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
-    let (point_xz, height_m, height_authority) =
+    let (point_xz, height_m, height_authority, source_provenance) =
         if let Some(resolved_authority) = resolved_authority {
             let Some(authority) = resolved_authority.height_for_vertex(
                 region.owner,
@@ -319,17 +373,19 @@ pub(super) fn heighted_vertex(
                 authority.point_xz,
                 authority.height_m,
                 Some(authority.authority),
+                authority.source_provenance,
             )
         } else {
             let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-            (point_xz, field.evaluate_height(point_xz)?, None)
+            (point_xz, field.evaluate_height(point_xz)?, None, None)
         };
     Ok(NodeHeightedVertex {
         point_xz,
         height_m,
         height_field_id: field.id,
         height_authority,
-        grade_authority: Some(NodeGradeVertexAuthority::new(
+        source_provenance,
+        grade_authority: Some(NodeGradeVertexAuthority::new_with_source_provenance(
             point_xz,
             height_m,
             region.owner,
@@ -337,6 +393,7 @@ pub(super) fn heighted_vertex(
             NodeGradeCarrierDecision::SourceCarrier {
                 authority: height_authority,
             },
+            source_provenance,
         )),
     })
 }
@@ -349,7 +406,8 @@ fn source_authorized_contour_points(
         return contour.clone();
     }
     let source_keys = material_transition_constraint_point_keys(region);
-    let protected_original_keys = original_contour_vertex_keys(contour);
+    let contour = canonicalize_contour_source_endpoint_dust(contour, &source_keys);
+    let protected_original_keys = original_contour_vertex_keys(&contour);
     let mut output = Vec::with_capacity(contour.len());
     for index in 0..contour.len() {
         let start = contour[index];
@@ -360,6 +418,39 @@ fn source_authorized_contour_points(
         ));
     }
     remove_subbudget_non_source_contour_points(output, &source_keys, &protected_original_keys)
+}
+
+fn canonicalize_contour_source_endpoint_dust(
+    contour: &NodeOverlayContour,
+    source_keys: &BTreeSet<SurfaceXzKey>,
+) -> NodeOverlayContour {
+    contour
+        .iter()
+        .copied()
+        .map(|point| {
+            let key = SurfaceXzKey::from_overlay_point(point);
+            if source_keys.contains(&key) {
+                return point;
+            }
+            let mut candidates = source_keys
+                .iter()
+                .copied()
+                .filter(|source_key| {
+                    let (source_x, source_z) = source_key.raw_tuple();
+                    let (x, z) = key.raw_tuple();
+                    (source_x - x).abs() <= SOURCE_ENDPOINT_DUST_KEYS
+                        && (source_z - z).abs() <= SOURCE_ENDPOINT_DUST_KEYS
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_unstable();
+            candidates.dedup();
+            let [source_key] = candidates.as_slice() else {
+                return point;
+            };
+            let point = source_key.to_road_xz();
+            [point.x, point.y]
+        })
+        .collect()
 }
 
 fn material_transition_constraint_point_keys(
@@ -543,6 +634,7 @@ mod tests {
                 },
             },
             RoadSurfaceBandKind::Sidewalk,
+            None,
         )
         .expect("mouth-band authority inserts");
         map.insert(
@@ -558,6 +650,7 @@ mod tests {
                 },
             },
             RoadSurfaceBandKind::Sidewalk,
+            None,
         )
         .expect("side-join authority supersedes shared source vertex");
 

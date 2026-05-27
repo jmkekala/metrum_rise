@@ -5,9 +5,9 @@ use super::*;
 #[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     let polygon = RoadSurfaceSystem::make_visual_polygon(vec![
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(0.15, 0.0, 0.0),
-        Vector3::new(0.0, 0.0, 0.02),
+        backend::RoadVec3::new(0.0, 0.0, 0.0),
+        backend::RoadVec3::new(0.15, 0.0, 0.0),
+        backend::RoadVec3::new(0.0, 0.0, 0.02),
     ])
     .expect("centimetre-scale curb closure polygons must survive the visual polygon builder");
 
@@ -137,14 +137,14 @@ fn standard_road_footprint_uses_stitched_mesh_instead_of_visual_terrain_stamp() 
         .unwrap();
     for lateral_offset in [-4.0_f32, 0.0, 4.0] {
         let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
-        let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
-        let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
-        let source_height =
-            terrain.sample_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
-        let visual_height =
-            terrain.sample_visual_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
+        let sample_x = section.center_xz.x + section.lateral_xz.x * f64::from(lateral_offset);
+        let sample_z = section.center_xz.y + section.lateral_xz.y * f64::from(lateral_offset);
+        let source_height = terrain.sample_height_world(sample_x as f32, sample_z as f32)
+            * crate::config::HEIGHT_SCALE;
+        let visual_height = terrain.sample_visual_height_world(sample_x as f32, sample_z as f32)
+            * crate::config::HEIGHT_SCALE;
         let support_height = surface
-            .sample_paved_support_height(&graph, &terrain, sample_x, sample_z)
+            .sample_paved_support_height(&graph, &terrain, sample_x as f32, sample_z as f32)
             .expect("standard paved footprint should expose a solved support surface");
         assert!(
             (visual_height - source_height).abs() <= 0.05,

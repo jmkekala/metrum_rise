@@ -8,7 +8,8 @@ use super::super::backend::{RoadVec2, quantize_road_vec2_to_overlay_grid};
 use super::super::keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey};
 use super::super::segments::key_lies_on_segment;
 use super::model::{
-    NodeHeightAuthoritySource, NodeHeightFieldError, NodeHeightedRegion, NodeHeightedVertex,
+    NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey, NodeHeightFieldError,
+    NodeHeightedRegion, NodeHeightedVertex,
 };
 use std::collections::BTreeMap;
 
@@ -172,6 +173,7 @@ mod tests {
                 height_m,
                 height_field_id,
                 height_authority: authority,
+                source_provenance: None,
                 grade_authority: Some(NodeGradeVertexAuthority::new(
                     RoadVec2::new(-1.0, 0.0),
                     height_m,

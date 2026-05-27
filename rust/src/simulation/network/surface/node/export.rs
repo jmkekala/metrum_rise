@@ -59,6 +59,7 @@ impl RoadSurfaceSystem {
             arrangement.piece_kind(),
             &owned_regions,
             &node_top_surface_sources,
+            &node_grade_authorities,
             &explicit_vertical_step_segments,
         )?;
         boundary_export_sources.extend_arrangement_exposed_boundary_edges(arrangement)?;

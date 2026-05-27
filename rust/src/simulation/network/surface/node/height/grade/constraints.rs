@@ -44,6 +44,8 @@ impl SameMaterialSharedEdgeCandidate {
         let mut end_height_m = end.height_m;
         let mut start_height_authority = start.height_authority;
         let mut end_height_authority = end.height_authority;
+        let mut start_source_provenance = start.source_provenance;
+        let mut end_source_provenance = end.source_provenance;
         let mut start_has_explicit_shared_material_seam =
             vertex_has_explicit_shared_material_seam(start, seam_constraints);
         let mut end_has_explicit_shared_material_seam =
@@ -56,6 +58,7 @@ impl SameMaterialSharedEdgeCandidate {
             std::mem::swap(&mut start_key, &mut end_key);
             std::mem::swap(&mut start_height_m, &mut end_height_m);
             std::mem::swap(&mut start_height_authority, &mut end_height_authority);
+            std::mem::swap(&mut start_source_provenance, &mut end_source_provenance);
             std::mem::swap(
                 &mut start_has_explicit_shared_material_seam,
                 &mut end_has_explicit_shared_material_seam,
@@ -70,6 +73,8 @@ impl SameMaterialSharedEdgeCandidate {
                 kind,
                 start: start_key,
                 end: end_key,
+                start_source_provenance,
+                end_source_provenance,
             },
             Self {
                 owner,
@@ -77,11 +82,13 @@ impl SameMaterialSharedEdgeCandidate {
                 start: start_key,
                 start_height_m,
                 start_height_authority,
+                start_source_provenance,
                 start_has_explicit_shared_material_seam,
                 start_has_explicit_height_split,
                 end: end_key,
                 end_height_m,
                 end_height_authority,
+                end_source_provenance,
                 end_has_explicit_shared_material_seam,
                 end_has_explicit_height_split,
             },
@@ -92,26 +99,29 @@ impl SameMaterialSharedEdgeCandidate {
         self,
         point: SurfaceXzKey,
     ) -> SameMaterialVertexHeightCandidate {
-        let (height_m, height_authority, has_explicit_shared_material_seam) = if point == self.start
-        {
-            (
-                self.start_height_m,
-                self.start_height_authority,
-                self.start_has_explicit_shared_material_seam,
-            )
-        } else {
-            debug_assert_eq!(point, self.end);
-            (
-                self.end_height_m,
-                self.end_height_authority,
-                self.end_has_explicit_shared_material_seam,
-            )
-        };
+        let (height_m, height_authority, source_provenance, has_explicit_shared_material_seam) =
+            if point == self.start {
+                (
+                    self.start_height_m,
+                    self.start_height_authority,
+                    self.start_source_provenance,
+                    self.start_has_explicit_shared_material_seam,
+                )
+            } else {
+                debug_assert_eq!(point, self.end);
+                (
+                    self.end_height_m,
+                    self.end_height_authority,
+                    self.end_source_provenance,
+                    self.end_has_explicit_shared_material_seam,
+                )
+            };
         SameMaterialVertexHeightCandidate {
             owner: self.owner,
             height_field_id: self.height_field_id,
             height_m,
             height_authority,
+            source_provenance,
             has_explicit_shared_material_seam,
         }
     }
@@ -359,12 +369,13 @@ pub(super) fn set_vertex_grade_height(
 ) {
     let height_m = canonical_height_m(height_m);
     vertex.height_m = height_m;
-    vertex.grade_authority = Some(NodeGradeVertexAuthority::new(
+    vertex.grade_authority = Some(NodeGradeVertexAuthority::new_with_source_provenance(
         vertex.point_xz,
         height_m,
         owner,
         vertex.height_field_id,
         decision,
+        vertex.source_provenance,
     ));
 }
 

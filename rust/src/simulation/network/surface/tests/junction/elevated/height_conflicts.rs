@@ -97,7 +97,7 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let mut max_mouth_abs_y = 0.0_f32;
+    let mut max_mouth_abs_y = 0.0_f64;
     for &edge_idx in graph.node_adjacency(center) {
         let edge = graph.edge(edge_idx);
         let span_piece = surface

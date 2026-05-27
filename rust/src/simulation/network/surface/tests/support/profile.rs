@@ -1,6 +1,7 @@
 //! Span/profile helper routines for road-surface tests.
 
 use super::*;
+use crate::simulation::network::surface::backend::RoadVec2;
 
 pub(in crate::simulation::network::surface::tests) fn span_profile_test_section(
     edge_idx: usize,
@@ -10,10 +11,10 @@ pub(in crate::simulation::network::surface::tests) fn span_profile_test_section(
     RoadSurfaceSection {
         edge_idx,
         s_m,
-        center_xz: Vector2::new(s_m, 0.0),
+        center_xz: RoadVec2::new(f64::from(s_m), 0.0),
         center_height_m: 0.0,
-        tangent_xz: Vector2::new(1.0, 0.0),
-        lateral_xz: Vector2::new(0.0, 1.0),
+        tangent_xz: RoadVec2::new(1.0, 0.0),
+        lateral_xz: RoadVec2::new(0.0, 1.0),
         bands,
     }
 }
@@ -116,8 +117,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_junction_mouth_sect
             (band.lateral_end_m, band.height_end_m),
         ] {
             let expected_height_m = plane.height_at_xz(
-                section.center_xz.x + section.lateral_xz.x * lateral_m,
-                section.center_xz.y + section.lateral_xz.y * lateral_m,
+                (section.center_xz.x + section.lateral_xz.x * f64::from(lateral_m)) as f32,
+                (section.center_xz.y + section.lateral_xz.y * f64::from(lateral_m)) as f32,
             ) + height_offset_m;
             assert!(
                 (height_m - expected_height_m).abs() <= tolerance_m,

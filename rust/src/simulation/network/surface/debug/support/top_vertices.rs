@@ -67,19 +67,19 @@ impl RoadSurfaceSystem {
 
     #[cfg(test)]
     pub(in crate::simulation::network::surface::debug) fn closest_debug_top_vertex(
-        point: Vector3,
+        point: backend::RoadVec3,
         top_vertices: &[DebugTopVertex],
     ) -> Option<DebugClosestTopVertex> {
         top_vertices
             .iter()
             .map(|vertex| {
-                let xz_error_m =
-                    Vector2::new(vertex.point.x - point.x, vertex.point.z - point.z).length();
+                let xz_error_m = backend::road_vec3_xz(vertex.point)
+                    .distance(backend::road_vec3_xz(point)) as f32;
                 DebugClosestTopVertex {
                     material: vertex.material,
                     point: vertex.point,
                     xz_error_m,
-                    y_delta_m: point.y - vertex.point.y,
+                    y_delta_m: (point.y - vertex.point.y) as f32,
                 }
             })
             .min_by(|a, b| {
@@ -90,7 +90,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface::debug) fn closest_debug_top_support_for_material(
-        point: Vector3,
+        point: backend::RoadVec3,
         material: &'static str,
         piece: &RoadSurfaceVisualNodePiece,
     ) -> Option<DebugClosestTopVertex> {
@@ -131,33 +131,34 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface::debug) fn update_closest_debug_top_support(
         best: &mut Option<DebugClosestTopVertex>,
-        point: Vector3,
+        point: backend::RoadVec3,
         material: &'static str,
-        candidate: Vector3,
+        candidate: backend::RoadVec3,
     ) {
-        let xz_error_m = Vector2::new(candidate.x - point.x, candidate.z - point.z).length();
+        let xz_error_m =
+            backend::road_vec3_xz(candidate).distance(backend::road_vec3_xz(point)) as f32;
         let candidate = DebugClosestTopVertex {
             material,
             point: candidate,
             xz_error_m,
-            y_delta_m: point.y - candidate.y,
+            y_delta_m: (point.y - candidate.y) as f32,
         };
         Self::retain_closest_debug_top_support(best, candidate);
     }
 
     pub(in crate::simulation::network::surface::debug) fn update_closest_debug_top_segment_support(
         best: &mut Option<DebugClosestTopVertex>,
-        point: Vector3,
+        point: backend::RoadVec3,
         material: &'static str,
-        start: Vector3,
-        end: Vector3,
+        start: backend::RoadVec3,
+        end: backend::RoadVec3,
     ) {
-        let segment_xz = Vector2::new(end.x - start.x, end.z - start.z);
+        let segment_xz = backend::road_vec3_xz(end) - backend::road_vec3_xz(start);
         let len_squared = segment_xz.length_squared();
-        if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+        if len_squared <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
             return;
         }
-        let to_point_xz = Vector2::new(point.x - start.x, point.z - start.z);
+        let to_point_xz = backend::road_vec3_xz(point) - backend::road_vec3_xz(start);
         let t = (to_point_xz.dot(segment_xz) / len_squared).clamp(0.0, 1.0);
         let candidate = start.lerp(end, t);
         Self::update_closest_debug_top_support(best, point, material, candidate);

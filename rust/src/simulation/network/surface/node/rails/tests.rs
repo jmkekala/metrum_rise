@@ -23,7 +23,6 @@ use super::{
 use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeSet;
 
 mod caps_and_joins;

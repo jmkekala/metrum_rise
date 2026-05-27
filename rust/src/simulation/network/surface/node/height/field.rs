@@ -78,6 +78,18 @@ impl NodeBandHeightField {
         Ok(())
     }
 
+    pub(super) fn extend_with_generated_contour_edge_support(
+        &mut self,
+        contour: &NodeGeneratedContour,
+    ) -> Result<(), NodeHeightFieldError> {
+        self.register_generated_contour_source_handoffs(contour)?;
+        self.patches
+            .push(NodeBandHeightPatch::from_generated_contour_edge_support(
+                self.id, self.kind, contour,
+            )?);
+        Ok(())
+    }
+
     pub(super) fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
         let mut candidates = Vec::new();
         let mut outside_error = None;

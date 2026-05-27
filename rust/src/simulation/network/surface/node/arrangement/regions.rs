@@ -1,14 +1,18 @@
 //! Height-owned arrangement region construction.
 
+use super::super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::super::height::{NodeHeightedRegion, NodeHeightedVertex};
-use super::build::quantize_height_m;
+use super::super::keys::{SURFACE_MM_PER_M, SurfaceSegmentParameter, SurfaceXzKey};
+use super::super::segments::interpolate_height_i64;
+use super::build::{node_grade_decision_rank, quantize_height_m};
 use super::edges::{PendingArrangementEdge, loop_edges};
 use super::seams::{NodeRegionSeamConstraint, NodeSeamSource};
 use super::{
-    NodeArrangement, NodeArrangementEdgeId, NodeArrangementError, NodeArrangementVertex,
-    NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner, NodeOwnedRegion,
-    NodeOwnedRegionId,
+    NodeArrangement, NodeArrangementEdgeId, NodeArrangementError, NodeArrangementKey,
+    NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
+    NodeOwnedRegion, NodeOwnedRegionId,
 };
+use std::collections::BTreeSet;
 
 #[derive(Clone)]
 pub(super) struct PendingArrangementRegion {
@@ -39,6 +43,147 @@ impl PendingArrangementRegion {
 }
 
 impl NodeArrangement {
+    pub(super) fn node_pending_region_edges(
+        &mut self,
+        pending_regions: &mut [PendingArrangementRegion],
+    ) -> Result<(), NodeArrangementError> {
+        let split_keys = self
+            .vertices
+            .iter()
+            .map(NodeArrangementVertex::key)
+            .collect::<BTreeSet<_>>();
+        for pending in pending_regions {
+            self.node_pending_loop_edges(
+                pending.owner,
+                pending.height_field_id,
+                &mut pending.outer_loop,
+                &split_keys,
+            )?;
+            for hole in &mut pending.holes {
+                self.node_pending_loop_edges(
+                    pending.owner,
+                    pending.height_field_id,
+                    hole,
+                    &split_keys,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn node_pending_loop_edges(
+        &mut self,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        loop_vertices: &mut Vec<NodeArrangementVertexId>,
+        split_keys: &BTreeSet<NodeArrangementKey>,
+    ) -> Result<(), NodeArrangementError> {
+        if loop_vertices.len() < 3 {
+            return Ok(());
+        }
+        let original = loop_vertices.clone();
+        let mut noded = Vec::with_capacity(original.len());
+        for index in 0..original.len() {
+            let start_id = original[index];
+            let end_id = original[(index + 1) % original.len()];
+            noded.push(start_id);
+            let (Some(start), Some(end)) = (
+                self.vertices.get(start_id.index()).cloned(),
+                self.vertices.get(end_id.index()).cloned(),
+            ) else {
+                continue;
+            };
+            for (split_key, parameter) in
+                interior_split_keys_on_edge(start.key(), end.key(), split_keys)
+            {
+                let split_id = self.insert_split_vertex_on_arrangement_edge(
+                    owner,
+                    height_field_id,
+                    &start,
+                    &end,
+                    split_key,
+                    parameter,
+                )?;
+                if noded.last().copied() != Some(split_id) {
+                    noded.push(split_id);
+                }
+            }
+        }
+        clean_arrangement_loop_vertices(&mut noded, &self.vertices);
+        *loop_vertices = noded;
+        Ok(())
+    }
+
+    fn insert_split_vertex_on_arrangement_edge(
+        &mut self,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+        start: &NodeArrangementVertex,
+        end: &NodeArrangementVertex,
+        split_key: NodeArrangementKey,
+        parameter: SurfaceSegmentParameter,
+    ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
+        let split_surface_key = split_key.surface_key();
+        let point_xz = split_surface_key.to_road_xz();
+        let (height_m, grade_authority) = self
+            .existing_owner_vertex_at_split_key(split_key, owner, height_field_id)
+            .unwrap_or_else(|| {
+                let height_mm =
+                    interpolate_height_i64(start.height_mm(), end.height_mm(), parameter);
+                let height_m = height_mm as f64 / SURFACE_MM_PER_M;
+                (
+                    height_m,
+                    NodeGradeVertexAuthority::new(
+                        point_xz,
+                        height_m,
+                        owner,
+                        height_field_id,
+                        NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
+                    ),
+                )
+            });
+        self.insert_vertex_with_grade_authority(
+            point_xz,
+            height_m,
+            [owner],
+            height_field_id,
+            [NodeSeamSource::for_owner(owner)],
+            grade_authority,
+        )
+    }
+
+    fn existing_owner_vertex_at_split_key(
+        &self,
+        split_key: NodeArrangementKey,
+        owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
+    ) -> Option<(f64, NodeGradeVertexAuthority)> {
+        let candidates = self
+            .vertices
+            .iter()
+            .filter(|vertex| {
+                vertex.key() == split_key
+                    && vertex.height_field_id() == height_field_id
+                    && vertex.owners().contains(&owner)
+            })
+            .collect::<Vec<_>>();
+        let first = candidates.first()?;
+        if candidates
+            .iter()
+            .any(|candidate| candidate.height_mm() != first.height_mm())
+        {
+            return None;
+        }
+        let grade_authority =
+            candidates
+                .iter()
+                .skip(1)
+                .fold(first.grade_authority(), |authority, candidate| {
+                    merged_split_vertex_grade_authority(authority, candidate.grade_authority())
+                });
+        Some((first.height_m(), grade_authority))
+    }
+
     pub(crate) fn push_region(
         &mut self,
         owner: NodeBandOwner,
@@ -151,6 +296,39 @@ impl NodeArrangement {
     }
 }
 
+fn interior_split_keys_on_edge(
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+    split_keys: &BTreeSet<NodeArrangementKey>,
+) -> Vec<(NodeArrangementKey, SurfaceSegmentParameter)> {
+    if start == end {
+        return Vec::new();
+    }
+    let start_surface = start.surface_key();
+    let end_surface = end.surface_key();
+    let mut keys = split_keys
+        .iter()
+        .copied()
+        .filter(|key| *key != start && *key != end)
+        .filter_map(|key| {
+            let key = key.surface_key();
+            if !key.lies_exactly_on_segment(start_surface, end_surface) {
+                return None;
+            }
+            let parameter = key.exact_line_parameter(start_surface, end_surface)?;
+            (parameter > SurfaceSegmentParameter::zero()
+                && parameter < SurfaceSegmentParameter::one())
+            .then_some((NodeArrangementKey::from_surface_key(key), parameter))
+        })
+        .collect::<Vec<_>>();
+    keys.sort_by_key(|(key, _)| {
+        SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key())
+            .segment_parameter_key(start_surface, end_surface)
+    });
+    keys.dedup_by_key(|(key, _)| *key);
+    keys
+}
+
 fn clean_arrangement_loop_vertices(
     loop_vertices: &mut Vec<NodeArrangementVertexId>,
     vertices: &[NodeArrangementVertex],
@@ -165,6 +343,17 @@ fn clean_arrangement_loop_vertices(
         if loop_vertices.len() < 3 {
             break;
         }
+    }
+}
+
+fn merged_split_vertex_grade_authority(
+    existing: NodeGradeVertexAuthority,
+    incoming: NodeGradeVertexAuthority,
+) -> NodeGradeVertexAuthority {
+    if node_grade_decision_rank(incoming.decision) < node_grade_decision_rank(existing.decision) {
+        incoming
+    } else {
+        existing
     }
 }
 

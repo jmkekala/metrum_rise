@@ -5,15 +5,15 @@ use super::*;
 #[test]
 fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
     let mut source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 2.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 2.0, 0.0),
         3,
         30,
         3,
         31,
     );
     source_edge.final_footprint_boundary = true;
-    let midpoint_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.0));
+    let midpoint_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 1.0, 0.0));
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         final_height_edges: Vec::new(),
@@ -21,6 +21,7 @@ fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -38,15 +39,15 @@ fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
 #[test]
 fn boundary_height_rejects_project_quantization_drift_from_source_edge() {
     let source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 2.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 2.0, 0.0),
         3,
         30,
         3,
         31,
     );
     let drifted_midpoint =
-        ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.000002));
+        ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 1.0, 0.000002));
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![source_edge],
         final_height_edges: Vec::new(),
@@ -54,6 +55,7 @@ fn boundary_height_rejects_project_quantization_drift_from_source_edge() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -79,8 +81,8 @@ fn boundary_height_prefers_final_footprint_source_edge_over_internal_edge() {
     let internal_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::Carriageway,
         9,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -89,8 +91,8 @@ fn boundary_height_prefers_final_footprint_source_edge_over_internal_edge() {
     let mut final_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::CurbOrShoulder,
         4,
-        Vector3::new(0.0, 0.12, 0.0),
-        Vector3::new(2.0, 0.12, 0.0),
+        RoadVec3::new(0.0, 0.12, 0.0),
+        RoadVec3::new(2.0, 0.12, 0.0),
         4,
         40,
         4,
@@ -104,9 +106,10 @@ fn boundary_height_prefers_final_footprint_source_edge_over_internal_edge() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let midpoint_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let midpoint_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
 
     let height_mm = sources
         .boundary_height_mm_at_key(midpoint_key.xz_key())
@@ -117,8 +120,8 @@ fn boundary_height_prefers_final_footprint_source_edge_over_internal_edge() {
 
 #[test]
 fn final_footprint_height_edge_rejects_overlay_grid_drift() {
-    let start_point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0));
-    let end_point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 2.0, 2.0));
+    let start_point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
+    let end_point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 2.0, 2.0));
     let drifted_midpoint = ArrangementBoundaryPointKey {
         x_key: 1_000_000,
         z_key: 1_000_001,
@@ -136,6 +139,7 @@ fn final_footprint_height_edge_rejects_overlay_grid_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -159,8 +163,8 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
     let mut lower_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::Carriageway,
         9,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -169,8 +173,8 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
     let mut raised_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::CurbOrShoulder,
         4,
-        Vector3::new(0.0, 0.12, 0.0),
-        Vector3::new(2.0, 0.12, 0.0),
+        RoadVec3::new(0.0, 0.12, 0.0),
+        RoadVec3::new(2.0, 0.12, 0.0),
         4,
         40,
         4,
@@ -185,9 +189,10 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let midpoint_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let midpoint_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
 
     let error = sources
         .boundary_height_mm_at_key(midpoint_key.xz_key())
@@ -201,8 +206,8 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
 
 #[test]
 fn boundary_height_accepts_source_authorized_same_kind_vertical_step() {
-    let key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0)).xz_key();
-    let step_end = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 0.0, 0.0)).xz_key();
+    let key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.0, 0.0)).xz_key();
+    let step_end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 0.0, 0.0)).xz_key();
     let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
     let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 6);
     let lower_point = ArrangementBoundaryPointKey {
@@ -245,6 +250,7 @@ fn boundary_height_accepts_source_authorized_same_kind_vertical_step() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: vec![
             arrangement::NodeExplicitVerticalStepSegment::new(
                 key,
@@ -268,8 +274,8 @@ fn boundary_height_rejects_same_owner_generated_edge_height_conflict() {
     let first_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::Carriageway,
         8,
-        Vector3::new(0.0, 151.044, 0.0),
-        Vector3::new(2.0, 151.044, 0.0),
+        RoadVec3::new(0.0, 151.044, 0.0),
+        RoadVec3::new(2.0, 151.044, 0.0),
         44,
         214,
         44,
@@ -278,8 +284,8 @@ fn boundary_height_rejects_same_owner_generated_edge_height_conflict() {
     let second_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::Carriageway,
         8,
-        Vector3::new(0.0, 151.045, 0.0),
-        Vector3::new(2.0, 151.045, 0.0),
+        RoadVec3::new(0.0, 151.045, 0.0),
+        RoadVec3::new(2.0, 151.045, 0.0),
         45,
         246,
         45,
@@ -292,9 +298,10 @@ fn boundary_height_rejects_same_owner_generated_edge_height_conflict() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let midpoint_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 151.044, 0.0));
+    let midpoint_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 151.044, 0.0));
 
     assert!(matches!(
         sources.boundary_height_mm_at_key(midpoint_key.xz_key()),
@@ -305,14 +312,14 @@ fn boundary_height_rejects_same_owner_generated_edge_height_conflict() {
 #[test]
 fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
     let source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 0.0, 0.0),
         3,
         30,
         3,
         31,
     );
-    let conflicting_point = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.2, 0.0));
+    let conflicting_point = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.2, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         conflicting_point,
@@ -332,6 +339,7 @@ fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -348,14 +356,14 @@ fn boundary_height_rejects_direct_conflict_with_exact_source_edge() {
 #[test]
 fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
     let source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 0.0, 0.0),
         3,
         30,
         3,
         31,
     );
-    let conflicting_point = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.2, 0.0));
+    let conflicting_point = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.2, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         conflicting_point,
@@ -375,6 +383,7 @@ fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
         direct_vertex_sources,
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -391,8 +400,8 @@ fn boundary_endpoint_candidate_rechecks_exact_conflicts_before_height_filter() {
 #[test]
 fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
     let mut source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -406,9 +415,10 @@ fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let near_extension = ArrangementBoundaryPointKey::from_world(Vector3::new(1.00005, 0.0, 0.0));
+    let near_extension = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.00005, 0.0, 0.0));
 
     let height_mm = sources
         .height_mm_at_key(near_extension.xz_key())
@@ -420,8 +430,8 @@ fn boundary_height_rejects_endpoint_scale_source_edge_extension() {
 #[test]
 fn numeric_cleanup_support_rejects_non_endpoint_boundary_drift() {
     let mut source_edge = test_source_edge(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(1.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(1.0, 0.0, 0.0),
         3,
         30,
         3,
@@ -435,10 +445,12 @@ fn numeric_cleanup_support_rejects_non_endpoint_boundary_drift() {
         direct_vertex_sources: BTreeMap::new(),
         direct_vertex_source_candidates: BTreeMap::new(),
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
-    let exact_midpoint = ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.0));
-    let drifted_midpoint = ArrangementBoundaryPointKey::from_world(Vector3::new(0.5, 0.0, 0.00005));
+    let exact_midpoint = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.5, 0.0, 0.0));
+    let drifted_midpoint =
+        ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.5, 0.0, 0.00005));
 
     assert!(sources.has_exact_final_owned_footprint_boundary_support_at_point(exact_midpoint));
     assert!(

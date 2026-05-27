@@ -4,14 +4,15 @@ use super::*;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn canonicalize_loop_points(
-        mut points_world: Vec<Vector3>,
-    ) -> Vec<Vector3> {
-        points_world
-            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
+        mut points_world: Vec<RoadVec3>,
+    ) -> Vec<RoadVec3> {
+        points_world.dedup_by(|a, b| {
+            (*a - *b).length_squared() <= f64::from(WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2)
+        });
         if points_world.len() >= 2
             && (points_world.first().copied().unwrap() - points_world.last().copied().unwrap())
                 .length_squared()
-                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+                <= f64::from(WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2)
         {
             points_world.pop();
         }
@@ -19,7 +20,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface) fn make_visual_polygon(
-        mut points_world: Vec<Vector3>,
+        mut points_world: Vec<RoadVec3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
         points_world = Self::canonicalize_loop_points(points_world);
         if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
@@ -48,19 +49,19 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface) fn make_boundary_loop_polygon(
-        points_world: Vec<Vector3>,
+        points_world: Vec<RoadVec3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
         Self::make_boundary_loop_polygon_with_winding(points_world, false)
     }
 
     pub(in crate::simulation::network::surface) fn make_boundary_loop_polygon_preserving_winding(
-        points_world: Vec<Vector3>,
+        points_world: Vec<RoadVec3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
         Self::make_boundary_loop_polygon_with_winding(points_world, true)
     }
 
     pub(super) fn make_boundary_loop_polygon_with_winding(
-        mut points_world: Vec<Vector3>,
+        mut points_world: Vec<RoadVec3>,
         preserve_winding: bool,
     ) -> Option<RoadSurfaceVisualPolygon> {
         points_world = Self::canonicalize_loop_points(points_world);
@@ -90,13 +91,14 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface) fn make_visual_strip_polygon(
-        mut points_world: Vec<Vector3>,
+        mut points_world: Vec<RoadVec3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
-        points_world
-            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
+        points_world.dedup_by(|a, b| {
+            (*a - *b).length_squared() <= f64::from(WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2)
+        });
         if points_world.len() >= 2
             && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+                <= f64::from(WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2)
         {
             points_world.pop();
         }
@@ -114,7 +116,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface) fn make_vertical_quad_polygon(
-        points_world: [Vector3; 4],
+        points_world: [RoadVec3; 4],
     ) -> Option<RoadSurfaceVisualPolygon> {
         let front = [
             [points_world[0], points_world[1], points_world[2]],
@@ -124,7 +126,7 @@ impl RoadSurfaceSystem {
             (triangle[1] - triangle[0])
                 .cross(triangle[2] - triangle[0])
                 .length()
-                <= SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2
+                <= f64::from(SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2)
         }) {
             return None;
         }

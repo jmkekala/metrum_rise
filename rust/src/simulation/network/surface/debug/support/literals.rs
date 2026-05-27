@@ -2,6 +2,65 @@
 
 use super::*;
 
+pub(in crate::simulation::network::surface::debug) trait DebugVec2Literal {
+    fn x(self) -> f64;
+    fn y(self) -> f64;
+}
+
+pub(in crate::simulation::network::surface::debug) trait DebugVec3Literal {
+    fn x(self) -> f64;
+    fn y(self) -> f64;
+    fn z(self) -> f64;
+}
+
+impl DebugVec2Literal for Vector2 {
+    fn x(self) -> f64 {
+        f64::from(self.x)
+    }
+
+    fn y(self) -> f64 {
+        f64::from(self.y)
+    }
+}
+
+impl DebugVec2Literal for backend::RoadVec2 {
+    fn x(self) -> f64 {
+        self.x
+    }
+
+    fn y(self) -> f64 {
+        self.y
+    }
+}
+
+impl DebugVec3Literal for Vector3 {
+    fn x(self) -> f64 {
+        f64::from(self.x)
+    }
+
+    fn y(self) -> f64 {
+        f64::from(self.y)
+    }
+
+    fn z(self) -> f64 {
+        f64::from(self.z)
+    }
+}
+
+impl DebugVec3Literal for backend::RoadVec3 {
+    fn x(self) -> f64 {
+        self.x
+    }
+
+    fn y(self) -> f64 {
+        self.y
+    }
+
+    fn z(self) -> f64 {
+        self.z
+    }
+}
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::debug) fn append_match_stats_fields(
         dump: &mut String,
@@ -29,11 +88,12 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::debug) fn append_surface_sample_literal(
         dump: &mut String,
         terrain: &TerrainSystem,
-        point: Vector3,
+        point: backend::RoadVec3,
     ) {
-        let source_y_m = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-        let visual_y_m =
-            terrain.sample_visual_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+        let source_y_m =
+            terrain.sample_height_world(point.x as f32, point.z as f32) * config::HEIGHT_SCALE;
+        let visual_y_m = terrain.sample_visual_height_world(point.x as f32, point.z as f32)
+            * config::HEIGHT_SCALE;
         dump.push('{');
         dump.push_str("\"world\":");
         Self::append_vector3_literal(dump, point);
@@ -45,10 +105,12 @@ impl RoadSurfaceSystem {
         dump.push('}');
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector3_list_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_list_literal<T>(
         dump: &mut String,
-        points: &[Vector3],
-    ) {
+        points: &[T],
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
         dump.push('[');
         for (index, point) in points.iter().enumerate() {
             if index > 0 {
@@ -59,10 +121,12 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector3_precise_list_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_precise_list_literal<T>(
         dump: &mut String,
-        points: &[Vector3],
-    ) {
+        points: &[T],
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
         dump.push('[');
         for (index, point) in points.iter().enumerate() {
             if index > 0 {
@@ -73,11 +137,13 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector3_pair_precise_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_pair_precise_literal<T>(
         dump: &mut String,
-        start: Vector3,
-        end: Vector3,
-    ) {
+        start: T,
+        end: T,
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
         dump.push('[');
         Self::append_vector3_precise_literal(dump, start);
         dump.push_str(", ");
@@ -166,24 +232,44 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector3_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_literal<T>(
         dump: &mut String,
-        point: Vector3,
-    ) {
-        let _ = write!(dump, "[{:.3}, {:.3}, {:.3}]", point.x, point.y, point.z);
+        point: T,
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
+        let _ = write!(
+            dump,
+            "[{:.3}, {:.3}, {:.3}]",
+            point.x(),
+            point.y(),
+            point.z()
+        );
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector3_precise_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_precise_literal<T>(
         dump: &mut String,
-        point: Vector3,
-    ) {
-        let _ = write!(dump, "[{:.6}, {:.6}, {:.6}]", point.x, point.y, point.z);
+        point: T,
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
+        let _ = write!(
+            dump,
+            "[{:.6}, {:.6}, {:.6}]",
+            point.x(),
+            point.y(),
+            point.z()
+        );
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_optional_vector3_precise_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_optional_vector3_precise_literal<
+        T,
+    >(
         dump: &mut String,
-        point: Option<Vector3>,
-    ) {
+        point: Option<T>,
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
         if let Some(point) = point {
             Self::append_vector3_precise_literal(dump, point);
         } else {
@@ -191,11 +277,13 @@ impl RoadSurfaceSystem {
         }
     }
 
-    pub(in crate::simulation::network::surface::debug) fn append_vector2_literal(
+    pub(in crate::simulation::network::surface::debug) fn append_vector2_literal<T>(
         dump: &mut String,
-        point: Vector2,
-    ) {
-        let _ = write!(dump, "[{:.3}, {:.3}]", point.x, point.y);
+        point: T,
+    ) where
+        T: Copy + DebugVec2Literal,
+    {
+        let _ = write!(dump, "[{:.3}, {:.3}]", point.x(), point.y());
     }
 
     pub(in crate::simulation::network::surface::debug) fn append_optional_f32_literal(

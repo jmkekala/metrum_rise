@@ -90,6 +90,96 @@ fn junctionn_same_material_shared_vertices_reject_height_conflict() {
 }
 
 #[test]
+fn junctionn_same_material_shared_vertices_keep_distinct_source_carrier_provenance() {
+    let mut regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            11,
+            0.0,
+            vec![manual_heighted_vertex_with_source_provenance(
+                RoadSurfaceBandKind::Sidewalk,
+                11,
+                -1.0,
+                0.0,
+                1.52523,
+            )],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            12,
+            0.0,
+            vec![manual_heighted_vertex_with_source_provenance(
+                RoadSurfaceBandKind::Sidewalk,
+                12,
+                -1.0,
+                0.0,
+                1.52522,
+            )],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("distinct source-carrier provenance must not be merged as one shared vertex");
+
+    assert_eq!(regions[0].shape[0][0].height_m, 1.52523);
+    assert_eq!(regions[1].shape[0][0].height_m, 1.52522);
+}
+
+#[test]
+fn junctionn_same_material_shared_edge_keeps_distinct_source_carrier_provenance() {
+    let mut regions = vec![
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            17,
+            0.0,
+            vec![
+                manual_heighted_vertex_with_source_provenance(
+                    RoadSurfaceBandKind::Sidewalk,
+                    17,
+                    -1.0,
+                    0.0,
+                    1.49242,
+                ),
+                manual_heighted_vertex_with_source_provenance(
+                    RoadSurfaceBandKind::Sidewalk,
+                    17,
+                    1.0,
+                    0.0,
+                    1.49242,
+                ),
+            ],
+        ),
+        manual_heighted_region(
+            RoadSurfaceBandKind::Sidewalk,
+            18,
+            0.0,
+            vec![
+                manual_heighted_vertex_with_source_provenance(
+                    RoadSurfaceBandKind::Sidewalk,
+                    18,
+                    -1.0,
+                    0.0,
+                    1.49243,
+                ),
+                manual_heighted_vertex_with_source_provenance(
+                    RoadSurfaceBandKind::Sidewalk,
+                    18,
+                    1.0,
+                    0.0,
+                    1.49243,
+                ),
+            ],
+        ),
+    ];
+
+    apply_junctionn_height_authority_normalization(&mut regions)
+        .expect("distinct source-carrier provenance must keep shared-edge heights independent");
+
+    assert_eq!(regions[0].shape[0][0].height_m, 1.49242);
+    assert_eq!(regions[1].shape[0][0].height_m, 1.49243);
+}
+
+#[test]
 fn junctionn_same_material_point_seam_selects_canonical_height_owner() {
     let seam = manual_seam_constraint(
         91,

@@ -34,9 +34,8 @@ use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
     RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
 };
-use godot::prelude::{Vector2, Vector3};
 
-fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+fn band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
     IncidentMouthBand {
         kind,
         start_point_world: start,
@@ -44,13 +43,13 @@ fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMout
     }
 }
 
-fn profile(x: f32, base_height: f32) -> IncidentMouthProfile {
+fn profile(x: f64, base_height: f64) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, base_height, -4.0),
-        Vector3::new(x, base_height + 0.1, -2.0),
-        Vector3::new(x, base_height + 0.2, 0.0),
-        Vector3::new(x, base_height + 0.3, 2.0),
-        Vector3::new(x, base_height + 0.4, 4.0),
+        RoadVec3::new(x, base_height, -4.0),
+        RoadVec3::new(x, base_height + 0.1, -2.0),
+        RoadVec3::new(x, base_height + 0.2, 0.0),
+        RoadVec3::new(x, base_height + 0.3, 2.0),
+        RoadVec3::new(x, base_height + 0.4, 4.0),
     ];
     let bands = vec![
         band(
@@ -75,7 +74,7 @@ fn profile(x: f32, base_height: f32) -> IncidentMouthProfile {
         ),
     ];
     IncidentMouthProfile {
-        inward_direction_xz: Vector2::RIGHT,
+        inward_direction_xz: RoadVec2::X,
         boundary_points_world,
         bands,
     }
@@ -90,7 +89,7 @@ fn solved_triangulation() -> NodeTriangulationSolution {
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };

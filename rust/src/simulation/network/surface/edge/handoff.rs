@@ -139,14 +139,14 @@ impl RoadSurfaceSystem {
             let dot = current
                 .direction_xz
                 .dot(other.direction_xz)
-                .clamp(-1.0, 1.0);
+                .clamp(-1.0, 1.0) as f32;
             if dot <= -VISUAL_CONFLICT_PASS_THROUGH_DOT_THRESHOLD {
                 continue;
             }
 
             let sin_theta = (current.direction_xz.x * other.direction_xz.y
                 - current.direction_xz.y * other.direction_xz.x)
-                .abs();
+                .abs() as f32;
             let pair_required = if sin_theta <= VISUAL_CONFLICT_SIN_EPSILON {
                 total_length_m
             } else {

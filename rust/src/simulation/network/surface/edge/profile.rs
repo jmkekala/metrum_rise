@@ -1,11 +1,11 @@
 //! Lateral roadbed profile bands and section boundary reconstruction.
 
+use super::super::backend::{RoadVec2, RoadVec3};
 use super::super::{RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem};
 use crate::config;
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
 use crate::simulation::network::types::{TransitFlags, TransitType};
-use godot::prelude::{Vector2, Vector3};
 
 // Standard roadbed lateral shaping.
 const CURB_BAND_WIDTH_M: f32 = 0.15;
@@ -25,15 +25,15 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::edge) fn build_lateral_bands(
         &self,
         edge: &Edge,
-        center: Vector3,
-        lateral_xz: Vector2,
+        center: RoadVec3,
+        lateral_xz: RoadVec2,
         profile_plane: Option<JunctionEndpointProfilePlane>,
     ) -> Vec<RoadSurfaceBand> {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
-            let base_height_m = profile_plane.map_or(center.y, |plane| {
+            let base_height_m = profile_plane.map_or(center.y as f32, |plane| {
                 plane.height_at_xz(
-                    center.x + lateral_xz.x * lateral_m,
-                    center.z + lateral_xz.y * lateral_m,
+                    (center.x + lateral_xz.x * f64::from(lateral_m)) as f32,
+                    (center.z + lateral_xz.y * f64::from(lateral_m)) as f32,
                 )
             });
             base_height_m + offset_m
@@ -151,7 +151,7 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn section_profile_world_points(
         &self,
         section: &RoadSurfaceSection,
-    ) -> Vec<Vector3> {
+    ) -> Vec<RoadVec3> {
         let Some(first_band) = section.bands.first() else {
             return Vec::new();
         };

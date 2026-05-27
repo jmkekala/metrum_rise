@@ -39,11 +39,11 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface::debug) fn debug_overlay_contour_from_world_points(
-        points: &[Vector3],
+        points: &[backend::RoadVec3],
     ) -> Option<NodeOverlayContour> {
         let mut contour = Vec::with_capacity(points.len());
         for point in points {
-            let point = backend::road_vec2_to_overlay_point(backend::godot_vec3_xz_to_road(*point));
+            let point = backend::road_vec2_to_overlay_point(backend::road_vec3_xz(*point));
             if contour.last().is_none_or(|last| *last != point) {
                 contour.push(point);
             }

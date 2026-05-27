@@ -2,6 +2,7 @@
 
 use super::super::{
     RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    backend::RoadVec2,
 };
 use super::model::{
     EarthworkBoundaryEdgeKey, EarthworkBoundaryPointKey, IndexedEarthworkBoundarySegment,
@@ -11,7 +12,6 @@ use super::{
     RoadSurfaceEarthworkGeometryError,
 };
 use crate::simulation::network::types::EdgeClass;
-use godot::prelude::Vector2;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl RoadSurfaceSystem {
@@ -44,8 +44,8 @@ impl RoadSurfaceSystem {
         for index in 0..points.len() {
             let inner_start = points[index];
             let inner_end = points[(index + 1) % points.len()];
-            let span_xz = Vector2::new(inner_end.x - inner_start.x, inner_end.z - inner_start.z);
-            if span_xz.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            let span_xz = RoadVec2::new(inner_end.x - inner_start.x, inner_end.z - inner_start.z);
+            if span_xz.length_squared() <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
                 continue;
             }
             segments.push(RoadSurfaceEarthworkBoundarySegment {
@@ -180,7 +180,9 @@ impl RoadSurfaceSystem {
                 .iter()
                 .map(|segment| segment.inner_start)
                 .collect::<Vec<_>>();
-            if Self::signed_polygon_area_xz(&point_loop).abs() <= SAMPLE_EPSILON_M {
+            if Self::earthwork_signed_polygon_area_xz(&point_loop).abs()
+                <= f64::from(SAMPLE_EPSILON_M)
+            {
                 return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                     point_count: point_loop.len(),
                 });
@@ -214,9 +216,9 @@ impl RoadSurfaceSystem {
         let samples = point_loops
             .iter()
             .map(|points| {
-                points.iter().fold(Vector2::ZERO, |sum, point| {
-                    sum + Vector2::new(point.x, point.z)
-                }) / points.len() as f32
+                points.iter().fold(RoadVec2::ZERO, |sum, point| {
+                    sum + RoadVec2::new(point.x, point.z)
+                }) / points.len() as f64
             })
             .collect::<Vec<_>>();
         let should_be_ccw = point_loops
@@ -228,7 +230,7 @@ impl RoadSurfaceSystem {
                     .enumerate()
                     .filter(|(candidate_index, candidate)| {
                         *candidate_index != loop_index
-                            && RoadSurfaceSystem::polygon_contains_point_xz(
+                            && RoadSurfaceSystem::earthwork_polygon_contains_point_xz(
                                 candidate,
                                 samples[loop_index],
                             )
@@ -242,7 +244,7 @@ impl RoadSurfaceSystem {
                 .iter()
                 .map(|segment| segment.inner_start)
                 .collect::<Vec<_>>();
-            let is_ccw = Self::signed_polygon_area_xz(&points) > 0.0;
+            let is_ccw = Self::earthwork_signed_polygon_area_xz(&points) > 0.0;
             if is_ccw != should_be_ccw {
                 Self::reverse_earthwork_boundary_segment_loop(segments);
             }
@@ -263,8 +265,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::surface::RoadSurfaceEarthworkSupportPolicy;
-    use godot::prelude::Vector3;
+    use crate::simulation::network::surface::{RoadSurfaceEarthworkSupportPolicy, RoadVec3};
 
     fn test_earthwork_source() -> RoadSurfaceEarthworkFaceSource {
         RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
@@ -284,14 +285,14 @@ mod tests {
     }
 
     fn boundary_segment(
-        start_x: f32,
-        start_z: f32,
-        end_x: f32,
-        end_z: f32,
+        start_x: f64,
+        start_z: f64,
+        end_x: f64,
+        end_z: f64,
     ) -> RoadSurfaceEarthworkBoundarySegment {
         RoadSurfaceEarthworkBoundarySegment {
-            inner_start: Vector3::new(start_x, 0.0, start_z),
-            inner_end: Vector3::new(end_x, 0.0, end_z),
+            inner_start: RoadVec3::new(start_x, 0.0, start_z),
+            inner_end: RoadVec3::new(end_x, 0.0, end_z),
             source: test_earthwork_source(),
         }
     }

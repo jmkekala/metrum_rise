@@ -2,7 +2,6 @@
 
 use super::NodeOverlayPoint;
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3};
-use godot::prelude::Vector3;
 
 pub(crate) const SURFACE_XZ_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 pub(crate) const SURFACE_MM_PER_M: f64 = 1000.0;
@@ -52,13 +51,6 @@ impl SurfaceXzKey {
         Self {
             x_key: Self::coordinate_key(point.x),
             z_key: Self::coordinate_key(point.z),
-        }
-    }
-
-    pub(crate) fn from_godot_world_xz(point: Vector3) -> Self {
-        Self {
-            x_key: Self::coordinate_key(f64::from(point.x)),
-            z_key: Self::coordinate_key(f64::from(point.z)),
         }
     }
 
@@ -346,6 +338,7 @@ impl SurfaceHeightMmKey {
         Self((value_m * SURFACE_MM_PER_M).round() as i64)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_m_f32(value_m: f32) -> Self {
         Self::from_m_f64(f64::from(value_m))
     }

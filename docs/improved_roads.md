@@ -167,13 +167,15 @@ section says whether the runtime has reached it yet.
   Imported JunctionN terrain clipping drops only road-owned internal chords from terrain seam
   constraints after both sides classify against the final footprint; exposed seam constraints
   remain preserved with provenance.
+- `CODE-14` is complete for the road-surface geometry boundary: long-lived span, node,
+  terrain-clip, earthwork, query, cache, and debug geometry now use `RoadVec2` / `RoadVec3`
+  internally, while Godot `Vector2` / `Vector3` values are limited to graph / API input,
+  GDExtension conversion, render upload, and debug output. Arrangement split vertices also preserve
+  exact source-owned height / provenance at canonical split keys instead of recomputing support
+  from an unrelated edge interpolation.
 
 ### Remaining Tracked Follow-Up
 
-- `CODE-14` owns the remaining road-surface geometry-boundary cleanup: long-lived road-surface
-  internals should migrate from Godot `Vector2` / `Vector3` storage to `RoadVec2` / `RoadVec3`
-  and accepted geometry backends, while Godot vectors remain boundary / upload / debug adapter
-  types.
 - Future terrain closure variants beyond the current retaining-wall path should be tracked as new
   explicit `EARTH-*` work, not reopened under `ROAD-01`.
 
@@ -810,10 +812,8 @@ The node class changes the number of incident mouths. It does not change asphalt
 
 #### Node Band Grade Carrier Hardcut
 
-Status: shipped for `ROAD-01` node ownership, height, and provenance. This section is now the
-runtime contract for node-local grade carriers. Remaining geometry-backend and Godot-vector
-boundary cleanup belongs to `CODE-14` and the library-backed node rework; it is not a blocker for
-the shipped grade-carrier hardcut.
+Status: shipped for `ROAD-01` node ownership, height, provenance, and the `CODE-14` geometry
+boundary cleanup. This section is now the runtime contract for node-local grade carriers.
 
 `Terminal`, `Bend`, and `JunctionN` geometry must be built from one deterministic node-local
 arrangement before triangulation. Accepted geometry backends may own low-level operations such as

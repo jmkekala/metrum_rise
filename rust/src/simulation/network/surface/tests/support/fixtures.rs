@@ -77,8 +77,8 @@ pub(in crate::simulation::network::surface::tests) fn road_points_from_json(
 }
 
 pub(in crate::simulation::network::surface::tests) fn terrain_clip_source_edge_for_test(
-    start: Vector3,
-    end: Vector3,
+    start: backend::RoadVec3,
+    end: backend::RoadVec3,
 ) -> RoadSurfaceTerrainClipSourceEdge {
     RoadSurfaceTerrainClipSourceEdge {
         start,

@@ -8,8 +8,8 @@ fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Carriageway,
             3,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             3,
             30,
             3,
@@ -18,8 +18,8 @@ fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             6,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             4,
             40,
             4,
@@ -31,8 +31,8 @@ fn overlapping_source_edges_with_distinct_provenance_are_rejected() {
     let error = push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -54,8 +54,8 @@ fn overlapping_source_edges_with_identical_boundary_provenance_are_accepted() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             10,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             47,
             3,
             23,
@@ -64,8 +64,8 @@ fn overlapping_source_edges_with_identical_boundary_provenance_are_accepted() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             10,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             47,
             3,
             23,
@@ -77,8 +77,8 @@ fn overlapping_source_edges_with_identical_boundary_provenance_are_accepted() {
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -115,8 +115,8 @@ fn overlapping_non_adjacent_material_edges_with_identical_boundary_provenance_us
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Carriageway,
             2,
-            Vector3::new(-5.0, 150.0, 0.0),
-            Vector3::new(0.0, 150.0, 0.0),
+            RoadVec3::new(-5.0, 150.0, 0.0),
+            RoadVec3::new(0.0, 150.0, 0.0),
             89,
             0,
             90,
@@ -125,8 +125,8 @@ fn overlapping_non_adjacent_material_edges_with_identical_boundary_provenance_us
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             11,
-            Vector3::new(-5.0, 150.0, 0.0),
-            Vector3::new(0.0, 150.0, 0.0),
+            RoadVec3::new(-5.0, 150.0, 0.0),
+            RoadVec3::new(0.0, 150.0, 0.0),
             89,
             0,
             90,
@@ -138,8 +138,8 @@ fn overlapping_non_adjacent_material_edges_with_identical_boundary_provenance_us
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::Bend,
-        test_boundary_point(Vector3::new(-5.0, 150.0, 0.0)),
-        test_boundary_point(Vector3::new(0.0, 150.0, 0.0)),
+        test_boundary_point(RoadVec3::new(-5.0, 150.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 150.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -177,8 +177,8 @@ fn overlapping_source_edges_with_distinct_height_carriers_are_rejected() {
     let mut first = test_source_edge_for_owner(
         RoadSurfaceBandKind::CurbOrShoulder,
         10,
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(2.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(2.0, 0.0, 0.0),
         47,
         3,
         23,
@@ -195,8 +195,8 @@ fn overlapping_source_edges_with_distinct_height_carriers_are_rejected() {
     let error = push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -218,8 +218,8 @@ fn overlapping_adjacent_material_edges_with_one_same_height_handoff_source_are_a
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             10,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             47,
             3,
             23,
@@ -228,8 +228,8 @@ fn overlapping_adjacent_material_edges_with_one_same_height_handoff_source_are_a
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             11,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             69,
             4,
             23,
@@ -241,8 +241,8 @@ fn overlapping_adjacent_material_edges_with_one_same_height_handoff_source_are_a
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.12, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -261,8 +261,8 @@ fn overlapping_adjacent_material_edges_with_one_sloped_handoff_source_are_accept
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             10,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             47,
             3,
             23,
@@ -271,8 +271,8 @@ fn overlapping_adjacent_material_edges_with_one_sloped_handoff_source_are_accept
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             11,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             69,
             4,
             23,
@@ -284,8 +284,8 @@ fn overlapping_adjacent_material_edges_with_one_sloped_handoff_source_are_accept
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -304,8 +304,8 @@ fn overlapping_adjacent_material_edges_with_distinct_endpoint_sources_use_canoni
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             7,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             31,
             24,
             32,
@@ -314,8 +314,8 @@ fn overlapping_adjacent_material_edges_with_distinct_endpoint_sources_use_canoni
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             40,
             14,
             41,
@@ -327,8 +327,8 @@ fn overlapping_adjacent_material_edges_with_distinct_endpoint_sources_use_canoni
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::Bend,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.12, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -367,8 +367,8 @@ fn overlapping_source_edges_with_same_owner_distinct_provenance_are_rejected() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             3,
             30,
             3,
@@ -377,8 +377,8 @@ fn overlapping_source_edges_with_same_owner_distinct_provenance_are_rejected() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             4,
             40,
             4,
@@ -390,8 +390,8 @@ fn overlapping_source_edges_with_same_owner_distinct_provenance_are_rejected() {
     let error = push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -413,8 +413,8 @@ fn overlapping_same_material_edges_with_equal_boundary_heights_use_canonical_seg
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             58,
             82,
             57,
@@ -423,8 +423,8 @@ fn overlapping_same_material_edges_with_equal_boundary_heights_use_canonical_seg
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             6,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             62,
             68,
             62,
@@ -436,8 +436,8 @@ fn overlapping_same_material_edges_with_equal_boundary_heights_use_canonical_seg
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.12, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -476,8 +476,8 @@ fn canonical_boundary_segment_source_matches_later_direct_source_at_same_keys() 
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             58,
             82,
             57,
@@ -486,8 +486,8 @@ fn canonical_boundary_segment_source_matches_later_direct_source_at_same_keys() 
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             6,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             62,
             68,
             62,
@@ -496,8 +496,8 @@ fn canonical_boundary_segment_source_matches_later_direct_source_at_same_keys() 
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             91,
             92,
             91,
@@ -509,8 +509,8 @@ fn canonical_boundary_segment_source_matches_later_direct_source_at_same_keys() 
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.12, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -529,8 +529,8 @@ fn partially_canonical_same_owner_segment_absorbs_later_direct_source_at_same_ke
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             7,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             31,
             24,
             32,
@@ -539,8 +539,8 @@ fn partially_canonical_same_owner_segment_absorbs_later_direct_source_at_same_ke
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             31,
             24,
             41,
@@ -549,8 +549,8 @@ fn partially_canonical_same_owner_segment_absorbs_later_direct_source_at_same_ke
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             40,
             14,
             41,
@@ -564,8 +564,8 @@ fn partially_canonical_same_owner_segment_absorbs_later_direct_source_at_same_ke
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::Bend,
-        test_boundary_point(Vector3::new(0.0, 0.12, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.12, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.12, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -600,8 +600,8 @@ fn partially_canonical_same_owner_segment_absorbs_later_direct_source_at_same_ke
 
 #[test]
 fn partially_canonical_same_owner_segment_matches_generated_bend_boundary_keys() {
-    let start = Vector3::new(-8.931965, 149.86, 8.170613);
-    let end = Vector3::new(-7.159239, 149.798, 5.100163);
+    let start = RoadVec3::new(-8.931965, 149.86, 8.170613);
+    let end = RoadVec3::new(-7.159239, 149.798, 5.100163);
     let mut source_edges = vec![
         test_source_edge_for_owner_and_kind(
             RoadSurfaceVisualNodePieceKind::Bend,

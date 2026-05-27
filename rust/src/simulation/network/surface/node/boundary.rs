@@ -3,8 +3,9 @@
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, arrangement,
-    backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2},
+    backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     band_semantics::raised_step_band_rank,
+    height,
     keys::{SurfaceSegmentParameter, SurfaceXzKey},
     piece::{
         NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
@@ -12,7 +13,6 @@ use super::{
     },
     segments::{exact_line_parameter, interpolate_height_i64, overlay_segment_parameter},
 };
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
 pub(super) use super::segments::{arrangement_key, key_lies_exactly_on_segment};
@@ -49,10 +49,10 @@ pub(super) type ArrangementSegmentParameter = SurfaceSegmentParameter;
 const BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS: i64 = 128;
 
 impl ArrangementBoundaryPointKey {
-    pub(super) fn from_world(point: Vector3) -> Self {
+    pub(super) fn from_world(point: RoadVec3) -> Self {
         Self {
-            x_key: (f64::from(point.x) * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            z_key: (f64::from(point.z) * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            x_key: (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            z_key: (point.z * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
             y_mm: (point.y * 1000.0).round() as i64,
         }
     }
@@ -70,7 +70,7 @@ impl NodeFootprintBoundaryPoint {
         Self { point_key }
     }
 
-    pub(super) fn point_world(self) -> Vector3 {
+    pub(super) fn point_world(self) -> RoadVec3 {
         arrangement_boundary_point_to_world(self.point_key)
     }
 
@@ -132,6 +132,7 @@ pub(super) struct NodeFootprintBoundaryExportSources {
         BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
     direct_vertex_source_conflicts:
         BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
+    grade_authority_source_provenance: Vec<Option<height::NodeHeightCarrierProvenanceKey>>,
     explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
 }
 
@@ -205,7 +206,7 @@ pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
     points: &mut Vec<NodeFootprintBoundaryPoint>,
     mut should_keep_vertex: F,
 ) where
-    F: FnMut(ArrangementBoundaryPointKey, [Vector3; 3]) -> bool,
+    F: FnMut(ArrangementBoundaryPointKey, [RoadVec3; 3]) -> bool,
 {
     loop {
         if points.len() < 4 {
@@ -527,15 +528,15 @@ pub(super) fn interpolated_segment_height_mm(
     interpolate_height_i64(start.y_mm, end.y_mm, parameter)
 }
 
-pub(super) fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> Vector3 {
-    Vector3::new(
-        (point.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
-        point.y_mm as f32 / 1000.0,
-        (point.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) as f32,
+pub(super) fn arrangement_boundary_point_to_world(point: ArrangementBoundaryPointKey) -> RoadVec3 {
+    RoadVec3::new(
+        point.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        point.y_mm as f64 / 1000.0,
+        point.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
     )
 }
 
-pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
+pub(super) fn boundary_points_numeric_area_budget_m2(points: &[RoadVec3]) -> f32 {
     if points.len() < 2 {
         return NODE_OVERLAY_MIN_AREA_M2;
     }
@@ -543,8 +544,8 @@ pub(super) fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 
         .iter()
         .zip(points.iter().cycle().skip(1))
         .take(points.len())
-        .map(|(start, end)| Vector2::new(start.x - end.x, start.z - end.z).length())
-        .sum::<f32>();
+        .map(|(start, end)| RoadVec2::new(start.x - end.x, start.z - end.z).length())
+        .sum::<f64>() as f32;
     RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
 }
 

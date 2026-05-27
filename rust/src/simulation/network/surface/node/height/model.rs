@@ -31,6 +31,7 @@ pub(crate) struct NodeHeightedVertex {
     pub(crate) height_m: f64,
     pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) height_authority: Option<NodeHeightAuthoritySource>,
+    pub(crate) source_provenance: Option<NodeHeightCarrierProvenanceKey>,
     pub(crate) grade_authority: Option<NodeGradeVertexAuthority>,
 }
 
@@ -180,6 +181,18 @@ pub(crate) enum NodeHeightAuthoritySource {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct NodeHeightCarrierProvenanceKey {
+    pub(crate) owner: NodeBandOwner,
+    pub(crate) source_kind: RoadSurfaceBandKind,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: usize,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
+    pub(crate) point: NodeOwnedRegionArrangementKey,
+    pub(crate) origin: NodeCarrierProvenanceOrigin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct NodeHeightPointKey {
     pub(super) x_key: i64,
     pub(super) z_key: i64,
@@ -229,6 +242,7 @@ pub(super) struct NodeResolvedHeightAuthority {
     pub(super) point_xz: RoadVec2,
     pub(super) height_m: f64,
     pub(super) authority: NodeHeightAuthoritySource,
+    pub(super) source_provenance: Option<NodeHeightCarrierProvenanceKey>,
 }
 
 pub(super) struct NodeBandHeightField {
@@ -243,6 +257,7 @@ pub(super) struct NodeBandHeightPatch {
     pub(super) explicit_vertex_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
     pub(super) source_handoff_support_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
     pub(super) contour_edge_support_heights: BTreeMap<NodeHeightSourcePointKey, f64>,
+    pub(super) contour_edges: Vec<NodeBandHeightContourEdge>,
     pub(super) triangles: Option<Vec<NodeBandHeightTriangle>>,
 }
 
@@ -269,6 +284,13 @@ pub(in crate::simulation::network::surface::node) struct NodeBandHeightTriangle 
     pub(super) a_height_m: f64,
     pub(super) b_height_m: f64,
     pub(super) c_height_m: f64,
+}
+
+pub(super) struct NodeBandHeightContourEdge {
+    pub(super) start: NodeHeightSourcePointKey,
+    pub(super) end: NodeHeightSourcePointKey,
+    pub(super) start_height_mm: i64,
+    pub(super) end_height_mm: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -330,5 +352,20 @@ impl NodeHeightPointKey {
 
     pub(super) fn z_mm(self) -> i64 {
         SurfaceXzKey::from_raw_keys(self.x_key, self.z_key).z_mm()
+    }
+}
+
+impl NodeHeightCarrierProvenanceKey {
+    pub(super) fn from_record(record: NodeCarrierProvenanceRecord) -> Self {
+        Self {
+            owner: record.owner,
+            source_kind: record.source_kind,
+            source_mouth_order_index: record.source_mouth_order_index,
+            source_band_index: record.source_band_index,
+            height_field_id: record.height_field_id,
+            claim_priority: record.claim_priority,
+            point: record.point,
+            origin: record.origin,
+        }
     }
 }

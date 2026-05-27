@@ -4,8 +4,8 @@ use super::*;
 
 #[test]
 fn direct_boundary_segment_with_adjacent_material_endpoint_owners_uses_raised_owner() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.0, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 0.0, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 0.0, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         start,
@@ -58,8 +58,8 @@ fn direct_boundary_segment_with_adjacent_material_endpoint_owners_uses_raised_ow
 
 #[test]
 fn direct_boundary_segment_with_same_material_distinct_endpoint_owners_uses_canonical_owner() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(2.0, 0.12, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 0.12, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         start,
@@ -116,8 +116,8 @@ fn boundary_segment_endpoints_can_use_source_edge_interpolation_provenance() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             3,
             30,
             3,
@@ -126,8 +126,8 @@ fn boundary_segment_endpoints_can_use_source_edge_interpolation_provenance() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 2.0),
-            Vector3::new(2.0, 0.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+            RoadVec3::new(2.0, 0.0, 2.0),
             4,
             40,
             4,
@@ -139,8 +139,8 @@ fn boundary_segment_endpoints_can_use_source_edge_interpolation_provenance() {
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(1.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(1.0, 0.0, 2.0)),
+        test_boundary_point(RoadVec3::new(1.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(1.0, 0.0, 2.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -176,8 +176,8 @@ fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_own
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             6,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             7,
             70,
             7,
@@ -186,8 +186,8 @@ fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_own
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             3,
             30,
             3,
@@ -196,8 +196,8 @@ fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_own
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Sidewalk,
             5,
-            Vector3::new(0.0, 0.0, 2.0),
-            Vector3::new(2.0, 0.0, 2.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+            RoadVec3::new(2.0, 0.0, 2.0),
             4,
             40,
             4,
@@ -209,8 +209,8 @@ fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_own
     let result = push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(1.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(1.0, 0.0, 2.0)),
+        test_boundary_point(RoadVec3::new(1.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(1.0, 0.0, 2.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -228,8 +228,8 @@ fn boundary_segment_endpoint_with_same_material_interpolated_sources_rejects_own
 
 #[test]
 fn direct_boundary_segment_with_raised_step_connector_uses_raised_owner() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(0.15, 0.0, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.15, 0.0, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         start,
@@ -282,8 +282,8 @@ fn direct_boundary_segment_with_raised_step_connector_uses_raised_owner() {
 
 #[test]
 fn direct_boundary_segment_with_nonadjacent_raised_corner_uses_raised_owner() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(0.15, 0.0, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.15, 0.0, 0.0));
     let mut direct_vertex_sources = BTreeMap::new();
     direct_vertex_sources.insert(
         start,
@@ -336,8 +336,8 @@ fn direct_boundary_segment_with_nonadjacent_raised_corner_uses_raised_owner() {
 
 #[test]
 fn raised_corner_with_equivalent_lower_material_candidates_uses_canonical_point_source() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(0.15, 0.0, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.15, 0.0, 0.0));
     let raised = NodeFootprintBoundaryDirectVertex {
         source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
             top_surface_source_index: 47,
@@ -403,8 +403,8 @@ fn raised_corner_with_equivalent_lower_material_candidates_uses_canonical_point_
 
 #[test]
 fn direct_boundary_segment_with_explicit_step_owner_pair_is_accepted() {
-    let start = ArrangementBoundaryPointKey::from_world(Vector3::new(0.0, 0.12, 0.0));
-    let end = ArrangementBoundaryPointKey::from_world(Vector3::new(0.15, 0.0, 0.0));
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.15, 0.0, 0.0));
     let raised_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 10);
     let lower_owner = arrangement::NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 9);
     let explicit_vertical_step_segments = vec![

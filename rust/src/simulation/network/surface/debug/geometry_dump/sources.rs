@@ -209,9 +209,9 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface::debug) fn append_node_boundary_key_debug_literal(
         dump: &mut String,
-        point: Vector3,
+        point: backend::RoadVec3,
     ) {
-        let key = NodeArrangementKey::from_point(backend::godot_vec3_xz_to_road(point));
+        let key = NodeArrangementKey::from_point(backend::road_vec3_xz(point));
         let _ = write!(dump, "[{},{}]", key.x_key(), key.z_key());
     }
 }

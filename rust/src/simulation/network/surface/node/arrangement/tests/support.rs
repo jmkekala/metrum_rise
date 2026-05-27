@@ -103,6 +103,7 @@ pub(super) fn height_vertex(x: f64, z: f64, height_m: f64) -> NodeHeightedVertex
         height_m,
         height_field_id: height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
         height_authority: None,
+        source_provenance: None,
         grade_authority: None,
     }
 }

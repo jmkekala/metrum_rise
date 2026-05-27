@@ -1,6 +1,7 @@
 //! Node boundary provenance and height-export tests.
 
 use super::*;
+use crate::simulation::network::surface::RoadVec3;
 
 mod direct_segments;
 mod duplicate_points;

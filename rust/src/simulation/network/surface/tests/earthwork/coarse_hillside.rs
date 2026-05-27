@@ -142,18 +142,18 @@ fn grounded_hillside_terrain_outside_paved_footprint_stays_near_source() {
 
     let side_a_lateral = left_outer - 2.0;
     let side_b_lateral = right_outer + 2.0;
-    let side_a_x = section.center_xz.x + section.lateral_xz.x * side_a_lateral;
-    let side_a_z = section.center_xz.y + section.lateral_xz.y * side_a_lateral;
-    let side_b_x = section.center_xz.x + section.lateral_xz.x * side_b_lateral;
-    let side_b_z = section.center_xz.y + section.lateral_xz.y * side_b_lateral;
-    let side_a_actual =
-        terrain.sample_visual_height_world(side_a_x, side_a_z) * crate::config::HEIGHT_SCALE;
-    let side_b_actual =
-        terrain.sample_visual_height_world(side_b_x, side_b_z) * crate::config::HEIGHT_SCALE;
+    let side_a_x = section.center_xz.x + section.lateral_xz.x * f64::from(side_a_lateral);
+    let side_a_z = section.center_xz.y + section.lateral_xz.y * f64::from(side_a_lateral);
+    let side_b_x = section.center_xz.x + section.lateral_xz.x * f64::from(side_b_lateral);
+    let side_b_z = section.center_xz.y + section.lateral_xz.y * f64::from(side_b_lateral);
+    let side_a_actual = terrain.sample_visual_height_world(side_a_x as f32, side_a_z as f32)
+        * crate::config::HEIGHT_SCALE;
+    let side_b_actual = terrain.sample_visual_height_world(side_b_x as f32, side_b_z as f32)
+        * crate::config::HEIGHT_SCALE;
     let side_a_source =
-        terrain.sample_height_world(side_a_x, side_a_z) * crate::config::HEIGHT_SCALE;
+        terrain.sample_height_world(side_a_x as f32, side_a_z as f32) * crate::config::HEIGHT_SCALE;
     let side_b_source =
-        terrain.sample_height_world(side_b_x, side_b_z) * crate::config::HEIGHT_SCALE;
+        terrain.sample_height_world(side_b_x as f32, side_b_z as f32) * crate::config::HEIGHT_SCALE;
     assert!(
         (side_a_actual - side_a_source).abs() <= 0.12,
         "expected terrain outside the paved footprint to remain near source on hillside side A, got actual={side_a_actual:.3} source={side_a_source:.3}"
@@ -165,18 +165,20 @@ fn grounded_hillside_terrain_outside_paved_footprint_stays_near_source() {
 
     let far_side_a_lateral = left_outer - EARTHWORK_MAX_MARGIN_M - 6.0;
     let far_side_b_lateral = right_outer + EARTHWORK_MAX_MARGIN_M + 6.0;
-    let far_side_a_x = section.center_xz.x + section.lateral_xz.x * far_side_a_lateral;
-    let far_side_a_z = section.center_xz.y + section.lateral_xz.y * far_side_a_lateral;
-    let far_side_b_x = section.center_xz.x + section.lateral_xz.x * far_side_b_lateral;
-    let far_side_b_z = section.center_xz.y + section.lateral_xz.y * far_side_b_lateral;
-    let far_side_a_actual = terrain.sample_visual_height_world(far_side_a_x, far_side_a_z)
+    let far_side_a_x = section.center_xz.x + section.lateral_xz.x * f64::from(far_side_a_lateral);
+    let far_side_a_z = section.center_xz.y + section.lateral_xz.y * f64::from(far_side_a_lateral);
+    let far_side_b_x = section.center_xz.x + section.lateral_xz.x * f64::from(far_side_b_lateral);
+    let far_side_b_z = section.center_xz.y + section.lateral_xz.y * f64::from(far_side_b_lateral);
+    let far_side_a_actual = terrain
+        .sample_visual_height_world(far_side_a_x as f32, far_side_a_z as f32)
         * crate::config::HEIGHT_SCALE;
-    let far_side_b_actual = terrain.sample_visual_height_world(far_side_b_x, far_side_b_z)
+    let far_side_b_actual = terrain
+        .sample_visual_height_world(far_side_b_x as f32, far_side_b_z as f32)
         * crate::config::HEIGHT_SCALE;
-    let far_side_a_source =
-        terrain.sample_height_world(far_side_a_x, far_side_a_z) * crate::config::HEIGHT_SCALE;
-    let far_side_b_source =
-        terrain.sample_height_world(far_side_b_x, far_side_b_z) * crate::config::HEIGHT_SCALE;
+    let far_side_a_source = terrain.sample_height_world(far_side_a_x as f32, far_side_a_z as f32)
+        * crate::config::HEIGHT_SCALE;
+    let far_side_b_source = terrain.sample_height_world(far_side_b_x as f32, far_side_b_z as f32)
+        * crate::config::HEIGHT_SCALE;
 
     assert!((far_side_a_actual - far_side_a_source).abs() <= 0.12);
     assert!((far_side_b_actual - far_side_b_source).abs() <= 0.12);

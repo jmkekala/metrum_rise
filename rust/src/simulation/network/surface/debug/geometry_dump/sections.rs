@@ -9,16 +9,16 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         section: &RoadSurfaceSection,
     ) {
-        let center_world = Vector3::new(
+        let center_world = backend::RoadVec3::new(
             section.center_xz.x,
-            section.center_height_m,
+            f64::from(section.center_height_m),
             section.center_xz.y,
         );
         let source_center_y_m = terrain
-            .sample_height_world(section.center_xz.x, section.center_xz.y)
+            .sample_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
             * config::HEIGHT_SCALE;
         let visual_center_y_m = terrain
-            .sample_visual_height_world(section.center_xz.x, section.center_xz.y)
+            .sample_visual_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
             * config::HEIGHT_SCALE;
 
         let _ = writeln!(dump, "        {{");
@@ -262,8 +262,8 @@ impl RoadSurfaceSystem {
         let mut min_y = f32::INFINITY;
         let mut max_y = f32::NEG_INFINITY;
         for point in &polygon.points_world {
-            min_y = min_y.min(point.y);
-            max_y = max_y.max(point.y);
+            min_y = min_y.min(point.y as f32);
+            max_y = max_y.max(point.y as f32);
         }
         min_y.is_finite().then_some((min_y, max_y))
     }

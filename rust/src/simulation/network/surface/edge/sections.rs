@@ -1,9 +1,9 @@
 //! Edge centerline section sampling and longitudinal height selection.
 
+use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use super::super::{CompiledNodeKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::EdgeClass;
-use godot::prelude::{Vector2, Vector3};
 
 // Longitudinal section sampling cadence by road-edge class.
 const STANDARD_SECTION_STEP_M: f32 = 8.0;
@@ -17,19 +17,24 @@ impl RoadSurfaceSystem {
         edge_idx: usize,
     ) -> Vec<RoadSurfaceSection> {
         let edge = graph.edge(edge_idx);
-        let points = self.edge_points(edge);
+        let points: Vec<RoadVec3> = self
+            .edge_points(edge)
+            .iter()
+            .copied()
+            .map(godot_vec3_to_road)
+            .collect();
         if points.is_empty() {
             return Vec::new();
         }
         if points.len() == 1 {
             let center = points[0];
             let center_height_m = self.solve_section_height(center);
-            let tangent_xz = Vector2::RIGHT;
-            let lateral_xz = Vector2::new(-tangent_xz.y, tangent_xz.x);
+            let tangent_xz = RoadVec2::X;
+            let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x);
             return vec![RoadSurfaceSection {
                 edge_idx,
                 s_m: 0.0,
-                center_xz: Vector2::new(center.x, center.z),
+                center_xz: RoadVec2::new(center.x, center.z),
                 center_height_m,
                 tangent_xz,
                 lateral_xz,
@@ -37,7 +42,7 @@ impl RoadSurfaceSystem {
             }];
         }
 
-        let cumulative = self.build_cumulative_distances(points);
+        let cumulative = self.build_cumulative_distances(&points);
         let start_kind = self.classify_surface_node_kind_from_graph_geometry(
             graph,
             graph.get_valid_node(edge.start_node),
@@ -77,8 +82,8 @@ impl RoadSurfaceSystem {
         sample_distances
             .into_iter()
             .map(|s_m| {
-                let (center, tangent_xz) = self.sample_polyline(points, &cumulative, s_m);
-                let lateral_xz = Vector2::new(-tangent_xz.y, tangent_xz.x).normalized();
+                let (center, tangent_xz) = self.sample_polyline(&points, &cumulative, s_m);
+                let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x).normalize();
                 let profile_plane =
                     handoff_range.and_then(|(start_handoff_s_m, end_handoff_s_m)| {
                         if s_m <= start_handoff_s_m + SAMPLE_EPSILON_M {
@@ -91,12 +96,12 @@ impl RoadSurfaceSystem {
                     });
                 let center_height_m = profile_plane.map_or_else(
                     || self.solve_section_height(center),
-                    |plane| plane.height_at_xz(center.x, center.z),
+                    |plane| plane.height_at_xz(center.x as f32, center.z as f32),
                 );
                 RoadSurfaceSection {
                     edge_idx,
                     s_m,
-                    center_xz: Vector2::new(center.x, center.z),
+                    center_xz: RoadVec2::new(center.x, center.z),
                     center_height_m,
                     tangent_xz,
                     lateral_xz,
@@ -106,8 +111,8 @@ impl RoadSurfaceSystem {
             .collect()
     }
 
-    fn solve_section_height(&self, center: Vector3) -> f32 {
-        center.y
+    fn solve_section_height(&self, center: RoadVec3) -> f32 {
+        center.y as f32
     }
 
     fn build_section_sample_distances(

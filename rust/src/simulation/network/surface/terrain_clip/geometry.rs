@@ -1,5 +1,6 @@
 //! Local terrain-clip overlay geometry helpers.
 
+use super::super::backend::RoadVec3;
 use super::super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour,
     NodeOverlayPoint, RoadSurfaceSystem,
@@ -10,7 +11,6 @@ use super::super::{
 use super::model::{
     OverlaySegmentParameter, RoadSurfaceTerrainClipLoop, TerrainClipContourCompactError,
 };
-use godot::prelude::Vector3;
 
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 
@@ -28,7 +28,7 @@ impl RoadSurfaceSystem {
         contours
     }
 
-    fn overlay_contour_from_world_points(points_world: &[Vector3]) -> NodeOverlayContour {
+    fn overlay_contour_from_world_points(points_world: &[RoadVec3]) -> NodeOverlayContour {
         let mut contour = Vec::with_capacity(points_world.len());
         for point in points_world {
             let overlay_point = Self::overlay_point_from_world_point(*point);
@@ -45,10 +45,10 @@ impl RoadSurfaceSystem {
         contour
     }
 
-    fn overlay_point_from_world_point(point: Vector3) -> NodeOverlayPoint {
+    fn overlay_point_from_world_point(point: RoadVec3) -> NodeOverlayPoint {
         [
-            (f64::from(point.x) * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
-            (f64::from(point.z) * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (point.x * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (point.z * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
         ]
     }
 
@@ -73,16 +73,19 @@ impl RoadSurfaceSystem {
         Ok(compact)
     }
 
-    pub(super) fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {
+    pub(super) fn world_points_same_for_boundary(a: RoadVec3, b: RoadVec3) -> bool {
         Self::terrain_clip_world_key(a) == Self::terrain_clip_world_key(b)
     }
 
-    pub(super) fn canonical_numeric_dust_boundary_point(a: Vector3, b: Vector3) -> Option<Vector3> {
+    pub(super) fn canonical_numeric_dust_boundary_point(
+        a: RoadVec3,
+        b: RoadVec3,
+    ) -> Option<RoadVec3> {
         if !Self::overlay_heights_equal(a.y, b.y) {
             return None;
         }
-        let dx = f64::from(a.x) - f64::from(b.x);
-        let dz = f64::from(a.z) - f64::from(b.z);
+        let dx = a.x - b.x;
+        let dz = a.z - b.z;
         let dust_width_m = f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M);
         if dx * dx + dz * dz > dust_width_m * dust_width_m {
             return None;
@@ -92,10 +95,10 @@ impl RoadSurfaceSystem {
         let b_key = Self::terrain_clip_world_key(b);
         let key = if a_key <= b_key { a_key } else { b_key };
         let point = key.to_road_xz();
-        Some(Vector3::new(
-            point.x as f32,
-            SurfaceHeightMmKey::from_m_f32(a.y).as_i64() as f32 / 1000.0,
-            point.y as f32,
+        Some(RoadVec3::new(
+            point.x,
+            SurfaceHeightMmKey::from_m_f64(a.y).as_i64() as f64 / 1000.0,
+            point.y,
         ))
     }
 
@@ -182,11 +185,11 @@ impl RoadSurfaceSystem {
         Some(f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) / length)
     }
 
-    pub(super) fn overlay_height_key(height_m: f32) -> i64 {
-        (f64::from(height_m) * NODE_OVERLAY_SCALE).round() as i64
+    pub(super) fn overlay_height_key(height_m: f64) -> i64 {
+        (height_m * NODE_OVERLAY_SCALE).round() as i64
     }
 
-    pub(super) fn overlay_heights_equal(a: f32, b: f32) -> bool {
+    pub(super) fn overlay_heights_equal(a: f64, b: f64) -> bool {
         Self::overlay_height_key(a) == Self::overlay_height_key(b)
     }
 
@@ -194,13 +197,13 @@ impl RoadSurfaceSystem {
         overlay_point_key(point)
     }
 
-    pub(super) fn terrain_clip_world_key(point: Vector3) -> SurfaceXzKey {
-        SurfaceXzKey::from_godot_world_xz(point)
+    pub(super) fn terrain_clip_world_key(point: RoadVec3) -> SurfaceXzKey {
+        SurfaceXzKey::from_world_xz(point)
     }
 }
 
-pub(super) fn interpolate_height_f64(start_y: f32, end_y: f32, t: f64) -> f32 {
-    (f64::from(start_y) + f64::from(end_y - start_y) * t) as f32
+pub(super) fn interpolate_height_f64(start_y: f64, end_y: f64, t: f64) -> f64 {
+    start_y + (end_y - start_y) * t
 }
 
 pub(super) fn overlay_segment_length_m(start: NodeOverlayPoint, end: NodeOverlayPoint) -> f64 {

@@ -14,16 +14,16 @@ fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
     };
     let source_edges = vec![
         test_source_edge(
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 1.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 1.0, 0.0),
             3,
             30,
             3,
             31,
         ),
         test_source_edge(
-            Vector3::new(1.0, 1.0, 0.0),
-            Vector3::new(2.0, 2.0, 0.0),
+            RoadVec3::new(1.0, 1.0, 0.0),
+            RoadVec3::new(2.0, 2.0, 0.0),
             4,
             40,
             4,
@@ -35,8 +35,8 @@ fn duplicate_split_point_same_height_preserves_sourced_subsegments() {
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 2.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 2.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -75,8 +75,8 @@ fn off_height_source_endpoint_does_not_split_boundary_segment() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::Carriageway,
             3,
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
             3,
             30,
             3,
@@ -85,8 +85,8 @@ fn off_height_source_endpoint_does_not_split_boundary_segment() {
         test_source_edge_for_owner(
             RoadSurfaceBandKind::CurbOrShoulder,
             6,
-            Vector3::new(1.0, 0.12, 0.0),
-            Vector3::new(1.0, 0.12, 1.0),
+            RoadVec3::new(1.0, 0.12, 0.0),
+            RoadVec3::new(1.0, 0.12, 1.0),
             4,
             40,
             4,
@@ -98,8 +98,8 @@ fn off_height_source_endpoint_does_not_split_boundary_segment() {
     push_sourced_node_earthwork_boundary_segments(
         11,
         RoadSurfaceVisualNodePieceKind::JunctionN,
-        test_boundary_point(Vector3::new(0.0, 0.0, 0.0)),
-        test_boundary_point(Vector3::new(2.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(0.0, 0.0, 0.0)),
+        test_boundary_point(RoadVec3::new(2.0, 0.0, 0.0)),
         &source_edges,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -121,7 +121,7 @@ fn duplicate_split_point_conflicting_height_is_rejected() {
         &mut split_points,
         parameter,
         NodeFootprintBoundarySplitPoint {
-            point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.0)),
+            point_key: ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 1.0, 0.0)),
             source: None,
         },
     )
@@ -131,7 +131,7 @@ fn duplicate_split_point_conflicting_height_is_rejected() {
         &mut split_points,
         parameter,
         NodeFootprintBoundarySplitPoint {
-            point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.0, 0.0)),
+            point_key: ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 2.0, 0.0)),
             source: None,
         },
     )
@@ -173,7 +173,7 @@ fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
         &mut split_points,
         parameter,
         NodeFootprintBoundarySplitPoint {
-            point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 2.0, 0.0)),
+            point_key: ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 2.0, 0.0)),
             source: Some(lower_order_source),
         },
     )
@@ -183,7 +183,7 @@ fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
         &mut split_points,
         parameter,
         NodeFootprintBoundarySplitPoint {
-            point_key: ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 1.0, 0.0)),
+            point_key: ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 1.0, 0.0)),
             source: Some(higher_order_source),
         },
     )
@@ -202,7 +202,7 @@ fn duplicate_split_point_conflicting_sourced_height_is_rejected() {
 
 #[test]
 fn same_height_boundary_point_with_distinct_source_identity_is_rejected() {
-    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.0, 0.0));
+    let point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.0, 0.0));
     let first = NodeFootprintBoundaryDirectVertex {
         source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
             top_surface_source_index: 3,
@@ -230,6 +230,7 @@ fn same_height_boundary_point_with_distinct_source_identity_is_rejected() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -245,7 +246,7 @@ fn same_height_boundary_point_with_distinct_source_identity_is_rejected() {
 
 #[test]
 fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_edge() {
-    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
     let direct = NodeFootprintBoundaryDirectVertex {
         source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
             top_surface_source_index: 122,
@@ -260,8 +261,8 @@ fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_e
     direct_vertex_source_candidates.insert(point_key, vec![direct]);
     let mut sources = NodeFootprintBoundaryExportSources {
         source_edges: vec![test_source_edge(
-            Vector3::new(0.0, 0.12, 0.0),
-            Vector3::new(2.0, 0.12, 0.0),
+            RoadVec3::new(0.0, 0.12, 0.0),
+            RoadVec3::new(2.0, 0.12, 0.0),
             121,
             53,
             121,
@@ -272,6 +273,7 @@ fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_e
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -296,7 +298,7 @@ fn same_height_boundary_point_accepts_same_owner_direct_source_on_interpolated_e
 
 #[test]
 fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
-    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
     let first_start = NodeFootprintBoundaryDirectSource {
         top_surface_source_index: 105,
         grade_authority_index: 160,
@@ -342,6 +344,7 @@ fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -354,7 +357,7 @@ fn same_height_boundary_point_accepts_reversed_interpolation_source_identity() {
 
 #[test]
 fn same_height_boundary_point_accepts_adjacent_interpolation_source_cluster() {
-    let point_key = ArrangementBoundaryPointKey::from_world(Vector3::new(1.0, 0.12, 0.0));
+    let point_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
     let first_start = NodeFootprintBoundaryDirectSource {
         top_surface_source_index: 1237,
         grade_authority_index: 1189,
@@ -400,6 +403,7 @@ fn same_height_boundary_point_accepts_adjacent_interpolation_source_cluster() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 
@@ -470,6 +474,7 @@ fn same_height_boundary_point_accepts_same_owner_interpolation_cluster() {
         direct_vertex_sources,
         direct_vertex_source_candidates,
         direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
         explicit_vertical_step_segments: Vec::new(),
     };
 

@@ -52,7 +52,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
                 next_boundary,
             ])
             .abs();
-            let overlay_match_tolerance_m = SAMPLE_EPSILON_M * 2.0;
+            let overlay_match_tolerance_m = f64::from(SAMPLE_EPSILON_M) * 2.0;
             let mut sampled_visible_top = false;
             let mut sampled_matching_height = false;
             let mut sampled_heights = Vec::new();
@@ -60,7 +60,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
                 for &triangle in &polygon.triangles_world {
                     let Some((wa, wb, wc)) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
                         triangle,
-                        Vector2::new(boundary_point.x, boundary_point.z),
+                        RoadVec2::new(boundary_point.x, boundary_point.z),
                     ) else {
                         continue;
                     };
@@ -68,7 +68,9 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
                         continue;
                     }
                     sampled_visible_top = true;
-                    let height = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+                    let height = triangle[0].y * f64::from(wa)
+                        + triangle[1].y * f64::from(wb)
+                        + triangle[2].y * f64::from(wc);
                     sampled_heights.push(height);
                     if (height - boundary_point.y).abs() <= overlay_match_tolerance_m {
                         sampled_matching_height = true;
@@ -86,7 +88,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
             if let Some(closest_boundary) =
                 closest_visible_top_boundary_point(&top_polygons, *boundary_point)
             {
-                let xz_error = Vector2::new(
+                let xz_error = RoadVec2::new(
                     closest_boundary.x - boundary_point.x,
                     closest_boundary.z - boundary_point.z,
                 )
@@ -99,18 +101,18 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
 
             let Some(closest) = top_vertices.iter().min_by(|a, b| {
                 let da =
-                    Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
+                    RoadVec2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
                 let db =
-                    Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
+                    RoadVec2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
                 da.total_cmp(&db)
             }) else {
                 panic!("node piece emitted no top vertices");
             };
             let xz_error =
-                Vector2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
+                RoadVec2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
             if xz_error <= overlay_match_tolerance_m {
                 let matching_height = top_vertices.iter().any(|candidate| {
-                    Vector2::new(
+                    RoadVec2::new(
                         candidate.x - boundary_point.x,
                         candidate.z - boundary_point.z,
                     )
@@ -129,10 +131,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
                 polygon.triangles_world.iter().find_map(|&triangle| {
                     let (wa, wb, wc) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
                         triangle,
-                        Vector2::new(boundary_point.x, boundary_point.z),
+                        RoadVec2::new(boundary_point.x, boundary_point.z),
                     )?;
-                    (wa >= 0.0 && wb >= 0.0 && wc >= 0.0)
-                        .then_some(triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc)
+                    (wa >= 0.0 && wb >= 0.0 && wc >= 0.0).then_some(
+                        triangle[0].y * f64::from(wa)
+                            + triangle[1].y * f64::from(wb)
+                            + triangle[2].y * f64::from(wc),
+                    )
                 })
             }) {
                 assert!(
@@ -150,8 +155,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
 
 fn closest_visible_top_boundary_point(
     top_polygons: &[&RoadSurfaceVisualPolygon],
-    boundary_point: Vector3,
-) -> Option<Vector3> {
+    boundary_point: RoadVec3,
+) -> Option<RoadVec3> {
     top_polygons
         .iter()
         .flat_map(|polygon| {
@@ -174,8 +179,8 @@ fn closest_visible_top_boundary_point(
                 }))
         })
         .min_by(|a, b| {
-            let da = Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
-            let db = Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
+            let da = RoadVec2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
+            let db = RoadVec2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
             da.total_cmp(&db).then(
                 (a.y - boundary_point.y)
                     .abs()
@@ -223,9 +228,9 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
             })
             .min_by(|a, b| {
                 let da =
-                    Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
+                    RoadVec2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
                 let db =
-                    Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
+                    RoadVec2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
                 da.total_cmp(&db).then(
                     (a.y - boundary_point.y)
                         .abs()
@@ -236,33 +241,34 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
             panic!("node piece emitted no top boundary support");
         };
         let xz_error =
-            Vector2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
+            RoadVec2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
         let y_error = (closest.y - boundary_point.y).abs();
         assert!(
-            xz_error <= SAMPLE_EPSILON_M * 2.0 && y_error <= SAMPLE_EPSILON_M * 2.0,
+            xz_error <= f64::from(SAMPLE_EPSILON_M) * 2.0
+                && y_error <= f64::from(SAMPLE_EPSILON_M) * 2.0,
             "node outer boundary vertices must lie on canonical visible top boundary support; boundary={boundary_point:?} closest={closest:?} xz_error={xz_error:.4} y_error={y_error:.4}"
         );
     }
 }
 
 pub(in crate::simulation::network::surface::tests) fn closest_point_on_segment_xz(
-    point: Vector3,
-    start: Vector3,
-    end: Vector3,
-) -> Vector3 {
-    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    point: RoadVec3,
+    start: RoadVec3,
+    end: RoadVec3,
+) -> RoadVec3 {
+    let segment = RoadVec2::new(end.x - start.x, end.z - start.z);
     let len_squared = segment.length_squared();
-    if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+    if len_squared <= f64::from(SAMPLE_EPSILON_M) * f64::from(SAMPLE_EPSILON_M) {
         return start;
     }
-    let to_point = Vector2::new(point.x - start.x, point.z - start.z);
+    let to_point = RoadVec2::new(point.x - start.x, point.z - start.z);
     let t = (to_point.dot(segment) / len_squared).clamp(0.0, 1.0);
     start.lerp(end, t)
 }
 
 pub(in crate::simulation::network::surface::tests) fn visible_top_vertices(
     piece: &RoadSurfaceVisualNodePiece,
-) -> Vec<Vector3> {
+) -> Vec<RoadVec3> {
     piece
         .road_surface_polygons
         .iter()
@@ -281,7 +287,7 @@ pub(in crate::simulation::network::surface::tests) fn visible_top_vertices(
 
 pub(in crate::simulation::network::surface::tests) fn assert_material_top_supports_point(
     polygons: &[RoadSurfaceVisualPolygon],
-    point: Vector3,
+    point: RoadVec3,
     label: &str,
 ) {
     assert!(
@@ -294,7 +300,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_material_top_suppor
 
 pub(in crate::simulation::network::surface::tests) fn polygon_supports_top_point(
     polygon: &RoadSurfaceVisualPolygon,
-    point: Vector3,
+    point: RoadVec3,
 ) -> bool {
     polygon_vertices_support_top_point(&polygon.points_world, point)
         || polygon_edges_support_top_point(&polygon.points_world, point)
@@ -307,8 +313,8 @@ pub(in crate::simulation::network::surface::tests) fn polygon_supports_top_point
 }
 
 pub(in crate::simulation::network::surface::tests) fn polygon_vertices_support_top_point(
-    vertices: &[Vector3],
-    point: Vector3,
+    vertices: &[RoadVec3],
+    point: RoadVec3,
 ) -> bool {
     vertices
         .iter()
@@ -317,8 +323,8 @@ pub(in crate::simulation::network::surface::tests) fn polygon_vertices_support_t
 }
 
 pub(in crate::simulation::network::surface::tests) fn polygon_edges_support_top_point(
-    vertices: &[Vector3],
-    point: Vector3,
+    vertices: &[RoadVec3],
+    point: RoadVec3,
 ) -> bool {
     if vertices.len() < 2 {
         return false;
@@ -333,32 +339,32 @@ pub(in crate::simulation::network::surface::tests) fn polygon_edges_support_top_
 }
 
 pub(in crate::simulation::network::surface::tests) fn triangle_edges_support_top_point(
-    triangle: [Vector3; 3],
-    point: Vector3,
+    triangle: [RoadVec3; 3],
+    point: RoadVec3,
 ) -> bool {
     (0..3)
         .any(|index| segment_supports_top_point(point, triangle[index], triangle[(index + 1) % 3]))
 }
 
 pub(in crate::simulation::network::surface::tests) fn segment_supports_top_point(
-    point: Vector3,
-    start: Vector3,
-    end: Vector3,
+    point: RoadVec3,
+    start: RoadVec3,
+    end: RoadVec3,
 ) -> bool {
-    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let segment = RoadVec2::new(end.x - start.x, end.z - start.z);
     let len_squared = segment.length_squared();
-    if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+    if len_squared <= f64::from(SAMPLE_EPSILON_M) * f64::from(SAMPLE_EPSILON_M) {
         return false;
     }
-    let to_point = Vector2::new(point.x - start.x, point.z - start.z);
+    let to_point = RoadVec2::new(point.x - start.x, point.z - start.z);
     let t = (to_point.dot(segment) / len_squared).clamp(0.0, 1.0);
     let candidate = start.lerp(end, t);
     top_points_match(candidate, point)
 }
 
 pub(in crate::simulation::network::surface::tests) fn top_points_match(
-    candidate: Vector3,
-    point: Vector3,
+    candidate: RoadVec3,
+    point: RoadVec3,
 ) -> bool {
     test_xz_key(candidate) == test_xz_key(point) && (candidate.y - point.y).abs() <= 0.004
 }

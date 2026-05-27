@@ -48,13 +48,13 @@ const DEBUG_VERTEX_NEAR_TOLERANCE_M: f32 = 0.002;
 #[derive(Clone, Copy)]
 struct DebugTopVertex {
     material: &'static str,
-    point: Vector3,
+    point: backend::RoadVec3,
 }
 
 #[derive(Clone, Copy)]
 struct DebugClosestTopVertex {
     material: &'static str,
-    point: Vector3,
+    point: backend::RoadVec3,
     xz_error_m: f32,
     y_delta_m: f32,
 }
@@ -65,7 +65,7 @@ struct DebugMouthTopAnchor {
     band_index: usize,
     role: &'static str,
     material: &'static str,
-    point: Vector3,
+    point: backend::RoadVec3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -103,8 +103,8 @@ struct DebugBoundaryOwner {
 #[derive(Clone, Copy)]
 struct DebugTopBoundaryEdge {
     owner: DebugBoundaryOwner,
-    start: Vector3,
-    end: Vector3,
+    start: backend::RoadVec3,
+    end: backend::RoadVec3,
     key: DebugRenderEdgeKey,
     xz_key: DebugRenderXzEdgeKey,
     avg_y_m: f32,
@@ -112,10 +112,10 @@ struct DebugTopBoundaryEdge {
 
 #[derive(Clone, Copy)]
 struct DebugVerticalFaceSpanEdges {
-    lower_start: Vector3,
-    lower_end: Vector3,
-    upper_start: Vector3,
-    upper_end: Vector3,
+    lower_start: backend::RoadVec3,
+    lower_end: backend::RoadVec3,
+    upper_start: backend::RoadVec3,
+    upper_end: backend::RoadVec3,
 }
 
 #[derive(Clone, Copy)]
@@ -153,11 +153,11 @@ struct DebugCoverageStats {
 }
 
 impl DebugRenderVertexKey {
-    fn from_point(point: Vector3) -> Self {
-        let xz_key = SurfaceXzKey::from_godot_world_xz(point);
+    fn from_point(point: backend::RoadVec3) -> Self {
+        let xz_key = SurfaceXzKey::from_world_xz(point);
         Self {
             x_key: xz_key.x_key(),
-            y_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+            y_mm: SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
             z_key: xz_key.z_key(),
         }
     }
@@ -171,7 +171,7 @@ impl DebugRenderVertexKey {
 }
 
 impl DebugRenderEdgeKey {
-    fn normalized(start: Vector3, end: Vector3) -> Option<Self> {
+    fn normalized(start: backend::RoadVec3, end: backend::RoadVec3) -> Option<Self> {
         let start = DebugRenderVertexKey::from_point(start);
         let end = DebugRenderVertexKey::from_point(end);
         if start == end {

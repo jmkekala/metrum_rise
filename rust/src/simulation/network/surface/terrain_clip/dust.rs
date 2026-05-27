@@ -1,5 +1,6 @@
 //! Numeric-dust terrain-clip connector recovery.
 
+use super::super::backend::RoadVec3;
 use super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSurfaceSystem};
 use super::geometry::{
     contour_area_delta_after_removing_vertex, interpolate_height_f64, overlay_segment_length_m,
@@ -7,7 +8,6 @@ use super::geometry::{
 use super::model::{
     TerrainClipDustConnectorRecovery, TerrainClipSegmentHeights, TerrainClipSourceEdge,
 };
-use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
     fn terrain_clip_dust_connector_heights_from_source_edges(
@@ -64,7 +64,7 @@ impl RoadSurfaceSystem {
     fn terrain_clip_contour_vertex_heights_from_source_edges(
         contour: &NodeOverlayContour,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Result<Option<Vec<f32>>, String> {
+    ) -> Result<Option<Vec<f64>>, String> {
         let len = contour.len();
         if len < 3 {
             return Ok(None);
@@ -115,7 +115,7 @@ impl RoadSurfaceSystem {
     fn validate_terrain_clip_dust_endpoint_height(
         label: &'static str,
         point: super::super::NodeOverlayPoint,
-        height: f32,
+        height: f64,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<(), String> {
         let Some(source_height) =
@@ -137,7 +137,7 @@ impl RoadSurfaceSystem {
 
     fn interpolate_terrain_clip_dust_run_heights(
         contour: &NodeOverlayContour,
-        heights: &mut [Option<f32>],
+        heights: &mut [Option<f64>],
         prev_index: usize,
         next_index: usize,
     ) -> Option<()> {
@@ -191,8 +191,8 @@ impl RoadSurfaceSystem {
         let start = contour[segment_index];
         let end = contour[(segment_index + 1) % len];
         TerrainClipDustConnectorRecovery::Covered(vec![
-            Vector3::new(start[0] as f32, heights.start_y, start[1] as f32),
-            Vector3::new(end[0] as f32, heights.end_y, end[1] as f32),
+            RoadVec3::new(start[0], heights.start_y, start[1]),
+            RoadVec3::new(end[0], heights.end_y, end[1]),
         ])
     }
 

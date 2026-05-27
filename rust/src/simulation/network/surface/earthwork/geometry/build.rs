@@ -85,13 +85,13 @@ impl RoadSurfaceSystem {
         }
         // A cusp has no unique vertex miter. Keep edge-based faces, but do not invent a loop point.
         let outer_loop = if vertex_outer_points.len() == boundary_points.len() {
-            Self::make_visual_polygon(vertex_outer_points)
+            Self::earthwork_visual_polygon_from_road_points(vertex_outer_points)
         } else {
             None
         };
         let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
-        let winding_ccw = Self::signed_polygon_area_xz(&boundary_points) > 0.0;
+        let winding_ccw = Self::earthwork_signed_polygon_area_xz(&boundary_points) > 0.0;
         for segment in boundary_segments {
             let current = segment.inner_start;
             let next = segment.inner_end;
@@ -112,9 +112,12 @@ impl RoadSurfaceSystem {
             {
                 continue;
             }
-            let Some(polygon) =
-                Self::make_visual_polygon(vec![current, next, outer_next, outer_current])
-            else {
+            let Some(polygon) = Self::earthwork_visual_polygon_from_road_points(vec![
+                current,
+                next,
+                outer_next,
+                outer_current,
+            ]) else {
                 continue;
             };
             let face_kind =

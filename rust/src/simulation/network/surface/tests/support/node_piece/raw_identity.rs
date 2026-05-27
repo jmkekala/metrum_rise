@@ -214,13 +214,13 @@ fn grade_authority_for_source(
         })
 }
 
-fn world_point_raw_key(point: Vector3) -> (i64, i64) {
-    let key = SurfaceXzKey::from_road_xz(backend::godot_vec3_xz_to_road(point));
+fn world_point_raw_key(point: RoadVec3) -> (i64, i64) {
+    let key = SurfaceXzKey::from_world_xz(point);
     (key.x_key(), key.z_key())
 }
 
 fn assert_exported_polygon_points_track_canonical_keys(
-    points_world: &[Vector3],
+    points_world: &[RoadVec3],
     vertex_keys: &[NodeArrangementKey],
 ) {
     assert_eq!(

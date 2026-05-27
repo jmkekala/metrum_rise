@@ -1,7 +1,6 @@
 //! Owned top-surface region export from triangulated arrangement faces.
 
 use super::super::*;
-use godot::prelude::Vector3;
 use std::collections::BTreeMap;
 
 impl RoadSurfaceSystem {
@@ -133,7 +132,7 @@ impl RoadSurfaceSystem {
     fn arrangement_face_world_triangle(
         arrangement: &NodeArrangement,
         vertices: [arrangement::NodeArrangementVertexId; 3],
-    ) -> Option<[Vector3; 3]> {
+    ) -> Option<[RoadVec3; 3]> {
         let road_triangle = [
             Self::arrangement_vertex_canonical_world(arrangement, vertices[0])?,
             Self::arrangement_vertex_canonical_world(arrangement, vertices[1])?,
@@ -157,9 +156,9 @@ impl RoadSurfaceSystem {
     pub(super) fn arrangement_vertex_world(
         arrangement: &NodeArrangement,
         vertex_id: arrangement::NodeArrangementVertexId,
-    ) -> Option<Vector3> {
+    ) -> Option<RoadVec3> {
         let vertex = arrangement.vertices().get(vertex_id.index())?;
-        Some(backend::road_xz_with_height_to_godot(
+        Some(backend::road_xz_with_height(
             arrangement_vertex_canonical_xz(vertex),
             vertex.height_m(),
         ))

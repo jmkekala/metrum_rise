@@ -42,10 +42,10 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
     let section_at = |s_m: f32| RoadSurfaceSection {
         edge_idx,
         s_m,
-        center_xz: Vector2::new(s_m, 0.0),
+        center_xz: backend::RoadVec2::new(f64::from(s_m), 0.0),
         center_height_m: 0.0,
-        tangent_xz: Vector2::new(1.0, 0.0),
-        lateral_xz: Vector2::new(0.0, 1.0),
+        tangent_xz: backend::RoadVec2::new(1.0, 0.0),
+        lateral_xz: backend::RoadVec2::new(0.0, 1.0),
         bands: vec![
             RoadSurfaceBand {
                 kind: RoadSurfaceBandKind::Carriageway,
@@ -78,13 +78,12 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
     assert!(!span_piece.raised_step_face_polygons.is_empty());
     assert!(
         span_piece.raised_step_face_polygons.iter().any(|face| {
-            face.points_world
+            face.points_world.iter().any(|point| {
+                (point.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= f64::from(SAMPLE_EPSILON_M)
+            }) && face
+                .points_world
                 .iter()
-                .any(|point| (point.y - CURB_STEP_HEIGHT_M).abs() <= SAMPLE_EPSILON_M)
-                && face
-                    .points_world
-                    .iter()
-                    .any(|point| point.y.abs() <= SAMPLE_EPSILON_M)
+                .any(|point| point.y.abs() <= f64::from(SAMPLE_EPSILON_M))
         }),
         "direct carriageway-sidewalk span boundary must emit a raised vertical face"
     );
@@ -108,10 +107,10 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
     let section_at = |s_m: f32| RoadSurfaceSection {
         edge_idx,
         s_m,
-        center_xz: Vector2::new(s_m, 0.0),
+        center_xz: backend::RoadVec2::new(f64::from(s_m), 0.0),
         center_height_m: 0.0,
-        tangent_xz: Vector2::new(1.0, 0.0),
-        lateral_xz: Vector2::new(0.0, 1.0),
+        tangent_xz: backend::RoadVec2::new(1.0, 0.0),
+        lateral_xz: backend::RoadVec2::new(0.0, 1.0),
         bands: vec![
             RoadSurfaceBand {
                 kind: RoadSurfaceBandKind::Carriageway,
@@ -152,13 +151,11 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
         .expect("curb-sidewalk stepped span should compile");
     assert!(
         span_piece.raised_step_face_polygons.iter().any(|face| {
-            face.points_world
-                .iter()
-                .any(|point| (point.y - sidewalk_height_m).abs() <= SAMPLE_EPSILON_M)
-                && face
-                    .points_world
-                    .iter()
-                    .any(|point| (point.y - CURB_STEP_HEIGHT_M).abs() <= SAMPLE_EPSILON_M)
+            face.points_world.iter().any(|point| {
+                (point.y - f64::from(sidewalk_height_m)).abs() <= f64::from(SAMPLE_EPSILON_M)
+            }) && face.points_world.iter().any(|point| {
+                (point.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= f64::from(SAMPLE_EPSILON_M)
+            })
         }),
         "span raised-step output must be owner-pair generic, including curb / sidewalk"
     );
@@ -290,25 +287,25 @@ fn span_earthwork_outer_loops_stay_outside_paved_footprint() {
                         let start = footprint.points_world[index];
                         let end =
                             footprint.points_world[(index + 1) % footprint.points_world.len()];
-                        let start_xz = Vector2::new(start.x, start.z);
-                        let end_xz = Vector2::new(end.x, end.z);
-                        let point_xz = Vector2::new(outer_point.x, outer_point.z);
+                        let start_xz = backend::RoadVec2::new(start.x, start.z);
+                        let end_xz = backend::RoadVec2::new(end.x, end.z);
+                        let point_xz = backend::RoadVec2::new(outer_point.x, outer_point.z);
                         let segment = end_xz - start_xz;
-                        if segment.length_squared() <= SAMPLE_EPSILON_M {
-                            point_xz.distance_to(start_xz)
+                        if segment.length_squared() <= f64::from(SAMPLE_EPSILON_M) {
+                            point_xz.distance(start_xz)
                         } else {
                             let t = ((point_xz - start_xz).dot(segment) / segment.length_squared())
                                 .clamp(0.0, 1.0);
-                            point_xz.distance_to(start_xz + segment * t)
+                            point_xz.distance(start_xz + segment * t)
                         }
                     })
                 })
-                .fold(f32::INFINITY, f32::min)
+                .fold(f64::INFINITY, f64::min)
         })
-        .fold(f32::INFINITY, f32::min);
+        .fold(f64::INFINITY, f64::min);
     assert!(
         earthwork_outer_points.iter().all(|outer_point| {
-            let point_xz = Vector2::new(outer_point.x, outer_point.z);
+            let point_xz = backend::RoadVec2::new(outer_point.x, outer_point.z);
             span_piece.outer_boundary_loops.iter().all(|footprint| {
                 !RoadSurfaceSystem::polygon_contains_point_xz(&footprint.points_world, point_xz)
             })
@@ -321,19 +318,19 @@ fn span_earthwork_outer_loops_stay_outside_paved_footprint() {
 fn earthwork_face_classification_distinguishes_slopes_from_walls() {
     assert_eq!(
         RoadSurfaceSystem::classify_earthwork_face_kind(
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.5, 0.0),
-            Vector3::new(1.0, 0.5, 0.0),
+            backend::RoadVec3::new(0.0, 0.0, 0.0),
+            backend::RoadVec3::new(1.0, 0.0, 0.0),
+            backend::RoadVec3::new(2.0, 0.5, 0.0),
+            backend::RoadVec3::new(1.0, 0.5, 0.0),
         ),
         RoadSurfaceEarthworkFaceKind::Slope
     );
     assert_eq!(
         RoadSurfaceSystem::classify_earthwork_face_kind(
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            Vector3::new(1.1, 3.0, 0.0),
-            Vector3::new(0.1, 3.0, 0.0),
+            backend::RoadVec3::new(0.0, 0.0, 0.0),
+            backend::RoadVec3::new(1.0, 0.0, 0.0),
+            backend::RoadVec3::new(1.1, 3.0, 0.0),
+            backend::RoadVec3::new(0.1, 3.0, 0.0),
         ),
         RoadSurfaceEarthworkFaceKind::RetainingWall
     );

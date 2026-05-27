@@ -1,18 +1,19 @@
 //! Terrain clip ambiguity rejection tests.
 
 use super::*;
+use crate::simulation::network::surface::backend::RoadVec3;
 use crate::simulation::network::surface::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
 };
 
 #[test]
 fn terrain_clip_union_rejects_ambiguous_source_chain_recovery() {
-    let p0 = Vector3::new(0.0, 9.0, 0.0);
-    let p1_a = Vector3::new(0.45, 9.4, 0.18);
-    let p1_b = Vector3::new(0.55, 9.6, -0.16);
-    let p2 = Vector3::new(1.0, 10.0, 0.0);
-    let p3 = Vector3::new(1.0, 10.0, 0.5);
-    let p4 = Vector3::new(0.0, 9.0, 0.5);
+    let p0 = RoadVec3::new(0.0, 9.0, 0.0);
+    let p1_a = RoadVec3::new(0.45, 9.4, 0.18);
+    let p1_b = RoadVec3::new(0.55, 9.6, -0.16);
+    let p2 = RoadVec3::new(1.0, 10.0, 0.0);
+    let p3 = RoadVec3::new(1.0, 10.0, 0.5);
+    let p4 = RoadVec3::new(0.0, 9.0, 0.5);
     let loop_for_node = |node_id, midpoint| RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_node_test(p0, midpoint, node_id),
@@ -43,10 +44,10 @@ fn terrain_clip_union_rejects_ambiguous_source_chain_recovery() {
 fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
     let y = 8.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(2.0, y, 0.0),
-        Vector3::new(2.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(2.0, y, 0.0),
+        RoadVec3::new(2.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let raw_clip_sources = vec![
         terrain_clip_loop_for_node_test(&points, 1),
@@ -73,10 +74,10 @@ fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
 fn terrain_clip_union_rejects_same_material_node_owner_boundary_source_ambiguity() {
     let y = 8.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(2.0, y, 0.0),
-        Vector3::new(2.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(2.0, y, 0.0),
+        RoadVec3::new(2.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let loop_for_owner = |owner_index, top_surface_source_index| RoadSurfaceTerrainClipLoop {
         source_edges: points
@@ -116,10 +117,10 @@ fn terrain_clip_union_rejects_same_material_node_owner_boundary_source_ambiguity
 fn terrain_clip_union_materializes_same_node_owner_adjacent_boundary_sources() {
     let y = 8.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(2.0, y, 0.0),
-        Vector3::new(2.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(2.0, y, 0.0),
+        RoadVec3::new(2.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let loop_for_source = |top_surface_source_index| RoadSurfaceTerrainClipLoop {
         source_edges: points
@@ -171,10 +172,10 @@ fn terrain_clip_union_materializes_same_node_owner_adjacent_boundary_sources() {
 fn terrain_clip_union_rejects_adjacent_node_owner_boundary_source_ambiguity() {
     let y = 8.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(2.0, y, 0.0),
-        Vector3::new(2.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(2.0, y, 0.0),
+        RoadVec3::new(2.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let loop_for_owner =
         |owner_kind, owner_index, top_surface_source_index| RoadSurfaceTerrainClipLoop {
@@ -216,10 +217,10 @@ fn terrain_clip_union_rejects_adjacent_node_owner_boundary_source_ambiguity() {
 fn terrain_clip_union_rejects_output_source_ambiguity_across_kind_priority() {
     let y = 8.0;
     let points = vec![
-        Vector3::new(0.0, y, 0.0),
-        Vector3::new(2.0, y, 0.0),
-        Vector3::new(2.0, y, 1.0),
-        Vector3::new(0.0, y, 1.0),
+        RoadVec3::new(0.0, y, 0.0),
+        RoadVec3::new(2.0, y, 0.0),
+        RoadVec3::new(2.0, y, 1.0),
+        RoadVec3::new(0.0, y, 1.0),
     ];
     let raw_clip_sources = vec![
         terrain_clip_loop_for_node_kind_test(
@@ -251,8 +252,8 @@ fn terrain_clip_union_rejects_output_source_ambiguity_across_kind_priority() {
 }
 
 fn same_material_node_owner_source_edge(
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     owner_index: usize,
     top_surface_source_index: usize,
     start_grade_authority_index: usize,
@@ -270,8 +271,8 @@ fn same_material_node_owner_source_edge(
 }
 
 fn node_owner_source_edge(
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     owner_kind: RoadSurfaceBandKind,
     owner_index: usize,
     top_surface_source_index: usize,
@@ -310,19 +311,19 @@ fn node_owner_source_edge(
 #[test]
 fn terrain_clip_union_rejects_dust_connector_conflicting_same_xz_heights() {
     let raw_boundary_y = -99.0;
-    let p0 = Vector3::new(0.0, 10.0, 0.0);
-    let p1 = Vector3::new(0.5, 10.5, 0.0);
-    let d0 = Vector3::new(0.50002, raw_boundary_y, 0.00008);
-    let d1 = Vector3::new(0.49998, raw_boundary_y, 0.00016);
-    let d2 = Vector3::new(0.50001, raw_boundary_y, 0.00024);
-    let p2 = Vector3::new(0.5, 10.7, 0.00032);
-    let p3 = Vector3::new(1.0, 11.0, 0.0);
-    let p4 = Vector3::new(1.0, 11.0, 0.1);
-    let p5 = Vector3::new(0.0, 10.0, 0.1);
-    let conflict_a0 = Vector3::new(d1.x - 0.0002, 20.0, d1.z);
-    let conflict_a1 = Vector3::new(d1.x + 0.0002, 20.0, d1.z);
-    let conflict_b0 = Vector3::new(d1.x - 0.0002, 21.0, d1.z);
-    let conflict_b1 = Vector3::new(d1.x + 0.0002, 21.0, d1.z);
+    let p0 = RoadVec3::new(0.0, 10.0, 0.0);
+    let p1 = RoadVec3::new(0.5, 10.5, 0.0);
+    let d0 = RoadVec3::new(0.50002, raw_boundary_y, 0.00008);
+    let d1 = RoadVec3::new(0.49998, raw_boundary_y, 0.00016);
+    let d2 = RoadVec3::new(0.50001, raw_boundary_y, 0.00024);
+    let p2 = RoadVec3::new(0.5, 10.7, 0.00032);
+    let p3 = RoadVec3::new(1.0, 11.0, 0.0);
+    let p4 = RoadVec3::new(1.0, 11.0, 0.1);
+    let p5 = RoadVec3::new(0.0, 10.0, 0.1);
+    let conflict_a0 = RoadVec3::new(d1.x - 0.0002, 20.0, d1.z);
+    let conflict_a1 = RoadVec3::new(d1.x + 0.0002, 20.0, d1.z);
+    let conflict_b0 = RoadVec3::new(d1.x - 0.0002, 21.0, d1.z);
+    let conflict_b1 = RoadVec3::new(d1.x + 0.0002, 21.0, d1.z);
     let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0, p1),
@@ -334,15 +335,15 @@ fn terrain_clip_union_rejects_dust_connector_conflicting_same_xz_heights() {
             terrain_clip_source_edge_for_test(conflict_b0, conflict_b1),
         ],
         points_world: vec![
-            Vector3::new(p0.x, raw_boundary_y, p0.z),
-            Vector3::new(p1.x, raw_boundary_y, p1.z),
+            RoadVec3::new(p0.x, raw_boundary_y, p0.z),
+            RoadVec3::new(p1.x, raw_boundary_y, p1.z),
             d0,
             d1,
             d2,
-            Vector3::new(p2.x, raw_boundary_y, p2.z),
-            Vector3::new(p3.x, raw_boundary_y, p3.z),
-            Vector3::new(p4.x, raw_boundary_y, p4.z),
-            Vector3::new(p5.x, raw_boundary_y, p5.z),
+            RoadVec3::new(p2.x, raw_boundary_y, p2.z),
+            RoadVec3::new(p3.x, raw_boundary_y, p3.z),
+            RoadVec3::new(p4.x, raw_boundary_y, p4.z),
+            RoadVec3::new(p5.x, raw_boundary_y, p5.z),
         ],
     }];
 

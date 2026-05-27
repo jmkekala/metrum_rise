@@ -629,6 +629,9 @@ The following are current hardcut implementation rules:
   for export; non-explicit boundary vertices and sampled boundary heights are geometry errors. A
   node path must not reconstruct a later outer boundary loop that contains vertices outside the
   canonical rendered node top-surface coverage.
+- road / earthwork seam math shares the road-surface `RoadVec2` / `RoadVec3` representation and
+  explicit quantized keys through the owning Rust stages; Godot vectors remain bridge, upload, and
+  debug payloads rather than authoritative seam identity.
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same grouped road footprint loops after a network edit and suppress
   cells that touch the outer-loop-minus-hole road-owned area, so water is no longer allowed to

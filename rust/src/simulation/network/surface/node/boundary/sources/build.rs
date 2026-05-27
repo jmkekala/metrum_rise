@@ -8,6 +8,7 @@ impl NodeFootprintBoundaryExportSources {
         kind: RoadSurfaceVisualNodePieceKind,
         owned_regions: &[NodeOwnedRegion],
         node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+        node_grade_authorities: &[height::NodeGradeVertexAuthority],
         explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
     ) -> Result<Self, NodeBoundaryExportError> {
         let (
@@ -27,6 +28,10 @@ impl NodeFootprintBoundaryExportSources {
             direct_vertex_sources,
             direct_vertex_source_candidates,
             direct_vertex_source_conflicts,
+            grade_authority_source_provenance: node_grade_authorities
+                .iter()
+                .map(|authority| authority.source_provenance)
+                .collect(),
             explicit_vertical_step_segments: explicit_vertical_step_segments.to_vec(),
         })
     }

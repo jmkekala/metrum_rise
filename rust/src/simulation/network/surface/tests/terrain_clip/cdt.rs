@@ -225,7 +225,7 @@ fn assert_terrain_clip_loops_cover_node_top_footprint_bounds(
         road_loops
             .iter()
             .flat_map(|road_loop| road_loop.vertices.iter())
-            .map(|vertex| (vertex.x as f32, vertex.z as f32)),
+            .map(|vertex| (vertex.x, vertex.z)),
     )
     .expect("terrain clip should export road loops");
     let top_bounds = xz_bounds(
@@ -264,7 +264,7 @@ fn assert_terrain_clip_loops_cover_node_top_footprint_bounds(
     );
 }
 
-fn xz_bounds(points: impl IntoIterator<Item = (f32, f32)>) -> Option<(f32, f32, f32, f32)> {
+fn xz_bounds(points: impl IntoIterator<Item = (f64, f64)>) -> Option<(f64, f64, f64, f64)> {
     points.into_iter().fold(None, |bounds, (x, z)| {
         Some(match bounds {
             Some((min_x, min_z, max_x, max_z)) => {

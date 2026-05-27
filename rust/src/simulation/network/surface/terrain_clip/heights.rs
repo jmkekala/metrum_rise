@@ -1,11 +1,11 @@
 //! Terrain-clip cutter height recovery and interval coverage.
 
+use super::super::backend::RoadVec3;
 use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceHeightMmKey};
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::{
     TerrainClipSegmentPointRecovery, TerrainClipSourceEdge, TerrainClipSourceInterval,
 };
-use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_top_envelope_points_from_interval_coverage<I>(
@@ -68,7 +68,7 @@ impl RoadSurfaceSystem {
                 continue;
             };
             let point = interpolate_overlay_point(start, end, t);
-            points.push(Vector3::new(point[0] as f32, height, point[1] as f32));
+            points.push(RoadVec3::new(point[0], height, point[1]));
         }
         Self::dedup_terrain_clip_top_envelope_points(&mut points);
         if points.len() >= 2 {
@@ -115,11 +115,11 @@ impl RoadSurfaceSystem {
                 if start_delta.signum() == end_delta.signum() {
                     continue;
                 }
-                let denominator = f64::from(start_delta - end_delta);
+                let denominator = start_delta - end_delta;
                 if denominator == 0.0 {
                     continue;
                 }
-                let crossing_t = start_t + (end_t - start_t) * f64::from(start_delta) / denominator;
+                let crossing_t = start_t + (end_t - start_t) * start_delta / denominator;
                 if crossing_t > start_t && crossing_t < end_t {
                     breakpoints.push(crossing_t);
                 }
@@ -138,7 +138,7 @@ impl RoadSurfaceSystem {
     fn terrain_clip_top_envelope_height_at_t(
         intervals: &[TerrainClipSourceInterval],
         t: f64,
-    ) -> Option<f32> {
+    ) -> Option<f64> {
         intervals
             .iter()
             .copied()
@@ -146,11 +146,11 @@ impl RoadSurfaceSystem {
             .max_by(|a, b| a.total_cmp(b))
     }
 
-    fn merge_terrain_clip_top_envelope_height(height: &mut Option<f32>, candidate: f32) {
+    fn merge_terrain_clip_top_envelope_height(height: &mut Option<f64>, candidate: f64) {
         *height = Some(height.map_or(candidate, |current| current.max(candidate)));
     }
 
-    pub(super) fn dedup_terrain_clip_top_envelope_points(points: &mut Vec<Vector3>) {
+    pub(super) fn dedup_terrain_clip_top_envelope_points(points: &mut Vec<RoadVec3>) {
         let mut deduped = Vec::with_capacity(points.len());
         for &point in points.iter() {
             if let Some(last) = deduped.last_mut() {
@@ -169,20 +169,17 @@ impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_unambiguous_overlay_point_height_from_source_edges(
         point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Result<Option<f32>, String> {
+    ) -> Result<Option<f64>, String> {
         let mut height = None;
         let mut height_key: Option<SurfaceHeightMmKey> = None;
         for &source_edge in source_edges {
-            let source_start = [
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ];
-            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+            let source_start = [source_edge.start.x, source_edge.start.z];
+            let source_end = [source_edge.end.x, source_edge.end.z];
             let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
                 continue;
             };
             let candidate = interpolate_height_f64(source_edge.start.y, source_edge.end.y, t);
-            let candidate_key = SurfaceHeightMmKey::from_m_f32(candidate);
+            let candidate_key = SurfaceHeightMmKey::from_m_f64(candidate);
             if let Some(current_key) = height_key {
                 if current_key != candidate_key {
                     return Err(format!(
@@ -195,14 +192,14 @@ impl RoadSurfaceSystem {
                 }
             } else {
                 height_key = Some(candidate_key);
-                height = Some(candidate_key.as_i64() as f32 / 1000.0);
+                height = Some(candidate_key.as_i64() as f64 / 1000.0);
             }
         }
         Ok(height)
     }
 }
 
-pub(super) fn interval_height_at(interval: TerrainClipSourceInterval, t: f64) -> f32 {
+pub(super) fn interval_height_at(interval: TerrainClipSourceInterval, t: f64) -> f64 {
     let span = interval.end_t - interval.start_t;
     if span == 0.0 {
         return interval.start_y;

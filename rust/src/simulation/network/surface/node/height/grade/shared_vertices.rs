@@ -22,6 +22,7 @@ pub(super) fn apply_junctionn_same_owner_canonical_vertex_height_normalization(
                 height_field_id: vertex.height_field_id,
                 height_m: vertex.height_m,
                 height_authority: vertex.height_authority,
+                source_provenance: vertex.source_provenance,
                 has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
                     vertex,
                     &region.seam_constraints,
@@ -212,6 +213,7 @@ fn same_material_vertex_height_candidate_from_vertex(
         height_field_id: vertex.height_field_id,
         height_m: vertex.height_m,
         height_authority: vertex.height_authority,
+        source_provenance: vertex.source_provenance,
         has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
             vertex,
             seam_constraints,
@@ -248,6 +250,7 @@ fn same_material_vertex_height_support_key_from_parts(
     SameMaterialVertexHeightSupportKey {
         kind,
         point,
+        source_provenance: vertex.source_provenance,
         explicit_seams,
         explicit_height_splits,
     }

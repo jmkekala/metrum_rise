@@ -3,20 +3,20 @@
 use super::*;
 use crate::simulation::network::surface::ownership::NodeSourceCarrierRegistry;
 
-pub(super) fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+pub(super) fn band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
     IncidentMouthBand {
         kind,
         start_point_world: start,
         end_point_world: end,
     }
 }
-pub(super) fn profile(x: f32, base_height: f32) -> IncidentMouthProfile {
+pub(super) fn profile(x: f64, base_height: f64) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, base_height, -4.0),
-        Vector3::new(x, base_height + 0.1, -2.0),
-        Vector3::new(x, base_height + 0.2, 0.0),
-        Vector3::new(x, base_height + 0.3, 2.0),
-        Vector3::new(x, base_height + 0.4, 4.0),
+        RoadVec3::new(x, base_height, -4.0),
+        RoadVec3::new(x, base_height + 0.1, -2.0),
+        RoadVec3::new(x, base_height + 0.2, 0.0),
+        RoadVec3::new(x, base_height + 0.3, 2.0),
+        RoadVec3::new(x, base_height + 0.4, 4.0),
     ];
     let bands = vec![
         band(
@@ -41,7 +41,7 @@ pub(super) fn profile(x: f32, base_height: f32) -> IncidentMouthProfile {
         ),
     ];
     IncidentMouthProfile {
-        inward_direction_xz: Vector2::RIGHT,
+        inward_direction_xz: RoadVec2::X,
         boundary_points_world,
         bands,
     }
@@ -55,7 +55,7 @@ pub(super) fn solved_input() -> NodeArrangementInput {
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };
@@ -286,6 +286,31 @@ pub(super) fn manual_heighted_vertex(x: f64, z: f64, height_m: f64) -> NodeHeigh
         height_m,
         height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
         height_authority: None,
+        source_provenance: None,
         grade_authority: None,
     }
+}
+pub(super) fn manual_heighted_vertex_with_source_provenance(
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    x: f64,
+    z: f64,
+    height_m: f64,
+) -> NodeHeightedVertex {
+    let mut vertex = manual_heighted_vertex(x, z, height_m);
+    let owner = NodeBandOwner::new(kind, owner_index);
+    let height_field_id = NodeBandHeightFieldId::new(owner_index, owner_index, kind);
+    vertex.height_field_id = height_field_id;
+    vertex.height_authority = Some(NodeHeightAuthoritySource::SourceInterval);
+    vertex.source_provenance = Some(NodeHeightCarrierProvenanceKey {
+        owner,
+        source_kind: kind,
+        source_mouth_order_index: owner_index,
+        source_band_index: owner_index,
+        height_field_id,
+        claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+        point: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(x, z)),
+        origin: NodeCarrierProvenanceOrigin::SourceVertex,
+    });
+    vertex
 }

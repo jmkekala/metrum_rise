@@ -23,8 +23,8 @@ impl RoadSurfaceSystem {
             for section in sections {
                 let profile = self.section_profile_world_points(section);
                 if let (Some(first), Some(last)) = (profile.first(), profile.last()) {
-                    data.section_lines.push(*first);
-                    data.section_lines.push(*last);
+                    data.section_lines.push(backend::road_vec3_to_godot(*first));
+                    data.section_lines.push(backend::road_vec3_to_godot(*last));
                 }
             }
 
@@ -35,8 +35,10 @@ impl RoadSurfaceSystem {
                     continue;
                 }
                 for index in 0..profile_a.len() {
-                    data.band_lines.push(profile_a[index]);
-                    data.band_lines.push(profile_b[index]);
+                    data.band_lines
+                        .push(backend::road_vec3_to_godot(profile_a[index]));
+                    data.band_lines
+                        .push(backend::road_vec3_to_godot(profile_b[index]));
                 }
             }
 
@@ -49,9 +51,11 @@ impl RoadSurfaceSystem {
                     continue;
                 }
                 for index in 0..points.len() {
-                    data.piece_boundary_lines.push(points[index]);
                     data.piece_boundary_lines
-                        .push(points[(index + 1) % points.len()]);
+                        .push(backend::road_vec3_to_godot(points[index]));
+                    data.piece_boundary_lines.push(backend::road_vec3_to_godot(
+                        points[(index + 1) % points.len()],
+                    ));
                 }
             }
         }
@@ -68,9 +72,11 @@ impl RoadSurfaceSystem {
                     continue;
                 }
                 for index in 0..points.len() {
-                    data.piece_boundary_lines.push(points[index]);
                     data.piece_boundary_lines
-                        .push(points[(index + 1) % points.len()]);
+                        .push(backend::road_vec3_to_godot(points[index]));
+                    data.piece_boundary_lines.push(backend::road_vec3_to_godot(
+                        points[(index + 1) % points.len()],
+                    ));
                 }
             }
         }
@@ -81,24 +87,28 @@ impl RoadSurfaceSystem {
             let (min, max) = self.chunk_bounds(chunk);
             let corners = [
                 Vector3::new(
-                    min.x,
-                    terrain.sample_visual_height_world(min.x, min.z) * config::HEIGHT_SCALE,
-                    min.z,
+                    min.x as f32,
+                    terrain.sample_visual_height_world(min.x as f32, min.z as f32)
+                        * config::HEIGHT_SCALE,
+                    min.z as f32,
                 ),
                 Vector3::new(
-                    max.x,
-                    terrain.sample_visual_height_world(max.x, min.z) * config::HEIGHT_SCALE,
-                    min.z,
+                    max.x as f32,
+                    terrain.sample_visual_height_world(max.x as f32, min.z as f32)
+                        * config::HEIGHT_SCALE,
+                    min.z as f32,
                 ),
                 Vector3::new(
-                    max.x,
-                    terrain.sample_visual_height_world(max.x, max.z) * config::HEIGHT_SCALE,
-                    max.z,
+                    max.x as f32,
+                    terrain.sample_visual_height_world(max.x as f32, max.z as f32)
+                        * config::HEIGHT_SCALE,
+                    max.z as f32,
                 ),
                 Vector3::new(
-                    min.x,
-                    terrain.sample_visual_height_world(min.x, max.z) * config::HEIGHT_SCALE,
-                    max.z,
+                    min.x as f32,
+                    terrain.sample_visual_height_world(min.x as f32, max.z as f32)
+                        * config::HEIGHT_SCALE,
+                    max.z as f32,
                 ),
             ];
             for index in 0..corners.len() {

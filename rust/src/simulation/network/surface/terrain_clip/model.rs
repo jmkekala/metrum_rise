@@ -1,10 +1,10 @@
 //! Terrain-clip source model and local export diagnostics.
 
+use super::super::backend::RoadVec3;
 use super::super::{
     NodeFootprintBoundarySegmentSource, NodeOverlayPoint, RoadSurfaceBandKind,
     earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceSegmentParameter,
 };
-use godot::prelude::Vector3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum RoadSurfaceTerrainClipEdgeKind {
@@ -16,15 +16,15 @@ pub(crate) enum RoadSurfaceTerrainClipEdgeKind {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RoadSurfaceTerrainClipSourceEdge {
-    pub(crate) start: Vector3,
-    pub(crate) end: Vector3,
+    pub(crate) start: RoadVec3,
+    pub(crate) end: RoadVec3,
     pub(crate) kind: RoadSurfaceTerrainClipEdgeKind,
     pub(crate) source: RoadSurfaceEarthworkFaceSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadSurfaceTerrainClipLoop {
-    pub(crate) points_world: Vec<Vector3>,
+    pub(crate) points_world: Vec<RoadVec3>,
     pub(crate) source_edges: Vec<RoadSurfaceTerrainClipSourceEdge>,
 }
 
@@ -47,19 +47,19 @@ pub(crate) enum RoadSurfaceTerrainClipExportError {
     },
     MissingOutputBoundaryOwner {
         shape_index: usize,
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     },
     AmbiguousOutputBoundaryOwner {
         shape_index: usize,
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
         context: String,
     },
     UnclosedOutputBoundary {
         shape_index: usize,
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     },
     RepeatedOverlayPointCycle {
         shape_index: usize,
@@ -128,13 +128,13 @@ pub(super) struct TerrainClipContourCompactError {
 pub(super) enum TerrainClipDustConnectorRecovery {
     Missing,
     Ambiguous(String),
-    Covered(Vec<Vector3>),
+    Covered(Vec<RoadVec3>),
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct TerrainClipSourceEdge {
-    pub(super) start: Vector3,
-    pub(super) end: Vector3,
+    pub(super) start: RoadVec3,
+    pub(super) end: RoadVec3,
     pub(super) kind: RoadSurfaceTerrainClipEdgeKind,
     pub(super) source: RoadSurfaceEarthworkFaceSource,
     pub(super) source_index: usize,
@@ -143,8 +143,8 @@ pub(super) struct TerrainClipSourceEdge {
 
 #[derive(Clone, Copy)]
 pub(super) struct TerrainClipSegmentHeights {
-    pub(super) start_y: f32,
-    pub(super) end_y: f32,
+    pub(super) start_y: f64,
+    pub(super) end_y: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -152,21 +152,21 @@ pub(super) struct TerrainClipEndpointSample {
     pub(super) kind: RoadSurfaceTerrainClipEdgeKind,
     pub(super) source_index: usize,
     pub(super) edge_index: usize,
-    pub(super) y: f32,
+    pub(super) y: f64,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct TerrainClipSourceInterval {
     pub(super) start_t: f64,
     pub(super) end_t: f64,
-    pub(super) start_y: f32,
-    pub(super) end_y: f32,
+    pub(super) start_y: f64,
+    pub(super) end_y: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TerrainClipSegmentPointRecovery {
     Degenerate,
-    Covered(Vec<Vector3>),
+    Covered(Vec<RoadVec3>),
     Partial,
     Missing,
 }

@@ -38,7 +38,7 @@ use carrier_provenance::NodeCarrierProvenanceContext;
 use seams::{
     ConstraintOverlapMode, materialize_noded_region_seam_constraints, seam_constraints_for_shape,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
     ownership_key_from_overlay_point, ownership_key_from_road_point, ownership_mm_key,
@@ -937,31 +937,181 @@ fn canonicalize_footprint_shapes_with_final_points(
         candidates.sort_unstable();
         candidates.dedup();
     }
+    let owned_boundary_edges = owned_region_boundary_edge_keys(owned_regions);
 
     for shape in &mut *footprint_shapes {
         for contour in shape {
-            for point in contour.iter_mut() {
-                let key = ownership_key_from_overlay_point(*point);
-                let Some(canonical) = canonical_footprint_point(key, &canonical_points_by_mm)
-                else {
+            let contour_keys = contour_point_keys(contour);
+            let mut canonical_contour = Vec::with_capacity(contour_keys.len());
+            for index in 0..contour_keys.len() {
+                let key = contour_keys[index];
+                if let Some(canonical) = canonical_footprint_point(key, &canonical_points_by_mm) {
+                    canonical_contour.push(canonical);
                     continue;
-                };
-                *point = overlay_point_from_key(canonical);
+                }
+                let previous = contour_keys[if index == 0 {
+                    contour_keys.len() - 1
+                } else {
+                    index - 1
+                }];
+                let next = contour_keys[(index + 1) % contour_keys.len()];
+                if let Some(path) = canonical_footprint_point_path(
+                    key,
+                    previous,
+                    next,
+                    &canonical_points_by_mm,
+                    &owned_boundary_edges,
+                ) {
+                    canonical_contour.extend(path);
+                } else {
+                    canonical_contour.push(key);
+                }
             }
-            contour.dedup_by(|a, b| {
-                ownership_key_from_overlay_point(*a) == ownership_key_from_overlay_point(*b)
-            });
-            if contour.len() >= 2
-                && ownership_key_from_overlay_point(contour[0])
-                    == ownership_key_from_overlay_point(
-                        *contour.last().expect("footprint contour has last point"),
-                    )
-            {
-                contour.pop();
-            }
+            dedup_canonical_footprint_contour(&mut canonical_contour);
+            *contour = canonical_contour
+                .into_iter()
+                .map(overlay_point_from_key)
+                .collect();
         }
     }
     RoadSurfaceSystem::sort_overlay_shapes(footprint_shapes);
+}
+
+fn owned_region_boundary_edge_keys(
+    owned_regions: &[NodeBooleanOwnedRegion],
+) -> BTreeSet<OwnedRegionEdgeKey> {
+    let mut edges = BTreeSet::new();
+    for contour in owned_regions
+        .iter()
+        .flat_map(|region| region.shape.iter())
+        .filter(|contour| contour.len() >= 2)
+    {
+        for index in 0..contour.len() {
+            let start = ownership_key_from_overlay_point(contour[index]);
+            let end = ownership_key_from_overlay_point(contour[(index + 1) % contour.len()]);
+            if start != end {
+                edges.insert(OwnedRegionEdgeKey::new(start, end));
+            }
+        }
+    }
+    edges
+}
+
+fn canonical_footprint_point_path(
+    point: NodeOwnershipPointKey,
+    previous: NodeOwnershipPointKey,
+    next: NodeOwnershipPointKey,
+    canonical_points_by_mm: &BTreeMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+    owned_boundary_edges: &BTreeSet<OwnedRegionEdgeKey>,
+) -> Option<Vec<NodeOwnershipPointKey>> {
+    let candidates = canonical_points_by_mm.get(&ownership_mm_key(point))?;
+    if candidates.len() < 2 {
+        return None;
+    }
+    let previous = canonical_footprint_point(previous, canonical_points_by_mm).unwrap_or(previous);
+    let next = canonical_footprint_point(next, canonical_points_by_mm).unwrap_or(next);
+    let mut nodes = candidates.clone();
+    nodes.push(previous);
+    nodes.push(next);
+    nodes.sort_unstable();
+    nodes.dedup();
+
+    let mut paths = Vec::new();
+    let mut path = vec![previous];
+    collect_owned_boundary_paths(
+        previous,
+        next,
+        &nodes,
+        owned_boundary_edges,
+        &mut path,
+        &mut paths,
+    );
+    let min_len = paths.iter().map(Vec::len).min()?;
+    let mut shortest = paths
+        .into_iter()
+        .filter(|path| path.len() == min_len)
+        .collect::<Vec<_>>();
+    shortest.sort_unstable();
+    shortest.dedup();
+    if shortest.len() != 1 {
+        return supported_canonical_footprint_cluster(
+            candidates,
+            previous,
+            next,
+            owned_boundary_edges,
+        );
+    }
+    let mut path = shortest.pop().expect("unique shortest path is present");
+    if path.len() < 3 {
+        return None;
+    }
+    path.remove(0);
+    path.pop();
+    if path.is_empty() || path.iter().all(|candidate| candidates.contains(candidate)) {
+        Some(path)
+    } else {
+        supported_canonical_footprint_cluster(candidates, previous, next, owned_boundary_edges)
+    }
+}
+
+fn supported_canonical_footprint_cluster(
+    candidates: &[NodeOwnershipPointKey],
+    previous: NodeOwnershipPointKey,
+    next: NodeOwnershipPointKey,
+    owned_boundary_edges: &BTreeSet<OwnedRegionEdgeKey>,
+) -> Option<Vec<NodeOwnershipPointKey>> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let mut support_nodes = candidates.to_vec();
+    support_nodes.push(previous);
+    support_nodes.push(next);
+    support_nodes.sort_unstable();
+    support_nodes.dedup();
+    if candidates.iter().copied().all(|candidate| {
+        support_nodes.iter().copied().any(|peer| {
+            peer != candidate
+                && owned_boundary_edges.contains(&OwnedRegionEdgeKey::new(candidate, peer))
+        })
+    }) {
+        Some(candidates.to_vec())
+    } else {
+        None
+    }
+}
+
+fn collect_owned_boundary_paths(
+    current: NodeOwnershipPointKey,
+    target: NodeOwnershipPointKey,
+    nodes: &[NodeOwnershipPointKey],
+    owned_boundary_edges: &BTreeSet<OwnedRegionEdgeKey>,
+    path: &mut Vec<NodeOwnershipPointKey>,
+    paths: &mut Vec<Vec<NodeOwnershipPointKey>>,
+) {
+    if current == target {
+        paths.push(path.clone());
+        return;
+    }
+    if path.len() > nodes.len() {
+        return;
+    }
+    for next in nodes.iter().copied() {
+        if path.contains(&next)
+            || !owned_boundary_edges.contains(&OwnedRegionEdgeKey::new(current, next))
+        {
+            continue;
+        }
+        path.push(next);
+        collect_owned_boundary_paths(next, target, nodes, owned_boundary_edges, path, paths);
+        path.pop();
+    }
+}
+
+fn dedup_canonical_footprint_contour(points: &mut Vec<NodeOwnershipPointKey>) {
+    points.dedup();
+    if points.len() >= 2 && points.first().copied() == points.last().copied() {
+        points.pop();
+    }
 }
 
 fn canonical_footprint_point(

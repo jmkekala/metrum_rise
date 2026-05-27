@@ -31,8 +31,10 @@ impl RoadSurfaceSystem {
                 kind: region.kind,
                 owner_index: region.owner_index,
             };
-            let mut edge_counts: BTreeMap<DebugRenderEdgeKey, (usize, Vector3, Vector3)> =
-                BTreeMap::new();
+            let mut edge_counts: BTreeMap<
+                DebugRenderEdgeKey,
+                (usize, backend::RoadVec3, backend::RoadVec3),
+            > = BTreeMap::new();
             if region.polygon.triangles_world.is_empty() {
                 let points = &region.polygon.points_world;
                 if points.len() >= 2 {
@@ -65,7 +67,7 @@ impl RoadSurfaceSystem {
                     end,
                     key,
                     xz_key: key.xz(),
-                    avg_y_m: (start.y + end.y) * 0.5,
+                    avg_y_m: ((start.y + end.y) * 0.5) as f32,
                 });
             }
         }
@@ -80,9 +82,12 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface::debug) fn record_debug_top_boundary_edge_count(
-        edge_counts: &mut BTreeMap<DebugRenderEdgeKey, (usize, Vector3, Vector3)>,
-        start: Vector3,
-        end: Vector3,
+        edge_counts: &mut BTreeMap<
+            DebugRenderEdgeKey,
+            (usize, backend::RoadVec3, backend::RoadVec3),
+        >,
+        start: backend::RoadVec3,
+        end: backend::RoadVec3,
     ) {
         let Some(key) = DebugRenderEdgeKey::normalized(start, end) else {
             return;
@@ -122,15 +127,15 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface::debug) fn debug_polygon_winding_normal(
-        points: &[Vector3],
-    ) -> Option<Vector3> {
+        points: &[backend::RoadVec3],
+    ) -> Option<backend::RoadVec3> {
         if points.len() < 3 {
             return None;
         }
         for index in 1..points.len().saturating_sub(1) {
             let normal = (points[index] - points[0]).cross(points[index + 1] - points[0]);
             if normal.length_squared() > 1e-8 {
-                return Some(normal.normalized());
+                return Some(normal.normalize());
             }
         }
         None
@@ -138,16 +143,16 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface::debug) fn debug_visible_dot_to_lower_raised_step_owner(
         piece: &RoadSurfaceVisualNodePiece,
-        face_midpoint: Vector3,
-        visible_direction: Vector3,
+        face_midpoint: backend::RoadVec3,
+        visible_direction: backend::RoadVec3,
         lower_matches: &[DebugTopBoundaryEdge],
         upper_matches: &[DebugTopBoundaryEdge],
     ) -> Option<f32> {
-        let visible_xz = Vector3::new(visible_direction.x, 0.0, visible_direction.z);
+        let visible_xz = backend::RoadVec3::new(visible_direction.x, 0.0, visible_direction.z);
         if visible_xz.length_squared() <= 1e-8 {
             return None;
         }
-        let visible_xz = visible_xz.normalized();
+        let visible_xz = visible_xz.normalize();
         let mut best: Option<f32> = None;
         for edge in lower_matches.iter().filter(|lower| {
             upper_matches
@@ -158,7 +163,7 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            let owner_direction = Vector3::new(
+            let owner_direction = backend::RoadVec3::new(
                 centroid.x - face_midpoint.x,
                 0.0,
                 centroid.z - face_midpoint.z,
@@ -166,7 +171,7 @@ impl RoadSurfaceSystem {
             if owner_direction.length_squared() <= 1e-8 {
                 continue;
             }
-            let dot = visible_xz.dot(owner_direction.normalized());
+            let dot = visible_xz.dot(owner_direction.normalize()) as f32;
             best = Some(best.map_or(dot, |current| current.max(dot)));
         }
         best
@@ -174,16 +179,16 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface::debug) fn debug_visible_dot_to_lower_owner(
         piece: &RoadSurfaceVisualNodePiece,
-        face_midpoint: Vector3,
-        visible_direction: Vector3,
+        face_midpoint: backend::RoadVec3,
+        visible_direction: backend::RoadVec3,
         lower_matches: &[DebugTopBoundaryEdge],
         lower_owner: NodeBandOwner,
     ) -> Option<f32> {
-        let visible_xz = Vector3::new(visible_direction.x, 0.0, visible_direction.z);
+        let visible_xz = backend::RoadVec3::new(visible_direction.x, 0.0, visible_direction.z);
         if visible_xz.length_squared() <= 1e-8 {
             return None;
         }
-        let visible_xz = visible_xz.normalized();
+        let visible_xz = visible_xz.normalize();
         let mut best: Option<f32> = None;
         for edge in lower_matches
             .iter()
@@ -193,7 +198,7 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            let owner_direction = Vector3::new(
+            let owner_direction = backend::RoadVec3::new(
                 centroid.x - face_midpoint.x,
                 0.0,
                 centroid.z - face_midpoint.z,
@@ -201,7 +206,7 @@ impl RoadSurfaceSystem {
             if owner_direction.length_squared() <= 1e-8 {
                 continue;
             }
-            let dot = visible_xz.dot(owner_direction.normalized());
+            let dot = visible_xz.dot(owner_direction.normalize()) as f32;
             best = Some(best.map_or(dot, |current| current.max(dot)));
         }
         best
@@ -210,9 +215,9 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::debug) fn debug_owned_region_centroid(
         piece: &RoadSurfaceVisualNodePiece,
         region_index: usize,
-    ) -> Option<Vector3> {
+    ) -> Option<backend::RoadVec3> {
         let region = piece.owned_regions.get(region_index)?;
-        let mut sum = Vector3::ZERO;
+        let mut sum = backend::RoadVec3::ZERO;
         let mut count = 0usize;
         if region.polygon.points_world.is_empty() {
             for point in region
@@ -230,6 +235,6 @@ impl RoadSurfaceSystem {
                 count += 1;
             }
         }
-        (count > 0).then_some(sum * (1.0 / count as f32))
+        (count > 0).then_some(sum * (1.0 / count as f64))
     }
 }

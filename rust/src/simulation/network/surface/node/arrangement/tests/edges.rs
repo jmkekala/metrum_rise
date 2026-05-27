@@ -73,6 +73,104 @@ fn arrangement_edges_match_opposite_owners_by_canonical_xz_segment() {
 }
 
 #[test]
+fn arrangement_nodes_long_boundary_edge_at_peer_region_vertex() {
+    let first = owner(RoadSurfaceBandKind::Carriageway, 0);
+    let second = owner(RoadSurfaceBandKind::Carriageway, 1);
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Carriageway,
+                first,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 2.0, 0.0),
+                    height_vertex(0.0, 2.0, 0.0),
+                ],
+                Vec::new(),
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Carriageway,
+                second,
+                vec![
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(2.0, 0.0, 0.0),
+                    height_vertex(2.0, 1.0, 0.0),
+                    height_vertex(1.0, 1.0, 0.0),
+                ],
+                Vec::new(),
+            ),
+        ],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("peer boundary vertices should node pending arrangement loops");
+    let lower_start = NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0));
+    let split = NodeArrangementKey::from_point(RoadVec2::new(1.0, 1.0));
+    let upper_end = NodeArrangementKey::from_point(RoadVec2::new(1.0, 2.0));
+
+    assert!(arrangement.edges().iter().any(|edge| {
+        let start = arrangement.vertices()[edge.start.0].key;
+        let end = arrangement.vertices()[edge.end.0].key;
+        edge.owner == first
+            && edge.opposite_owner == Some(second)
+            && ((start == lower_start && end == split) || (start == split && end == lower_start))
+    }));
+    assert!(arrangement.edges().iter().any(|edge| {
+        let start = arrangement.vertices()[edge.start.0].key;
+        let end = arrangement.vertices()[edge.end.0].key;
+        edge.owner == first
+            && edge.opposite_owner.is_none()
+            && edge.exposed_boundary
+            && ((start == split && end == upper_end) || (start == upper_end && end == split))
+    }));
+}
+
+#[test]
+fn arrangement_split_vertex_reuses_existing_owner_height_at_exact_split_key() {
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 23);
+    let heights = NodeHeightSolution {
+        node_id: 14,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 2.0, 0.004),
+                    height_vertex(0.0, 2.0, 0.0),
+                ],
+                Vec::new(),
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![
+                    height_vertex(1.0, 1.0, 0.001),
+                    height_vertex(2.0, 1.0, 0.001),
+                    height_vertex(2.0, 2.0, 0.001),
+                ],
+                Vec::new(),
+            ),
+        ],
+    };
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("same-owner split key should preserve the existing source-owned height");
+    let split = NodeArrangementKey::from_point(RoadVec2::new(1.0, 1.0));
+    let split_heights = arrangement
+        .vertices()
+        .iter()
+        .filter(|vertex| vertex.key() == split && vertex.owners().contains(&sidewalk))
+        .map(|vertex| vertex.height_mm())
+        .collect::<Vec<_>>();
+
+    assert_eq!(split_heights, vec![1]);
+}
+
+#[test]
 fn shared_arrangement_edge_reports_missing_source_constraint() {
     let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
     let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);

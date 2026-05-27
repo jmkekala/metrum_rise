@@ -8,12 +8,12 @@ mod regions;
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon, band_semantics::band_kind_sort_key,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon, backend::RoadVec3,
+    band_semantics::band_kind_sort_key,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::Vector3;
 
 // Avoid resolved region construction between adjacent bands whose widths have collapsed together.
 const SPAN_REGION_MIN_BAND_WIDTH_M: f32 = 0.05;
@@ -40,7 +40,7 @@ pub(crate) struct RoadSurfaceSpanOwnedRegion {
     pub(crate) end_section_index: usize,
     pub(crate) start_s_m: f32,
     pub(crate) end_s_m: f32,
-    pub(crate) source_corners_world: [Vector3; 4],
+    pub(crate) source_corners_world: [RoadVec3; 4],
     pub(crate) polygon: RoadSurfaceVisualPolygon,
 }
 
@@ -52,10 +52,10 @@ pub(crate) struct RoadSurfaceSpanRaisedStepSource {
     pub(crate) end_section_index: usize,
     pub(crate) start_s_m: f32,
     pub(crate) end_s_m: f32,
-    pub(crate) start_lower_world: Vector3,
-    pub(crate) start_raised_world: Vector3,
-    pub(crate) end_lower_world: Vector3,
-    pub(crate) end_raised_world: Vector3,
+    pub(crate) start_lower_world: RoadVec3,
+    pub(crate) start_raised_world: RoadVec3,
+    pub(crate) end_lower_world: RoadVec3,
+    pub(crate) end_raised_world: RoadVec3,
 }
 
 /// Explicit visual span piece compiled from one edge corridor.
@@ -114,9 +114,9 @@ struct SpanRaisedStepConstraint {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpanRaisedStepSample {
-    lower_world: Vector3,
-    raised_world: Vector3,
-    lower_direction: Vector3,
+    lower_world: RoadVec3,
+    raised_world: RoadVec3,
+    lower_direction: RoadVec3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

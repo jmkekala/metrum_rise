@@ -7,11 +7,11 @@ impl RoadSurfaceSystem {
         &self,
         piece: &RoadSurfaceVisualNodePiece,
         kind: ChunkCacheKind,
-    ) -> Option<(Vector3, Vector3)> {
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX;
-        let mut max_z = f32::MIN;
+    ) -> Option<(RoadVec3, RoadVec3)> {
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_z = f64::MAX;
+        let mut max_z = f64::MIN;
         let mut saw_point = false;
 
         match kind {
@@ -21,10 +21,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(point.x);
-                    max_x = max_x.max(point.x);
-                    min_z = min_z.min(point.z);
-                    max_z = max_z.max(point.z);
+                    min_x = min_x.min(f64::from(point.x));
+                    max_x = max_x.max(f64::from(point.x));
+                    min_z = min_z.min(f64::from(point.z));
+                    max_z = max_z.max(f64::from(point.z));
                     saw_point = true;
                 }
             }
@@ -34,10 +34,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(point.x);
-                    max_x = max_x.max(point.x);
-                    min_z = min_z.min(point.z);
-                    max_z = max_z.max(point.z);
+                    min_x = min_x.min(f64::from(point.x));
+                    max_x = max_x.max(f64::from(point.x));
+                    min_z = min_z.min(f64::from(point.z));
+                    max_z = max_z.max(f64::from(point.z));
                     saw_point = true;
                 }
                 if !saw_point {
@@ -46,10 +46,10 @@ impl RoadSurfaceSystem {
                         .iter()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
-                        min_x = min_x.min(point.x);
-                        max_x = max_x.max(point.x);
-                        min_z = min_z.min(point.z);
-                        max_z = max_z.max(point.z);
+                        min_x = min_x.min(f64::from(point.x));
+                        max_x = max_x.max(f64::from(point.x));
+                        min_z = min_z.min(f64::from(point.z));
+                        max_z = max_z.max(f64::from(point.z));
                         saw_point = true;
                     }
                 }
@@ -57,8 +57,8 @@ impl RoadSurfaceSystem {
         }
 
         saw_point.then_some((
-            Vector3::new(min_x, 0.0, min_z),
-            Vector3::new(max_x, 0.0, max_z),
+            RoadVec3::new(min_x, 0.0, min_z),
+            RoadVec3::new(max_x, 0.0, max_z),
         ))
     }
 
@@ -66,11 +66,11 @@ impl RoadSurfaceSystem {
         &self,
         piece: &RoadSurfaceVisualSpanPiece,
         kind: ChunkCacheKind,
-    ) -> Option<(Vector3, Vector3)> {
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX;
-        let mut max_z = f32::MIN;
+    ) -> Option<(RoadVec3, RoadVec3)> {
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_z = f64::MAX;
+        let mut max_z = f64::MIN;
         let mut saw_point = false;
 
         match kind {
@@ -80,10 +80,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(point.x);
-                    max_x = max_x.max(point.x);
-                    min_z = min_z.min(point.z);
-                    max_z = max_z.max(point.z);
+                    min_x = min_x.min(f64::from(point.x));
+                    max_x = max_x.max(f64::from(point.x));
+                    min_z = min_z.min(f64::from(point.z));
+                    max_z = max_z.max(f64::from(point.z));
                     saw_point = true;
                 }
             }
@@ -93,10 +93,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(point.x);
-                    max_x = max_x.max(point.x);
-                    min_z = min_z.min(point.z);
-                    max_z = max_z.max(point.z);
+                    min_x = min_x.min(f64::from(point.x));
+                    max_x = max_x.max(f64::from(point.x));
+                    min_z = min_z.min(f64::from(point.z));
+                    max_z = max_z.max(f64::from(point.z));
                     saw_point = true;
                 }
                 if !saw_point {
@@ -105,10 +105,10 @@ impl RoadSurfaceSystem {
                         .iter()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
-                        min_x = min_x.min(point.x);
-                        max_x = max_x.max(point.x);
-                        min_z = min_z.min(point.z);
-                        max_z = max_z.max(point.z);
+                        min_x = min_x.min(f64::from(point.x));
+                        max_x = max_x.max(f64::from(point.x));
+                        min_z = min_z.min(f64::from(point.z));
+                        max_z = max_z.max(f64::from(point.z));
                         saw_point = true;
                     }
                 }
@@ -116,8 +116,8 @@ impl RoadSurfaceSystem {
         }
 
         saw_point.then_some((
-            Vector3::new(min_x, 0.0, min_z),
-            Vector3::new(max_x, 0.0, max_z),
+            RoadVec3::new(min_x, 0.0, min_z),
+            RoadVec3::new(max_x, 0.0, max_z),
         ))
     }
 
@@ -132,33 +132,34 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface) fn chunk_coords_for_world(
         &self,
-        world_x: f32,
-        world_z: f32,
+        world_x: f64,
+        world_z: f64,
     ) -> SurfaceChunkKey {
         (
-            (world_x / self.chunk_span_m).floor() as i32,
-            (world_z / self.chunk_span_m).floor() as i32,
+            (world_x / f64::from(self.chunk_span_m)).floor() as i32,
+            (world_z / f64::from(self.chunk_span_m)).floor() as i32,
         )
     }
 
     pub(in crate::simulation::network::surface) fn chunk_bounds(
         &self,
         chunk: SurfaceChunkKey,
-    ) -> (Vector3, Vector3) {
-        let min_x = chunk.0 as f32 * self.chunk_span_m;
-        let min_z = chunk.1 as f32 * self.chunk_span_m;
-        let max_x = min_x + self.chunk_span_m;
-        let max_z = min_z + self.chunk_span_m;
+    ) -> (RoadVec3, RoadVec3) {
+        let chunk_span_m = f64::from(self.chunk_span_m);
+        let min_x = f64::from(chunk.0) * chunk_span_m;
+        let min_z = f64::from(chunk.1) * chunk_span_m;
+        let max_x = min_x + chunk_span_m;
+        let max_z = min_z + chunk_span_m;
         (
-            Vector3::new(min_x, 0.0, min_z),
-            Vector3::new(max_x, 0.0, max_z),
+            RoadVec3::new(min_x, 0.0, min_z),
+            RoadVec3::new(max_x, 0.0, max_z),
         )
     }
 
     pub(in crate::simulation::network::surface) fn bounds_to_chunk_keys(
         &self,
-        min: Vector3,
-        max: Vector3,
+        min: RoadVec3,
+        max: RoadVec3,
     ) -> Vec<SurfaceChunkKey> {
         let min_chunk = self.chunk_coords_for_world(min.x, min.z);
         let max_chunk = self.chunk_coords_for_world(max.x, max.z);

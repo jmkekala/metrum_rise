@@ -159,7 +159,7 @@ fn validate_profile_pair(
 fn normalized_direction(
     mouth: &OrderedIncidentPieceMouth,
 ) -> Result<RoadVec2, NodeInputExtractionError> {
-    let direction = godot_vec2_to_road(mouth.direction_xz);
+    let direction = mouth.direction_xz;
     let length = direction.length();
     if length <= f64::EPSILON {
         return Err(NodeInputExtractionError::DegenerateDirection {
@@ -183,8 +183,8 @@ fn conflict_handoff_distance_m(
         .iter()
         .zip(&mouth.endpoint_profile.boundary_points_world)
     {
-        let mouth_xz = godot_vec3_xz_to_road(*mouth_point);
-        let endpoint_xz = godot_vec3_xz_to_road(*endpoint_point);
+        let mouth_xz = road_vec3_xz(*mouth_point);
+        let endpoint_xz = road_vec3_xz(*endpoint_point);
         total += (mouth_xz - endpoint_xz).dot(direction_xz);
         count += 1;
     }

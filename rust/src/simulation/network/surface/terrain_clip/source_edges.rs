@@ -1,12 +1,12 @@
 //! Source-edge extraction and diagnostics for terrain-clip union output.
 
+use super::super::backend::RoadVec3;
 use super::super::{
     NodeOverlayPoint, RoadSurfaceSystem,
     keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey},
 };
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::*;
-use godot::prelude::Vector3;
 use std::collections::BTreeMap;
 
 impl RoadSurfaceSystem {
@@ -104,16 +104,16 @@ impl RoadSurfaceSystem {
         a == b
     }
 
-    fn terrain_clip_source_endpoint_key(point: Vector3) -> TerrainClipSourceEndpointKey {
+    fn terrain_clip_source_endpoint_key(point: RoadVec3) -> TerrainClipSourceEndpointKey {
         let key = Self::terrain_clip_world_key(point);
         TerrainClipSourceEndpointKey {
             x_key: key.x_key(),
             z_key: key.z_key(),
-            height_mm: SurfaceHeightMmKey::from_m_f32(point.y).as_i64(),
+            height_mm: SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
         }
     }
 
-    fn terrain_clip_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Vector3 {
+    fn terrain_clip_canonical_loop_point(point: RoadVec3, loop_points: &[RoadVec3]) -> RoadVec3 {
         loop_points
             .iter()
             .copied()
@@ -190,11 +190,8 @@ impl RoadSurfaceSystem {
         end: NodeOverlayPoint,
         source_edge: TerrainClipSourceEdge,
     ) -> Option<TerrainClipSourceInterval> {
-        let source_start = [
-            f64::from(source_edge.start.x),
-            f64::from(source_edge.start.z),
-        ];
-        let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+        let source_start = [source_edge.start.x, source_edge.start.z];
+        let source_end = [source_edge.end.x, source_edge.end.z];
         let source_start_t = Self::overlay_line_parameter(source_start, start, end)?;
         let source_end_t = Self::overlay_line_parameter(source_end, start, end)?;
         let mut overlap_start_t = source_start_t.min(source_end_t).max(0.0);
@@ -235,7 +232,7 @@ impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_top_envelope_source_point_for_vertex_key(
         key: SurfaceXzKey,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<Vector3> {
+    ) -> Option<RoadVec3> {
         // This top-envelope pick is scoped to terrain-removal cutter recovery after
         // final footprint ownership exists. Output provenance and dust connectors
         // must use their ambiguity-checking paths instead.
@@ -254,10 +251,10 @@ struct TerrainClipSourceEndpointKey {
     height_mm: i64,
 }
 
-fn terrain_clip_point_from_source_endpoint_key(key: TerrainClipSourceEndpointKey) -> Vector3 {
-    Vector3::new(
-        (key.x_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE) as f32,
-        key.height_mm as f32 / 1000.0,
-        (key.z_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE) as f32,
+fn terrain_clip_point_from_source_endpoint_key(key: TerrainClipSourceEndpointKey) -> RoadVec3 {
+    RoadVec3::new(
+        key.x_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE,
+        key.height_mm as f64 / 1000.0,
+        key.z_key as f64 / super::super::keys::SURFACE_XZ_KEY_SCALE,
     )
 }

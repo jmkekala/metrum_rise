@@ -4,13 +4,13 @@ use super::*;
 
 pub(in crate::simulation::network::surface::tests) fn assert_raised_step_face_lower_edge_covers(
     polygons: &[RoadSurfaceVisualPolygon],
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     label: &str,
 ) {
     let start_key = test_xz_key(start);
     let end_key = test_xz_key(end);
-    let expected_length = Vector2::new(end.x - start.x, end.z - start.z).length();
+    let expected_length = RoadVec2::new(end.x - start.x, end.z - start.z).length();
     let covered_length = polygons
         .iter()
         .filter_map(vertical_face_lower_edge_for_test)
@@ -18,8 +18,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_face_lo
             test_xz_key_lies_on_segment_or_dust(edge[0], start, end, start_key, end_key)
                 && test_xz_key_lies_on_segment_or_dust(edge[1], start, end, start_key, end_key)
         })
-        .map(|edge| Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length())
-        .sum::<f32>();
+        .map(|edge| RoadVec2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length())
+        .sum::<f64>();
 
     assert!(
         covered_length + 0.001 >= expected_length,
@@ -28,27 +28,27 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_face_lo
 }
 
 fn test_xz_key_lies_on_segment_or_dust(
-    point: Vector3,
-    start: Vector3,
-    end: Vector3,
+    point: RoadVec3,
+    start: RoadVec3,
+    end: RoadVec3,
     start_key: (i64, i64),
     end_key: (i64, i64),
 ) -> bool {
     if test_xz_key_lies_on_segment(test_xz_key(point), start_key, end_key) {
         return true;
     }
-    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let segment = RoadVec2::new(end.x - start.x, end.z - start.z);
     let length_sq = segment.length_squared();
-    if length_sq <= f32::EPSILON {
+    if length_sq <= f64::EPSILON {
         return false;
     }
-    let point_offset = Vector2::new(point.x - start.x, point.z - start.z);
+    let point_offset = RoadVec2::new(point.x - start.x, point.z - start.z);
     let t = point_offset.dot(segment) / length_sq;
     if !(-0.001..=1.001).contains(&t) {
         return false;
     }
-    let projection = Vector2::new(start.x, start.z) + segment * t;
-    let distance = (Vector2::new(point.x, point.z) - projection).length();
+    let projection = RoadVec2::new(start.x, start.z) + segment * t;
+    let distance = (RoadVec2::new(point.x, point.z) - projection).length();
     distance <= 0.001
 }
 
@@ -133,7 +133,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_canonical_explicit_
             continue;
         }
         if explicit_vertical_step_segment_len_squared_m2(*segment)
-            <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+            <= f64::from(SAMPLE_EPSILON_M) * f64::from(SAMPLE_EPSILON_M)
         {
             continue;
         }
@@ -167,13 +167,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_v
             continue;
         };
         let visible_direction =
-            Vector3::new(visible_direction.x, 0.0, visible_direction.z).normalized();
+            RoadVec3::new(visible_direction.x, 0.0, visible_direction.z).normalize();
         let Some(lower_edge) = vertical_face_owner_edge_for_test(face, &top_edges, lower_owner)
         else {
             continue;
         };
         let midpoint = (lower_edge[0] + lower_edge[1]) * 0.5;
-        let mut best_dot: Option<f32> = None;
+        let mut best_dot: Option<f64> = None;
 
         for region in piece.owned_regions.iter().filter(|region| {
             region.kind == lower_owner.kind() && region.owner_index == lower_owner.owner_index()
@@ -182,11 +182,11 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_v
                 continue;
             };
             let owner_direction =
-                Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+                RoadVec3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
             if owner_direction.length_squared() <= 1e-8 {
                 continue;
             }
-            let dot = visible_direction.dot(owner_direction.normalized());
+            let dot = visible_direction.dot(owner_direction.normalize());
             best_dot = Some(best_dot.map_or(dot, |current| current.max(dot)));
         }
 

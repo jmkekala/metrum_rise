@@ -159,7 +159,8 @@ fn push_region_seam_constraint(
         seam_source: seam_source_from_constraint(constraint, owner),
         owner: constraint.owner,
         opposite_owner: constraint.opposite_owner,
-        constrains_shared_height: constraint_constrains_shared_height(constraint),
+        constrains_shared_height: constraint_constrains_shared_height(constraint)
+            && ownership_key_from_road_point(start_xz) != ownership_key_from_road_point(end_xz),
         is_material_transition: constraint_is_material_transition(constraint),
         start_xz,
         end_xz,

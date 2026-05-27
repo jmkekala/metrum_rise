@@ -65,7 +65,7 @@ pub(in crate::simulation::network::surface::tests) fn test_owned_top_boundary_ed
 ) -> Vec<TestTopBoundaryEdge> {
     let mut boundary_edges = Vec::new();
     for region in &piece.owned_regions {
-        let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, Vector3, Vector3)>::new();
+        let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, RoadVec3, RoadVec3)>::new();
         if region.polygon.triangles_world.is_empty() {
             let points = &region.polygon.points_world;
             if points.len() >= 2 {
@@ -115,7 +115,7 @@ pub(in crate::simulation::network::surface::tests) fn test_owned_top_boundary_ed
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_lower_edge_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<[Vector3; 2]> {
+) -> Option<[RoadVec3; 2]> {
     let [first_edge, second_edge] = vertical_face_side_edges_for_test(polygon)?;
     let first_avg_y = (first_edge[0].y + first_edge[1].y) * 0.5;
     let second_avg_y = (second_edge[0].y + second_edge[1].y) * 0.5;
@@ -128,7 +128,7 @@ pub(in crate::simulation::network::surface::tests) fn vertical_face_lower_edge_f
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_side_edges_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<[[Vector3; 2]; 2]> {
+) -> Option<[[RoadVec3; 2]; 2]> {
     let [a, b, c, d] = polygon.points_world.as_slice() else {
         return None;
     };
@@ -153,7 +153,7 @@ pub(in crate::simulation::network::surface::tests) fn vertical_face_owner_edge_f
     face: &RoadSurfaceVisualPolygon,
     top_edges: &[TestTopBoundaryEdge],
     owner: NodeBandOwner,
-) -> Option<[Vector3; 2]> {
+) -> Option<[RoadVec3; 2]> {
     let [first_edge, second_edge] = vertical_face_side_edges_for_test(face)?;
     [first_edge, second_edge].into_iter().find(|edge| {
         let Some(edge_key) = TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz())
@@ -170,17 +170,17 @@ pub(in crate::simulation::network::surface::tests) fn vertical_face_owner_edge_f
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_visible_direction_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<Vector3> {
+) -> Option<RoadVec3> {
     let [upper_start, lower_start, lower_end, _upper_end] = polygon.points_world.as_slice() else {
         return None;
     };
     let normal = (*lower_start - *upper_start).cross(*lower_end - *upper_start);
-    (normal.length_squared() > 1e-8).then(|| -normal.normalized())
+    (normal.length_squared() > 1e-8).then(|| -normal.normalize())
 }
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_upper_edge_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<[Vector3; 2]> {
+) -> Option<[RoadVec3; 2]> {
     let [a, b, c, d] = polygon.points_world.as_slice() else {
         return None;
     };

@@ -2,13 +2,16 @@
 
 use super::super::{
     RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    SurfaceChunkKey,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    backend::{RoadVec2, RoadVec3},
 };
 use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
+
+const EARTHWORK_MIN_TRIANGLE_DOUBLE_AREA_M2: f64 = 1.0e-8;
+const EARTHWORK_MIN_TRIANGLE_ALTITUDE_M: f64 = 0.01;
 
 impl RoadSurfaceSystem {
     pub(super) fn section_is_tunnel_surface_visible(
@@ -16,7 +19,8 @@ impl RoadSurfaceSystem {
         section: &RoadSurfaceSection,
         terrain: &TerrainSystem,
     ) -> bool {
-        let terrain_height = terrain.sample_height_world(section.center_xz.x, section.center_xz.y)
+        let terrain_height = terrain
+            .sample_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
             * config::HEIGHT_SCALE;
         section.center_height_m >= terrain_height - super::TUNNEL_PORTAL_STAMP_DEPTH_M
     }
@@ -127,12 +131,12 @@ impl RoadSurfaceSystem {
         &self,
         terrain: &TerrainSystem,
         chunk: SurfaceChunkKey,
-        triangle: [Vector3; 3],
+        triangle: [RoadVec3; 3],
         conservative_margin_m: f32,
         height_offset_m: f32,
         candidates: &mut BTreeMap<(usize, usize), (f32, f32)>,
     ) {
-        if !Self::triangle_has_area_xz(triangle) {
+        if !Self::earthwork_triangle_has_area_xz(triangle) {
             return;
         }
 
@@ -140,25 +144,25 @@ impl RoadSurfaceSystem {
         let min_x = triangle
             .iter()
             .map(|point| point.x)
-            .fold(chunk_max.x, f32::min)
-            .max(chunk_min.x - conservative_margin_m);
+            .fold(chunk_max.x, f64::min)
+            .max(chunk_min.x - f64::from(conservative_margin_m));
         let max_x = triangle
             .iter()
             .map(|point| point.x)
-            .fold(chunk_min.x, f32::max)
-            .min(chunk_max.x + conservative_margin_m);
+            .fold(chunk_min.x, f64::max)
+            .min(chunk_max.x + f64::from(conservative_margin_m));
         let min_z = triangle
             .iter()
             .map(|point| point.z)
-            .fold(chunk_max.z, f32::min)
-            .max(chunk_min.z - conservative_margin_m);
+            .fold(chunk_max.z, f64::min)
+            .max(chunk_min.z - f64::from(conservative_margin_m));
         let max_z = triangle
             .iter()
             .map(|point| point.z)
-            .fold(chunk_min.z, f32::max)
-            .min(chunk_max.z + conservative_margin_m);
-        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
-            terrain.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
+            .fold(chunk_min.z, f64::max)
+            .min(chunk_max.z + f64::from(conservative_margin_m));
+        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) = terrain
+            .grid_rect_for_world_bounds(min_x as f32, min_z as f32, max_x as f32, max_z as f32)
         else {
             return;
         };
@@ -176,11 +180,11 @@ impl RoadSurfaceSystem {
         for grid_z in grid_min_z..=grid_max_z {
             for grid_x in grid_min_x..=grid_max_x {
                 let (world_x, world_z) = terrain.grid_to_world_coords(grid_x, grid_z);
-                let point_xz = Vector2::new(world_x, world_z);
-                if !Self::point_is_inside_or_near_triangle_xz(
+                let point_xz = RoadVec2::new(f64::from(world_x), f64::from(world_z));
+                if !Self::earthwork_point_is_inside_or_near_triangle_xz(
                     triangle,
                     point_xz,
-                    conservative_margin_m,
+                    f64::from(conservative_margin_m),
                 ) {
                     continue;
                 }
@@ -215,18 +219,143 @@ impl RoadSurfaceSystem {
     }
 
     fn top_surface_support_candidate_from_triangle(
-        triangle: [Vector3; 3],
-        point_xz: Vector2,
+        triangle: [RoadVec3; 3],
+        point_xz: RoadVec2,
         height_offset_m: f32,
     ) -> Option<(f32, f32)> {
-        let sample_point_xz = Self::closest_point_on_triangle_xz(triangle, point_xz);
-        let (wa, wb, wc) = Self::triangle_barycentric_weights_xz(triangle, sample_point_xz)?;
+        let sample_point_xz = Self::earthwork_closest_point_on_triangle_xz(triangle, point_xz);
+        let (wa, wb, wc) =
+            Self::earthwork_triangle_barycentric_weights_xz(triangle, sample_point_xz)?;
         let support_height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-        let clearance_sample = (support_height_m - height_offset_m) / config::HEIGHT_SCALE;
+        let clearance_sample = ((support_height_m - f64::from(height_offset_m))
+            / f64::from(config::HEIGHT_SCALE)) as f32;
         Some((
-            point_xz.distance_squared_to(sample_point_xz),
+            point_xz.distance_squared(sample_point_xz) as f32,
             clearance_sample,
         ))
+    }
+
+    fn earthwork_triangle_has_area_xz(triangle: [RoadVec3; 3]) -> bool {
+        let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
+            - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        if projected_cross.abs() <= EARTHWORK_MIN_TRIANGLE_DOUBLE_AREA_M2 {
+            return false;
+        }
+        let edge_ab = RoadVec2::new(triangle[1].x - triangle[0].x, triangle[1].z - triangle[0].z);
+        let edge_bc = RoadVec2::new(triangle[2].x - triangle[1].x, triangle[2].z - triangle[1].z);
+        let edge_ca = RoadVec2::new(triangle[0].x - triangle[2].x, triangle[0].z - triangle[2].z);
+        let max_edge_m = edge_ab.length().max(edge_bc.length()).max(edge_ca.length());
+        projected_cross.abs() / max_edge_m.max(f64::from(SAMPLE_EPSILON_M))
+            >= EARTHWORK_MIN_TRIANGLE_ALTITUDE_M
+    }
+
+    fn earthwork_triangle_barycentric_weights_xz(
+        triangle: [RoadVec3; 3],
+        point: RoadVec2,
+    ) -> Option<(f64, f64, f64)> {
+        let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
+            - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        if area.abs() <= f64::from(SAMPLE_EPSILON_M) {
+            return None;
+        }
+
+        let w0 = ((triangle[1].x - point.x) * (triangle[2].z - point.y)
+            - (triangle[1].z - point.y) * (triangle[2].x - point.x))
+            / area;
+        let w1 = ((triangle[2].x - point.x) * (triangle[0].z - point.y)
+            - (triangle[2].z - point.y) * (triangle[0].x - point.x))
+            / area;
+        let w2 = 1.0 - w0 - w1;
+        let epsilon = 0.001;
+        if w0 < -epsilon || w1 < -epsilon || w2 < -epsilon {
+            return None;
+        }
+        Some((w0, w1, w2))
+    }
+
+    fn earthwork_point_is_inside_or_near_triangle_xz(
+        triangle: [RoadVec3; 3],
+        point: RoadVec2,
+        margin_m: f64,
+    ) -> bool {
+        if Self::earthwork_triangle_barycentric_weights_xz(triangle, point).is_some() {
+            return true;
+        }
+        Self::earthwork_distance_point_to_triangle_xz(triangle, point) <= margin_m
+    }
+
+    fn earthwork_closest_point_on_triangle_xz(
+        triangle: [RoadVec3; 3],
+        point: RoadVec2,
+    ) -> RoadVec2 {
+        if Self::earthwork_triangle_barycentric_weights_xz(triangle, point).is_some() {
+            return point;
+        }
+
+        let triangle_points = [
+            RoadVec2::new(triangle[0].x, triangle[0].z),
+            RoadVec2::new(triangle[1].x, triangle[1].z),
+            RoadVec2::new(triangle[2].x, triangle[2].z),
+        ];
+        let mut best = triangle_points[0];
+        let mut best_distance_squared = point.distance_squared(best);
+
+        for &(start, end) in &[
+            (triangle_points[0], triangle_points[1]),
+            (triangle_points[1], triangle_points[2]),
+            (triangle_points[2], triangle_points[0]),
+        ] {
+            let candidate = Self::earthwork_closest_point_on_segment_xz(point, start, end);
+            let distance_squared = point.distance_squared(candidate);
+            if distance_squared < best_distance_squared {
+                best = candidate;
+                best_distance_squared = distance_squared;
+            }
+        }
+
+        best
+    }
+
+    fn earthwork_distance_point_to_triangle_xz(triangle: [RoadVec3; 3], point: RoadVec2) -> f64 {
+        Self::earthwork_distance_point_to_segment_xz(
+            point,
+            RoadVec2::new(triangle[0].x, triangle[0].z),
+            RoadVec2::new(triangle[1].x, triangle[1].z),
+        )
+        .min(Self::earthwork_distance_point_to_segment_xz(
+            point,
+            RoadVec2::new(triangle[1].x, triangle[1].z),
+            RoadVec2::new(triangle[2].x, triangle[2].z),
+        ))
+        .min(Self::earthwork_distance_point_to_segment_xz(
+            point,
+            RoadVec2::new(triangle[2].x, triangle[2].z),
+            RoadVec2::new(triangle[0].x, triangle[0].z),
+        ))
+    }
+
+    fn earthwork_distance_point_to_segment_xz(
+        point: RoadVec2,
+        start: RoadVec2,
+        end: RoadVec2,
+    ) -> f64 {
+        point.distance(Self::earthwork_closest_point_on_segment_xz(
+            point, start, end,
+        ))
+    }
+
+    fn earthwork_closest_point_on_segment_xz(
+        point: RoadVec2,
+        start: RoadVec2,
+        end: RoadVec2,
+    ) -> RoadVec2 {
+        let segment = end - start;
+        let length_squared = segment.length_squared();
+        if length_squared <= f64::from(SAMPLE_EPSILON_M) {
+            return start;
+        }
+        let t = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+        start + segment * t
     }
 }
 

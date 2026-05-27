@@ -28,7 +28,17 @@ fn logged_curved_terminal_exports_outer_boundary_from_visible_top_support() {
     let terminal_piece = surface
         .compiled_visual_node_pieces()
         .get(&end)
-        .expect("logged curved terminal should compile");
+        .unwrap_or_else(|| {
+            panic!(
+                "logged curved terminal should compile: {}",
+                canonical_node_pipeline_report(
+                    &surface,
+                    &graph,
+                    end,
+                    RoadSurfaceVisualNodePieceKind::Terminal,
+                )
+            )
+        });
     assert_eq!(
         terminal_piece.kind,
         RoadSurfaceVisualNodePieceKind::Terminal

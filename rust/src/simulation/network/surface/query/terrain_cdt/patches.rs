@@ -20,7 +20,12 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+            for key in terrain.render_patch_keys_for_world_bounds(
+                min.x as f32,
+                min.z as f32,
+                max.x as f32,
+                max.z as f32,
+            ) {
                 patch_keys.insert(key);
             }
         }
@@ -35,7 +40,12 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+            for key in terrain.render_patch_keys_for_world_bounds(
+                min.x as f32,
+                min.z as f32,
+                max.x as f32,
+                max.z as f32,
+            ) {
                 patch_keys.insert(key);
             }
         }
@@ -100,7 +110,7 @@ impl RoadSurfaceSystem {
     ) {
         for boundary_loop in source {
             if Self::visual_points_overlap_bounds_xz(
-                &boundary_loop.points_world,
+                boundary_loop.points_world.iter().copied(),
                 min_x,
                 min_z,
                 max_x,
@@ -112,16 +122,20 @@ impl RoadSurfaceSystem {
     }
 
     fn visual_points_overlap_bounds_xz(
-        points_world: &[Vector3],
+        points_world: impl IntoIterator<Item = RoadVec3>,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
     ) -> bool {
-        let mut polygon_min_x = f32::MAX;
-        let mut polygon_max_x = f32::MIN;
-        let mut polygon_min_z = f32::MAX;
-        let mut polygon_max_z = f32::MIN;
+        let min_x = f64::from(min_x);
+        let min_z = f64::from(min_z);
+        let max_x = f64::from(max_x);
+        let max_z = f64::from(max_z);
+        let mut polygon_min_x = f64::MAX;
+        let mut polygon_max_x = f64::MIN;
+        let mut polygon_min_z = f64::MAX;
+        let mut polygon_max_z = f64::MIN;
         for point in points_world {
             polygon_min_x = polygon_min_x.min(point.x);
             polygon_max_x = polygon_max_x.max(point.x);

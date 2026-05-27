@@ -50,22 +50,14 @@ impl RoadSurfaceSystem {
         let vertices = boundary_loop
             .points_world
             .iter()
-            .map(|point| TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z)))
+            .map(|point| TerrainCdtVertex::new(point.x, point.y as f32, point.z))
             .collect::<Vec<_>>();
         let source_edges = boundary_loop
             .source_edges
             .iter()
             .map(|edge| TerrainCdtRoadLoopSourceEdge {
-                start: TerrainCdtVertex::new(
-                    f64::from(edge.start.x),
-                    edge.start.y,
-                    f64::from(edge.start.z),
-                ),
-                end: TerrainCdtVertex::new(
-                    f64::from(edge.end.x),
-                    edge.end.y,
-                    f64::from(edge.end.z),
-                ),
+                start: TerrainCdtVertex::new(edge.start.x, edge.start.y as f32, edge.start.z),
+                end: TerrainCdtVertex::new(edge.end.x, edge.end.y as f32, edge.end.z),
                 source: Self::terrain_cdt_boundary_source_from_surface(edge.source),
             })
             .collect::<Vec<_>>();

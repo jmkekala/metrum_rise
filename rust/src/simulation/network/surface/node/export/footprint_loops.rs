@@ -1,18 +1,16 @@
 //! Footprint boundary loop export from the final boolean road-owned footprint.
 
 use super::super::{
-    NodeOverlayShapes,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayShapes,
     arrangement::NodeArrangementKey,
-    backend::RoadVec2,
+    backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     boundary::{
         ArrangementBoundaryPointKey, NodeBoundaryExportError, NodeFootprintBoundaryExportSources,
-        NodeFootprintBoundaryPoint, boundary_points_numeric_area_budget_m2,
-        remove_subbudget_unsupported_numeric_boundary_vertices,
+        NodeFootprintBoundaryPoint, remove_subbudget_unsupported_numeric_boundary_vertices,
         same_winding_boundary_point_loops_from_loop,
     },
 };
 use crate::simulation::network::surface::RoadSurfaceSystem;
-use godot::prelude::Vector3;
 use std::collections::BTreeSet;
 
 impl RoadSurfaceSystem {
@@ -46,13 +44,19 @@ fn push_valid_footprint_boundary_point_loops(
     loops: &mut Vec<Vec<NodeFootprintBoundaryPoint>>,
 ) -> Result<(), NodeBoundaryExportError> {
     let mut points = canonicalize_footprint_boundary_point_loop(points);
+    points = canonicalize_footprint_boundary_points_with_exact_final_support(
+        points,
+        boundary_export_sources,
+    );
     remove_subbudget_unsupported_numeric_boundary_vertices(
         &mut points,
         |current_point_key, local_points| {
+            let local_points = local_points
+                .map(|point| RoadVec3::new(point.x.into(), point.y.into(), point.z.into()));
             boundary_export_sources.has_exact_final_owned_footprint_boundary_support_at_xz_key(
                 current_point_key.xz_key(),
             ) || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                > boundary_points_numeric_area_budget_m2(&local_points)
+                > footprint_boundary_points_numeric_area_budget_m2(&local_points)
         },
     );
     let points = canonicalize_footprint_boundary_point_loop(points);
@@ -105,6 +109,33 @@ fn push_valid_footprint_boundary_point_loops(
         }
     }
     Ok(())
+}
+
+fn canonicalize_footprint_boundary_points_with_exact_final_support(
+    points: Vec<NodeFootprintBoundaryPoint>,
+    boundary_export_sources: &NodeFootprintBoundaryExportSources,
+) -> Vec<NodeFootprintBoundaryPoint> {
+    let mut canonicalized = Vec::with_capacity(points.len());
+    for point in points {
+        if boundary_export_sources
+            .has_exact_final_owned_footprint_boundary_support_at_point(point.point_key)
+        {
+            canonicalized.push(point);
+            continue;
+        }
+        let exact_support = boundary_export_sources
+            .exact_final_owned_footprint_boundary_points_in_same_mm(point.point_key);
+        if exact_support.is_empty() {
+            canonicalized.push(point);
+        } else {
+            canonicalized.extend(
+                exact_support
+                    .into_iter()
+                    .map(NodeFootprintBoundaryPoint::new),
+            );
+        }
+    }
+    canonicalize_footprint_boundary_point_loop(canonicalized)
 }
 
 fn footprint_boundary_xz_point_loop_from_contour(
@@ -213,12 +244,12 @@ fn remove_subbudget_same_xz_footprint_boundary_vertices(
                 continue;
             }
             let local_points = [
-                points[previous].point_world(),
-                points[index].point_world(),
-                points[next].point_world(),
+                footprint_boundary_point_world(points[previous]),
+                footprint_boundary_point_world(points[index]),
+                footprint_boundary_point_world(points[next]),
             ];
             if RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                > boundary_points_numeric_area_budget_m2(&local_points)
+                > footprint_boundary_points_numeric_area_budget_m2(&local_points)
             {
                 continue;
             }
@@ -279,8 +310,20 @@ fn canonical_footprint_boundary_loop_rotation(
 
 fn footprint_boundary_point_loop_world_points(
     points: &[NodeFootprintBoundaryPoint],
-) -> Vec<Vector3> {
-    points.iter().map(|point| point.point_world()).collect()
+) -> Vec<RoadVec3> {
+    points
+        .iter()
+        .copied()
+        .map(footprint_boundary_point_world)
+        .collect()
+}
+
+fn footprint_boundary_point_world(point: NodeFootprintBoundaryPoint) -> RoadVec3 {
+    RoadVec3::new(
+        point.point_key.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        point.point_key.y_mm as f64 / 1000.0,
+        point.point_key.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+    )
 }
 
 fn signed_footprint_boundary_point_loop_area_xz(points: &[NodeFootprintBoundaryPoint]) -> f32 {
@@ -290,5 +333,20 @@ fn signed_footprint_boundary_point_loop_area_xz(points: &[NodeFootprintBoundaryP
 fn footprint_boundary_point_loop_numeric_area_budget_m2(
     points: &[NodeFootprintBoundaryPoint],
 ) -> f32 {
-    boundary_points_numeric_area_budget_m2(&footprint_boundary_point_loop_world_points(points))
+    footprint_boundary_points_numeric_area_budget_m2(&footprint_boundary_point_loop_world_points(
+        points,
+    ))
+}
+
+fn footprint_boundary_points_numeric_area_budget_m2(points: &[RoadVec3]) -> f32 {
+    if points.len() < 2 {
+        return NODE_OVERLAY_MIN_AREA_M2;
+    }
+    let perimeter_m = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(start, end)| RoadVec2::new(start.x - end.x, start.z - end.z).length())
+        .sum::<f64>() as f32;
+    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
 }

@@ -3,7 +3,7 @@
 use super::arrangement::{
     NodeArrangementEdgeId, NodeBandHeightFieldId, NodeRegionSeamConstraint, NodeSeamSource,
 };
-use super::backend::RoadVec2;
+use super::backend::{RoadVec2, RoadVec3};
 use super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::*;
@@ -188,6 +188,7 @@ fn heighted_vertex_with_grade_decision(
         height_m,
         height_field_id,
         height_authority: None,
+        source_provenance: None,
         grade_authority: Some(NodeGradeVertexAuthority::new(
             point_xz,
             height_m,
@@ -208,7 +209,7 @@ fn footprint_shapes_from_points(points: &[RoadVec2]) -> NodeOverlayShapes {
     ]]
 }
 
-fn footprint_loop_contains_xz(loop_points: &[Vector3], point_xz: RoadVec2) -> bool {
+fn footprint_loop_contains_xz(loop_points: &[RoadVec3], point_xz: RoadVec2) -> bool {
     let key = NodeArrangementKey::from_point(point_xz);
     loop_points
         .iter()

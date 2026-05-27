@@ -50,9 +50,9 @@ impl RoadSurfaceSystem {
         profile: &IncidentMouthProfile,
         endpoint_profile: &IncidentMouthProfile,
     ) -> (
-        Vec<Vec<Vector3>>,
-        Vec<Vec<Vector3>>,
-        Vec<Vec<Vector3>>,
+        Vec<Vec<RoadVec3>>,
+        Vec<Vec<RoadVec3>>,
+        Vec<Vec<RoadVec3>>,
         bool,
     ) {
         let Some(sections) = self.compiled_sections.get(&incident.edge_idx) else {
@@ -184,7 +184,7 @@ fn incident_mouth_profiles_have_same_shape(
             .all(|(left, right)| left.kind == right.kind)
 }
 
-fn incident_world_path(points: impl IntoIterator<Item = Vector3>) -> Vec<Vector3> {
+fn incident_world_path(points: impl IntoIterator<Item = RoadVec3>) -> Vec<RoadVec3> {
     points.into_iter().collect()
 }
 
@@ -218,6 +218,6 @@ fn incident_profile_center_key(profile: &IncidentMouthProfile) -> Option<NodeArr
     let last = profile.boundary_points_world.last()?;
     let center = (*first + *last) * 0.5;
     Some(NodeArrangementKey::from_point(
-        super::super::backend::godot_vec3_xz_to_road(center),
+        super::super::backend::road_vec3_xz(center),
     ))
 }

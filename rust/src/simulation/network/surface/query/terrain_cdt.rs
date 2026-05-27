@@ -7,6 +7,7 @@ use super::super::{
     RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipExport,
     RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
     RoadSurfaceTerrainClipLoopTopology, RoadSurfaceVisualNodePieceKind,
+    backend::RoadVec3,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use crate::simulation::network::graph::RegionGraph;
@@ -19,7 +20,6 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtRoadLoopSourceEdge,
     TerrainCdtSpanRegionRole, TerrainCdtVertex,
 };
-use godot::prelude::Vector3;
 use std::collections::{BTreeMap, HashSet};
 
 mod loops;

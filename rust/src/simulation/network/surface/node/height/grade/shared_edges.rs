@@ -98,6 +98,7 @@ fn resolve_same_material_shared_edge_height_agreement(
                 let context = SameMaterialSharedVertexContext {
                     owner: candidate.owner,
                     height_field_id: candidate.height_field_id,
+                    source_provenance: candidate.endpoint_candidate(endpoint).source_provenance,
                 };
                 if !contexts.contains(&context) {
                     contexts.push(context);
@@ -133,6 +134,7 @@ fn apply_same_material_shared_edge_height_agreement(
             let context = SameMaterialSharedVertexContext {
                 owner,
                 height_field_id: vertex.height_field_id,
+                source_provenance: vertex.source_provenance,
             };
             if !contexts.contains(&context) {
                 continue;

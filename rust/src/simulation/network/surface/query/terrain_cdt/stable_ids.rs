@@ -51,10 +51,10 @@ impl RoadSurfaceSystem {
             });
             hasher.write_usize(boundary_loop.points_world.len());
             for point in &boundary_loop.points_world {
-                let key = SurfaceXzKey::from_godot_world_xz(*point);
+                let key = SurfaceXzKey::from_world_xz(*point);
                 hasher.write_i64(key.x_key());
                 hasher.write_i64(key.z_key());
-                hasher.write_i64(SurfaceHeightMmKey::from_m_f32(point.y).as_i64());
+                hasher.write_i64(SurfaceHeightMmKey::from_m_f64(point.y).as_i64());
             }
             hasher.write_usize(boundary_loop.source_edges.len());
             for edge in &boundary_loop.source_edges {
@@ -76,21 +76,21 @@ impl RoadSurfaceSystem {
         hasher.write_str("terrain_clip_union_loop_v1");
         hasher.write_usize(boundary_loop.points_world.len());
         for point in &boundary_loop.points_world {
-            let key = SurfaceXzKey::from_godot_world_xz(*point);
+            let key = SurfaceXzKey::from_world_xz(*point);
             hasher.write_i64(key.x_key());
             hasher.write_i64(key.z_key());
-            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(point.y).as_i64());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f64(point.y).as_i64());
         }
         hasher.write_usize(boundary_loop.source_edges.len());
         for edge in &boundary_loop.source_edges {
-            let start_key = SurfaceXzKey::from_godot_world_xz(edge.start);
-            let end_key = SurfaceXzKey::from_godot_world_xz(edge.end);
+            let start_key = SurfaceXzKey::from_world_xz(edge.start);
+            let end_key = SurfaceXzKey::from_world_xz(edge.end);
             hasher.write_i64(start_key.x_key());
             hasher.write_i64(start_key.z_key());
-            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(edge.start.y).as_i64());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f64(edge.start.y).as_i64());
             hasher.write_i64(end_key.x_key());
             hasher.write_i64(end_key.z_key());
-            hasher.write_i64(SurfaceHeightMmKey::from_m_f32(edge.end.y).as_i64());
+            hasher.write_i64(SurfaceHeightMmKey::from_m_f64(edge.end.y).as_i64());
             hasher.write_u64(Self::terrain_cdt_stable_piece_id_for_source(edge.source));
         }
         hasher.finish()

@@ -9,9 +9,11 @@ use super::triangles::height_triangles_from_contour;
 use super::vertices::height_vertex_heights_from_vertices;
 use super::*;
 use crate::simulation::network::surface::backend::road_points_to_polyline;
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 use crate::simulation::network::surface::input::NodeInputMouth;
 use crate::simulation::network::surface::ownership::{
-    NodeBooleanOwnership, NodeCarrierProvenanceClosure, NodeOwnedRegionArrangement,
+    NodeBooleanOwnership, NodeCarrierProvenanceClosure, NodeCarrierProvenanceOrigin,
+    NodeOwnedRegionArrangement, NodeOwnedRegionArrangementKey,
 };
 use crate::simulation::network::surface::rails::NodeRailContourSet;
 use crate::simulation::network::surface::terminal::{
@@ -20,7 +22,6 @@ use crate::simulation::network::surface::terminal::{
 use crate::simulation::network::surface::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
 };
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
 mod carriers;

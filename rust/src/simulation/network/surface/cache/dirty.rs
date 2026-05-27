@@ -33,6 +33,11 @@ impl RoadSurfaceSystem {
 
     /// Marks one world-space point as dirty for both surface and terrain chunk rebuilds.
     pub fn mark_world_point_dirty(&mut self, pos: Vector3) {
+        let pos = godot_vec3_to_road(pos);
+        self.mark_road_world_point_dirty(pos);
+    }
+
+    fn mark_road_world_point_dirty(&mut self, pos: RoadVec3) {
         let chunk = self.chunk_coords_for_world(pos.x, pos.z);
         self.dirty_surface_chunks.insert(chunk);
         self.dirty_terrain_chunks.insert(chunk);
@@ -40,6 +45,12 @@ impl RoadSurfaceSystem {
 
     /// Marks one world-space AABB as dirty for both surface and terrain chunk rebuilds.
     pub fn mark_world_aabb_dirty(&mut self, min: Vector3, max: Vector3) {
+        let min = godot_vec3_to_road(min);
+        let max = godot_vec3_to_road(max);
+        self.mark_road_world_aabb_dirty(min, max);
+    }
+
+    fn mark_road_world_aabb_dirty(&mut self, min: RoadVec3, max: RoadVec3) {
         let min_chunk = self.chunk_coords_for_world(min.x.min(max.x), min.z.min(max.z));
         let max_chunk = self.chunk_coords_for_world(min.x.max(max.x), min.z.max(max.z));
         for cx in min_chunk.0..=max_chunk.0 {
@@ -73,12 +84,15 @@ impl RoadSurfaceSystem {
     /// This marks both touched terrain chunks and any nearby road edges / nodes whose compiled
     /// roadbed may need recompilation when terrain-dependent grades are rebuilt.
     pub fn mark_terrain_edit_dirty(&mut self, graph: &RegionGraph, center: Vector2, radius_m: f32) {
-        let radius_m = radius_m.max(0.0);
-        let min = Vector3::new(center.x - radius_m, 0.0, center.y - radius_m);
-        let max = Vector3::new(center.x + radius_m, 0.0, center.y + radius_m);
-        self.mark_world_aabb_dirty(min, max);
+        let radius_m = f64::from(radius_m.max(0.0));
+        let center: RoadVec2 = godot_vec2_to_road(center);
+        let min = RoadVec3::new(center.x - radius_m, 0.0, center.y - radius_m);
+        let max = RoadVec3::new(center.x + radius_m, 0.0, center.y + radius_m);
+        self.mark_road_world_aabb_dirty(min, max);
 
-        for edge_idx in graph.get_edges_near_aabb(min, max) {
+        let graph_min = Vector3::new(min.x as f32, min.y as f32, min.z as f32);
+        let graph_max = Vector3::new(max.x as f32, max.y as f32, max.z as f32);
+        for edge_idx in graph.get_edges_near_aabb(graph_min, graph_max) {
             self.mark_edge_dirty(graph, edge_idx);
             let edge = graph.edge(edge_idx);
             self.mark_node_dirty(graph, edge.start_node);

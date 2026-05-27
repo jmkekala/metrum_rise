@@ -81,10 +81,10 @@ impl RoadSurfaceSystem {
         for &chunk in chunks {
             let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
             terrain.reset_visual_region_from_source_world(
-                chunk_min.x,
-                chunk_min.z,
-                chunk_max.x,
-                chunk_max.z,
+                chunk_min.x as f32,
+                chunk_min.z as f32,
+                chunk_max.x as f32,
+                chunk_max.z as f32,
             );
 
             let Some(entry) = self.earthwork_chunk_cache.get(&chunk) else {

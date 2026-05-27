@@ -30,6 +30,7 @@ impl NodeFootprintBoundaryExportSources {
         self.boundary_height_mm_at_key_with_context(key, false)
     }
 
+    #[cfg(test)]
     fn boundary_height_mm_at_key_with_context(
         &self,
         key: arrangement::NodeArrangementKey,
@@ -65,18 +66,22 @@ impl NodeFootprintBoundaryExportSources {
         previous_key: arrangement::NodeArrangementKey,
         next_key: arrangement::NodeArrangementKey,
     ) -> Result<Option<i64>, NodeBoundaryExportError> {
-        let direct_final_context_candidates = self
-            .direct_height_candidates_at_key(key)
-            .into_iter()
-            .filter(|candidate| {
-                self.direct_candidate_has_final_boundary_context(
-                    candidate,
-                    key,
-                    previous_key,
-                    next_key,
-                )
-            })
-            .collect::<Vec<_>>();
+        let direct_final_context_candidates = self.prefer_strongest_direct_final_boundary_context(
+            key,
+            previous_key,
+            next_key,
+            self.direct_height_candidates_at_key(key)
+                .into_iter()
+                .filter(|candidate| {
+                    self.direct_candidate_has_final_boundary_context(
+                        candidate,
+                        key,
+                        previous_key,
+                        next_key,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
         if let Some(height_mm) = self.boundary_height_mm_from_final_candidates(
             key,
             direct_final_context_candidates,
@@ -105,7 +110,16 @@ impl NodeFootprintBoundaryExportSources {
         {
             return Ok(Some(height_mm));
         }
-        self.boundary_height_mm_at_key_with_context(key, true)
+        let exact_candidates = self
+            .direct_height_candidates_at_key(key)
+            .into_iter()
+            .chain(
+                self.boundary_edge_height_candidates_at_key(key)
+                    .filter(|candidate| candidate.final_footprint_boundary)
+                    .map(|candidate| candidate.height),
+            )
+            .collect::<Vec<_>>();
+        self.boundary_height_mm_from_candidates(key, exact_candidates)
     }
 
     fn boundary_height_mm_from_final_candidates(
@@ -169,6 +183,11 @@ impl NodeFootprintBoundaryExportSources {
             &self.source_edges,
         ) {
             return Ok(Some(height_mm));
+        }
+        if let Some(candidate) =
+            self.canonical_distinct_source_provenance_candidate(&exact_candidates, &heights)
+        {
+            return Ok(Some(candidate.height_mm));
         }
 
         let existing = exact_candidates
@@ -257,6 +276,11 @@ impl NodeFootprintBoundaryExportSources {
                 &self.explicit_vertical_step_segments,
                 &self.source_edges,
             ) {
+                return Ok(Some(candidate));
+            }
+            if let Some(candidate) =
+                self.canonical_distinct_source_provenance_candidate(&candidates, &heights)
+            {
                 return Ok(Some(candidate));
             }
             let existing = candidates
@@ -469,6 +493,149 @@ impl NodeFootprintBoundaryExportSources {
                 && (final_height_edge_supports_key(source_edge, previous_key)
                     || final_height_edge_supports_key(source_edge, next_key))
         })
+    }
+
+    fn prefer_strongest_direct_final_boundary_context(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+        candidates: Vec<NodeFootprintBoundaryHeightCandidate>,
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        if candidates.len() < 2 {
+            return candidates;
+        }
+        let scored = candidates
+            .into_iter()
+            .map(|candidate| {
+                (
+                    self.direct_candidate_final_boundary_context_score(
+                        candidate,
+                        key,
+                        previous_key,
+                        next_key,
+                    ),
+                    candidate,
+                )
+            })
+            .collect::<Vec<_>>();
+        let Some(max_score) = scored.iter().map(|(score, _)| *score).max() else {
+            return Vec::new();
+        };
+        if max_score == 0
+            || scored
+                .iter()
+                .filter(|(score, _)| *score == max_score)
+                .count()
+                != 1
+        {
+            return scored.into_iter().map(|(_, candidate)| candidate).collect();
+        }
+        scored
+            .into_iter()
+            .filter_map(|(score, candidate)| (score == max_score).then_some(candidate))
+            .collect()
+    }
+
+    fn direct_candidate_final_boundary_context_score(
+        &self,
+        candidate: NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+    ) -> u8 {
+        if !matches!(
+            candidate.source.source,
+            NodeFootprintBoundaryVertexSource::Direct(_)
+        ) {
+            return 0;
+        }
+        let supports_previous = self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+                && final_height_edge_supports_key(source_edge, previous_key)
+        });
+        let supports_next = self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+                && final_height_edge_supports_key(source_edge, next_key)
+        });
+        u8::from(supports_previous) + u8::from(supports_next)
+    }
+
+    fn canonical_distinct_source_provenance_candidate(
+        &self,
+        candidates: &[NodeFootprintBoundaryHeightCandidate],
+        heights: &[i64],
+    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
+        if heights.len() < 2 {
+            return None;
+        }
+        let owner_kind = candidates.first()?.source.owner_kind;
+        if candidates
+            .iter()
+            .any(|candidate| candidate.source.owner_kind != owner_kind)
+        {
+            return None;
+        }
+        let mut owner_indices = candidates
+            .iter()
+            .map(|candidate| candidate.source.owner_index)
+            .collect::<Vec<_>>();
+        owner_indices.sort_unstable();
+        owner_indices.dedup();
+        if owner_indices.len() < 2 {
+            return None;
+        }
+        let mut candidates_by_provenance = BTreeMap::<
+            height::NodeHeightCarrierProvenanceKey,
+            NodeFootprintBoundaryHeightCandidate,
+        >::new();
+        for candidate in candidates.iter().copied() {
+            let provenance = self.boundary_vertex_source_provenance(candidate.source.source)?;
+            if let Some(existing) = candidates_by_provenance.insert(provenance, candidate)
+                && existing.height_mm != candidate.height_mm
+            {
+                return None;
+            }
+        }
+        if candidates_by_provenance.len() < 2 {
+            return None;
+        }
+        candidates_by_provenance.into_values().next()
+    }
+
+    fn boundary_vertex_source_provenance(
+        &self,
+        source: NodeFootprintBoundaryVertexSource,
+    ) -> Option<height::NodeHeightCarrierProvenanceKey> {
+        match source {
+            NodeFootprintBoundaryVertexSource::Direct(source) => self
+                .grade_authority_source_provenance
+                .get(source.grade_authority_index)
+                .copied()
+                .flatten(),
+            NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+                owning_segment_start,
+                owning_segment_end,
+                ..
+            } => {
+                let start = self
+                    .grade_authority_source_provenance
+                    .get(owning_segment_start.grade_authority_index)
+                    .copied()
+                    .flatten()?;
+                let end = self
+                    .grade_authority_source_provenance
+                    .get(owning_segment_end.grade_authority_index)
+                    .copied()
+                    .flatten()?;
+                (start == end).then_some(start)
+            }
+            NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. } => None,
+        }
     }
 
     fn final_boundary_vertex_height_candidates_at_key(

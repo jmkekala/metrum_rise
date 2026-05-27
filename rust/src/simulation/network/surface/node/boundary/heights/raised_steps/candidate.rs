@@ -28,7 +28,7 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
             checked_pairs += 1;
             let Some((lower, raised)) = ordered_raised_step_footprint_candidates(left, right)
             else {
-                return None;
+                continue;
             };
             let explicit_step_authorized = explicit_vertical_step_authorizes_footprint_height_pair(
                 key,
@@ -57,12 +57,22 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
     if checked_pairs == 0 || raised_candidates.is_empty() {
         return None;
     }
+    let mut raised_heights = raised_candidates
+        .iter()
+        .map(|candidate| candidate.height_mm)
+        .collect::<Vec<_>>();
+    raised_heights.sort_unstable();
+    raised_heights.dedup();
+    let [raised_height_mm] = raised_heights.as_slice() else {
+        return None;
+    };
+
     let mut source = None;
     for candidate in raised_candidates {
         let point_key = ArrangementBoundaryPointKey {
             x_key: key.x_key(),
             z_key: key.z_key(),
-            y_mm: candidate.height_mm,
+            y_mm: *raised_height_mm,
         };
         if merge_node_footprint_boundary_point_source(point_key, &mut source, candidate.source)
             .is_err()
@@ -71,7 +81,7 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
         }
     }
     source.map(|source| NodeFootprintBoundaryHeightCandidate {
-        height_mm: heights[1],
+        height_mm: *raised_height_mm,
         source,
     })
 }
@@ -87,16 +97,12 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
         return None;
     };
 
-    raised_step_footprint_authorized_rank_pairs(
+    raised_step_footprint_authorized_height_mm(
         key,
         candidates,
-        *lower_height_mm,
-        *raised_height_mm,
         explicit_vertical_step_segments,
         source_edges,
     )
-    .is_some()
-    .then_some(*raised_height_mm)
     .or_else(|| {
         same_kind_explicit_vertical_step_footprint_height_mm(
             key,

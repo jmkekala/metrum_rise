@@ -154,9 +154,9 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
         .get(&edge_idx)
         .expect("terminal road should keep a visible span after terminal handoff");
 
-    let travel = Vector2::new(40.0, 5.0).normalized();
+    let travel = backend::RoadVec2::new(40.0, 5.0).normalize();
     let lateral = RoadSurfaceSystem::left_normal_xz(travel);
-    let center = Vector2::new(0.0, 0.0);
+    let center = backend::RoadVec2::new(0.0, 0.0);
     for side in [-1.0, 1.0] {
         let curb_mid = center + lateral * side * 3.575;
         assert!(
@@ -190,9 +190,9 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
         );
     }
 
-    let end_travel = Vector2::new(-40.0, -5.0).normalized();
+    let end_travel = backend::RoadVec2::new(-40.0, -5.0).normalize();
     let end_lateral = RoadSurfaceSystem::left_normal_xz(end_travel);
-    let end_center = Vector2::new(40.0, 5.0);
+    let end_center = backend::RoadVec2::new(40.0, 5.0);
     for side in [-1.0, 1.0] {
         let curb_mid = end_center + end_lateral * side * 3.575;
         assert!(
@@ -270,7 +270,7 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
     let left_road_lower = start_mouth.bands[2].start_point_world;
     assert_eq!(test_xz_key(left_curb_upper), test_xz_key(left_road_lower));
     assert!(
-        (left_curb_upper.y - left_road_lower.y - CURB_STEP_HEIGHT_M).abs() <= 0.004,
+        (left_curb_upper.y - left_road_lower.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= 0.004,
         "left asphalt-curb mouth seam should keep the explicit vertical step"
     );
     assert_material_top_supports_point(
@@ -288,7 +288,7 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
     let right_curb_upper = start_mouth.bands[4].start_point_world;
     assert_eq!(test_xz_key(right_road_lower), test_xz_key(right_curb_upper));
     assert!(
-        (right_curb_upper.y - right_road_lower.y - CURB_STEP_HEIGHT_M).abs() <= 0.004,
+        (right_curb_upper.y - right_road_lower.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= 0.004,
         "right asphalt-curb mouth seam should keep the explicit vertical step"
     );
     assert_material_top_supports_point(
@@ -302,9 +302,9 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         "straight terminal right curb upper mouth seam",
     );
 
-    let travel = Vector2::new(40.0, 0.0).normalized();
+    let travel = backend::RoadVec2::new(40.0, 0.0).normalize();
     let lateral = RoadSurfaceSystem::left_normal_xz(travel);
-    let center = Vector2::new(0.0, 0.0);
+    let center = backend::RoadVec2::new(0.0, 0.0);
     for side in [-1.0, 1.0] {
         let curb_mid = center + lateral * side * 3.575;
         assert!(

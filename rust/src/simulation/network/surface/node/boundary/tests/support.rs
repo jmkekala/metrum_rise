@@ -3,14 +3,14 @@
 use super::*;
 
 pub(in crate::simulation::network::surface::node::boundary::tests) fn test_boundary_point(
-    point: Vector3,
+    point: RoadVec3,
 ) -> NodeFootprintBoundaryPoint {
     NodeFootprintBoundaryPoint::new(ArrangementBoundaryPointKey::from_world(point))
 }
 
 pub(in crate::simulation::network::surface::node::boundary::tests) fn test_source_edge(
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     start_top_surface_source_index: usize,
     start_grade_authority_index: usize,
     end_top_surface_source_index: usize,
@@ -31,8 +31,8 @@ pub(in crate::simulation::network::surface::node::boundary::tests) fn test_sourc
 pub(in crate::simulation::network::surface::node::boundary::tests) fn test_source_edge_for_owner(
     owner_kind: RoadSurfaceBandKind,
     owner_index: usize,
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     start_top_surface_source_index: usize,
     start_grade_authority_index: usize,
     end_top_surface_source_index: usize,
@@ -55,8 +55,8 @@ pub(in crate::simulation::network::surface::node::boundary::tests) fn test_sourc
     kind: RoadSurfaceVisualNodePieceKind,
     owner_kind: RoadSurfaceBandKind,
     owner_index: usize,
-    start: Vector3,
-    end: Vector3,
+    start: RoadVec3,
+    end: RoadVec3,
     start_top_surface_source_index: usize,
     start_grade_authority_index: usize,
     end_top_surface_source_index: usize,

@@ -1,7 +1,7 @@
 //! Core arrangement identifiers, keys, records, and accessors.
 
 use super::super::backend::RoadVec2;
-use super::super::height::NodeGradeVertexAuthority;
+use super::super::height::{NodeGradeVertexAuthority, NodeHeightCarrierProvenanceKey};
 use super::super::keys::SurfaceXzKey;
 use super::super::segments::arrangement_key_lies_on_segment;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
@@ -29,11 +29,12 @@ pub(crate) struct NodeArrangementKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(super) struct NodeArrangementHeightKey(pub(super) i64);
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct NodeArrangementVertexContextKey {
     pub(super) position: NodeArrangementKey,
     pub(super) owners: Vec<NodeBandOwner>,
     pub(super) height_field_id: NodeBandHeightFieldId,
+    pub(super) source_provenance: Option<NodeHeightCarrierProvenanceKey>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -205,7 +206,7 @@ impl NodeArrangementKey {
         SurfaceXzKey::from_raw_keys(self.x_key, self.z_key)
     }
 
-    pub(super) fn lies_on_segment(self, start: Self, end: Self) -> bool {
+    pub(crate) fn lies_on_segment(self, start: Self, end: Self) -> bool {
         arrangement_key_lies_on_segment(self, start, end)
     }
 }

@@ -4,20 +4,20 @@ use super::*;
 
 pub(in crate::simulation::network::surface::tests) fn explicit_vertical_step_segment_len_squared_m2(
     segment: super::arrangement::NodeExplicitVerticalStepSegment,
-) -> f32 {
+) -> f64 {
     let dx = (segment.end().x_key() - segment.start().x_key()) as f64
         / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
     let dz = (segment.end().z_key() - segment.start().z_key()) as f64
         / super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-    (dx * dx + dz * dz) as f32
+    dx * dx + dz * dz
 }
 
 pub(in crate::simulation::network::surface::tests) fn polygon_boundary_overlaps_edge_at_height_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-    edge: [Vector3; 2],
+    edge: [RoadVec3; 2],
 ) -> bool {
     if !polygon.triangles_world.is_empty() {
-        let mut triangle_edges = BTreeMap::<TestRenderEdgeKey, (usize, [Vector3; 2])>::new();
+        let mut triangle_edges = BTreeMap::<TestRenderEdgeKey, (usize, [RoadVec3; 2])>::new();
         for triangle in &polygon.triangles_world {
             for edge_index in 0..3 {
                 let start = triangle[edge_index];
@@ -49,8 +49,8 @@ pub(in crate::simulation::network::surface::tests) fn polygon_boundary_overlaps_
 }
 
 pub(in crate::simulation::network::surface::tests) fn test_boundary_edge_contains_edge_at_height(
-    boundary_edge: [Vector3; 2],
-    edge: [Vector3; 2],
+    boundary_edge: [RoadVec3; 2],
+    edge: [RoadVec3; 2],
 ) -> bool {
     let boundary_start = TestRenderVertexKey::from_point(boundary_edge[0]);
     let boundary_end = TestRenderVertexKey::from_point(boundary_edge[1]);
@@ -170,12 +170,12 @@ pub(in crate::simulation::network::surface::tests) fn test_xz_segments_overlap_w
 
 pub(in crate::simulation::network::surface::tests) fn polygon_centroid_for_test(
     polygon: &RoadSurfaceVisualPolygon,
-) -> Option<Vector3> {
-    let mut sum = Vector3::ZERO;
+) -> Option<RoadVec3> {
+    let mut sum = RoadVec3::ZERO;
     let mut count = 0usize;
     for point in &polygon.points_world {
-        sum += Vector3::new(point.x, 0.0, point.z);
+        sum += RoadVec3::new(point.x, 0.0, point.z);
         count += 1;
     }
-    (count > 0).then_some(sum / count as f32)
+    (count > 0).then_some(sum / count as f64)
 }

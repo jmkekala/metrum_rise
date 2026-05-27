@@ -22,12 +22,12 @@ use super::{
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
-    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt, backend, band_semantics, indices, keys, paths,
-    segments,
+    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt,
+    backend::{self, RoadVec2, RoadVec3},
+    band_semantics, indices, keys, paths, segments,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeSet;
 
 // Node-piece classification threshold.

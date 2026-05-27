@@ -2,20 +2,20 @@
 
 use super::*;
 
-pub(super) fn band(kind: RoadSurfaceBandKind, start: Vector3, end: Vector3) -> IncidentMouthBand {
+pub(super) fn band(kind: RoadSurfaceBandKind, start: RoadVec3, end: RoadVec3) -> IncidentMouthBand {
     IncidentMouthBand {
         kind,
         start_point_world: start,
         end_point_world: end,
     }
 }
-pub(super) fn profile(x: f32) -> IncidentMouthProfile {
+pub(super) fn profile(x: f64) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, 4.0, -4.0),
-        Vector3::new(x, 4.1, -2.0),
-        Vector3::new(x, 4.2, 0.0),
-        Vector3::new(x, 4.3, 2.0),
-        Vector3::new(x, 4.4, 4.0),
+        RoadVec3::new(x, 4.0, -4.0),
+        RoadVec3::new(x, 4.1, -2.0),
+        RoadVec3::new(x, 4.2, 0.0),
+        RoadVec3::new(x, 4.3, 2.0),
+        RoadVec3::new(x, 4.4, 4.0),
     ];
     let bands = vec![
         band(
@@ -40,68 +40,20 @@ pub(super) fn profile(x: f32) -> IncidentMouthProfile {
         ),
     ];
     IncidentMouthProfile {
-        inward_direction_xz: Vector2::RIGHT,
+        inward_direction_xz: RoadVec2::X,
         boundary_points_world,
         bands,
     }
 }
-pub(super) fn terminal_profile(x: f32) -> IncidentMouthProfile {
+pub(super) fn terminal_profile(x: f64) -> IncidentMouthProfile {
     let boundary_points_world = vec![
-        Vector3::new(x, 4.0, -4.0),
-        Vector3::new(x, 4.1, -3.0),
-        Vector3::new(x, 4.2, -1.0),
-        Vector3::new(x, 4.0, 0.0),
-        Vector3::new(x, 4.2, 1.0),
-        Vector3::new(x, 4.1, 3.0),
-        Vector3::new(x, 4.0, 4.0),
-    ];
-    let bands = vec![
-        band(
-            RoadSurfaceBandKind::Sidewalk,
-            boundary_points_world[0],
-            boundary_points_world[1],
-        ),
-        band(
-            RoadSurfaceBandKind::CurbOrShoulder,
-            boundary_points_world[1],
-            boundary_points_world[2],
-        ),
-        band(
-            RoadSurfaceBandKind::Carriageway,
-            boundary_points_world[2],
-            boundary_points_world[3],
-        ),
-        band(
-            RoadSurfaceBandKind::Carriageway,
-            boundary_points_world[3],
-            boundary_points_world[4],
-        ),
-        band(
-            RoadSurfaceBandKind::CurbOrShoulder,
-            boundary_points_world[4],
-            boundary_points_world[5],
-        ),
-        band(
-            RoadSurfaceBandKind::Sidewalk,
-            boundary_points_world[5],
-            boundary_points_world[6],
-        ),
-    ];
-    IncidentMouthProfile {
-        inward_direction_xz: Vector2::RIGHT,
-        boundary_points_world,
-        bands,
-    }
-}
-pub(super) fn terminal_profile_z(z: f32) -> IncidentMouthProfile {
-    let boundary_points_world = vec![
-        Vector3::new(4.0, 4.0, z),
-        Vector3::new(3.0, 4.1, z),
-        Vector3::new(1.0, 4.2, z),
-        Vector3::new(0.0, 4.0, z),
-        Vector3::new(-1.0, 4.2, z),
-        Vector3::new(-3.0, 4.1, z),
-        Vector3::new(-4.0, 4.0, z),
+        RoadVec3::new(x, 4.0, -4.0),
+        RoadVec3::new(x, 4.1, -3.0),
+        RoadVec3::new(x, 4.2, -1.0),
+        RoadVec3::new(x, 4.0, 0.0),
+        RoadVec3::new(x, 4.2, 1.0),
+        RoadVec3::new(x, 4.1, 3.0),
+        RoadVec3::new(x, 4.0, 4.0),
     ];
     let bands = vec![
         band(
@@ -136,12 +88,60 @@ pub(super) fn terminal_profile_z(z: f32) -> IncidentMouthProfile {
         ),
     ];
     IncidentMouthProfile {
-        inward_direction_xz: Vector2::DOWN,
+        inward_direction_xz: RoadVec2::X,
         boundary_points_world,
         bands,
     }
 }
-pub(super) fn input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
+pub(super) fn terminal_profile_z(z: f64) -> IncidentMouthProfile {
+    let boundary_points_world = vec![
+        RoadVec3::new(4.0, 4.0, z),
+        RoadVec3::new(3.0, 4.1, z),
+        RoadVec3::new(1.0, 4.2, z),
+        RoadVec3::new(0.0, 4.0, z),
+        RoadVec3::new(-1.0, 4.2, z),
+        RoadVec3::new(-3.0, 4.1, z),
+        RoadVec3::new(-4.0, 4.0, z),
+    ];
+    let bands = vec![
+        band(
+            RoadSurfaceBandKind::Sidewalk,
+            boundary_points_world[0],
+            boundary_points_world[1],
+        ),
+        band(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            boundary_points_world[1],
+            boundary_points_world[2],
+        ),
+        band(
+            RoadSurfaceBandKind::Carriageway,
+            boundary_points_world[2],
+            boundary_points_world[3],
+        ),
+        band(
+            RoadSurfaceBandKind::Carriageway,
+            boundary_points_world[3],
+            boundary_points_world[4],
+        ),
+        band(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            boundary_points_world[4],
+            boundary_points_world[5],
+        ),
+        band(
+            RoadSurfaceBandKind::Sidewalk,
+            boundary_points_world[5],
+            boundary_points_world[6],
+        ),
+    ];
+    IncidentMouthProfile {
+        inward_direction_xz: RoadVec2::Y,
+        boundary_points_world,
+        bands,
+    }
+}
+pub(super) fn input_with_endpoint_x(endpoint_x: f64) -> NodeArrangementInput {
     let mouth = OrderedIncidentPieceMouth {
         profile: profile(10.0),
         endpoint_profile: profile(endpoint_x),
@@ -150,7 +150,7 @@ pub(super) fn input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };
@@ -161,7 +161,7 @@ pub(super) fn input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
     )
     .expect("test mouth should produce canonical input")
 }
-pub(super) fn terminal_input_with_endpoint_x(endpoint_x: f32) -> NodeArrangementInput {
+pub(super) fn terminal_input_with_endpoint_x(endpoint_x: f64) -> NodeArrangementInput {
     let mouth = OrderedIncidentPieceMouth {
         profile: terminal_profile(10.0),
         endpoint_profile: terminal_profile(endpoint_x),
@@ -170,7 +170,7 @@ pub(super) fn terminal_input_with_endpoint_x(endpoint_x: f32) -> NodeArrangement
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };
@@ -190,7 +190,7 @@ pub(super) fn side_join_input(piece_kind: RoadSurfaceVisualNodePieceKind) -> Nod
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: 0.0,
-        direction_xz: Vector2::RIGHT,
+        direction_xz: RoadVec2::X,
         edge_idx: 7,
         side: IncidentEdgeSide::Start,
     };
@@ -202,7 +202,7 @@ pub(super) fn side_join_input(piece_kind: RoadSurfaceVisualNodePieceKind) -> Nod
         band_end_paths_world: Vec::new(),
         uses_explicit_band_domain_paths: false,
         direction_angle_ccw: std::f32::consts::FRAC_PI_2,
-        direction_xz: Vector2::DOWN,
+        direction_xz: RoadVec2::Y,
         edge_idx: 8,
         side: IncidentEdgeSide::Start,
     };

@@ -2,9 +2,12 @@
 
 use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
+
+const SAMPLE_EPSILON_M: f64 = 0.001;
 
 impl RoadSurfaceSystem {
     pub(crate) fn sample_visible_surface_height(
@@ -14,9 +17,11 @@ impl RoadSurfaceSystem {
         world_x: f32,
         world_z: f32,
     ) -> Option<f32> {
+        let world_x = f64::from(world_x);
+        let world_z = f64::from(world_z);
         let chunk = self.chunk_coords_for_world(world_x, world_z);
         let (edge_indices, node_ids) = self.collect_query_contributors(chunk, chunk);
-        let point = Vector2::new(world_x, world_z);
+        let point = RoadVec2::new(world_x, world_z);
         let mut top_surface_height_m: Option<f32> = None;
 
         self.visit_visible_top_surface_query_triangles(
@@ -59,9 +64,11 @@ impl RoadSurfaceSystem {
         world_x: f32,
         world_z: f32,
     ) -> Option<f32> {
+        let world_x = f64::from(world_x);
+        let world_z = f64::from(world_z);
         let chunk = self.chunk_coords_for_world(world_x, world_z);
         let (edge_indices, node_ids) = self.collect_query_contributors(chunk, chunk);
-        let point = Vector2::new(world_x, world_z);
+        let point = RoadVec2::new(world_x, world_z);
         let mut best_height_m: Option<f32> = None;
 
         // Terrain support clearance is a lower envelope: where terminal caps, spans, or raised
@@ -117,20 +124,27 @@ impl RoadSurfaceSystem {
             return None;
         }
 
+        let ray_origin_road = godot_vec3_to_road(ray_origin);
+        let ray_dir_road = godot_vec3_to_road(ray_dir);
         let terrain_hit = terrain.raycast_visual_terrain(ray_origin, ray_dir);
-        let terrain_t = terrain_hit.map(|terrain_hit| {
-            (terrain_hit - ray_origin).dot(ray_dir) / ray_dir.length_squared().max(f32::EPSILON)
+        let terrain_hit_road = terrain_hit.map(godot_vec3_to_road);
+        let terrain_t = terrain_hit_road.map(|terrain_hit| {
+            (terrain_hit - ray_origin_road).dot(ray_dir_road)
+                / ray_dir_road.length_squared().max(f64::EPSILON)
         });
-        let Some((min_chunk, max_chunk)) =
-            self.raycast_visible_query_chunk_bounds(terrain, ray_origin, ray_dir, terrain_hit)
-        else {
+        let Some((min_chunk, max_chunk)) = self.raycast_visible_query_chunk_bounds(
+            terrain,
+            ray_origin_road,
+            ray_dir_road,
+            terrain_hit_road,
+        ) else {
             return terrain_hit;
         };
         let (edge_indices, node_ids) = self.collect_query_contributors(min_chunk, max_chunk);
 
         let mut best_t = match terrain_t {
             Some(t) => t,
-            None => f32::INFINITY,
+            None => f64::INFINITY,
         };
         let mut best_hit = None;
 
@@ -140,7 +154,13 @@ impl RoadSurfaceSystem {
             &edge_indices,
             &node_ids,
             &mut |triangle| {
-                update_closest_ray_hit(triangle, ray_origin, ray_dir, &mut best_t, &mut best_hit);
+                update_closest_ray_hit(
+                    triangle,
+                    ray_origin_road,
+                    ray_dir_road,
+                    &mut best_t,
+                    &mut best_hit,
+                );
             },
         );
         self.visit_visible_earthwork_query_triangles(
@@ -149,11 +169,19 @@ impl RoadSurfaceSystem {
             &edge_indices,
             &node_ids,
             &mut |triangle| {
-                update_closest_ray_hit(triangle, ray_origin, ray_dir, &mut best_t, &mut best_hit);
+                update_closest_ray_hit(
+                    triangle,
+                    ray_origin_road,
+                    ray_dir_road,
+                    &mut best_t,
+                    &mut best_hit,
+                );
             },
         );
 
-        best_hit.or(terrain_hit)
+        best_hit
+            .map(|hit| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
+            .or(terrain_hit)
     }
 
     pub(crate) fn visible_section_ranges_for_edge(
@@ -209,17 +237,17 @@ impl RoadSurfaceSystem {
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
 
-    fn triangle_height_at_xz(triangle: [Vector3; 3], point: Vector2) -> Option<f32> {
-        let (wa, wb, wc) = Self::triangle_barycentric_weights_xz(triangle, point)?;
-        Some(triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc)
+    fn triangle_height_at_xz(triangle: [RoadVec3; 3], point: RoadVec2) -> Option<f32> {
+        let (wa, wb, wc) = road_triangle_barycentric_weights_xz(triangle, point)?;
+        Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
     }
 
     fn raycast_visible_query_chunk_bounds(
         &self,
         terrain: &TerrainSystem,
-        ray_origin: Vector3,
-        ray_dir: Vector3,
-        terrain_hit: Option<Vector3>,
+        ray_origin: RoadVec3,
+        ray_dir: RoadVec3,
+        terrain_hit: Option<RoadVec3>,
     ) -> Option<(SurfaceChunkKey, SurfaceChunkKey)> {
         if let Some(terrain_hit) = terrain_hit {
             return Some((
@@ -235,6 +263,8 @@ impl RoadSurfaceSystem {
         }
 
         let (half_w, half_h) = terrain.half_world_extents();
+        let half_w = f64::from(half_w);
+        let half_h = f64::from(half_h);
         let (entry_t, exit_t) =
             ray_xz_interval_for_bounds(ray_origin, ray_dir, -half_w, -half_h, half_w, half_h)?;
         if !entry_t.is_finite() || !exit_t.is_finite() {
@@ -254,15 +284,15 @@ impl RoadSurfaceSystem {
 }
 
 fn ray_xz_interval_for_bounds(
-    ray_origin: Vector3,
-    ray_dir: Vector3,
-    min_x: f32,
-    min_z: f32,
-    max_x: f32,
-    max_z: f32,
-) -> Option<(f32, f32)> {
-    let mut entry_t = f32::NEG_INFINITY;
-    let mut exit_t = f32::INFINITY;
+    ray_origin: RoadVec3,
+    ray_dir: RoadVec3,
+    min_x: f64,
+    min_z: f64,
+    max_x: f64,
+    max_z: f64,
+) -> Option<(f64, f64)> {
+    let mut entry_t = f64::NEG_INFINITY;
+    let mut exit_t = f64::INFINITY;
     clip_ray_axis_interval(
         ray_origin.x,
         ray_dir.x,
@@ -283,14 +313,14 @@ fn ray_xz_interval_for_bounds(
 }
 
 fn clip_ray_axis_interval(
-    origin: f32,
-    direction: f32,
-    min: f32,
-    max: f32,
-    entry_t: &mut f32,
-    exit_t: &mut f32,
+    origin: f64,
+    direction: f64,
+    min: f64,
+    max: f64,
+    entry_t: &mut f64,
+    exit_t: &mut f64,
 ) -> Option<()> {
-    if direction.abs() <= f32::EPSILON {
+    if direction.abs() <= f64::EPSILON {
         return (origin >= min && origin <= max).then_some(());
     }
 
@@ -311,18 +341,70 @@ fn keep_min_height(target: &mut Option<f32>, height_m: f32) {
 }
 
 fn update_closest_ray_hit(
-    triangle: [Vector3; 3],
-    ray_origin: Vector3,
-    ray_dir: Vector3,
-    best_t: &mut f32,
-    best_hit: &mut Option<Vector3>,
+    triangle: [RoadVec3; 3],
+    ray_origin: RoadVec3,
+    ray_dir: RoadVec3,
+    best_t: &mut f64,
+    best_hit: &mut Option<RoadVec3>,
 ) {
-    let Some(t) = RoadSurfaceSystem::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
-    else {
+    let Some(t) = road_ray_triangle_intersection_t(triangle, ray_origin, ray_dir) else {
         return;
     };
     if t >= 0.0 && t <= *best_t {
         *best_t = t;
         *best_hit = Some(ray_origin + ray_dir * t);
     }
+}
+
+fn road_triangle_barycentric_weights_xz(
+    triangle: [RoadVec3; 3],
+    point: RoadVec2,
+) -> Option<(f64, f64, f64)> {
+    let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
+        - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+    if area.abs() <= SAMPLE_EPSILON_M {
+        return None;
+    }
+
+    let w0 = ((triangle[1].x - point.x) * (triangle[2].z - point.y)
+        - (triangle[1].z - point.y) * (triangle[2].x - point.x))
+        / area;
+    let w1 = ((triangle[2].x - point.x) * (triangle[0].z - point.y)
+        - (triangle[2].z - point.y) * (triangle[0].x - point.x))
+        / area;
+    let w2 = 1.0 - w0 - w1;
+    if w0 < -SAMPLE_EPSILON_M || w1 < -SAMPLE_EPSILON_M || w2 < -SAMPLE_EPSILON_M {
+        return None;
+    }
+    Some((w0, w1, w2))
+}
+
+fn road_ray_triangle_intersection_t(
+    triangle: [RoadVec3; 3],
+    ray_origin: RoadVec3,
+    ray_dir: RoadVec3,
+) -> Option<f64> {
+    let edge_ab = triangle[1] - triangle[0];
+    let edge_ac = triangle[2] - triangle[0];
+    let pvec = ray_dir.cross(edge_ac);
+    let det = edge_ab.dot(pvec);
+    if det.abs() <= SAMPLE_EPSILON_M {
+        return None;
+    }
+
+    let inv_det = 1.0 / det;
+    let tvec = ray_origin - triangle[0];
+    let u = tvec.dot(pvec) * inv_det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+
+    let qvec = tvec.cross(edge_ab);
+    let v = ray_dir.dot(qvec) * inv_det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let t = edge_ac.dot(qvec) * inv_det;
+    (t >= 0.0).then_some(t)
 }

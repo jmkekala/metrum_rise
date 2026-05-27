@@ -67,6 +67,8 @@ fn push_materialized_region_seam_constraint(
             constraint,
             owner,
             opposite_owner,
+            start_xz,
+            end_xz,
         ),
         is_material_transition: materialized_constraint_kind_is_material_transition(
             materialized_kind,
@@ -171,7 +173,12 @@ fn materialized_constraint_constrains_shared_height(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
 ) -> bool {
+    if ownership_key_from_road_point(start_xz) == ownership_key_from_road_point(end_xz) {
+        return false;
+    }
     let kind = materialized_constraint_kind_for_owned_edge(constraint, owner, opposite_owner);
     if kind == NodeRailConstraintKind::RaisedStepContact
         && !rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)

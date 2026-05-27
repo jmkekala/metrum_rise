@@ -3,7 +3,7 @@
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualPolygon, RoadVec3,
 };
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -440,13 +440,14 @@ fn emit_surface_polygon(
     }
 
     for triangle in &polygon.triangles_world {
+        let triangle = road_triangle_to_render(*triangle);
         if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
             continue;
         }
         super::push_triangle(
             mesh,
             layer,
-            *triangle,
+            triangle,
             [
                 Vector2::ZERO,
                 Vector2::new(1.0, 0.0),
@@ -466,7 +467,12 @@ fn emit_vertical_surface_polygon(
         return;
     };
 
-    let vertices = [*upper_start, *lower_start, *lower_end, *upper_end];
+    let vertices = [
+        road_vec3_to_render(*upper_start),
+        road_vec3_to_render(*lower_start),
+        road_vec3_to_render(*lower_end),
+        road_vec3_to_render(*upper_end),
+    ];
     let uvs = [
         Vector2::ZERO,
         Vector2::new(1.0, 0.0),
@@ -503,10 +509,22 @@ fn section_boundary_world_point(
     height_m: f32,
 ) -> Vector3 {
     Vector3::new(
-        section.center_xz.x + section.lateral_xz.x * lateral_offset_m,
+        (section.center_xz.x + section.lateral_xz.x * f64::from(lateral_offset_m)) as f32,
         height_m,
-        section.center_xz.y + section.lateral_xz.y * lateral_offset_m,
+        (section.center_xz.y + section.lateral_xz.y * f64::from(lateral_offset_m)) as f32,
     )
+}
+
+fn road_vec3_to_render(point: RoadVec3) -> Vector3 {
+    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
+}
+
+fn road_triangle_to_render(triangle: [RoadVec3; 3]) -> [Vector3; 3] {
+    [
+        road_vec3_to_render(triangle[0]),
+        road_vec3_to_render(triangle[1]),
+        road_vec3_to_render(triangle[2]),
+    ]
 }
 
 fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {

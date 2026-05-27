@@ -6,11 +6,11 @@ use super::*;
 pub(in crate::simulation::network::surface::tests) struct TestTopBoundaryEdge {
     pub(in crate::simulation::network::surface::tests) kind: RoadSurfaceBandKind,
     pub(in crate::simulation::network::surface::tests) owner_index: usize,
-    pub(in crate::simulation::network::surface::tests) start: Vector3,
-    pub(in crate::simulation::network::surface::tests) end: Vector3,
+    pub(in crate::simulation::network::surface::tests) start: RoadVec3,
+    pub(in crate::simulation::network::surface::tests) end: RoadVec3,
     pub(in crate::simulation::network::surface::tests) key: TestRenderEdgeKey,
     pub(in crate::simulation::network::surface::tests) xz_key: TestRenderXzEdgeKey,
-    pub(in crate::simulation::network::surface::tests) avg_y_m: f32,
+    pub(in crate::simulation::network::surface::tests) avg_y_m: f64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -39,7 +39,7 @@ pub(in crate::simulation::network::surface::tests) struct TestRenderXzEdgeKey {
 }
 
 impl TestRenderVertexKey {
-    pub(in crate::simulation::network::surface::tests) fn from_point(point: Vector3) -> Self {
+    pub(in crate::simulation::network::surface::tests) fn from_point(point: RoadVec3) -> Self {
         let (x_key, z_key) = test_xz_key(point);
         Self {
             x_key,
@@ -69,8 +69,8 @@ impl TestRenderXzVertexKey {
 
 impl TestRenderEdgeKey {
     pub(in crate::simulation::network::surface::tests) fn normalized(
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     ) -> Option<Self> {
         let start = TestRenderVertexKey::from_point(start);
         let end = TestRenderVertexKey::from_point(end);

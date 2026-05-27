@@ -4,7 +4,6 @@
 //! earthwork, geometry, cache, system, and debug implementations. This file
 //! keeps only the public contracts and stage re-exports that cross those owners.
 
-use godot::prelude::{Vector2, Vector3};
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 
 mod backend;
@@ -26,6 +25,7 @@ mod span;
 mod system;
 mod terrain_clip;
 
+pub use backend::{RoadVec2, RoadVec3};
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
 pub use edge::PreviewRoadSurfaceResult;
 pub use node::RoadSurfaceVisualNodePiece;
@@ -128,13 +128,13 @@ pub struct RoadSurfaceSection {
     /// Longitudinal distance from the edge start in world metres.
     pub s_m: f32,
     /// Section center point in world-space XZ metres.
-    pub center_xz: Vector2,
+    pub center_xz: RoadVec2,
     /// Solved center height in world metres.
     pub center_height_m: f32,
     /// Unit tangent vector in XZ.
-    pub tangent_xz: Vector2,
+    pub tangent_xz: RoadVec2,
     /// Unit lateral axis in XZ.
-    pub lateral_xz: Vector2,
+    pub lateral_xz: RoadVec2,
     /// Ordered lateral bands for this section.
     pub bands: Vec<RoadSurfaceBand>,
 }
@@ -164,9 +164,9 @@ impl RoadSurfaceVisualNodePieceKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoadSurfaceVisualPolygon {
     /// Ordered world-space polygon points.
-    pub points_world: Vec<Vector3>,
+    pub points_world: Vec<RoadVec3>,
     /// Deterministic cached triangles covering the polygon in world space.
-    pub triangles_world: Vec<[Vector3; 3]>,
+    pub triangles_world: Vec<[RoadVec3; 3]>,
 }
 
 #[cfg(test)]

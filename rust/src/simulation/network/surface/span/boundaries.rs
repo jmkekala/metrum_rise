@@ -4,13 +4,13 @@ use super::super::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
     RoadSurfaceVisualPolygon,
+    backend::RoadVec3,
     earthwork::RoadSurfaceEarthworkGeometryError,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
     terrain_clip_edge_kind_for_band,
 };
 use super::RoadSurfaceSpanOwnedRegion;
 use crate::simulation::network::types::EdgeClass;
-use godot::prelude::Vector3;
 
 impl RoadSurfaceSystem {
     pub(super) fn build_span_boundary_loops_from_regions(
@@ -58,7 +58,9 @@ impl RoadSurfaceSystem {
         Ok((outer_boundary_loops, terrain_clip_boundary_loops))
     }
 
-    fn span_boundary_loop_points(segments: &[RoadSurfaceEarthworkBoundarySegment]) -> Vec<Vector3> {
+    fn span_boundary_loop_points(
+        segments: &[RoadSurfaceEarthworkBoundarySegment],
+    ) -> Vec<RoadVec3> {
         segments.iter().map(|segment| segment.inner_start).collect()
     }
 
@@ -93,8 +95,8 @@ impl RoadSurfaceSystem {
     fn span_boundary_segment_source(
         region: &RoadSurfaceSpanOwnedRegion,
         edge_class: EdgeClass,
-        start: Vector3,
-        end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
     ) -> RoadSurfaceEarthworkFaceSource {
         let [start_left, end_left, end_right, start_right] = region.source_corners_world;
         if Self::span_boundary_segment_matches_source_edge(start, end, end_left, end_right) {
@@ -115,10 +117,10 @@ impl RoadSurfaceSystem {
     }
 
     fn span_boundary_segment_matches_source_edge(
-        start: Vector3,
-        end: Vector3,
-        source_start: Vector3,
-        source_end: Vector3,
+        start: RoadVec3,
+        end: RoadVec3,
+        source_start: RoadVec3,
+        source_end: RoadVec3,
     ) -> bool {
         (Self::span_points_share_canonical_position(start, source_start)
             && Self::span_points_share_canonical_position(end, source_end))
@@ -159,7 +161,7 @@ impl RoadSurfaceSystem {
 
     fn canonicalize_span_terrain_clip_source_edges(
         source_edges: &mut [RoadSurfaceTerrainClipSourceEdge],
-        loop_points: &[Vector3],
+        loop_points: &[RoadVec3],
     ) {
         for edge in source_edges {
             if let Some(point) = Self::matching_canonical_span_loop_point(edge.start, loop_points) {
@@ -172,17 +174,17 @@ impl RoadSurfaceSystem {
     }
 
     fn matching_canonical_span_loop_point(
-        point: Vector3,
-        loop_points: &[Vector3],
-    ) -> Option<Vector3> {
+        point: RoadVec3,
+        loop_points: &[RoadVec3],
+    ) -> Option<RoadVec3> {
         loop_points
             .iter()
             .copied()
             .find(|candidate| Self::span_points_share_canonical_position(*candidate, point))
     }
 
-    fn span_points_share_canonical_position(a: Vector3, b: Vector3) -> bool {
-        SurfaceXzKey::from_godot_world_xz(a) == SurfaceXzKey::from_godot_world_xz(b)
-            && SurfaceHeightMmKey::from_m_f32(a.y) == SurfaceHeightMmKey::from_m_f32(b.y)
+    fn span_points_share_canonical_position(a: RoadVec3, b: RoadVec3) -> bool {
+        SurfaceXzKey::from_world_xz(a) == SurfaceXzKey::from_world_xz(b)
+            && SurfaceHeightMmKey::from_m_f64(a.y) == SurfaceHeightMmKey::from_m_f64(b.y)
     }
 }

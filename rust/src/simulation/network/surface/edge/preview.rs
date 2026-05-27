@@ -1,5 +1,6 @@
 //! Temporary road preview compilation from conditioned edge input.
 
+use super::super::backend::road_vec3_to_godot;
 use super::super::{
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, SAMPLE_EPSILON_M,
 };
@@ -124,7 +125,14 @@ impl RoadSurfaceSystem {
                 let a1 = profile_a[index + 1];
                 let b0 = profile_b[index];
                 let b1 = profile_b[index + 1];
-                vertices.extend_from_slice(&[a0, b0, a1, a1, b0, b1]);
+                vertices.extend_from_slice(&[
+                    road_vec3_to_godot(a0),
+                    road_vec3_to_godot(b0),
+                    road_vec3_to_godot(a1),
+                    road_vec3_to_godot(a1),
+                    road_vec3_to_godot(b0),
+                    road_vec3_to_godot(b1),
+                ]);
             }
         }
 
@@ -150,9 +158,10 @@ impl RoadSurfaceSystem {
 
         if prepared_points.len() > 2 {
             if let Some(mid_section) = compiled_sections.get(compiled_sections.len() / 2) {
-                let terrain_h = terrain
-                    .sample_height_world(mid_section.center_xz.x, mid_section.center_xz.y)
-                    * config::HEIGHT_SCALE;
+                let terrain_h = terrain.sample_height_world(
+                    mid_section.center_xz.x as f32,
+                    mid_section.center_xz.y as f32,
+                ) * config::HEIGHT_SCALE;
                 match edge_class {
                     EdgeClass::Bridge => {
                         if mid_section.center_height_m < terrain_h + PREVIEW_CLEARANCE_M {

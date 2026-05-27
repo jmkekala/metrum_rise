@@ -4,24 +4,25 @@ use super::*;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn classify_earthwork_face_kind(
-        inner_start: Vector3,
-        inner_end: Vector3,
-        outer_end: Vector3,
-        outer_start: Vector3,
+        inner_start: RoadVec3,
+        inner_end: RoadVec3,
+        outer_end: RoadVec3,
+        outer_start: RoadVec3,
     ) -> RoadSurfaceEarthworkFaceKind {
         let setback_a =
-            Vector2::new(outer_start.x - inner_start.x, outer_start.z - inner_start.z).length();
-        let setback_b = Vector2::new(outer_end.x - inner_end.x, outer_end.z - inner_end.z).length();
+            RoadVec2::new(outer_start.x - inner_start.x, outer_start.z - inner_start.z).length();
+        let setback_b =
+            RoadVec2::new(outer_end.x - inner_end.x, outer_end.z - inner_end.z).length();
         let avg_setback = (setback_a + setback_b) * 0.5;
-        if avg_setback <= SAMPLE_EPSILON_M {
+        if avg_setback <= f64::from(SAMPLE_EPSILON_M) {
             return RoadSurfaceEarthworkFaceKind::RetainingWall;
         }
 
         let max_height_delta = (outer_start.y - inner_start.y)
             .abs()
             .max((outer_end.y - inner_end.y).abs());
-        let slope_ratio = max_height_delta / avg_setback.max(SAMPLE_EPSILON_M);
-        if slope_ratio >= EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD {
+        let slope_ratio = max_height_delta / avg_setback.max(f64::from(SAMPLE_EPSILON_M));
+        if slope_ratio >= f64::from(EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD) {
             RoadSurfaceEarthworkFaceKind::RetainingWall
         } else {
             RoadSurfaceEarthworkFaceKind::Slope

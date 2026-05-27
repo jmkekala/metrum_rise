@@ -1,20 +1,38 @@
 //! Overlay and quantized geometry helpers for road-surface tests.
 
 use super::*;
+use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
+
+pub(in crate::simulation::network::surface::tests) trait TestPointXz {
+    fn to_road_xz(self) -> RoadVec2;
+}
+
+impl TestPointXz for Vector2 {
+    fn to_road_xz(self) -> RoadVec2 {
+        RoadVec2::new(f64::from(self.x), f64::from(self.y))
+    }
+}
+
+impl TestPointXz for RoadVec2 {
+    fn to_road_xz(self) -> RoadVec2 {
+        self
+    }
+}
 
 pub(in crate::simulation::network::surface::tests) fn triangle_centroid_xz(
-    triangle: [Vector3; 3],
+    triangle: [RoadVec3; 3],
 ) -> Vector2 {
     Vector2::new(
-        (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
-        (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+        ((triangle[0].x + triangle[1].x + triangle[2].x) / 3.0) as f32,
+        ((triangle[0].z + triangle[1].z + triangle[2].z) / 3.0) as f32,
     )
 }
 
 pub(in crate::simulation::network::surface::tests) fn point_inside_visual_polygons(
     polygons: &[RoadSurfaceVisualPolygon],
-    point: Vector2,
+    point: impl TestPointXz,
 ) -> bool {
+    let point = point.to_road_xz();
     polygons.iter().any(|polygon| {
         if polygon.triangles_world.is_empty() {
             RoadSurfaceSystem::polygon_contains_point_xz(&polygon.points_world, point)
@@ -28,14 +46,15 @@ pub(in crate::simulation::network::surface::tests) fn point_inside_visual_polygo
 
 pub(in crate::simulation::network::surface::tests) fn visual_polygon_boundary_contains_xz(
     polygons: &[RoadSurfaceVisualPolygon],
-    point: Vector2,
+    point: impl TestPointXz,
 ) -> bool {
+    let point = point.to_road_xz();
     polygons
         .iter()
         .flat_map(|polygon| polygon.points_world.iter())
         .any(|candidate| {
-            Vector2::new(candidate.x - point.x, candidate.z - point.y).length()
-                <= SAMPLE_EPSILON_M * 2.0
+            RoadVec2::new(candidate.x - point.x, candidate.z - point.y).length()
+                <= f64::from(SAMPLE_EPSILON_M) * 2.0
         })
 }
 
@@ -52,13 +71,12 @@ pub(in crate::simulation::network::surface::tests) fn overlay_contours_from_poly
 }
 
 pub(in crate::simulation::network::surface::tests) fn overlay_contour_from_world_points(
-    points: &[Vector3],
+    points: &[RoadVec3],
 ) -> super::NodeOverlayContour {
     let mut contour = Vec::with_capacity(points.len());
     for point in points {
-        let overlay_point = super::backend::road_vec2_to_overlay_point(
-            super::backend::godot_vec3_xz_to_road(*point),
-        );
+        let overlay_point =
+            super::backend::road_vec2_to_overlay_point(super::backend::road_vec3_xz(*point));
         if contour.last().is_none_or(|last| *last != overlay_point) {
             contour.push(overlay_point);
         }
@@ -169,9 +187,8 @@ pub(in crate::simulation::network::surface::tests) fn test_xz_key_lies_on_segmen
     dot >= 0 && dot <= len_squared
 }
 
-pub(in crate::simulation::network::surface::tests) fn test_xz_key(point: Vector3) -> (i64, i64) {
-    let point =
-        super::backend::road_vec2_to_overlay_point(super::backend::godot_vec3_xz_to_road(point));
+pub(in crate::simulation::network::surface::tests) fn test_xz_key(point: RoadVec3) -> (i64, i64) {
+    let point = super::backend::road_vec2_to_overlay_point(super::backend::road_vec3_xz(point));
     (
         (point[0] * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         (point[1] * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
@@ -179,8 +196,8 @@ pub(in crate::simulation::network::surface::tests) fn test_xz_key(point: Vector3
 }
 
 pub(in crate::simulation::network::surface::tests) fn triangle_overlap_area_m2(
-    a: [Vector3; 3],
-    b: [Vector3; 3],
+    a: [RoadVec3; 3],
+    b: [RoadVec3; 3],
 ) -> f32 {
     RoadSurfaceSystem::overlay_binary_shapes(
         &triangle_overlay_shapes(a),
@@ -194,8 +211,8 @@ pub(in crate::simulation::network::surface::tests) fn triangle_overlap_area_m2(
 }
 
 pub(in crate::simulation::network::surface::tests) fn triangle_overlap_numeric_budget_m2(
-    a: [Vector3; 3],
-    b: [Vector3; 3],
+    a: [RoadVec3; 3],
+    b: [RoadVec3; 3],
 ) -> f32 {
     RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_overlay_shapes(a)).max(
         RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_overlay_shapes(b)),
@@ -203,11 +220,11 @@ pub(in crate::simulation::network::surface::tests) fn triangle_overlap_numeric_b
 }
 
 pub(in crate::simulation::network::surface::tests) fn triangle_overlay_shapes(
-    triangle: [Vector3; 3],
+    triangle: [RoadVec3; 3],
 ) -> super::NodeOverlayShapes {
     let mut contour = triangle
         .iter()
-        .map(|point| [f64::from(point.x), f64::from(point.z)])
+        .map(|point| [point.x, point.z])
         .collect::<Vec<_>>();
     let area = (contour[1][0] - contour[0][0]) * (contour[2][1] - contour[0][1])
         - (contour[1][1] - contour[0][1]) * (contour[2][0] - contour[0][0]);

@@ -2,7 +2,6 @@
 
 use super::sources::node_earthwork_source_for_boundary_subsegment;
 use super::*;
-use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
 pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node_earthwork_boundary_segments(
@@ -80,6 +79,10 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
             if (expected_height_mm - split_point_key.y_mm).abs() > 1 {
                 continue;
             }
+            let split_point_key = ArrangementBoundaryPointKey {
+                y_mm: expected_height_mm,
+                ..split_point_key
+            };
             insert_node_footprint_boundary_split_point(
                 &mut split_points,
                 parameter,
@@ -101,8 +104,10 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
         let sub_end_split = pair[1].1;
         let sub_start = sub_start_split.point_world();
         let sub_end = sub_end_split.point_world();
-        if Vector2::new(sub_end.x - sub_start.x, sub_end.z - sub_start.z).length_squared()
-            <= super::super::super::SAMPLE_EPSILON_M * super::super::super::SAMPLE_EPSILON_M
+        if RoadVec2::new(sub_end.x - sub_start.x, sub_end.z - sub_start.z).length_squared()
+            <= f64::from(
+                super::super::super::SAMPLE_EPSILON_M * super::super::super::SAMPLE_EPSILON_M,
+            )
         {
             continue;
         }
@@ -176,7 +181,7 @@ fn nearby_source_edges_for_missing_segment(
 }
 
 impl NodeFootprintBoundarySplitPoint {
-    fn point_world(self) -> Vector3 {
+    fn point_world(self) -> RoadVec3 {
         arrangement_boundary_point_to_world(self.point_key)
     }
 }

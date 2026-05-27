@@ -217,7 +217,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   bends, raised `JunctionN`, widened tie-in diagnostics, retaining-wall provenance, and
   edit-order-stable emitted topology through the same production path. `ROAD-02` generated helper
   hardening now covers mixed sidewalk / curb and no-sidewalk curb / shoulder profile modes across
-  flat and elevated mixed-width 4-way / 5-way / 6-way `JunctionN` cases.
+  flat and elevated mixed-width 4-way / 5-way / 6-way `JunctionN` cases. `CODE-14` is now closed:
+  road-surface long-lived geometry is `RoadVec2` / `RoadVec3` internally, Godot vectors are limited
+  to graph/API input, render upload, debug output, and bridge adapters, and arrangement split
+  vertices preserve source-owned height provenance at exact canonical split keys.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

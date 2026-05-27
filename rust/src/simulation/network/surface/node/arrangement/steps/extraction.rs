@@ -86,6 +86,11 @@ impl NodeArrangement {
                 {
                     return Some(opposite_owner);
                 }
+                if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
+                    && self.edge_has_material_endpoint_path_for_opposite(edge, opposite_owner)
+                {
+                    return Some(opposite_owner);
+                }
             }
             candidates.extend(
                 self.edge_source_constraint_opposite_owners(edge)
@@ -131,6 +136,12 @@ impl NodeArrangement {
             {
                 return Some(opposite_owner);
             }
+        }
+        let endpoint_path_candidates = self.edge_endpoint_material_path_step_opposite_owners(edge);
+        if let Some(opposite_owner) =
+            select_endpoint_path_step_opposite_owner(edge.owner, &endpoint_path_candidates)
+        {
+            return Some(opposite_owner);
         }
         let endpoint_candidates = self.edge_endpoint_source_constraint_opposite_owners(edge);
         if endpoint_candidates.len() == 1
@@ -309,6 +320,85 @@ impl NodeArrangement {
         )
     }
 
+    fn edge_has_material_endpoint_path_for_opposite(
+        &self,
+        edge: &NodeArrangementEdge,
+        opposite_owner: NodeBandOwner,
+    ) -> bool {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        self.has_explicit_material_seam_endpoint_path_at_key_between(
+            start,
+            &[edge.owner],
+            &[opposite_owner],
+        ) && self.has_explicit_material_seam_endpoint_path_at_key_between(
+            end,
+            &[edge.owner],
+            &[opposite_owner],
+        )
+    }
+
+    fn edge_endpoint_material_path_step_opposite_owners(
+        &self,
+        edge: &NodeArrangementEdge,
+    ) -> Vec<NodeBandOwner> {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return Vec::new();
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return Vec::new();
+        };
+        let start_owners = self.material_endpoint_path_step_opposite_owners(edge.owner, start);
+        let end_owners = self.material_endpoint_path_step_opposite_owners(edge.owner, end);
+        let mut owners = start_owners
+            .into_iter()
+            .filter(|owner| end_owners.contains(owner))
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
+    fn material_endpoint_path_step_opposite_owners(
+        &self,
+        owner: NodeBandOwner,
+        key: NodeArrangementKey,
+    ) -> Vec<NodeBandOwner> {
+        let mut owners = self
+            .regions
+            .iter()
+            .flat_map(|region| {
+                region
+                    .seam_constraints
+                    .iter()
+                    .filter(move |constraint| {
+                        constraint.is_material_transition
+                            && !constraint.constrains_shared_height
+                            && seam_constraint_covers_key(constraint, key)
+                    })
+                    .flat_map(move |constraint| {
+                        owners_for_material_seam_constraint(constraint, region.owner)
+                    })
+            })
+            .filter(|candidate| {
+                *candidate != owner
+                    && owners_form_explicit_vertical_step_pair(owner, *candidate)
+                    && self.has_explicit_material_seam_endpoint_path_at_key_between(
+                        key,
+                        &[owner],
+                        &[*candidate],
+                    )
+            })
+            .collect::<Vec<_>>();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
     fn owner_pair_has_material_transition_point_sources_at_key(
         &self,
         owner: NodeBandOwner,
@@ -370,6 +460,28 @@ impl NodeArrangement {
             right_owners,
             &segments,
         )
+    }
+}
+
+fn select_endpoint_path_step_opposite_owner(
+    owner: NodeBandOwner,
+    candidates: &[NodeBandOwner],
+) -> Option<NodeBandOwner> {
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
+    let mut cross_kind_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.kind() != owner.kind())
+        .collect::<Vec<_>>();
+    cross_kind_candidates.sort_unstable();
+    cross_kind_candidates.dedup();
+    if cross_kind_candidates.len() == 1 {
+        Some(cross_kind_candidates[0])
+    } else {
+        None
     }
 }
 

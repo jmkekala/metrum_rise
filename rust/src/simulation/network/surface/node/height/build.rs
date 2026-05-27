@@ -336,7 +336,14 @@ pub(super) fn extend_height_fields_with_generated_contours(
             if matches!(
                 error,
                 NodeHeightFieldError::InvalidHeightCarrierContour { .. }
-                    | NodeHeightFieldError::MissingGeneratedContourHeightPoints { .. }
+            ) && generated_contour_is_superseded_by_post_boolean_region(contour, ownership)
+            {
+                field.extend_with_generated_contour_edge_support(contour)?;
+                continue;
+            }
+            if matches!(
+                error,
+                NodeHeightFieldError::MissingGeneratedContourHeightPoints { .. }
             ) && generated_contour_is_superseded_by_post_boolean_region(contour, ownership)
             {
                 continue;

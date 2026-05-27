@@ -67,14 +67,14 @@ fn grounded_standard_roadbed_is_laterally_flat_and_footprint_stays_below_carriag
     let mut sampled_profile = Vec::new();
     for lateral_offset in [-half_carriageway * 0.8, 0.0, half_carriageway * 0.8] {
         let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
-        let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
-        let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
-        let source_height =
-            terrain.sample_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
-        let visual_height =
-            terrain.sample_visual_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
+        let sample_x = section.center_xz.x + section.lateral_xz.x * f64::from(lateral_offset);
+        let sample_z = section.center_xz.y + section.lateral_xz.y * f64::from(lateral_offset);
+        let source_height = terrain.sample_height_world(sample_x as f32, sample_z as f32)
+            * crate::config::HEIGHT_SCALE;
+        let visual_height = terrain.sample_visual_height_world(sample_x as f32, sample_z as f32)
+            * crate::config::HEIGHT_SCALE;
         let visible_surface_height = surface
-            .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+            .sample_visible_surface_height(&graph, &terrain, sample_x as f32, sample_z as f32)
             .expect("standard road footprint should be owned by the road surface");
         sampled_profile.push((lateral_offset, road_height, visible_surface_height));
         assert!(

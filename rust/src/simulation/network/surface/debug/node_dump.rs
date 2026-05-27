@@ -133,8 +133,8 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|triangle| triangle.iter().copied()),
             ) {
-                y_min = y_min.min(point.y);
-                y_max = y_max.max(point.y);
+                y_min = y_min.min(point.y as f32);
+                y_max = y_max.max(point.y as f32);
             }
             let _ = write!(
                 dump,
@@ -380,15 +380,17 @@ impl RoadSurfaceSystem {
             .iter()
             .flat_map(|polygon| polygon.points_world.iter().copied())
         {
-            y_min = y_min.min(point.y);
-            y_max = y_max.max(point.y);
-            let source_y_m = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-            let visual_y_m =
-                terrain.sample_visual_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-            source_delta_min = source_delta_min.min(point.y - source_y_m);
-            source_delta_max = source_delta_max.max(point.y - source_y_m);
-            visual_delta_min = visual_delta_min.min(point.y - visual_y_m);
-            visual_delta_max = visual_delta_max.max(point.y - visual_y_m);
+            let point_y = point.y as f32;
+            y_min = y_min.min(point_y);
+            y_max = y_max.max(point_y);
+            let source_y_m =
+                terrain.sample_height_world(point.x as f32, point.z as f32) * config::HEIGHT_SCALE;
+            let visual_y_m = terrain.sample_visual_height_world(point.x as f32, point.z as f32)
+                * config::HEIGHT_SCALE;
+            source_delta_min = source_delta_min.min(point_y - source_y_m);
+            source_delta_max = source_delta_max.max(point_y - source_y_m);
+            visual_delta_min = visual_delta_min.min(point_y - visual_y_m);
+            visual_delta_max = visual_delta_max.max(point_y - visual_y_m);
         }
 
         let mut max_triangle_y_delta_m = 0.0_f32;
@@ -400,9 +402,10 @@ impl RoadSurfaceSystem {
             for edge_index in 0..3 {
                 let start = triangle[edge_index];
                 let end = triangle[(edge_index + 1) % 3];
-                let y_delta = (end.y - start.y).abs();
+                let y_delta = (end.y - start.y).abs() as f32;
                 max_triangle_y_delta_m = max_triangle_y_delta_m.max(y_delta);
-                let xz_distance = Vector2::new(end.x - start.x, end.z - start.z).length();
+                let xz_distance =
+                    backend::road_vec3_xz(end).distance(backend::road_vec3_xz(start)) as f32;
                 if xz_distance > SAMPLE_EPSILON_M {
                     max_triangle_slope_ratio = max_triangle_slope_ratio.max(y_delta / xz_distance);
                 }
