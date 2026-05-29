@@ -4760,6 +4760,18 @@ impl SimulationNode {
         config::LANE_WIDTH
     }
 
+    /// Returns the half-width of the roadbed footprint that road placement will build.
+    #[func]
+    pub fn get_preview_roadbed_half_width(&self, fwd_lanes: i32, bkw_lanes: i32) -> f32 {
+        let lane_count =
+            fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
+        if lane_count <= 0 {
+            return 1.0;
+        }
+
+        (lane_count as f32 * config::LANE_WIDTH).max(2.0) * 0.5 + config::SIDEWALK_WIDTH
+    }
+
     /// High-level city setup for performance testing.
     #[func]
     pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {

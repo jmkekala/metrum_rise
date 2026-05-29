@@ -58,14 +58,13 @@ var _preview_exact_waiting: bool = false
 var _commit_waiting_for_preview: bool = false
 var _pending_commit_points: PackedVector3Array = PackedVector3Array()
 var _pending_commit_end_pos: Vector3 = Vector3.ZERO
+var _preview_roadbed_half_width_m: float = 5.0
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
 const ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC := 0.10
 const ROAD_PREVIEW_RENDER_OFFSET_M := 0.08
-const ROAD_PREVIEW_LANE_WIDTH_M := 3.5
-const ROAD_PREVIEW_MIN_WIDTH_M := 2.0
 const MAP_BORDER_SNAP_DIST_M := 25.0
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
@@ -80,6 +79,7 @@ func _ready():
 	if blueprint_mesh:
 		blueprint_mesh.position.y = ROAD_PREVIEW_RENDER_OFFSET_M
 	_road_debug_enabled = _road_debug_is_enabled()
+	_refresh_preview_roadbed_width()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
 	add_child(_hud_canvas)
@@ -131,6 +131,7 @@ func _road_debug_is_enabled() -> bool:
 	return false
 
 func _update_lanes_label():
+	_refresh_preview_roadbed_width()
 	if active and current_path != null:
 		_queue_preview_update()
 
@@ -330,41 +331,7 @@ func _draw_blueprint():
 		_preview_drawn_request_id = preview_request_id
 		_preview_lightweight_points = PackedVector3Array()
 
-		# ── HUD: distance + angle readout ──────────────────────────────────
-		if _info_label and preview_verts.size() >= 2:
-			var total_m := 0.0
-			for i in range(1, preview_verts.size()):
-				total_m += preview_verts[i].distance_to(preview_verts[i - 1])
-
-			# Angle display:
-			# - Connected to a road: show angle relative to that road (0°=parallel, 90°=perpendicular).
-			# - Open terrain: show world orientation (0°=E-W, 90°=N-S).
-			# In both cases folded to [0°, 90°] — a road and its reverse are identical.
-			var d: Vector3 = preview_verts[-1] - preview_verts[0]
-			var world_angle: float = atan2(d.z, d.x)  # East=0, North=PI/2
-			var angle_deg: float
-			if _has_road_tangent:
-				var relative: float = world_angle - _start_tangent_angle
-				# Normalise to (-PI, PI]
-				while relative > PI: relative -= TAU
-				while relative <= -PI: relative += TAU
-				angle_deg = abs(rad_to_deg(relative))
-				# Fold to [0°, 90°]: 180°-parallel == parallel, 90°+x == 90°-x
-				if angle_deg > 90.0:
-					angle_deg = 180.0 - angle_deg
-			else:
-				angle_deg = rad_to_deg(world_angle)
-				if angle_deg < 0.0: angle_deg += 360.0
-				if angle_deg >= 180.0: angle_deg -= 180.0
-
-			var snap_str := " [snap]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
-			_info_label.text = "%.1f m  %.0f°%s" % [total_m, angle_deg, snap_str]
-
-			# Store world midpoint — projected to screen each frame in _process.
-			var mid: Vector3 = preview_verts[preview_verts.size() / 2]
-			mid.y += 2.0
-			_label_world_pos = mid
-			_info_label.visible = true
+		_update_preview_measurement_label(preview_verts)
 	else:
 		blueprint_mesh.mesh = null
 		_preview_drawn_request_id = 0
@@ -377,6 +344,7 @@ func _draw_lightweight_preview() -> bool:
 	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
 	if points.size() < 2:
 		return false
+	_update_preview_measurement_label(points)
 	var lightweight_matches := (
 		_preview_lightweight_fwd_lanes == fwd_lanes
 		and _preview_lightweight_bkw_lanes == bkw_lanes
@@ -398,15 +366,48 @@ func _draw_lightweight_preview() -> bool:
 	_preview_lightweight_points = points
 	_preview_lightweight_fwd_lanes = fwd_lanes
 	_preview_lightweight_bkw_lanes = bkw_lanes
-	if _info_label:
-		_info_label.visible = false
 	return true
 
+func _update_preview_measurement_label(points: PackedVector3Array) -> void:
+	if not _info_label or points.size() < 2:
+		return
+
+	var total_m := 0.0
+	for i in range(1, points.size()):
+		total_m += points[i].distance_to(points[i - 1])
+
+	# Angle display:
+	# - Connected to a road: show angle relative to that road (0°=parallel, 90°=perpendicular).
+	# - Open terrain: show world orientation (0°=E-W, 90°=N-S).
+	# In both cases folded to [0°, 90°] — a road and its reverse are identical.
+	var d: Vector3 = points[-1] - points[0]
+	var world_angle: float = atan2(d.z, d.x)  # East=0, North=PI/2
+	var angle_deg: float
+	if _has_road_tangent:
+		var relative: float = world_angle - _start_tangent_angle
+		# Normalise to (-PI, PI]
+		while relative > PI: relative -= TAU
+		while relative <= -PI: relative += TAU
+		angle_deg = abs(rad_to_deg(relative))
+		# Fold to [0°, 90°]: 180°-parallel == parallel, 90°+x == 90°-x
+		if angle_deg > 90.0:
+			angle_deg = 180.0 - angle_deg
+	else:
+		angle_deg = rad_to_deg(world_angle)
+		if angle_deg < 0.0: angle_deg += 360.0
+		if angle_deg >= 180.0: angle_deg -= 180.0
+
+	var snap_str := " [snap]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
+	_info_label.text = "%.1f m  %.0f°%s" % [total_m, angle_deg, snap_str]
+
+	# Store world midpoint — projected to screen each frame in _process.
+	var mid: Vector3 = points[points.size() / 2]
+	mid.y += 2.0
+	_label_world_pos = mid
+	_info_label.visible = true
+
 func _lightweight_preview_ribbon_vertices(points: PackedVector3Array) -> PackedVector3Array:
-	var half_width := maxf(
-		float(fwd_lanes + bkw_lanes) * ROAD_PREVIEW_LANE_WIDTH_M,
-		ROAD_PREVIEW_MIN_WIDTH_M
-	) * 0.5
+	var half_width := _preview_roadbed_half_width_m
 	var left := PackedVector3Array()
 	var right := PackedVector3Array()
 	for index in range(points.size()):
@@ -431,6 +432,13 @@ func _lightweight_preview_ribbon_vertices(points: PackedVector3Array) -> PackedV
 		vertices.append(right[index + 1])
 		vertices.append(left[index + 1])
 	return vertices
+
+func _refresh_preview_roadbed_width() -> void:
+	if simulation_node:
+		_preview_roadbed_half_width_m = simulation_node.get_preview_roadbed_half_width(
+			fwd_lanes,
+			bkw_lanes
+		)
 
 func _preview_horizontal_dir(vector: Vector3) -> Vector2:
 	var dir := Vector2(vector.x, vector.z)
