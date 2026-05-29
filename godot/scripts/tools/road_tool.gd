@@ -53,12 +53,16 @@ var _preview_lightweight_fwd_lanes: int = -1
 var _preview_lightweight_bkw_lanes: int = -1
 var _preview_update_pending: bool = false
 var _preview_result_pending: bool = false
-var _preview_update_delay_sec: float = 0.0
+var _preview_idle_exact_delay_sec: float = 0.0
+var _preview_exact_waiting: bool = false
+var _commit_waiting_for_preview: bool = false
+var _pending_commit_points: PackedVector3Array = PackedVector3Array()
+var _pending_commit_end_pos: Vector3 = Vector3.ZERO
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
-const ROAD_PREVIEW_UPDATE_INTERVAL_SEC := 0.033
+const ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC := 0.10
 const ROAD_PREVIEW_RENDER_OFFSET_M := 0.08
 const ROAD_PREVIEW_LANE_WIDTH_M := 3.5
 const ROAD_PREVIEW_MIN_WIDTH_M := 2.0
@@ -91,10 +95,16 @@ func _ready():
 
 func _process(delta):
 	super._process(delta)
-	_preview_update_delay_sec = maxf(_preview_update_delay_sec - delta, 0.0)
-	if _preview_update_pending and _preview_update_delay_sec <= 0.0:
+	_preview_idle_exact_delay_sec = maxf(_preview_idle_exact_delay_sec - delta, 0.0)
+	if (
+		current_path != null
+		and _preview_exact_waiting
+		and _preview_idle_exact_delay_sec <= 0.0
+		and not _preview_update_pending
+	):
+		_preview_update_pending = true
+	if _preview_update_pending:
 		_preview_update_pending = false
-		_preview_update_delay_sec = ROAD_PREVIEW_UPDATE_INTERVAL_SEC
 		_update_preview()
 	elif _preview_result_pending:
 		_poll_pending_preview_result()
@@ -268,6 +278,8 @@ func _queue_preview_update() -> void:
 	if current_path == null:
 		return
 	_preview_update_pending = true
+	_preview_exact_waiting = true
+	_preview_idle_exact_delay_sec = ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC
 
 func _poll_pending_preview_result() -> void:
 	if current_path == null or _preview_request_id <= 0:
@@ -286,13 +298,14 @@ func _poll_pending_preview_result() -> void:
 
 	_preview_result_pending = false
 	_remember_preview_surface(points, preview)
+	if _try_resume_pending_commit(points, preview):
+		return
 	_draw_blueprint()
 
 func _draw_blueprint():
 	var preview := _get_compiled_preview_surface()
 	if preview.is_empty():
-		if _preview_request_id > 0:
-			_draw_lightweight_preview()
+		if _draw_lightweight_preview():
 			return
 		blueprint_mesh.mesh = null
 		_preview_drawn_request_id = 0
@@ -358,23 +371,23 @@ func _draw_blueprint():
 		if _info_label:
 			_info_label.visible = false
 
-func _draw_lightweight_preview() -> void:
+func _draw_lightweight_preview() -> bool:
 	if current_path == null:
-		return
+		return false
 	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
 	if points.size() < 2:
-		return
+		return false
 	var lightweight_matches := (
 		_preview_lightweight_fwd_lanes == fwd_lanes
 		and _preview_lightweight_bkw_lanes == bkw_lanes
 		and _road_surface_points_match(points, _preview_lightweight_points)
 	)
 	if lightweight_matches:
-		return
+		return true
 
 	var surface_vertices := _lightweight_preview_ribbon_vertices(points)
 	if surface_vertices.size() < 3:
-		return
+		return false
 	var arr_mesh = ArrayMesh.new()
 	var arrays = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -387,6 +400,7 @@ func _draw_lightweight_preview() -> void:
 	_preview_lightweight_bkw_lanes = bkw_lanes
 	if _info_label:
 		_info_label.visible = false
+	return true
 
 func _lightweight_preview_ribbon_vertices(points: PackedVector3Array) -> PackedVector3Array:
 	var half_width := maxf(
@@ -436,6 +450,9 @@ func _commit_segment(end_pos):
 	var preview := _cached_preview_surface_for_points(points)
 	if preview.is_empty():
 		preview = _get_compiled_preview_surface("commit")
+	if preview.is_empty():
+		_defer_commit_until_exact_preview(points, end_pos)
+		return
 	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
 	var committed := false
 	var preview_valid := not preview.is_empty() and bool(preview.get("is_valid", false))
@@ -482,6 +499,24 @@ func _commit_segment(end_pos):
 			]
 		)
 
+func _defer_commit_until_exact_preview(points: PackedVector3Array, end_pos: Vector3) -> void:
+	_commit_waiting_for_preview = true
+	_pending_commit_points = points
+	_pending_commit_end_pos = end_pos
+
+func _try_resume_pending_commit(points: PackedVector3Array, preview: Dictionary) -> bool:
+	if not _commit_waiting_for_preview:
+		return false
+	if not _road_surface_points_match(points, _pending_commit_points):
+		return false
+
+	var end_pos := _pending_commit_end_pos
+	_commit_waiting_for_preview = false
+	_pending_commit_points = PackedVector3Array()
+	if bool(preview.get("is_valid", false)):
+		_commit_segment(end_pos)
+	return true
+
 func cancel_road():
 	current_state = State.IDLE
 	if current_path:
@@ -489,7 +524,9 @@ func cancel_road():
 		current_path.queue_free()
 	current_path = null
 	_preview_update_pending = false
-	_preview_update_delay_sec = 0.0
+	_preview_idle_exact_delay_sec = 0.0
+	_commit_waiting_for_preview = false
+	_pending_commit_points = PackedVector3Array()
 	_clear_preview_cache()
 	if _info_label:
 		_info_label.visible = false
@@ -608,6 +645,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	var cached_preview := _cached_preview_surface_for_points(points)
 	if not cached_preview.is_empty():
 		_preview_result_pending = false
+		_preview_exact_waiting = false
 		var cached_vertices: PackedVector3Array = cached_preview.get("surface_vertices", PackedVector3Array())
 		_log_preview_surface_detail(
 			profile_label,
@@ -621,6 +659,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		return cached_preview
 	if points.size() <= 1:
 		_preview_result_pending = false
+		_preview_exact_waiting = false
 		_log_preview_surface_detail(profile_label, points.size(), 0, true, baked_ms, 0.0, total_start_us)
 		var empty_preview := {
 			"prepared_points": points,
@@ -630,6 +669,10 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		_remember_preview_surface(points, empty_preview)
 		return empty_preview
 
+	if profile_label != "commit" and _preview_exact_waiting and _preview_idle_exact_delay_sec > 0.0:
+		_log_preview_surface_detail(profile_label, points.size(), 0, false, baked_ms, 0.0, total_start_us)
+		return {}
+
 	var rust_start_us := Time.get_ticks_usec()
 	if not _preview_request_matches(points):
 		_preview_request_id = simulation_node.request_preview_road_surface(points, fwd_lanes, bkw_lanes)
@@ -637,6 +680,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		_preview_request_fwd_lanes = fwd_lanes
 		_preview_request_bkw_lanes = bkw_lanes
 		_preview_result_pending = true
+		_preview_exact_waiting = false
 	var preview = simulation_node.get_preview_road_surface_result(_preview_request_id)
 	var rust_ms := float(Time.get_ticks_usec() - rust_start_us) / 1000.0
 	if preview == null:
@@ -645,6 +689,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		return {}
 
 	_preview_result_pending = false
+	_preview_exact_waiting = false
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	_log_preview_surface_detail(
 		profile_label,
@@ -694,6 +739,8 @@ func _clear_preview_cache() -> void:
 	_preview_lightweight_fwd_lanes = -1
 	_preview_lightweight_bkw_lanes = -1
 	_preview_result_pending = false
+	_preview_exact_waiting = false
+	_preview_idle_exact_delay_sec = 0.0
 
 func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
 	if left.size() != right.size():

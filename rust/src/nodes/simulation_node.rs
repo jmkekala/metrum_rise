@@ -124,7 +124,6 @@ const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
-const TERRAIN_CDT_FAR_SAMPLE_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
 
 #[derive(Default)]
@@ -697,7 +696,13 @@ impl SimulationNode {
                     Self::append_cdt_seam_quality_samples(dict, mesh);
                     Self::append_cdt_invalid_constraint_samples(dict, mesh);
                 }
-                Self::append_cdt_mesh_buffers(dict, &cached.patch, mesh, include_debug);
+                Self::append_cdt_mesh_buffers(
+                    dict,
+                    &cached.patch,
+                    cached.cdt_patch,
+                    mesh,
+                    include_debug,
+                );
             }
             Some(Err(err)) => {
                 Self::append_empty_cdt_failure(
@@ -831,6 +836,7 @@ impl SimulationNode {
         let total_start = road_debug.then(Instant::now);
         let input_road_loops = cdt_input.road_loops.len();
         let input_source_samples = cdt_input.source_samples.len();
+        let cdt_patch = cdt_input.patch;
         if cdt_input.road_loops.is_empty() {
             if let Some(error_label) = clip_error_label {
                 Self::append_empty_cdt_failure(dict, error_label, include_debug);
@@ -981,7 +987,7 @@ impl SimulationNode {
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
                 let mesh_export_start = road_debug.then(Instant::now);
-                Self::append_cdt_mesh_buffers(dict, patch, &mesh, include_debug);
+                Self::append_cdt_mesh_buffers(dict, patch, cdt_patch, &mesh, include_debug);
                 let mesh_export_ms = mesh_export_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
@@ -1295,66 +1301,66 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
     ) -> TerrainCdtInput {
-        let patch_model = TerrainCdtPatch::new(
-            f64::from(patch.world_origin_x),
-            f64::from(patch.world_origin_z),
-            f64::from(patch.world_origin_x + patch.world_size_x),
-            f64::from(patch.world_origin_z + patch.world_size_z),
-            [
-                Self::terrain_patch_sample_height_m(patch, 0, 0),
-                Self::terrain_patch_sample_height_m(
-                    patch,
-                    0,
-                    patch.sample_height.saturating_sub(1),
-                ),
-                Self::terrain_patch_sample_height_m(
-                    patch,
-                    patch.sample_width.saturating_sub(1),
-                    patch.sample_height.saturating_sub(1),
-                ),
-                Self::terrain_patch_sample_height_m(patch, patch.sample_width.saturating_sub(1), 0),
-            ],
-        );
         if road_loops.is_empty() {
-            return TerrainCdtInput::new(patch_model, Vec::new(), Vec::new());
+            return TerrainCdtInput::new(
+                Self::terrain_cdt_patch_for_bounds(
+                    terrain,
+                    patch.world_origin_x,
+                    patch.world_origin_z,
+                    patch.world_origin_x + patch.world_size_x,
+                    patch.world_origin_z + patch.world_size_z,
+                ),
+                Vec::new(),
+                Vec::new(),
+            );
         }
 
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let far_step_m = terrain
-            .cell_size_m()
-            .max(safe_render_step_m * TERRAIN_CDT_FAR_SAMPLE_RENDER_STEPS)
-            .max(TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M);
+        let (min_x, min_z, max_x, max_z) =
+            Self::terrain_cdt_local_sample_bounds(terrain, patch, road_loops, safe_render_step_m)
+                .unwrap_or((
+                    patch.world_origin_x,
+                    patch.world_origin_z,
+                    patch.world_origin_x + patch.world_size_x,
+                    patch.world_origin_z + patch.world_size_z,
+                ));
+        let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
         let mut sample_keys = BTreeMap::new();
         Self::append_terrain_cdt_grid_samples(
             terrain,
             patch,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-            far_step_m,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            safe_render_step_m,
             &mut source_samples,
             &mut sample_keys,
         );
 
-        if let Some((min_x, min_z, max_x, max_z)) =
-            Self::terrain_cdt_local_sample_bounds(terrain, patch, road_loops, safe_render_step_m)
-        {
-            Self::append_terrain_cdt_grid_samples(
-                terrain,
-                patch,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-                safe_render_step_m,
-                &mut source_samples,
-                &mut sample_keys,
-            );
-        }
-
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
+    }
+
+    fn terrain_cdt_patch_for_bounds(
+        terrain: &TerrainSystem,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> TerrainCdtPatch {
+        TerrainCdtPatch::new(
+            f64::from(min_x),
+            f64::from(min_z),
+            f64::from(max_x),
+            f64::from(max_z),
+            [
+                terrain.sample_visual_height_world(min_x, min_z) * config::HEIGHT_SCALE,
+                terrain.sample_visual_height_world(min_x, max_z) * config::HEIGHT_SCALE,
+                terrain.sample_visual_height_world(max_x, max_z) * config::HEIGHT_SCALE,
+                terrain.sample_visual_height_world(max_x, min_z) * config::HEIGHT_SCALE,
+            ],
+        )
     }
 
     fn terrain_cdt_local_sample_bounds(
@@ -1485,9 +1491,41 @@ impl SimulationNode {
         patch.height_data[index] * config::HEIGHT_SCALE
     }
 
+    fn terrain_patch_height_at_world_m(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        world_x: f32,
+        world_z: f32,
+    ) -> f32 {
+        if patch.sample_width == 0 || patch.sample_height == 0 {
+            return 0.0;
+        }
+        let local_x = ((world_x - patch.world_origin_x) / patch.world_size_x.max(0.001))
+            .clamp(0.0, 1.0)
+            * patch.sample_width.saturating_sub(1) as f32;
+        let local_z = ((world_z - patch.world_origin_z) / patch.world_size_z.max(0.001))
+            .clamp(0.0, 1.0)
+            * patch.sample_height.saturating_sub(1) as f32;
+
+        let x0 = local_x.floor() as usize;
+        let z0 = local_z.floor() as usize;
+        let x1 = (x0 + 1).min(patch.sample_width.saturating_sub(1));
+        let z1 = (z0 + 1).min(patch.sample_height.saturating_sub(1));
+        let tx = local_x.fract();
+        let tz = local_z.fract();
+
+        let h00 = Self::terrain_patch_sample_height_m(patch, x0, z0);
+        let h10 = Self::terrain_patch_sample_height_m(patch, x1, z0);
+        let h01 = Self::terrain_patch_sample_height_m(patch, x0, z1);
+        let h11 = Self::terrain_patch_sample_height_m(patch, x1, z1);
+        let h0 = h00 * (1.0 - tx) + h10 * tx;
+        let h1 = h01 * (1.0 - tx) + h11 * tx;
+        h0 * (1.0 - tz) + h1 * tz
+    }
+
     fn append_cdt_mesh_buffers(
         dict: &mut VarDictionary,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        cdt_patch: TerrainCdtPatch,
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
         include_debug: bool,
     ) {
@@ -1501,6 +1539,8 @@ impl SimulationNode {
             &mesh.terrain_triangle_sources,
             include_debug,
         );
+        let mut terrain_buffers = terrain_buffers;
+        Self::append_regular_terrain_mesh_outside_cdt_patch(&mut terrain_buffers, patch, cdt_patch);
         let terrain_buffer_ms = terrain_buffer_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -1690,6 +1730,169 @@ impl SimulationNode {
             face_sources: source_export,
             emitted_faces,
         }
+    }
+
+    fn append_regular_terrain_mesh_outside_cdt_patch(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        cdt_patch: TerrainCdtPatch,
+    ) {
+        let patch_min_x = patch.world_origin_x;
+        let patch_min_z = patch.world_origin_z;
+        let patch_max_x = patch.world_origin_x + patch.world_size_x;
+        let patch_max_z = patch.world_origin_z + patch.world_size_z;
+        let cdt_min_x = (cdt_patch.min_x as f32).clamp(patch_min_x, patch_max_x);
+        let cdt_min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
+        let cdt_max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
+        let cdt_max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
+        let step_m = Self::regular_terrain_mesh_step_m(patch);
+
+        Self::append_regular_terrain_grid_region(
+            export,
+            patch,
+            patch_min_x,
+            patch_min_z,
+            cdt_min_x,
+            patch_max_z,
+            step_m,
+        );
+        Self::append_regular_terrain_grid_region(
+            export,
+            patch,
+            cdt_max_x,
+            patch_min_z,
+            patch_max_x,
+            patch_max_z,
+            step_m,
+        );
+        Self::append_regular_terrain_grid_region(
+            export,
+            patch,
+            cdt_min_x,
+            patch_min_z,
+            cdt_max_x,
+            cdt_min_z,
+            step_m,
+        );
+        Self::append_regular_terrain_grid_region(
+            export,
+            patch,
+            cdt_min_x,
+            cdt_max_z,
+            cdt_max_x,
+            patch_max_z,
+            step_m,
+        );
+    }
+
+    fn regular_terrain_mesh_step_m(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    ) -> f32 {
+        let sample_step_x = patch.world_size_x / patch.sample_width.saturating_sub(1).max(1) as f32;
+        let sample_step_z =
+            patch.world_size_z / patch.sample_height.saturating_sub(1).max(1) as f32;
+        sample_step_x
+            .max(sample_step_z)
+            .max(TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M)
+    }
+
+    fn regular_terrain_axis_samples(min: f32, max: f32, step_m: f32) -> Vec<f32> {
+        let safe_step_m = step_m.max(f32::EPSILON);
+        let mut samples = vec![min];
+        let mut next = min + safe_step_m;
+        while next < max - 0.001 {
+            samples.push(next);
+            next += safe_step_m;
+        }
+        if samples
+            .last()
+            .is_none_or(|last| (*last - max).abs() > 0.001)
+        {
+            samples.push(max);
+        }
+        samples
+    }
+
+    fn append_regular_terrain_grid_region(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        step_m: f32,
+    ) {
+        if max_x <= min_x + 0.001 || max_z <= min_z + 0.001 {
+            return;
+        }
+
+        let xs = Self::regular_terrain_axis_samples(min_x, max_x, step_m);
+        let zs = Self::regular_terrain_axis_samples(min_z, max_z, step_m);
+        if xs.len() < 2 || zs.len() < 2 {
+            return;
+        }
+
+        let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let base_index = export.vertices.len();
+        for &z in &zs {
+            for &x in &xs {
+                export.vertices.push(Vector3::new(
+                    x - center_x,
+                    Self::terrain_patch_height_at_world_m(patch, x, z),
+                    z - center_z,
+                ));
+                export.normals.push(Vector3::ZERO);
+                export.uvs.push(Vector2::new(
+                    ((x - patch.world_origin_x) / patch.world_size_x.max(0.001)).clamp(0.0, 1.0),
+                    ((z - patch.world_origin_z) / patch.world_size_z.max(0.001)).clamp(0.0, 1.0),
+                ));
+            }
+        }
+
+        let width = xs.len();
+        for z_index in 0..zs.len() - 1 {
+            for x_index in 0..xs.len() - 1 {
+                let i00 = base_index + z_index * width + x_index;
+                let i10 = i00 + 1;
+                let i01 = i00 + width;
+                let i11 = i01 + 1;
+                Self::append_regular_terrain_triangle(export, [i00, i11, i10]);
+                Self::append_regular_terrain_triangle(export, [i00, i01, i11]);
+            }
+        }
+
+        for normal in &mut export.normals[base_index..] {
+            if normal.length_squared() <= 0.000_001 {
+                *normal = Vector3::UP;
+            } else {
+                *normal = normal.normalized();
+            }
+        }
+    }
+
+    fn append_regular_terrain_triangle(
+        export: &mut TerrainCdtTriangleBufferExport,
+        triangle: [usize; 3],
+    ) {
+        let points = [
+            export.vertices[triangle[0]],
+            export.vertices[triangle[1]],
+            export.vertices[triangle[2]],
+        ];
+        let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+        if normal.length_squared() <= 0.000_001 {
+            return;
+        }
+        let normal = normal.normalized();
+        for index in triangle {
+            export.normals[index] = export.normals[index] + normal;
+            export
+                .indices
+                .push(i32::try_from(index).unwrap_or(i32::MAX));
+        }
+        export.emitted_faces += 1;
+        export.face_sources.push_sources(&[]);
     }
 
     fn append_cdt_road_seam_face_samples(
@@ -4499,6 +4702,7 @@ impl SimCore {
             .map(|input| {
                 let input_road_loops = input.cdt_input.road_loops.len();
                 let input_source_samples = input.cdt_input.source_samples.len();
+                let cdt_patch = input.cdt_input.patch;
                 let cdt_start = Instant::now();
                 let mesh_result = if input_road_loops == 0 {
                     None
@@ -4511,6 +4715,7 @@ impl SimCore {
                     patch: input.patch,
                     input_road_loops,
                     input_source_samples,
+                    cdt_patch,
                     road_clip_source_count: input.road_clip_source_count,
                     clip_error_label: input.clip_error_label,
                     mesh_result,

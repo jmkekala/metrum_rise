@@ -30,7 +30,9 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::surface::RoadSurfaceSystem;
-use crate::simulation::terrain::cdt::{TerrainCdtError, TerrainCdtInput, TerrainCdtMesh};
+use crate::simulation::terrain::cdt::{
+    TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
+};
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
@@ -220,6 +222,8 @@ pub(crate) struct CachedRefinedTerrainPatch {
     pub(crate) input_road_loops: usize,
     /// Number of source terrain samples supplied to the CDT builder.
     pub(crate) input_source_samples: usize,
+    /// Local CDT window used inside the base render patch.
+    pub(crate) cdt_patch: TerrainCdtPatch,
     /// Number of source road-boundary records found by the clip query.
     pub(crate) road_clip_source_count: usize,
     /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
