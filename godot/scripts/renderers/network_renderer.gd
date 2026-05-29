@@ -2,12 +2,11 @@
 ##
 ## The sim thread adds roads/rails asynchronously and sets the `network_dirty` flag
 ## on `SimCore`. This node polls `is_network_dirty()` once per frame and triggers
-## the correct sequence: network-surface terrain rebuild → terrain visual update → network mesh rebuild.
+## the visual sequence: terrain visual update → network mesh rebuild.
 ## Centralising the refresh here means adding a new transport mode (rail, etc.) only
 ## requires wiring that tool's mesh update call in one place.
 ##
-## Rust methods called: is_network_dirty(), rebuild_network_surface_terrain(),
-##   clear_terrain_dirty()
+## Rust methods called: is_network_dirty(), get_dirty_terrain_patches(), clear_terrain_dirty()
 extends Node
 
 @onready var simulation_node = $"../SimulationNode"
@@ -30,16 +29,14 @@ func _process(_delta: float) -> void:
 
 	var total_start_us := Time.get_ticks_usec()
 
-	# 1. Rebuild road-surface-driven visual terrain to match the edited network.
-	var terrain_rebuild_start_us := Time.get_ticks_usec()
-	simulation_node.rebuild_network_surface_terrain()
-	var terrain_rebuild_ms := float(Time.get_ticks_usec() - terrain_rebuild_start_us) / 1000.0
+	# 1. Consume the dirty terrain patches prepared by the sim thread. NetworkRenderer must
+	# never trigger road-surface compilation from Godot's main thread.
+	var terrain_rebuild_ms := 0.0
 	var dirty_terrain_patch_keys: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
 	var dirty_patch_pairs := int(dirty_terrain_patch_keys.size() / 2)
 
-	# 2. Redraw the terrain mesh (rebuild_network_surface_terrain sets terrain_dirty, but
-	#    we update it eagerly here and clear the flag so terrain.gd._process skips it
-	#    this frame rather than running a redundant second pass).
+	# 2. Redraw the terrain mesh eagerly and clear the flag so terrain.gd._process skips it
+	#    this frame rather than running a redundant second pass.
 	var terrain_visuals_start_us := Time.get_ticks_usec()
 	terrain.update_terrain_visuals()
 	var terrain_visuals_ms := float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0

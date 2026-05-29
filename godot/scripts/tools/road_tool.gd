@@ -40,6 +40,8 @@ var _ghost_guides_dirty: bool = true
 var _ghost_rebuild_queued: bool = false
 var _road_debug_enabled: bool = false
 var _profile_next_mouse_pos: bool = false
+var _preview_cache_points: PackedVector3Array = PackedVector3Array()
+var _preview_cache_surface: Dictionary = {}
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
@@ -301,13 +303,15 @@ func _commit_segment(end_pos):
 	var total_start_us := Time.get_ticks_usec()
 	if not is_valid: return
 
-	var preview_start_us := Time.get_ticks_usec()
-	var preview := _get_compiled_preview_surface("commit")
-	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
 	var baked_start_us := Time.get_ticks_usec()
 	var raw_points := current_path.curve.get_baked_points() if current_path else PackedVector3Array()
 	var points := _road_surface_points_from_curve(current_path.curve) if current_path else PackedVector3Array()
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
+	var preview_start_us := Time.get_ticks_usec()
+	var preview := _cached_preview_surface_for_points(points)
+	if preview.is_empty():
+		preview = _get_compiled_preview_surface("commit")
+	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
 	var committed := false
 	var preview_valid := not preview.is_empty() and bool(preview.get("is_valid", false))
 	var add_road_ms := 0.0
@@ -359,6 +363,8 @@ func cancel_road():
 		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
+	_preview_cache_points = PackedVector3Array()
+	_preview_cache_surface = {}
 	if _info_label:
 		_info_label.visible = false
 
@@ -681,22 +687,26 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
 	if points.size() <= 1:
 		_log_preview_surface_detail(profile_label, points.size(), 0, true, baked_ms, 0.0, total_start_us)
-		return {
+		var empty_preview := {
 			"prepared_points": points,
 			"surface_vertices": PackedVector3Array(),
 			"is_valid": true
 		}
+		_remember_preview_surface(points, empty_preview)
+		return empty_preview
 
 	var rust_start_us := Time.get_ticks_usec()
 	var preview = simulation_node.get_preview_road_surface(points, fwd_lanes, bkw_lanes)
 	var rust_ms := float(Time.get_ticks_usec() - rust_start_us) / 1000.0
 	if preview == null:
 		_log_preview_surface_detail(profile_label, points.size(), 0, false, baked_ms, rust_ms, total_start_us)
-		return {
+		var invalid_preview := {
 			"prepared_points": points,
 			"surface_vertices": PackedVector3Array(),
 			"is_valid": false
 		}
+		_remember_preview_surface(points, invalid_preview)
+		return invalid_preview
 
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	_log_preview_surface_detail(
@@ -708,7 +718,28 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		rust_ms,
 		total_start_us
 	)
+	_remember_preview_surface(points, preview)
 	return preview
+
+func _remember_preview_surface(points: PackedVector3Array, preview: Dictionary) -> void:
+	_preview_cache_points = points
+	_preview_cache_surface = preview.duplicate(true)
+
+func _cached_preview_surface_for_points(points: PackedVector3Array) -> Dictionary:
+	if _preview_cache_surface.is_empty():
+		return {}
+	if not _road_surface_points_match(points, _preview_cache_points):
+		return {}
+	return _preview_cache_surface.duplicate(true)
+
+func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
+	if left.size() != right.size():
+		return false
+	var epsilon_sq := ROAD_SURFACE_POINT_EPS_M * ROAD_SURFACE_POINT_EPS_M
+	for index in range(left.size()):
+		if left[index].distance_squared_to(right[index]) > epsilon_sq:
+			return false
+	return true
 
 func _road_surface_points_from_curve(curve: Curve3D) -> PackedVector3Array:
 	var raw_points: PackedVector3Array = curve.get_baked_points()

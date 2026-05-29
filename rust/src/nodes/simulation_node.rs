@@ -56,7 +56,6 @@
 //! | **Network** | `add_road` | `road_tool.gd` |
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
-//! | | `rebuild_network_surface_terrain` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
 //! | | `get_preview_road_surface` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
@@ -3456,12 +3455,6 @@ impl SimulationNode {
             .get_network_direction_at_point_internal(pos)
     }
 
-    /// Rebuilds visual terrain from the authoritative road-surface cache.
-    #[func]
-    pub fn rebuild_network_surface_terrain(&mut self) {
-        self.lock_core().rebuild_network_surface_terrain_internal();
-    }
-
     /// Returns terrain height at a position.
     #[func]
     pub fn get_height_at(&self, pos: Vector2) -> f32 {
@@ -3470,8 +3463,8 @@ impl SimulationNode {
 
     /// Returns the visible world-surface height at a position.
     ///
-    /// This prefers the compiled roadbed when a road surface owns the queried XZ location and
-    /// otherwise falls back to the current visual terrain.
+    /// This reads the already compiled roadbed when a road surface owns the queried XZ location
+    /// and otherwise falls back to the current visual terrain.
     #[func]
     pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
         self.lock_core().get_world_surface_height_internal(pos)
@@ -3500,7 +3493,7 @@ impl SimulationNode {
     #[func]
     pub fn intersect_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
         match self.try_lock_core() {
-            Some(mut core) => match core.intersect_world_surface_internal(ray_origin, ray_dir) {
+            Some(core) => match core.intersect_world_surface_internal(ray_origin, ray_dir) {
                 Some(p) => p.to_variant(),
                 None => Variant::nil(),
             },
