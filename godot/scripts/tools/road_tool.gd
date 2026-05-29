@@ -42,6 +42,13 @@ var _road_debug_enabled: bool = false
 var _profile_next_mouse_pos: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
+var _preview_cache_fwd_lanes: int = -1
+var _preview_cache_bkw_lanes: int = -1
+var _preview_request_points: PackedVector3Array = PackedVector3Array()
+var _preview_request_fwd_lanes: int = -1
+var _preview_request_bkw_lanes: int = -1
+var _preview_request_id: int = 0
+var _preview_update_pending: bool = false
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
@@ -72,6 +79,9 @@ func _ready():
 
 func _process(delta):
 	super._process(delta)
+	if _preview_update_pending:
+		_preview_update_pending = false
+		_update_preview()
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible:
@@ -96,7 +106,7 @@ func _road_debug_is_enabled() -> bool:
 
 func _update_lanes_label():
 	if active and current_path != null:
-		_draw_blueprint()
+		_queue_preview_update()
 
 func adjust_lanes(fwd_delta: int, bkw_delta: int):
 	if fwd_delta != 0: fwd_lanes = clamp(fwd_lanes + fwd_delta, 0, 4)
@@ -106,11 +116,11 @@ func adjust_lanes(fwd_delta: int, bkw_delta: int):
 
 func adjust_altitude(delta: float):
 	altitude_offset += delta
-	_update_preview()
+	_queue_preview_update()
 
 func _unhandled_input(event):
 	if active and event is InputEventMouseMotion:
-		_update_preview()
+		_queue_preview_update()
 
 	# G toggle works whenever the road tool is the active tool (not just mid-draw).
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -239,9 +249,16 @@ func _update_preview():
 
 	_draw_blueprint()
 
+func _queue_preview_update() -> void:
+	if current_path == null:
+		return
+	_preview_update_pending = true
+
 func _draw_blueprint():
 	var preview := _get_compiled_preview_surface()
 	if preview.is_empty():
+		if _preview_request_id > 0:
+			return
 		blueprint_mesh.mesh = null
 		if _info_label:
 			_info_label.visible = false
@@ -363,8 +380,8 @@ func cancel_road():
 		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
-	_preview_cache_points = PackedVector3Array()
-	_preview_cache_surface = {}
+	_preview_update_pending = false
+	_clear_preview_cache()
 	if _info_label:
 		_info_label.visible = false
 
@@ -685,6 +702,19 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	var baked_start_us := Time.get_ticks_usec()
 	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
+	var cached_preview := _cached_preview_surface_for_points(points)
+	if not cached_preview.is_empty():
+		var cached_vertices: PackedVector3Array = cached_preview.get("surface_vertices", PackedVector3Array())
+		_log_preview_surface_detail(
+			profile_label,
+			points.size(),
+			cached_vertices.size(),
+			bool(cached_preview.get("is_valid", false)),
+			baked_ms,
+			0.0,
+			total_start_us
+		)
+		return cached_preview
 	if points.size() <= 1:
 		_log_preview_surface_detail(profile_label, points.size(), 0, true, baked_ms, 0.0, total_start_us)
 		var empty_preview := {
@@ -696,17 +726,16 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		return empty_preview
 
 	var rust_start_us := Time.get_ticks_usec()
-	var preview = simulation_node.get_preview_road_surface(points, fwd_lanes, bkw_lanes)
+	if not _preview_request_matches(points):
+		_preview_request_id = simulation_node.request_preview_road_surface(points, fwd_lanes, bkw_lanes)
+		_preview_request_points = points
+		_preview_request_fwd_lanes = fwd_lanes
+		_preview_request_bkw_lanes = bkw_lanes
+	var preview = simulation_node.get_preview_road_surface_result(_preview_request_id)
 	var rust_ms := float(Time.get_ticks_usec() - rust_start_us) / 1000.0
 	if preview == null:
 		_log_preview_surface_detail(profile_label, points.size(), 0, false, baked_ms, rust_ms, total_start_us)
-		var invalid_preview := {
-			"prepared_points": points,
-			"surface_vertices": PackedVector3Array(),
-			"is_valid": false
-		}
-		_remember_preview_surface(points, invalid_preview)
-		return invalid_preview
+		return {}
 
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	_log_preview_surface_detail(
@@ -724,13 +753,34 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 func _remember_preview_surface(points: PackedVector3Array, preview: Dictionary) -> void:
 	_preview_cache_points = points
 	_preview_cache_surface = preview.duplicate(true)
+	_preview_cache_fwd_lanes = fwd_lanes
+	_preview_cache_bkw_lanes = bkw_lanes
 
 func _cached_preview_surface_for_points(points: PackedVector3Array) -> Dictionary:
 	if _preview_cache_surface.is_empty():
 		return {}
+	if _preview_cache_fwd_lanes != fwd_lanes or _preview_cache_bkw_lanes != bkw_lanes:
+		return {}
 	if not _road_surface_points_match(points, _preview_cache_points):
 		return {}
 	return _preview_cache_surface.duplicate(true)
+
+func _preview_request_matches(points: PackedVector3Array) -> bool:
+	if _preview_request_id <= 0:
+		return false
+	if _preview_request_fwd_lanes != fwd_lanes or _preview_request_bkw_lanes != bkw_lanes:
+		return false
+	return _road_surface_points_match(points, _preview_request_points)
+
+func _clear_preview_cache() -> void:
+	_preview_cache_points = PackedVector3Array()
+	_preview_cache_surface = {}
+	_preview_cache_fwd_lanes = -1
+	_preview_cache_bkw_lanes = -1
+	_preview_request_points = PackedVector3Array()
+	_preview_request_fwd_lanes = -1
+	_preview_request_bkw_lanes = -1
+	_preview_request_id = 0
 
 func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
 	if left.size() != right.size():

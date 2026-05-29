@@ -57,7 +57,8 @@
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
-//! | | `get_preview_road_surface` | `road_tool.gd` |
+//! | | `request_preview_road_surface` | `road_tool.gd` |
+//! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
@@ -106,6 +107,7 @@ use crate::simulation::water::WaterSystem;
 use crate::debug_log;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
@@ -202,6 +204,8 @@ pub struct SimulationNode {
     pub(crate) cmd_tx: std::sync::mpsc::Sender<SimCommand>,
     /// Receiver held here until `ready()` transfers it to the background thread.
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
+    /// Monotonic ids for stale-safe asynchronous road preview requests.
+    pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
     pub(crate) benchmark_mode: bool,
     /// True when launched with `--asset-editor`. Sim thread is not started;
@@ -3178,68 +3182,90 @@ impl SimulationNode {
         core.get_road_mesh_data_internal()
     }
 
-    /// Returns temporary compiled preview-surface data for the road tool.
+    /// Requests temporary preview-surface compilation for the road tool.
     ///
-    /// Uses `try_lock` because this is called during live mouse movement and must not stall the
-    /// Godot main thread while the sim thread is holding the core mutex.
+    /// The result is published asynchronously through [`get_preview_road_surface_result`], so the
+    /// Godot main thread never runs the road-surface compiler directly.
     #[func]
-    pub fn get_preview_road_surface(
+    pub fn request_preview_road_surface(
         &self,
         points: PackedVector3Array,
         fwd_lanes: i32,
         bkw_lanes: i32,
-    ) -> Variant {
+    ) -> i64 {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
+        let request_id = self
+            .road_preview_request_counter
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
         let point_count = points.len();
-        let fwd_lanes = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let bkw_lanes = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let lock_start = road_debug.then(Instant::now);
-        let core = self.try_lock_core();
-        let lock_ms = lock_start
+        let clone_start = road_debug.then(Instant::now);
+        let points = points.to_vec();
+        let clone_ms = clone_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        match core {
-            Some(core) => {
-                let preview_start = road_debug.then(Instant::now);
-                let preview = core.get_preview_road_surface_internal(points, fwd_lanes, bkw_lanes);
-                let preview_ms = preview_start
+        let send_start = road_debug.then(Instant::now);
+        let send_ok = self
+            .cmd_tx
+            .send(crate::nodes::sim::core::SimCommand::CompileRoadPreview {
+                request_id,
+                points,
+                fwd_lanes,
+                bkw_lanes,
+            })
+            .is_ok();
+        let send_ms = send_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if road_debug {
+            debug_log!(
+                "road",
+                "preview_surface_request request_id={} points={} fwd_lanes={} bkw_lanes={} clone_ms={:.3} send_ms={:.3} send_ok={} total_ms={:.3}",
+                request_id,
+                point_count,
+                fwd_lanes,
+                bkw_lanes,
+                clone_ms,
+                send_ms,
+                send_ok,
+                total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0);
-                let total_ms = total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0);
-                if road_debug && total_ms >= 50.0 {
-                    debug_log!(
-                        "road",
-                        "preview_surface_bridge points={} fwd_lanes={} bkw_lanes={} lock=ok lock_ms={:.3} preview_ms={:.3} total_ms={:.3}",
-                        point_count,
-                        fwd_lanes,
-                        bkw_lanes,
-                        lock_ms,
-                        preview_ms,
-                        total_ms
-                    );
-                }
-                preview.to_variant()
-            }
-            None => {
-                if road_debug {
-                    debug_log!(
-                        "road",
-                        "preview_surface_bridge points={} fwd_lanes={} bkw_lanes={} lock=busy lock_ms={:.3} total_ms={:.3}",
-                        point_count,
-                        fwd_lanes,
-                        bkw_lanes,
-                        lock_ms,
-                        total_start
-                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                            .unwrap_or(0.0)
-                    );
-                }
-                Variant::nil()
-            }
+                    .unwrap_or(0.0)
+            );
         }
+        i64::try_from(request_id).unwrap_or(i64::MAX)
+    }
+
+    /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
+    #[func]
+    pub fn get_preview_road_surface_result(&self, request_id: i64) -> Variant {
+        let Ok(request_id) = u64::try_from(request_id) else {
+            return Variant::nil();
+        };
+        let snapshot = self.snapshot.read().unwrap();
+        let Some(preview) = snapshot.road_preview.as_ref() else {
+            return Variant::nil();
+        };
+        if preview.request_id != request_id {
+            return Variant::nil();
+        }
+
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "request_id",
+            i64::try_from(preview.request_id).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "prepared_points",
+            PackedVector3Array::from_iter(preview.prepared_points.iter().copied()),
+        );
+        dict.set(
+            "surface_vertices",
+            PackedVector3Array::from_iter(preview.surface_vertices.iter().copied()),
+        );
+        dict.set("is_valid", preview.is_valid);
+        dict.to_variant()
     }
 
     /// Returns compiled road-surface debug line data for editor visualization.
@@ -4062,6 +4088,7 @@ impl INode3D for SimulationNode {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
+            latest_road_preview: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 
@@ -4081,6 +4108,7 @@ impl INode3D for SimulationNode {
             sim_thread: None,
             cmd_tx,
             cmd_rx: Some(cmd_rx),
+            road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,
             economy_editor_mode,

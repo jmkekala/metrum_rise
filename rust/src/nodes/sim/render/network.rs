@@ -3,7 +3,7 @@
 //! Handles road mesh generation and road connection utility calculations.
 
 use crate::debug_log;
-use crate::nodes::sim::core::SimCore;
+use crate::nodes::sim::core::{RoadPreviewSnapshot, SimCore};
 use godot::prelude::*;
 use std::time::Instant;
 
@@ -133,26 +133,22 @@ impl SimCore {
         dict
     }
 
-    /// Returns temporary compiled preview-surface data for the road tool.
-    pub fn get_preview_road_surface_internal(
+    /// Compiles temporary road-tool preview data without touching Godot objects.
+    pub(crate) fn compile_road_preview_snapshot(
         &self,
-        points: PackedVector3Array,
-        fwd_lanes: u8,
-        bkw_lanes: u8,
-    ) -> VarDictionary {
+        request_id: u64,
+        points: Vec<Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> RoadPreviewSnapshot {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
-        let points_start = road_debug.then(Instant::now);
-        let points = points.to_vec();
         let point_count = points.len();
-        let points_ms = points_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
         let compile_start = road_debug.then(Instant::now);
         let preview = self.transit_network.road_surface.compile_preview_surface(
             &points,
-            fwd_lanes,
-            bkw_lanes,
+            fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+            bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
             &self.heightmap,
         );
         let compile_ms = compile_start
@@ -162,38 +158,28 @@ impl SimCore {
         let prepared_count = preview.prepared_points.len();
         let surface_vertex_count = preview.surface_vertices.len();
         let is_valid = preview.is_valid;
-        let dict_start = road_debug.then(Instant::now);
-        let mut dict = VarDictionary::new();
-        dict.set(
-            "prepared_points",
-            PackedVector3Array::from_iter(preview.prepared_points),
-        );
-        dict.set(
-            "surface_vertices",
-            PackedVector3Array::from_iter(preview.surface_vertices),
-        );
-        dict.set("is_valid", is_valid);
-        let dict_ms = dict_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
         let total_ms = total_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         if road_debug && total_ms >= 50.0 {
             debug_log!(
                 "road",
-                "preview_surface_rust points={} prepared_points={} surface_vertices={} valid={} points_ms={:.3} compile_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                "preview_surface_rust request_id={} points={} prepared_points={} surface_vertices={} valid={} compile_ms={:.3} total_ms={:.3}",
+                request_id,
                 point_count,
                 prepared_count,
                 surface_vertex_count,
                 is_valid,
-                points_ms,
                 compile_ms,
-                dict_ms,
                 total_ms
             );
         }
-        dict
+        RoadPreviewSnapshot {
+            request_id,
+            prepared_points: preview.prepared_points,
+            surface_vertices: preview.surface_vertices,
+            is_valid,
+        }
     }
 
     /// Returns compiled road-surface debug line data for editor visualization.

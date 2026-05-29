@@ -479,6 +479,9 @@ They must not:
 Editor preview must call the same road-surface solve code as committed placement.
 
 The preview path and the committed path may differ in cache lifetime, but not in geometric rules.
+Godot must request preview compilation asynchronously and poll the latest matching result; it must
+not run the road-surface preview compiler synchronously from mouse motion, click handling, or
+`_process`.
 
 ## Authoritative Roadbed Model
 
