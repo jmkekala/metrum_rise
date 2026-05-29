@@ -38,10 +38,11 @@ pub fn get_closest_point(
     let node_snap_dist = max_dist * 2.5;
     let mut closest_node_dist = f32::MAX;
 
-    for (i, node) in graph.nodes().iter().enumerate() {
-        if !is_canonical_node(graph, i as u32) {
+    for node_id in nearby_node_ids(graph, world_pos, node_snap_dist) {
+        if !is_canonical_node(graph, node_id) {
             continue;
         }
+        let node = &graph.nodes()[node_id as usize];
         let d = node.pos.distance_to(world_pos);
         if d < node_snap_dist {
             let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
@@ -132,17 +133,36 @@ pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) 
     let mut closest_node = None;
     let mut min_dist_sq = max_dist * max_dist;
 
-    for (i, node) in graph.nodes().iter().enumerate() {
-        if !is_canonical_node(graph, i as u32) {
+    for node_id in nearby_node_ids(graph, world_pos, max_dist) {
+        if !is_canonical_node(graph, node_id) {
             continue;
         }
+        let node = &graph.nodes()[node_id as usize];
         let d_sq = node.pos.distance_squared_to(world_pos);
         if d_sq < min_dist_sq {
             min_dist_sq = d_sq;
-            closest_node = Some(i as u32);
+            closest_node = Some(node_id);
         }
     }
     closest_node
+}
+
+fn nearby_node_ids(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    radius: f32,
+) -> impl Iterator<Item = u32> + '_ {
+    let min = Vector3::new(world_pos.x - radius, 0.0, world_pos.z - radius);
+    let max = Vector3::new(world_pos.x + radius, 0.0, world_pos.z + radius);
+    let min_chunk = RegionGraph::get_node_chunk_coords(min);
+    let max_chunk = RegionGraph::get_node_chunk_coords(max);
+    (min_chunk.0..=max_chunk.0)
+        .flat_map(move |chunk_x| {
+            (min_chunk.1..=max_chunk.1)
+                .filter_map(move |chunk_z| graph.spatial_node_grid.get(&(chunk_x, chunk_z)))
+        })
+        .flatten()
+        .copied()
 }
 
 /// Projects a 3D point onto a line segment defined by two points.

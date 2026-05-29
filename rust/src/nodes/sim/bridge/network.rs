@@ -146,25 +146,23 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
 
 /// Returns the nearest ghost-guide snap point, with height resolved in Rust.
 pub fn get_road_ghost_snap(
-    core: &mut SimCore,
+    core: &SimCore,
     pos: Vector3,
     max_dist_m: f32,
     altitude_offset_m: f32,
 ) -> Option<Vector3> {
-    core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
-
     let query = Vector2::new(pos.x, pos.z);
     let mut best_dist = max_dist_m;
     let mut best_point = None;
+    let query_radius =
+        max_dist_m + GHOST_OUTWARD_EXTEND_M.max(GHOST_MAX_OFFSETS as f32 * GHOST_GRID_SPACING_M);
+    let candidate_edges = core.region_graph.get_edges_near_point(pos, query_radius);
 
-    for edge in core
-        .region_graph
-        .edges()
-        .iter()
-        .filter(|edge| !edge.deleted && edge.physical_geometry.len() >= 2)
-    {
+    for edge_idx in candidate_edges.iter().copied() {
+        let edge = core.region_graph.edge(edge_idx);
+        if edge.deleted || edge.physical_geometry.len() < 2 {
+            continue;
+        }
         let geom = &edge.physical_geometry;
         let end_index = geom.len() - 1;
         let start_tangent = (geom[0] - geom[1]).normalized();
@@ -186,21 +184,27 @@ pub fn get_road_ghost_snap(
         );
     }
 
-    for edge in core
-        .region_graph
-        .edges()
-        .iter()
-        .filter(|edge| !edge.deleted && edge.physical_geometry.len() >= 2)
-    {
-        let points: Vec<Vector2> = edge
-            .physical_geometry
-            .iter()
-            .map(|point| Vector2::new(point.x, point.z))
-            .collect();
+    for edge_idx in candidate_edges {
+        let edge = core.region_graph.edge(edge_idx);
+        if edge.deleted || edge.physical_geometry.len() < 2 {
+            continue;
+        }
         for offset_index in 1..=GHOST_MAX_OFFSETS {
             let offset = offset_index as f32 * GHOST_GRID_SPACING_M;
-            update_best_offset_ghost_snap(query, &points, offset, &mut best_dist, &mut best_point);
-            update_best_offset_ghost_snap(query, &points, -offset, &mut best_dist, &mut best_point);
+            update_best_offset_ghost_snap(
+                query,
+                &edge.physical_geometry,
+                offset,
+                &mut best_dist,
+                &mut best_point,
+            );
+            update_best_offset_ghost_snap(
+                query,
+                &edge.physical_geometry,
+                -offset,
+                &mut best_dist,
+                &mut best_point,
+            );
         }
     }
 
@@ -378,14 +382,14 @@ fn update_best_outward_ghost_snap(
 
 fn update_best_offset_ghost_snap(
     query: Vector2,
-    points: &[Vector2],
+    points: &[Vector3],
     offset_m: f32,
     best_dist: &mut f32,
     best_point: &mut Option<Vector2>,
 ) {
     for segment in points.windows(2) {
-        let a = segment[0];
-        let b = segment[1];
+        let a = Vector2::new(segment[0].x, segment[0].z);
+        let b = Vector2::new(segment[1].x, segment[1].z);
         let seg = b - a;
         if seg.length_squared() < 0.01 {
             continue;

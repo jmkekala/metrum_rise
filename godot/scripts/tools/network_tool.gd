@@ -3,7 +3,7 @@
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_world_surface_height(),
 ##   get_road_ghost_line_data(), get_road_ghost_snap(), intersect_world_surface(),
-##   get_road_surface_debug_data()
+##   get_road_tool_cursor_pos(), get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D
@@ -26,6 +26,10 @@ var ghost_mesh: MeshInstance3D # Ghost guide lines (SimCity-style grid overlay, 
 var surface_debug_mesh: MeshInstance3D # Compiled roadbed debug overlay
 var _surface_debug_enabled: bool = false
 var _surface_debug_refresh_elapsed: float = 0.0
+var _last_world_mouse_pos: Vector3 = Vector3.ZERO
+var _has_last_world_mouse_pos: bool = false
+var _node_visuals_dirty: bool = true
+var _node_visuals_visible: bool = false
 
 const SURFACE_DEBUG_REFRESH_SEC := 0.2
 
@@ -121,6 +125,8 @@ func _setup_visuals():
 func _process(delta):
 	if active:
 		var pos = get_world_mouse_pos()
+		_last_world_mouse_pos = pos
+		_has_last_world_mouse_pos = true
 		if cursor_mesh:
 			cursor_mesh.global_position = pos
 			cursor_mesh.global_position.y += 0.35 # Float above road geometries
@@ -130,15 +136,19 @@ func _process(delta):
 		_update_node_visuals()
 		_update_surface_debug_overlay(delta)
 	else:
+		_has_last_world_mouse_pos = false
 		if cursor_mesh:
 			cursor_mesh.visible = false
-		if node_multimesh and node_multimesh.multimesh:
+		if _node_visuals_visible and node_multimesh and node_multimesh.multimesh:
 			node_multimesh.multimesh.instance_count = 0
+			_node_visuals_visible = false
 		if surface_debug_mesh:
 			surface_debug_mesh.visible = false
 
 func _update_node_visuals():
 	if not simulation_node: return
+	if not _node_visuals_dirty and _node_visuals_visible:
+		return
 	var nodes = simulation_node.get_network_nodes()
 	if nodes == null: return
 	var mm = node_multimesh.multimesh
@@ -148,6 +158,11 @@ func _update_node_visuals():
 		t.origin = nodes[i]
 		t.origin.y += 0.3 # Elevate above the 0.15m asphalt and 0.05m kerb
 		mm.set_instance_transform(i, t)
+	_node_visuals_dirty = false
+	_node_visuals_visible = true
+
+func mark_network_nodes_dirty() -> void:
+	_node_visuals_dirty = true
 
 func _update_blueprint_visuals():
 	if is_valid:
@@ -261,11 +276,13 @@ static var _earthwork_mat: StandardMaterial3D = null
 
 func update_main_mesh():
 	if name != "RoadTool":
+		mark_network_nodes_dirty()
 		var road_tool = get_node_or_null("../RoadTool")
 		if road_tool:
 			road_tool.update_main_mesh()
 		return
 
+	mark_network_nodes_dirty()
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
 	

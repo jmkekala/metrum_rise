@@ -39,7 +39,6 @@ var _ghost_enabled: bool = true  # toggled with G key
 var _ghost_guides_dirty: bool = true
 var _ghost_rebuild_queued: bool = false
 var _road_debug_enabled: bool = false
-var _profile_next_mouse_pos: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
 var _preview_cache_fwd_lanes: int = -1
@@ -49,10 +48,15 @@ var _preview_request_fwd_lanes: int = -1
 var _preview_request_bkw_lanes: int = -1
 var _preview_request_id: int = 0
 var _preview_update_pending: bool = false
+var _preview_result_pending: bool = false
+var _preview_update_delay_sec: float = 0.0
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
+const ROAD_PREVIEW_UPDATE_INTERVAL_SEC := 0.033
+const ROAD_PREVIEW_RENDER_OFFSET_M := 0.08
+const MAP_BORDER_SNAP_DIST_M := 25.0
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
 # Base angle (radians) for Shift snapping — set to the road tangent at start_pos
@@ -63,6 +67,8 @@ var _has_road_tangent: bool = false
 
 func _ready():
 	super._ready()
+	if blueprint_mesh:
+		blueprint_mesh.position.y = ROAD_PREVIEW_RENDER_OFFSET_M
 	_road_debug_enabled = _road_debug_is_enabled()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
@@ -79,9 +85,13 @@ func _ready():
 
 func _process(delta):
 	super._process(delta)
-	if _preview_update_pending:
+	_preview_update_delay_sec = maxf(_preview_update_delay_sec - delta, 0.0)
+	if _preview_update_pending and _preview_update_delay_sec <= 0.0:
 		_preview_update_pending = false
+		_preview_update_delay_sec = ROAD_PREVIEW_UPDATE_INTERVAL_SEC
 		_update_preview()
+	elif _preview_result_pending:
+		_poll_pending_preview_result()
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible:
@@ -140,7 +150,6 @@ func _handle_click():
 	var total_start_us := Time.get_ticks_usec()
 	var state_before: int = current_state
 	var mouse_start_us := Time.get_ticks_usec()
-	_profile_next_mouse_pos = _road_debug_enabled
 	var pos = get_world_mouse_pos()
 	var mouse_ms := float(Time.get_ticks_usec() - mouse_start_us) / 1000.0
 	var tangent_ms := 0.0
@@ -215,7 +224,7 @@ func _handle_click():
 
 func _update_preview():
 	if current_path == null: return
-	var mouse_pos = get_world_mouse_pos()
+	var mouse_pos: Vector3 = _last_world_mouse_pos if _has_last_world_mouse_pos else get_world_mouse_pos()
 	
 	current_path.curve.clear_points()
 	is_valid = true
@@ -253,6 +262,25 @@ func _queue_preview_update() -> void:
 	if current_path == null:
 		return
 	_preview_update_pending = true
+
+func _poll_pending_preview_result() -> void:
+	if current_path == null or _preview_request_id <= 0:
+		_preview_result_pending = false
+		return
+
+	var preview = simulation_node.get_preview_road_surface_result(_preview_request_id)
+	if preview == null:
+		return
+
+	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
+	if not _preview_request_matches(points):
+		_preview_result_pending = false
+		_queue_preview_update()
+		return
+
+	_preview_result_pending = false
+	_remember_preview_surface(points, preview)
+	_draw_blueprint()
 
 func _draw_blueprint():
 	var preview := _get_compiled_preview_surface()
@@ -381,6 +409,7 @@ func cancel_road():
 		current_path.queue_free()
 	current_path = null
 	_preview_update_pending = false
+	_preview_update_delay_sec = 0.0
 	_clear_preview_cache()
 	if _info_label:
 		_info_label.visible = false
@@ -456,240 +485,34 @@ func _prompt_border_connection(node_id: int) -> void:
 	dialog.popup_centered()
 
 
-# Override to add Self-Snapping, Angle Snapping, and Map-Border Snapping.
-# When the cursor moves beyond the terrain edge the terrain raycast returns null.
-# In that case we project the camera ray onto a flat plane and clamp to the map boundary
-# so the endpoint snaps cleanly to the border instead of showing an invalid (red) preview.
+# Override to resolve the full road-tool cursor in one Rust-side hot-path query.
 func get_world_mouse_pos() -> Vector3:
-	var profile_this_call := _profile_next_mouse_pos
-	_profile_next_mouse_pos = false
-	var total_start_us := Time.get_ticks_usec()
-	var terrain_world_start_us := Time.get_ticks_usec()
-	var terrain_world_size: Vector2 = simulation_node.get_terrain_world_size()
-	var terrain_world_ms := float(Time.get_ticks_usec() - terrain_world_start_us) / 1000.0
-	var terrain_interaction_ms := 0.0
-	var fallback_ms := 0.0
-	var closest_ms := 0.0
-	var ghost_snap_ms := 0.0
-	var border_height_ms := 0.0
-	var half_w: float = terrain_world_size.x * 0.5
-	var half_h: float = terrain_world_size.y * 0.5
-	# How close to the edge (in metres) before snapping to it.
-	var border_snap_dist: float = minf(half_w, half_h) * 0.08  # ~8% of half-extent
+	var mouse_screen := get_viewport().get_mouse_position()
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		is_valid = false
+		return Vector3.ZERO
 
-	var terrain_interaction_start_us := Time.get_ticks_usec()
-	var pos_variant = get_terrain_interaction()
-	terrain_interaction_ms = float(Time.get_ticks_usec() - terrain_interaction_start_us) / 1000.0
-
-	if pos_variant == null:
-		var fallback_start_us := Time.get_ticks_usec()
-		# Cursor is off the terrain — project ray onto a flat plane and snap to map border.
-		var mouse_screen := get_viewport().get_mouse_position()
-		var camera := get_viewport().get_camera_3d()
-		fallback_ms = float(Time.get_ticks_usec() - fallback_start_us) / 1000.0
-		if camera == null:
-			is_valid = false
-			_log_mouse_pos_detail(
-				profile_this_call,
-				"off_terrain_no_camera",
-				terrain_world_ms,
-				terrain_interaction_ms,
-				fallback_ms,
-				closest_ms,
-				ghost_snap_ms,
-				border_height_ms,
-				total_start_us
-			)
-			return Vector3.ZERO
-		fallback_start_us = Time.get_ticks_usec()
-		var ray_origin := camera.project_ray_origin(mouse_screen)
-		var ray_dir    := camera.project_ray_normal(mouse_screen)
-		fallback_ms += float(Time.get_ticks_usec() - fallback_start_us) / 1000.0
-		if ray_dir.y >= -0.001:
-			# Ray points upward — cannot hit the ground plane.
-			is_valid = false
-			_log_mouse_pos_detail(
-				profile_this_call,
-				"off_terrain_ray_up",
-				terrain_world_ms,
-				terrain_interaction_ms,
-				fallback_ms,
-				closest_ms,
-				ghost_snap_ms,
-				border_height_ms,
-				total_start_us
-			)
-			return Vector3.ZERO
-		fallback_start_us = Time.get_ticks_usec()
-		var t_plane: float = -ray_origin.y / ray_dir.y
-		var hit := ray_origin + ray_dir * t_plane
-		# Clamp to map bounds, then snap to the nearest edge.
-		hit.x = clampf(hit.x, -half_w, half_w)
-		hit.z = clampf(hit.z, -half_h, half_h)
-		hit = _snap_to_map_border(hit, half_w, half_h)
-		fallback_ms += float(Time.get_ticks_usec() - fallback_start_us) / 1000.0
-		var border_height_start_us := Time.get_ticks_usec()
-		hit.y = simulation_node.get_world_surface_height(Vector2(hit.x, hit.z))
-		border_height_ms = float(Time.get_ticks_usec() - border_height_start_us) / 1000.0
-		is_valid = true
-		_log_mouse_pos_detail(
-			profile_this_call,
-			"off_terrain_border",
-			terrain_world_ms,
-			terrain_interaction_ms,
-			fallback_ms,
-			closest_ms,
-			ghost_snap_ms,
-			border_height_ms,
-			total_start_us
-		)
-		return hit
-
-	var pos: Vector3 = pos_variant
-
-	# Apply altitude offset early so angle-snap and network-snap work in real space.
-	pos.y += altitude_offset
-
-	# 1. Angle + length snap (Shift) — applied FIRST so network snap honours the constrained direction.
-	if active and Input.is_key_pressed(KEY_SHIFT):
-		var ref_pos: Vector3 = start_pos if current_state == State.SETTING_CONTROL else control_pos
-		var dir: Vector3 = pos - ref_pos
-		var length: float = dir.length()
-		if length > 0.1:
-			var angle := atan2(dir.z, dir.x)
-			var snap_rad := PI / 12.0  # 15-degree increments
-			# Snap relative to road tangent at start so 90° gives a true perpendicular.
-			var relative := angle - _start_tangent_angle
-			relative = round(relative / snap_rad) * snap_rad
-			angle = _start_tangent_angle + relative
-			# Snap length to nearest 10 m so block distances are exact.
-			const LENGTH_SNAP := 10.0
-			length = maxf(LENGTH_SNAP, round(length / LENGTH_SNAP) * LENGTH_SNAP)
-			pos = ref_pos + Vector3(cos(angle), 0.0, sin(angle)) * length
-
-	# 2. Snap to existing network node/edge on the (possibly angle-constrained) position.
-	var closest_start_us := Time.get_ticks_usec()
-	var snapped_pos = simulation_node.get_closest_network_point(pos, 5.0)
-	closest_ms = float(Time.get_ticks_usec() - closest_start_us) / 1000.0
-	if snapped_pos != null:
-		is_valid = true
-		_log_mouse_pos_detail(
-			profile_this_call,
-			"network_snap",
-			terrain_world_ms,
-			terrain_interaction_ms,
-			fallback_ms,
-			closest_ms,
-			ghost_snap_ms,
-			border_height_ms,
-			total_start_us
-		)
-		return snapped_pos
-
-	# 3. Ghost-line snap — snaps to both outward tangent rays AND parallel offset curves.
-	if _ghost_enabled and not Input.is_key_pressed(KEY_SHIFT):
-		var ghost_snap_start_us := Time.get_ticks_usec()
-		var ghost_snap = simulation_node.get_road_ghost_snap(pos, 10.0, altitude_offset)
-		ghost_snap_ms = float(Time.get_ticks_usec() - ghost_snap_start_us) / 1000.0
-		if ghost_snap != null:
-			is_valid = true
-			_log_mouse_pos_detail(
-				profile_this_call,
-				"ghost_snap",
-				terrain_world_ms,
-				terrain_interaction_ms,
-				fallback_ms,
-				closest_ms,
-				ghost_snap_ms,
-				border_height_ms,
-				total_start_us
-			)
-			return ghost_snap
-
-	# 4. Snap to map border when cursor is within border_snap_dist of any edge.
-	if _is_near_border(pos, half_w, half_h, border_snap_dist):
-		pos = _snap_to_map_border(pos, half_w, half_h)
-		var border_height_start_us := Time.get_ticks_usec()
-		pos.y = simulation_node.get_world_surface_height(Vector2(pos.x, pos.z))
-		border_height_ms = float(Time.get_ticks_usec() - border_height_start_us) / 1000.0
-		is_valid = true
-		_log_mouse_pos_detail(
-			profile_this_call,
-			"border_snap",
-			terrain_world_ms,
-			terrain_interaction_ms,
-			fallback_ms,
-			closest_ms,
-			ghost_snap_ms,
-			border_height_ms,
-			total_start_us
-		)
-		return pos
-
-	# 5. Self-snapping (to start or control point).
-	if active:
-		if pos.distance_to(start_pos) < 2.5:
-			_log_mouse_pos_detail(
-				profile_this_call,
-				"self_start",
-				terrain_world_ms,
-				terrain_interaction_ms,
-				fallback_ms,
-				closest_ms,
-				ghost_snap_ms,
-				border_height_ms,
-				total_start_us
-			)
-			return start_pos
-		if current_state == State.SETTING_END:
-			if pos.distance_to(control_pos) < 2.5:
-				_log_mouse_pos_detail(
-					profile_this_call,
-					"self_control",
-					terrain_world_ms,
-					terrain_interaction_ms,
-					fallback_ms,
-					closest_ms,
-					ghost_snap_ms,
-					border_height_ms,
-					total_start_us
-				)
-				return control_pos
-
-	_log_mouse_pos_detail(
-		profile_this_call,
-		"terrain",
-		terrain_world_ms,
-		terrain_interaction_ms,
-		fallback_ms,
-		closest_ms,
-		ghost_snap_ms,
-		border_height_ms,
-		total_start_us
+	var pos_variant = simulation_node.get_road_tool_cursor_pos(
+		camera.project_ray_origin(mouse_screen),
+		camera.project_ray_normal(mouse_screen),
+		altitude_offset,
+		active,
+		current_state,
+		start_pos,
+		control_pos,
+		Input.is_key_pressed(KEY_SHIFT),
+		_start_tangent_angle,
+		_ghost_enabled,
+		MAP_BORDER_SNAP_DIST_M
 	)
-	return pos
-
-## Returns true when pos is within threshold metres of any map edge.
-func _is_near_border(pos: Vector3, half_w: float, half_h: float, threshold: float) -> bool:
-	return (pos.x < -half_w + threshold or pos.x > half_w - threshold or
-			pos.z < -half_h + threshold or pos.z > half_h - threshold)
-
-## Snaps pos to the nearest map edge by clamping whichever axis is closest to its limit.
-func _snap_to_map_border(pos: Vector3, half_w: float, half_h: float) -> Vector3:
-	var d_left  := pos.x + half_w   # distance from left  edge (X = -half_w)
-	var d_right := half_w - pos.x   # distance from right edge (X = +half_w)
-	var d_top   := pos.z + half_h   # distance from top   edge (Z = -half_h)
-	var d_bot   := half_h - pos.z   # distance from bot   edge (Z = +half_h)
-	var min_d   := minf(d_left, minf(d_right, minf(d_top, d_bot)))
-	if min_d == d_left:
-		pos.x = -half_w
-	elif min_d == d_right:
-		pos.x = half_w
-	elif min_d == d_top:
-		pos.z = -half_h
-	else:
-		pos.z = half_h
-	return pos
+	if pos_variant == null:
+		if _has_last_world_mouse_pos:
+			return _last_world_mouse_pos
+		is_valid = false
+		return Vector3.ZERO
+	is_valid = true
+	return pos_variant
 
 ## Returns preview geometry compiled through the shared Rust road-surface pipeline.
 ## If the sim mutex is momentarily contended, returns an empty invalid preview instead of stale geometry.
@@ -704,6 +527,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
 	var cached_preview := _cached_preview_surface_for_points(points)
 	if not cached_preview.is_empty():
+		_preview_result_pending = false
 		var cached_vertices: PackedVector3Array = cached_preview.get("surface_vertices", PackedVector3Array())
 		_log_preview_surface_detail(
 			profile_label,
@@ -716,6 +540,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		)
 		return cached_preview
 	if points.size() <= 1:
+		_preview_result_pending = false
 		_log_preview_surface_detail(profile_label, points.size(), 0, true, baked_ms, 0.0, total_start_us)
 		var empty_preview := {
 			"prepared_points": points,
@@ -731,12 +556,15 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		_preview_request_points = points
 		_preview_request_fwd_lanes = fwd_lanes
 		_preview_request_bkw_lanes = bkw_lanes
+		_preview_result_pending = true
 	var preview = simulation_node.get_preview_road_surface_result(_preview_request_id)
 	var rust_ms := float(Time.get_ticks_usec() - rust_start_us) / 1000.0
 	if preview == null:
+		_preview_result_pending = true
 		_log_preview_surface_detail(profile_label, points.size(), 0, false, baked_ms, rust_ms, total_start_us)
 		return {}
 
+	_preview_result_pending = false
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	_log_preview_surface_detail(
 		profile_label,
@@ -781,6 +609,7 @@ func _clear_preview_cache() -> void:
 	_preview_request_fwd_lanes = -1
 	_preview_request_bkw_lanes = -1
 	_preview_request_id = 0
+	_preview_result_pending = false
 
 func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
 	if left.size() != right.size():
@@ -851,33 +680,6 @@ func _log_click_detail(
 			ghost_queue_ms,
 			path_ms,
 			commit_ms,
-			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-		]
-	)
-
-func _log_mouse_pos_detail(
-	enabled: bool,
-	branch: String,
-	terrain_world_ms: float,
-	terrain_interaction_ms: float,
-	fallback_ms: float,
-	closest_ms: float,
-	ghost_snap_ms: float,
-	border_height_ms: float,
-	total_start_us: int
-) -> void:
-	if not enabled or not _road_debug_enabled:
-		return
-	print(
-		"[DEBUG:road] mouse_pos_detail branch=%s terrain_world_ms=%.3f terrain_interaction_ms=%.3f fallback_ms=%.3f closest_ms=%.3f ghost_snap_ms=%.3f border_height_ms=%.3f total_ms=%.3f"
-		% [
-			branch,
-			terrain_world_ms,
-			terrain_interaction_ms,
-			fallback_ms,
-			closest_ms,
-			ghost_snap_ms,
-			border_height_ms,
 			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 		]
 	)

@@ -60,6 +60,7 @@
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
+//! | | `get_road_tool_cursor_pos` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
@@ -265,6 +266,31 @@ impl SimulationNode {
                 Some(e.into_inner())
             }
         }
+    }
+
+    fn road_tool_is_near_border(pos: Vector3, half_w: f32, half_h: f32, threshold: f32) -> bool {
+        pos.x < -half_w + threshold
+            || pos.x > half_w - threshold
+            || pos.z < -half_h + threshold
+            || pos.z > half_h - threshold
+    }
+
+    fn road_tool_snap_to_border(mut pos: Vector3, half_w: f32, half_h: f32) -> Vector3 {
+        let d_left = pos.x + half_w;
+        let d_right = half_w - pos.x;
+        let d_top = pos.z + half_h;
+        let d_bottom = half_h - pos.z;
+        let min_d = d_left.min(d_right).min(d_top).min(d_bottom);
+        if min_d == d_left {
+            pos.x = -half_w;
+        } else if min_d == d_right {
+            pos.x = half_w;
+        } else if min_d == d_top {
+            pos.z = -half_h;
+        } else {
+            pos.z = half_h;
+        }
+        pos
     }
 
     /// Returns the dimensions of the heightmap.
@@ -3303,6 +3329,99 @@ impl SimulationNode {
         }
     }
 
+    /// Resolves the road-tool cursor position in one non-blocking Rust query.
+    ///
+    /// This combines visible-surface picking, angle snapping, network snapping, optional
+    /// ghost-guide snapping, map-border snapping, and self-snapping so the Godot editor loop
+    /// does not perform several bridge calls for every mouse frame.
+    #[func]
+    pub fn get_road_tool_cursor_pos(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        altitude_offset_m: f32,
+        active: bool,
+        current_state: i32,
+        start_pos: Vector3,
+        control_pos: Vector3,
+        shift_pressed: bool,
+        start_tangent_angle: f32,
+        ghost_enabled: bool,
+        border_snap_dist_m: f32,
+    ) -> Variant {
+        let Some(core) = self.try_lock_core() else {
+            return Variant::nil();
+        };
+        let (world_w, world_h) = core.heightmap.world_size();
+        let half_w = world_w * 0.5;
+        let half_h = world_h * 0.5;
+        let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
+
+        let mut pos = match core.intersect_world_surface_internal(ray_origin, ray_dir) {
+            Some(hit) => hit,
+            None => {
+                if ray_dir.y >= -0.001 {
+                    return Variant::nil();
+                }
+                let t_plane = -ray_origin.y / ray_dir.y;
+                let mut hit = ray_origin + ray_dir * t_plane;
+                hit.x = hit.x.clamp(-half_w, half_w);
+                hit.z = hit.z.clamp(-half_h, half_h);
+                hit = Self::road_tool_snap_to_border(hit, half_w, half_h);
+                hit.y = core.get_world_surface_height_internal(Vector2::new(hit.x, hit.z));
+                return hit.to_variant();
+            }
+        };
+
+        pos.y += altitude_offset_m;
+
+        if active && shift_pressed {
+            let ref_pos = if current_state == 1 {
+                start_pos
+            } else {
+                control_pos
+            };
+            let dir = pos - ref_pos;
+            let length = dir.length();
+            if length > 0.1 {
+                let snap_rad = std::f32::consts::PI / 12.0;
+                let relative =
+                    ((dir.z.atan2(dir.x) - start_tangent_angle) / snap_rad).round() * snap_rad;
+                let angle = start_tangent_angle + relative;
+                let snapped_length = ((length / 10.0).round() * 10.0).max(10.0);
+                pos = ref_pos + Vector3::new(angle.cos(), 0.0, angle.sin()) * snapped_length;
+            }
+        }
+
+        if let Some(snapped_pos) = core.get_closest_network_point_internal(pos, 5.0) {
+            return snapped_pos.to_variant();
+        }
+
+        if ghost_enabled && !shift_pressed {
+            use super::sim::bridge::network::get_road_ghost_snap;
+            if let Some(ghost_snap) = get_road_ghost_snap(&core, pos, 10.0, altitude_offset_m) {
+                return ghost_snap.to_variant();
+            }
+        }
+
+        if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
+            pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
+            pos.y = core.get_world_surface_height_internal(Vector2::new(pos.x, pos.z));
+            return pos.to_variant();
+        }
+
+        if active {
+            if pos.distance_to(start_pos) < 2.5 {
+                return start_pos.to_variant();
+            }
+            if current_state == 2 && pos.distance_to(control_pos) < 2.5 {
+                return control_pos.to_variant();
+            }
+        }
+
+        pos.to_variant()
+    }
+
     /// Returns the ID of the closest network node.
     #[func]
     pub fn get_closest_node(&self, world_pos: Vector3, max_dist: f32) -> i32 {
@@ -3371,8 +3490,8 @@ impl SimulationNode {
     ) -> Variant {
         use super::sim::bridge::network::get_road_ghost_snap;
         match self.try_lock_core() {
-            Some(mut core) => {
-                match get_road_ghost_snap(&mut core, world_pos, max_dist_m, altitude_offset_m) {
+            Some(core) => {
+                match get_road_ghost_snap(&core, world_pos, max_dist_m, altitude_offset_m) {
                     Some(point) => point.to_variant(),
                     None => Variant::nil(),
                 }
