@@ -73,6 +73,8 @@ const NODE_OVERLAY_NUMERIC_DUST_WIDTH_M: f32 = WORLD_POINT_DEDUP_DISTANCE_M;
 const NODE_OVERLAY_NUMERIC_AREA_CAP_M2: f32 = 1.0e-3;
 // Avoid Rayon setup overhead for the small edge/node sets common in single-edit rebuilds.
 const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
+// Node pieces are much heavier than edge/span pieces; parallelize as soon as two dirty nodes exist.
+const PARALLEL_NODE_COMPILE_MIN_ITEMS: usize = 2;
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 type NodeOverlayPoint = [f64; 2];

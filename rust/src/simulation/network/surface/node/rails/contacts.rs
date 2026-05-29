@@ -30,7 +30,7 @@ use super::owners::generated_contour_band_kind;
 use super::topology::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, NodeRailPointKey,
     generated_contour_directed_edges, generated_contour_keys, set_generated_contour_from_keys,
-    shared_generated_contour_edges, shared_generated_contour_points,
+    shared_generated_contour_points,
 };
 use super::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,

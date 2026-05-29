@@ -79,7 +79,8 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CachedRefinedTerrainPatch, CityTreasury, RefinedTerrainPatchBuildInput,
+    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury,
+    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
     RoadPreviewWorkerContext, RoadToolQuerySnapshot, SimCommand, SimCore, run_road_preview_worker,
     run_sim_thread,
@@ -188,6 +189,19 @@ struct TerrainCdtTriangleBufferExport {
     emitted_faces: usize,
 }
 
+impl TerrainCdtTriangleBufferExport {
+    fn empty() -> Self {
+        Self {
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            face_sources: TerrainCdtSourceExport::default(),
+            emitted_faces: 0,
+        }
+    }
+}
+
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 /// The central simulation node exposed to Godot.
@@ -241,6 +255,11 @@ struct RoadClipLoopQuery {
     cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
     clip_error_label: Option<&'static str>,
+}
+
+struct TerrainCdtLoopWindowDraft {
+    bounds: (f32, f32, f32, f32),
+    loops: Vec<TerrainCdtRoadLoop>,
 }
 
 impl SimulationNode {
@@ -582,136 +601,228 @@ impl SimulationNode {
             return;
         }
 
-        match &cached.mesh_result {
-            Some(Ok(mesh)) => {
-                let cdt_status = if mesh.stats.invalid_constraint_edges > 0 {
-                    "conflicted"
-                } else {
-                    "ok"
-                };
-                dict.set("terrain_cdt_status", GString::from(cdt_status));
-                if include_debug {
-                    Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
-                }
-                dict.set(
-                    "terrain_cdt_input_vertices",
-                    i64::try_from(mesh.stats.input_vertices).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_constraint_edges",
-                    i64::try_from(mesh.stats.constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_road_constraint_edges",
-                    i64::try_from(mesh.stats.road_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_accepted_faces",
-                    i64::try_from(mesh.stats.accepted_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_rejected_road_faces",
-                    i64::try_from(mesh.stats.rejected_road_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_preserved_road_constraint_edges",
-                    i64::try_from(mesh.stats.preserved_road_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_invalid_constraints",
-                    i64::try_from(mesh.stats.invalid_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_max_face_y_delta_m",
-                    f64::from(mesh.stats.max_face_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_max_face_slope_ratio",
-                    f64::from(mesh.stats.max_face_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_faces",
-                    i64::try_from(mesh.stats.road_seam_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_max_y_delta_m",
-                    f64::from(mesh.stats.road_seam_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_max_slope_ratio",
-                    f64::from(mesh.stats.road_seam_max_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_faces",
-                    i64::try_from(mesh.stats.retaining_wall_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_max_y_delta_m",
-                    f64::from(mesh.stats.retaining_wall_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_max_slope_ratio",
-                    f64::from(mesh.stats.retaining_wall_max_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_accepted_seam_edges",
-                    i64::try_from(mesh.stats.accepted_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_merged_subbudget_seam_edges",
-                    i64::try_from(mesh.stats.merged_subbudget_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_omitted_near_seam_source_samples",
-                    i64::try_from(mesh.stats.omitted_near_seam_source_samples).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_required_seam_edges",
-                    i64::try_from(mesh.stats.retaining_wall_required_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_required_seam_faces",
-                    i64::try_from(mesh.stats.retaining_wall_required_seam_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_blocking_degenerate_seam_edges",
-                    i64::try_from(mesh.stats.blocking_degenerate_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_source_samples",
-                    i64::try_from(mesh.stats.tie_in_widened_source_samples).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_max_y_delta_m",
-                    f64::from(mesh.stats.tie_in_widened_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_max_slope_ratio",
-                    f64::from(mesh.stats.tie_in_widened_max_slope_ratio),
-                );
-                if include_debug {
-                    Self::append_cdt_road_seam_face_samples(dict, mesh);
-                    Self::append_cdt_retaining_wall_face_samples(dict, mesh);
-                    Self::append_cdt_tie_in_widened_samples(dict, mesh);
-                    Self::append_cdt_seam_quality_samples(dict, mesh);
-                    Self::append_cdt_invalid_constraint_samples(dict, mesh);
-                }
-                Self::append_cdt_mesh_buffers(
-                    dict,
-                    &cached.patch,
-                    cached.cdt_patch,
-                    mesh,
-                    include_debug,
-                );
-            }
-            Some(Err(err)) => {
-                Self::append_empty_cdt_failure(
-                    dict,
-                    Self::terrain_cdt_error_label(err),
-                    include_debug,
-                );
-            }
-            None => {}
+        let successful_windows = cached
+            .windows
+            .iter()
+            .filter_map(|window| window.mesh_result.as_ref().ok().map(|mesh| (window, mesh)))
+            .collect::<Vec<_>>();
+        if successful_windows.is_empty() {
+            let error_label = cached
+                .windows
+                .iter()
+                .find_map(|window| window.mesh_result.as_ref().err())
+                .map(Self::terrain_cdt_error_label)
+                .unwrap_or("missing_road_clip_loops");
+            Self::append_empty_cdt_failure(dict, error_label, include_debug);
+            return;
+        }
+
+        let has_conflicts = successful_windows
+            .iter()
+            .any(|(_, mesh)| mesh.stats.invalid_constraint_edges > 0);
+        dict.set(
+            "terrain_cdt_status",
+            GString::from(if has_conflicts { "conflicted" } else { "ok" }),
+        );
+        if include_debug {
+            Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
+        }
+        dict.set(
+            "terrain_cdt_input_vertices",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.input_vertices)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_constraint_edges",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.constraint_edges)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_road_constraint_edges",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.road_constraint_edges)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_accepted_faces",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.accepted_faces)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_rejected_road_faces",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.rejected_road_faces)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraints",
+            i64::try_from(
+                successful_windows
+                    .iter()
+                    .map(|(_, mesh)| mesh.stats.invalid_constraint_edges)
+                    .sum::<usize>(),
+            )
+            .unwrap_or(0),
+        );
+        Self::append_cdt_window_mesh_buffers(
+            dict,
+            &cached.patch,
+            &successful_windows,
+            include_debug,
+        );
+    }
+
+    fn append_cdt_window_mesh_buffers(
+        dict: &mut VarDictionary,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        windows: &[(
+            &CachedRefinedTerrainCdtWindow,
+            &crate::simulation::terrain::cdt::TerrainCdtMesh,
+        )],
+        include_debug: bool,
+    ) {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let terrain_buffer_start = road_debug.then(Instant::now);
+        let mut terrain_buffers = TerrainCdtTriangleBufferExport::empty();
+        let mut retaining_buffers = TerrainCdtTriangleBufferExport::empty();
+        let mut cdt_patches = Vec::with_capacity(windows.len());
+        for (window, mesh) in windows {
+            let window_terrain_buffers = Self::terrain_cdt_triangle_buffers(
+                patch,
+                &mesh.vertices,
+                &mesh.triangles,
+                &mesh.terrain_triangle_sources,
+                include_debug,
+            );
+            Self::append_triangle_buffer_export(&mut terrain_buffers, window_terrain_buffers);
+            let window_retaining_buffers = Self::terrain_cdt_triangle_buffers(
+                patch,
+                &mesh.vertices,
+                &mesh.retaining_wall_triangles,
+                &mesh.retaining_wall_triangle_sources,
+                include_debug,
+            );
+            Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
+            cdt_patches.push(window.cdt_patch);
+        }
+        Self::append_regular_terrain_mesh_outside_cdt_windows(
+            &mut terrain_buffers,
+            patch,
+            &cdt_patches,
+        );
+        let terrain_buffer_ms = terrain_buffer_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
+        let terrain_vertices = terrain_buffers.vertices.len();
+        let terrain_indices = terrain_buffers.indices.len();
+        let retaining_vertices = retaining_buffers.vertices.len();
+        let retaining_indices = retaining_buffers.indices.len();
+        let terrain_emitted_faces = terrain_buffers.emitted_faces;
+        let retaining_emitted_faces = retaining_buffers.emitted_faces;
+
+        let dict_start = road_debug.then(Instant::now);
+        dict.set(
+            "terrain_cdt_emitted_faces",
+            i64::try_from(terrain_emitted_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_emitted_faces",
+            i64::try_from(retaining_emitted_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_mesh_vertices",
+            PackedVector3Array::from_iter(terrain_buffers.vertices),
+        );
+        dict.set(
+            "terrain_mesh_normals",
+            PackedVector3Array::from_iter(terrain_buffers.normals),
+        );
+        dict.set(
+            "terrain_mesh_uvs",
+            PackedVector2Array::from_iter(terrain_buffers.uvs),
+        );
+        dict.set(
+            "terrain_mesh_indices",
+            PackedInt32Array::from_iter(terrain_buffers.indices),
+        );
+        if include_debug {
+            Self::append_cdt_face_source_export(
+                dict,
+                "terrain_mesh",
+                &terrain_buffers.face_sources,
+            );
+        }
+        dict.set(
+            "terrain_retaining_wall_mesh_vertices",
+            PackedVector3Array::from_iter(retaining_buffers.vertices),
+        );
+        dict.set(
+            "terrain_retaining_wall_mesh_normals",
+            PackedVector3Array::from_iter(retaining_buffers.normals),
+        );
+        dict.set(
+            "terrain_retaining_wall_mesh_uvs",
+            PackedVector2Array::from_iter(retaining_buffers.uvs),
+        );
+        dict.set(
+            "terrain_retaining_wall_mesh_indices",
+            PackedInt32Array::from_iter(retaining_buffers.indices),
+        );
+        if include_debug {
+            Self::append_cdt_face_source_export(
+                dict,
+                "terrain_retaining_wall_mesh",
+                &retaining_buffers.face_sources,
+            );
+        }
+        let dict_ms = dict_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if road_debug {
+            debug_log!(
+                "road",
+                "terrain_cdt_window_mesh_buffers key=({},{}) include_debug={} windows={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} terrain_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                patch.patch_x,
+                patch.patch_z,
+                include_debug,
+                windows.len(),
+                terrain_vertices,
+                terrain_indices,
+                terrain_emitted_faces,
+                retaining_vertices,
+                retaining_indices,
+                retaining_emitted_faces,
+                terrain_buffer_ms,
+                dict_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
         }
     }
 
@@ -1342,6 +1453,187 @@ impl SimulationNode {
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
     }
 
+    fn terrain_cdt_window_build_inputs(
+        terrain: &TerrainSystem,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        road_loops: &[TerrainCdtRoadLoop],
+        render_step_m: f32,
+        previous: Option<&CachedRefinedTerrainPatch>,
+    ) -> Vec<RefinedTerrainCdtWindowBuildInput> {
+        if road_loops.is_empty() {
+            return Vec::new();
+        }
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let previous_windows = previous
+            .map(|cached| {
+                cached
+                    .windows
+                    .iter()
+                    .map(|window| (window.key, window.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let mut loops_by_group = BTreeMap::<u64, Vec<TerrainCdtRoadLoop>>::new();
+        for road_loop in road_loops {
+            loops_by_group
+                .entry(road_loop.footprint_group_id)
+                .or_default()
+                .push(road_loop.clone());
+        }
+
+        let mut drafts = loops_by_group
+            .into_values()
+            .filter_map(|loops| {
+                Self::terrain_cdt_local_sample_bounds(terrain, patch, &loops, safe_render_step_m)
+                    .map(|bounds| TerrainCdtLoopWindowDraft { bounds, loops })
+            })
+            .collect::<Vec<_>>();
+        Self::merge_terrain_cdt_window_drafts(terrain, patch, safe_render_step_m, &mut drafts);
+
+        drafts
+            .into_iter()
+            .filter_map(|draft| {
+                let cdt_input = Self::terrain_cdt_input_for_bounds(
+                    terrain,
+                    patch,
+                    &draft.loops,
+                    safe_render_step_m,
+                    draft.bounds,
+                );
+                if cdt_input.road_loops.is_empty() {
+                    return None;
+                }
+                let key = Self::terrain_cdt_window_key(&cdt_input);
+                Some(RefinedTerrainCdtWindowBuildInput {
+                    key,
+                    cdt_input,
+                    previous: previous_windows.get(&key).cloned(),
+                })
+            })
+            .collect()
+    }
+
+    fn merge_terrain_cdt_window_drafts(
+        terrain: &TerrainSystem,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        render_step_m: f32,
+        drafts: &mut Vec<TerrainCdtLoopWindowDraft>,
+    ) {
+        drafts.sort_by(|left, right| {
+            left.bounds
+                .0
+                .total_cmp(&right.bounds.0)
+                .then_with(|| left.bounds.1.total_cmp(&right.bounds.1))
+                .then_with(|| left.bounds.2.total_cmp(&right.bounds.2))
+                .then_with(|| left.bounds.3.total_cmp(&right.bounds.3))
+        });
+        let mut merged: Vec<TerrainCdtLoopWindowDraft> = Vec::new();
+        'drafts: for mut draft in drafts.drain(..) {
+            for existing in &mut merged {
+                if Self::terrain_cdt_window_bounds_overlap(existing.bounds, draft.bounds) {
+                    existing.loops.append(&mut draft.loops);
+                    if let Some(bounds) = Self::terrain_cdt_local_sample_bounds(
+                        terrain,
+                        patch,
+                        &existing.loops,
+                        render_step_m,
+                    ) {
+                        existing.bounds = bounds;
+                    }
+                    continue 'drafts;
+                }
+            }
+            merged.push(draft);
+        }
+        *drafts = merged;
+    }
+
+    fn terrain_cdt_window_bounds_overlap(
+        left: (f32, f32, f32, f32),
+        right: (f32, f32, f32, f32),
+    ) -> bool {
+        left.0 <= right.2 && left.2 >= right.0 && left.1 <= right.3 && left.3 >= right.1
+    }
+
+    fn terrain_cdt_input_for_bounds(
+        terrain: &TerrainSystem,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        road_loops: &[TerrainCdtRoadLoop],
+        render_step_m: f32,
+        bounds: (f32, f32, f32, f32),
+    ) -> TerrainCdtInput {
+        let (min_x, min_z, max_x, max_z) = bounds;
+        let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
+        let mut source_samples = Vec::new();
+        let mut sample_keys = BTreeMap::new();
+        Self::append_terrain_cdt_grid_samples(
+            terrain,
+            patch,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            render_step_m.max(f32::EPSILON),
+            &mut source_samples,
+            &mut sample_keys,
+        );
+        TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
+    }
+
+    fn terrain_cdt_window_key(input: &TerrainCdtInput) -> RefinedTerrainCdtWindowKey {
+        RefinedTerrainCdtWindowKey {
+            min_x_mm: Self::quantize_cdt_coord_mm(input.patch.min_x),
+            min_z_mm: Self::quantize_cdt_coord_mm(input.patch.min_z),
+            max_x_mm: Self::quantize_cdt_coord_mm(input.patch.max_x),
+            max_z_mm: Self::quantize_cdt_coord_mm(input.patch.max_z),
+            fingerprint: Self::terrain_cdt_input_fingerprint(input),
+        }
+    }
+
+    fn quantize_cdt_coord_mm(value: f64) -> i64 {
+        (value * 1000.0).round() as i64
+    }
+
+    fn terrain_cdt_input_fingerprint(input: &TerrainCdtInput) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        Self::hash_u64(&mut hash, input.road_loops.len() as u64);
+        for road_loop in &input.road_loops {
+            Self::hash_u64(&mut hash, road_loop.stable_piece_id);
+            Self::hash_u64(&mut hash, road_loop.footprint_group_id);
+            Self::hash_u64(&mut hash, u64::from(road_loop.local_loop_index));
+            Self::hash_u64(&mut hash, u64::from(road_loop.is_hole));
+            Self::hash_u64(&mut hash, road_loop.vertices.len() as u64);
+            for vertex in &road_loop.vertices {
+                Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(vertex.x));
+                Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(vertex.z));
+                Self::hash_i64(
+                    &mut hash,
+                    (f64::from(vertex.height_m) * 1000.0).round() as i64,
+                );
+            }
+        }
+        Self::hash_u64(&mut hash, input.source_samples.len() as u64);
+        for sample in &input.source_samples {
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(sample.x));
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(sample.z));
+            Self::hash_i64(
+                &mut hash,
+                (f64::from(sample.height_m) * 1000.0).round() as i64,
+            );
+        }
+        hash
+    }
+
+    fn hash_i64(hash: &mut u64, value: i64) {
+        Self::hash_u64(hash, value as u64);
+    }
+
+    fn hash_u64(hash: &mut u64, value: u64) {
+        *hash ^= value;
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
     fn terrain_cdt_patch_for_bounds(
         terrain: &TerrainSystem,
         min_x: f32,
@@ -1732,57 +2024,152 @@ impl SimulationNode {
         }
     }
 
+    fn append_triangle_buffer_export(
+        target: &mut TerrainCdtTriangleBufferExport,
+        source: TerrainCdtTriangleBufferExport,
+    ) {
+        let vertex_offset = i32::try_from(target.vertices.len()).unwrap_or(i32::MAX);
+        target.vertices.extend(source.vertices);
+        target.normals.extend(source.normals);
+        target.uvs.extend(source.uvs);
+        target.indices.extend(
+            source
+                .indices
+                .into_iter()
+                .map(|index| index.saturating_add(vertex_offset)),
+        );
+        target
+            .face_sources
+            .counts
+            .extend(source.face_sources.counts);
+        target
+            .face_sources
+            .labels
+            .extend(source.face_sources.labels);
+        target
+            .face_sources
+            .kind_codes
+            .extend(source.face_sources.kind_codes);
+        target
+            .face_sources
+            .primary_ids
+            .extend(source.face_sources.primary_ids);
+        target
+            .face_sources
+            .node_kind_codes
+            .extend(source.face_sources.node_kind_codes);
+        target
+            .face_sources
+            .edge_class_codes
+            .extend(source.face_sources.edge_class_codes);
+        target
+            .face_sources
+            .owner_kinds
+            .extend(source.face_sources.owner_kinds);
+        target
+            .face_sources
+            .owner_indices
+            .extend(source.face_sources.owner_indices);
+        target
+            .face_sources
+            .support_policies
+            .extend(source.face_sources.support_policies);
+        target.face_sources.roles.extend(source.face_sources.roles);
+        target
+            .face_sources
+            .section_ranges
+            .extend(source.face_sources.section_ranges);
+        target
+            .face_sources
+            .s_ranges
+            .extend(source.face_sources.s_ranges);
+        target.emitted_faces += source.emitted_faces;
+    }
+
     fn append_regular_terrain_mesh_outside_cdt_patch(
         export: &mut TerrainCdtTriangleBufferExport,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         cdt_patch: TerrainCdtPatch,
     ) {
+        Self::append_regular_terrain_mesh_outside_cdt_windows(export, patch, &[cdt_patch]);
+    }
+
+    fn append_regular_terrain_mesh_outside_cdt_windows(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        cdt_patches: &[TerrainCdtPatch],
+    ) {
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
         let patch_max_x = patch.world_origin_x + patch.world_size_x;
         let patch_max_z = patch.world_origin_z + patch.world_size_z;
-        let cdt_min_x = (cdt_patch.min_x as f32).clamp(patch_min_x, patch_max_x);
-        let cdt_min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
-        let cdt_max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
-        let cdt_max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
+        let mut windows = Vec::new();
+        for cdt_patch in cdt_patches {
+            let min_x = (cdt_patch.min_x as f32).clamp(patch_min_x, patch_max_x);
+            let min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
+            let max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
+            let max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
+            if max_x > min_x + 0.001 && max_z > min_z + 0.001 {
+                windows.push((min_x, min_z, max_x, max_z));
+            }
+        }
+        if windows.is_empty() {
+            Self::append_regular_terrain_grid_region(
+                export,
+                patch,
+                patch_min_x,
+                patch_min_z,
+                patch_max_x,
+                patch_max_z,
+                Self::regular_terrain_mesh_step_m(patch),
+            );
+            return;
+        }
         let step_m = Self::regular_terrain_mesh_step_m(patch);
 
-        Self::append_regular_terrain_grid_region(
-            export,
-            patch,
-            patch_min_x,
-            patch_min_z,
-            cdt_min_x,
-            patch_max_z,
-            step_m,
-        );
-        Self::append_regular_terrain_grid_region(
-            export,
-            patch,
-            cdt_max_x,
-            patch_min_z,
-            patch_max_x,
-            patch_max_z,
-            step_m,
-        );
-        Self::append_regular_terrain_grid_region(
-            export,
-            patch,
-            cdt_min_x,
-            patch_min_z,
-            cdt_max_x,
-            cdt_min_z,
-            step_m,
-        );
-        Self::append_regular_terrain_grid_region(
-            export,
-            patch,
-            cdt_min_x,
-            cdt_max_z,
-            cdt_max_x,
-            patch_max_z,
-            step_m,
-        );
+        let mut x_lines = vec![patch_min_x, patch_max_x];
+        let mut z_lines = vec![patch_min_z, patch_max_z];
+        for (min_x, min_z, max_x, max_z) in &windows {
+            x_lines.extend([*min_x, *max_x]);
+            z_lines.extend([*min_z, *max_z]);
+        }
+        Self::sort_dedup_axis_lines(&mut x_lines);
+        Self::sort_dedup_axis_lines(&mut z_lines);
+        for x_pair in x_lines.windows(2) {
+            let min_x = x_pair[0];
+            let max_x = x_pair[1];
+            if max_x <= min_x + 0.001 {
+                continue;
+            }
+            for z_pair in z_lines.windows(2) {
+                let min_z = z_pair[0];
+                let max_z = z_pair[1];
+                if max_z <= min_z + 0.001 {
+                    continue;
+                }
+                let mid_x = (min_x + max_x) * 0.5;
+                let mid_z = (min_z + max_z) * 0.5;
+                if windows
+                    .iter()
+                    .any(|(win_min_x, win_min_z, win_max_x, win_max_z)| {
+                        mid_x >= *win_min_x
+                            && mid_x <= *win_max_x
+                            && mid_z >= *win_min_z
+                            && mid_z <= *win_max_z
+                    })
+                {
+                    continue;
+                }
+                Self::append_regular_terrain_grid_region(
+                    export, patch, min_x, min_z, max_x, max_z, step_m,
+                );
+            }
+        }
+    }
+
+    fn sort_dedup_axis_lines(values: &mut Vec<f32>) {
+        values.sort_by(|left, right| left.total_cmp(right));
+        values.dedup_by(|left, right| (*left - *right).abs() <= 0.001);
     }
 
     fn regular_terrain_mesh_step_m(
@@ -2571,10 +2958,12 @@ impl SimulationNode {
             if road_debug {
                 debug_log!(
                     "road",
-                    "refined_patch_cache_hit key=({},{}) render_step_mm={} input_road_loops={} source_samples={} cdt_ms={:.3} total_ms={:.3}",
+                    "refined_patch_cache_hit key=({},{}) render_step_mm={} windows={} reused_windows={} input_road_loops={} source_samples={} cdt_ms={:.3} total_ms={:.3}",
                     patch_x,
                     patch_z,
                     cache_key.render_step_mm,
+                    cached.windows.len(),
+                    cached.reused_windows,
                     cached.input_road_loops,
                     cached.input_source_samples,
                     cached.cdt_ms,
@@ -4624,7 +5013,6 @@ impl SimCore {
             .iter()
             .copied()
             .collect();
-        self.refined_terrain_patch_cache.clear();
         if dirty_patches.is_empty() {
             return Vec::new();
         }
@@ -4659,16 +5047,19 @@ impl SimCore {
                 base_patch.world_origin_x + base_patch.world_size_x,
                 base_patch.world_origin_z + base_patch.world_size_z,
             );
-            let cdt_input = SimulationNode::terrain_cdt_input(
+            let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
+            let previous = self.refined_terrain_patch_cache.get(&key);
+            let windows = SimulationNode::terrain_cdt_window_build_inputs(
                 &self.heightmap,
                 &base_patch,
                 &road_clip_query.cdt_road_loops,
                 safe_render_step_m,
+                previous,
             );
             inputs.push(RefinedTerrainPatchBuildInput {
-                key: SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m),
+                key,
                 patch: base_patch,
-                cdt_input,
+                windows,
                 road_clip_source_count: road_clip_query.source_count,
                 clip_error_label: road_clip_query.clip_error_label,
             });
@@ -4700,26 +5091,59 @@ impl SimCore {
         let mut entries: Vec<CachedRefinedTerrainPatch> = inputs
             .into_par_iter()
             .map(|input| {
-                let input_road_loops = input.cdt_input.road_loops.len();
-                let input_source_samples = input.cdt_input.source_samples.len();
-                let cdt_patch = input.cdt_input.patch;
-                let cdt_start = Instant::now();
-                let mesh_result = if input_road_loops == 0 {
-                    None
-                } else {
-                    Some(build_road_touched_terrain_patch(input.cdt_input))
-                };
-                let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+                let mut cdt_ms = 0.0;
+                let mut reused_windows = 0usize;
+                let mut windows = input
+                    .windows
+                    .into_par_iter()
+                    .map(|window| {
+                        if let Some(mut previous) = window.previous {
+                            previous.reused = true;
+                            return previous;
+                        }
+                        let input_road_loops = window.cdt_input.road_loops.len();
+                        let input_source_samples = window.cdt_input.source_samples.len();
+                        let cdt_patch = window.cdt_input.patch;
+                        let cdt_start = Instant::now();
+                        let mesh_result = build_road_touched_terrain_patch(window.cdt_input);
+                        let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+                        CachedRefinedTerrainCdtWindow {
+                            key: window.key,
+                            input_road_loops,
+                            input_source_samples,
+                            cdt_patch,
+                            mesh_result,
+                            cdt_ms,
+                            reused: false,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                windows.sort_by_key(|window| window.key);
+                for window in &windows {
+                    if window.reused {
+                        reused_windows += 1;
+                    } else {
+                        cdt_ms += window.cdt_ms;
+                    }
+                }
+                let input_road_loops = windows
+                    .iter()
+                    .map(|window| window.input_road_loops)
+                    .sum::<usize>();
+                let input_source_samples = windows
+                    .iter()
+                    .map(|window| window.input_source_samples)
+                    .sum::<usize>();
                 CachedRefinedTerrainPatch {
                     key: input.key,
                     patch: input.patch,
                     input_road_loops,
                     input_source_samples,
-                    cdt_patch,
+                    windows,
                     road_clip_source_count: input.road_clip_source_count,
                     clip_error_label: input.clip_error_label,
-                    mesh_result,
                     cdt_ms,
+                    reused_windows,
                 }
             })
             .collect();
@@ -4727,19 +5151,33 @@ impl SimCore {
 
         if road_debug {
             for entry in &entries {
-                let status = match &entry.mesh_result {
-                    Some(Ok(mesh)) if mesh.stats.invalid_constraint_edges > 0 => "conflicted",
-                    Some(Ok(_)) => "ok",
-                    Some(Err(err)) => SimulationNode::terrain_cdt_error_label(err),
-                    None => "empty",
+                let status = if entry.windows.is_empty() {
+                    "empty"
+                } else if entry.windows.iter().any(|window| {
+                    window
+                        .mesh_result
+                        .as_ref()
+                        .is_ok_and(|mesh| mesh.stats.invalid_constraint_edges > 0)
+                }) {
+                    "conflicted"
+                } else if let Some(err) = entry
+                    .windows
+                    .iter()
+                    .find_map(|window| window.mesh_result.as_ref().err())
+                {
+                    SimulationNode::terrain_cdt_error_label(err)
+                } else {
+                    "ok"
                 };
                 debug_log!(
                     "road",
-                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} road_loops={} source_samples={} cdt_ms={:.3}",
+                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} reused_windows={} road_loops={} source_samples={} cdt_ms={:.3}",
                     entry.key.patch_x,
                     entry.key.patch_z,
                     entry.key.render_step_mm,
                     status,
+                    entry.windows.len(),
+                    entry.reused_windows,
                     entry.input_road_loops,
                     entry.input_source_samples,
                     entry.cdt_ms

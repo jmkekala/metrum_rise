@@ -22,33 +22,50 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     contours: &[NodeGeneratedContour],
     source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
-) {
+) -> GeneratedContactEmissionStats {
+    let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
+    let summaries = generated_contact_contour_summaries(contours);
+    let mut stats = GeneratedContactEmissionStats::default();
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
+            stats.pair_tests += 1;
             let left = &contours[left_index];
             let right = &contours[right_index];
-            let Some(left_owner) = left.owner else {
+            let left_summary = &summaries[left_index];
+            let right_summary = &summaries[right_index];
+            let Some(left_owner) = left_summary.owner else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let Some(right_owner) = right.owner else {
+            let Some(right_owner) = right_summary.owner else {
+                stats.kind_rejected += 1;
                 continue;
             };
             if left_owner == right_owner {
+                stats.kind_rejected += 1;
                 continue;
             }
-            let Some(kind) = generated_contour_band_kind(left) else {
+            let Some(kind) = left_summary.kind else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let Some(right_kind) = generated_contour_band_kind(right) else {
+            let Some(right_kind) = right_summary.kind else {
+                stats.kind_rejected += 1;
                 continue;
             };
+            if left_summary.aabb_disjoint(right_summary) {
+                stats.aabb_rejected += 1;
+                continue;
+            }
+            stats.processed_pairs += 1;
             if kind == right_kind {
-                collect_same_material_height_splits(
+                collect_same_material_height_splits_from_edges(
                     left,
                     right,
+                    &shared_sorted_edges(&left_summary.edges, &right_summary.edges),
                     left_owner,
                     right_owner,
                     &mut same_material_height_splits,
@@ -58,12 +75,14 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             let Some(contact_kind) =
                 generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
             else {
+                stats.kind_rejected += 1;
                 continue;
             };
             let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let shared_edges = shared_generated_contour_edges(left, right);
+            let shared_edges = shared_sorted_edges(&left_summary.edges, &right_summary.edges);
             let shared_edge_points = shared_edges
                 .iter()
                 .flat_map(|edge| [edge.start, edge.end])
@@ -119,6 +138,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                     );
                 }
             }
+            stats.overlay_calls += 1;
             for edge in generated_contact_edges_from_overlay_intersection(left, right) {
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
@@ -136,7 +156,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                     );
                 }
             }
-            for point in shared_generated_contour_points(left, right) {
+            for point in shared_sorted_keys(&left_summary.keys, &right_summary.keys) {
                 if shared_edge_points.contains(&point) {
                     continue;
                 }
@@ -241,17 +261,20 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
         });
     }
     append_same_material_height_split_constraints(constraints, same_material_height_splits);
+    stats.emitted_constraints = constraints.len() - before_len;
+    stats
 }
 
-fn collect_same_material_height_splits(
+fn collect_same_material_height_splits_from_edges(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
+    shared_edges: &[GeneratedContourEdgeKey],
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
     contacts: &mut BTreeSet<SameMaterialHeightSplitConstraint>,
 ) {
     let mut edges = BTreeSet::new();
-    for edge in shared_generated_contour_edges(left, right) {
+    for &edge in shared_edges {
         insert_same_material_height_split(
             contacts,
             left_owner,

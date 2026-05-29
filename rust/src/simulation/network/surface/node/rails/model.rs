@@ -94,6 +94,12 @@ pub(crate) struct NodeRailBuildProfile {
     pub(crate) validation_constraints: usize,
     pub(crate) height_carrier_sources: usize,
     pub(crate) height_carrier_points: usize,
+    pub(crate) contact_pair_tests: usize,
+    pub(crate) contact_pair_aabb_rejected: usize,
+    pub(crate) contact_pair_kind_rejected: usize,
+    pub(crate) contact_pair_processed: usize,
+    pub(crate) contact_overlay_calls: usize,
+    pub(crate) contact_constraints_emitted: usize,
 }
 
 #[derive(Clone, Debug)]

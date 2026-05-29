@@ -217,7 +217,7 @@ impl NodeRailContourSet {
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         profile.contact_noding_first_ms = elapsed_profile_ms(contact_noding_first_start);
         let raised_step_contacts_first_start = profile_enabled.then(Instant::now);
-        append_source_authorized_raised_step_point_contacts(
+        profile.contact_constraints_emitted += append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
             source_constraint_count,
@@ -226,10 +226,17 @@ impl NodeRailContourSet {
         profile.raised_step_contacts_first_ms =
             elapsed_profile_ms(raised_step_contacts_first_start);
         let material_contacts_start = profile_enabled.then(Instant::now);
-        append_generated_material_point_contact_constraints(&contours, &mut constraints);
+        let material_contact_profile =
+            append_generated_material_point_contact_constraints(&contours, &mut constraints);
+        profile.contact_pair_tests += material_contact_profile.pair_tests;
+        profile.contact_pair_aabb_rejected += material_contact_profile.aabb_rejected;
+        profile.contact_pair_kind_rejected += material_contact_profile.kind_rejected;
+        profile.contact_pair_processed += material_contact_profile.processed_pairs;
+        profile.contact_overlay_calls += material_contact_profile.overlay_calls;
+        profile.contact_constraints_emitted += material_contact_profile.emitted_constraints;
         profile.material_contacts_ms = elapsed_profile_ms(material_contacts_start);
         let raised_step_contacts_second_start = profile_enabled.then(Instant::now);
-        append_source_authorized_raised_step_point_contacts(
+        profile.contact_constraints_emitted += append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
             source_constraint_count,
@@ -241,12 +248,18 @@ impl NodeRailContourSet {
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         profile.contact_noding_second_ms = elapsed_profile_ms(contact_noding_second_start);
         let same_band_contacts_start = profile_enabled.then(Instant::now);
-        append_generated_same_band_contact_constraints(
+        let same_band_contact_profile = append_generated_same_band_contact_constraints(
             input.piece_kind,
             &contours,
             source_constraint_count,
             &mut constraints,
         );
+        profile.contact_pair_tests += same_band_contact_profile.pair_tests;
+        profile.contact_pair_aabb_rejected += same_band_contact_profile.aabb_rejected;
+        profile.contact_pair_kind_rejected += same_band_contact_profile.kind_rejected;
+        profile.contact_pair_processed += same_band_contact_profile.processed_pairs;
+        profile.contact_overlay_calls += same_band_contact_profile.overlay_calls;
+        profile.contact_constraints_emitted += same_band_contact_profile.emitted_constraints;
         profile.same_band_contacts_ms = elapsed_profile_ms(same_band_contacts_start);
         let contact_noding_third_start = profile_enabled.then(Instant::now);
         node_generated_contact_contours(&mut contours, &mut constraints)?;

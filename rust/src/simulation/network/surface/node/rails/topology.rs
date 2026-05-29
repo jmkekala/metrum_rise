@@ -74,21 +74,6 @@ fn update_generated_band_contour_constraint(
         }
     }
 }
-pub(super) fn shared_generated_contour_edges(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-) -> Vec<GeneratedContourEdgeKey> {
-    let mut left_edges = generated_contour_edges(left);
-    let mut right_edges = generated_contour_edges(right);
-    left_edges.sort_unstable();
-    left_edges.dedup();
-    right_edges.sort_unstable();
-    right_edges.dedup();
-    left_edges
-        .into_iter()
-        .filter(|edge| right_edges.binary_search(edge).is_ok())
-        .collect()
-}
 pub(super) fn shared_generated_contour_points(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
@@ -103,18 +88,6 @@ pub(super) fn shared_generated_contour_points(
         .into_iter()
         .filter(|point| right_points.binary_search(point).is_ok())
         .collect()
-}
-fn generated_contour_edges(contour: &NodeGeneratedContour) -> Vec<GeneratedContourEdgeKey> {
-    let keys = generated_contour_keys(contour);
-    let mut edges = Vec::new();
-    for index in 0..keys.len() {
-        let start = keys[index];
-        let end = keys[(index + 1) % keys.len()];
-        if start != end {
-            edges.push(GeneratedContourEdgeKey::new(start, end));
-        }
-    }
-    edges
 }
 pub(super) fn generated_contour_directed_edges(
     contour: &NodeGeneratedContour,

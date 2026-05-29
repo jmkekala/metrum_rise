@@ -1,10 +1,11 @@
 //! Road-surface system state, dirty rebuild orchestration, and shared ordering helpers.
 
 use super::{
-    ChunkCacheKind, NodeOwnedRegion, PARALLEL_SURFACE_COMPILE_MIN_ITEMS,
-    RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry, RoadSurfaceSection,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodeCompileInput, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    ChunkCacheKind, NodeOwnedRegion, PARALLEL_NODE_COMPILE_MIN_ITEMS,
+    PARALLEL_SURFACE_COMPILE_MIN_ITEMS, RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry,
+    RoadSurfaceSection, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodeCompileInput,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
@@ -277,7 +278,7 @@ impl RoadSurfaceSystem {
             u32,
             RoadSurfaceVisualNodeCompileInput,
             Option<RoadSurfaceVisualNodePiece>,
-        )> = Self::collect_surface_compile_work(&node_candidates, |node_id| {
+        )> = Self::collect_node_compile_work(&node_candidates, |node_id| {
             (
                 node_id.0,
                 node_id.1.clone(),
@@ -396,7 +397,7 @@ impl RoadSurfaceSystem {
             u32,
             RoadSurfaceVisualNodeCompileInput,
             Option<RoadSurfaceVisualNodePiece>,
-        )> = Self::collect_surface_compile_work(&node_candidates, |node_id| {
+        )> = Self::collect_node_compile_work(&node_candidates, |node_id| {
             (
                 node_id.0,
                 node_id.1.clone(),
@@ -458,6 +459,21 @@ impl RoadSurfaceSystem {
         // Slice parallel iterators are indexed; collecting into Vec preserves input order, so
         // the serial commit phase remains deterministic without re-sorting by id.
         if items.len() >= PARALLEL_SURFACE_COMPILE_MIN_ITEMS {
+            items.par_iter().cloned().map(&work).collect()
+        } else {
+            items.iter().cloned().map(&work).collect()
+        }
+    }
+
+    pub(crate) fn collect_node_compile_work<I, O, F>(items: &[I], work: F) -> Vec<O>
+    where
+        I: Clone + Send + Sync,
+        O: Send,
+        F: Fn(I) -> O + Sync,
+    {
+        // Node compilation dominates road-edit latency; two independent dirty nodes are already
+        // worth Rayon scheduling overhead. Indexed collection keeps commit order deterministic.
+        if items.len() >= PARALLEL_NODE_COMPILE_MIN_ITEMS {
             items.par_iter().cloned().map(&work).collect()
         } else {
             items.iter().cloned().map(&work).collect()

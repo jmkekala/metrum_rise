@@ -42,7 +42,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
     contours: &[NodeGeneratedContour],
     source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
-) {
+) -> usize {
+    let before_len = constraints.len();
     let mut existing = constraints
         .iter()
         .filter_map(generated_same_band_contact_constraint_key)
@@ -77,42 +78,61 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
             ],
         });
     }
+    constraints.len() - before_len
 }
 
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_material_point_contact_constraints(
     contours: &[NodeGeneratedContour],
     constraints: &mut Vec<NodeRailConstraint>,
-) {
+) -> GeneratedContactEmissionStats {
+    let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
+    let summaries = generated_contact_contour_summaries(contours);
+    let mut stats = GeneratedContactEmissionStats::default();
     let mut contact_points = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
+            stats.pair_tests += 1;
             let left = &contours[left_index];
             let right = &contours[right_index];
-            let Some(left_owner) = left.owner else {
+            let left_summary = &summaries[left_index];
+            let right_summary = &summaries[right_index];
+            let Some(left_owner) = left_summary.owner else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let Some(right_owner) = right.owner else {
+            let Some(right_owner) = right_summary.owner else {
+                stats.kind_rejected += 1;
                 continue;
             };
             if left_owner == right_owner {
+                stats.kind_rejected += 1;
                 continue;
             }
-            let Some(left_kind) = generated_contour_band_kind(left) else {
+            let Some(left_kind) = left_summary.kind else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let Some(right_kind) = generated_contour_band_kind(right) else {
+            let Some(right_kind) = right_summary.kind else {
+                stats.kind_rejected += 1;
                 continue;
             };
             if left_kind == right_kind {
+                stats.kind_rejected += 1;
                 continue;
             }
             let Some(contact_kind) =
                 generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
             else {
+                stats.kind_rejected += 1;
                 continue;
             };
-            let mut points = shared_generated_contour_points(left, right);
+            if left_summary.aabb_disjoint(right_summary) {
+                stats.aabb_rejected += 1;
+                continue;
+            }
+            stats.processed_pairs += 1;
+            let mut points = shared_sorted_keys(&left_summary.keys, &right_summary.keys);
             points.extend(generated_contact_points_from_contour_intersections(
                 left, right,
             ));
@@ -124,7 +144,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                 right_owner,
                 &authority_index,
             ));
-            points.extend(generated_contour_keys(left).into_iter().filter(|point| {
+            points.extend(left_summary.keys.iter().copied().filter(|point| {
                 generated_material_point_contact_authority(
                     contact_kind,
                     left_owner,
@@ -143,7 +163,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                         )
                 })
             }));
-            points.extend(generated_contour_keys(right).into_iter().filter(|point| {
+            points.extend(right_summary.keys.iter().copied().filter(|point| {
                 generated_material_point_contact_authority(
                     contact_kind,
                     left_owner,
@@ -209,4 +229,6 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
             contact.source_band_index,
         );
     }
+    stats.emitted_constraints = constraints.len() - before_len;
+    stats
 }

@@ -203,12 +203,56 @@ pub(crate) struct RefinedTerrainPatchBuildInput {
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
-    /// CDT input assembled from source terrain samples and road footprint loops.
-    pub(crate) cdt_input: TerrainCdtInput,
+    /// Local CDT windows assembled from source terrain samples and road footprint loops.
+    pub(crate) windows: Vec<RefinedTerrainCdtWindowBuildInput>,
     /// Number of source road-boundary records found by the clip query.
     pub(crate) road_clip_source_count: usize,
     /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
     pub(crate) clip_error_label: Option<&'static str>,
+}
+
+/// Cache key for one local CDT window inside a refined render patch.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct RefinedTerrainCdtWindowKey {
+    /// Window minimum X in quantized millimetres.
+    pub(crate) min_x_mm: i64,
+    /// Window minimum Z in quantized millimetres.
+    pub(crate) min_z_mm: i64,
+    /// Window maximum X in quantized millimetres.
+    pub(crate) max_x_mm: i64,
+    /// Window maximum Z in quantized millimetres.
+    pub(crate) max_z_mm: i64,
+    /// Stable fingerprint of road loops and terrain samples in this window.
+    pub(crate) fingerprint: u64,
+}
+
+/// Build input for one local CDT window inside a refined render patch.
+pub(crate) struct RefinedTerrainCdtWindowBuildInput {
+    /// Window cache key.
+    pub(crate) key: RefinedTerrainCdtWindowKey,
+    /// CDT input for this local window.
+    pub(crate) cdt_input: TerrainCdtInput,
+    /// Previous compiled window when the fingerprint did not change.
+    pub(crate) previous: Option<CachedRefinedTerrainCdtWindow>,
+}
+
+/// Cached local CDT window built away from the Godot frame.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CachedRefinedTerrainCdtWindow {
+    /// Window cache key.
+    pub(crate) key: RefinedTerrainCdtWindowKey,
+    /// Number of road loops supplied to the CDT builder.
+    pub(crate) input_road_loops: usize,
+    /// Number of source terrain samples supplied to the CDT builder.
+    pub(crate) input_source_samples: usize,
+    /// Local CDT window used inside the base render patch.
+    pub(crate) cdt_patch: TerrainCdtPatch,
+    /// CDT result for this window.
+    pub(crate) mesh_result: Result<TerrainCdtMesh, TerrainCdtError>,
+    /// Time spent in CDT construction for this window.
+    pub(crate) cdt_ms: f64,
+    /// True when this window was reused from the previous patch cache.
+    pub(crate) reused: bool,
 }
 
 /// Cached production refined terrain patch built away from the Godot frame.
@@ -222,16 +266,16 @@ pub(crate) struct CachedRefinedTerrainPatch {
     pub(crate) input_road_loops: usize,
     /// Number of source terrain samples supplied to the CDT builder.
     pub(crate) input_source_samples: usize,
-    /// Local CDT window used inside the base render patch.
-    pub(crate) cdt_patch: TerrainCdtPatch,
+    /// Local CDT windows composed into this render patch.
+    pub(crate) windows: Vec<CachedRefinedTerrainCdtWindow>,
     /// Number of source road-boundary records found by the clip query.
     pub(crate) road_clip_source_count: usize,
     /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
     pub(crate) clip_error_label: Option<&'static str>,
-    /// CDT result for this patch; empty-loop patches intentionally skip the builder.
-    pub(crate) mesh_result: Option<Result<TerrainCdtMesh, TerrainCdtError>>,
-    /// Time spent in CDT construction for this patch.
+    /// Time spent in CDT construction for this patch's rebuilt windows.
     pub(crate) cdt_ms: f64,
+    /// Number of windows reused from the previous cache entry.
+    pub(crate) reused_windows: usize,
 }
 
 /// All simulation state — owned exclusively by the background sim thread when running.
