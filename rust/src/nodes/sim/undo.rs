@@ -90,6 +90,8 @@ impl SimCore {
                     .rebuild(&mut self.region_graph);
                 self.transit_network
                     .rebuild_cch_and_check(&self.region_graph);
+                self.cached_road_mesh_data = None;
+                self.network_dirty = true;
             }
             return true;
         }

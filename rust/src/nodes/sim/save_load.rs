@@ -67,5 +67,6 @@ impl SimCore {
         self.world_lake_fill_preview = None;
         self.terrain_dirty = true;
         self.water_dirty = true;
+        self.cached_road_mesh_data = None;
     }
 }

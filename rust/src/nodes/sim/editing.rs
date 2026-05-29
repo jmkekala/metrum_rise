@@ -33,6 +33,7 @@ impl SimCore {
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
         self.terrain_dirty = true;
+        self.cached_road_mesh_data = None;
 
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
@@ -448,6 +449,7 @@ impl SimCore {
         }
 
         self.network_dirty = true;
+        self.cached_road_mesh_data = None;
 
         // Store partial timing so the AddRoad handler can append the remaining phases.
         // Zoning is NOT flushed here — create_edge_internal already called
@@ -499,6 +501,7 @@ impl SimCore {
             );
             self.transit_network.mark_surface_point_dirty(old_pos);
             self.network_dirty = true;
+            self.cached_road_mesh_data = None;
         }
     }
 
@@ -947,7 +950,7 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            latest_road_preview: None,
+            cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

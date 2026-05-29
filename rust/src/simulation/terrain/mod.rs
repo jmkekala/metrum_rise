@@ -55,6 +55,7 @@ pub(crate) struct TerrainPatchSnapshot {
 }
 
 /// Dual-buffer heightmap for the terrain surface.
+#[derive(Clone)]
 pub struct TerrainSystem {
     /// Map width in height samples.
     pub width: usize,

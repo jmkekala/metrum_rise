@@ -2,17 +2,16 @@
 use crate::config::HEIGHT_SCALE;
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
+use crate::nodes::sim::road_tool::{
+    GHOST_GRID_SPACING_M, GHOST_LINE_LIFT_M, GHOST_MAX_OFFSETS, GHOST_OFFSET_ALPHAS,
+    GHOST_OUTWARD_EXTEND_M, GHOST_TICK_HALF_M, GHOST_TICK_INTERVAL_M, GHOST_TICK_LIFT_M,
+    RoadGhostSnapIndex,
+};
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::time::Instant;
-
-const GHOST_GRID_SPACING_M: f32 = 80.0;
-const GHOST_MAX_OFFSETS: usize = 3;
-const GHOST_OUTWARD_EXTEND_M: f32 = 200.0;
-const GHOST_TICK_INTERVAL_M: f32 = 20.0;
-const GHOST_TICK_HALF_M: f32 = 1.5;
-const GHOST_LINE_LIFT_M: f32 = 0.06;
-const GHOST_TICK_LIFT_M: f32 = 0.07;
-const GHOST_OFFSET_ALPHAS: [f32; GHOST_MAX_OFFSETS] = [0.30, 0.12, 0.04];
 
 /// Returns ghost guide data for the road-tool overlay.
 pub fn get_road_ghost_guides(core: &SimCore) -> PackedFloat32Array {
@@ -151,70 +150,38 @@ pub fn get_road_ghost_snap(
     max_dist_m: f32,
     altitude_offset_m: f32,
 ) -> Option<Vector3> {
+    let ghost_snap_index = RoadGhostSnapIndex::from_graph(&core.region_graph);
+    get_road_ghost_snap_from_parts(
+        &core.region_graph,
+        &core.transit_network.road_surface,
+        &core.heightmap,
+        &ghost_snap_index,
+        pos,
+        max_dist_m,
+        altitude_offset_m,
+    )
+}
+
+/// Returns the nearest ghost-guide snap point from immutable road-query data.
+pub(crate) fn get_road_ghost_snap_from_parts(
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
+    ghost_snap_index: &RoadGhostSnapIndex,
+    pos: Vector3,
+    max_dist_m: f32,
+    altitude_offset_m: f32,
+) -> Option<Vector3> {
     let query = Vector2::new(pos.x, pos.z);
-    let mut best_dist = max_dist_m;
-    let mut best_point = None;
-    let query_radius =
-        max_dist_m + GHOST_OUTWARD_EXTEND_M.max(GHOST_MAX_OFFSETS as f32 * GHOST_GRID_SPACING_M);
-    let candidate_edges = core.region_graph.get_edges_near_point(pos, query_radius);
-
-    for edge_idx in candidate_edges.iter().copied() {
-        let edge = core.region_graph.edge(edge_idx);
-        if edge.deleted || edge.physical_geometry.len() < 2 {
-            continue;
-        }
-        let geom = &edge.physical_geometry;
-        let end_index = geom.len() - 1;
-        let start_tangent = (geom[0] - geom[1]).normalized();
-        update_best_outward_ghost_snap(
-            query,
-            Vector2::new(geom[0].x, geom[0].z),
-            Vector2::new(start_tangent.x, start_tangent.z),
-            &mut best_dist,
-            &mut best_point,
-        );
-
-        let end_tangent = (geom[end_index] - geom[end_index - 1]).normalized();
-        update_best_outward_ghost_snap(
-            query,
-            Vector2::new(geom[end_index].x, geom[end_index].z),
-            Vector2::new(end_tangent.x, end_tangent.z),
-            &mut best_dist,
-            &mut best_point,
-        );
-    }
-
-    for edge_idx in candidate_edges {
-        let edge = core.region_graph.edge(edge_idx);
-        if edge.deleted || edge.physical_geometry.len() < 2 {
-            continue;
-        }
-        for offset_index in 1..=GHOST_MAX_OFFSETS {
-            let offset = offset_index as f32 * GHOST_GRID_SPACING_M;
-            update_best_offset_ghost_snap(
-                query,
-                &edge.physical_geometry,
-                offset,
-                &mut best_dist,
-                &mut best_point,
-            );
-            update_best_offset_ghost_snap(
-                query,
-                &edge.physical_geometry,
-                -offset,
-                &mut best_dist,
-                &mut best_point,
-            );
-        }
-    }
-
-    best_point.map(|point| {
-        Vector3::new(
-            point.x,
-            ghost_surface_height_m(core, point) + altitude_offset_m,
-            point.y,
-        )
-    })
+    ghost_snap_index
+        .nearest_point(query, max_dist_m)
+        .map(|point| {
+            Vector3::new(
+                point.x,
+                ghost_surface_height_m(graph, road_surface, terrain, point) + altitude_offset_m,
+                point.y,
+            )
+        })
 }
 
 /// Returns the full physical geometry of every non-deleted road edge.
@@ -364,63 +331,6 @@ fn append_offset_ghost_curve(
     }
 }
 
-fn update_best_outward_ghost_snap(
-    query: Vector2,
-    anchor: Vector2,
-    tangent: Vector2,
-    best_dist: &mut f32,
-    best_point: &mut Option<Vector2>,
-) {
-    let to_query = query - anchor;
-    let along = to_query.dot(tangent);
-    if along < 0.0 {
-        return;
-    }
-    let closest = anchor + tangent * along;
-    update_best_ghost_point(query, closest, best_dist, best_point);
-}
-
-fn update_best_offset_ghost_snap(
-    query: Vector2,
-    points: &[Vector3],
-    offset_m: f32,
-    best_dist: &mut f32,
-    best_point: &mut Option<Vector2>,
-) {
-    for segment in points.windows(2) {
-        let a = Vector2::new(segment[0].x, segment[0].z);
-        let b = Vector2::new(segment[1].x, segment[1].z);
-        let seg = b - a;
-        if seg.length_squared() < 0.01 {
-            continue;
-        }
-        let seg_norm = seg.normalized();
-        let perp = Vector2::new(-seg_norm.y, seg_norm.x);
-        let offset_a = a + perp * offset_m;
-        let offset_b = b + perp * offset_m;
-        if (offset_b - offset_a).dot(seg_norm) < 0.0 {
-            continue;
-        }
-        let offset_seg = offset_b - offset_a;
-        let along =
-            ((query - offset_a).dot(offset_seg) / offset_seg.length_squared()).clamp(0.0, 1.0);
-        update_best_ghost_point(query, offset_a + offset_seg * along, best_dist, best_point);
-    }
-}
-
-fn update_best_ghost_point(
-    query: Vector2,
-    candidate: Vector2,
-    best_dist: &mut f32,
-    best_point: &mut Option<Vector2>,
-) {
-    let distance = (query - candidate).length();
-    if distance < *best_dist {
-        *best_dist = distance;
-        *best_point = Some(candidate);
-    }
-}
-
 fn push_ghost_line(
     start: Vector3,
     end: Vector3,
@@ -435,11 +345,15 @@ fn push_ghost_line(
     colors.push(color);
 }
 
-fn ghost_surface_height_m(core: &SimCore, pos: Vector2) -> f32 {
-    core.transit_network
-        .road_surface
-        .sample_visible_surface_height(&core.region_graph, &core.heightmap, pos.x, pos.y)
-        .unwrap_or_else(|| core.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE)
+fn ghost_surface_height_m(
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
+    pos: Vector2,
+) -> f32 {
+    road_surface
+        .sample_visible_surface_height(graph, terrain, pos.x, pos.y)
+        .unwrap_or_else(|| terrain.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE)
 }
 
 fn segments_cross_2d(a1: Vector2, b1: Vector2, a2: Vector2, b2: Vector2) -> bool {

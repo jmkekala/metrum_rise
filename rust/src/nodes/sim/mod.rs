@@ -9,6 +9,7 @@ pub mod editing;
 pub mod query;
 /// Rendering bridge sub-modules for Godot-Rust interaction.
 pub mod render;
+pub mod road_tool;
 pub mod save_load;
 pub mod undo;
 pub mod world_definition;

@@ -1298,7 +1298,7 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            latest_road_preview: None,
+            cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

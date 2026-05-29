@@ -80,7 +80,9 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainPatch, CityTreasury, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, SimCommand, SimCore, run_sim_thread,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SimCommand, SimCore, run_road_preview_worker,
+    run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -205,6 +207,14 @@ pub struct SimulationNode {
     pub(crate) cmd_tx: std::sync::mpsc::Sender<SimCommand>,
     /// Receiver held here until `ready()` transfers it to the background thread.
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
+    /// Channel for road-tool preview jobs handled outside the simulation thread.
+    pub(crate) road_preview_tx: std::sync::mpsc::Sender<RoadPreviewRequest>,
+    /// Immutable context consumed by the road-preview worker.
+    pub(crate) road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
+    /// Latest completed road-tool preview from the dedicated preview worker.
+    pub(crate) road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
+    /// Immutable road-tool query state used by cursor picking without locking SimCore.
+    pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
     pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
@@ -304,19 +314,27 @@ impl SimulationNode {
         if let Some(rx) = self.cmd_rx.take() {
             let core = Arc::clone(&self.core);
             let snap = Arc::clone(&self.snapshot);
+            let road_preview = Arc::clone(&self.road_preview_context);
+            let road_query = Arc::clone(&self.road_tool_query_snapshot);
             self.sim_thread = Some(std::thread::spawn(move || {
-                run_sim_thread(core, snap, rx);
+                run_sim_thread(core, snap, road_preview, road_query, rx);
             }));
         }
     }
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let snapshot = {
+        let (snapshot, preview_context, road_query_snapshot) = {
             let core = self.lock_core();
-            core.build_snapshot()
+            (
+                core.build_snapshot(),
+                RoadPreviewWorkerContext::from_core(&core),
+                RoadToolQuerySnapshot::from_core(&core),
+            )
         };
         *self.snapshot.write().unwrap() = snapshot;
+        *self.road_preview_context.write().unwrap() = preview_context;
+        *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
     }
 
     fn world_lake_fill_preview_dict(
@@ -2036,7 +2054,11 @@ impl SimulationNode {
     /// Undoes the last action.
     #[func]
     pub fn undo_action(&mut self) -> bool {
-        self.lock_core().undo_action_internal()
+        let changed = self.lock_core().undo_action_internal();
+        if changed {
+            self.refresh_snapshot_from_core();
+        }
+        changed
     }
 
     // ── Terrain & Water ──
@@ -2216,10 +2238,18 @@ impl SimulationNode {
     /// Clears the terrain dirty flag.
     #[func]
     pub fn clear_terrain_dirty(&mut self) {
-        let mut core = self.lock_core();
-        core.terrain_dirty = false;
-        core.heightmap.clear_dirty_render_patches();
-        core.refined_terrain_patch_cache.clear();
+        let (preview_context, road_query_snapshot) = {
+            let mut core = self.lock_core();
+            core.terrain_dirty = false;
+            core.heightmap.clear_dirty_render_patches();
+            core.refined_terrain_patch_cache.clear();
+            (
+                RoadPreviewWorkerContext::from_core(&core),
+                RoadToolQuerySnapshot::from_core(&core),
+            )
+        };
+        *self.road_preview_context.write().unwrap() = preview_context;
+        *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
         self.snapshot.write().unwrap().terrain_dirty = false;
     }
 
@@ -3233,8 +3263,8 @@ impl SimulationNode {
             .unwrap_or(0.0);
         let send_start = road_debug.then(Instant::now);
         let send_ok = self
-            .cmd_tx
-            .send(crate::nodes::sim::core::SimCommand::CompileRoadPreview {
+            .road_preview_tx
+            .send(RoadPreviewRequest {
                 request_id,
                 points,
                 fwd_lanes,
@@ -3269,8 +3299,8 @@ impl SimulationNode {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
         };
-        let snapshot = self.snapshot.read().unwrap();
-        let Some(preview) = snapshot.road_preview.as_ref() else {
+        let preview_result = self.road_preview_result.read().unwrap();
+        let Some(preview) = preview_result.as_ref() else {
             return Variant::nil();
         };
         if preview.request_id != request_id {
@@ -3349,15 +3379,18 @@ impl SimulationNode {
         ghost_enabled: bool,
         border_snap_dist_m: f32,
     ) -> Variant {
-        let Some(core) = self.try_lock_core() else {
-            return Variant::nil();
-        };
-        let (world_w, world_h) = core.heightmap.world_size();
+        let query = self.road_tool_query_snapshot.read().unwrap();
+        let (world_w, world_h) = query.terrain.world_size();
         let half_w = world_w * 0.5;
         let half_h = world_h * 0.5;
         let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
 
-        let mut pos = match core.intersect_world_surface_internal(ray_origin, ray_dir) {
+        let mut pos = match query.road_surface.raycast_visible_surface(
+            &query.region_graph,
+            &query.terrain,
+            ray_origin,
+            ray_dir,
+        ) {
             Some(hit) => hit,
             None => {
                 if ray_dir.y >= -0.001 {
@@ -3368,7 +3401,18 @@ impl SimulationNode {
                 hit.x = hit.x.clamp(-half_w, half_w);
                 hit.z = hit.z.clamp(-half_h, half_h);
                 hit = Self::road_tool_snap_to_border(hit, half_w, half_h);
-                hit.y = core.get_world_surface_height_internal(Vector2::new(hit.x, hit.z));
+                hit.y = query
+                    .road_surface
+                    .sample_visible_surface_height(
+                        &query.region_graph,
+                        &query.terrain,
+                        hit.x,
+                        hit.z,
+                    )
+                    .unwrap_or_else(|| {
+                        query.terrain.sample_visual_height_world(hit.x, hit.z)
+                            * crate::config::HEIGHT_SCALE
+                    });
                 return hit.to_variant();
             }
         };
@@ -3393,20 +3437,38 @@ impl SimulationNode {
             }
         }
 
-        if let Some(snapped_pos) = core.get_closest_network_point_internal(pos, 5.0) {
+        if let Some(snapped_pos) = crate::simulation::network::interaction::get_closest_point(
+            &query.region_graph,
+            pos,
+            5.0,
+        ) {
             return snapped_pos.to_variant();
         }
 
         if ghost_enabled && !shift_pressed {
-            use super::sim::bridge::network::get_road_ghost_snap;
-            if let Some(ghost_snap) = get_road_ghost_snap(&core, pos, 10.0, altitude_offset_m) {
+            use super::sim::bridge::network::get_road_ghost_snap_from_parts;
+            if let Some(ghost_snap) = get_road_ghost_snap_from_parts(
+                &query.region_graph,
+                &query.road_surface,
+                &query.terrain,
+                &query.ghost_snap_index,
+                pos,
+                10.0,
+                altitude_offset_m,
+            ) {
                 return ghost_snap.to_variant();
             }
         }
 
         if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
             pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
-            pos.y = core.get_world_surface_height_internal(Vector2::new(pos.x, pos.z));
+            pos.y = query
+                .road_surface
+                .sample_visible_surface_height(&query.region_graph, &query.terrain, pos.x, pos.z)
+                .unwrap_or_else(|| {
+                    query.terrain.sample_visual_height_world(pos.x, pos.z)
+                        * crate::config::HEIGHT_SCALE
+                });
             return pos.to_variant();
         }
 
@@ -3449,6 +3511,7 @@ impl SimulationNode {
     #[func]
     pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
         self.lock_core().move_network_node_internal(node_id, pos);
+        self.refresh_snapshot_from_core();
     }
 
     /// Returns all junction node positions, read from the pre-computed snapshot.
@@ -3488,14 +3551,18 @@ impl SimulationNode {
         max_dist_m: f32,
         altitude_offset_m: f32,
     ) -> Variant {
-        use super::sim::bridge::network::get_road_ghost_snap;
-        match self.try_lock_core() {
-            Some(core) => {
-                match get_road_ghost_snap(&core, world_pos, max_dist_m, altitude_offset_m) {
-                    Some(point) => point.to_variant(),
-                    None => Variant::nil(),
-                }
-            }
+        use super::sim::bridge::network::get_road_ghost_snap_from_parts;
+        let query = self.road_tool_query_snapshot.read().unwrap();
+        match get_road_ghost_snap_from_parts(
+            &query.region_graph,
+            &query.road_surface,
+            &query.terrain,
+            &query.ghost_snap_index,
+            world_pos,
+            max_dist_m,
+            altitude_offset_m,
+        ) {
+            Some(point) => point.to_variant(),
             None => Variant::nil(),
         }
     }
@@ -4207,8 +4274,22 @@ impl INode3D for SimulationNode {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            latest_road_preview: None,
+            cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
+        };
+
+        let road_preview_context =
+            Arc::new(RwLock::new(RoadPreviewWorkerContext::from_core(&core)));
+        let road_tool_query_snapshot =
+            Arc::new(RwLock::new(RoadToolQuerySnapshot::from_core(&core)));
+        let road_preview_result = Arc::new(RwLock::new(None));
+        let (road_preview_tx, road_preview_rx) = std::sync::mpsc::channel();
+        let _road_preview_thread = {
+            let context = Arc::clone(&road_preview_context);
+            let result = Arc::clone(&road_preview_result);
+            std::thread::spawn(move || {
+                run_road_preview_worker(context, result, road_preview_rx);
+            })
         };
 
         let core_arc = Arc::new(Mutex::new(core));
@@ -4227,6 +4308,10 @@ impl INode3D for SimulationNode {
             sim_thread: None,
             cmd_tx,
             cmd_rx: Some(cmd_rx),
+            road_preview_tx,
+            road_preview_context,
+            road_preview_result,
+            road_tool_query_snapshot,
             road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,

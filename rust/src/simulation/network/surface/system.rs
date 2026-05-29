@@ -19,6 +19,7 @@ fn elapsed_ms(start: Option<Instant>) -> f64 {
 }
 
 /// Ownership cache and compiler for the road-surface pipeline.
+#[derive(Clone)]
 pub struct RoadSurfaceSystem {
     pub(crate) chunk_span_m: f32,
     pub(crate) compiled_once: bool,
