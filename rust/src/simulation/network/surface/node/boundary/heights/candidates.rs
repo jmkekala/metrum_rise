@@ -413,6 +413,7 @@ impl NodeFootprintBoundaryExportSources {
     ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
         let mut candidates = Vec::new();
         candidates.extend(self.final_boundary_vertex_height_candidates_at_key(key));
+        candidates.extend(self.final_endpoint_dust_height_candidates_at_key(key));
         self.push_final_height_edge_candidates_at_key(&mut candidates, key, true);
         candidates
     }

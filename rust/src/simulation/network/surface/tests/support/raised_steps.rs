@@ -1,7 +1,10 @@
 //! Raised-step vertical-face helpers for road-surface tests.
 
 use super::*;
-use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
+use crate::simulation::network::surface::{
+    backend::{RoadVec2, RoadVec3},
+    keys as surface_keys, segments,
+};
 
 mod assertions;
 mod extraction;

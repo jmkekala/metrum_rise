@@ -6,8 +6,7 @@ use super::super::{
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     boundary::{
         ArrangementBoundaryPointKey, NodeBoundaryExportError, NodeFootprintBoundaryExportSources,
-        NodeFootprintBoundaryPoint, remove_subbudget_unsupported_numeric_boundary_vertices,
-        same_winding_boundary_point_loops_from_loop,
+        NodeFootprintBoundaryPoint, same_winding_boundary_point_loops_from_loop,
     },
 };
 use crate::simulation::network::surface::RoadSurfaceSystem;
@@ -43,22 +42,6 @@ fn push_valid_footprint_boundary_point_loops(
     emitted_loop_identities: &mut BTreeSet<Vec<ArrangementBoundaryPointKey>>,
     loops: &mut Vec<Vec<NodeFootprintBoundaryPoint>>,
 ) -> Result<(), NodeBoundaryExportError> {
-    let mut points = canonicalize_footprint_boundary_point_loop(points);
-    points = canonicalize_footprint_boundary_points_with_exact_final_support(
-        points,
-        boundary_export_sources,
-    );
-    remove_subbudget_unsupported_numeric_boundary_vertices(
-        &mut points,
-        |current_point_key, local_points| {
-            let local_points = local_points
-                .map(|point| RoadVec3::new(point.x.into(), point.y.into(), point.z.into()));
-            boundary_export_sources.has_exact_final_owned_footprint_boundary_support_at_xz_key(
-                current_point_key.xz_key(),
-            ) || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
-                > footprint_boundary_points_numeric_area_budget_m2(&local_points)
-        },
-    );
     let points = canonicalize_footprint_boundary_point_loop(points);
     if points.len() < 3 {
         return Ok(());
@@ -109,33 +92,6 @@ fn push_valid_footprint_boundary_point_loops(
         }
     }
     Ok(())
-}
-
-fn canonicalize_footprint_boundary_points_with_exact_final_support(
-    points: Vec<NodeFootprintBoundaryPoint>,
-    boundary_export_sources: &NodeFootprintBoundaryExportSources,
-) -> Vec<NodeFootprintBoundaryPoint> {
-    let mut canonicalized = Vec::with_capacity(points.len());
-    for point in points {
-        if boundary_export_sources
-            .has_exact_final_owned_footprint_boundary_support_at_point(point.point_key)
-        {
-            canonicalized.push(point);
-            continue;
-        }
-        let exact_support = boundary_export_sources
-            .exact_final_owned_footprint_boundary_points_in_same_mm(point.point_key);
-        if exact_support.is_empty() {
-            canonicalized.push(point);
-        } else {
-            canonicalized.extend(
-                exact_support
-                    .into_iter()
-                    .map(NodeFootprintBoundaryPoint::new),
-            );
-        }
-    }
-    canonicalize_footprint_boundary_point_loop(canonicalized)
 }
 
 fn footprint_boundary_xz_point_loop_from_contour(

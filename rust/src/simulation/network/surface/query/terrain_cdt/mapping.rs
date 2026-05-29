@@ -44,6 +44,22 @@ impl RoadSurfaceSystem {
                 boundary_source: boundary_source
                     .map(Self::terrain_cdt_node_footprint_boundary_segment_source),
             },
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+            } => TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                node_kind: Self::terrain_cdt_node_piece_kind(kind),
+                owner_kind: Self::terrain_cdt_band_kind(owner_kind),
+                owner_index_a: terrain_cdt_usize_to_u32(owner_index_a),
+                owner_index_b: terrain_cdt_usize_to_u32(owner_index_b),
+                boundary_source: boundary_source
+                    .map(Self::terrain_cdt_node_footprint_boundary_segment_source),
+            },
         }
     }
 

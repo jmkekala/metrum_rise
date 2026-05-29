@@ -152,6 +152,25 @@ impl RoadSurfaceSystem {
                 );
                 dump.push('}');
             }
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+            } => {
+                let _ = write!(
+                    dump,
+                    "{{\"source_kind\":\"node_same_material_boundary_handoff\",\"node_id\":{},\"node_kind\":\"{:?}\",\"owner_kind\":\"{:?}\",\"owner_index_a\":{},\"owner_index_b\":{},\"boundary_source\":",
+                    node_id, kind, owner_kind, owner_index_a, owner_index_b
+                );
+                Self::append_node_footprint_boundary_segment_source_debug_literal(
+                    dump,
+                    boundary_source,
+                );
+                dump.push('}');
+            }
         }
     }
 

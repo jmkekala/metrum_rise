@@ -407,7 +407,6 @@ fn source_authorized_contour_points(
     }
     let source_keys = material_transition_constraint_point_keys(region);
     let contour = canonicalize_contour_source_endpoint_dust(contour, &source_keys);
-    let protected_original_keys = original_contour_vertex_keys(&contour);
     let mut output = Vec::with_capacity(contour.len());
     for index in 0..contour.len() {
         let start = contour[index];
@@ -417,40 +416,7 @@ fn source_authorized_contour_points(
             region, start, end,
         ));
     }
-    remove_subbudget_non_source_contour_points(output, &source_keys, &protected_original_keys)
-}
-
-fn canonicalize_contour_source_endpoint_dust(
-    contour: &NodeOverlayContour,
-    source_keys: &BTreeSet<SurfaceXzKey>,
-) -> NodeOverlayContour {
-    contour
-        .iter()
-        .copied()
-        .map(|point| {
-            let key = SurfaceXzKey::from_overlay_point(point);
-            if source_keys.contains(&key) {
-                return point;
-            }
-            let mut candidates = source_keys
-                .iter()
-                .copied()
-                .filter(|source_key| {
-                    let (source_x, source_z) = source_key.raw_tuple();
-                    let (x, z) = key.raw_tuple();
-                    (source_x - x).abs() <= SOURCE_ENDPOINT_DUST_KEYS
-                        && (source_z - z).abs() <= SOURCE_ENDPOINT_DUST_KEYS
-                })
-                .collect::<Vec<_>>();
-            candidates.sort_unstable();
-            candidates.dedup();
-            let [source_key] = candidates.as_slice() else {
-                return point;
-            };
-            let point = source_key.to_road_xz();
-            [point.x, point.y]
-        })
-        .collect()
+    output
 }
 
 fn material_transition_constraint_point_keys(
@@ -462,14 +428,6 @@ fn material_transition_constraint_point_keys(
         .filter(|constraint| constraint.is_material_transition)
         .flat_map(|constraint| [constraint.start_xz, constraint.end_xz])
         .map(|point_xz| SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point_xz)))
-        .collect()
-}
-
-fn original_contour_vertex_keys(contour: &NodeOverlayContour) -> BTreeSet<SurfaceXzKey> {
-    contour
-        .iter()
-        .copied()
-        .map(SurfaceXzKey::from_overlay_point)
         .collect()
 }
 
@@ -518,68 +476,37 @@ fn source_authorized_points_for_contour_edge(
         .collect()
 }
 
-fn remove_subbudget_non_source_contour_points(
-    mut points: NodeOverlayContour,
+fn canonicalize_contour_source_endpoint_dust(
+    contour: &NodeOverlayContour,
     source_keys: &BTreeSet<SurfaceXzKey>,
-    protected_original_keys: &BTreeSet<SurfaceXzKey>,
 ) -> NodeOverlayContour {
-    loop {
-        if points.len() < 3 {
-            return points;
-        }
-        let mut removed = false;
-        for index in 0..points.len() {
-            let previous = if index == 0 {
-                points.len() - 1
-            } else {
-                index - 1
-            };
-            let next = (index + 1) % points.len();
-            let current_key = SurfaceXzKey::from_overlay_point(points[index]);
-            let previous_key = SurfaceXzKey::from_overlay_point(points[previous]);
-            let next_key = SurfaceXzKey::from_overlay_point(points[next]);
-            if source_keys.contains(&current_key)
-                || protected_original_keys.contains(&current_key)
-                || (!source_keys.contains(&previous_key) && !source_keys.contains(&next_key))
-            {
-                continue;
-            }
-            let local_points = [points[previous], points[index], points[next]];
-            if local_triangle_area_m2(local_points)
-                > local_overlay_numeric_area_budget_m2(local_points)
-            {
-                continue;
-            }
-            points.remove(index);
-            removed = true;
-            break;
-        }
-        if !removed {
-            return points;
-        }
-    }
-}
-
-fn local_triangle_area_m2(points: [NodeOverlayPoint; 3]) -> f32 {
-    (((points[0][0] * points[1][1] - points[1][0] * points[0][1])
-        + (points[1][0] * points[2][1] - points[2][0] * points[1][1])
-        + (points[2][0] * points[0][1] - points[0][0] * points[2][1]))
-        * 0.5)
-        .abs() as f32
-}
-
-fn local_overlay_numeric_area_budget_m2(points: [NodeOverlayPoint; 3]) -> f32 {
-    let perimeter_m = points
+    contour
         .iter()
-        .zip(points.iter().cycle().skip(1))
-        .take(points.len())
-        .map(|(start, end)| {
-            let dx = start[0] - end[0];
-            let dz = start[1] - end[1];
-            (dx * dx + dz * dz).sqrt() as f32
+        .copied()
+        .map(|point| {
+            let key = SurfaceXzKey::from_overlay_point(point);
+            if source_keys.contains(&key) {
+                return point;
+            }
+            let mut candidates = source_keys
+                .iter()
+                .copied()
+                .filter(|source_key| {
+                    let (source_x, source_z) = source_key.raw_tuple();
+                    let (x, z) = key.raw_tuple();
+                    (source_x - x).abs() <= SOURCE_ENDPOINT_DUST_KEYS
+                        && (source_z - z).abs() <= SOURCE_ENDPOINT_DUST_KEYS
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_unstable();
+            candidates.dedup();
+            let [source_key] = candidates.as_slice() else {
+                return point;
+            };
+            let point = source_key.to_road_xz();
+            [point.x, point.y]
         })
-        .sum::<f32>();
-    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
+        .collect()
 }
 
 fn heighted_shape_area_m2(shape: &NodeHeightedShape) -> f32 {

@@ -7,7 +7,7 @@ use self::{
     boundary::{
         ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
         NodeFootprintBoundaryExportSources, arrangement_boundary_point_to_world,
-        boundary_points_numeric_area_budget_m2, boundary_segment_parameter_xz,
+        boundary_points_numeric_area_budget_m2,
         node_earthwork_boundary_segments_from_footprint_loops,
     },
     input::NodeInputExtractionError,

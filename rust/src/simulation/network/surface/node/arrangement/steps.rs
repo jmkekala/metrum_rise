@@ -1,15 +1,23 @@
 //! Explicit vertical-step authority extraction from canonical arrangement edges.
 
-use super::super::band_semantics::{ordered_raised_step_kinds, raised_step_band_rank};
+use super::super::band_semantics::{
+    ordered_raised_step_kinds, raised_step_band_rank, raised_step_kinds_can_contact,
+};
+use super::super::keys::{SurfaceSegmentParameter, SurfaceXzKey};
+use super::super::segments::{
+    exact_line_parameter, interpolate_height_i64, interpolate_key,
+    key_collinear_with_overlay_grid_segment, overlay_segment_parameter, segment_parameter_key,
+};
 use super::seams::{
     NodeRegionSeamConstraint, owners_for_material_seam_constraint, seam_constraint_covers_edge,
     seam_constraint_covers_key, seam_constraint_matches_owner_pair,
     seam_constraint_opposite_owner_for_edge_owner,
 };
 use super::{
-    NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner, NodeSeamSource,
+    NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner, NodeOwnedRegionId,
+    NodeSeamSource,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod authority;
 mod extraction;

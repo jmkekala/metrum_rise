@@ -153,6 +153,178 @@ fn explicit_vertical_step_segments_do_not_derive_steps_from_face_overlap() {
 }
 
 #[test]
+fn explicit_vertical_step_segments_use_exposed_owned_edge_overlap() {
+    let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+    let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let carriageway_height = height_field_id(RoadSurfaceBandKind::Carriageway, 2);
+    let curb_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+    let carriageway_start = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, 0.0),
+            0.0,
+            [carriageway],
+            carriageway_height,
+            [NodeSeamSource::AsphaltBoundary { owner_index: 2 }],
+        )
+        .expect("test vertex is legal");
+    let carriageway_end = arrangement
+        .insert_vertex(
+            RoadVec2::new(4.0, 0.0),
+            0.0,
+            [carriageway],
+            carriageway_height,
+            [NodeSeamSource::AsphaltBoundary { owner_index: 2 }],
+        )
+        .expect("test vertex is legal");
+    let curb_start = arrangement
+        .insert_vertex(
+            RoadVec2::new(1.0, 0.0),
+            0.12,
+            [curb],
+            curb_height,
+            [NodeSeamSource::RaisedStepContact { owner_index: 1 }],
+        )
+        .expect("test vertex is legal");
+    let curb_end = arrangement
+        .insert_vertex(
+            RoadVec2::new(3.0, 0.0),
+            0.12,
+            [curb],
+            curb_height,
+            [NodeSeamSource::RaisedStepContact { owner_index: 1 }],
+        )
+        .expect("test vertex is legal");
+
+    arrangement.push_edge(
+        carriageway_start,
+        carriageway_end,
+        carriageway,
+        carriageway_height,
+        None,
+        None,
+        true,
+        false,
+        false,
+        NodeSeamSource::AsphaltBoundary { owner_index: 2 },
+        Vec::new(),
+    );
+    arrangement.push_edge(
+        curb_start,
+        curb_end,
+        curb,
+        curb_height,
+        None,
+        None,
+        true,
+        false,
+        false,
+        NodeSeamSource::RaisedStepContact { owner_index: 1 },
+        Vec::new(),
+    );
+
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+        NodeArrangementKey::from_point(RoadVec2::new(3.0, 0.0)),
+        carriageway,
+        curb,
+    )
+    .expect("test segment is non-degenerate");
+
+    assert!(
+        arrangement
+            .explicit_vertical_step_segments()
+            .contains(&expected)
+    );
+}
+
+#[test]
+fn explicit_vertical_step_segments_use_authorized_final_boundary_overlap() {
+    let carriageway = owner(RoadSurfaceBandKind::Carriageway, 14);
+    let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 10);
+    let carriageway_height = height_field_id(RoadSurfaceBandKind::Carriageway, 14);
+    let curb_height = height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 10);
+    let start = RoadVec2::new(0.0, 0.0);
+    let lower_end_point = RoadVec2::new(1.000001, 0.0);
+    let raised_end_point = RoadVec2::new(1.0, 0.0);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 96,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 10 },
+        owner: Some(carriageway),
+        opposite_owner: Some(curb),
+        constrains_shared_height: false,
+        is_material_transition: true,
+        start_xz: start,
+        end_xz: lower_end_point,
+    };
+    let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::JunctionN);
+    let carriageway_region = arrangement.push_region(
+        carriageway,
+        carriageway_height,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        vec![seam.clone()],
+    );
+    let curb_region = arrangement.push_region(
+        curb,
+        curb_height,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        vec![seam],
+    );
+    let lower_start = arrangement
+        .insert_vertex(start, 0.0, [carriageway], carriageway_height, [])
+        .expect("lower start vertex is legal");
+    let lower_end = arrangement
+        .insert_vertex(lower_end_point, 0.0, [carriageway], carriageway_height, [])
+        .expect("lower end vertex is legal");
+    let lower_apex = arrangement
+        .insert_vertex(
+            RoadVec2::new(0.0, -1.0),
+            0.0,
+            [carriageway],
+            carriageway_height,
+            [],
+        )
+        .expect("lower apex vertex is legal");
+    arrangement.push_face(
+        carriageway_region,
+        carriageway,
+        [lower_start, lower_end, lower_apex],
+    );
+
+    let raised_start = arrangement
+        .insert_vertex(start, 0.12, [curb], curb_height, [])
+        .expect("raised start vertex is legal");
+    let raised_end = arrangement
+        .insert_vertex(raised_end_point, 0.12, [curb], curb_height, [])
+        .expect("raised end vertex is legal");
+    let raised_apex = arrangement
+        .insert_vertex(RoadVec2::new(0.0, 1.0), 0.12, [curb], curb_height, [])
+        .expect("raised apex vertex is legal");
+    arrangement.push_face(curb_region, curb, [raised_start, raised_apex, raised_end]);
+
+    let expected = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(start),
+        NodeArrangementKey::from_point(raised_end_point),
+        carriageway,
+        curb,
+    )
+    .expect("test segment is non-degenerate");
+
+    assert!(
+        arrangement
+            .explicit_vertical_step_segments()
+            .contains(&expected)
+    );
+}
+
+#[test]
 fn explicit_vertical_step_segments_require_source_for_same_kind_junction_edge() {
     let lower = owner(RoadSurfaceBandKind::CurbOrShoulder, 0);
     let raised = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);

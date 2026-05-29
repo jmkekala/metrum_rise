@@ -13,7 +13,8 @@ use super::{
     backend,
     band_semantics::ordered_raised_step_kinds,
     height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightAuthoritySource},
-    keys::{SurfaceHeightMmKey, SurfaceXzKey},
+    keys::{SurfaceHeightMmKey, SurfaceSegmentParameter, SurfaceXzKey},
+    segments,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -122,6 +123,50 @@ struct DebugVerticalFaceSpanEdges {
 struct DebugExpectedVerticalStep {
     lower: DebugTopBoundaryEdge,
     upper: DebugTopBoundaryEdge,
+}
+
+struct DebugRaisedStepCoverageReport {
+    required_interval_count: usize,
+    required_gap_count: usize,
+    missing_length_m: f32,
+    samples: Vec<DebugRaisedStepCoverageGap>,
+}
+
+struct DebugRaisedStepCoverageGap {
+    lower: DebugTopBoundaryEdge,
+    raised: DebugTopBoundaryEdge,
+    missing_start_t: f64,
+    missing_end_t: f64,
+    lower_start: backend::RoadVec3,
+    lower_end: backend::RoadVec3,
+    raised_start: backend::RoadVec3,
+    raised_end: backend::RoadVec3,
+    missing_length_m: f32,
+    source: DebugRaisedStepCoverageSource,
+    nearest_face: Option<DebugNearestRaisedStepFace>,
+}
+
+enum DebugRaisedStepCoverageSource {
+    Canonical {
+        explicit_vertical_step_index: usize,
+        segment: NodeExplicitVerticalStepSegment,
+    },
+    CanonicalSameMaterialHandoff {
+        explicit_vertical_step_index: usize,
+        segment: NodeExplicitVerticalStepSegment,
+        lower_owner: NodeBandOwner,
+        raised_owner: NodeBandOwner,
+    },
+    FinalTopBoundaryPair,
+}
+
+struct DebugNearestRaisedStepFace {
+    face_index: usize,
+    distance_m: f32,
+    lower_start: backend::RoadVec3,
+    lower_end: backend::RoadVec3,
+    upper_start: backend::RoadVec3,
+    upper_end: backend::RoadVec3,
 }
 
 struct DebugCanonicalVerticalStep {

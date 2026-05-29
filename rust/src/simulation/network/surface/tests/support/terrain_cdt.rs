@@ -225,6 +225,31 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_cdt_boundar
             assert_eq!(source.section_range_codes(), [-1, -1]);
             assert_eq!(source.s_range_values(), [-1.0, -1.0]);
         }
+        TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+            owner_index_a,
+            owner_index_b,
+            boundary_source,
+            ..
+        } => {
+            assert_eq!(source.source_kind_code(), 2);
+            assert!(source.primary_id_code() >= 0);
+            assert!(source.node_kind_code() >= 0);
+            assert!(source.owner_kind_code() >= 0);
+            assert!(
+                boundary_source.is_some(),
+                "{case_name}: production same-material node CDT handoff must preserve endpoint boundary provenance"
+            );
+            assert_eq!(
+                source.owner_index_code(),
+                i32::try_from(owner_index_a).unwrap()
+            );
+            assert!(owner_index_b >= owner_index_a);
+            assert_eq!(source.edge_class_code(), -1);
+            assert_eq!(source.support_policy_code(), -1);
+            assert_eq!(source.role_code(), -1);
+            assert_eq!(source.section_range_codes(), [-1, -1]);
+            assert_eq!(source.s_range_values(), [-1.0, -1.0]);
+        }
         TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => {
             panic!("{case_name}: production terrain CDT export must not use synthetic sources")
         }

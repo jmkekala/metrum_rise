@@ -56,6 +56,375 @@ fn logged_flat_three_way_right_angle_junction_compiles_explicit_raised_steps() {
 }
 
 #[test]
+fn logged_flat_three_way_junction_keeps_all_height_jumps_faced() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-102.528061, 0.0, -37.261856),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(
+        Vector3::new(-46.854595, 0.0, -30.163692),
+        NodeType::Junction,
+    );
+    let east = graph.add_node(Vector3::new(18.217957, 0.0, -21.867180), NodeType::Junction);
+    let south = graph.add_node(
+        Vector3::new(-39.266411, 0.0, -89.681923),
+        NodeType::Junction,
+    );
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-102.528061, 0.0, -37.261856),
+            Vector3::new(-46.854595, 0.0, -30.163692),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        vec![
+            Vector3::new(-46.854595, 0.0, -30.163692),
+            Vector3::new(-39.266411, 0.0, -89.681923),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-46.854595, 0.0, -30.163692),
+            Vector3::new(18.217957, 0.0, -21.867180),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+}
+
+#[test]
+fn regenerated_flat_three_way_junction_keeps_all_height_jumps_faced() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-72.868027, 0.0, -49.521713),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(
+        Vector3::new(-21.145235, 0.0, -24.091516),
+        NodeType::Junction,
+    );
+    let north = graph.add_node(Vector3::new(-43.206322, 0.0, 20.778391), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(32.258186, 0.0, 2.164986), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-72.868027, 0.0, -49.521713),
+            Vector3::new(-21.145235, 0.0, -24.091516),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        north,
+        vec![
+            Vector3::new(-21.145235, 0.0, -24.091516),
+            Vector3::new(-43.206322, 0.0, 20.778391),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-21.145235, 0.0, -24.091516),
+            Vector3::new(32.258186, 0.0, 2.164986),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+}
+
+#[test]
+fn logged_curved_flat_three_way_junction_does_not_emit_orphan_raised_step_caps() {
+    let mut graph = RegionGraph::new();
+    let northwest = graph.add_node(
+        Vector3::new(-40.449200, 0.0, -22.386183),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(
+        Vector3::new(-21.853373, 0.0, -49.000950),
+        NodeType::Junction,
+    );
+    let south = graph.add_node(
+        Vector3::new(-44.080544, 0.0, -111.136162),
+        NodeType::Junction,
+    );
+    let southeast = graph.add_node(Vector3::new(-0.356785, 0.0, -79.767349), NodeType::Junction);
+    graph.add_edge(test_edge(
+        northwest,
+        center,
+        vec![
+            Vector3::new(-40.449200, 0.0, -22.386183),
+            Vector3::new(-22.045769, 0.0, -48.725590),
+            Vector3::new(-21.853373, 0.0, -49.000950),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        vec![
+            Vector3::new(-21.853373, 0.0, -49.000950),
+            Vector3::new(-22.102993, 0.0, -49.698757),
+            Vector3::new(-44.080544, 0.0, -111.136162),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        southeast,
+        vec![
+            Vector3::new(-21.853373, 0.0, -49.000950),
+            Vector3::new(-21.576977, 0.0, -49.396534),
+            Vector3::new(-0.356785, 0.0, -79.767349),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+}
+
+#[test]
+fn regenerated_curved_flat_three_way_junction_filters_curb_width_orphan_caps() {
+    let mut graph = RegionGraph::new();
+    let southwest = graph.add_node(
+        Vector3::new(-73.806625, 0.0, -50.709042),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(Vector3::new(3.799001, 0.0, -32.290504), NodeType::Junction);
+    let southeast = graph.add_node(
+        Vector3::new(19.964146, 0.0, -100.398422),
+        NodeType::Junction,
+    );
+    let east = graph.add_node(Vector3::new(99.692421, 0.0, -9.531635), NodeType::Junction);
+    graph.add_edge(test_edge(
+        southwest,
+        center,
+        road_points_from_json(include_str!("../data/logged_flat_three_way_cap_edge0.json")),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        southeast,
+        road_points_from_json(include_str!("../data/logged_flat_three_way_cap_edge1.json")),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        road_points_from_json(include_str!("../data/logged_flat_three_way_cap_edge2.json")),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0, 1, 2]);
+    let json = dump
+        .trim_start_matches("ROAD_GEOMETRY_DUMP_BEGIN")
+        .trim_end_matches("ROAD_GEOMETRY_DUMP_END")
+        .trim();
+    let parsed: serde_json::Value =
+        serde_json::from_str(json).expect("road geometry debug dump must parse");
+    let center_node = parsed["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|node| node["node_id"] == center))
+        .expect("logged center JunctionN must be present in debug dump");
+    let details = &center_node["raised_step_face_details"];
+    assert_eq!(
+        details["missing_required_face_count"], 0,
+        "logged JunctionN must not miss required raised-step faces; samples={:#?}",
+        details["expected_raised_steps"]
+    );
+    assert_eq!(
+        details["required_gap_count"], 0,
+        "logged JunctionN must not leave final raised-step coverage gaps; samples={:#?}",
+        details["required_gap_samples"],
+    );
+    assert!(
+        details["missing_length_m"]
+            .as_f64()
+            .unwrap_or(f64::INFINITY)
+            <= f64::EPSILON
+    );
+    let problem_faces = details["faces"]
+        .as_array()
+        .expect("raised-step details must include faces")
+        .iter()
+        .filter(|face| {
+            face["problem"].as_bool().unwrap_or(false)
+                || face["status"].as_str().is_some_and(|status| status != "ok")
+        })
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        problem_faces.is_empty(),
+        "JunctionN raised-step debug must not emit orphan/problem faces; samples={problem_faces:#?}"
+    );
+    assert_eq!(details["face_problem_count"], 0);
+    assert_eq!(details["problem_count"], 0);
+    assert!(
+        center_node["material_footprint_coverage"]["suspicious_missing_shape_count"] == 0,
+        "logged JunctionN top-footprint holes must not leave visible boundary gaps; coverage={:#?}",
+        center_node["material_footprint_coverage"]
+    );
+    assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+    assert_no_missing_top_footprint_shapes_touch_boundaries(piece);
+    assert_surface_terrain_cdt_contract(
+        "logged flat 3-way JunctionN",
+        &surface,
+        &graph,
+        &terrain,
+        (-16.0, -52.0, 24.0, -16.0),
+        false,
+    );
+}
+
+#[test]
+fn logged_flat_four_way_junction_does_not_emit_curb_width_orphan_caps() {
+    let mut graph = RegionGraph::new();
+    let southwest = graph.add_node(
+        Vector3::new(-94.740189, 0.0, -33.348091),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(Vector3::new(-39.109142, 0.0, 1.256486), NodeType::Junction);
+    let southeast = graph.add_node(Vector3::new(-7.418081, 0.0, -49.691299), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(36.835907, 0.0, 48.497128), NodeType::Junction);
+    let northwest = graph.add_node(Vector3::new(-81.363907, 0.0, 69.186852), NodeType::Junction);
+    graph.add_edge(test_edge(
+        southwest,
+        center,
+        vec![
+            Vector3::new(-94.740189, 0.0, -33.348091),
+            Vector3::new(-39.109142, 0.0, 1.256486),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        southeast,
+        vec![
+            Vector3::new(-39.109142, 0.0, 1.256486),
+            Vector3::new(-7.418081, 0.0, -49.691299),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-39.109142, 0.0, 1.256486),
+            Vector3::new(36.835907, 0.0, 48.497128),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        northwest,
+        vec![
+            Vector3::new(-39.109142, 0.0, 1.256486),
+            Vector3::new(-81.363907, 0.0, 69.186852),
+        ],
+        14.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+}
+
+#[test]
 fn flat_bend_angle_matrix_compiles_conflict_first_owned_regions() {
     for angle_degrees in GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES {
         compile_generated_flat_bend(

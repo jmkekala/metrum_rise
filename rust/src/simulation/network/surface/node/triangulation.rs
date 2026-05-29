@@ -4,8 +4,8 @@ use super::arrangement::{
     NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
     NodeBandOwner, NodeExplicitVerticalStepSegment, NodeOwnedRegion,
 };
-use super::backend::RoadVec3;
-use super::height::NodeGradeVertexAuthority;
+use super::backend::{RoadVec2, RoadVec3};
+use super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::indices::normalized_vertex_edge;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::{
@@ -130,6 +130,10 @@ impl NodeTriangulationPointKey {
             x_mm: key.x_key(),
             z_mm: key.z_key(),
         }
+    }
+
+    fn road_xz(self) -> RoadVec2 {
+        SurfaceXzKey::from_raw_keys(self.x_mm, self.z_mm).to_road_xz()
     }
 }
 

@@ -242,7 +242,6 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_node_pieces.remove(&node_id);
             }
         }
-
         let dirty_surface_chunks = self.sorted_chunk_keys(&self.dirty_surface_chunks);
         let dirty_terrain_chunks = self.sorted_chunk_keys(&self.dirty_terrain_chunks);
         self.rebuild_surface_chunk_cache(&dirty_surface_chunks);
@@ -302,7 +301,6 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_node_pieces.remove(&node_id);
             }
         }
-
         let all_surface_chunks = self.collect_all_chunks(ChunkCacheKind::Surface);
         let all_earthwork_chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
         self.rebuild_surface_chunk_cache(&all_surface_chunks);

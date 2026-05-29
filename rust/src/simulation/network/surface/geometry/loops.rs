@@ -131,7 +131,19 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let triangles_world = vec![front[0], front[1]];
+        let triangles_world = front
+            .into_iter()
+            .filter(|triangle| {
+                (triangle[1] - triangle[0])
+                    .cross(triangle[2] - triangle[0])
+                    .length()
+                    * 0.5
+                    > f64::from(NODE_OVERLAY_MIN_AREA_M2)
+            })
+            .collect::<Vec<_>>();
+        if triangles_world.is_empty() {
+            return None;
+        }
         Some(RoadSurfaceVisualPolygon {
             points_world: points_world.into_iter().collect(),
             triangles_world,

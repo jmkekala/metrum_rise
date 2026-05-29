@@ -13,7 +13,7 @@ mod top_regions;
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
-        footprint_shapes: &super::NodeOverlayShapes,
+        ownership_footprint_shapes: &super::NodeOverlayShapes,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
         reject_unauthorized_arrangement_height_splits(arrangement)?;
         let mut node_grade_authorities = arrangement
@@ -70,7 +70,7 @@ impl RoadSurfaceSystem {
         Self::retain_raised_step_faces_with_owned_top_support(
             &mut raised_step_faces,
             &owned_regions,
-            &node_top_surface_sources,
+            &explicit_vertical_step_segments,
         );
         let mut raised_step_faces = raised_step_faces
             .into_iter()
@@ -89,9 +89,14 @@ impl RoadSurfaceSystem {
         {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
+        let mut final_footprint_shapes = ownership_footprint_shapes.clone();
+        Self::sort_overlay_shapes(&mut final_footprint_shapes);
+        if final_footprint_shapes.is_empty() {
+            return Err(NodeBoundaryExportError::EmptyOuterBoundary);
+        }
         let footprint_boundary_point_loops =
             Self::footprint_boundary_point_loops_from_footprint_shapes(
-                footprint_shapes,
+                &final_footprint_shapes,
                 &mut boundary_export_sources,
             )?;
         let mut earthwork_boundary_segments =

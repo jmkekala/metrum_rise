@@ -1,6 +1,7 @@
 //! Node-piece top-surface coverage assertions.
 
 use super::*;
+use crate::simulation::network::surface::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;
 
 pub(in crate::simulation::network::surface::tests) fn assert_node_top_covers_footprint(
     piece: &RoadSurfaceVisualNodePiece,
@@ -12,6 +13,92 @@ pub(in crate::simulation::network::surface::tests) fn assert_node_top_covers_foo
         "node top surfaces must exactly cover the canonical footprint; kind={:?} missing_area={missing_area_m2:.6} extra_area={extra_area_m2:.6} budget={budget_m2:.6} missing_shapes={missing_shapes:?} extra_shapes={extra_shapes:?}",
         piece.kind
     );
+}
+
+pub(in crate::simulation::network::surface::tests) fn assert_no_missing_top_footprint_shapes_touch_boundaries(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
+    let (missing_area_m2, _extra_area_m2, budget_m2, missing_shapes, _extra_shapes) =
+        node_top_coverage_details_m2(piece);
+    let top_edges = test_owned_top_boundary_edges(piece);
+    let touching_missing_shapes = missing_shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, shape)| {
+            missing_footprint_shape_is_suspicious(shape, &top_edges).then_some((
+                index,
+                overlay_shape_thin_width_m(shape),
+                shape,
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        touching_missing_shapes.is_empty(),
+        "node top-surface footprint holes must not leave visible road/curb/sidewalk boundary gaps; kind={:?} missing_area={missing_area_m2:.8} budget={budget_m2:.8} touching_missing_shapes={touching_missing_shapes:?}",
+        piece.kind
+    );
+}
+
+fn missing_footprint_shape_is_suspicious(
+    shape: &NodeOverlayShape,
+    top_edges: &[TestTopBoundaryEdge],
+) -> bool {
+    overlay_shape_touches_test_top_boundary(shape, top_edges)
+        && RoadSurfaceSystem::overlay_shape_area_m2(shape) > f32::EPSILON
+        && !missing_footprint_shape_is_canonical_numeric_dust(shape)
+}
+
+fn missing_footprint_shape_is_canonical_numeric_dust(shape: &NodeOverlayShape) -> bool {
+    overlay_shape_thin_width_m(shape) <= NODE_OVERLAY_NUMERIC_DUST_WIDTH_M
+        && RoadSurfaceSystem::overlay_shape_area_m2(shape)
+            <= overlay_shape_numeric_area_budget_m2(shape)
+}
+
+fn overlay_shape_numeric_area_budget_m2(shape: &NodeOverlayShape) -> f32 {
+    let perimeter_m = shape
+        .iter()
+        .map(|contour| RoadSurfaceSystem::overlay_contour_perimeter_m(contour))
+        .sum::<f32>();
+    let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
+    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
+}
+
+fn overlay_shape_thin_width_m(shape: &NodeOverlayShape) -> f32 {
+    let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
+    let perimeter_m = shape
+        .iter()
+        .map(|contour| RoadSurfaceSystem::overlay_contour_perimeter_m(contour))
+        .sum::<f32>();
+    if perimeter_m <= f32::EPSILON {
+        return 0.0;
+    }
+    2.0 * area_m2 / perimeter_m
+}
+
+fn overlay_shape_touches_test_top_boundary(
+    shape: &NodeOverlayShape,
+    top_edges: &[TestTopBoundaryEdge],
+) -> bool {
+    shape
+        .iter()
+        .flat_map(|contour| contour.iter().copied())
+        .any(|point| {
+            top_edges.iter().copied().any(|edge| {
+                let point = TestRenderVertexKey::from_point(RoadVec3::new(
+                    point[0],
+                    edge.avg_y_m,
+                    point[1],
+                ));
+                let start = TestRenderVertexKey::from_point(edge.start);
+                let end = TestRenderVertexKey::from_point(edge.end);
+                test_boundary_segment_parameter_xz(point, start, end).is_some_and(
+                    |(numerator, denominator)| {
+                        let tolerance = (denominator / 1_000_000).max(1);
+                        numerator >= -tolerance && numerator <= denominator + tolerance
+                    },
+                )
+            })
+        })
 }
 
 pub(in crate::simulation::network::surface::tests) fn assert_material_triangles_do_not_overlap(

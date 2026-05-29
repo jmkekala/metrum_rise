@@ -32,6 +32,10 @@ impl RoadSurfaceSystem {
                         RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                             owner_kind,
                             ..
+                        }
+                        | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                            owner_kind,
+                            ..
                         } => terrain_clip_edge_kind_for_band(owner_kind),
                         RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
                             RoadSurfaceTerrainClipEdgeKind::FootprintBoundary

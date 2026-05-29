@@ -253,6 +253,7 @@ func _load_texture(path: String) -> Texture2D:
 
 static var _road_mat: ShaderMaterial = null
 static var _curb_mat: StandardMaterial3D = null
+static var _raised_step_mat: StandardMaterial3D = null
 static var _concrete_mat: ShaderMaterial = null
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
@@ -282,6 +283,14 @@ func update_main_mesh():
 		_curb_mat.roughness = 1.0
 		_curb_mat.metallic = 0.0
 		_curb_mat.cull_mode = BaseMaterial3D.CULL_BACK
+
+	if _raised_step_mat == null:
+		_raised_step_mat = StandardMaterial3D.new()
+		_raised_step_mat.vertex_color_use_as_albedo = true
+		_raised_step_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_raised_step_mat.roughness = 1.0
+		_raised_step_mat.metallic = 0.0
+		_raised_step_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	
 	if _marking_mat == null:
 		_marking_mat = StandardMaterial3D.new()
@@ -340,7 +349,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.raised_step_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.raised_step_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_curb_mat)
+		surface_map.push_back(_raised_step_mat)
 
 	# Sidewalk base
 	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:

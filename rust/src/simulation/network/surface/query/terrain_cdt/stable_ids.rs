@@ -106,6 +106,9 @@ impl RoadSurfaceSystem {
             RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. } => {
                 (1_u64 << 63) | u64::from(node_id)
             }
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id, .. } => {
+                (1_u64 << 63) | u64::from(node_id)
+            }
         }
     }
 }

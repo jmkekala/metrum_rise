@@ -5,13 +5,21 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     arrangement, height::NodeGradeVertexAuthority,
 };
-use crate::simulation::network::types::EdgeClass;
+use crate::simulation::network::{
+    surface::band_semantics::ordered_raised_step_kinds, types::EdgeClass,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceVerticalFaceSource {
     CanonicalStep {
         explicit_vertical_step_index: usize,
         segment: arrangement::NodeExplicitVerticalStepSegment,
+    },
+    CanonicalStepSameMaterialHandoff {
+        explicit_vertical_step_index: usize,
+        segment: arrangement::NodeExplicitVerticalStepSegment,
+        lower_owner: arrangement::NodeBandOwner,
+        raised_owner: arrangement::NodeBandOwner,
     },
 }
 
@@ -21,6 +29,10 @@ impl RoadSurfaceVerticalFaceSource {
             Self::CanonicalStep {
                 explicit_vertical_step_index,
                 ..
+            }
+            | Self::CanonicalStepSameMaterialHandoff {
+                explicit_vertical_step_index,
+                ..
             } => Some(explicit_vertical_step_index),
         }
     }
@@ -28,6 +40,30 @@ impl RoadSurfaceVerticalFaceSource {
     pub(crate) fn segment(self) -> arrangement::NodeExplicitVerticalStepSegment {
         match self {
             Self::CanonicalStep { segment, .. } => segment,
+            Self::CanonicalStepSameMaterialHandoff { segment, .. } => segment,
+        }
+    }
+
+    pub(crate) fn lower_and_raised_owners(
+        self,
+    ) -> Option<(arrangement::NodeBandOwner, arrangement::NodeBandOwner)> {
+        match self {
+            Self::CanonicalStep { segment, .. } => {
+                let owner = segment.owner();
+                let opposite_owner = segment.opposite_owner();
+                let (lower_kind, _) =
+                    ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
+                Some(if owner.kind() == lower_kind {
+                    (owner, opposite_owner)
+                } else {
+                    (opposite_owner, owner)
+                })
+            }
+            Self::CanonicalStepSameMaterialHandoff {
+                lower_owner,
+                raised_owner,
+                ..
+            } => Some((lower_owner, raised_owner)),
         }
     }
 
@@ -43,6 +79,20 @@ impl RoadSurfaceVerticalFaceSource {
                 explicit_vertical_step_index,
                 segment,
             } => (0, segment, Some(explicit_vertical_step_index)),
+            Self::CanonicalStepSameMaterialHandoff {
+                explicit_vertical_step_index,
+                segment,
+                lower_owner,
+                raised_owner,
+            } => (
+                1,
+                segment,
+                Some(
+                    explicit_vertical_step_index
+                        ^ lower_owner.owner_index()
+                        ^ raised_owner.owner_index(),
+                ),
+            ),
         }
     }
 }

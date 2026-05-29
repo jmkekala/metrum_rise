@@ -12,42 +12,6 @@ pub(in crate::simulation::network::surface::tests) fn explicit_vertical_step_seg
     dx * dx + dz * dz
 }
 
-pub(in crate::simulation::network::surface::tests) fn polygon_boundary_overlaps_edge_at_height_for_test(
-    polygon: &RoadSurfaceVisualPolygon,
-    edge: [RoadVec3; 2],
-) -> bool {
-    if !polygon.triangles_world.is_empty() {
-        let mut triangle_edges = BTreeMap::<TestRenderEdgeKey, (usize, [RoadVec3; 2])>::new();
-        for triangle in &polygon.triangles_world {
-            for edge_index in 0..3 {
-                let start = triangle[edge_index];
-                let end = triangle[(edge_index + 1) % 3];
-                let Some(key) = TestRenderEdgeKey::normalized(start, end) else {
-                    continue;
-                };
-                triangle_edges
-                    .entry(key)
-                    .and_modify(|entry| entry.0 += 1)
-                    .or_insert((1, [start, end]));
-            }
-        }
-        return triangle_edges
-            .into_values()
-            .filter_map(|(count, boundary_edge)| (count == 1).then_some(boundary_edge))
-            .any(|boundary_edge| test_boundary_edge_contains_edge_at_height(boundary_edge, edge));
-    }
-
-    let points = &polygon.points_world;
-    if points.len() < 2 {
-        return false;
-    }
-    (0..points.len()).any(|index| {
-        let start = points[index];
-        let end = points[(index + 1) % points.len()];
-        test_boundary_edge_contains_edge_at_height([start, end], edge)
-    })
-}
-
 pub(in crate::simulation::network::surface::tests) fn test_boundary_edge_contains_edge_at_height(
     boundary_edge: [RoadVec3; 2],
     edge: [RoadVec3; 2],
@@ -56,14 +20,6 @@ pub(in crate::simulation::network::surface::tests) fn test_boundary_edge_contain
     let boundary_end = TestRenderVertexKey::from_point(boundary_edge[1]);
     let edge_start = TestRenderVertexKey::from_point(edge[0]);
     let edge_end = TestRenderVertexKey::from_point(edge[1]);
-    if !test_xz_segments_overlap_with_length(
-        (boundary_start.x_key, boundary_start.z_key),
-        (boundary_end.x_key, boundary_end.z_key),
-        (edge_start.x_key, edge_start.z_key),
-        (edge_end.x_key, edge_end.z_key),
-    ) {
-        return false;
-    }
     let Some((start_numerator, start_denominator)) =
         test_boundary_segment_parameter_xz(edge_start, boundary_start, boundary_end)
     else {
@@ -74,10 +30,12 @@ pub(in crate::simulation::network::surface::tests) fn test_boundary_edge_contain
     else {
         return false;
     };
-    if start_numerator < 0
-        || start_numerator > start_denominator
-        || end_numerator < 0
-        || end_numerator > end_denominator
+    let start_tolerance = (start_denominator / 1_000_000).max(1);
+    let end_tolerance = (end_denominator / 1_000_000).max(1);
+    if start_numerator < -start_tolerance
+        || start_numerator > start_denominator + start_tolerance
+        || end_numerator < -end_tolerance
+        || end_numerator > end_denominator + end_tolerance
     {
         return false;
     }
@@ -104,19 +62,30 @@ pub(in crate::simulation::network::surface::tests) fn test_boundary_segment_para
     start: TestRenderVertexKey,
     end: TestRenderVertexKey,
 ) -> Option<(i128, i128)> {
-    let dx = end.x_key - start.x_key;
-    let dz = end.z_key - start.z_key;
-    let px = point.x_key - start.x_key;
-    let pz = point.z_key - start.z_key;
-    let length_squared = i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz);
-    if length_squared == 0 || i128::from(dx) * i128::from(pz) - i128::from(dz) * i128::from(px) != 0
-    {
+    let point_key = test_surface_xz_key(point.x_key, point.z_key);
+    let start_key = test_surface_xz_key(start.x_key, start.z_key);
+    let end_key = test_surface_xz_key(end.x_key, end.z_key);
+    if let Some(parameter) = segments::overlay_segment_parameter(point_key, start_key, end_key) {
+        return Some((parameter.numerator, parameter.denominator));
+    }
+    let denominator = segment_denominator((start.x_key, start.z_key), (end.x_key, end.z_key));
+    if xz_keys_nearly_equal(point, start) {
+        return (denominator > 0).then_some((0, denominator));
+    }
+    if xz_keys_nearly_equal(point, end) {
+        return (denominator > 0).then_some((denominator, denominator));
+    }
+    if !segments::key_collinear_with_overlay_grid_segment(point_key, start_key, end_key) {
         return None;
     }
-    Some((
-        i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
-        length_squared,
+    (denominator > 0).then_some((
+        segments::segment_parameter_key(start_key, end_key, point_key),
+        denominator,
     ))
+}
+
+fn xz_keys_nearly_equal(left: TestRenderVertexKey, right: TestRenderVertexKey) -> bool {
+    (left.x_key - right.x_key).abs() <= 2 && (left.z_key - right.z_key).abs() <= 2
 }
 
 pub(in crate::simulation::network::surface::tests) fn test_interpolated_height_mm(
@@ -143,29 +112,46 @@ pub(in crate::simulation::network::surface::tests) fn test_xz_segments_overlap_w
     if a_start == a_end || b_start == b_end {
         return false;
     }
-    let a_dx = i128::from(a_end.0 - a_start.0);
-    let a_dz = i128::from(a_end.1 - a_start.1);
-    let b_dx = i128::from(b_end.0 - b_start.0);
-    let b_dz = i128::from(b_end.1 - b_start.1);
-    if a_dx * b_dz - a_dz * b_dx != 0 {
+    let a_start_key = test_surface_xz_key(a_start.0, a_start.1);
+    let a_end_key = test_surface_xz_key(a_end.0, a_end.1);
+    let b_start_key = test_surface_xz_key(b_start.0, b_start.1);
+    let b_end_key = test_surface_xz_key(b_end.0, b_end.1);
+    let denominator = segment_denominator(a_start, a_end);
+    if denominator == 0 {
         return false;
     }
-    if !test_xz_key_lies_on_segment(a_start, b_start, b_end)
-        && !test_xz_key_lies_on_segment(a_end, b_start, b_end)
-        && !test_xz_key_lies_on_segment(b_start, a_start, a_end)
-        && !test_xz_key_lies_on_segment(b_end, a_start, a_end)
+    let mut candidates = Vec::new();
+    if segments::key_lies_on_segment(a_start_key, b_start_key, b_end_key) {
+        candidates.push(0);
+    }
+    if segments::key_lies_on_segment(a_end_key, b_start_key, b_end_key) {
+        candidates.push(denominator);
+    }
+    if let Some(parameter) =
+        segments::overlay_segment_parameter(b_start_key, a_start_key, a_end_key)
     {
-        return false;
+        candidates.push(parameter.numerator);
     }
-    let use_x = (a_end.0 - a_start.0).abs() >= (a_end.1 - a_start.1).abs();
-    let coordinate = |key: (i64, i64)| {
-        if use_x { key.0 } else { key.1 }
-    };
-    let a0 = coordinate(a_start);
-    let a1 = coordinate(a_end);
-    let b0 = coordinate(b_start);
-    let b1 = coordinate(b_end);
-    a0.min(a1).max(b0.min(b1)) < a0.max(a1).min(b0.max(b1))
+    if let Some(parameter) = segments::overlay_segment_parameter(b_end_key, a_start_key, a_end_key)
+    {
+        candidates.push(parameter.numerator);
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+        .first()
+        .zip(candidates.last())
+        .is_some_and(|(start, end)| end > start)
+}
+
+fn test_surface_xz_key(x_key: i64, z_key: i64) -> surface_keys::SurfaceXzKey {
+    surface_keys::SurfaceXzKey::from_raw_keys(x_key, z_key)
+}
+
+fn segment_denominator(start: (i64, i64), end: (i64, i64)) -> i128 {
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    dx * dx + dz * dz
 }
 
 pub(in crate::simulation::network::surface::tests) fn polygon_centroid_for_test(

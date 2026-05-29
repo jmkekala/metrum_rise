@@ -132,13 +132,9 @@ pub(in crate::simulation::network::surface::tests) fn test_render_xz_vertex_key_
     start: TestRenderXzVertexKey,
     end: TestRenderXzVertexKey,
 ) -> bool {
-    let dx = i128::from(end.x_key - start.x_key);
-    let dz = i128::from(end.z_key - start.z_key);
-    let px = i128::from(point.x_key - start.x_key);
-    let pz = i128::from(point.z_key - start.z_key);
-    dx * pz - dz * px == 0
-        && point.x_key >= start.x_key.min(end.x_key)
-        && point.x_key <= start.x_key.max(end.x_key)
-        && point.z_key >= start.z_key.min(end.z_key)
-        && point.z_key <= start.z_key.max(end.z_key)
+    segments::key_lies_on_segment(
+        surface_keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key),
+        surface_keys::SurfaceXzKey::from_raw_keys(start.x_key, start.z_key),
+        surface_keys::SurfaceXzKey::from_raw_keys(end.x_key, end.z_key),
+    )
 }

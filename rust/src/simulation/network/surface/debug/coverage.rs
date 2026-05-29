@@ -1,6 +1,7 @@
 //! Footprint, mouth-seam, and material-coverage debug diagnostics.
 
 use super::*;
+use crate::simulation::network::surface::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;
 
 impl RoadSurfaceSystem {
     pub(super) fn append_material_footprint_coverage_debug_literal(
@@ -43,6 +44,19 @@ impl RoadSurfaceSystem {
             return;
         };
         Self::sort_overlay_shapes(&mut extra_shapes);
+        let top_edges = Self::debug_owned_top_boundary_edges(piece);
+        let missing_boundary_touch_count = missing_shapes
+            .iter()
+            .filter(|shape| Self::debug_overlay_shape_touches_top_boundary(shape, &top_edges))
+            .count();
+        let suspicious_missing_shape_count = missing_shapes
+            .iter()
+            .filter(|shape| Self::debug_missing_footprint_shape_is_suspicious(shape, &top_edges))
+            .count();
+        let canonical_numeric_dust_missing_shape_count = missing_shapes
+            .iter()
+            .filter(|shape| Self::debug_missing_footprint_shape_is_canonical_numeric_dust(shape))
+            .count();
 
         let stats = DebugCoverageStats {
             footprint_area_m2: Self::debug_overlay_area_m2(&footprint_shapes),
@@ -57,10 +71,11 @@ impl RoadSurfaceSystem {
 
         dump.push('{');
         let problem = stats.missing_area_m2 > stats.area_budget_m2
-            || stats.extra_area_m2 > stats.area_budget_m2;
+            || stats.extra_area_m2 > stats.area_budget_m2
+            || suspicious_missing_shape_count > 0;
         let _ = write!(
             dump,
-            "\"status\":\"ok\",\"problem\":{},\"footprint_area_m2\":{:.6},\"top_area_m2\":{:.6},\"missing_area_m2\":{:.6},\"extra_area_m2\":{:.6},\"area_budget_m2\":{:.6},\"missing_shape_count\":{},\"extra_shape_count\":{}",
+            "\"status\":\"ok\",\"problem\":{},\"footprint_area_m2\":{:.6},\"top_area_m2\":{:.6},\"missing_area_m2\":{:.6},\"extra_area_m2\":{:.6},\"area_budget_m2\":{:.6},\"missing_shape_count\":{},\"missing_boundary_touch_count\":{},\"suspicious_missing_shape_count\":{},\"canonical_numeric_dust_missing_shape_count\":{},\"extra_shape_count\":{}",
             problem,
             stats.footprint_area_m2,
             stats.top_area_m2,
@@ -68,6 +83,9 @@ impl RoadSurfaceSystem {
             stats.extra_area_m2,
             stats.area_budget_m2,
             stats.missing_shape_count,
+            missing_boundary_touch_count,
+            suspicious_missing_shape_count,
+            canonical_numeric_dust_missing_shape_count,
             stats.extra_shape_count
         );
         dump.push_str(",\"missing_samples\":[");
@@ -75,6 +93,52 @@ impl RoadSurfaceSystem {
         dump.push_str("],\"extra_samples\":[");
         Self::append_overlay_shape_samples(dump, &extra_shapes);
         dump.push_str("]}");
+    }
+
+    fn debug_missing_footprint_shape_is_suspicious(
+        shape: &NodeOverlayShape,
+        top_edges: &[DebugTopBoundaryEdge],
+    ) -> bool {
+        Self::debug_overlay_shape_touches_top_boundary(shape, top_edges)
+            && Self::overlay_shape_area_m2(shape) > f32::EPSILON
+            && !Self::debug_missing_footprint_shape_is_canonical_numeric_dust(shape)
+    }
+
+    fn debug_missing_footprint_shape_is_canonical_numeric_dust(shape: &NodeOverlayShape) -> bool {
+        Self::debug_overlay_shape_thin_width_m(shape) <= NODE_OVERLAY_NUMERIC_DUST_WIDTH_M
+            && Self::overlay_shape_area_m2(shape)
+                <= Self::debug_overlay_shape_numeric_area_budget_m2(shape)
+    }
+
+    fn debug_overlay_shape_numeric_area_budget_m2(shape: &NodeOverlayShape) -> f32 {
+        let perimeter_m = shape
+            .iter()
+            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .sum::<f32>();
+        let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
+        Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
+    }
+
+    fn debug_overlay_shape_touches_top_boundary(
+        shape: &NodeOverlayShape,
+        top_edges: &[DebugTopBoundaryEdge],
+    ) -> bool {
+        shape
+            .iter()
+            .flat_map(|contour| contour.iter().copied())
+            .any(|point| {
+                let point = SurfaceXzKey::from_overlay_point(point);
+                top_edges.iter().copied().any(|edge| {
+                    let start = SurfaceXzKey::from_raw_keys(
+                        edge.xz_key.start.x_key,
+                        edge.xz_key.start.z_key,
+                    );
+                    let end =
+                        SurfaceXzKey::from_raw_keys(edge.xz_key.end.x_key, edge.xz_key.end.z_key);
+                    Self::debug_top_edge_vertex_parameter(point, start, end)
+                        .is_some_and(|parameter| (-0.001..=1.001).contains(&parameter.as_f64()))
+                })
+            })
     }
 
     pub(super) fn append_outer_boundary_top_match_debug_literal(
@@ -287,6 +351,10 @@ impl RoadSurfaceSystem {
                 }
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                     boundary_source, ..
+                }
+                | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                    boundary_source,
+                    ..
                 } => {
                     node_footprint_source_count += 1;
                     for source in [
@@ -315,6 +383,9 @@ impl RoadSurfaceSystem {
             if matches!(
                 face.source,
                 RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    boundary_source: None,
+                    ..
+                } | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
                     boundary_source: None,
                     ..
                 }

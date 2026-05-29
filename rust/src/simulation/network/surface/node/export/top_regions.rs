@@ -145,23 +145,7 @@ impl RoadSurfaceSystem {
         if area_3d_m2 < f64::from(NODE_OVERLAY_MIN_AREA_M2) {
             return None;
         }
-        let triangle = [
-            Self::arrangement_vertex_world(arrangement, vertices[0])?,
-            Self::arrangement_vertex_world(arrangement, vertices[1])?,
-            Self::arrangement_vertex_world(arrangement, vertices[2])?,
-        ];
-        Some(triangle)
-    }
-
-    pub(super) fn arrangement_vertex_world(
-        arrangement: &NodeArrangement,
-        vertex_id: arrangement::NodeArrangementVertexId,
-    ) -> Option<RoadVec3> {
-        let vertex = arrangement.vertices().get(vertex_id.index())?;
-        Some(backend::road_xz_with_height(
-            arrangement_vertex_canonical_xz(vertex),
-            vertex.height_m(),
-        ))
+        Some(road_triangle)
     }
 
     fn arrangement_vertex_canonical_world(

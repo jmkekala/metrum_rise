@@ -63,54 +63,90 @@ pub(in crate::simulation::network::surface::tests) fn test_top_edges_form_raised
 pub(in crate::simulation::network::surface::tests) fn test_owned_top_boundary_edges(
     piece: &RoadSurfaceVisualNodePiece,
 ) -> Vec<TestTopBoundaryEdge> {
-    let mut boundary_edges = Vec::new();
+    let mut top_edges = Vec::new();
     for region in &piece.owned_regions {
         let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, RoadVec3, RoadVec3)>::new();
-        if region.polygon.triangles_world.is_empty() {
-            let points = &region.polygon.points_world;
-            if points.len() >= 2 {
-                for index in 0..points.len() {
-                    if let Some(key) = TestRenderEdgeKey::normalized(
-                        points[index],
-                        points[(index + 1) % points.len()],
-                    ) {
-                        edge_counts
-                            .entry(key)
-                            .and_modify(|entry| entry.0 += 1)
-                            .or_insert((1, points[index], points[(index + 1) % points.len()]));
-                    }
-                }
-            }
-        } else {
-            for triangle in &region.polygon.triangles_world {
-                for edge_index in 0..3 {
-                    if let Some(key) = TestRenderEdgeKey::normalized(
-                        triangle[edge_index],
-                        triangle[(edge_index + 1) % 3],
-                    ) {
-                        edge_counts
-                            .entry(key)
-                            .and_modify(|entry| entry.0 += 1)
-                            .or_insert((1, triangle[edge_index], triangle[(edge_index + 1) % 3]));
-                    }
+        for (key, start, end) in test_polygon_top_edge_candidates(&region.polygon) {
+            edge_counts
+                .entry(key)
+                .and_modify(|entry| entry.0 += 1)
+                .or_insert((1, start, end));
+        }
+        top_edges.extend(
+            edge_counts
+                .into_iter()
+                .filter_map(|(key, (count, start, end))| {
+                    (count == 1).then_some(TestTopBoundaryEdge {
+                        kind: region.kind,
+                        owner_index: region.owner_index,
+                        start,
+                        end,
+                        key,
+                        xz_key: key.xz(),
+                        avg_y_m: (start.y + end.y) * 0.5,
+                    })
+                }),
+        );
+    }
+    top_edges
+}
+
+pub(in crate::simulation::network::surface::tests) fn test_polygon_top_boundary_edges(
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Vec<TestTopBoundaryEdge> {
+    let mut edge_counts = BTreeMap::<TestRenderEdgeKey, (usize, RoadVec3, RoadVec3)>::new();
+    for (key, start, end) in test_polygon_top_edge_candidates(polygon) {
+        edge_counts
+            .entry(key)
+            .and_modify(|entry| entry.0 += 1)
+            .or_insert((1, start, end));
+    }
+    edge_counts
+        .into_iter()
+        .filter_map(|(key, (count, start, end))| {
+            (count == 1).then_some(TestTopBoundaryEdge {
+                kind,
+                owner_index,
+                start,
+                end,
+                key,
+                xz_key: key.xz(),
+                avg_y_m: (start.y + end.y) * 0.5,
+            })
+        })
+        .collect()
+}
+
+fn test_polygon_top_edge_candidates(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Vec<(TestRenderEdgeKey, RoadVec3, RoadVec3)> {
+    let mut edges = Vec::new();
+    if polygon.triangles_world.is_empty() {
+        let points = &polygon.points_world;
+        if points.len() >= 2 {
+            for index in 0..points.len() {
+                if let Some(key) =
+                    TestRenderEdgeKey::normalized(points[index], points[(index + 1) % points.len()])
+                {
+                    edges.push((key, points[index], points[(index + 1) % points.len()]));
                 }
             }
         }
-        for (key, (count, start, end)) in edge_counts {
-            if count == 1 {
-                boundary_edges.push(TestTopBoundaryEdge {
-                    kind: region.kind,
-                    owner_index: region.owner_index,
-                    start,
-                    end,
-                    key,
-                    xz_key: key.xz(),
-                    avg_y_m: (start.y + end.y) * 0.5,
-                });
+    } else {
+        for triangle in &polygon.triangles_world {
+            for edge_index in 0..3 {
+                if let Some(key) = TestRenderEdgeKey::normalized(
+                    triangle[edge_index],
+                    triangle[(edge_index + 1) % 3],
+                ) {
+                    edges.push((key, triangle[edge_index], triangle[(edge_index + 1) % 3]));
+                }
             }
         }
     }
-    boundary_edges
+    edges
 }
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_lower_edge_for_test(
@@ -138,15 +174,13 @@ pub(in crate::simulation::network::surface::tests) fn vertical_face_side_edges_f
 pub(in crate::simulation::network::surface::tests) fn test_lower_owner_from_vertical_face_source(
     source: super::RoadSurfaceVerticalFaceSource,
 ) -> Option<NodeBandOwner> {
-    let segment = source.segment();
-    let owner = segment.owner();
-    let opposite_owner = segment.opposite_owner();
-    let (lower_kind, _) = ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
-    Some(if owner.kind() == lower_kind {
-        owner
-    } else {
-        opposite_owner
-    })
+    test_lower_and_raised_owners_from_vertical_face_source(source).map(|(lower, _)| lower)
+}
+
+pub(in crate::simulation::network::surface::tests) fn test_lower_and_raised_owners_from_vertical_face_source(
+    source: super::RoadSurfaceVerticalFaceSource,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    source.lower_and_raised_owners()
 }
 
 pub(in crate::simulation::network::surface::tests) fn vertical_face_owner_edge_for_test(
@@ -156,14 +190,10 @@ pub(in crate::simulation::network::surface::tests) fn vertical_face_owner_edge_f
 ) -> Option<[RoadVec3; 2]> {
     let [first_edge, second_edge] = vertical_face_side_edges_for_test(face)?;
     [first_edge, second_edge].into_iter().find(|edge| {
-        let Some(edge_key) = TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz())
-        else {
-            return false;
-        };
         top_edges.iter().any(|top_edge| {
-            top_edge.xz_key == edge_key
-                && top_edge.kind == owner.kind()
+            top_edge.kind == owner.kind()
                 && top_edge.owner_index == owner.owner_index()
+                && test_boundary_edge_contains_edge_at_height([top_edge.start, top_edge.end], *edge)
         })
     })
 }

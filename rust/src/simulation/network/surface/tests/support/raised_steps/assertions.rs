@@ -110,6 +110,223 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_raised_step_own
     }
 }
 
+pub(in crate::simulation::network::surface::tests) fn assert_no_unfaced_cross_material_height_boundaries(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
+    let top_edges = test_owned_top_boundary_edges(piece);
+    let face_lower_edges = piece
+        .raised_step_face_polygons
+        .iter()
+        .filter_map(vertical_face_lower_edge_for_test)
+        .collect::<Vec<_>>();
+
+    for (left_index, left_edge) in top_edges.iter().enumerate() {
+        for right_edge in top_edges.iter().skip(left_index + 1) {
+            if left_edge.kind == right_edge.kind {
+                continue;
+            }
+            let (lower_edge, raised_edge) = if left_edge.avg_y_m <= right_edge.avg_y_m {
+                (*left_edge, *right_edge)
+            } else {
+                (*right_edge, *left_edge)
+            };
+            if lower_edge.avg_y_m + f64::from(SAMPLE_EPSILON_M) >= raised_edge.avg_y_m {
+                continue;
+            }
+            let Some(overlap) = test_top_boundary_overlap_interval(lower_edge, raised_edge) else {
+                continue;
+            };
+            assert!(
+                test_top_edges_form_raised_step(lower_edge, raised_edge),
+                "cross-material top boundary has a height jump without an adjacent raised-step owner pair; kind={:?} overlap={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?}",
+                piece.kind,
+                overlap,
+                lower_edge.kind,
+                lower_edge.owner_index,
+                lower_edge.start,
+                lower_edge.end,
+                raised_edge.kind,
+                raised_edge.owner_index,
+                raised_edge.start,
+                raised_edge.end
+            );
+            assert!(
+                test_raised_step_faces_cover_overlap_interval(
+                    lower_edge,
+                    overlap,
+                    &face_lower_edges
+                ),
+                "cross-material raised top boundary must emit explicit vertical face coverage; kind={:?} overlap={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?} matching_canonical_steps={:?} face_lower_edges={:?}",
+                piece.kind,
+                overlap,
+                lower_edge.kind,
+                lower_edge.owner_index,
+                lower_edge.start,
+                lower_edge.end,
+                raised_edge.kind,
+                raised_edge.owner_index,
+                raised_edge.start,
+                raised_edge.end,
+                explicit_vertical_step_descriptions_for_xz_key(piece, lower_edge.xz_key),
+                face_lower_edges
+            );
+        }
+    }
+}
+
+pub(in crate::simulation::network::surface::tests) fn assert_surface_no_unfaced_cross_material_height_boundaries(
+    surface: &RoadSurfaceSystem,
+) {
+    let mut top_edges = Vec::new();
+    let mut face_lower_edges = Vec::new();
+    for span_piece in surface.compiled_visual_span_pieces().values() {
+        for region in &span_piece.span_owned_regions {
+            top_edges.extend(test_polygon_top_boundary_edges(
+                region.owner.kind,
+                region.owner.source_band_index,
+                &region.polygon,
+            ));
+        }
+        face_lower_edges.extend(
+            span_piece
+                .raised_step_face_polygons
+                .iter()
+                .filter_map(vertical_face_lower_edge_for_test),
+        );
+    }
+    for node_piece in surface.compiled_visual_node_pieces().values() {
+        top_edges.extend(test_owned_top_boundary_edges(node_piece));
+        face_lower_edges.extend(
+            node_piece
+                .raised_step_face_polygons
+                .iter()
+                .filter_map(vertical_face_lower_edge_for_test),
+        );
+    }
+    for (left_index, left_edge) in top_edges.iter().enumerate() {
+        for right_edge in top_edges.iter().skip(left_index + 1) {
+            if left_edge.kind == right_edge.kind {
+                continue;
+            }
+            let (lower_edge, raised_edge) = if left_edge.avg_y_m <= right_edge.avg_y_m {
+                (*left_edge, *right_edge)
+            } else {
+                (*right_edge, *left_edge)
+            };
+            if lower_edge.avg_y_m + f64::from(SAMPLE_EPSILON_M) >= raised_edge.avg_y_m {
+                continue;
+            }
+            let Some(overlap) = test_top_boundary_overlap_interval(lower_edge, raised_edge) else {
+                continue;
+            };
+            if !test_top_edges_form_raised_step(lower_edge, raised_edge) {
+                continue;
+            }
+            assert!(
+                test_raised_step_faces_cover_overlap_interval(
+                    lower_edge,
+                    overlap,
+                    &face_lower_edges
+                ),
+                "surface cross-material raised top boundary must emit explicit vertical face coverage; overlap={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?} face_lower_edges={:?}",
+                overlap,
+                lower_edge.kind,
+                lower_edge.owner_index,
+                lower_edge.start,
+                lower_edge.end,
+                raised_edge.kind,
+                raised_edge.owner_index,
+                raised_edge.start,
+                raised_edge.end,
+                face_lower_edges
+            );
+        }
+    }
+}
+
+fn test_top_boundary_overlap_interval(
+    lower_edge: TestTopBoundaryEdge,
+    raised_edge: TestTopBoundaryEdge,
+) -> Option<(i128, i128, i128)> {
+    if !test_xz_segments_overlap_with_length(
+        (lower_edge.xz_key.start.x_key, lower_edge.xz_key.start.z_key),
+        (lower_edge.xz_key.end.x_key, lower_edge.xz_key.end.z_key),
+        (
+            raised_edge.xz_key.start.x_key,
+            raised_edge.xz_key.start.z_key,
+        ),
+        (raised_edge.xz_key.end.x_key, raised_edge.xz_key.end.z_key),
+    ) {
+        return None;
+    }
+    let lower_start = TestRenderVertexKey::from_point(lower_edge.start);
+    let lower_end = TestRenderVertexKey::from_point(lower_edge.end);
+    let raised_start = TestRenderVertexKey::from_point(raised_edge.start);
+    let raised_end = TestRenderVertexKey::from_point(raised_edge.end);
+    let (raised_start_numerator, denominator) =
+        test_boundary_segment_parameter_xz(raised_start, lower_start, lower_end)?;
+    let (raised_end_numerator, raised_denominator) =
+        test_boundary_segment_parameter_xz(raised_end, lower_start, lower_end)?;
+    if denominator != raised_denominator || denominator <= 0 {
+        return None;
+    }
+    let overlap_start = raised_start_numerator.min(raised_end_numerator).max(0);
+    let overlap_end = raised_start_numerator
+        .max(raised_end_numerator)
+        .min(denominator);
+    (overlap_end > overlap_start).then_some((overlap_start, overlap_end, denominator))
+}
+
+fn test_raised_step_faces_cover_overlap_interval(
+    lower_edge: TestTopBoundaryEdge,
+    overlap: (i128, i128, i128),
+    face_lower_edges: &[[RoadVec3; 2]],
+) -> bool {
+    let (required_start, required_end, denominator) = overlap;
+    let lower_start = TestRenderVertexKey::from_point(lower_edge.start);
+    let lower_end = TestRenderVertexKey::from_point(lower_edge.end);
+    let mut intervals = Vec::<(i128, i128)>::new();
+    for face_edge in face_lower_edges {
+        let face_start = TestRenderVertexKey::from_point(face_edge[0]);
+        let face_end = TestRenderVertexKey::from_point(face_edge[1]);
+        let Some((face_start_numerator, face_denominator)) =
+            test_boundary_segment_parameter_xz(face_start, lower_start, lower_end)
+        else {
+            continue;
+        };
+        let Some((face_end_numerator, face_end_denominator)) =
+            test_boundary_segment_parameter_xz(face_end, lower_start, lower_end)
+        else {
+            continue;
+        };
+        if face_denominator != denominator || face_end_denominator != denominator {
+            continue;
+        }
+        let start = face_start_numerator
+            .min(face_end_numerator)
+            .max(required_start);
+        let end = face_start_numerator
+            .max(face_end_numerator)
+            .min(required_end);
+        if end > start {
+            intervals.push((start, end));
+        }
+    }
+    intervals.sort_unstable();
+    let mut cursor = required_start;
+    let tolerance = (denominator / 1_000_000).max(1);
+    for (start, end) in intervals {
+        if start > cursor + tolerance {
+            return false;
+        }
+        cursor = cursor.max(end);
+        if cursor + tolerance >= required_end {
+            return true;
+        }
+    }
+    cursor + tolerance >= required_end
+}
+
 pub(in crate::simulation::network::surface::tests) fn assert_canonical_explicit_vertical_steps_have_faces(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
@@ -192,7 +409,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_v
 
         if let Some(dot) = best_dot {
             assert!(
-                dot > -0.25,
+                dot > 0.0,
                 "raised-step face must be visible from its lower owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
                 piece.kind,
                 face.points_world
@@ -204,7 +421,12 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_v
 pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_have_top_support(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
-    for face in &piece.raised_step_face_polygons {
+    let top_edges = test_owned_top_boundary_edges(piece);
+    for (face, source) in piece
+        .raised_step_face_polygons
+        .iter()
+        .zip(piece.raised_step_face_sources.iter())
+    {
         let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
             panic!(
                 "raised-step face must expose a non-degenerate lower edge; face={:?}",
@@ -217,18 +439,33 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_h
                 face.points_world
             );
         };
-        let lower_matches = piece
-            .owned_regions
+        let Some((lower_owner, raised_owner)) =
+            test_lower_and_raised_owners_from_vertical_face_source(*source)
+        else {
+            panic!(
+                "raised-step face must carry explicit raised-step provenance; source={source:?}"
+            );
+        };
+        let lower_matches = top_edges
             .iter()
-            .filter(|region| {
-                polygon_boundary_overlaps_edge_at_height_for_test(&region.polygon, lower_edge)
+            .filter(|edge| {
+                edge.kind == lower_owner.kind()
+                    && edge.owner_index == lower_owner.owner_index()
+                    && test_boundary_edge_contains_edge_at_height(
+                        [edge.start, edge.end],
+                        lower_edge,
+                    )
             })
             .collect::<Vec<_>>();
-        let upper_matches = piece
-            .owned_regions
+        let upper_matches = top_edges
             .iter()
-            .filter(|region| {
-                polygon_boundary_overlaps_edge_at_height_for_test(&region.polygon, upper_edge)
+            .filter(|edge| {
+                edge.kind == raised_owner.kind()
+                    && edge.owner_index == raised_owner.owner_index()
+                    && test_boundary_edge_contains_edge_at_height(
+                        [edge.start, edge.end],
+                        upper_edge,
+                    )
             })
             .collect::<Vec<_>>();
         assert!(
@@ -239,15 +476,6 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_h
         assert!(
             !upper_matches.is_empty(),
             "raised-step face upper edge must be backed by a top owner; upper_edge={upper_edge:?} face={:?}",
-            face.points_world
-        );
-        assert!(
-            lower_matches.iter().any(|lower_match| {
-                upper_matches.iter().any(|upper_match| {
-                    test_owners_form_raised_step(lower_match.kind, upper_match.kind)
-                })
-            }),
-            "raised-step face support edges must belong to an explicit raised-step owner pair; lower_edge={lower_edge:?} upper_edge={upper_edge:?} face={:?}",
             face.points_world
         );
     }

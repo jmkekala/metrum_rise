@@ -4,6 +4,7 @@ use super::*;
 use crate::simulation::network::surface::backend::RoadVec3;
 use crate::simulation::network::surface::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
+    RoadSurfaceVisualNodePieceKind,
 };
 
 #[test]
@@ -71,7 +72,7 @@ fn terrain_clip_union_rejects_matching_height_output_source_ambiguity() {
 }
 
 #[test]
-fn terrain_clip_union_rejects_same_material_node_owner_boundary_source_ambiguity() {
+fn terrain_clip_union_materializes_same_material_node_owner_boundary_handoff() {
     let y = 8.0;
     let points = vec![
         RoadVec3::new(0.0, y, 0.0),
@@ -100,16 +101,29 @@ fn terrain_clip_union_rejects_same_material_node_owner_boundary_source_ambiguity
     let unioned = RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&[
         loop_for_owner(2, 20),
         loop_for_owner(1, 21),
-    ]);
+    ])
+    .expect("same-material different-owner overlap should export canonical handoff provenance");
 
-    let Err(RoadSurfaceTerrainClipExportError::AmbiguousOutputBoundaryOwner { context, .. }) =
-        unioned
-    else {
-        panic!("same-material different-owner overlap must reject provenance, got {unioned:?}");
-    };
+    assert_eq!(unioned.len(), 1);
     assert!(
-        context.contains("sources_disagree"),
-        "ambiguous same-material owner diagnostic should name provenance disagreement: {context}"
+        unioned
+            .iter()
+            .flat_map(|loop_| loop_.source_edges.iter())
+            .all(|edge| matches!(
+                edge.source,
+                RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                    node_id: 1,
+                    kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+                    owner_kind: RoadSurfaceBandKind::Sidewalk,
+                    owner_index_a: 1,
+                    owner_index_b: 2,
+                    boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                        start: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
+                        end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
+                    }),
+                }
+            )),
+        "same-material different-owner output segment must keep canonical handoff provenance: {unioned:?}"
     );
 }
 

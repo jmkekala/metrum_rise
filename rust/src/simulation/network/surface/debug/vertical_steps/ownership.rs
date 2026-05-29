@@ -14,6 +14,73 @@ impl RoadSurfaceSystem {
         })
     }
 
+    pub(in crate::simulation::network::surface::debug) fn debug_top_edges_containing_span(
+        top_edges: &[DebugTopBoundaryEdge],
+        span_start: backend::RoadVec3,
+        span_end: backend::RoadVec3,
+    ) -> Vec<DebugTopBoundaryEdge> {
+        let Some(span_key) = DebugRenderEdgeKey::normalized(span_start, span_end) else {
+            return Vec::new();
+        };
+        top_edges
+            .iter()
+            .copied()
+            .filter(|edge| Self::debug_top_edge_contains_span_at_height(*edge, span_key))
+            .collect()
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn debug_top_edge_contains_span_at_height(
+        top_edge: DebugTopBoundaryEdge,
+        span_key: DebugRenderEdgeKey,
+    ) -> bool {
+        Self::debug_top_edge_contains_vertex_at_height(top_edge, span_key.start)
+            && Self::debug_top_edge_contains_vertex_at_height(top_edge, span_key.end)
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn debug_top_edge_contains_vertex_at_height(
+        top_edge: DebugTopBoundaryEdge,
+        vertex: DebugRenderVertexKey,
+    ) -> bool {
+        let point = SurfaceXzKey::from_raw_keys(vertex.x_key, vertex.z_key);
+        let start = SurfaceXzKey::from_raw_keys(top_edge.key.start.x_key, top_edge.key.start.z_key);
+        let end = SurfaceXzKey::from_raw_keys(top_edge.key.end.x_key, top_edge.key.end.z_key);
+        let Some(parameter) = Self::debug_top_edge_vertex_parameter(point, start, end) else {
+            return false;
+        };
+        let expected_y = segments::interpolate_height_i64(
+            top_edge.key.start.y_mm,
+            top_edge.key.end.y_mm,
+            parameter,
+        );
+        (expected_y - vertex.y_mm).abs() <= 1
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn debug_top_edge_vertex_parameter(
+        point: SurfaceXzKey,
+        start: SurfaceXzKey,
+        end: SurfaceXzKey,
+    ) -> Option<SurfaceSegmentParameter> {
+        segments::overlay_segment_parameter(point, start, end)
+            .or_else(|| segments::exact_line_parameter(point, start, end))
+            .or_else(|| Self::debug_overlay_grid_line_parameter(point, start, end))
+    }
+
+    fn debug_overlay_grid_line_parameter(
+        point: SurfaceXzKey,
+        start: SurfaceXzKey,
+        end: SurfaceXzKey,
+    ) -> Option<SurfaceSegmentParameter> {
+        if !segments::key_collinear_with_overlay_grid_segment(point, start, end) {
+            return None;
+        }
+        let dx = i128::from(end.x_key() - start.x_key());
+        let dz = i128::from(end.z_key() - start.z_key());
+        SurfaceSegmentParameter::new(
+            segments::segment_parameter_key(start, end, point),
+            dx * dx + dz * dz,
+        )
+    }
+
     pub(in crate::simulation::network::surface::debug) fn debug_boundary_owner_matches_band(
         owner: DebugBoundaryOwner,
         band_owner: NodeBandOwner,

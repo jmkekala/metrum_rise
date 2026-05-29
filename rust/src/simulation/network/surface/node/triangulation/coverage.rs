@@ -29,6 +29,29 @@ pub(super) fn reject_triangle_coverage_mismatch(
     triangles: &[NodeTriangulatedTriangle],
     vertices: &[NodeTriangulatedVertex],
 ) -> Result<(), NodeTriangulationError> {
+    let (missing, extra) =
+        triangle_coverage_residual_shapes(node_id, region_index, owner_shape, triangles, vertices)?;
+    let missing_area_m2 = overlay_area_m2(&missing);
+    let extra_area_m2 = overlay_area_m2(&extra);
+    let area_budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(owner_shape);
+    if missing_area_m2 > area_budget_m2 || extra_area_m2 > area_budget_m2 {
+        return Err(NodeTriangulationError::TriangleCoverageMismatch {
+            node_id,
+            region_index,
+            missing_area_m2,
+            extra_area_m2,
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn triangle_coverage_residual_shapes(
+    node_id: u32,
+    region_index: usize,
+    owner_shape: &NodeOverlayShape,
+    triangles: &[NodeTriangulatedTriangle],
+    vertices: &[NodeTriangulatedVertex],
+) -> Result<(NodeOverlayShapes, NodeOverlayShapes), NodeTriangulationError> {
     let owner_shapes = vec![owner_shape.clone()];
     let triangle_contours = triangles
         .iter()
@@ -50,18 +73,7 @@ pub(super) fn reject_triangle_coverage_mismatch(
         &owner_shapes,
         "triangles_minus_owner",
     )?;
-    let missing_area_m2 = overlay_area_m2(&missing);
-    let extra_area_m2 = overlay_area_m2(&extra);
-    let area_budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(owner_shape);
-    if missing_area_m2 > area_budget_m2 || extra_area_m2 > area_budget_m2 {
-        return Err(NodeTriangulationError::TriangleCoverageMismatch {
-            node_id,
-            region_index,
-            missing_area_m2,
-            extra_area_m2,
-        });
-    }
-    Ok(())
+    Ok((missing, extra))
 }
 
 fn overlay_union(

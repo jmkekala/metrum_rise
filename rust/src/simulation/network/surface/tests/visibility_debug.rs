@@ -389,6 +389,10 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"source_constraint_count\""));
     assert!(dump.contains("\"final_required_face_count\""));
     assert!(dump.contains("\"missing_required_face_count\""));
+    assert!(dump.contains("\"required_interval_count\""));
+    assert!(dump.contains("\"required_gap_count\""));
+    assert!(dump.contains("\"missing_length_m\""));
+    assert!(dump.contains("\"required_gap_samples\""));
     assert!(dump.contains("\"non_exposed_source_constraint_count\""));
     assert!(dump.contains("\"materialization_status\""));
     assert!(dump.contains("\"band_ownership\""));
@@ -397,6 +401,8 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"decision\":\"source_carrier\""));
     assert!(dump.contains("\"seam_constraints\""));
     assert!(dump.contains("\"material_footprint_coverage\""));
+    assert!(dump.contains("\"missing_boundary_touch_count\""));
+    assert!(dump.contains("\"suspicious_missing_shape_count\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
     assert!(dump.contains("\"direct_source_count\""));
     assert!(dump.contains("\"top_surface_source_index\""));

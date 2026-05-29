@@ -1,23 +1,34 @@
 //! Raised-step vertical face support checks against final owned top surfaces.
 
 use super::super::{
-    ArrangementBoundaryPointKey, NodeOwnedRegion, NodeTopSurfacePolygonSource,
-    RoadSurfaceRaisedStepFace, RoadSurfaceVerticalFaceSource, arrangement::NodeBandOwner, keys,
-    segments,
+    ArrangementBoundaryPointKey, NodeOwnedRegion, RoadSurfaceRaisedStepFace,
+    RoadSurfaceVerticalFaceSource,
+    arrangement::{NodeBandOwner, NodeExplicitVerticalStepSegment},
+    keys, segments,
 };
 use crate::simulation::network::surface::{
-    RoadSurfaceSystem, band_semantics::ordered_raised_step_kinds,
+    RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
+    band_semantics::ordered_raised_step_kinds,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl RoadSurfaceSystem {
     pub(super) fn retain_raised_step_faces_with_owned_top_support(
         raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
         owned_regions: &[NodeOwnedRegion],
-        node_top_surface_sources: &[NodeTopSurfacePolygonSource],
+        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
     ) {
-        let top_edges = owned_top_boundary_edges(owned_regions, node_top_surface_sources);
-        raised_step_faces.retain(|face| raised_step_face_has_owned_top_support(face, &top_edges));
+        let top_edges = owned_top_boundary_edges(owned_regions);
+        let required_spans =
+            final_required_raised_step_spans(explicit_vertical_step_segments, &top_edges);
+        let required_keys = required_raised_step_face_keys(&required_spans);
+        let owner_centroids = raised_step_owner_centroids(owned_regions);
+        complete_raised_step_faces_from_final_spans(
+            raised_step_faces,
+            &required_spans,
+            &required_keys,
+        );
+        orient_raised_step_faces_from_lower_owner(raised_step_faces, &owner_centroids);
     }
 }
 
@@ -36,68 +47,501 @@ struct NodeTopSupportEdgeKey {
 #[derive(Clone, Copy, Debug)]
 struct NodeTopSupportEdge {
     owner: NodeBandOwner,
-    key: NodeTopSupportEdgeKey,
+    start: NodeTopSupportVertexKey,
+    end: NodeTopSupportVertexKey,
 }
 
-fn owned_top_boundary_edges(
-    owned_regions: &[NodeOwnedRegion],
-    node_top_surface_sources: &[NodeTopSurfacePolygonSource],
-) -> Vec<NodeTopSupportEdge> {
-    let mut top_edges = Vec::new();
-    for (region, source) in owned_regions.iter().zip(node_top_surface_sources) {
+#[derive(Clone, Copy, Debug)]
+struct FinalRequiredRaisedStepSpan {
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_edge: NodeTopSupportEdge,
+    raised_edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+    start_t: keys::SurfaceSegmentParameter,
+    end_t: keys::SurfaceSegmentParameter,
+    source: RoadSurfaceVerticalFaceSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FinalStepSupportMatch {
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+    start_t: keys::SurfaceSegmentParameter,
+    end_t: keys::SurfaceSegmentParameter,
+    source: RoadSurfaceVerticalFaceSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RaisedStepBoundaryPointKeys {
+    lower_start: ArrangementBoundaryPointKey,
+    lower_end: ArrangementBoundaryPointKey,
+    raised_start: ArrangementBoundaryPointKey,
+    raised_end: ArrangementBoundaryPointKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RaisedStepFaceSupportKey {
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_edge: NodeTopSupportEdgeKey,
+    upper_edge: NodeTopSupportEdgeKey,
+}
+
+fn owned_top_boundary_edges(owned_regions: &[NodeOwnedRegion]) -> Vec<NodeTopSupportEdge> {
+    let mut edge_counts_by_owner = BTreeMap::<
+        NodeBandOwner,
+        BTreeMap<NodeTopSupportEdgeKey, (usize, NodeTopSupportVertexKey, NodeTopSupportVertexKey)>,
+    >::new();
+    for region in owned_regions {
         let owner = NodeBandOwner::new(region.kind, region.owner_index);
-        let mut edge_counts = BTreeMap::<NodeTopSupportEdgeKey, usize>::new();
-        for edge_key in top_source_boundary_edges(source) {
-            *edge_counts.entry(edge_key).or_default() += 1;
+        let edge_counts = edge_counts_by_owner.entry(owner).or_default();
+        for (edge_key, edge_start, edge_end) in final_polygon_boundary_edges(&region.polygon) {
+            edge_counts
+                .entry(edge_key)
+                .and_modify(|entry| entry.0 += 1)
+                .or_insert((1, edge_start, edge_end));
         }
+    }
+
+    let mut top_edges = Vec::new();
+    for (owner, edge_counts) in edge_counts_by_owner {
         top_edges.extend(
-            edge_counts.into_iter().filter_map(|(key, count)| {
-                (count == 1).then_some(NodeTopSupportEdge { owner, key })
-            }),
+            edge_counts
+                .into_iter()
+                .filter_map(|(_key, (count, start, end))| {
+                    (count == 1).then_some(NodeTopSupportEdge { owner, start, end })
+                }),
         );
     }
     top_edges
 }
 
-fn top_source_boundary_edges(source: &NodeTopSurfacePolygonSource) -> Vec<NodeTopSupportEdgeKey> {
-    if source.vertex_keys.len() != source.vertex_height_mm.len() {
-        return Vec::new();
-    }
+fn final_polygon_boundary_edges(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Vec<(
+    NodeTopSupportEdgeKey,
+    NodeTopSupportVertexKey,
+    NodeTopSupportVertexKey,
+)> {
     let mut edges = Vec::new();
-    for index in 0..source.vertex_keys.len() {
-        let next = (index + 1) % source.vertex_keys.len();
-        edges.push(NodeTopSupportEdgeKey::from_source_vertices(
-            source.vertex_keys[index],
-            source.vertex_height_mm[index],
-            source.vertex_keys[next],
-            source.vertex_height_mm[next],
-        ));
+    if polygon.triangles_world.is_empty() {
+        push_loop_edges(&polygon.points_world, &mut edges);
+        return edges;
+    }
+    for triangle in &polygon.triangles_world {
+        for edge_index in 0..3 {
+            if let Some(edge) = top_support_edge_from_world_points(
+                triangle[edge_index],
+                triangle[(edge_index + 1) % 3],
+            ) {
+                edges.push(edge);
+            }
+        }
     }
     edges
 }
 
-fn raised_step_face_has_owned_top_support(
-    face: &RoadSurfaceRaisedStepFace,
-    top_edges: &[NodeTopSupportEdge],
-) -> bool {
-    let Some((lower_owner, raised_owner)) = vertical_face_lower_and_raised_owners(face.source)
-    else {
-        return false;
-    };
-    let lower_edge = NodeTopSupportEdgeKey::from_boundary_points(face.lower_edge);
-    let upper_edge = NodeTopSupportEdgeKey::from_boundary_points(face.upper_edge);
-    top_edges
-        .iter()
-        .any(|top_edge| top_edge.owner == lower_owner && top_edge.contains(lower_edge))
-        && top_edges
-            .iter()
-            .any(|top_edge| top_edge.owner == raised_owner && top_edge.contains(upper_edge))
+fn push_loop_edges(
+    points: &[RoadVec3],
+    edges: &mut Vec<(
+        NodeTopSupportEdgeKey,
+        NodeTopSupportVertexKey,
+        NodeTopSupportVertexKey,
+    )>,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    for index in 0..points.len() {
+        let next = (index + 1) % points.len();
+        if let Some(edge) = top_support_edge_from_world_points(points[index], points[next]) {
+            edges.push(edge);
+        }
+    }
 }
 
-fn vertical_face_lower_and_raised_owners(
+fn top_support_edge_from_world_points(
+    start: RoadVec3,
+    end: RoadVec3,
+) -> Option<(
+    NodeTopSupportEdgeKey,
+    NodeTopSupportVertexKey,
+    NodeTopSupportVertexKey,
+)> {
+    let start = NodeTopSupportVertexKey::from_world_point(start);
+    let end = NodeTopSupportVertexKey::from_world_point(end);
+    NodeTopSupportEdgeKey::from_vertices(start, end).map(|key| (key, start, end))
+}
+
+fn complete_raised_step_faces_from_final_spans(
+    raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
+    required_spans: &[FinalRequiredRaisedStepSpan],
+    required_keys: &BTreeSet<RaisedStepFaceSupportKey>,
+) {
+    // Final owner-wide top boundaries are the rendered authority. Rebuild the face set from these
+    // spans so stale arrangement-side quads cannot block corrected final support geometry.
+    let mut rebuilt = Vec::new();
+    let mut emitted = BTreeSet::new();
+
+    for span in required_spans.iter().copied() {
+        let Some(key) = raised_step_face_support_key_from_span(span) else {
+            continue;
+        };
+        if !required_keys.contains(&key) || !emitted.insert(key) {
+            continue;
+        }
+        if let Some(face) = raised_step_face_from_span(span) {
+            rebuilt.push(face);
+        }
+    }
+    *raised_step_faces = rebuilt;
+}
+
+fn final_required_raised_step_spans(
+    explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+    top_edges: &[NodeTopSupportEdge],
+) -> Vec<FinalRequiredRaisedStepSpan> {
+    let mut spans = Vec::new();
+    let mut emitted = BTreeSet::<RaisedStepFaceSupportKey>::new();
+    for (left_index, left_edge) in top_edges.iter().copied().enumerate() {
+        for right_edge in top_edges.iter().copied().skip(left_index + 1) {
+            let Some((lower_edge, raised_edge, lower_owner, raised_owner)) =
+                final_top_edges_form_raised_step_pair(left_edge, right_edge)
+            else {
+                continue;
+            };
+            for (step_index, source_segment) in
+                explicit_vertical_step_segments.iter().copied().enumerate()
+            {
+                let Some(support_match) = explicit_vertical_step_final_support_interval(
+                    step_index,
+                    source_segment,
+                    lower_edge,
+                    raised_edge,
+                    lower_owner,
+                    raised_owner,
+                ) else {
+                    continue;
+                };
+                let span = FinalRequiredRaisedStepSpan {
+                    lower_owner,
+                    raised_owner,
+                    lower_edge,
+                    raised_edge,
+                    segment_start: support_match.segment_start,
+                    segment_end: support_match.segment_end,
+                    start_t: support_match.start_t,
+                    end_t: support_match.end_t,
+                    source: support_match.source,
+                };
+                let Some(key) = raised_step_face_support_key_from_span(span) else {
+                    continue;
+                };
+                if emitted.insert(key) {
+                    spans.push(span);
+                }
+            }
+        }
+    }
+    spans
+}
+
+fn explicit_vertical_step_final_support_interval(
+    explicit_vertical_step_index: usize,
+    segment: NodeExplicitVerticalStepSegment,
+    lower_edge: NodeTopSupportEdge,
+    raised_edge: NodeTopSupportEdge,
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+) -> Option<FinalStepSupportMatch> {
+    let Some((source_lower_owner, source_raised_owner)) =
+        vertical_step_lower_and_raised_owners(segment)
+    else {
+        return None;
+    };
+    let source = vertical_step_source_for_final_support_owners(
+        explicit_vertical_step_index,
+        segment,
+        source_lower_owner,
+        source_raised_owner,
+        lower_owner,
+        raised_owner,
+    )?;
+    let segment_start =
+        keys::SurfaceXzKey::from_raw_keys(segment.start().x_key(), segment.start().z_key());
+    let segment_end =
+        keys::SurfaceXzKey::from_raw_keys(segment.end().x_key(), segment.end().z_key());
+    let (lower_start_t, lower_end_t) =
+        support_edge_overlap_interval_on_segment(lower_edge, segment_start, segment_end)?;
+    let (raised_start_t, raised_end_t) =
+        support_edge_overlap_interval_on_segment(raised_edge, segment_start, segment_end)?;
+    let start_t = lower_start_t.max(raised_start_t);
+    let end_t = lower_end_t.min(raised_end_t);
+    (end_t > start_t).then_some(FinalStepSupportMatch {
+        segment_start,
+        segment_end,
+        start_t,
+        end_t,
+        source,
+    })
+}
+
+fn vertical_step_source_for_final_support_owners(
+    explicit_vertical_step_index: usize,
+    segment: NodeExplicitVerticalStepSegment,
+    source_lower_owner: NodeBandOwner,
+    source_raised_owner: NodeBandOwner,
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+) -> Option<RoadSurfaceVerticalFaceSource> {
+    if source_lower_owner == lower_owner && source_raised_owner == raised_owner {
+        return Some(RoadSurfaceVerticalFaceSource::CanonicalStep {
+            explicit_vertical_step_index,
+            segment,
+        });
+    }
+    if source_lower_owner.kind() != lower_owner.kind()
+        || source_raised_owner.kind() != raised_owner.kind()
+    {
+        return None;
+    }
+    if source_lower_owner != lower_owner && source_raised_owner != raised_owner {
+        return None;
+    }
+    Some(
+        RoadSurfaceVerticalFaceSource::CanonicalStepSameMaterialHandoff {
+            explicit_vertical_step_index,
+            segment,
+            lower_owner,
+            raised_owner,
+        },
+    )
+}
+
+fn final_top_edges_form_raised_step_pair(
+    left_edge: NodeTopSupportEdge,
+    right_edge: NodeTopSupportEdge,
+) -> Option<(
+    NodeTopSupportEdge,
+    NodeTopSupportEdge,
+    NodeBandOwner,
+    NodeBandOwner,
+)> {
+    let (lower_kind, raised_kind) =
+        ordered_raised_step_kinds(left_edge.owner.kind(), right_edge.owner.kind())?;
+    if left_edge.owner.kind() == lower_kind && right_edge.owner.kind() == raised_kind {
+        Some((left_edge, right_edge, left_edge.owner, right_edge.owner))
+    } else {
+        Some((right_edge, left_edge, right_edge.owner, left_edge.owner))
+    }
+}
+
+fn required_raised_step_face_keys(
+    spans: &[FinalRequiredRaisedStepSpan],
+) -> BTreeSet<RaisedStepFaceSupportKey> {
+    spans
+        .iter()
+        .copied()
+        .filter_map(raised_step_face_support_key_from_span)
+        .collect()
+}
+
+fn raised_step_face_from_span(
+    span: FinalRequiredRaisedStepSpan,
+) -> Option<RoadSurfaceRaisedStepFace> {
+    raised_step_face_from_top_support(
+        span.lower_edge,
+        span.raised_edge,
+        span.segment_start,
+        span.segment_end,
+        span.start_t,
+        span.end_t,
+        span.source,
+    )
+}
+
+fn raised_step_face_from_top_support(
+    lower_edge: NodeTopSupportEdge,
+    raised_edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+    start_t: keys::SurfaceSegmentParameter,
+    end_t: keys::SurfaceSegmentParameter,
     source: RoadSurfaceVerticalFaceSource,
+) -> Option<RoadSurfaceRaisedStepFace> {
+    let keys = raised_step_boundary_points_from_top_support(
+        lower_edge,
+        raised_edge,
+        segment_start,
+        segment_end,
+        start_t,
+        end_t,
+    )?;
+
+    let lower_start = boundary_point_to_world(keys.lower_start);
+    let lower_end = boundary_point_to_world(keys.lower_end);
+    let raised_start = boundary_point_to_world(keys.raised_start);
+    let raised_end = boundary_point_to_world(keys.raised_end);
+    let lower_owner_on_right =
+        support_edge_owner_lies_right_of_segment(lower_edge, segment_start, segment_end)?;
+    let points = if lower_owner_on_right {
+        [raised_start, lower_start, lower_end, raised_end]
+    } else {
+        [raised_end, lower_end, lower_start, raised_start]
+    };
+    let polygon = RoadSurfaceSystem::make_vertical_quad_polygon(points)?;
+    Some(RoadSurfaceRaisedStepFace {
+        polygon,
+        source,
+        lower_edge: (keys.lower_start, keys.lower_end),
+    })
+}
+
+fn raised_step_boundary_points_from_top_support(
+    lower_edge: NodeTopSupportEdge,
+    raised_edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+    start_t: keys::SurfaceSegmentParameter,
+    end_t: keys::SurfaceSegmentParameter,
+) -> Option<RaisedStepBoundaryPointKeys> {
+    let lower_start =
+        support_edge_point_at_segment_parameter(lower_edge, segment_start, segment_end, start_t)?;
+    let lower_end =
+        support_edge_point_at_segment_parameter(lower_edge, segment_start, segment_end, end_t)?;
+    let raised_start =
+        support_edge_point_at_segment_parameter(raised_edge, segment_start, segment_end, start_t)?;
+    let raised_end =
+        support_edge_point_at_segment_parameter(raised_edge, segment_start, segment_end, end_t)?;
+    if lower_start.xz_key() == lower_end.xz_key()
+        || raised_start.xz_key() == raised_end.xz_key()
+        || raised_start.y_mm < lower_start.y_mm
+        || raised_end.y_mm < lower_end.y_mm
+        || (raised_start.y_mm == lower_start.y_mm && raised_end.y_mm == lower_end.y_mm)
+    {
+        return None;
+    }
+    Some(RaisedStepBoundaryPointKeys {
+        lower_start,
+        lower_end,
+        raised_start,
+        raised_end,
+    })
+}
+
+fn raised_step_face_support_key_from_span(
+    span: FinalRequiredRaisedStepSpan,
+) -> Option<RaisedStepFaceSupportKey> {
+    let keys = raised_step_boundary_points_from_top_support(
+        span.lower_edge,
+        span.raised_edge,
+        span.segment_start,
+        span.segment_end,
+        span.start_t,
+        span.end_t,
+    )?;
+    Some(RaisedStepFaceSupportKey {
+        lower_owner: span.lower_owner,
+        raised_owner: span.raised_owner,
+        lower_edge: NodeTopSupportEdgeKey::from_boundary_points((keys.lower_start, keys.lower_end)),
+        upper_edge: NodeTopSupportEdgeKey::from_boundary_points((
+            keys.raised_start,
+            keys.raised_end,
+        )),
+    })
+}
+
+fn raised_step_owner_centroids(
+    owned_regions: &[NodeOwnedRegion],
+) -> BTreeMap<NodeBandOwner, RoadVec3> {
+    let mut sums = BTreeMap::<NodeBandOwner, (RoadVec3, usize)>::new();
+    for region in owned_regions {
+        let owner = NodeBandOwner::new(region.kind, region.owner_index);
+        let entry = sums.entry(owner).or_insert((RoadVec3::ZERO, 0));
+        if !region.polygon.points_world.is_empty() {
+            for point in &region.polygon.points_world {
+                entry.0 += RoadVec3::new(point.x, 0.0, point.z);
+                entry.1 += 1;
+            }
+        } else {
+            for point in region
+                .polygon
+                .triangles_world
+                .iter()
+                .flat_map(|triangle| triangle.iter())
+            {
+                entry.0 += RoadVec3::new(point.x, 0.0, point.z);
+                entry.1 += 1;
+            }
+        }
+    }
+    sums.into_iter()
+        .filter_map(|(owner, (sum, count))| (count > 0).then_some((owner, sum / count as f64)))
+        .collect()
+}
+
+fn orient_raised_step_faces_from_lower_owner(
+    raised_step_faces: &mut [RoadSurfaceRaisedStepFace],
+    owner_centroids: &BTreeMap<NodeBandOwner, RoadVec3>,
+) {
+    for face in raised_step_faces {
+        let Some((lower_owner, _)) = face.source.lower_and_raised_owners() else {
+            continue;
+        };
+        let Some(lower_centroid) = owner_centroids.get(&lower_owner).copied() else {
+            continue;
+        };
+        let lower_start = boundary_point_to_world(face.lower_edge.0);
+        let lower_end = boundary_point_to_world(face.lower_edge.1);
+        let midpoint = RoadVec3::new(
+            (lower_start.x + lower_end.x) * 0.5,
+            0.0,
+            (lower_start.z + lower_end.z) * 0.5,
+        );
+        let owner_direction = RoadVec3::new(
+            lower_centroid.x - midpoint.x,
+            0.0,
+            lower_centroid.z - midpoint.z,
+        );
+        if owner_direction.length_squared() <= 1e-8 {
+            continue;
+        }
+        let Some(visible_direction) = vertical_face_visible_direction(&face.polygon.points_world)
+        else {
+            continue;
+        };
+        if visible_direction.dot(owner_direction.normalize()) > 0.0 {
+            continue;
+        }
+        let [a, b, c, d] = face.polygon.points_world.as_slice() else {
+            continue;
+        };
+        if let Some(flipped) = RoadSurfaceSystem::make_vertical_quad_polygon([*d, *c, *b, *a]) {
+            face.polygon = flipped;
+        }
+    }
+}
+
+fn vertical_face_visible_direction(points: &[RoadVec3]) -> Option<RoadVec3> {
+    if points.len() < 3 {
+        return None;
+    }
+    for index in 1..points.len().saturating_sub(1) {
+        let normal = (points[index] - points[0]).cross(points[index + 1] - points[0]);
+        if normal.length_squared() > 1e-8 {
+            let visible = -normal.normalize();
+            let visible_xz = RoadVec3::new(visible.x, 0.0, visible.z);
+            return (visible_xz.length_squared() > 1e-8).then(|| visible_xz.normalize());
+        }
+    }
+    None
+}
+
+fn vertical_step_lower_and_raised_owners(
+    segment: NodeExplicitVerticalStepSegment,
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {
-    let segment = source.segment();
     let owner = segment.owner();
     let opposite_owner = segment.opposite_owner();
     let (lower_kind, _) = ordered_raised_step_kinds(owner.kind(), opposite_owner.kind())?;
@@ -108,23 +552,121 @@ fn vertical_face_lower_and_raised_owners(
     })
 }
 
+fn support_edge_overlap_interval_on_segment(
+    edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<(keys::SurfaceSegmentParameter, keys::SurfaceSegmentParameter)> {
+    clipped_endpoint_parameter_interval(edge.start.xz, edge.end.xz, segment_start, segment_end)
+}
+
+fn clipped_endpoint_parameter_interval(
+    overlap_start: keys::SurfaceXzKey,
+    overlap_end: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<(keys::SurfaceSegmentParameter, keys::SurfaceSegmentParameter)> {
+    let start = endpoint_parameter_on_segment(overlap_start, segment_start, segment_end)?;
+    let end = endpoint_parameter_on_segment(overlap_end, segment_start, segment_end)?;
+    let low = start.min(end);
+    let high = start.max(end);
+    let start = low.max(keys::SurfaceSegmentParameter::zero());
+    let end = high.min(keys::SurfaceSegmentParameter::one());
+    (end > start).then_some((start, end))
+}
+
+fn endpoint_parameter_on_segment(
+    point: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<keys::SurfaceSegmentParameter> {
+    segments::overlay_segment_parameter(point, segment_start, segment_end)
+        .or_else(|| segments::exact_line_parameter(point, segment_start, segment_end))
+        .or_else(|| overlay_grid_line_parameter(point, segment_start, segment_end))
+}
+
+fn overlay_grid_line_parameter(
+    point: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<keys::SurfaceSegmentParameter> {
+    if !segments::key_collinear_with_overlay_grid_segment(point, segment_start, segment_end) {
+        return None;
+    }
+    let dx = i128::from(segment_end.x_key() - segment_start.x_key());
+    let dz = i128::from(segment_end.z_key() - segment_start.z_key());
+    let denominator = dx * dx + dz * dz;
+    keys::SurfaceSegmentParameter::new(
+        segments::segment_parameter_key(segment_start, segment_end, point),
+        denominator,
+    )
+}
+
+fn support_edge_point_at_segment_parameter(
+    edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+    parameter: keys::SurfaceSegmentParameter,
+) -> Option<ArrangementBoundaryPointKey> {
+    let xz = segments::interpolate_key(segment_start, segment_end, parameter);
+    support_edge_point_at_xz(edge, xz)
+}
+
+fn support_edge_point_at_xz(
+    edge: NodeTopSupportEdge,
+    xz: keys::SurfaceXzKey,
+) -> Option<ArrangementBoundaryPointKey> {
+    let edge_parameter = endpoint_parameter_on_segment(xz, edge.start.xz, edge.end.xz)?;
+    Some(ArrangementBoundaryPointKey {
+        x_key: xz.x_key(),
+        z_key: xz.z_key(),
+        y_mm: segments::interpolate_height_i64(edge.start.y_mm, edge.end.y_mm, edge_parameter),
+    })
+}
+
+fn support_edge_owner_lies_right_of_segment(
+    edge: NodeTopSupportEdge,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<bool> {
+    let start_t = support_edge_order_key(edge.start.xz, segment_start, segment_end)?;
+    let end_t = support_edge_order_key(edge.end.xz, segment_start, segment_end)?;
+    Some(end_t < start_t)
+}
+
+fn support_edge_order_key(
+    point: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<i128> {
+    if segment_start == segment_end {
+        return None;
+    }
+    Some(segments::segment_parameter_key(
+        segment_start,
+        segment_end,
+        point,
+    ))
+}
+
+fn boundary_point_to_world(point: ArrangementBoundaryPointKey) -> RoadVec3 {
+    let xz = keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key).to_road_xz();
+    RoadVec3::new(xz.x, point.y_mm as f64 / 1000.0, xz.y)
+}
+
 impl NodeTopSupportEdgeKey {
-    fn from_source_vertices(
-        start_key: super::super::arrangement::NodeArrangementKey,
-        start_y_mm: i64,
-        end_key: super::super::arrangement::NodeArrangementKey,
-        end_y_mm: i64,
-    ) -> Self {
-        let start = NodeTopSupportVertexKey::from_source(start_key, start_y_mm);
-        let end = NodeTopSupportVertexKey::from_source(end_key, end_y_mm);
-        if start <= end {
+    fn from_vertices(start: NodeTopSupportVertexKey, end: NodeTopSupportVertexKey) -> Option<Self> {
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
             Self { start, end }
         } else {
             Self {
                 start: end,
                 end: start,
             }
-        }
+        })
     }
 
     fn from_boundary_points(
@@ -144,10 +686,10 @@ impl NodeTopSupportEdgeKey {
 }
 
 impl NodeTopSupportVertexKey {
-    fn from_source(key: super::super::arrangement::NodeArrangementKey, y_mm: i64) -> Self {
+    fn from_world_point(point: RoadVec3) -> Self {
         Self {
-            xz: keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key()),
-            y_mm,
+            xz: keys::SurfaceXzKey::from_world_xz(point),
+            y_mm: keys::SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
         }
     }
 
@@ -156,25 +698,5 @@ impl NodeTopSupportVertexKey {
             xz: keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key),
             y_mm: point.y_mm,
         }
-    }
-}
-
-impl NodeTopSupportEdge {
-    fn contains(self, candidate: NodeTopSupportEdgeKey) -> bool {
-        self.contains_vertex(candidate.start) && self.contains_vertex(candidate.end)
-    }
-
-    fn contains_vertex(self, vertex: NodeTopSupportVertexKey) -> bool {
-        if !segments::key_lies_exactly_on_segment(vertex.xz, self.key.start.xz, self.key.end.xz) {
-            return false;
-        }
-        let Some(parameter) =
-            segments::exact_line_parameter(vertex.xz, self.key.start.xz, self.key.end.xz)
-        else {
-            return false;
-        };
-        let expected_y_mm =
-            segments::interpolate_height_i64(self.key.start.y_mm, self.key.end.y_mm, parameter);
-        vertex.y_mm == expected_y_mm
     }
 }

@@ -9,8 +9,6 @@ pub(in crate::simulation::network::surface::node) struct RoadSurfaceRaisedStepFa
     pub(in crate::simulation::network::surface::node) source: RoadSurfaceVerticalFaceSource,
     pub(in crate::simulation::network::surface::node) lower_edge:
         (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-    pub(in crate::simulation::network::surface::node) upper_edge:
-        (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
 }
 
 impl RoadSurfaceSystem {
@@ -18,6 +16,8 @@ impl RoadSurfaceSystem {
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
     ) -> Vec<RoadSurfaceRaisedStepFace> {
+        let derived_overlap_segments =
+            arrangement.derived_overlap_explicit_vertical_step_segments();
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for (step_index, segment) in explicit_vertical_step_segments.iter().copied().enumerate() {
@@ -27,17 +27,20 @@ impl RoadSurfaceSystem {
                 continue;
             };
             let segment_key = (segment.start(), segment.end());
+            let allow_overlay_only_overlap = derived_overlap_segments.contains(&segment);
             let lower_intervals = arrangement_owner_face_boundary_intervals_for_segment(
                 arrangement,
                 lower_owner,
                 segment_key,
                 false,
+                allow_overlay_only_overlap,
             );
             let raised_intervals = arrangement_owner_face_boundary_intervals_for_segment(
                 arrangement,
                 raised_owner,
                 segment_key,
                 true,
+                allow_overlay_only_overlap,
             );
             let shared_intervals =
                 arrangement_shared_face_boundary_intervals(&lower_intervals, &raised_intervals);
@@ -128,7 +131,6 @@ impl RoadSurfaceSystem {
                     segment,
                 },
                 lower_edge: (lower_start_key, lower_end_key),
-                upper_edge: (raised_start_key, raised_end_key),
             });
         }
     }
@@ -198,11 +200,29 @@ fn lower_interval_owner_lies_right_of_segment(
 ) -> Option<bool> {
     let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
-    let edge_start_t =
-        boundary_segment_parameter_xz(lower_interval.edge_start, segment_start, segment_end)?;
-    let edge_end_t =
-        boundary_segment_parameter_xz(lower_interval.edge_end, segment_start, segment_end)?;
+    let edge_start_t = arrangement_boundary_segment_order_key(
+        lower_interval.edge_start,
+        segment_start,
+        segment_end,
+    )?;
+    let edge_end_t = arrangement_boundary_segment_order_key(
+        lower_interval.edge_end,
+        segment_start,
+        segment_end,
+    )?;
     Some(edge_end_t < edge_start_t)
+}
+
+fn arrangement_boundary_segment_order_key(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<i128> {
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
+    (dx != 0 || dz != 0).then_some(px * dx + pz * dz)
 }
 
 fn vertical_face_dedup_key(

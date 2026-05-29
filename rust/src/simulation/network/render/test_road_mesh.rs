@@ -14,6 +14,7 @@ mod tests {
     use crate::simulation::network::graph::data::Edge;
     use crate::simulation::network::render::road::RoadRenderer;
     use crate::simulation::network::render::{NetworkMeshData, TransitRenderer};
+    use crate::simulation::network::surface::RoadSurfaceSystem;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use crate::simulation::terrain::TerrainSystem;
     use godot::prelude::*;
@@ -39,6 +40,21 @@ mod tests {
     struct RenderEdgeKey {
         start: RenderVertexKey,
         end: RenderVertexKey,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum RenderTopOwnerKind {
+        Road,
+        Curb,
+        Sidewalk,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct RenderTopBoundaryEdge {
+        kind: RenderTopOwnerKind,
+        start: Vector3,
+        end: Vector3,
+        avg_y: f32,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,6 +149,14 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         }
+    }
+
+    fn road_points_from_json(points_json: &str) -> Vec<Vector3> {
+        serde_json::from_str::<Vec<[f32; 3]>>(points_json)
+            .expect("logged road geometry points must parse")
+            .into_iter()
+            .map(|[x, y, z]| Vector3::new(x, y, z))
+            .collect()
     }
 
     fn validate_mesh(mesh_data: &NetworkMeshData, max_dist: f32) {
@@ -259,6 +283,188 @@ mod tests {
             .into_iter()
             .filter_map(|(edge, count)| (count == 1).then(|| edge_segments[&edge]))
             .collect()
+    }
+
+    fn rendered_top_boundary_edges(
+        kind: RenderTopOwnerKind,
+        vertices: &[Vector3],
+    ) -> Vec<RenderTopBoundaryEdge> {
+        top_surface_boundary_segments(vertices)
+            .into_iter()
+            .map(|[start, end]| RenderTopBoundaryEdge {
+                kind,
+                start,
+                end,
+                avg_y: (start.y + end.y) * 0.5,
+            })
+            .collect()
+    }
+
+    fn rendered_raised_step_lower_edges(vertices: &[Vector3]) -> Vec<[Vector3; 2]> {
+        let mut lower_edges = Vec::new();
+        for triangle in triangles_from_vertices(vertices) {
+            if triangle_projected_double_area(triangle).abs() >= 0.001
+                || triangle_y_delta(triangle) < 0.05
+            {
+                continue;
+            }
+            let horizontal_edges = triangle_edges(triangle)
+                .into_iter()
+                .filter(|[start, end]| {
+                    Vector2::new(end.x - start.x, end.z - start.z).length() >= 0.001
+                        && (end.y - start.y).abs() <= 0.001
+                })
+                .collect::<Vec<_>>();
+            if horizontal_edges.len() != 1 {
+                continue;
+            }
+            let edge = horizontal_edges[0];
+            let min_triangle_y = triangle[0].y.min(triangle[1].y).min(triangle[2].y);
+            if (edge[0].y - min_triangle_y).abs() <= 0.001 {
+                lower_edges.push(edge);
+            }
+        }
+        lower_edges
+    }
+
+    fn assert_rendered_height_jumps_have_raised_step_faces(mesh_data: &NetworkMeshData) {
+        let mut top_edges = Vec::new();
+        top_edges.extend(rendered_top_boundary_edges(
+            RenderTopOwnerKind::Road,
+            &mesh_data.road_vertices,
+        ));
+        top_edges.extend(rendered_top_boundary_edges(
+            RenderTopOwnerKind::Curb,
+            &mesh_data.curb_vertices,
+        ));
+        top_edges.extend(rendered_top_boundary_edges(
+            RenderTopOwnerKind::Sidewalk,
+            &mesh_data.sidewalk_vertices,
+        ));
+        let raised_lower_edges = rendered_raised_step_lower_edges(&mesh_data.raised_step_vertices);
+
+        for (left_index, left_edge) in top_edges.iter().enumerate() {
+            for right_edge in top_edges.iter().skip(left_index + 1) {
+                if left_edge.kind == right_edge.kind {
+                    continue;
+                }
+                let (lower_edge, raised_edge) = if left_edge.avg_y <= right_edge.avg_y {
+                    (*left_edge, *right_edge)
+                } else {
+                    (*right_edge, *left_edge)
+                };
+                if lower_edge.avg_y + 0.01 >= raised_edge.avg_y {
+                    continue;
+                }
+                if !rendered_top_kinds_form_raised_step(lower_edge.kind, raised_edge.kind) {
+                    continue;
+                }
+                let Some(overlap) = rendered_xz_overlap_interval(lower_edge, raised_edge) else {
+                    continue;
+                };
+                assert!(
+                    rendered_lower_edges_cover_interval(lower_edge, overlap, &raised_lower_edges),
+                    "rendered cross-material height jump must have raised-step upload triangles; overlap={overlap:?} lower={:?} {:?}->{:?} raised={:?} {:?}->{:?} raised_lower_edges={raised_lower_edges:?}",
+                    lower_edge.kind,
+                    lower_edge.start,
+                    lower_edge.end,
+                    raised_edge.kind,
+                    raised_edge.start,
+                    raised_edge.end
+                );
+            }
+        }
+    }
+
+    fn rendered_top_kinds_form_raised_step(
+        lower: RenderTopOwnerKind,
+        raised: RenderTopOwnerKind,
+    ) -> bool {
+        matches!(
+            (lower, raised),
+            (RenderTopOwnerKind::Road, RenderTopOwnerKind::Curb)
+                | (RenderTopOwnerKind::Road, RenderTopOwnerKind::Sidewalk)
+                | (RenderTopOwnerKind::Curb, RenderTopOwnerKind::Sidewalk)
+        )
+    }
+
+    fn rendered_xz_overlap_interval(
+        lower_edge: RenderTopBoundaryEdge,
+        raised_edge: RenderTopBoundaryEdge,
+    ) -> Option<(f32, f32)> {
+        let lower_delta = Vector2::new(
+            lower_edge.end.x - lower_edge.start.x,
+            lower_edge.end.z - lower_edge.start.z,
+        );
+        let lower_len_sq = lower_delta.length_squared();
+        if lower_len_sq <= 1.0e-8 {
+            return None;
+        }
+        let raised_start = rendered_segment_parameter_xz(raised_edge.start, lower_edge)?;
+        let raised_end = rendered_segment_parameter_xz(raised_edge.end, lower_edge)?;
+        let start = raised_start.min(raised_end).max(0.0);
+        let end = raised_start.max(raised_end).min(1.0);
+        (end > start + 0.0001).then_some((start, end))
+    }
+
+    fn rendered_segment_parameter_xz(
+        point: Vector3,
+        segment: RenderTopBoundaryEdge,
+    ) -> Option<f32> {
+        let delta = Vector2::new(
+            segment.end.x - segment.start.x,
+            segment.end.z - segment.start.z,
+        );
+        let len_sq = delta.length_squared();
+        if len_sq <= 1.0e-8 {
+            return None;
+        }
+        let offset = Vector2::new(point.x - segment.start.x, point.z - segment.start.z);
+        let t = offset.dot(delta) / len_sq;
+        if !(-0.001..=1.001).contains(&t) {
+            return None;
+        }
+        let projection = Vector2::new(segment.start.x, segment.start.z) + delta * t;
+        let distance = (Vector2::new(point.x, point.z) - projection).length();
+        (distance <= 0.001).then_some(t)
+    }
+
+    fn rendered_lower_edges_cover_interval(
+        lower_edge: RenderTopBoundaryEdge,
+        required: (f32, f32),
+        raised_lower_edges: &[[Vector3; 2]],
+    ) -> bool {
+        let mut intervals = Vec::new();
+        for [start, end] in raised_lower_edges {
+            if (start.y - lower_edge.avg_y).abs() > 0.001
+                || (end.y - lower_edge.avg_y).abs() > 0.001
+            {
+                continue;
+            }
+            let Some(start_t) = rendered_segment_parameter_xz(*start, lower_edge) else {
+                continue;
+            };
+            let Some(end_t) = rendered_segment_parameter_xz(*end, lower_edge) else {
+                continue;
+            };
+            let start = start_t.min(end_t).max(required.0);
+            let end = start_t.max(end_t).min(required.1);
+            if end > start + 0.0001 {
+                intervals.push((start, end));
+            }
+        }
+        intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let mut cursor = required.0;
+        for (start, end) in intervals {
+            if start > cursor + 0.001 {
+                return false;
+            }
+            cursor = cursor.max(end);
+            if cursor + 0.001 >= required.1 {
+                return true;
+            }
+        }
+        cursor + 0.001 >= required.1
     }
 
     fn nearby_boundary_edges_debug(target: [Vector3; 2], segments: &[[Vector3; 2]]) -> String {
@@ -477,6 +683,74 @@ mod tests {
             }
         }
         terrain
+    }
+
+    #[test]
+    fn logged_flat_three_way_junction_uploads_continuous_raised_steps() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(256, 256);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let southwest = graph.add_node(
+            Vector3::new(-73.806625, 0.0, -50.709042),
+            NodeType::Junction,
+        );
+        let center = graph.add_node(Vector3::new(3.799001, 0.0, -32.290504), NodeType::Junction);
+        let southeast = graph.add_node(
+            Vector3::new(19.964146, 0.0, -100.398422),
+            NodeType::Junction,
+        );
+        let east = graph.add_node(Vector3::new(99.692421, 0.0, -9.531635), NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            southwest,
+            center,
+            &road_points_from_json(include_str!(
+                "../surface/tests/data/logged_flat_three_way_cap_edge0.json"
+            )),
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            southeast,
+            &road_points_from_json(include_str!(
+                "../surface/tests/data/logged_flat_three_way_cap_edge1.json"
+            )),
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            east,
+            &road_points_from_json(include_str!(
+                "../surface/tests/data/logged_flat_three_way_cap_edge2.json"
+            )),
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.rebuild_intersection_clips();
+        graph.rebuild_adjacency_list();
+
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 140.0);
+        assert!(
+            !mesh_data.raised_step_vertices.is_empty(),
+            "logged JunctionN upload must contain raised-step triangles"
+        );
+        assert_rendered_height_jumps_have_raised_step_faces(&mesh_data);
     }
 
     #[test]
@@ -1140,8 +1414,8 @@ mod tests {
             TransitType::Road,
             EdgeClass::Standard,
             TransitFlags::CAR | TransitFlags::FOOT,
-            2,
-            0,
+            1,
+            1,
         ));
 
         graph.rebuild_adjacency_list();
@@ -1436,6 +1710,155 @@ mod tests {
             VisibleSurface::Road,
         );
         assert!(center_road >= 0.95);
+    }
+
+    #[test]
+    fn regenerated_flat_three_way_upload_keeps_road_edge_sideskirts() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(256, 256);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let west = graph.add_node(
+            Vector3::new(-72.868_027, 0.0, -49.521_713),
+            NodeType::Junction,
+        );
+        let center = graph.add_node(
+            Vector3::new(-21.145_235, 0.0, -24.091_516),
+            NodeType::Junction,
+        );
+        let north = graph.add_node(
+            Vector3::new(-43.206_322, 0.0, 20.778_391),
+            NodeType::Junction,
+        );
+        let east = graph.add_node(Vector3::new(32.258_186, 0.0, 2.164_986), NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            west,
+            center,
+            &[
+                Vector3::new(-72.868_027, 0.0, -49.521_713),
+                Vector3::new(-21.145_235, 0.0, -24.091_516),
+            ],
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            north,
+            &[
+                Vector3::new(-21.145_235, 0.0, -24.091_516),
+                Vector3::new(-43.206_322, 0.0, 20.778_391),
+            ],
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            east,
+            &[
+                Vector3::new(-21.145_235, 0.0, -24.091_516),
+                Vector3::new(32.258_186, 0.0, 2.164_986),
+            ],
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        road_surface.compile_dirty(&graph, &terrain);
+        let mesh_data =
+            renderer.generate_mesh_data_with_surface(&graph, &lane_system, &terrain, &road_surface);
+        validate_mesh(&mesh_data, 120.0);
+        assert_rendered_height_jumps_have_raised_step_faces(&mesh_data);
+    }
+
+    #[test]
+    fn regenerated_curved_flat_three_way_upload_keeps_corner_sideskirts() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(256, 256);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let southwest = graph.add_node(
+            Vector3::new(-107.867_722, 0.0, -42.304_695),
+            NodeType::Junction,
+        );
+        let center = graph.add_node(
+            Vector3::new(-49.643_913, 0.0, -42.304_695),
+            NodeType::Junction,
+        );
+        let southeast = graph.add_node(
+            Vector3::new(-49.643_913, 0.0, -122.304_695),
+            NodeType::Junction,
+        );
+        let east = graph.add_node(
+            Vector3::new(22.132_278, 0.0, -42.304_695),
+            NodeType::Junction,
+        );
+        let edge0 = road_points_from_json(include_str!(
+            "../surface/tests/data/logged_flat_three_way_cap_edge0.json"
+        ));
+        let edge1 = road_points_from_json(include_str!(
+            "../surface/tests/data/logged_flat_three_way_cap_edge1.json"
+        ));
+        let edge2 = road_points_from_json(include_str!(
+            "../surface/tests/data/logged_flat_three_way_cap_edge2.json"
+        ));
+        graph.add_edge(create_surface_edge(
+            southwest,
+            center,
+            &edge0,
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            southeast,
+            &edge1,
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+        graph.add_edge(create_surface_edge(
+            center,
+            east,
+            &edge2,
+            7.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        road_surface.compile_dirty(&graph, &terrain);
+        let mesh_data =
+            renderer.generate_mesh_data_with_surface(&graph, &lane_system, &terrain, &road_surface);
+        validate_mesh(&mesh_data, 140.0);
+        assert_rendered_height_jumps_have_raised_step_faces(&mesh_data);
     }
 
     #[test]

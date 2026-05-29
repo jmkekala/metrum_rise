@@ -2,11 +2,12 @@
 
 use super::super::{
     NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, RoadSurfaceSystem,
-    backend::RoadVec3, earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceHeightMmKey,
+    RoadSurfaceVisualNodePieceKind, backend::RoadVec3, earthwork::RoadSurfaceEarthworkFaceSource,
+    keys::SurfaceHeightMmKey,
 };
 use super::heights::interval_height_at;
 use super::model::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 enum TerrainClipOutputSourceSelection {
     Missing,
@@ -299,49 +300,37 @@ impl RoadSurfaceSystem {
         end: RoadVec3,
     ) -> Option<TerrainClipSourceEdge> {
         let first = *candidates.first()?;
-        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-            node_id,
-            kind,
-            owner_kind,
-            owner_index,
-            ..
-        } = first.source
-        else {
-            return None;
-        };
-        if !candidates.iter().copied().all(|candidate| {
-            candidate.kind == first.kind
-                && matches!(
-                    candidate.source,
-                    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                        node_id: candidate_node_id,
-                        kind: candidate_kind,
-                        owner_kind: candidate_owner_kind,
-                        owner_index: candidate_owner_index,
-                        ..
-                    } if candidate_node_id == node_id
-                        && candidate_kind == kind
-                        && candidate_owner_kind == owner_kind
-                        && candidate_owner_index == owner_index
-                )
-        }) {
-            return None;
-        }
-
-        Some(TerrainClipSourceEdge {
-            start,
-            end,
-            kind: first.kind,
-            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+        let (node_id, kind, owner_kind, owner_indices) =
+            Self::canonical_node_boundary_owner_set(candidates, first)?;
+        let source = if owner_indices.len() == 1 {
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
                 node_id,
                 kind,
                 owner_kind,
-                owner_index,
+                owner_index: owner_indices[0],
                 boundary_source: Some(NodeFootprintBoundarySegmentSource {
                     start: Self::canonical_output_boundary_vertex_source(start),
                     end: Self::canonical_output_boundary_vertex_source(end),
                 }),
-            },
+            }
+        } else {
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index_a: owner_indices[0],
+                owner_index_b: owner_indices[1],
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: Self::canonical_output_boundary_vertex_source(start),
+                    end: Self::canonical_output_boundary_vertex_source(end),
+                }),
+            }
+        };
+        Some(TerrainClipSourceEdge {
+            start,
+            end,
+            kind: first.kind,
+            source,
             source_index: first.source_index,
             edge_index: first.edge_index,
         })
@@ -384,38 +373,91 @@ impl RoadSurfaceSystem {
                 .entry(key)
                 .or_insert(DustConnectorGroup { first: candidate });
         }
-        let mut owner_groups = groups.into_values().collect::<Vec<_>>();
-        if owner_groups.len() != 1 {
-            return None;
-        }
-        let first = owner_groups.pop()?.first;
-        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-            node_id,
-            kind,
-            owner_kind,
-            owner_index,
-            ..
-        } = first.source
-        else {
-            return None;
+        let owner_groups = groups.into_values().collect::<Vec<_>>();
+        let first = owner_groups.first()?.first;
+        let candidates = owner_groups
+            .iter()
+            .map(|group| group.first)
+            .collect::<Vec<_>>();
+        let (node_id, kind, owner_kind, owner_indices) =
+            Self::canonical_node_boundary_owner_set(&candidates, first)?;
+        let source = if owner_indices.len() == 1 {
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index: owner_indices[0],
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: Self::canonical_output_boundary_vertex_source(start),
+                    end: Self::canonical_output_boundary_vertex_source(end),
+                }),
+            }
+        } else {
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index_a: owner_indices[0],
+                owner_index_b: owner_indices[1],
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: Self::canonical_output_boundary_vertex_source(start),
+                    end: Self::canonical_output_boundary_vertex_source(end),
+                }),
+            }
         };
         Some(TerrainClipSourceEdge {
             start,
             end,
             kind: first.kind,
-            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
-                node_id,
-                kind,
-                owner_kind,
-                owner_index,
-                boundary_source: Some(NodeFootprintBoundarySegmentSource {
-                    start: Self::canonical_output_boundary_vertex_source(start),
-                    end: Self::canonical_output_boundary_vertex_source(end),
-                }),
-            },
+            source,
             source_index: first.source_index,
             edge_index: first.edge_index,
         })
+    }
+
+    fn canonical_node_boundary_owner_set(
+        candidates: &[TerrainClipSourceEdge],
+        first: TerrainClipSourceEdge,
+    ) -> Option<(
+        u32,
+        RoadSurfaceVisualNodePieceKind,
+        super::super::RoadSurfaceBandKind,
+        Vec<usize>,
+    )> {
+        let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id,
+            kind,
+            owner_kind,
+            ..
+        } = first.source
+        else {
+            return None;
+        };
+        let mut owner_indices = BTreeSet::new();
+        for candidate in candidates.iter().copied() {
+            if candidate.kind != first.kind {
+                return None;
+            }
+            let RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: candidate_node_id,
+                kind: candidate_kind,
+                owner_kind: candidate_owner_kind,
+                owner_index,
+                ..
+            } = candidate.source
+            else {
+                return None;
+            };
+            if candidate_node_id != node_id
+                || candidate_kind != kind
+                || candidate_owner_kind != owner_kind
+            {
+                return None;
+            }
+            owner_indices.insert(owner_index);
+        }
+        let owner_indices = owner_indices.into_iter().collect::<Vec<_>>();
+        (owner_indices.len() <= 2).then_some((node_id, kind, owner_kind, owner_indices))
     }
 
     fn canonical_output_boundary_vertex_source(

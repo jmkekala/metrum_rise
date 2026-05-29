@@ -69,14 +69,43 @@ impl RoadSurfaceSystem {
                 dump.push_str(", ");
             }
             let area_m2 = Self::overlay_shape_area_m2(shape);
+            let thin_width_m = Self::debug_overlay_shape_thin_width_m(shape);
             let (centroid_x, centroid_z) = Self::overlay_shape_centroid_xz(shape);
             let (min_x, min_z, max_x, max_z) = Self::overlay_shape_bounds_xz(shape);
             let _ = write!(
                 dump,
-                "{{\"area_m2\":{:.6},\"centroid\":[{:.3}, {:.3}],\"bounds\":[[{:.3}, {:.3}], [{:.3}, {:.3}]]}}",
-                area_m2, centroid_x, centroid_z, min_x, min_z, max_x, max_z
+                "{{\"area_m2\":{:.6},\"thin_width_m\":{:.6},\"centroid\":[{:.6}, {:.6}],\"bounds\":[[{:.6}, {:.6}], [{:.6}, {:.6}]],\"contours\":[",
+                area_m2, thin_width_m, centroid_x, centroid_z, min_x, min_z, max_x, max_z
             );
+            for (contour_index, contour) in shape.iter().enumerate() {
+                if contour_index > 0 {
+                    dump.push_str(", ");
+                }
+                dump.push('[');
+                for (point_index, point) in contour.iter().enumerate() {
+                    if point_index > 0 {
+                        dump.push_str(", ");
+                    }
+                    let _ = write!(dump, "[{:.6}, {:.6}]", point[0], point[1]);
+                }
+                dump.push(']');
+            }
+            dump.push_str("]}");
         }
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn debug_overlay_shape_thin_width_m(
+        shape: &NodeOverlayShape,
+    ) -> f32 {
+        let area_m2 = Self::overlay_shape_area_m2(shape);
+        let perimeter_m = shape
+            .iter()
+            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .sum::<f32>();
+        if perimeter_m <= f32::EPSILON {
+            return 0.0;
+        }
+        2.0 * area_m2 / perimeter_m
     }
 
     pub(in crate::simulation::network::surface::debug) fn overlay_shape_centroid_xz(

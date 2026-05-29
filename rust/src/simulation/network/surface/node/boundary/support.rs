@@ -7,108 +7,26 @@ use super::*;
 enum NodeFinalOwnedFootprintBoundarySupport {
     DirectVertex,
     ExactSourceEdge,
+    CanonicalEndpointDust,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NodeFinalBoundaryEndpointDustSupport {
+    owner_kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    y_mm: i64,
 }
 
 impl NodeFinalOwnedFootprintBoundarySupport {
     fn is_exact(self) -> bool {
-        matches!(self, Self::DirectVertex | Self::ExactSourceEdge)
+        matches!(
+            self,
+            Self::DirectVertex | Self::ExactSourceEdge | Self::CanonicalEndpointDust
+        )
     }
 }
 
 impl NodeFootprintBoundaryExportSources {
-    pub(in crate::simulation::network::surface) fn exact_final_owned_footprint_boundary_points_in_same_mm(
-        &self,
-        point_key: ArrangementBoundaryPointKey,
-    ) -> Vec<ArrangementBoundaryPointKey> {
-        let target_mm = boundary_point_xz_mm_key(point_key);
-        let mut points = Vec::new();
-        points.extend(
-            self.direct_vertex_sources
-                .iter()
-                .filter(|(_, source)| {
-                    matches!(source.source, NodeFootprintBoundaryVertexSource::Direct(_))
-                })
-                .map(|(point_key, _)| *point_key)
-                .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
-        );
-        points.extend(
-            self.final_vertex_sources
-                .keys()
-                .copied()
-                .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
-        );
-        for edge in &self.final_height_edges {
-            points.extend(
-                [edge.start_point_key, edge.end_point_key]
-                    .into_iter()
-                    .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
-            );
-        }
-        for edge in self
-            .source_edges
-            .iter()
-            .filter(|edge| edge.final_footprint_boundary)
-        {
-            points.extend(
-                [edge.start_point_key, edge.end_point_key]
-                    .into_iter()
-                    .filter(|candidate| boundary_point_xz_mm_key(*candidate) == target_mm),
-            );
-        }
-        points.sort_unstable();
-        points.dedup();
-        points
-            .into_iter()
-            .filter(|candidate| {
-                self.has_exact_final_owned_footprint_boundary_support_at_point(*candidate)
-            })
-            .collect()
-    }
-
-    pub(in crate::simulation::network::surface) fn has_exact_final_owned_footprint_boundary_support_at_xz_key(
-        &self,
-        key: arrangement::NodeArrangementKey,
-    ) -> bool {
-        self.direct_vertex_sources
-            .iter()
-            .any(|(point_key, source)| {
-                point_key.xz_key() == key
-                    && matches!(source.source, NodeFootprintBoundaryVertexSource::Direct(_))
-            })
-            || self
-                .final_vertex_sources
-                .keys()
-                .any(|point_key| point_key.xz_key() == key)
-            || self.final_height_edges.iter().any(|source_edge| {
-                boundary_segment_parameter_xz_on_segment(
-                    ArrangementBoundaryPointKey {
-                        x_key: key.x_key(),
-                        z_key: key.z_key(),
-                        y_mm: 0,
-                    },
-                    source_edge.start_point_key,
-                    source_edge.end_point_key,
-                )
-                .is_some()
-            })
-            || self
-                .source_edges
-                .iter()
-                .filter(|edge| edge.final_footprint_boundary)
-                .any(|source_edge| {
-                    boundary_segment_parameter_xz_on_segment(
-                        ArrangementBoundaryPointKey {
-                            x_key: key.x_key(),
-                            z_key: key.z_key(),
-                            y_mm: 0,
-                        },
-                        source_edge.start_point_key,
-                        source_edge.end_point_key,
-                    )
-                    .is_some()
-                })
-    }
-
     pub(in crate::simulation::network::surface) fn has_exact_final_owned_footprint_boundary_support_at_point(
         &self,
         point_key: ArrangementBoundaryPointKey,
@@ -154,6 +72,13 @@ impl NodeFootprintBoundaryExportSources {
         }) {
             return Some(NodeFinalOwnedFootprintBoundarySupport::ExactSourceEdge);
         }
+        if self
+            .final_endpoint_dust_height_candidates_at_key(point_key.xz_key())
+            .iter()
+            .any(|candidate| candidate.height_mm == point_key.y_mm)
+        {
+            return Some(NodeFinalOwnedFootprintBoundarySupport::CanonicalEndpointDust);
+        }
         self.source_edges
             .iter()
             .filter(|edge| edge.final_footprint_boundary)
@@ -162,13 +87,77 @@ impl NodeFootprintBoundaryExportSources {
                     .map(|_| NodeFinalOwnedFootprintBoundarySupport::ExactSourceEdge)
             })
     }
-}
 
-fn boundary_point_xz_mm_key(point_key: ArrangementBoundaryPointKey) -> (i64, i64) {
-    (
-        SurfaceXzKey::coordinate_key_to_mm(point_key.x_key),
-        SurfaceXzKey::coordinate_key_to_mm(point_key.z_key),
-    )
+    pub(in crate::simulation::network::surface::node::boundary) fn final_endpoint_dust_height_candidates_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        let supports = self.final_endpoint_dust_supports_at_key(key);
+        let mut candidates = Vec::new();
+        for support in &supports {
+            if supports
+                .iter()
+                .filter(|candidate| {
+                    candidate.owner_kind == support.owner_kind
+                        && candidate.owner_index == support.owner_index
+                        && candidate.y_mm == support.y_mm
+                })
+                .count()
+                < 2
+            {
+                continue;
+            }
+            let candidate = NodeFootprintBoundaryHeightCandidate {
+                height_mm: support.y_mm,
+                source: NodeFootprintBoundaryDirectVertex {
+                    source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                        x_key: key.x_key(),
+                        z_key: key.z_key(),
+                        y_mm: support.y_mm,
+                    },
+                    owner_kind: support.owner_kind,
+                    owner_index: support.owner_index,
+                },
+            };
+            if !candidates.iter().any(|existing| *existing == candidate) {
+                candidates.push(candidate);
+            }
+        }
+        candidates
+    }
+
+    fn final_endpoint_dust_supports_at_key(
+        &self,
+        key: arrangement::NodeArrangementKey,
+    ) -> Vec<NodeFinalBoundaryEndpointDustSupport> {
+        let point = arrangement_key(key);
+        self.final_height_edges
+            .iter()
+            .filter_map(|edge| {
+                let start = arrangement_key(edge.start_point_key.xz_key());
+                let end = arrangement_key(edge.end_point_key.xz_key());
+                let near_start = key_distance_squared(point, start)
+                    <= i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS)
+                        * i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+                let near_end = key_distance_squared(point, end)
+                    <= i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS)
+                        * i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+                let y_mm = match (near_start, near_end) {
+                    (true, false) => edge.start_point_key.y_mm,
+                    (false, true) => edge.end_point_key.y_mm,
+                    (true, true) if edge.start_point_key.y_mm == edge.end_point_key.y_mm => {
+                        edge.start_point_key.y_mm
+                    }
+                    _ => return None,
+                };
+                Some(NodeFinalBoundaryEndpointDustSupport {
+                    owner_kind: edge.owner_kind,
+                    owner_index: edge.owner_index,
+                    y_mm,
+                })
+            })
+            .collect()
+    }
 }
 
 fn node_footprint_boundary_vertex_source_is_exact(

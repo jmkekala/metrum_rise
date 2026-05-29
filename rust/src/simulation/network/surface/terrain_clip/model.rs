@@ -285,6 +285,34 @@ fn terrain_clip_sources_same_provenance(
                     boundary_source_b,
                 )
         }
+        (
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_a,
+                kind: kind_a,
+                owner_kind: owner_kind_a,
+                owner_index_a: owner_index_a_a,
+                owner_index_b: owner_index_b_a,
+                boundary_source: boundary_source_a,
+            },
+            RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_b,
+                kind: kind_b,
+                owner_kind: owner_kind_b,
+                owner_index_a: owner_index_a_b,
+                owner_index_b: owner_index_b_b,
+                boundary_source: boundary_source_b,
+            },
+        ) => {
+            node_id_a == node_id_b
+                && kind_a == kind_b
+                && owner_kind_a == owner_kind_b
+                && owner_index_a_a == owner_index_a_b
+                && owner_index_b_a == owner_index_b_b
+                && terrain_clip_boundary_sources_same_undirected(
+                    boundary_source_a,
+                    boundary_source_b,
+                )
+        }
         _ => a == b,
     }
 }

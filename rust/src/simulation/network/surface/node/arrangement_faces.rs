@@ -19,6 +19,7 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
     owner: NodeBandOwner,
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     include_internal_edges: bool,
+    allow_overlay_only_overlap: bool,
 ) -> Vec<ArrangementFaceBoundaryInterval> {
     let mut edge_counts = BTreeMap::<
         (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
@@ -69,9 +70,12 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
         if !include_internal_edges && count != 1 {
             continue;
         }
-        if let Some((start, end)) =
-            arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
-        {
+        if let Some((start, end)) = arrangement_face_boundary_overlap_interval(
+            segment_key,
+            edge_start,
+            edge_end,
+            allow_overlay_only_overlap,
+        ) {
             intervals.push(ArrangementFaceBoundaryInterval {
                 owner,
                 start,
@@ -101,9 +105,12 @@ pub(super) fn arrangement_owner_face_boundary_intervals_for_segment(
             else {
                 continue;
             };
-            if let Some((start, end)) =
-                arrangement_face_boundary_overlap_interval(segment_key, edge_start, edge_end)
-            {
+            if let Some((start, end)) = arrangement_face_boundary_overlap_interval(
+                segment_key,
+                edge_start,
+                edge_end,
+                allow_overlay_only_overlap,
+            ) {
                 intervals.push(ArrangementFaceBoundaryInterval {
                     owner,
                     start,
@@ -169,18 +176,84 @@ fn arrangement_face_boundary_overlap_interval(
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     edge_start: ArrangementBoundaryPointKey,
     edge_end: ArrangementBoundaryPointKey,
+    allow_overlay_only_overlap: bool,
 ) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
     let segment_start = arrangement_key_boundary_point(segment_key.0, 0);
     let segment_end = arrangement_key_boundary_point(segment_key.1, 0);
-    let edge_start_t = boundary_segment_parameter_xz(edge_start, segment_start, segment_end)?;
-    let edge_end_t = boundary_segment_parameter_xz(edge_end, segment_start, segment_end)?;
-    let start = edge_start_t
-        .min(edge_end_t)
+    if !allow_overlay_only_overlap
+        && !arrangement_boundary_segments_have_exact_anchor(
+            segment_start,
+            segment_end,
+            edge_start,
+            edge_end,
+        )
+    {
+        return None;
+    }
+    let mut parameters = Vec::new();
+    if let Some(parameter) =
+        arrangement_boundary_segment_parameter_xz(edge_start, segment_start, segment_end)
+    {
+        parameters.push(parameter);
+    }
+    if let Some(parameter) =
+        arrangement_boundary_segment_parameter_xz(edge_end, segment_start, segment_end)
+    {
+        parameters.push(parameter);
+    }
+    if arrangement_boundary_segment_parameter_xz(segment_start, edge_start, edge_end).is_some() {
+        parameters.push(ArrangementSegmentParameter::zero());
+    }
+    if arrangement_boundary_segment_parameter_xz(segment_end, edge_start, edge_end).is_some() {
+        parameters.push(ArrangementSegmentParameter::one());
+    }
+    parameters.sort();
+    parameters.dedup();
+    let start = parameters
+        .first()
+        .copied()?
         .max(ArrangementSegmentParameter::zero());
-    let end = edge_start_t
-        .max(edge_end_t)
+    let end = parameters
+        .last()
+        .copied()?
         .min(ArrangementSegmentParameter::one());
     (end > start).then_some((start, end))
+}
+
+fn arrangement_boundary_segments_have_exact_anchor(
+    segment_start: ArrangementBoundaryPointKey,
+    segment_end: ArrangementBoundaryPointKey,
+    edge_start: ArrangementBoundaryPointKey,
+    edge_end: ArrangementBoundaryPointKey,
+) -> bool {
+    segment_start.xz_key() == edge_start.xz_key()
+        || segment_start.xz_key() == edge_end.xz_key()
+        || segment_end.xz_key() == edge_start.xz_key()
+        || segment_end.xz_key() == edge_end.xz_key()
+        || arrangement_boundary_segment_parameter_xz_strict_anchor(
+            edge_start,
+            segment_start,
+            segment_end,
+        )
+        .is_some()
+        || arrangement_boundary_segment_parameter_xz_strict_anchor(
+            edge_end,
+            segment_start,
+            segment_end,
+        )
+        .is_some()
+        || arrangement_boundary_segment_parameter_xz_strict_anchor(
+            segment_start,
+            edge_start,
+            edge_end,
+        )
+        .is_some()
+        || arrangement_boundary_segment_parameter_xz_strict_anchor(
+            segment_end,
+            edge_start,
+            edge_end,
+        )
+        .is_some()
 }
 
 pub(super) fn arrangement_face_boundary_interval_point_at(
@@ -220,7 +293,8 @@ fn arrangement_boundary_endpoint_at_parameter(
     segment_end: ArrangementBoundaryPointKey,
     parameter: ArrangementSegmentParameter,
 ) -> Option<ArrangementBoundaryPointKey> {
-    let endpoint_t = boundary_segment_parameter_xz(endpoint, segment_start, segment_end)?;
+    let endpoint_t =
+        arrangement_boundary_segment_parameter_xz(endpoint, segment_start, segment_end)?;
     (endpoint_t.cmp(&parameter) == std::cmp::Ordering::Equal).then_some(endpoint)
 }
 
@@ -239,7 +313,7 @@ fn arrangement_face_boundary_interpolated_point_at(
         y_mm: 0,
     };
     let edge_parameter =
-        boundary_segment_parameter_xz(target, interval.edge_start, interval.edge_end)?;
+        arrangement_boundary_segment_parameter_xz(target, interval.edge_start, interval.edge_end)?;
     if edge_parameter < ArrangementSegmentParameter::zero()
         || edge_parameter > ArrangementSegmentParameter::one()
     {
@@ -261,4 +335,45 @@ pub(super) fn arrangement_key_boundary_point(
         z_key: key.z_key(),
         y_mm,
     }
+}
+
+pub(super) fn arrangement_boundary_segment_parameter_xz(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<ArrangementSegmentParameter> {
+    let point_key = keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key);
+    let start_key = keys::SurfaceXzKey::from_raw_keys(start.x_key, start.z_key);
+    let end_key = keys::SurfaceXzKey::from_raw_keys(end.x_key, end.z_key);
+    point_key.overlay_segment_parameter(start_key, end_key)
+}
+
+fn arrangement_boundary_segment_parameter_xz_strict_anchor(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<ArrangementSegmentParameter> {
+    let point_key = keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key);
+    let start_key = keys::SurfaceXzKey::from_raw_keys(start.x_key, start.z_key);
+    let end_key = keys::SurfaceXzKey::from_raw_keys(end.x_key, end.z_key);
+    if !segments::key_lies_on_segment(point_key, start_key, end_key)
+        || !arrangement_boundary_point_is_subkey_collinear(point, start, end)
+    {
+        return None;
+    }
+    segments::overlay_segment_parameter(point_key, start_key, end_key)
+}
+
+fn arrangement_boundary_point_is_subkey_collinear(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> bool {
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
+    let cross = dx * pz - dz * px;
+    let length_squared = dx * dx + dz * dz;
+    length_squared > 0 && cross * cross * 4 <= length_squared
 }

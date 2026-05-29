@@ -83,6 +83,14 @@ pub(crate) enum RoadSurfaceEarthworkFaceSource {
         owner_index: usize,
         boundary_source: Option<NodeFootprintBoundarySegmentSource>,
     },
+    NodeSameMaterialBoundaryHandoff {
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        owner_kind: RoadSurfaceBandKind,
+        owner_index_a: usize,
+        owner_index_b: usize,
+        boundary_source: Option<NodeFootprintBoundarySegmentSource>,
+    },
 }
 
 impl RoadSurfaceEarthworkFaceSource {
@@ -146,10 +154,46 @@ impl RoadSurfaceEarthworkFaceSource {
                 .then(band_kind_sort_key(owner_kind_a).cmp(&band_kind_sort_key(owner_kind_b)))
                 .then(owner_index_a.cmp(&owner_index_b))
                 .then(boundary_source_a.cmp(&boundary_source_b)),
+            (
+                Self::NodeSameMaterialBoundaryHandoff {
+                    node_id: node_id_a,
+                    kind: kind_a,
+                    owner_kind: owner_kind_a,
+                    owner_index_a: owner_index_a_a,
+                    owner_index_b: owner_index_b_a,
+                    boundary_source: boundary_source_a,
+                },
+                Self::NodeSameMaterialBoundaryHandoff {
+                    node_id: node_id_b,
+                    kind: kind_b,
+                    owner_kind: owner_kind_b,
+                    owner_index_a: owner_index_a_b,
+                    owner_index_b: owner_index_b_b,
+                    boundary_source: boundary_source_b,
+                },
+            ) => node_id_a
+                .cmp(&node_id_b)
+                .then(kind_a.sort_key().cmp(&kind_b.sort_key()))
+                .then(band_kind_sort_key(owner_kind_a).cmp(&band_kind_sort_key(owner_kind_b)))
+                .then(owner_index_a_a.cmp(&owner_index_a_b))
+                .then(owner_index_b_a.cmp(&owner_index_b_b))
+                .then(boundary_source_a.cmp(&boundary_source_b)),
             (Self::SpanSupportBoundary { .. }, Self::NodeFootprintBoundary { .. }) => {
                 std::cmp::Ordering::Less
             }
             (Self::NodeFootprintBoundary { .. }, Self::SpanSupportBoundary { .. }) => {
+                std::cmp::Ordering::Greater
+            }
+            (Self::SpanSupportBoundary { .. }, Self::NodeSameMaterialBoundaryHandoff { .. }) => {
+                std::cmp::Ordering::Less
+            }
+            (Self::NodeSameMaterialBoundaryHandoff { .. }, Self::SpanSupportBoundary { .. }) => {
+                std::cmp::Ordering::Greater
+            }
+            (Self::NodeFootprintBoundary { .. }, Self::NodeSameMaterialBoundaryHandoff { .. }) => {
+                std::cmp::Ordering::Less
+            }
+            (Self::NodeSameMaterialBoundaryHandoff { .. }, Self::NodeFootprintBoundary { .. }) => {
                 std::cmp::Ordering::Greater
             }
         }

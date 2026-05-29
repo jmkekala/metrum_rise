@@ -153,7 +153,8 @@ impl RoadSurfaceSystem {
             RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { owner, .. } => {
                 terrain_clip_edge_kind_for_band(owner.kind)
             }
-            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. } => {
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { .. }
+            | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { .. } => {
                 unreachable!("span boundary extraction only emits span support boundary sources")
             }
         }

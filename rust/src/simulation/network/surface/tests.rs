@@ -11,8 +11,8 @@ use super::keys::SurfaceHeightMmKey;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundaryVertexSource, NodeOverlayContour,
-    NodeOverlayShapes, PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource,
+    NodeOverlayShape, NodeOverlayShapes, PreviewRoadSurfaceResult, RoadSurfaceBand,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSpanRegionRole,
     RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipExportError,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,

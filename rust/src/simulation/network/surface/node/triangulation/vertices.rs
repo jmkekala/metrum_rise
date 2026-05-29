@@ -69,7 +69,7 @@ fn insert_arrangement_vertex(
     }
 
     let index = vertices.len();
-    let point_xz = vertex.point_xz();
+    let point_xz = point_key.road_xz();
     vertices.push(NodeTriangulatedVertex {
         point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
         height_field_id: vertex.height_field_id(),

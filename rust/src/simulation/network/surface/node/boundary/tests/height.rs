@@ -159,6 +159,85 @@ fn final_footprint_height_edge_rejects_overlay_grid_drift() {
 }
 
 #[test]
+fn final_footprint_height_accepts_same_owner_endpoint_dust_corner() {
+    let first_start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let corner = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
+    let second_end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 1.0));
+    let dust_corner = ArrangementBoundaryPointKey {
+        x_key: corner.x_key + 1,
+        z_key: corner.z_key,
+        y_mm: corner.y_mm,
+    };
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        final_height_edges: vec![
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: first_start,
+                end_point_key: corner,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: corner,
+                end_point_key: second_end,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+        ],
+        final_vertex_sources: BTreeMap::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_contour_key(
+            dust_corner.xz_key(),
+            first_start.xz_key(),
+            second_end.xz_key(),
+        )
+        .expect("same-owner endpoint dust corner should be canonical numeric support");
+
+    assert_eq!(height_mm, Some(120));
+    assert!(sources.has_exact_final_owned_footprint_boundary_support_at_point(dust_corner));
+}
+
+#[test]
+fn final_footprint_height_rejects_single_endpoint_dust_extension() {
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
+    let dust_extension = ArrangementBoundaryPointKey {
+        x_key: end.x_key + 1,
+        z_key: end.z_key,
+        y_mm: end.y_mm,
+    };
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        final_height_edges: vec![NodeFinalFootprintBoundaryHeightEdge {
+            start_point_key: start,
+            end_point_key: end,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        }],
+        final_vertex_sources: BTreeMap::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_contour_key(dust_extension.xz_key(), start.xz_key(), end.xz_key())
+        .expect("single endpoint dust extension should remain unsupported");
+
+    assert_eq!(height_mm, None);
+    assert!(!sources.has_exact_final_owned_footprint_boundary_support_at_point(dust_extension));
+}
+
+#[test]
 fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
     let mut lower_edge = test_source_edge_for_owner(
         RoadSurfaceBandKind::Carriageway,

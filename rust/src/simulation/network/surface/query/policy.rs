@@ -85,6 +85,29 @@ impl RoadSurfaceSystem {
             ..
         } = face.source
         else {
+            if let RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                ..
+            } = face.source
+            {
+                return self.node_earthwork_owner_uses_visible_earthwork(
+                    graph,
+                    terrain,
+                    node_id,
+                    piece,
+                    owner_kind,
+                    owner_index_a,
+                ) || self.node_earthwork_owner_uses_visible_earthwork(
+                    graph,
+                    terrain,
+                    node_id,
+                    piece,
+                    owner_kind,
+                    owner_index_b,
+                );
+            }
             return false;
         };
         self.node_earthwork_owner_uses_visible_earthwork(

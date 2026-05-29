@@ -27,14 +27,14 @@ impl RoadSurfaceSystem {
         step: &DebugCanonicalVerticalStep,
         face_matches: &[usize],
         face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
-        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+        top_edges: &[DebugTopBoundaryEdge],
     ) {
         let visible_dot = Self::debug_canonical_step_visible_dot_from_lower_owner(
             piece,
             step,
             face_matches,
             face_span_edges,
-            top_edges_by_key,
+            top_edges,
         );
         let visible_from_lower_owner = visible_dot.map(|dot| dot > 0.0);
         let materialized = !face_matches.is_empty();
@@ -147,14 +147,14 @@ impl RoadSurfaceSystem {
         step: &DebugCanonicalVerticalStep,
         face_matches: &[usize],
         face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
-        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+        top_edges: &[DebugTopBoundaryEdge],
     ) -> Option<bool> {
         Self::debug_canonical_step_visible_dot_from_lower_owner(
             piece,
             step,
             face_matches,
             face_span_edges,
-            top_edges_by_key,
+            top_edges,
         )
         .map(|dot| dot > 0.0)
     }
@@ -164,7 +164,7 @@ impl RoadSurfaceSystem {
         step: &DebugCanonicalVerticalStep,
         face_matches: &[usize],
         face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
-        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+        top_edges: &[DebugTopBoundaryEdge],
     ) -> Option<f32> {
         let mut best: Option<f32> = None;
         for &face_index in face_matches {
@@ -179,17 +179,16 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            let lower_key =
-                DebugRenderEdgeKey::normalized(span_edges.lower_start, span_edges.lower_end);
-            let lower_matches = lower_key
-                .and_then(|key| top_edges_by_key.get(&key))
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+            let lower_matches = Self::debug_top_edges_containing_span(
+                top_edges,
+                span_edges.lower_start,
+                span_edges.lower_end,
+            );
             let Some(dot) = Self::debug_visible_dot_to_lower_owner(
                 piece,
                 (span_edges.lower_start + span_edges.lower_end) * 0.5,
                 visible_direction,
-                lower_matches,
+                &lower_matches,
                 step.lower_owner,
             ) else {
                 continue;

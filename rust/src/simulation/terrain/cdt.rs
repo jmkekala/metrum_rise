@@ -254,6 +254,14 @@ pub(crate) enum TerrainCdtRoadBoundarySource {
         owner_index: u32,
         boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
     },
+    NodeSameMaterialBoundaryHandoff {
+        node_id: u32,
+        node_kind: TerrainCdtNodePieceKind,
+        owner_kind: TerrainCdtRoadBandKind,
+        owner_index_a: u32,
+        owner_index_b: u32,
+        boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
+    },
     SyntheticTestBoundary {
         stable_piece_id: u64,
         local_loop_index: u32,
@@ -266,7 +274,8 @@ impl TerrainCdtRoadBoundarySource {
         match self {
             Self::SpanSupportBoundary { .. } => 0,
             Self::NodeFootprintBoundary { .. } => 1,
-            Self::SyntheticTestBoundary { .. } => 2,
+            Self::NodeSameMaterialBoundaryHandoff { .. } => 2,
+            Self::SyntheticTestBoundary { .. } => 3,
         }
     }
 
@@ -274,6 +283,7 @@ impl TerrainCdtRoadBoundarySource {
         match self {
             Self::SpanSupportBoundary { edge_idx, .. } => clamp_u64_to_i32(edge_idx),
             Self::NodeFootprintBoundary { node_id, .. } => clamp_u32_to_i32(node_id),
+            Self::NodeSameMaterialBoundaryHandoff { node_id, .. } => clamp_u32_to_i32(node_id),
             Self::SyntheticTestBoundary {
                 stable_piece_id, ..
             } => clamp_u64_to_i32(stable_piece_id),
@@ -282,7 +292,8 @@ impl TerrainCdtRoadBoundarySource {
 
     pub(crate) fn node_kind_code(self) -> i32 {
         match self {
-            Self::NodeFootprintBoundary { node_kind, .. } => {
+            Self::NodeFootprintBoundary { node_kind, .. }
+            | Self::NodeSameMaterialBoundaryHandoff { node_kind, .. } => {
                 i32::from(terrain_cdt_node_kind_sort_key(node_kind))
             }
             _ => -1,
@@ -315,6 +326,9 @@ impl TerrainCdtRoadBoundarySource {
             Self::NodeFootprintBoundary { owner_kind, .. } => {
                 i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
             }
+            Self::NodeSameMaterialBoundaryHandoff { owner_kind, .. } => {
+                i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
+            }
             Self::SyntheticTestBoundary { .. } => -1,
         }
     }
@@ -325,6 +339,9 @@ impl TerrainCdtRoadBoundarySource {
                 source_band_index, ..
             } => clamp_u32_to_i32(source_band_index),
             Self::NodeFootprintBoundary { owner_index, .. } => clamp_u32_to_i32(owner_index),
+            Self::NodeSameMaterialBoundaryHandoff { owner_index_a, .. } => {
+                clamp_u32_to_i32(owner_index_a)
+            }
             Self::SyntheticTestBoundary { .. } => -1,
         }
     }
@@ -399,6 +416,22 @@ impl TerrainCdtRoadBoundarySource {
                 terrain_cdt_node_kind_label(node_kind),
                 terrain_cdt_band_kind_label(owner_kind),
                 owner_index,
+                boundary_source
+            ),
+            Self::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                node_kind,
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+            } => format!(
+                "node_same_material_handoff id={} kind={} owner_kind={} owner_indices={}..{} boundary_source={:?}",
+                node_id,
+                terrain_cdt_node_kind_label(node_kind),
+                terrain_cdt_band_kind_label(owner_kind),
+                owner_index_a,
+                owner_index_b,
                 boundary_source
             ),
             Self::SyntheticTestBoundary {
@@ -1364,6 +1397,32 @@ fn mergeable_terrain_cdt_seam_source(
             && node_kind_a == node_kind_b
             && owner_kind_a == owner_kind_b
             && owner_index_a == owner_index_b
+            && boundary_source_a == boundary_source_b =>
+        {
+            Some(first)
+        }
+        (
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_a,
+                node_kind: node_kind_a,
+                owner_kind: owner_kind_a,
+                owner_index_a: owner_index_a_a,
+                owner_index_b: owner_index_b_a,
+                boundary_source: boundary_source_a,
+            },
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_b,
+                node_kind: node_kind_b,
+                owner_kind: owner_kind_b,
+                owner_index_a: owner_index_a_b,
+                owner_index_b: owner_index_b_b,
+                boundary_source: boundary_source_b,
+            },
+        ) if node_id_a == node_id_b
+            && node_kind_a == node_kind_b
+            && owner_kind_a == owner_kind_b
+            && owner_index_a_a == owner_index_a_b
+            && owner_index_b_a == owner_index_b_b
             && boundary_source_a == boundary_source_b =>
         {
             Some(first)
@@ -2828,6 +2887,36 @@ fn terrain_cdt_boundary_source_cmp(
             .then(owner_index_a.cmp(&owner_index_b))
             .then(boundary_source_a.cmp(&boundary_source_b)),
         (
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_a,
+                node_kind: node_kind_a,
+                owner_kind: owner_kind_a,
+                owner_index_a: owner_index_a_a,
+                owner_index_b: owner_index_b_a,
+                boundary_source: boundary_source_a,
+            },
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                node_id: node_id_b,
+                node_kind: node_kind_b,
+                owner_kind: owner_kind_b,
+                owner_index_a: owner_index_a_b,
+                owner_index_b: owner_index_b_b,
+                boundary_source: boundary_source_b,
+            },
+        ) => node_id_a
+            .cmp(&node_id_b)
+            .then(
+                terrain_cdt_node_kind_sort_key(node_kind_a)
+                    .cmp(&terrain_cdt_node_kind_sort_key(node_kind_b)),
+            )
+            .then(
+                terrain_cdt_band_kind_sort_key(owner_kind_a)
+                    .cmp(&terrain_cdt_band_kind_sort_key(owner_kind_b)),
+            )
+            .then(owner_index_a_a.cmp(&owner_index_a_b))
+            .then(owner_index_b_a.cmp(&owner_index_b_b))
+            .then(boundary_source_a.cmp(&boundary_source_b)),
+        (
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
                 stable_piece_id: stable_piece_id_a,
                 local_loop_index: local_loop_index_a,
@@ -2849,6 +2938,19 @@ fn terrain_cdt_boundary_source_cmp(
         ) => std::cmp::Ordering::Greater,
         (
             TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
+        ) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
+        ) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
+            | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+        ) => std::cmp::Ordering::Greater,
+        (
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
         ) => std::cmp::Ordering::Less,
         (TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. }, _) => {
@@ -4714,6 +4816,31 @@ mod tests {
                     source.owner_index_code(),
                     i32::try_from(owner_index).unwrap()
                 );
+                assert_eq!(source.support_policy_code(), -1);
+                assert_eq!(source.role_code(), -1);
+                assert_eq!(source.section_range_codes(), [-1, -1]);
+                assert_eq!(source.s_range_values(), [-1.0, -1.0]);
+            }
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+                ..
+            } => {
+                assert_eq!(
+                    source.source_kind_code(),
+                    2,
+                    "{case_name}: node same-material handoff source kind code changed"
+                );
+                assert!(source.primary_id_code() >= 0);
+                assert!(source.node_kind_code() >= 0);
+                assert!(source.owner_kind_code() >= 0);
+                assert_eq!(
+                    source.owner_index_code(),
+                    i32::try_from(owner_index_a).unwrap()
+                );
+                assert!(owner_index_b >= owner_index_a);
+                assert!(boundary_source.is_some());
                 assert_eq!(source.support_policy_code(), -1);
                 assert_eq!(source.role_code(), -1);
                 assert_eq!(source.section_range_codes(), [-1, -1]);

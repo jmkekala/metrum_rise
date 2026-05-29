@@ -27,10 +27,6 @@ pub(crate) fn road_vec3_to_godot(point: RoadVec3) -> Vector3 {
     Vector3::new(point.x as f32, point.y as f32, point.z as f32)
 }
 
-pub(crate) fn road_xz_with_height(point_xz: RoadVec2, height_m: f64) -> RoadVec3 {
-    RoadVec3::new(point_xz.x, height_m, point_xz.y)
-}
-
 pub(crate) fn overlay_point_to_road(point: NodeOverlayPoint) -> RoadVec2 {
     quantize_road_vec2_to_overlay_grid(RoadVec2::new(point[0], point[1]))
 }

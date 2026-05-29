@@ -463,6 +463,27 @@ fn emit_vertical_surface_polygon(
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
+    if !polygon.triangles_world.is_empty() {
+        for triangle in &polygon.triangles_world {
+            let triangle = road_triangle_to_render(*triangle);
+            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+                continue;
+            }
+            super::push_triangle_preserving_winding(
+                mesh,
+                MeshLayer::RaisedStep,
+                triangle,
+                [
+                    Vector2::ZERO,
+                    Vector2::new(1.0, 0.0),
+                    Vector2::new(1.0, 1.0),
+                ],
+                color,
+            );
+        }
+        return;
+    }
+
     let [upper_start, lower_start, lower_end, upper_end] = polygon.points_world.as_slice() else {
         return;
     };
