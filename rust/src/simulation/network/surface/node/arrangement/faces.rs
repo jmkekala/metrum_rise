@@ -121,9 +121,11 @@ impl NodeArrangement {
             }
         }
 
-        let conflict_start = profile_enabled.then(Instant::now);
-        self.reject_implicit_material_height_conflicts()?;
-        profile.conflict_ms = elapsed_profile_ms(conflict_start);
+        if profile.vertices_inserted > 0 {
+            let conflict_start = profile_enabled.then(Instant::now);
+            self.reject_implicit_material_height_conflicts()?;
+            profile.conflict_ms = elapsed_profile_ms(conflict_start);
+        }
         profile.arrangement_vertices_after = self.vertices.len();
         profile.total_ms = elapsed_profile_ms(total_start);
         Ok(profile)

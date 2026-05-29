@@ -1,8 +1,8 @@
 //! Same-band and contact-edge constraint emission for generated rails.
 
 use super::super::authority::{
-    GeneratedMaterialPointContactAuthority, generated_contact_edge_source_authority,
-    generated_contact_point_has_explicit_roles,
+    GeneratedContactAuthorityIndex, GeneratedMaterialPointContactAuthority,
+    generated_contact_edge_source_authority, generated_contact_point_has_explicit_roles,
     generated_exact_owner_pair_contact_authority_at_point,
 };
 use super::super::*;
@@ -23,6 +23,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
 ) {
+    let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
     for left_index in 0..contours.len() {
@@ -71,7 +72,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
@@ -88,7 +89,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
@@ -105,7 +106,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
@@ -122,7 +123,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     edge,
                 ) {
                     insert_generated_contact_constraint(
@@ -145,6 +146,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                     left,
                     right,
                     constraints,
+                    &authority_index,
                     point,
                     contact_kind,
                 ) {
@@ -153,7 +155,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     point,
                 ) else {
                     continue;
@@ -178,6 +180,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                     left,
                     right,
                     constraints,
+                    &authority_index,
                     point,
                     contact_kind,
                 ) {
@@ -186,7 +189,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
                     pair.owner,
                     pair.opposite_owner,
-                    constraints,
+                    &authority_index,
                     point,
                 ) else {
                     continue;
@@ -372,22 +375,30 @@ fn append_same_material_height_split_constraints(
     constraints: &mut Vec<NodeRailConstraint>,
     contacts: BTreeSet<SameMaterialHeightSplitConstraint>,
 ) {
-    for (owner, opposite_owner, start, end, source_mouth_order_index, source_band_index) in contacts
-    {
-        if constraints.iter().any(|constraint| {
+    let mut existing = constraints
+        .iter()
+        .filter(|constraint| {
             constraint.kind == NodeRailConstraintKind::RaisedStepContact
-                && owners_match_unordered(
-                    constraint.owner,
-                    constraint.opposite_owner,
-                    owner,
-                    opposite_owner,
-                )
                 && constraint.points_xz.len() == 2
-                && GeneratedContourEdgeKey::new(
+        })
+        .filter_map(|constraint| {
+            let owner = constraint.owner?;
+            let opposite_owner = constraint.opposite_owner?;
+            let (owner, opposite_owner) = ordered_owner_pair(owner, opposite_owner);
+            Some((
+                owner,
+                opposite_owner,
+                GeneratedContourEdgeKey::new(
                     road_point_key(constraint.points_xz[0]),
                     road_point_key(constraint.points_xz[1]),
-                ) == GeneratedContourEdgeKey::new(start, end)
-        }) {
+                ),
+            ))
+        })
+        .collect::<BTreeSet<_>>();
+    for (owner, opposite_owner, start, end, source_mouth_order_index, source_band_index) in contacts
+    {
+        let edge = GeneratedContourEdgeKey::new(start, end);
+        if !existing.insert((owner, opposite_owner, edge)) {
             continue;
         }
         constraints.push(NodeRailConstraint {
@@ -400,6 +411,17 @@ fn append_same_material_height_split_constraints(
             opposite_owner: Some(opposite_owner),
             points_xz: vec![road_point_from_key(start), road_point_from_key(end)],
         });
+    }
+}
+
+fn ordered_owner_pair(
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+) -> (NodeBandOwner, NodeBandOwner) {
+    if left_owner <= right_owner {
+        (left_owner, right_owner)
+    } else {
+        (right_owner, left_owner)
     }
 }
 

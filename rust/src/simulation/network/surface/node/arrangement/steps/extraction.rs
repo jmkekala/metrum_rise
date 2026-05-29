@@ -701,29 +701,6 @@ impl NodeArrangement {
                     && seam_constraint_covers_key(constraint, key)
             })
     }
-
-    pub(in crate::simulation::network::surface::node::arrangement) fn has_explicit_vertical_step_at_key_between(
-        &self,
-        key: NodeArrangementKey,
-        left_owners: &[NodeBandOwner],
-        right_owners: &[NodeBandOwner],
-    ) -> bool {
-        let segments = self.explicit_vertical_step_segments();
-        segments.iter().copied().any(|segment| {
-            key.lies_on_segment(segment.start(), segment.end())
-                && owner_sets_match_step(
-                    left_owners,
-                    right_owners,
-                    segment.owner(),
-                    segment.opposite_owner(),
-                )
-        }) || owner_sets_have_explicit_vertical_step_endpoint_authority(
-            key,
-            left_owners,
-            right_owners,
-            &segments,
-        )
-    }
 }
 
 #[derive(Clone, Copy)]

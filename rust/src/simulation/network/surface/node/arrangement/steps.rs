@@ -23,8 +23,8 @@ mod authority;
 mod extraction;
 mod segment;
 
+use authority::owner_sets_match_step;
 pub(crate) use authority::owners_form_explicit_vertical_step_pair;
-use authority::{owner_sets_have_explicit_vertical_step_endpoint_authority, owner_sets_match_step};
 pub(crate) use segment::{
     NodeExplicitVerticalStepSegment, explicit_vertical_step_segments_authorize_height_side_at_key,
 };

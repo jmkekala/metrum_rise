@@ -1,6 +1,8 @@
 //! Contact contour noding candidate discovery.
 
-use super::super::materialization::generated_contact_point_has_explicit_roles;
+use super::super::materialization::{
+    GeneratedContactAuthorityIndex, generated_contact_point_has_explicit_roles,
+};
 use super::super::source_authority::generated_raised_step_contact_kind_for_owners;
 use super::super::{
     GeneratedContourDirectedEdge, NodeGeneratedContour, NodeRailConstraint, NodeRailPointKey,
@@ -13,6 +15,7 @@ pub(super) fn generated_contact_contour_noding_candidates(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
 ) -> Vec<ContactNodingCandidate> {
+    let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let mut candidates = Vec::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
@@ -22,24 +25,39 @@ pub(super) fn generated_contact_contour_noding_candidates(
                 continue;
             }
             candidates.extend(
-                generated_contact_point_on_edge_noding_candidates(left, right, constraints)
-                    .into_iter()
-                    .map(|(edge, insert_key)| (left_index, edge, insert_key)),
+                generated_contact_point_on_edge_noding_candidates(
+                    left,
+                    right,
+                    constraints,
+                    &authority_index,
+                )
+                .into_iter()
+                .map(|(edge, insert_key)| (left_index, edge, insert_key)),
             );
             candidates.extend(
-                generated_contact_point_on_edge_noding_candidates(right, left, constraints)
-                    .into_iter()
-                    .map(|(edge, insert_key)| (right_index, edge, insert_key)),
+                generated_contact_point_on_edge_noding_candidates(
+                    right,
+                    left,
+                    constraints,
+                    &authority_index,
+                )
+                .into_iter()
+                .map(|(edge, insert_key)| (right_index, edge, insert_key)),
             );
             candidates.extend(
-                generated_contact_edge_intersection_noding_candidates(left, right, constraints)
-                    .into_iter()
-                    .flat_map(|(left_edge, right_edge, insert_key)| {
-                        [
-                            (left_index, left_edge, insert_key),
-                            (right_index, right_edge, insert_key),
-                        ]
-                    }),
+                generated_contact_edge_intersection_noding_candidates(
+                    left,
+                    right,
+                    constraints,
+                    &authority_index,
+                )
+                .into_iter()
+                .flat_map(|(left_edge, right_edge, insert_key)| {
+                    [
+                        (left_index, left_edge, insert_key),
+                        (right_index, right_edge, insert_key),
+                    ]
+                }),
             );
         }
     }
@@ -65,6 +83,7 @@ fn generated_contact_point_on_edge_noding_candidates(
     edge_contour: &NodeGeneratedContour,
     point_contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
 ) -> Vec<(GeneratedContourDirectedEdge, NodeRailPointKey)> {
     let mut candidates = Vec::new();
     let edge_keys = generated_contour_keys(edge_contour);
@@ -76,6 +95,7 @@ fn generated_contact_point_on_edge_noding_candidates(
                     edge_contour,
                     point_contour,
                     constraints,
+                    authority_index,
                     point_key,
                 )
             {
@@ -91,6 +111,7 @@ fn generated_contact_edge_intersection_noding_candidates(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
 ) -> Vec<(
     GeneratedContourDirectedEdge,
     GeneratedContourDirectedEdge,
@@ -116,6 +137,7 @@ fn generated_contact_edge_intersection_noding_candidates(
                 left,
                 right,
                 constraints,
+                authority_index,
                 intersection,
             ) {
                 continue;
@@ -130,6 +152,7 @@ fn generated_contact_noding_point_has_explicit_roles(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
     point: NodeRailPointKey,
 ) -> bool {
     let Some(left_kind) = generated_contour_band_kind(left) else {
@@ -154,6 +177,7 @@ fn generated_contact_noding_point_has_explicit_roles(
         left,
         right,
         constraints,
+        authority_index,
         point,
         contact_kind,
     )

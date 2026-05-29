@@ -1,7 +1,7 @@
 //! Point-contact constraint emission for generated rail contact materialization.
 
 use super::super::authority::{
-    generated_material_authority_points_on_counterpart_contour,
+    GeneratedContactAuthorityIndex, generated_material_authority_points_on_counterpart_contour,
     generated_material_point_contact_authority,
 };
 use super::super::*;
@@ -25,20 +25,6 @@ fn insert_generated_material_point_constraint(
         (owner, opposite_owner)
     };
     let edge = [road_point_from_key(point), road_point_from_key(point)];
-    if constraints.iter().any(|constraint| {
-        constraint.kind == kind
-            && owners_match_unordered(
-                constraint.owner,
-                constraint.opposite_owner,
-                owner,
-                opposite_owner,
-            )
-            && constraint.points_xz.len() == 2
-            && road_point_key(constraint.points_xz[0]) == point
-            && road_point_key(constraint.points_xz[1]) == point
-    }) {
-        return;
-    }
     constraints.push(NodeRailConstraint {
         constraint_index: constraints.len(),
         kind,
@@ -97,6 +83,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
     contours: &[NodeGeneratedContour],
     constraints: &mut Vec<NodeRailConstraint>,
 ) {
+    let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let mut contact_points = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     for left_index in 0..contours.len() {
         for right_index in left_index + 1..contours.len() {
@@ -135,7 +122,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                 right,
                 left_owner,
                 right_owner,
-                constraints,
+                &authority_index,
             ));
             points.extend(generated_contour_keys(left).into_iter().filter(|point| {
                 generated_material_point_contact_authority(
@@ -143,7 +130,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                     left_owner,
                     right_owner,
                     *point,
-                    constraints,
+                    &authority_index,
                 )
                 .is_some_and(|authority| {
                     authority.owner == Some(right_owner)
@@ -162,7 +149,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                     left_owner,
                     right_owner,
                     *point,
-                    constraints,
+                    &authority_index,
                 )
                 .is_some_and(|authority| {
                     authority.owner == Some(left_owner)
@@ -183,7 +170,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
                     left_owner,
                     right_owner,
                     point,
-                    constraints,
+                    &authority_index,
                 ) else {
                     continue;
                 };

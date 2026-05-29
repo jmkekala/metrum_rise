@@ -223,20 +223,6 @@ impl NodeArrangement {
         boundary_edges
     }
 
-    pub(super) fn edge_touches_key(
-        &self,
-        edge: &NodeArrangementEdge,
-        key: NodeArrangementKey,
-    ) -> bool {
-        let Some(start) = self.vertices.get(edge.start.0) else {
-            return false;
-        };
-        let Some(end) = self.vertices.get(edge.end.0) else {
-            return false;
-        };
-        start.key == key || end.key == key
-    }
-
     pub(super) fn edge_has_applicable_material_source_constraint(
         &self,
         edge: &NodeArrangementEdge,

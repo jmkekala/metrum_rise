@@ -1,6 +1,7 @@
 //! Contact authority lookup for generated rail contact materialization.
 
 use super::*;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedMaterialPointContactAuthority {
@@ -10,27 +11,78 @@ pub(super) struct GeneratedMaterialPointContactAuthority {
     pub(super) opposite_owner: Option<NodeBandOwner>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct GeneratedContactOwnerPair {
+    lower: NodeBandOwner,
+    upper: NodeBandOwner,
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedContactAuthorityIndex<
+    'a,
+> {
+    constraints_by_kind_owner_pair:
+        BTreeMap<(NodeRailConstraintKind, GeneratedContactOwnerPair), Vec<&'a NodeRailConstraint>>,
+}
+
+impl GeneratedContactOwnerPair {
+    fn new(a: NodeBandOwner, b: NodeBandOwner) -> Self {
+        if a <= b {
+            Self { lower: a, upper: b }
+        } else {
+            Self { lower: b, upper: a }
+        }
+    }
+}
+
+impl<'a> GeneratedContactAuthorityIndex<'a> {
+    pub(in crate::simulation::network::surface::node::rails::contacts) fn new(
+        constraints: &'a [NodeRailConstraint],
+    ) -> Self {
+        let mut constraints_by_kind_owner_pair = BTreeMap::<
+            (NodeRailConstraintKind, GeneratedContactOwnerPair),
+            Vec<&'a NodeRailConstraint>,
+        >::new();
+        for constraint in constraints {
+            let (Some(owner), Some(opposite_owner)) = (constraint.owner, constraint.opposite_owner)
+            else {
+                continue;
+            };
+            constraints_by_kind_owner_pair
+                .entry((
+                    constraint.kind,
+                    GeneratedContactOwnerPair::new(owner, opposite_owner),
+                ))
+                .or_default()
+                .push(constraint);
+        }
+        Self {
+            constraints_by_kind_owner_pair,
+        }
+    }
+
+    fn constraints_for(
+        &self,
+        kind: NodeRailConstraintKind,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+    ) -> &[&'a NodeRailConstraint] {
+        self.constraints_by_kind_owner_pair
+            .get(&(kind, GeneratedContactOwnerPair::new(owner, opposite_owner)))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
 pub(super) fn generated_material_authority_points_on_counterpart_contour(
     kind: NodeRailConstraintKind,
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
-    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
 ) -> Vec<NodeRailPointKey> {
     let mut points = Vec::new();
-    for constraint in constraints
-        .iter()
-        .filter(|constraint| constraint.kind == kind)
-        .filter(|constraint| {
-            owners_match_unordered(
-                constraint.owner,
-                constraint.opposite_owner,
-                left_owner,
-                right_owner,
-            )
-        })
-    {
+    for constraint in authority_index.constraints_for(kind, left_owner, right_owner) {
         for point in constraint.points_xz.iter().copied().map(road_point_key) {
             if generated_contour_contains_key(right, point) {
                 points.push(point);
@@ -106,20 +158,13 @@ pub(super) fn generated_material_point_contact_authority(
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
     point: NodeRailPointKey,
-    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
 ) -> Option<GeneratedMaterialPointContactAuthority> {
-    constraints
+    authority_index
+        .constraints_for(kind, left_owner, right_owner)
         .iter()
-        .filter(|constraint| constraint.kind == kind)
+        .copied()
         .filter(|constraint| generated_constraint_touches_key(constraint, point))
-        .filter(|constraint| {
-            owners_match_unordered(
-                constraint.owner,
-                constraint.opposite_owner,
-                left_owner,
-                right_owner,
-            )
-        })
         .min_by_key(|constraint| constraint.constraint_index)
         .map(|constraint| GeneratedMaterialPointContactAuthority {
             source_mouth_order_index: constraint.source_mouth_order_index,
@@ -132,20 +177,17 @@ pub(super) fn generated_material_point_contact_authority(
 fn generated_exact_owner_pair_contact_authority_for_edge(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
-    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
     edge: GeneratedContourEdgeKey,
 ) -> Option<GeneratedMaterialPointContactAuthority> {
-    constraints
+    authority_index
+        .constraints_for(
+            NodeRailConstraintKind::RaisedStepContact,
+            owner,
+            opposite_owner,
+        )
         .iter()
-        .filter(|constraint| constraint.kind == NodeRailConstraintKind::RaisedStepContact)
-        .filter(|constraint| {
-            owners_match_unordered(
-                constraint.owner,
-                constraint.opposite_owner,
-                owner,
-                opposite_owner,
-            )
-        })
+        .copied()
         .filter(|constraint| {
             generated_constraint_contains_key_segment(constraint, edge.start, edge.end)
         })
@@ -161,7 +203,7 @@ fn generated_exact_owner_pair_contact_authority_for_edge(
 pub(super) fn generated_exact_owner_pair_contact_authority_at_point(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
-    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
     point: NodeRailPointKey,
 ) -> Option<GeneratedMaterialPointContactAuthority> {
     generated_material_point_contact_authority(
@@ -169,17 +211,22 @@ pub(super) fn generated_exact_owner_pair_contact_authority_at_point(
         owner,
         opposite_owner,
         point,
-        constraints,
+        authority_index,
     )
 }
 
 pub(super) fn generated_contact_edge_source_authority(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
-    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
     edge: GeneratedContourEdgeKey,
 ) -> Option<GeneratedMaterialPointContactAuthority> {
-    generated_exact_owner_pair_contact_authority_for_edge(owner, opposite_owner, constraints, edge)
+    generated_exact_owner_pair_contact_authority_for_edge(
+        owner,
+        opposite_owner,
+        authority_index,
+        edge,
+    )
 }
 
 fn generated_same_band_point_contact_has_explicit_roles(
@@ -200,6 +247,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
     point: NodeRailPointKey,
     contact_kind: NodeRailConstraintKind,
 ) -> bool {
@@ -226,7 +274,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
             generated_exact_owner_pair_contact_authority_at_point(
                 pair.owner,
                 pair.opposite_owner,
-                constraints,
+                authority_index,
                 point,
             )
             .is_some()

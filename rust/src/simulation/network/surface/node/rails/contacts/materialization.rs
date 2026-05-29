@@ -22,7 +22,9 @@ use super::{
 mod authority;
 mod emission;
 
-pub(in crate::simulation::network::surface::node::rails::contacts) use authority::generated_contact_point_has_explicit_roles;
+pub(in crate::simulation::network::surface::node::rails::contacts) use authority::{
+    GeneratedContactAuthorityIndex, generated_contact_point_has_explicit_roles,
+};
 pub(in crate::simulation::network::surface::node::rails) use emission::{
     append_generated_material_point_contact_constraints,
     append_generated_same_band_contact_constraints,
