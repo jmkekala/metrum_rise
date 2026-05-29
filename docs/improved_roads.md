@@ -193,10 +193,11 @@ terrain-CDT gates.
 
 ### Active Plan: JunctionN Raised-Step Coverage Closure
 
-Status: shipped/closed. The visible `JunctionN` raised-step closure is complete for the current
-canonical arrangement/export contract. Runtime logs originally showed missing vertical curb /
-sideskirt polygons near `JunctionN` throats even when broad ROAD-01 / ROAD-02 suites passed. The
-fix remains a general ownership/export contract, not a set of case patches.
+Status: reopened for rendered-material proof. The canonical arrangement/export coverage can report
+complete raised-step geometry while the normal Godot view still shows tiny blue rectangles at
+`JunctionN` raised-step endpoints. Runtime logs originally showed missing vertical curb / sideskirt
+polygons near `JunctionN` throats even when broad ROAD-01 / ROAD-02 suites passed. The fix remains
+a general ownership/export and render-material contract, not a set of case patches.
 
 The failure signature is:
 
@@ -248,8 +249,21 @@ Required tests for this plan:
   exposed road-owned seam constraint with provenance
 - rendered mesh extraction / upload contains raised-step triangles covering the same canonical
   intervals as the compiled surface model
+- normal render upload assigns every required raised-step face a production-valid material / color;
+  diagnostic blue / vertex-color overlays are allowed only behind explicit debug overlays, not in
+  the default road mesh
 - equivalent edit order and source order produce identical stats and canonical emitted triangle /
   raised-step interval sets
+
+Current diagnostic gap:
+
+- `flat-3way.log` shows the visible tiny rectangles as emitted `canonical_step` raised-step faces
+  rather than as missing geometry. For example, `JunctionN` node `2` can emit face `28` as a
+  `0.250 m x 0.120 m` carriageway-to-curb rectangle with `problem=false`, while
+  `required_gap_count`, `missing_required_face_count`, and material-footprint missing counts remain
+  zero. Coverage diagnostics therefore prove only that a face exists; they do not prove the default
+  Godot upload uses the intended production material / color or that endpoint caps are visually
+  closed.
 
 Forbidden fixes for this plan:
 
