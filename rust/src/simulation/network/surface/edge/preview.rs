@@ -107,6 +107,62 @@ impl RoadSurfaceSystem {
         }
     }
 
+    /// Compiles the lightweight editor preview mesh without building transient node pieces or
+    /// chunk caches that are only needed by committed road-surface exports.
+    pub fn compile_preview_surface_mesh_only(
+        &self,
+        raw_points: &[Vector3],
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        terrain: &TerrainSystem,
+    ) -> PreviewRoadSurfaceResult {
+        let (conditioned_points, edge_class) =
+            Self::classify_and_ground_road_points(raw_points, terrain);
+        let mut prepared_points = Self::simplify_road_input_points(&conditioned_points);
+        Self::taubin_smooth_road_heights(&mut prepared_points);
+
+        if prepared_points.len() < 2 {
+            return PreviewRoadSurfaceResult {
+                edge_class,
+                prepared_points,
+                compiled_sections: Vec::new(),
+                compiled_visual_node_pieces: Vec::new(),
+                surface_vertices: Vec::new(),
+                is_valid: true,
+            };
+        }
+
+        let mut graph = RegionGraph::new();
+        let start_node = graph.add_node(prepared_points[0], NodeType::Junction);
+        let end_node = graph.add_node(*prepared_points.last().unwrap(), NodeType::Junction);
+        let edge_idx = graph.add_edge(build_surface_edge(
+            start_node,
+            end_node,
+            prepared_points.clone(),
+            fwd_lanes,
+            bkw_lanes,
+            edge_class,
+        ));
+
+        let compiled_sections = self.compile_edge_sections(&graph, edge_idx);
+        let surface_vertices = self.build_preview_surface_vertices(&compiled_sections);
+        let is_valid = Self::preview_surface_is_valid(
+            edge_class,
+            &prepared_points,
+            &compiled_sections,
+            terrain,
+        );
+
+        PreviewRoadSurfaceResult {
+            edge_class,
+            prepared_points,
+            compiled_sections,
+            compiled_visual_node_pieces: Vec::new(),
+            surface_vertices,
+            is_valid,
+        }
+    }
+
     fn build_preview_surface_vertices(&self, sections: &[RoadSurfaceSection]) -> Vec<Vector3> {
         if sections.len() < 2 {
             return Vec::new();

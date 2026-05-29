@@ -145,12 +145,15 @@ impl SimCore {
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let compile_start = road_debug.then(Instant::now);
-        let preview = self.transit_network.road_surface.compile_preview_surface(
-            &points,
-            fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-            bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-            &self.heightmap,
-        );
+        let preview = self
+            .transit_network
+            .road_surface
+            .compile_preview_surface_mesh_only(
+                &points,
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                &self.heightmap,
+            );
         let compile_ms = compile_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
