@@ -1,7 +1,7 @@
 //! Incident edge and mouth-profile data shared by span, node, and rail compilation.
 
 use super::{
-    RoadSurfaceBandKind,
+    RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
     backend::{RoadVec2, RoadVec3},
 };
 
@@ -52,4 +52,10 @@ pub(crate) struct OrderedIncidentPieceMouth {
     pub(crate) direction_xz: RoadVec2,
     pub(crate) edge_idx: usize,
     pub(crate) side: IncidentEdgeSide,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RoadSurfaceVisualNodeCompileInput {
+    pub(crate) kind: RoadSurfaceVisualNodePieceKind,
+    pub(crate) mouths: Vec<OrderedIncidentPieceMouth>,
 }

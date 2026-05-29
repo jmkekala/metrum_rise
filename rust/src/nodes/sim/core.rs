@@ -26,7 +26,8 @@ use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::cdt::{TerrainCdtError, TerrainCdtInput, TerrainCdtMesh};
+use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
     AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
@@ -58,6 +59,8 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
 pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
+/// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
+pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
 /// First continuous runtime water pass tick interval in simulated seconds.
 const CONTINUOUS_WATER_TICK_DT: f32 = 0.2;
 /// First continuous runtime water pass tick interval in real-time seconds.
@@ -177,6 +180,52 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) zoning: Option<ZoningSystem>,
 }
 
+/// Cache key for one production refined terrain patch mesh.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct RefinedTerrainPatchCacheKey {
+    /// Terrain render-patch X index.
+    pub(crate) patch_x: usize,
+    /// Terrain render-patch Z index.
+    pub(crate) patch_z: usize,
+    /// Refined render step quantized to millimetres.
+    pub(crate) render_step_mm: u32,
+}
+
+/// Complete input needed to build a refined road-clipped terrain patch off the Godot frame.
+pub(crate) struct RefinedTerrainPatchBuildInput {
+    /// Cache key for the produced patch.
+    pub(crate) key: RefinedTerrainPatchCacheKey,
+    /// Base visual terrain patch snapshot.
+    pub(crate) patch: TerrainPatchSnapshot,
+    /// CDT input assembled from source terrain samples and road footprint loops.
+    pub(crate) cdt_input: TerrainCdtInput,
+    /// Number of source road-boundary records found by the clip query.
+    pub(crate) road_clip_source_count: usize,
+    /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
+    pub(crate) clip_error_label: Option<&'static str>,
+}
+
+/// Cached production refined terrain patch built away from the Godot frame.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CachedRefinedTerrainPatch {
+    /// Cache key for this patch.
+    pub(crate) key: RefinedTerrainPatchCacheKey,
+    /// Base visual terrain patch snapshot.
+    pub(crate) patch: TerrainPatchSnapshot,
+    /// Number of road loops supplied to the CDT builder.
+    pub(crate) input_road_loops: usize,
+    /// Number of source terrain samples supplied to the CDT builder.
+    pub(crate) input_source_samples: usize,
+    /// Number of source road-boundary records found by the clip query.
+    pub(crate) road_clip_source_count: usize,
+    /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
+    pub(crate) clip_error_label: Option<&'static str>,
+    /// CDT result for this patch; empty-loop patches intentionally skip the builder.
+    pub(crate) mesh_result: Option<Result<TerrainCdtMesh, TerrainCdtError>>,
+    /// Time spent in CDT construction for this patch.
+    pub(crate) cdt_ms: f64,
+}
+
 /// All simulation state — owned exclusively by the background sim thread when running.
 ///
 /// The main thread accesses this via `Arc<Mutex<SimCore>>`. The lock is held for at
@@ -249,6 +298,9 @@ pub struct SimCore {
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
+    /// Production refined terrain patches precomputed by the sim thread for Godot upload.
+    pub(crate) refined_terrain_patch_cache:
+        HashMap<RefinedTerrainPatchCacheKey, CachedRefinedTerrainPatch>,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -289,6 +341,8 @@ pub struct RenderSnapshot {
     pub heightmap_width: usize,
     /// Heightmap height in cells (for CSV logging on the main thread).
     pub heightmap_height: usize,
+    /// Terrain world extent in metres, cached so Godot tools do not lock `SimCore` per frame.
+    pub terrain_world_size: godot::prelude::Vector2,
     /// World-space positions of all canonical (non-virtual) network nodes.
     /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
     /// instead of locking SimCore — avoids main-thread stalls during road placement.
@@ -311,6 +365,7 @@ impl Default for RenderSnapshot {
             agent_count: 0,
             treasury_balance: 0.0,
             heightmap_width: 0,
+            terrain_world_size: godot::prelude::Vector2::ZERO,
             node_positions: Vec::new(),
             heightmap_height: 0,
         }
@@ -898,6 +953,8 @@ impl SimCore {
             .map(|(_, n)| n.pos)
             .collect();
 
+        let (terrain_world_w, terrain_world_h) = self.heightmap.world_size();
+
         RenderSnapshot {
             pedestrian_transforms,
             car_transforms,
@@ -917,6 +974,7 @@ impl SimCore {
             treasury_balance: self.treasury.balance,
             heightmap_width: self.heightmap.width,
             heightmap_height: self.heightmap.height,
+            terrain_world_size: godot::prelude::Vector2::new(terrain_world_w, terrain_world_h),
         }
     }
 }
@@ -960,83 +1018,97 @@ pub fn run_sim_thread(
                     bkw_lanes,
                 }) => {
                     let road_total = Instant::now();
-                    let mut c = core.lock().unwrap();
-                    // Bulk-load defers per-edge rebuilds until finalization.
-                    c.transit_network.bulk_load = true;
-                    c.add_road_internal(points, fwd_lanes, bkw_lanes);
-                    {
-                        let c = &mut *c;
-                        c.transit_network.bulk_load = false;
-
-                        // Take dirty edges first so we can derive the affected nodes
-                        // for the incremental clips pass.
-                        let dirty = std::mem::take(&mut c.transit_network.bulk_dirty_edges);
-                        let dirty_count = dirty.len();
-
-                        // Collect nodes touched by the new/split edges.
-                        let mut affected_nodes = std::collections::HashSet::new();
-                        for &e_id in &dirty {
-                            if e_id < c.region_graph.edge_count()
-                                && !c.region_graph.edge(e_id).deleted
-                            {
-                                let e = c.region_graph.edge(e_id);
-                                affected_nodes.insert(c.region_graph.get_valid_node(e.start_node));
-                                affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
-                            }
-                        }
-                        if crate::debug::category_enabled("road")
-                            && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
-                                .map(|value| !value.is_empty() && value != "0")
-                                .unwrap_or(false)
+                    let cache_inputs = {
+                        let mut c = core.lock().unwrap();
+                        // Bulk-load defers per-edge rebuilds until finalization.
+                        c.transit_network.bulk_load = true;
+                        c.add_road_internal(points, fwd_lanes, bkw_lanes);
                         {
-                            c.last_surface_debug_edges.extend(dirty.iter().copied());
-                            c.last_surface_debug_edges.sort_unstable();
-                            c.last_surface_debug_edges.dedup();
+                            let c = &mut *c;
+                            c.transit_network.bulk_load = false;
+
+                            // Take dirty edges first so we can derive the affected nodes
+                            // for the incremental clips pass.
+                            let dirty = std::mem::take(&mut c.transit_network.bulk_dirty_edges);
+                            let dirty_count = dirty.len();
+
+                            // Collect nodes touched by the new/split edges.
+                            let mut affected_nodes = std::collections::HashSet::new();
+                            for &e_id in &dirty {
+                                if e_id < c.region_graph.edge_count()
+                                    && !c.region_graph.edge(e_id).deleted
+                                {
+                                    let e = c.region_graph.edge(e_id);
+                                    affected_nodes
+                                        .insert(c.region_graph.get_valid_node(e.start_node));
+                                    affected_nodes
+                                        .insert(c.region_graph.get_valid_node(e.end_node));
+                                }
+                            }
+                            if crate::debug::category_enabled("road")
+                                && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
+                                    .map(|value| !value.is_empty() && value != "0")
+                                    .unwrap_or(false)
+                            {
+                                c.last_surface_debug_edges.extend(dirty.iter().copied());
+                                c.last_surface_debug_edges.sort_unstable();
+                                c.last_surface_debug_edges.dedup();
+                            }
+
+                            let t_clips = Instant::now();
+                            c.region_graph
+                                .rebuild_intersection_clips_for_nodes(&affected_nodes);
+                            let dt_clips_us = t_clips.elapsed().as_micros();
+
+                            let t_inv = Instant::now();
+                            // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
+                            c.agents.invalidate_lane_ids_for_edges(
+                                &dirty,
+                                &c.transit_network.lane_system,
+                            );
+                            let dt_inv_us = t_inv.elapsed().as_micros();
+
+                            let t_lanes = Instant::now();
+                            c.transit_network
+                                .lane_system
+                                .rebuild_edges_incremental(&mut c.region_graph, &dirty);
+                            let dt_lanes_us = t_lanes.elapsed().as_micros();
+                            c.allocator.rebuild_entrance_cache(
+                                &c.region_graph,
+                                &c.transit_network.lane_system,
+                            );
+
+                            // Rebuild CCH and run the connectivity check. This is the only
+                            // place the CCH is actually rebuilt for road placements — the
+                            // sim-tick path is gated on speed > 0.0 and would miss paused edits.
+                            c.transit_network.rebuild_cch_and_check(&c.region_graph);
+                            c.transit_network.cch_dirty_chunks.clear();
+
+                            // Zone flush is deferred to the next simulate_tick_internal call
+                            // so it does not block road placement. zoning_dirty_edges accumulates.
+
+                            let total_us = road_total.elapsed().as_micros();
+                            let msg = format!(
+                                "TOTAL={}µs  {}  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
+                                total_us,
+                                c.last_road_timing,
+                                dt_clips_us,
+                                dt_lanes_us,
+                                dirty_count,
+                                dt_inv_us
+                            );
+                            debug_log!("road", "{}", msg);
+                            c.last_road_timing = msg;
                         }
-
-                        let t_clips = Instant::now();
-                        c.region_graph
-                            .rebuild_intersection_clips_for_nodes(&affected_nodes);
-                        let dt_clips_us = t_clips.elapsed().as_micros();
-
-                        let t_inv = Instant::now();
-                        // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
-                        c.agents
-                            .invalidate_lane_ids_for_edges(&dirty, &c.transit_network.lane_system);
-                        let dt_inv_us = t_inv.elapsed().as_micros();
-
-                        let t_lanes = Instant::now();
-                        c.transit_network
-                            .lane_system
-                            .rebuild_edges_incremental(&mut c.region_graph, &dirty);
-                        let dt_lanes_us = t_lanes.elapsed().as_micros();
-                        c.allocator.rebuild_entrance_cache(
-                            &c.region_graph,
-                            &c.transit_network.lane_system,
-                        );
-
-                        // Rebuild CCH and run the connectivity check. This is the only
-                        // place the CCH is actually rebuilt for road placements — the
-                        // sim-tick path is gated on speed > 0.0 and would miss paused edits.
-                        c.transit_network.rebuild_cch_and_check(&c.region_graph);
-                        c.transit_network.cch_dirty_chunks.clear();
-
-                        // Zone flush is deferred to the next simulate_tick_internal call
-                        // so it does not block road placement. zoning_dirty_edges accumulates.
-
-                        let total_us = road_total.elapsed().as_micros();
-                        let msg = format!(
-                            "TOTAL={}µs  {}  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
-                            total_us,
-                            c.last_road_timing,
-                            dt_clips_us,
-                            dt_lanes_us,
-                            dirty_count,
-                            dt_inv_us
-                        );
-                        debug_log!("road", "{}", msg);
-                        c.last_road_timing = msg;
-                    }
+                        c.rebuild_network_surface_terrain_internal();
+                        c.collect_refined_terrain_patch_build_inputs(
+                            ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+                        )
+                    };
+                    let cache_entries =
+                        SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
+                    let mut c = core.lock().unwrap();
+                    c.insert_refined_terrain_patch_cache_entries(cache_entries);
                     c.network_dirty = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {

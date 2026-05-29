@@ -12,10 +12,11 @@ mod steps;
 mod tests;
 
 pub(crate) use model::{
-    NodeArrangement, NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId,
-    NodeArrangementError, NodeArrangementFace, NodeArrangementFaceId, NodeArrangementKey,
-    NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
-    NodeOwnedRegion, NodeOwnedRegionId,
+    NodeArrangement, NodeArrangementAttachProfile, NodeArrangementBuildProfile,
+    NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId, NodeArrangementError,
+    NodeArrangementFace, NodeArrangementFaceId, NodeArrangementKey, NodeArrangementVertex,
+    NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner, NodeOwnedRegion,
+    NodeOwnedRegionId,
 };
 pub(crate) use seams::{NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous};
 pub(crate) use steps::{

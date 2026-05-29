@@ -11,10 +11,17 @@ use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
 use super::seams::{NodeRegionSeamConstraint, NodeSeamSource, seam_constraint_covers_key};
 use super::steps::owners_form_explicit_vertical_step_pair;
 use super::{
-    NodeArrangement, NodeArrangementError, NodeArrangementKey, NodeArrangementVertex,
-    NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
+    NodeArrangement, NodeArrangementBuildProfile, NodeArrangementError, NodeArrangementKey,
+    NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
 };
 use std::collections::BTreeMap;
+use std::time::Instant;
+
+fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 impl NodeArrangement {
     #[cfg(test)]
@@ -160,28 +167,59 @@ impl NodeArrangement {
         id
     }
 
+    #[cfg(test)]
     pub(crate) fn from_height_solution(
         heights: &NodeHeightSolution,
     ) -> Result<Self, NodeArrangementError> {
+        Self::from_height_solution_with_profile(heights, false).map(|(arrangement, _)| arrangement)
+    }
+
+    pub(crate) fn from_height_solution_with_profile(
+        heights: &NodeHeightSolution,
+        profile_enabled: bool,
+    ) -> Result<(Self, NodeArrangementBuildProfile), NodeArrangementError> {
+        let total_start = profile_enabled.then(Instant::now);
+        let mut profile = NodeArrangementBuildProfile {
+            height_regions: heights.regions.len(),
+            ..NodeArrangementBuildProfile::default()
+        };
         let mut arrangement = Self::new(heights.node_id, heights.piece_kind);
         let mut pending_regions = Vec::with_capacity(heights.regions.len());
 
+        let pending_start = profile_enabled.then(Instant::now);
         for (region_index, height_region) in heights.regions.iter().enumerate() {
             let pending = arrangement.pending_region(region_index, height_region)?;
             pending_regions.push(pending);
         }
-        arrangement.node_pending_region_edges(&mut pending_regions)?;
+        profile.pending_regions_ms = elapsed_profile_ms(pending_start);
+        profile.pending_edges_before = pending_regions
+            .iter()
+            .map(|pending| pending.edge_count())
+            .sum();
 
+        let noding_start = profile_enabled.then(Instant::now);
+        arrangement.node_pending_region_edges(&mut pending_regions)?;
+        profile.noding_ms = elapsed_profile_ms(noding_start);
+        profile.pending_edges_after = pending_regions
+            .iter()
+            .map(|pending| pending.edge_count())
+            .sum();
+
+        let edge_support_start = profile_enabled.then(Instant::now);
         let (edge_owners, edge_use_counts) =
             collect_pending_region_edge_support(&pending_regions, &arrangement.vertices);
+        profile.edge_support_ms = elapsed_profile_ms(edge_support_start);
 
         for pending in pending_regions.iter().cloned() {
+            let boundary_start = profile_enabled.then(Instant::now);
             let boundary_edges = arrangement.push_boundary_edges_for_pending_region(
                 &pending,
                 &pending_regions,
                 &edge_owners,
                 &edge_use_counts,
             );
+            profile.boundary_edges_ms += elapsed_profile_ms(boundary_start);
+            let push_region_start = profile_enabled.then(Instant::now);
             arrangement.push_region(
                 pending.owner,
                 pending.height_field_id,
@@ -191,10 +229,23 @@ impl NodeArrangement {
                 pending.area_m2,
                 pending.seam_constraints,
             );
+            profile.push_regions_ms += elapsed_profile_ms(push_region_start);
         }
 
+        let conflict_start = profile_enabled.then(Instant::now);
         arrangement.reject_implicit_material_height_conflicts()?;
-        Ok(arrangement)
+        profile.conflict_ms = elapsed_profile_ms(conflict_start);
+        profile.vertices = arrangement.vertices.len();
+        profile.edges = arrangement.edges.len();
+        profile.regions = arrangement.regions.len();
+        profile.seam_constraints = arrangement
+            .regions
+            .iter()
+            .map(|region| region.seam_constraints.len())
+            .sum();
+        profile.diagnostics = arrangement.diagnostics.len();
+        profile.total_ms = elapsed_profile_ms(total_start);
+        Ok((arrangement, profile))
     }
 
     pub(super) fn reject_implicit_material_height_conflicts(

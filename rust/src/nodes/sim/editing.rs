@@ -908,7 +908,7 @@ mod tests {
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
     use godot::prelude::{Vector2, Vector3};
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     fn test_core() -> SimCore {
         use crate::nodes::sim::core::CityTreasury;
@@ -946,6 +946,7 @@ mod tests {
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
+            refined_terrain_patch_cache: HashMap::new(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

@@ -40,7 +40,7 @@ pub(crate) use earthwork::{
 };
 pub(crate) use incident::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
-    IncidentSurfaceEdge, OrderedIncidentPieceMouth,
+    IncidentSurfaceEdge, OrderedIncidentPieceMouth, RoadSurfaceVisualNodeCompileInput,
 };
 pub(crate) use node::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,

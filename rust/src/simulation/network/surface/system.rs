@@ -3,13 +3,20 @@
 use super::{
     ChunkCacheKind, NodeOwnedRegion, PARALLEL_SURFACE_COMPILE_MIN_ITEMS,
     RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry, RoadSurfaceSection,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodeCompileInput, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
+
+fn elapsed_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 /// Ownership cache and compiler for the road-surface pipeline.
 pub struct RoadSurfaceSystem {
@@ -23,6 +30,7 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_sections: HashMap<usize, Vec<RoadSurfaceSection>>,
     pub(crate) compiled_visual_span_pieces: HashMap<usize, RoadSurfaceVisualSpanPiece>,
     pub(crate) compiled_visual_node_pieces: HashMap<u32, RoadSurfaceVisualNodePiece>,
+    pub(crate) compiled_visual_node_inputs: HashMap<u32, RoadSurfaceVisualNodeCompileInput>,
     pub(crate) surface_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
     pub(crate) surface_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
     pub(crate) earthwork_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
@@ -51,6 +59,7 @@ impl RoadSurfaceSystem {
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
+            compiled_visual_node_inputs: HashMap::new(),
             surface_span_chunks: HashMap::new(),
             surface_node_chunks: HashMap::new(),
             earthwork_span_chunks: HashMap::new(),
@@ -131,8 +140,19 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        self.prune_stale_cache_entries(graph);
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let dirty_edge_count = self.dirty_edges.len();
+        let dirty_node_count = self.dirty_nodes.len();
+        let dirty_surface_chunk_count = self.dirty_surface_chunks.len();
+        let dirty_terrain_chunk_count = self.dirty_terrain_chunks.len();
+        let allow_node_reuse = dirty_terrain_chunk_count == 0;
 
+        let prune_start = road_debug.then(Instant::now);
+        self.prune_stale_cache_entries(graph);
+        let prune_ms = elapsed_ms(prune_start);
+
+        let ordering_start = road_debug.then(Instant::now);
         let mut edge_ids: Vec<usize> = self.dirty_edges.iter().copied().collect();
         edge_ids.sort_unstable();
 
@@ -167,6 +187,9 @@ impl RoadSurfaceSystem {
         let mut sorted_span_edges: Vec<usize> = span_edge_ids.into_iter().collect();
         sorted_span_edges.sort_unstable();
         sorted_span_edges.dedup();
+        let ordering_ms = elapsed_ms(ordering_start);
+
+        let sections_start = road_debug.then(Instant::now);
         let section_results: Vec<(usize, Option<Vec<RoadSurfaceSection>>)> =
             Self::collect_surface_compile_work(&sorted_span_edges, |edge_idx| {
                 if edge_idx >= graph.edge_count() {
@@ -185,7 +208,9 @@ impl RoadSurfaceSystem {
                 self.compiled_sections.remove(&edge_idx);
             }
         }
+        let sections_ms = elapsed_ms(sections_start);
 
+        let spans_start = road_debug.then(Instant::now);
         let mut span_candidates = Vec::new();
         for &edge_idx in &sorted_span_edges {
             self.remove_span_piece_coverage(edge_idx);
@@ -216,49 +241,119 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
             }
         }
+        let spans_ms = elapsed_ms(spans_start);
 
+        let nodes_start = road_debug.then(Instant::now);
         let mut node_candidates = Vec::new();
+        let mut reused_node_count = 0usize;
         for &node_id in &sorted_nodes {
-            self.remove_node_piece_coverage(node_id);
-            if self.node_has_surface_edges(graph, node_id) {
-                node_candidates.push(node_id);
-            } else {
+            if !self.node_has_surface_edges(graph, node_id) {
+                self.remove_node_piece_coverage(node_id);
                 self.compiled_visual_node_pieces.remove(&node_id);
+                self.compiled_visual_node_inputs.remove(&node_id);
+                continue;
             }
+            let Some(input) = self.visual_node_compile_input(graph, node_id) else {
+                self.remove_node_piece_coverage(node_id);
+                self.compiled_visual_node_pieces.remove(&node_id);
+                self.compiled_visual_node_inputs.remove(&node_id);
+                continue;
+            };
+            if allow_node_reuse
+                && self
+                    .compiled_visual_node_inputs
+                    .get(&node_id)
+                    .is_some_and(|previous| previous == &input)
+                && self.compiled_visual_node_pieces.contains_key(&node_id)
+            {
+                reused_node_count += 1;
+                continue;
+            }
+            self.remove_node_piece_coverage(node_id);
+            node_candidates.push((node_id, input));
         }
-        let node_results: Vec<(u32, Option<RoadSurfaceVisualNodePiece>)> =
-            Self::collect_surface_compile_work(&node_candidates, |node_id| {
-                (
-                    node_id,
-                    self.compile_visual_node_piece(graph, terrain, node_id),
-                )
-            });
-        for (node_id, visual_piece) in node_results {
+        let node_results: Vec<(
+            u32,
+            RoadSurfaceVisualNodeCompileInput,
+            Option<RoadSurfaceVisualNodePiece>,
+        )> = Self::collect_surface_compile_work(&node_candidates, |node_id| {
+            (
+                node_id.0,
+                node_id.1.clone(),
+                self.compile_visual_node_piece_from_input(graph, terrain, node_id.0, &node_id.1),
+            )
+        });
+        for (node_id, input, visual_piece) in node_results {
             if let Some(visual_piece) = visual_piece {
                 self.insert_node_piece_coverage(&visual_piece);
                 self.compiled_visual_node_pieces
                     .insert(node_id, visual_piece);
+                self.compiled_visual_node_inputs.insert(node_id, input);
             } else {
                 self.compiled_visual_node_pieces.remove(&node_id);
+                self.compiled_visual_node_inputs.remove(&node_id);
             }
         }
+        let nodes_ms = elapsed_ms(nodes_start);
+
+        let chunk_cache_start = road_debug.then(Instant::now);
         let dirty_surface_chunks = self.sorted_chunk_keys(&self.dirty_surface_chunks);
         let dirty_terrain_chunks = self.sorted_chunk_keys(&self.dirty_terrain_chunks);
         self.rebuild_surface_chunk_cache(&dirty_surface_chunks);
         self.rebuild_earthwork_chunk_cache(&dirty_terrain_chunks);
+        let chunk_cache_ms = elapsed_ms(chunk_cache_start);
         self.last_rebuilt_surface_chunks = dirty_surface_chunks;
         self.last_rebuilt_terrain_chunks = dirty_terrain_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
+
+        if road_debug {
+            let total_ms = elapsed_ms(total_start);
+            if total_ms >= 50.0 {
+                crate::debug_log!(
+                    "road",
+                    "surface_compile_dirty_detail dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} node_candidates={} node_reused={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    dirty_edge_count,
+                    dirty_node_count,
+                    dirty_surface_chunk_count,
+                    dirty_terrain_chunk_count,
+                    sorted_span_edges.len(),
+                    sorted_nodes.len(),
+                    span_candidates.len(),
+                    node_candidates.len(),
+                    reused_node_count,
+                    self.last_rebuilt_surface_chunks.len(),
+                    self.last_rebuilt_terrain_chunks.len(),
+                    prune_ms,
+                    ordering_ms,
+                    sections_ms,
+                    spans_ms,
+                    nodes_ms,
+                    chunk_cache_ms,
+                    total_ms
+                );
+            }
+        }
     }
 
     fn compile_all(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+
+        let prune_start = road_debug.then(Instant::now);
         self.prune_stale_cache_entries(graph);
         self.clear_piece_chunk_coverage();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();
+        self.compiled_visual_node_pieces.clear();
+        self.compiled_visual_node_inputs.clear();
+        let prune_ms = elapsed_ms(prune_start);
 
+        let edge_start = road_debug.then(Instant::now);
         let edge_ids = self.all_surface_edge_ids(graph);
+        let edge_ms = elapsed_ms(edge_start);
+
+        let sections_start = road_debug.then(Instant::now);
         let section_results: Vec<(usize, Vec<RoadSurfaceSection>)> =
             Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
                 (edge_idx, self.compile_edge_sections(graph, edge_idx))
@@ -266,7 +361,9 @@ impl RoadSurfaceSystem {
         for (edge_idx, sections) in section_results {
             self.compiled_sections.insert(edge_idx, sections);
         }
+        let sections_ms = elapsed_ms(sections_start);
 
+        let spans_start = road_debug.then(Instant::now);
         let span_results: Vec<(usize, Option<RoadSurfaceVisualSpanPiece>)> =
             Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
                 (
@@ -283,46 +380,86 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
             }
         }
+        let spans_ms = elapsed_ms(spans_start);
 
+        let nodes_start = road_debug.then(Instant::now);
         let node_ids = self.all_surface_node_ids(graph);
-        let node_results: Vec<(u32, Option<RoadSurfaceVisualNodePiece>)> =
-            Self::collect_surface_compile_work(&node_ids, |node_id| {
-                (
-                    node_id,
-                    self.compile_visual_node_piece(graph, terrain, node_id),
-                )
-            });
-        for (node_id, visual_piece) in node_results {
+        let node_candidates: Vec<(u32, RoadSurfaceVisualNodeCompileInput)> = node_ids
+            .iter()
+            .filter_map(|node_id| {
+                self.visual_node_compile_input(graph, *node_id)
+                    .map(|input| (*node_id, input))
+            })
+            .collect();
+        let node_results: Vec<(
+            u32,
+            RoadSurfaceVisualNodeCompileInput,
+            Option<RoadSurfaceVisualNodePiece>,
+        )> = Self::collect_surface_compile_work(&node_candidates, |node_id| {
+            (
+                node_id.0,
+                node_id.1.clone(),
+                self.compile_visual_node_piece_from_input(graph, terrain, node_id.0, &node_id.1),
+            )
+        });
+        for (node_id, input, visual_piece) in node_results {
             if let Some(visual_piece) = visual_piece {
                 self.insert_node_piece_coverage(&visual_piece);
                 self.compiled_visual_node_pieces
                     .insert(node_id, visual_piece);
+                self.compiled_visual_node_inputs.insert(node_id, input);
             } else {
                 self.compiled_visual_node_pieces.remove(&node_id);
+                self.compiled_visual_node_inputs.remove(&node_id);
             }
         }
+        let nodes_ms = elapsed_ms(nodes_start);
+
+        let chunk_cache_start = road_debug.then(Instant::now);
         let all_surface_chunks = self.collect_all_chunks(ChunkCacheKind::Surface);
         let all_earthwork_chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
         self.rebuild_surface_chunk_cache(&all_surface_chunks);
         self.rebuild_earthwork_chunk_cache(&all_earthwork_chunks);
+        let chunk_cache_ms = elapsed_ms(chunk_cache_start);
         self.last_rebuilt_surface_chunks = all_surface_chunks;
         self.last_rebuilt_terrain_chunks = all_earthwork_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
+
+        if road_debug {
+            let total_ms = elapsed_ms(total_start);
+            if total_ms >= 50.0 {
+                crate::debug_log!(
+                    "road",
+                    "surface_compile_all_detail edges={} nodes={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} edge_collect_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    edge_ids.len(),
+                    node_ids.len(),
+                    self.last_rebuilt_surface_chunks.len(),
+                    self.last_rebuilt_terrain_chunks.len(),
+                    prune_ms,
+                    edge_ms,
+                    sections_ms,
+                    spans_ms,
+                    nodes_ms,
+                    chunk_cache_ms,
+                    total_ms
+                );
+            }
+        }
     }
 
     pub(crate) fn collect_surface_compile_work<I, O, F>(items: &[I], work: F) -> Vec<O>
     where
-        I: Copy + Send + Sync,
+        I: Clone + Send + Sync,
         O: Send,
         F: Fn(I) -> O + Sync,
     {
         // Slice parallel iterators are indexed; collecting into Vec preserves input order, so
         // the serial commit phase remains deterministic without re-sorting by id.
         if items.len() >= PARALLEL_SURFACE_COMPILE_MIN_ITEMS {
-            items.par_iter().copied().map(&work).collect()
+            items.par_iter().cloned().map(&work).collect()
         } else {
-            items.iter().copied().map(&work).collect()
+            items.iter().cloned().map(&work).collect()
         }
     }
 

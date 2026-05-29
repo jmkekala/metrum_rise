@@ -85,6 +85,7 @@ impl RoadSurfaceSystem {
         for node_id in stale_node_ids {
             self.remove_node_piece_coverage(node_id);
             self.compiled_visual_node_pieces.remove(&node_id);
+            self.compiled_visual_node_inputs.remove(&node_id);
         }
 
         self.compiled_sections.retain(|edge_idx, _| {
@@ -94,6 +95,8 @@ impl RoadSurfaceSystem {
             *edge_idx < graph.edge_count() && Self::is_surface_edge(graph.edge(*edge_idx))
         });
         self.compiled_visual_node_pieces
+            .retain(|node_id, _| (*node_id as usize) < graph.node_count());
+        self.compiled_visual_node_inputs
             .retain(|node_id, _| (*node_id as usize) < graph.node_count());
         self.surface_chunk_cache
             .retain(|_, entry| !entry.edge_indices.is_empty() || !entry.node_ids.is_empty());

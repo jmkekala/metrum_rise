@@ -24,6 +24,7 @@ const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
 
 /// One deterministic render-patch snapshot of visual terrain.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TerrainPatchSnapshot {
     /// Patch X index on the render-patch grid.
     pub patch_x: usize,

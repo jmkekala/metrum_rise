@@ -3,85 +3,54 @@
 use super::*;
 
 impl RoadSurfaceSystem {
-    pub(in crate::simulation::network::surface) fn compile_visual_node_piece(
+    pub(in crate::simulation::network::surface) fn visual_node_compile_input(
         &self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
         node_id: u32,
-    ) -> Option<RoadSurfaceVisualNodePiece> {
+    ) -> Option<RoadSurfaceVisualNodeCompileInput> {
         let valid = graph.get_valid_node(node_id);
         let incidents = self.sorted_incident_surface_edges(graph, valid);
         match self.classify_visual_node_kind(&incidents) {
-            CompiledNodeKind::Terminal => incidents.first().and_then(|incident| {
-                self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
-            }),
+            CompiledNodeKind::Terminal => {
+                let incident = incidents.first()?;
+                let mouths = self.build_ordered_piece_mouths(&[*incident])?;
+                Some(RoadSurfaceVisualNodeCompileInput {
+                    kind: RoadSurfaceVisualNodePieceKind::Terminal,
+                    mouths,
+                })
+            }
             CompiledNodeKind::PassThrough => None,
             CompiledNodeKind::Bend => {
-                self.build_bend_visual_node_piece(graph, terrain, valid, &incidents)
+                if incidents.len() != 2 {
+                    return None;
+                }
+                let mouths = self.build_ordered_piece_mouths(&incidents)?;
+                Some(RoadSurfaceVisualNodeCompileInput {
+                    kind: RoadSurfaceVisualNodePieceKind::Bend,
+                    mouths,
+                })
             }
             CompiledNodeKind::JunctionN => {
-                self.build_junction_visual_node_piece(graph, terrain, valid, &incidents)
+                if incidents.len() < 3 {
+                    return None;
+                }
+                let mouths = self.build_ordered_piece_mouths(&incidents)?;
+                Some(RoadSurfaceVisualNodeCompileInput {
+                    kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+                    mouths,
+                })
             }
         }
     }
 
-    fn build_terminal_visual_node_piece(
+    pub(in crate::simulation::network::surface) fn compile_visual_node_piece_from_input(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
-        incident: IncidentSurfaceEdge,
+        input: &RoadSurfaceVisualNodeCompileInput,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        let mouths = self.build_ordered_piece_mouths(&[incident])?;
-        self.build_canonical_visual_node_piece(
-            graph,
-            terrain,
-            node_id,
-            RoadSurfaceVisualNodePieceKind::Terminal,
-            &mouths,
-        )
-    }
-
-    fn build_bend_visual_node_piece(
-        &self,
-        graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        node_id: u32,
-        incidents: &[IncidentSurfaceEdge],
-    ) -> Option<RoadSurfaceVisualNodePiece> {
-        if incidents.len() != 2 {
-            return None;
-        }
-        let mouths = self.build_ordered_piece_mouths(incidents)?;
-        self.build_canonical_visual_node_piece(
-            graph,
-            terrain,
-            node_id,
-            RoadSurfaceVisualNodePieceKind::Bend,
-            &mouths,
-        )
-    }
-
-    fn build_junction_visual_node_piece(
-        &self,
-        graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        node_id: u32,
-        incidents: &[IncidentSurfaceEdge],
-    ) -> Option<RoadSurfaceVisualNodePiece> {
-        if incidents.len() < 3 {
-            return None;
-        }
-        let Some(mouths) = self.build_ordered_piece_mouths(incidents) else {
-            return None;
-        };
-        self.build_canonical_visual_node_piece(
-            graph,
-            terrain,
-            node_id,
-            RoadSurfaceVisualNodePieceKind::JunctionN,
-            &mouths,
-        )
+        self.build_canonical_visual_node_piece(graph, terrain, node_id, input.kind, &input.mouths)
     }
 
     fn build_canonical_visual_node_piece(

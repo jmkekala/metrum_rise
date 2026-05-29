@@ -23,38 +23,72 @@ use super::source_points::{
     interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
 };
 use super::{
-    NodeRailContourSet, NodeRailGenerationError, NodeRailHeightCarrierPaths, RoadSurfaceBandKind,
-    RoadSurfaceSystem,
+    NodeRailBuildProfile, NodeRailContourSet, NodeRailGenerationError, NodeRailHeightCarrierPaths,
+    RoadSurfaceBandKind, RoadSurfaceSystem,
 };
 use std::collections::BTreeMap;
+use std::time::Instant;
+
+fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 impl RoadSurfaceSystem {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn build_node_rail_contours_from_input(
         input: &NodeArrangementInput,
     ) -> Result<NodeRailContourSet, NodeRailGenerationError> {
         NodeRailContourSet::from_input(input)
     }
+
+    pub(in crate::simulation::network::surface) fn build_node_rail_contours_from_input_with_profile(
+        input: &NodeArrangementInput,
+        profile_enabled: bool,
+    ) -> Result<(NodeRailContourSet, NodeRailBuildProfile), NodeRailGenerationError> {
+        NodeRailContourSet::from_input_with_profile(input, profile_enabled)
+    }
 }
 
 impl NodeRailContourSet {
+    #[cfg(test)]
     pub(crate) fn from_input(
         input: &NodeArrangementInput,
     ) -> Result<Self, NodeRailGenerationError> {
+        Self::from_input_with_profile(input, false).map(|(rails, _)| rails)
+    }
+
+    pub(crate) fn from_input_with_profile(
+        input: &NodeArrangementInput,
+        profile_enabled: bool,
+    ) -> Result<(Self, NodeRailBuildProfile), NodeRailGenerationError> {
+        let total_start = profile_enabled.then(Instant::now);
+        let mut profile = NodeRailBuildProfile {
+            mouths: input.mouths.len(),
+            ..NodeRailBuildProfile::default()
+        };
         if input.mouths.is_empty() {
             return Err(NodeRailGenerationError::EmptyInput {
                 node_id: input.node_id,
             });
         }
 
+        let terminal_caps_start = profile_enabled.then(Instant::now);
         let terminal_cap_bands_by_mouth = terminal_cap_bands_by_mouth(input)
             .map_err(|error| NodeRailGenerationError::TerminalCapGeneration { error })?;
+        profile.terminal_caps_ms = elapsed_profile_ms(terminal_caps_start);
+        let side_joins_start = profile_enabled.then(Instant::now);
         let side_join_bands_by_mouth = side_join_bands_by_mouth(input)
             .map_err(|error| NodeRailGenerationError::SideJoinGeneration { error })?;
+        profile.side_joins_ms = elapsed_profile_ms(side_joins_start);
+        let owners_start = profile_enabled.then(Instant::now);
         let owners_by_mouth = owners_by_mouth(
             input,
             &terminal_cap_bands_by_mouth,
             &side_join_bands_by_mouth,
         );
+        profile.owners_ms = elapsed_profile_ms(owners_start);
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_paths_by_source =
@@ -71,6 +105,7 @@ impl NodeRailContourSet {
             let terminal_cap_bands = terminal_cap_bands_by_mouth
                 .get(mouth_index)
                 .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
+            let base_start = profile_enabled.then(Instant::now);
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
             push_raw_carriageway_corridor_contour(
                 input.piece_kind,
@@ -78,7 +113,9 @@ impl NodeRailContourSet {
                 &mut contours,
                 &mut constraints,
             )?;
+            profile.mouth_base_contours_ms += elapsed_profile_ms(base_start);
 
+            let band_start = profile_enabled.then(Instant::now);
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
                 let height_carrier_paths = interval_height_carrier_paths(interval);
                 height_carrier_paths_by_source
@@ -102,6 +139,8 @@ impl NodeRailContourSet {
                     &mut constraints,
                 )?;
             }
+            profile.mouth_band_contours_ms += elapsed_profile_ms(band_start);
+            let cap_carrier_start = profile_enabled.then(Instant::now);
             for cap_band in terminal_cap_bands {
                 height_carrier_paths_by_source
                     .entry((
@@ -127,6 +166,8 @@ impl NodeRailContourSet {
                         .copied(),
                 )?;
             }
+            profile.cap_height_carriers_ms += elapsed_profile_ms(cap_carrier_start);
+            let terminal_cap_contours_start = profile_enabled.then(Instant::now);
             push_terminal_cap_band_contours(
                 input.piece_kind,
                 mouth,
@@ -136,6 +177,8 @@ impl NodeRailContourSet {
                 &mut contours,
                 &mut constraints,
             )?;
+            profile.terminal_cap_contours_ms += elapsed_profile_ms(terminal_cap_contours_start);
+            let side_join_contours_start = profile_enabled.then(Instant::now);
             push_side_join_band_contours(
                 input.piece_kind,
                 mouth,
@@ -145,6 +188,8 @@ impl NodeRailContourSet {
                 &mut contours,
                 &mut constraints,
             )?;
+            profile.side_join_contours_ms += elapsed_profile_ms(side_join_contours_start);
+            let boundary_constraints_start = profile_enabled.then(Instant::now);
             for boundary_rail in &mouth.boundary_rails {
                 let (owner, opposite_owner) =
                     boundary_owners(boundary_rail.boundary_index, &mouth_owners.band_owners);
@@ -157,35 +202,56 @@ impl NodeRailContourSet {
                     &mut constraints,
                 )?;
             }
+            profile.boundary_constraints_ms += elapsed_profile_ms(boundary_constraints_start);
 
+            let span_handoff_start = profile_enabled.then(Instant::now);
             for profile_rail in &mouth.mouth_rails {
                 let owner = mouth_owners.band_owners[profile_rail.band_index];
                 push_span_handoff_constraint(mouth, profile_rail, owner, &mut constraints)?;
             }
+            profile.span_handoff_ms += elapsed_profile_ms(span_handoff_start);
         }
         let source_constraint_count = constraints.len();
+        profile.source_constraints = source_constraint_count;
+        let contact_noding_first_start = profile_enabled.then(Instant::now);
         node_generated_contact_contours(&mut contours, &mut constraints)?;
+        profile.contact_noding_first_ms = elapsed_profile_ms(contact_noding_first_start);
+        let raised_step_contacts_first_start = profile_enabled.then(Instant::now);
         append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
             source_constraint_count,
             &mut constraints,
         );
+        profile.raised_step_contacts_first_ms =
+            elapsed_profile_ms(raised_step_contacts_first_start);
+        let material_contacts_start = profile_enabled.then(Instant::now);
         append_generated_material_point_contact_constraints(&contours, &mut constraints);
+        profile.material_contacts_ms = elapsed_profile_ms(material_contacts_start);
+        let raised_step_contacts_second_start = profile_enabled.then(Instant::now);
         append_source_authorized_raised_step_point_contacts(
             input.piece_kind,
             &contours,
             source_constraint_count,
             &mut constraints,
         );
+        profile.raised_step_contacts_second_ms =
+            elapsed_profile_ms(raised_step_contacts_second_start);
+        let contact_noding_second_start = profile_enabled.then(Instant::now);
         node_generated_contact_contours(&mut contours, &mut constraints)?;
+        profile.contact_noding_second_ms = elapsed_profile_ms(contact_noding_second_start);
+        let same_band_contacts_start = profile_enabled.then(Instant::now);
         append_generated_same_band_contact_constraints(
             input.piece_kind,
             &contours,
             source_constraint_count,
             &mut constraints,
         );
+        profile.same_band_contacts_ms = elapsed_profile_ms(same_band_contacts_start);
+        let contact_noding_third_start = profile_enabled.then(Instant::now);
         node_generated_contact_contours(&mut contours, &mut constraints)?;
+        profile.contact_noding_third_ms = elapsed_profile_ms(contact_noding_third_start);
+        let validation_source_constraints_start = profile_enabled.then(Instant::now);
         let mut validation_constraints = constraints.clone();
         node_generated_contact_source_constraints(
             &contours,
@@ -198,6 +264,9 @@ impl NodeRailContourSet {
             source_constraint_count,
         );
         let authority_constraints = validation_constraints.clone();
+        profile.validation_source_constraints_ms =
+            elapsed_profile_ms(validation_source_constraints_start);
+        let retain_constraints_start = profile_enabled.then(Instant::now);
         retain_source_authorized_generated_contact_constraints(
             &contours,
             &authority_constraints,
@@ -210,25 +279,40 @@ impl NodeRailContourSet {
             &mut validation_constraints,
             source_constraint_count,
         );
+        profile.retain_constraints_ms = elapsed_profile_ms(retain_constraints_start);
+        let validate_endpoints_start = profile_enabled.then(Instant::now);
         validate_generated_contact_constraint_endpoints_from_sources(
             &contours,
             &validation_constraints,
             source_constraint_count,
         )?;
+        profile.validate_endpoints_ms = elapsed_profile_ms(validate_endpoints_start);
+        let source_carriers_start = profile_enabled.then(Instant::now);
         let source_carriers = NodeSourceCarrierRegistry::from_rail_parts(
             &contours,
             &constraints,
             &height_carrier_paths_by_source,
             &height_carrier_points_by_source,
         );
-        Ok(Self {
-            node_id: input.node_id,
-            piece_kind: input.piece_kind,
-            contours,
-            constraints,
-            height_carrier_paths_by_source,
-            height_carrier_points_by_source,
-            source_carriers,
-        })
+        profile.source_carriers_ms = elapsed_profile_ms(source_carriers_start);
+        profile.contours = contours.len();
+        profile.constraints = constraints.len();
+        profile.validation_constraints = validation_constraints.len();
+        profile.height_carrier_sources = height_carrier_points_by_source.len();
+        profile.height_carrier_points =
+            height_carrier_points_by_source.values().map(Vec::len).sum();
+        profile.total_ms = elapsed_profile_ms(total_start);
+        Ok((
+            Self {
+                node_id: input.node_id,
+                piece_kind: input.piece_kind,
+                contours,
+                constraints,
+                height_carrier_paths_by_source,
+                height_carrier_points_by_source,
+                source_carriers,
+            },
+            profile,
+        ))
     }
 }

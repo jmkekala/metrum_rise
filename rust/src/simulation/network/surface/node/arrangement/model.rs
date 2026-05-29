@@ -112,6 +112,43 @@ pub(crate) struct NodeArrangement {
         BTreeMap<NodeArrangementVertexContextKey, NodeArrangementVertexId>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NodeArrangementBuildProfile {
+    pub(crate) total_ms: f64,
+    pub(crate) pending_regions_ms: f64,
+    pub(crate) noding_ms: f64,
+    pub(crate) edge_support_ms: f64,
+    pub(crate) boundary_edges_ms: f64,
+    pub(crate) push_regions_ms: f64,
+    pub(crate) conflict_ms: f64,
+    pub(crate) height_regions: usize,
+    pub(crate) pending_edges_before: usize,
+    pub(crate) pending_edges_after: usize,
+    pub(crate) vertices: usize,
+    pub(crate) edges: usize,
+    pub(crate) regions: usize,
+    pub(crate) seam_constraints: usize,
+    pub(crate) diagnostics: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NodeArrangementAttachProfile {
+    pub(crate) total_ms: f64,
+    pub(crate) validation_ms: f64,
+    pub(crate) insert_vertices_ms: f64,
+    pub(crate) push_faces_ms: f64,
+    pub(crate) conflict_ms: f64,
+    pub(crate) regions: usize,
+    pub(crate) source_vertices: usize,
+    pub(crate) source_triangles: usize,
+    pub(crate) vertex_insert_attempts: usize,
+    pub(crate) arrangement_vertices_before: usize,
+    pub(crate) arrangement_vertices_after: usize,
+    pub(crate) vertices_inserted: usize,
+    pub(crate) vertices_reused: usize,
+    pub(crate) faces_pushed: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NodeArrangementDiagnostic {
     MissingSeamConstraint {

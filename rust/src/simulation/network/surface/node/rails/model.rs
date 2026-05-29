@@ -63,6 +63,39 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) source_carriers: NodeSourceCarrierRegistry,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NodeRailBuildProfile {
+    pub(crate) total_ms: f64,
+    pub(crate) terminal_caps_ms: f64,
+    pub(crate) side_joins_ms: f64,
+    pub(crate) owners_ms: f64,
+    pub(crate) mouth_base_contours_ms: f64,
+    pub(crate) mouth_band_contours_ms: f64,
+    pub(crate) cap_height_carriers_ms: f64,
+    pub(crate) terminal_cap_contours_ms: f64,
+    pub(crate) side_join_contours_ms: f64,
+    pub(crate) boundary_constraints_ms: f64,
+    pub(crate) span_handoff_ms: f64,
+    pub(crate) contact_noding_first_ms: f64,
+    pub(crate) raised_step_contacts_first_ms: f64,
+    pub(crate) material_contacts_ms: f64,
+    pub(crate) raised_step_contacts_second_ms: f64,
+    pub(crate) contact_noding_second_ms: f64,
+    pub(crate) same_band_contacts_ms: f64,
+    pub(crate) contact_noding_third_ms: f64,
+    pub(crate) validation_source_constraints_ms: f64,
+    pub(crate) retain_constraints_ms: f64,
+    pub(crate) validate_endpoints_ms: f64,
+    pub(crate) source_carriers_ms: f64,
+    pub(crate) mouths: usize,
+    pub(crate) contours: usize,
+    pub(crate) constraints: usize,
+    pub(crate) source_constraints: usize,
+    pub(crate) validation_constraints: usize,
+    pub(crate) height_carrier_sources: usize,
+    pub(crate) height_carrier_points: usize,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct NodeRailHeightCarrierPaths {
     pub(crate) start_path_world: Vec<RoadVec3>,

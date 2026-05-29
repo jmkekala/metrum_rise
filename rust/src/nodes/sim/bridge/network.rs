@@ -45,13 +45,7 @@ pub fn get_road_ghost_guides(core: &SimCore) -> PackedFloat32Array {
 pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
     let road_debug = crate::debug::category_enabled("road");
     let total_start = road_debug.then(Instant::now);
-    let compile_start = road_debug.then(Instant::now);
-    core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
-    let compile_ms = compile_start
-        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
+    let compile_ms = 0.0;
 
     let mut vertices = Vec::new();
     let mut colors = Vec::new();
@@ -70,8 +64,7 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
         let end_index = geom.len() - 1;
         let start_tangent = (geom[0] - geom[1]).normalized();
         append_outward_ghost_guide(
-            core,
-            Vector2::new(geom[0].x, geom[0].z),
+            geom[0],
             Vector2::new(start_tangent.x, start_tangent.z),
             guide_color,
             &mut vertices,
@@ -80,8 +73,7 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
 
         let end_tangent = (geom[end_index] - geom[end_index - 1]).normalized();
         append_outward_ghost_guide(
-            core,
-            Vector2::new(geom[end_index].x, geom[end_index].z),
+            geom[end_index],
             Vector2::new(end_tangent.x, end_tangent.z),
             guide_color,
             &mut vertices,
@@ -99,17 +91,24 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
         .iter()
         .filter(|edge| !edge.deleted && edge.physical_geometry.len() >= 2)
     {
-        let points: Vec<Vector2> = edge
-            .physical_geometry
-            .iter()
-            .map(|point| Vector2::new(point.x, point.z))
-            .collect();
         for offset_index in 1..=GHOST_MAX_OFFSETS {
             let alpha = GHOST_OFFSET_ALPHAS[offset_index - 1];
             let color = Color::from_rgba(1.0, 1.0, 1.0, alpha);
             let offset = offset_index as f32 * GHOST_GRID_SPACING_M;
-            append_offset_ghost_curve(core, &points, offset, color, &mut vertices, &mut colors);
-            append_offset_ghost_curve(core, &points, -offset, color, &mut vertices, &mut colors);
+            append_offset_ghost_curve(
+                &edge.physical_geometry,
+                offset,
+                color,
+                &mut vertices,
+                &mut colors,
+            );
+            append_offset_ghost_curve(
+                &edge.physical_geometry,
+                -offset,
+                color,
+                &mut vertices,
+                &mut colors,
+            );
         }
     }
     let offset_ms = offset_start
@@ -136,7 +135,7 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
             outward_ms,
             offset_ms,
             dict_ms,
-            vertex_count,
+            0,
             total_start
                 .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0)
@@ -267,19 +266,18 @@ pub fn get_road_tangent_at(core: &SimCore, pos: Vector3, max_dist: f32) -> Vecto
 }
 
 fn append_outward_ghost_guide(
-    core: &SimCore,
-    anchor: Vector2,
+    anchor: Vector3,
     tangent: Vector2,
     color: Color,
     vertices: &mut Vec<Vector3>,
     colors: &mut Vec<Color>,
 ) {
     let perp = Vector2::new(-tangent.y, tangent.x);
-    let end = anchor + tangent * GHOST_OUTWARD_EXTEND_M;
+    let anchor_xz = Vector2::new(anchor.x, anchor.z);
+    let end_xz = anchor_xz + tangent * GHOST_OUTWARD_EXTEND_M;
     push_ghost_line(
-        core,
         anchor,
-        end,
+        Vector3::new(end_xz.x, anchor.y, end_xz.y),
         GHOST_LINE_LIFT_M,
         color,
         vertices,
@@ -288,11 +286,18 @@ fn append_outward_ghost_guide(
 
     let mut dist = GHOST_TICK_INTERVAL_M;
     while dist <= GHOST_OUTWARD_EXTEND_M {
-        let tick_center = anchor + tangent * dist;
+        let tick_center = anchor_xz + tangent * dist;
         push_ghost_line(
-            core,
-            tick_center - perp * GHOST_TICK_HALF_M,
-            tick_center + perp * GHOST_TICK_HALF_M,
+            Vector3::new(
+                tick_center.x - perp.x * GHOST_TICK_HALF_M,
+                anchor.y,
+                tick_center.y - perp.y * GHOST_TICK_HALF_M,
+            ),
+            Vector3::new(
+                tick_center.x + perp.x * GHOST_TICK_HALF_M,
+                anchor.y,
+                tick_center.y + perp.y * GHOST_TICK_HALF_M,
+            ),
             GHOST_TICK_LIFT_M,
             color,
             vertices,
@@ -303,8 +308,7 @@ fn append_outward_ghost_guide(
 }
 
 fn append_offset_ghost_curve(
-    core: &SimCore,
-    points: &[Vector2],
+    points: &[Vector3],
     offset_m: f32,
     color: Color,
     vertices: &mut Vec<Vector3>,
@@ -316,8 +320,8 @@ fn append_offset_ghost_curve(
 
     let mut offset_segments = Vec::with_capacity(points.len().saturating_sub(1));
     for segment in points.windows(2) {
-        let a = segment[0];
-        let b = segment[1];
+        let a = Vector2::new(segment[0].x, segment[0].z);
+        let b = Vector2::new(segment[1].x, segment[1].z);
         let seg = b - a;
         if seg.length_squared() < 0.01 {
             continue;
@@ -329,7 +333,7 @@ fn append_offset_ghost_curve(
         if (offset_b - offset_a).dot(seg_norm) < 0.0 {
             continue;
         }
-        offset_segments.push((offset_a, offset_b));
+        offset_segments.push((offset_a, offset_b, segment[0].y, segment[1].y));
     }
 
     let mut skip_next = false;
@@ -338,14 +342,21 @@ fn append_offset_ghost_curve(
             skip_next = false;
             continue;
         }
-        let (a, b) = offset_segments[index];
-        if let Some((next_a, next_b)) = offset_segments.get(index + 1).copied() {
+        let (a, b, start_y, end_y) = offset_segments[index];
+        if let Some((next_a, next_b, _, _)) = offset_segments.get(index + 1).copied() {
             if segments_cross_2d(a, b, next_a, next_b) {
                 skip_next = true;
                 continue;
             }
         }
-        push_ghost_line(core, a, b, GHOST_LINE_LIFT_M, color, vertices, colors);
+        push_ghost_line(
+            Vector3::new(a.x, start_y, a.y),
+            Vector3::new(b.x, end_y, b.y),
+            GHOST_LINE_LIFT_M,
+            color,
+            vertices,
+            colors,
+        );
     }
 }
 
@@ -407,24 +418,15 @@ fn update_best_ghost_point(
 }
 
 fn push_ghost_line(
-    core: &SimCore,
-    start: Vector2,
-    end: Vector2,
+    start: Vector3,
+    end: Vector3,
     lift_m: f32,
     color: Color,
     vertices: &mut Vec<Vector3>,
     colors: &mut Vec<Color>,
 ) {
-    vertices.push(Vector3::new(
-        start.x,
-        ghost_surface_height_m(core, start) + lift_m,
-        start.y,
-    ));
-    vertices.push(Vector3::new(
-        end.x,
-        ghost_surface_height_m(core, end) + lift_m,
-        end.y,
-    ));
+    vertices.push(Vector3::new(start.x, start.y + lift_m, start.z));
+    vertices.push(Vector3::new(end.x, end.y + lift_m, end.z));
     colors.push(color);
     colors.push(color);
 }

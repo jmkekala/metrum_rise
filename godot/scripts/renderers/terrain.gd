@@ -164,12 +164,16 @@ func rebuild_from_simulation_state() -> void:
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var residency_start_us := frame_start_us
-	var residency_changed := _sync_patch_residency()
+	var sim_core_busy: bool = simulation_node.is_sim_core_busy()
+	var network_refresh_pending: bool = simulation_node.is_network_dirty()
+	var residency_changed := false
+	if not sim_core_busy:
+		residency_changed = _sync_patch_residency()
 	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
-	if simulation_node.is_terrain_dirty():
+	if not sim_core_busy and not network_refresh_pending and simulation_node.is_terrain_dirty():
 		_refresh_road_locked_patch_lookup()
 		var dirty_start_us := Time.get_ticks_usec()
 		var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
@@ -215,7 +219,7 @@ func _process(delta: float) -> void:
 			water_sync_elapsed_ms
 		)
 
-	if not simulation_node.is_terrain_dirty():
+	if not sim_core_busy and not network_refresh_pending and not simulation_node.is_terrain_dirty():
 		_prewarm_patch_cache()
 
 func get_resident_patch_keys() -> Array[Vector2i]:

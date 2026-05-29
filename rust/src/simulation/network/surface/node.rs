@@ -22,7 +22,7 @@ use super::{
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint,
-    NodeOverlayShape, NodeOverlayShapes, SurfaceCdt,
+    NodeOverlayShape, NodeOverlayShapes, RoadSurfaceVisualNodeCompileInput, SurfaceCdt,
     backend::{self, RoadVec2, RoadVec3},
     band_semantics, indices, keys, paths, segments,
 };

@@ -191,81 +191,50 @@ elevated 4-way / 5-way / 6-way `JunctionN` fixtures now exercise mixed sidewalk 
 no-sidewalk curb / shoulder profile modes without weakening canonical identity, provenance, or
 terrain-CDT gates.
 
-### Active Plan: JunctionN Raised-Step Coverage Closure
+### Closed Note: JunctionN Raised-Step Coverage Closure
 
-Status: reopened for rendered-material proof. The canonical arrangement/export coverage can report
-complete raised-step geometry while the normal Godot view still shows tiny blue rectangles at
-`JunctionN` raised-step endpoints. Runtime logs originally showed missing vertical curb / sideskirt
-polygons near `JunctionN` throats even when broad ROAD-01 / ROAD-02 suites passed. The fix remains
-a general ownership/export and render-material contract, not a set of case patches.
+Status: closed as a rendered-hole plan and superseded by RoadTool input-simplification evidence.
+The earlier closeout assumed that visible `JunctionN` sideskirt / raised-step rectangles required
+more canonical ownership/export provenance. Current runtime evidence points to a narrower source:
+Godot was sending dense baked `Curve3D` point streams for visually straight road edits. Recent
+`road-perf.log` commits show those edits reduced from hundreds of raw samples to two canonical
+surface points, for example `raw_points=619 points=2`, `raw_points=329 points=2`, and
+`raw_points=181 points=2`. After that simplification, the flat 3-way visible sideskirt holes were
+no longer observed.
 
-The failure signature is:
+Root-cause candidate:
 
-- blue or background-colored holes on vertical faces between carriageway edge and sidewalk near
-  `JunctionN` throats, especially beside crosswalk / mouth transitions
-- final raised-step diagnostics that can report no interval gaps while material-footprint coverage
-  still contains boundary-touching missing shapes
-- terrain clip ambiguity where adjacent sidewalk / curb owners claim the same exported seam point or
-  segment without canonical final-boundary provenance
-- any rendered raised-step face created from nearby final top boundaries without an explicit
-  canonical source step or final owner/export record
+- oversampled straight road edits injected redundant near-collinear plan points into the road
+  surface compiler
+- those points created extra sections, tiny endpoint clusters, and near-duplicate `JunctionN` mouth
+  geometry that could stress canonical arrangement/export and produce small visible material
+  artifacts even when broad raised-step coverage diagnostics reported complete geometry
+- straight road edits must therefore commit endpoint-only plan input; curved edits may sample at a
+  deterministic world-metre interval but must preserve the authored endpoints exactly
+- long term, road edit intent and simplification should move to Rust so preview and commit share one
+  deterministic path builder and Godot remains an input/render bridge
 
-Implementation sequence:
+Retired TODOs:
 
-1. Freeze the live repro before changing ownership logic. Update the logged flat 3-way fixture from
-   the regenerated `flat-3way.log` and make the fixture reproduce the visible throat-side missing
-   vertical faces in Rust tests.
-2. Harden diagnostics so visible slivers cannot hide under area budgets. Final raised-step coverage
-   must report `required_gap_count`, `missing_length_m`, sampled missing spans, lower / raised
-   owner, endpoints, source edge, and nearest emitted face. Any non-empty material-footprint
-   missing shape that touches road / curb / sidewalk or raised-step boundaries is suspicious until
-   proven to be canonical numeric dust.
-3. Split the current sideskirt changes into diagnostic code, valid canonical ownership/export code,
-   and suspect downstream completion code. Downstream completion that emits a vertical face from
-   only a nearby top-boundary pair must be removed or gated behind explicit canonical provenance.
-4. Fix the owning stage. `JunctionN` arrangement / export must derive curb-to-sidewalk and
-   road-to-curb raised-step intervals from the final road-owned footprint and its seam constraints.
-   Source edge splitting, final owned-region seams, and footprint loops must carry stable owner /
-   source IDs so the renderer, terrain clipper, query support, and debug output all consume the same
-   boundary.
-5. Resolve same-material boundary handoff explicitly. If two adjacent sidewalk or curb owners meet
-   on the final outer boundary, terrain clipping may accept that seam only through a canonical
-   same-material handoff record with stable provenance; it must not choose an owner by nearest
-   point, insertion order, area size, or render order.
-6. Prove rendered upload continuity from the Rust-owned data. The test suite must assert that the
-   final mesh payload contains continuous raised-step triangles for every required boundary interval
-   and that Godot-side upload remains display-only.
-7. After the tests pass, prune failed experiments and diagnostic scaffolding that is not part of
-   the maintained contract.
+- the previous seven-step provenance/export implementation sequence is no longer an active plan
+- do not reopen downstream vertical-face completion or broad sideskirt export surgery for this
+  symptom unless a clean endpoint-only fixture reproduces the missing geometry
+- keep the shipped provenance guardrails that already exist: `FinalTopBoundaryPair` is diagnostic
+  only, same-material boundary handoffs require canonical provenance, endpoint dust remains bounded,
+  and boundary-touching missing material footprints stay suspicious unless proven numeric dust
 
-Required tests for this plan:
+Maintenance coverage:
 
-- the regenerated flat 3-way `JunctionN` fixture has zero final raised-step coverage gaps and zero
-  exposed curb-width caps
-- no missing material-footprint shape touches a raised-step, road / curb, curb / sidewalk, sidewalk
-  outer, or throat boundary, except canonical numeric dust that is reported and excluded before
-  height / CDT obligations
-- terrain clipping for the fixture has no ambiguous output-boundary owner and preserves every
-  exposed road-owned seam constraint with provenance
-- rendered mesh extraction / upload contains raised-step triangles covering the same canonical
-  intervals as the compiled surface model
-- normal render upload assigns every required raised-step face a production-valid material / color;
-  diagnostic blue / vertex-color overlays are allowed only behind explicit debug overlays, not in
-  the default road mesh
-- equivalent edit order and source order produce identical stats and canonical emitted triangle /
-  raised-step interval sets
+- the regenerated flat 3-way `JunctionN` fixture should continue to have zero final raised-step
+  coverage gaps and zero exposed curb-width caps
+- rendered mesh extraction / upload should continue to contain raised-step triangles covering the
+  same canonical intervals as the compiled surface model
+- add or keep a regression proving that a visually straight edit with many raw Godot baked samples
+  is simplified to endpoint-only road-surface input before compile
+- future sideskirt regressions require a minimal clean-input fixture before changing canonical
+  ownership/export code
 
-Current diagnostic gap:
-
-- `flat-3way.log` shows the visible tiny rectangles as emitted `canonical_step` raised-step faces
-  rather than as missing geometry. For example, `JunctionN` node `2` can emit face `28` as a
-  `0.250 m x 0.120 m` carriageway-to-curb rectangle with `problem=false`, while
-  `required_gap_count`, `missing_required_face_count`, and material-footprint missing counts remain
-  zero. Coverage diagnostics therefore prove only that a face exists; they do not prove the default
-  Godot upload uses the intended production material / color or that endpoint caps are visually
-  closed.
-
-Forbidden fixes for this plan:
+Forbidden fixes remain:
 
 - render z-bias, material ordering, cull-mode tricks, or shader / water / background masking
 - nearest-height, nearest-owner, min/max, averaging, old-road-wins, terrain sampling, or fallback
@@ -277,16 +246,16 @@ Forbidden fixes for this plan:
 - global scans outside the dirty node / edge / chunk scope; the fix remains node-local and bounded
   by compiled piece geometry
 
-Done means the live repro, generated `JunctionN` matrices, and terrain-CDT contract tests all pass
-without any downstream repair path that can invent rendered sideskirt geometry from unowned
-boundaries.
+Done means clean simplified RoadTool input no longer reproduces the visible sideskirt holes, the
+flat 3-way / generated `JunctionN` regressions continue to pass, and no downstream repair path can
+invent rendered sideskirt geometry from unowned boundaries.
 
 ### Contract Map
 
 - terrain CDT status and rules live under
   [`Spade CDT Terrain-Patch Hardcut`](#spade-cdt-terrain-patch-hardcut)
 - shipped JunctionN raised-step closure lives under
-  [`Active Plan: JunctionN Raised-Step Coverage Closure`](#active-plan-junctionn-raised-step-coverage-closure)
+  [`Closed Note: JunctionN Raised-Step Coverage Closure`](#closed-note-junctionn-raised-step-coverage-closure)
 - the node pipeline runtime contract lives under
   [`Library-Backed Node Runtime Contract`](#library-backed-node-runtime-contract)
 - the shipped carrier-provenance replacement for post-boolean repair lives under

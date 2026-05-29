@@ -9,6 +9,7 @@ impl RoadSurfaceSystem {
         self.compiled_sections.clear();
         self.compiled_visual_span_pieces.clear();
         self.compiled_visual_node_pieces.clear();
+        self.compiled_visual_node_inputs.clear();
         self.clear_piece_chunk_coverage();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();
