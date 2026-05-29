@@ -2,7 +2,8 @@
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_world_surface_height(),
-##   get_road_ghost_guides(), intersect_world_surface(), get_road_surface_debug_data()
+##   get_road_ghost_line_data(), get_road_ghost_snap(), intersect_world_surface(),
+##   get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D

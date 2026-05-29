@@ -37,6 +37,7 @@ var _label_world_pos: Vector3 = Vector3.ZERO
 var _ghost_enabled: bool = true  # toggled with G key
 # Cached guide data so we only call Rust when the network changes.
 var _ghost_guides_dirty: bool = true
+var _road_debug_enabled: bool = false
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
 # Base angle (radians) for Shift snapping — set to the road tangent at start_pos
@@ -47,6 +48,7 @@ var _has_road_tangent: bool = false
 
 func _ready():
 	super._ready()
+	_road_debug_enabled = _road_debug_is_enabled()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
 	add_child(_hud_canvas)
@@ -70,6 +72,19 @@ func _process(delta):
 			var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
 			# Offset slightly so the label sits above-right of the midpoint.
 			_info_label.position = screen_pos + Vector2(8.0, -24.0)
+
+func _road_debug_is_enabled() -> bool:
+	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
+	if debug_value != "1":
+		return false
+	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	if filter.is_empty():
+		return true
+	for entry_variant in filter.split(","):
+		var entry := String(entry_variant).strip_edges()
+		if entry == "road" or entry == "road-geometry":
+			return true
+	return false
 
 func _update_lanes_label():
 	if active and current_path != null:
@@ -272,15 +287,46 @@ func cancel_road():
 ## Drains _pending_border_checks and shows the border-connection dialog if relevant.
 ## Also rebuilds ghost guides now that the new road is in the graph.
 func drain_pending_border_checks() -> void:
+	var total_start_us := Time.get_ticks_usec()
+	var pending_count := _pending_border_checks.size()
+	var ghost_was_dirty := _ghost_guides_dirty
+	var ghost_ms := 0.0
+	var candidate_ms := 0.0
+	var prompt_ms := 0.0
+	var candidate_calls := 0
+	var prompt_count := 0
 	if _ghost_guides_dirty:
+		var ghost_start_us := Time.get_ticks_usec()
 		_rebuild_ghost_lines()
+		ghost_ms = float(Time.get_ticks_usec() - ghost_start_us) / 1000.0
 	while not _pending_border_checks.is_empty():
 		var pair = _pending_border_checks.pop_front()
+		var candidate_start_us := Time.get_ticks_usec()
 		var candidate: int = simulation_node.check_border_candidate(pair[0])
+		candidate_calls += 1
 		if candidate < 0:
 			candidate = simulation_node.check_border_candidate(pair[1])
+			candidate_calls += 1
+		candidate_ms += float(Time.get_ticks_usec() - candidate_start_us) / 1000.0
 		if candidate >= 0:
+			var prompt_start_us := Time.get_ticks_usec()
 			_prompt_border_connection(candidate)
+			prompt_ms += float(Time.get_ticks_usec() - prompt_start_us) / 1000.0
+			prompt_count += 1
+	if _road_debug_enabled:
+		print(
+			"[DEBUG:road] border_checks_detail pending=%d ghost_dirty=%s ghost_ms=%.3f candidate_calls=%d candidate_ms=%.3f prompts=%d prompt_ms=%.3f total_ms=%.3f"
+			% [
+				pending_count,
+				str(ghost_was_dirty),
+				ghost_ms,
+				candidate_calls,
+				candidate_ms,
+				prompt_count,
+				prompt_ms,
+				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
+			]
+		)
 
 ## Shows a dialog asking whether to make this road endpoint an external connection.
 ## On confirmation, the node is promoted to Border and becomes an immigrant spawn point.
@@ -371,64 +417,10 @@ func get_world_mouse_pos() -> Vector3:
 
 	# 3. Ghost-line snap — snaps to both outward tangent rays AND parallel offset curves.
 	if _ghost_enabled and not Input.is_key_pressed(KEY_SHIFT):
-		var best_dist := 10.0  # snap radius in metres — wide enough to be usable top-down
-		var best_x := 0.0
-		var best_z := 0.0
-		var found := false
-
-		# 3a. Outward tangent rays from road endpoints.
-		var guides: PackedFloat32Array = simulation_node.get_road_ghost_guides()
-		var n_guides := guides.size() / 4
-		for i in range(n_guides):
-			var ax: float = guides[i * 4 + 0]
-			var az: float = guides[i * 4 + 1]
-			var dx: float = guides[i * 4 + 2]
-			var dz: float = guides[i * 4 + 3]
-			var px := pos.x - ax;  var pz := pos.z - az
-			var t := px * dx + pz * dz
-			if t < 0.0: continue
-			var cx := ax + dx * t;  var cz := az + dz * t
-			var d := sqrt((pos.x - cx) * (pos.x - cx) + (pos.z - cz) * (pos.z - cz))
-			if d < best_dist:
-				best_dist = d;  best_x = cx;  best_z = cz;  found = true
-
-		# 3b. Parallel offset curves (80 m, 160 m, 240 m from each edge).
-		# Uses the same polyline data as the visual overlay so snap aligns exactly.
-		const GHOST_OFFSETS := [80.0, 160.0, 240.0]
-		var polylines: PackedFloat32Array = simulation_node.get_road_edge_polylines()
-		var idx := 0
-		while idx < polylines.size():
-			var n_pts := int(polylines[idx]); idx += 1
-			if n_pts < 2: idx += n_pts * 2; continue
-			var edge_pts: Array = []
-			for j in range(n_pts):
-				edge_pts.append(Vector2(polylines[idx], polylines[idx + 1])); idx += 2
-			for off_idx in range(GHOST_OFFSETS.size()):
-				for side in [-1.0, 1.0]:
-					var actual_offset: float = GHOST_OFFSETS[off_idx] * side
-					for k in range(edge_pts.size() - 1):
-						var a: Vector2 = edge_pts[k]
-						var b: Vector2 = edge_pts[k + 1]
-						var seg: Vector2 = b - a
-						if seg.length_squared() < 0.01: continue
-						var seg_norm: Vector2 = seg.normalized()
-						var perp: Vector2 = Vector2(-seg_norm.y, seg_norm.x)
-						var oa: Vector2 = a + perp * actual_offset
-						var ob: Vector2 = b + perp * actual_offset
-						# Skip collapsed inside-curve segments.
-						if (ob - oa).dot(seg_norm) < 0.0: continue
-						# Find closest point on this offset segment to cursor.
-						var pa: Vector2 = Vector2(pos.x, pos.z) - oa
-						var ab: Vector2 = ob - oa
-						var t2: float = clampf(pa.dot(ab) / ab.length_squared(), 0.0, 1.0)
-						var closest: Vector2 = oa + ab * t2
-						var d: float = Vector2(pos.x - closest.x, pos.z - closest.y).length()
-						if d < best_dist:
-							best_dist = d;  best_x = closest.x;  best_z = closest.y;  found = true
-
-		if found:
+		var ghost_snap = simulation_node.get_road_ghost_snap(pos, 10.0, altitude_offset)
+		if ghost_snap != null:
 			is_valid = true
-			return Vector3(best_x, simulation_node.get_world_surface_height(Vector2(best_x, best_z)) + altitude_offset, best_z)
+			return ghost_snap
 
 	# 4. Snap to map border when cursor is within border_snap_dist of any edge.
 	if _is_near_border(pos, half_w, half_h, border_snap_dist):
@@ -504,139 +496,55 @@ func _rebuild_ghost_lines() -> void:
 		ghost_mesh.visible = false
 		return
 
-	var guides: PackedFloat32Array = simulation_node.get_road_ghost_guides()
-	if guides.size() == 0:
+	var total_start_us := Time.get_ticks_usec()
+	var fetch_start_us := Time.get_ticks_usec()
+	var guide_data: Dictionary = simulation_node.get_road_ghost_line_data()
+	var fetch_ms := float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
+	var vertices: PackedVector3Array = (
+		guide_data.get("vertices", PackedVector3Array())
+		as PackedVector3Array
+	)
+	var colors: PackedColorArray = (
+		guide_data.get("colors", PackedColorArray())
+		as PackedColorArray
+	)
+	if vertices.size() < 2:
 		ghost_mesh.visible = false
 		_ghost_guides_dirty = false
+		if _road_debug_enabled:
+			print(
+				"[DEBUG:road] ghost_lines_godot vertices=%d colors=%d fetch_ms=%.3f upload_ms=0.000 total_ms=%.3f"
+				% [
+					vertices.size(),
+					colors.size(),
+					fetch_ms,
+					float(Time.get_ticks_usec() - total_start_us) / 1000.0,
+				]
+			)
 		return
 
-	# City block grid spacing — 80 m matches the most common compact urban standard
-	# (Manhattan short blocks ~80 m, Portland ~60 m, Barcelona ~113 m).
-	const GRID_SPACING    := 80.0   # metres between parallel road guides
-	const MAX_OFFSETS     := 3      # 80 m, 160 m, 240 m — 320 m is invisible so skipped
-	const OUTWARD_EXTEND  := 200.0  # metres the outward tangent extends ahead
-	const TICK_INTERVAL   := 20.0   # tick every 20 m on the outward guide
-	const TICK_HALF       := 1.5    # half-width of each tick mark
-
+	var upload_start_us := Time.get_ticks_usec()
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-
-	var n_guides := guides.size() / 4
-	for i in range(n_guides):
-		var ax: float = guides[i * 4 + 0]
-		var az: float = guides[i * 4 + 1]
-		var dx: float = guides[i * 4 + 2]
-		var dz: float = guides[i * 4 + 3]
-		var ay: float = simulation_node.get_world_surface_height(Vector2(ax, az)) + 0.06
-		var perp_x := -dz
-		var perp_z :=  dx
-
-		# ── Outward tangent guide (extends ahead from the endpoint) ──────────
-		var ex := ax + dx * OUTWARD_EXTEND
-		var ez := az + dz * OUTWARD_EXTEND
-		var ey: float = simulation_node.get_world_surface_height(Vector2(ex, ez)) + 0.06
-		var guide_col := Color(1.0, 1.0, 1.0, 0.30)
-		im.surface_set_color(guide_col)
-		im.surface_add_vertex(Vector3(ax, ay, az))
-		im.surface_set_color(guide_col)
-		im.surface_add_vertex(Vector3(ex, ey, ez))
-
-		# Tick marks along the outward guide at each grid interval
-		var tick_col := Color(1.0, 1.0, 1.0, 0.30)
-		var dist := GRID_SPACING
-		while dist <= OUTWARD_EXTEND:
-			var tx := ax + dx * dist
-			var tz := az + dz * dist
-			var ty: float = simulation_node.get_world_surface_height(Vector2(tx, tz)) + 0.07
-			im.surface_set_color(tick_col)
-			im.surface_add_vertex(Vector3(tx - perp_x * TICK_HALF, ty, tz - perp_z * TICK_HALF))
-			im.surface_set_color(tick_col)
-			im.surface_add_vertex(Vector3(tx + perp_x * TICK_HALF, ty, tz + perp_z * TICK_HALF))
-			dist += GRID_SPACING
-
-	# ── Parallel offset guides from full edge polylines (follows road curvature) ─
-	# Each edge's physical geometry is offset perpendicular to the road direction
-	# at ±GRID_SPACING intervals, so curved/splined roads get curved parallel guides.
-	var polylines: PackedFloat32Array = simulation_node.get_road_edge_polylines()
-	var idx := 0
-	while idx < polylines.size():
-		var n_pts := int(polylines[idx]); idx += 1
-		if n_pts < 2:
-			idx += n_pts * 2
-			continue
-
-		# Collect XZ points for this edge
-		var pts: Array = []
-		for j in range(n_pts):
-			pts.append(Vector2(polylines[idx], polylines[idx + 1]))
-			idx += 2
-
-		# Draw offset curves at ±80 m, ±160 m, ±240 m with diminishing alpha.
-		# Alpha: k=1 → 0.30, k=2 → 0.12, k=3 → 0.04 (almost invisible at 240 m).
-		var alphas := [0.30, 0.12, 0.04]
-		for k in range(1, MAX_OFFSETS + 1):
-			var col := Color(1.0, 1.0, 1.0, alphas[k - 1])
-			for side in [-1.0, 1.0]:
-				_draw_offset_curve(im, pts, side * k * GRID_SPACING, col)
+	var has_colors := colors.size() == vertices.size()
+	var fallback_color := Color(1.0, 1.0, 1.0, 0.30)
+	for index in range(vertices.size()):
+		im.surface_set_color(colors[index] if has_colors else fallback_color)
+		im.surface_add_vertex(vertices[index])
 
 	im.surface_end()
 	ghost_mesh.mesh = im
 	ghost_mesh.visible = true
 	_ghost_guides_dirty = false
-
-## Draws an offset curve parallel to the polyline `pts` (Array of Vector2 XZ),
-## displaced by `offset` metres perpendicular to the road tangent.
-## Uses per-segment perpendiculars and skips crossing pairs so tight inside curves
-## don't produce X artifacts when the offset exceeds the local radius of curvature.
-## `col` controls the line colour and alpha (used for distance-based fading).
-func _draw_offset_curve(im: ImmediateMesh, pts: Array, offset: float, col: Color) -> void:
-	const Y_LIFT := 0.06
-	var n := pts.size()
-
-	# 1. Compute all offset segments, discarding any whose direction reversed.
-	var off_segs: Array = []   # each entry: [oa: Vector2, ob: Vector2, norm: Vector2]
-	for i in range(n - 1):
-		var a: Vector2 = pts[i]
-		var b: Vector2 = pts[i + 1]
-		var seg := b - a
-		if seg.length_squared() < 0.01:
-			continue
-		var seg_norm := seg.normalized()
-		var perp := Vector2(-seg_norm.y, seg_norm.x)
-		var oa := a + perp * offset
-		var ob := b + perp * offset
-		if (ob - oa).dot(seg_norm) < 0.0:
-			continue  # Collapsed past curve centre — direction reversed.
-		off_segs.append([oa, ob, seg_norm])
-
-	# 2. Draw segments, skipping any pair that physically crosses its neighbour.
-	#    Two successive inside-curve segments can intersect even though each
-	#    individually hasn't reversed — the classic "offset X" on tight curves.
-	var skip_next := false
-	for i in range(off_segs.size()):
-		if skip_next:
-			skip_next = false
-			continue
-		var s: Array = off_segs[i]
-		if i + 1 < off_segs.size():
-			var nxt: Array = off_segs[i + 1]
-			if _segs_cross_2d(s[0], s[1], nxt[0], nxt[1]):
-				skip_next = true   # suppress this segment and the next
-				continue
-		var oa: Vector2 = s[0]
-		var ob: Vector2 = s[1]
-		im.surface_set_color(col)
-		im.surface_add_vertex(Vector3(oa.x, simulation_node.get_world_surface_height(oa) + Y_LIFT, oa.y))
-		im.surface_set_color(col)
-		im.surface_add_vertex(Vector3(ob.x, simulation_node.get_world_surface_height(ob) + Y_LIFT, ob.y))
-
-## Returns true when 2-D segments (a1→b1) and (a2→b2) properly intersect.
-func _segs_cross_2d(a1: Vector2, b1: Vector2, a2: Vector2, b2: Vector2) -> bool:
-	var d1 := b1 - a1
-	var d2 := b2 - a2
-	var denom := d1.x * d2.y - d1.y * d2.x
-	if absf(denom) < 1e-6:
-		return false  # parallel
-	var t := ((a2.x - a1.x) * d2.y - (a2.y - a1.y) * d2.x) / denom
-	var u := ((a2.x - a1.x) * d1.y - (a2.y - a1.y) * d1.x) / denom
-	return t > 0.0 and t < 1.0 and u > 0.0 and u < 1.0
+	var upload_ms := float(Time.get_ticks_usec() - upload_start_us) / 1000.0
+	if _road_debug_enabled:
+		print(
+			"[DEBUG:road] ghost_lines_godot vertices=%d colors=%d fetch_ms=%.3f upload_ms=%.3f total_ms=%.3f"
+			% [
+				vertices.size(),
+				colors.size(),
+				fetch_ms,
+				upload_ms,
+				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
+			]
+		)

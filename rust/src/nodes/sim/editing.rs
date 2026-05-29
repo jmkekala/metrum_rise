@@ -660,23 +660,59 @@ impl SimCore {
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
     pub fn rebuild_network_surface_terrain_internal(&mut self) {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
         let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
-        self.transit_network
-            .sync_to_terrain(&mut self.region_graph, &self.heightmap);
-        self.transit_network
+
+        let earthwork_start = road_debug.then(Instant::now);
+        let dirty_chunks = self
+            .transit_network
             .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+        let earthwork_ms = earthwork_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
+        let entrances_start = road_debug.then(Instant::now);
         self.rebuild_building_entrances_internal();
+        let entrances_ms = entrances_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
+        let mut dump_build_ms = 0.0;
+        let mut dump_print_ms = 0.0;
+        let mut dump_bytes = 0usize;
         if crate::debug::category_enabled("road")
             && Self::road_geometry_dump_enabled()
             && !debug_edges.is_empty()
         {
+            let dump_start = Instant::now();
             let dump = self
                 .transit_network
                 .road_surface
                 .build_edge_geometry_debug_dump(&self.region_graph, &self.heightmap, &debug_edges);
+            dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
+            dump_bytes = dump.len();
+            let dump_print_start = Instant::now();
             debug_log!("road", "{}", dump);
+            dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
         }
         self.terrain_dirty = true;
+        if road_debug {
+            debug_log!(
+                "road",
+                "terrain_rebuild_detail earthworks_ms={:.3} dirty_chunks={} entrances_ms={:.3} dump_edges={} dump_bytes={} dump_build_ms={:.3} dump_print_ms={:.3} total_ms={:.3}",
+                earthwork_ms,
+                dirty_chunks.len(),
+                entrances_ms,
+                debug_edges.len(),
+                dump_bytes,
+                dump_build_ms,
+                dump_print_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within
