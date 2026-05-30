@@ -64,7 +64,11 @@ impl RoadSurfaceSystem {
             ..NodeExportProfile::default()
         };
         let height_split_start = profile_enabled.then(Instant::now);
-        reject_unauthorized_arrangement_height_splits(arrangement)?;
+        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+        reject_unauthorized_arrangement_height_splits(
+            arrangement,
+            &explicit_vertical_step_segments,
+        )?;
         profile.height_split_ms = elapsed_profile_ms(height_split_start);
         let authority_start = profile_enabled.then(Instant::now);
         let mut node_grade_authorities = arrangement
@@ -109,7 +113,6 @@ impl RoadSurfaceSystem {
             &mut node_top_surface_sources,
         )?;
         profile.sorting_ms += elapsed_profile_ms(sorting_start);
-        let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
         let boundary_sources_start = profile_enabled.then(Instant::now);
         let mut boundary_export_sources = NodeFootprintBoundaryExportSources::from_owned_regions(
             arrangement.node_id(),
@@ -221,12 +224,10 @@ impl RoadSurfaceSystem {
 
 fn reject_unauthorized_arrangement_height_splits(
     arrangement: &NodeArrangement,
+    explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
 ) -> Result<(), NodeBoundaryExportError> {
-    let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
-    let authorization_index = ArrangementHeightSplitAuthorizationIndex::new(
-        arrangement,
-        &explicit_vertical_step_segments,
-    );
+    let authorization_index =
+        ArrangementHeightSplitAuthorizationIndex::new(arrangement, explicit_vertical_step_segments);
     let mut vertices_by_key = BTreeMap::<arrangement::NodeArrangementKey, Vec<_>>::new();
     for vertex in arrangement.vertices() {
         vertices_by_key
