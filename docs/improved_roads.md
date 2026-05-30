@@ -1492,12 +1492,34 @@ Required bounds:
 - terrain earthwork stamping for independent chunks should parallelize with Rayon
 - no allocation is allowed inside per-frame render upload loops beyond unavoidable Godot boundary
   copies
+- road geometry debug output must not hide provider-specific cost; terrain, water, zoning, and
+  total patch-debug timings must be logged separately
+- road geometry debug output must not trigger full-map zoning texture scans; zoning debug uses
+  cached overlay statistics from normal texture upload
 
 Preferred cache structure:
 
 - use the existing road chunking / terrain chunking conventions where they already fit
 - avoid inventing a second unrelated spatial ownership grid when one of the existing chunk systems
   can index the same work
+
+Earthwork stamping performance contract:
+
+- instrument the stamping path with counters for chunks, owners, regions, triangles
+  visited, degenerate triangles, grid cells scanned from triangle bounds, point / triangle tests,
+  candidate inserts, candidate replacements, and final unique writes
+- preserve the current support-candidate rule exactly: closest projected support triangle wins, and
+  equal-distance candidates choose the lower support height
+- use chunk-local candidate building instead of triangle-first terrain-grid scanning:
+  - collect valid span / node support triangles for the dirty chunk
+  - bucket prepared triangles into small chunk-local sample tiles
+  - for each terrain sample, test only triangles from nearby buckets
+  - write each final winning terrain sample once
+- parallelize candidate-map construction across independent dirty chunks with Rayon, then apply
+  visual-terrain resets and writes sequentially in canonical chunk order
+- keep this as an acceleration of existing structural visual-terrain stamping only; it must not
+  become a fallback seam carrier, mask, cap strip, closure strip, or replacement for the Rust CDT
+  road-footprint terrain patch path
 
 ## Piece-Owned Chunk Coverage Hardcut
 

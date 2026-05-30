@@ -39,11 +39,14 @@ var _zone_dirty: bool = true
 var _distance_dirty: bool = true
 var _occupied_dirty: bool = true
 var _no_build_dirty: bool = true
+var _zone_debug_nonzero_cells: int = 0
+var _zone_debug_cell_count: int = 0
 
 func _ready():
 	var size: Vector2i = simulation_node.get_zone_grid_size()
 	zone_grid_w = size.x
 	zone_grid_h = size.y
+	_zone_debug_cell_count = zone_grid_w * zone_grid_h
 
 	var style_bytes: PackedByteArray = simulation_node.get_zone_profile_style_lut_rgba8()
 	profile_style_lut_size = maxi(1, style_bytes.size() / 4)
@@ -117,8 +120,20 @@ func _process(delta):
 func _upload_zone():
 	var bytes = simulation_node.get_zone_profile_texture_data_rg8()
 	if bytes.size() == zone_grid_w * zone_grid_h * 2:
+		_update_zone_debug_stats(bytes)
 		zone_image.set_data(zone_grid_w, zone_grid_h, false, Image.FORMAT_RG8, bytes)
 		zone_tex.update(zone_image)
+
+func _update_zone_debug_stats(bytes: PackedByteArray):
+	var nonzero_cells := 0
+	var cell_count := int(bytes.size() / 2)
+	for cell_index in range(cell_count):
+		var byte_index := cell_index * 2
+		var runtime_id := int(bytes[byte_index]) | (int(bytes[byte_index + 1]) << 8)
+		if runtime_id != 0:
+			nonzero_cells += 1
+	_zone_debug_nonzero_cells = nonzero_cells
+	_zone_debug_cell_count = cell_count
 
 func _upload_distance():
 	var bytes = simulation_node.get_distance_texture_data()
@@ -171,22 +186,14 @@ func full_refresh():
 	_rebuild_no_build_overlay()
 
 func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[String]:
-	var zone_bytes: PackedByteArray = simulation_node.get_zone_profile_texture_data_rg8()
-	var nonzero_cells: int = 0
-	var cell_count: int = int(zone_bytes.size() / 2)
-	for cell_index in range(cell_count):
-		var byte_index: int = cell_index * 2
-		var runtime_id: int = int(zone_bytes[byte_index]) | (int(zone_bytes[byte_index + 1]) << 8)
-		if runtime_id != 0:
-			nonzero_cells += 1
 	var lines: Array[String] = [
 		"zoning_overlay visible=%s tool_active=%.3f target=%.3f zone_nonzero=%d/%d"
 		% [
 			str(visible),
 			_tool_active,
 			_tool_active_target,
-			nonzero_cells,
-			cell_count,
+			_zone_debug_nonzero_cells,
+			_zone_debug_cell_count,
 		]
 	]
 	return lines

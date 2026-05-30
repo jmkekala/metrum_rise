@@ -1,17 +1,18 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
-use super::{
-    ChunkCacheKind, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece,
-    SurfaceChunkKey,
-};
+use super::{ChunkCacheKind, RoadSurfaceSystem, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
+use rayon::prelude::*;
+use std::time::Instant;
 
 mod boundary;
 mod geometry;
 mod model;
 mod ranges;
 mod stamping;
+
+use stamping::{EarthworkChunkStampResult, EarthworkStampStats};
 
 pub(crate) use model::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
@@ -35,6 +36,7 @@ const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 // Structural end caps that constrain bridge abutments and tunnel portal stamps.
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
+const PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS: usize = 2;
 
 impl RoadSurfaceSystem {
     /// Rebuilds terrain earthworks only for the currently dirty road-surface chunks.
@@ -78,7 +80,53 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
         chunks: &[SurfaceChunkKey],
     ) {
-        for &chunk in chunks {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let collect_start = road_debug.then(Instant::now);
+        let terrain_read: &TerrainSystem = terrain;
+        let stamp_results: Vec<EarthworkChunkStampResult> =
+            if chunks.len() >= PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS {
+                chunks
+                    .par_iter()
+                    .copied()
+                    .map(|chunk| {
+                        let chunk_start = road_debug.then(Instant::now);
+                        let mut result =
+                            self.collect_earthwork_chunk_stamp_writes(graph, terrain_read, chunk);
+                        result.collect_ms = chunk_start
+                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
+                        result
+                    })
+                    .collect()
+            } else {
+                chunks
+                    .iter()
+                    .copied()
+                    .map(|chunk| {
+                        let chunk_start = road_debug.then(Instant::now);
+                        let mut result =
+                            self.collect_earthwork_chunk_stamp_writes(graph, terrain_read, chunk);
+                        result.collect_ms = chunk_start
+                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
+                        result
+                    })
+                    .collect()
+            };
+        let collect_ms = collect_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
+        let apply_start = road_debug.then(Instant::now);
+        let mut stats = EarthworkStampStats::default();
+        let mut chunk_collect_total_ms = 0.0;
+        let mut chunk_collect_max_ms = 0.0_f64;
+        let chunk_collect_count = stamp_results.len();
+        for result in stamp_results {
+            let chunk = result.chunk;
+            chunk_collect_total_ms += result.collect_ms;
+            chunk_collect_max_ms = chunk_collect_max_ms.max(result.collect_ms);
             let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
             terrain.reset_visual_region_from_source_world(
                 chunk_min.x as f32,
@@ -87,73 +135,51 @@ impl RoadSurfaceSystem {
                 chunk_max.z as f32,
             );
 
-            let Some(entry) = self.earthwork_chunk_cache.get(&chunk) else {
-                continue;
-            };
-
-            for &edge_idx in &entry.edge_indices {
-                let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                    continue;
-                };
-                self.stamp_visual_span_piece_earthworks_for_chunk(piece, chunk, terrain);
-            }
-
-            for &node_id in &entry.node_ids {
-                if node_id as usize >= graph.node_count() {
-                    continue;
-                }
-                let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                    continue;
-                };
-                self.stamp_visual_node_piece_earthworks_for_chunk(
-                    graph, node_id, piece, chunk, terrain,
+            for write in result.writes {
+                terrain.set_visual_height_at_grid_unmarked(
+                    write.grid_x,
+                    write.grid_z,
+                    write.height_sample,
                 );
             }
+            stats.add_assign(result.stats);
         }
-    }
+        let apply_ms = apply_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
 
-    fn stamp_visual_span_piece_earthworks_for_chunk(
-        &self,
-        piece: &RoadSurfaceVisualSpanPiece,
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-    ) {
-        if !self.span_piece_uses_visible_earthwork(piece) {
-            return;
+        if road_debug {
+            let chunk_collect_avg_ms = if chunk_collect_count == 0 {
+                0.0
+            } else {
+                chunk_collect_total_ms / chunk_collect_count as f64
+            };
+            crate::debug_log!(
+                "road",
+                "earthwork_stamp_detail chunks={} chunks_with_cache={} span_owners={} node_owners={} regions_visited={} regions_stamped={} triangles_visited={} degenerate_triangles={} valid_triangles={} triangle_grid_cells_scanned={} tile_triangle_refs={} point_triangle_tests={} candidate_inserts={} candidate_replacements={} final_unique_writes={} chunk_collect_avg_ms={:.3} chunk_collect_max_ms={:.3} collect_ms={:.3} apply_ms={:.3} total_ms={:.3}",
+                stats.chunks,
+                stats.chunks_with_cache,
+                stats.span_owners,
+                stats.node_owners,
+                stats.regions_visited,
+                stats.regions_stamped,
+                stats.triangles_visited,
+                stats.degenerate_triangles,
+                stats.valid_triangles,
+                stats.triangle_grid_cells_scanned,
+                stats.tile_triangle_refs,
+                stats.point_triangle_tests,
+                stats.candidate_inserts,
+                stats.candidate_replacements,
+                stats.final_unique_writes,
+                chunk_collect_avg_ms,
+                chunk_collect_max_ms,
+                collect_ms,
+                apply_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
         }
-
-        let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
-        self.stamp_span_top_surface_support_for_chunk(
-            &piece.span_earthwork_support_regions,
-            chunk,
-            terrain,
-            height_offset_m,
-        );
-    }
-
-    fn stamp_visual_node_piece_earthworks_for_chunk(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        piece: &RoadSurfaceVisualNodePiece,
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-    ) {
-        if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
-            return;
-        }
-        if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
-            return;
-        }
-
-        let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
-        self.stamp_node_structural_top_surface_clearance_for_chunk(
-            graph,
-            node_id,
-            piece,
-            chunk,
-            terrain,
-            height_offset_m,
-        );
     }
 }

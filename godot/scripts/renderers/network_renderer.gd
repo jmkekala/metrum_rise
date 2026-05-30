@@ -111,21 +111,39 @@ func _print_road_geometry_patch_debug(dirty_terrain_patch_keys: PackedInt32Array
 		print(
 			"[DEBUG:road] road_patch_debug_skipped dirty_patch_pairs=%d limit=%d reason=too_many_dirty_patches"
 			% [dirty_pair_count, ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS]
-		)
-		var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
-		print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
-		return
+			)
+			var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
+			print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
+			print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
+			print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
+			print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
+			return
 	if terrain and terrain.has_method("road_geometry_debug_patch_lines"):
+		var terrain_start_us := Time.get_ticks_usec()
 		var terrain_lines: Array = terrain.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in terrain_lines:
 			print("[DEBUG:road] %s" % String(line_variant))
+		var terrain_ms := float(Time.get_ticks_usec() - terrain_start_us) / 1000.0
+		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=%.3f" % terrain_ms)
+	else:
+		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
 	if water and water.has_method("road_geometry_debug_patch_lines"):
+		var water_start_us := Time.get_ticks_usec()
 		var water_lines: Array = water.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in water_lines:
 			print("[DEBUG:road] %s" % String(line_variant))
+		var water_ms := float(Time.get_ticks_usec() - water_start_us) / 1000.0
+		print("[DEBUG:road] road_geometry_patch_debug_water_ms=%.3f" % water_ms)
+	else:
+		print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
 	if zoning_overlay and zoning_overlay.has_method("road_geometry_debug_patch_lines"):
+		var zoning_start_us := Time.get_ticks_usec()
 		var zoning_lines: Array = zoning_overlay.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in zoning_lines:
 			print("[DEBUG:road] %s" % String(line_variant))
+		var zoning_ms := float(Time.get_ticks_usec() - zoning_start_us) / 1000.0
+		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=%.3f" % zoning_ms)
+	else:
+		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
 	var diagnostic_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
 	print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % diagnostic_ms)
