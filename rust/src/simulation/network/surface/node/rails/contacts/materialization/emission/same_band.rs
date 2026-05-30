@@ -2,6 +2,7 @@
 
 use super::super::authority::{
     GeneratedContactAuthorityIndex, GeneratedMaterialPointContactAuthority,
+    generated_contact_authority_source_edges_touching_contour_pair,
     generated_contact_edge_source_authority, generated_contact_point_has_explicit_roles,
     generated_exact_owner_pair_contact_authority_at_point,
 };
@@ -217,77 +218,39 @@ fn collect_same_band_pair_contacts(
         result.stats.kind_rejected = 1;
         return result;
     };
-    if !authority_index.has_constraints_for(
+    if !authority_index.has_constraints_touching_contour_pair(
         NodeRailConstraintKind::RaisedStepContact,
         pair.owner,
         pair.opposite_owner,
+        left_summary,
+        right_summary,
     ) {
         result.stats.kind_rejected = 1;
         return result;
     }
-    let shared_edges = shared_sorted_edges(&left_summary.edges, &right_summary.edges);
-    let shared_edge_points = shared_edges
+    let source_edges = generated_contact_authority_source_edges_touching_contour_pair(
+        NodeRailConstraintKind::RaisedStepContact,
+        pair.owner,
+        pair.opposite_owner,
+        left_summary,
+        right_summary,
+        authority_index,
+    );
+    let (contact_edges, used_pair_overlay) = generated_raised_step_contact_edges_from_authority(
+        left,
+        right,
+        left_summary,
+        right_summary,
+        &source_edges,
+    );
+    if used_pair_overlay {
+        result.stats.overlay_calls = 1;
+    }
+    let shared_edge_points = contact_edges
         .iter()
         .flat_map(|edge| [edge.start, edge.end])
         .collect::<BTreeSet<_>>();
-    for edge in shared_edges {
-        if let Some(source) = generated_contact_edge_source_authority(
-            pair.owner,
-            pair.opposite_owner,
-            authority_index,
-            edge,
-        ) {
-            insert_generated_contact_constraint(
-                &mut result.contact_edges,
-                contact_kind,
-                pair.owner,
-                pair.opposite_owner,
-                edge,
-                source,
-            );
-        }
-    }
-    for edge in generated_contact_edges_inside_contour(left, right) {
-        if let Some(source) = generated_contact_edge_source_authority(
-            pair.owner,
-            pair.opposite_owner,
-            authority_index,
-            edge,
-        ) {
-            insert_generated_contact_constraint(
-                &mut result.contact_edges,
-                contact_kind,
-                pair.owner,
-                pair.opposite_owner,
-                edge,
-                source,
-            );
-        }
-    }
-    for edge in generated_contact_edges_inside_contour(right, left) {
-        if let Some(source) = generated_contact_edge_source_authority(
-            pair.owner,
-            pair.opposite_owner,
-            authority_index,
-            edge,
-        ) {
-            insert_generated_contact_constraint(
-                &mut result.contact_edges,
-                contact_kind,
-                pair.owner,
-                pair.opposite_owner,
-                edge,
-                source,
-            );
-        }
-    }
-    result.stats.overlay_calls = 1;
-    for edge in generated_contact_edges_from_summary_overlay(
-        left,
-        right,
-        left_summary.overlay_shapes.as_ref(),
-        right_summary.overlay_shapes.as_ref(),
-    ) {
+    for edge in contact_edges {
         if let Some(source) = generated_contact_edge_source_authority(
             pair.owner,
             pair.opposite_owner,
@@ -377,6 +340,46 @@ fn collect_same_band_pair_contacts(
             });
     }
     result
+}
+
+fn generated_raised_step_contact_edges_from_authority(
+    left: &NodeGeneratedContour,
+    right: &NodeGeneratedContour,
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
+    source_edges: &[GeneratedContourDirectedEdge],
+) -> (Vec<GeneratedContourEdgeKey>, bool) {
+    if !source_edges.is_empty() {
+        if let (Some(left_shapes), Some(right_shapes)) = (
+            left_summary.overlay_shapes.as_ref(),
+            right_summary.overlay_shapes.as_ref(),
+        ) {
+            return (
+                generated_contact_edges_from_source_edges_inside_shape_intersection(
+                    source_edges,
+                    &left_summary.overlay_shape_edges,
+                    left_shapes,
+                    &right_summary.overlay_shape_edges,
+                    right_shapes,
+                ),
+                false,
+            );
+        }
+    }
+    let mut edges = BTreeSet::new();
+    edges.extend(shared_sorted_edges(
+        &left_summary.edges,
+        &right_summary.edges,
+    ));
+    edges.extend(generated_contact_edges_inside_contour(left, right));
+    edges.extend(generated_contact_edges_inside_contour(right, left));
+    edges.extend(generated_contact_edges_from_summary_overlay(
+        left,
+        right,
+        left_summary.overlay_shapes.as_ref(),
+        right_summary.overlay_shapes.as_ref(),
+    ));
+    (edges.into_iter().collect(), true)
 }
 
 fn merge_contact_emission_stats(

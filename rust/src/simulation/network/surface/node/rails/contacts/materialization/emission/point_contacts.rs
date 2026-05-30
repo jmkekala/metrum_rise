@@ -139,7 +139,9 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
             points.extend(generated_material_authority_points_on_counterpart_contour(
                 contact_kind,
                 left,
+                left_summary,
                 right,
+                right_summary,
                 left_owner,
                 right_owner,
                 &authority_index,

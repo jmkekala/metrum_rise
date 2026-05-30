@@ -201,6 +201,60 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
     edges
 }
 
+pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contact_edges_from_source_edges_inside_shape_intersection(
+    source_edges: &[GeneratedContourDirectedEdge],
+    left_shape_edges: &[GeneratedContourDirectedEdge],
+    left_shapes: &NodeOverlayShapes,
+    right_shape_edges: &[GeneratedContourDirectedEdge],
+    right_shapes: &NodeOverlayShapes,
+) -> Vec<GeneratedContourEdgeKey> {
+    let mut edges = BTreeSet::new();
+    for source_edge in source_edges {
+        edges.extend(generated_source_edge_segments_inside_shape_intersection(
+            *source_edge,
+            left_shape_edges,
+            left_shapes,
+            right_shape_edges,
+            right_shapes,
+        ));
+    }
+    edges.into_iter().collect()
+}
+
+fn generated_source_edge_segments_inside_shape_intersection(
+    source_edge: GeneratedContourDirectedEdge,
+    left_shape_edges: &[GeneratedContourDirectedEdge],
+    left_shapes: &NodeOverlayShapes,
+    right_shape_edges: &[GeneratedContourDirectedEdge],
+    right_shapes: &NodeOverlayShapes,
+) -> Vec<GeneratedContourEdgeKey> {
+    let mut edges = BTreeSet::new();
+    edges.extend(
+        generated_shape_boundary_segments_on_source_edge(source_edge, left_shape_edges)
+            .into_iter()
+            .filter(|edge| generated_contact_edge_lies_inside_overlay_shapes(*edge, right_shapes)),
+    );
+    edges.extend(
+        generated_shape_boundary_segments_on_source_edge(source_edge, right_shape_edges)
+            .into_iter()
+            .filter(|edge| generated_contact_edge_lies_inside_overlay_shapes(*edge, left_shapes)),
+    );
+    edges.retain(|edge| {
+        generated_contact_edge_lies_inside_overlay_shapes(*edge, left_shapes)
+            && generated_contact_edge_lies_inside_overlay_shapes(*edge, right_shapes)
+    });
+    edges.into_iter().collect()
+}
+
+fn generated_contact_edge_lies_inside_overlay_shapes(
+    edge: GeneratedContourEdgeKey,
+    shapes: &NodeOverlayShapes,
+) -> bool {
+    let point_x2 = i128::from(edge.start.0) + i128::from(edge.end.0);
+    let point_z2 = i128::from(edge.start.1) + i128::from(edge.end.1);
+    doubled_point_inside_or_on_overlay_shapes(point_x2, point_z2, shapes)
+}
+
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contact_points_from_contour_intersections(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,

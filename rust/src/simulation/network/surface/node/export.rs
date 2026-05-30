@@ -356,20 +356,19 @@ impl ArrangementHeightSplitAuthorizationIndex {
             .collect::<Vec<_>>();
         arrangement_keys.sort_unstable();
         arrangement_keys.dedup();
+        let arrangement_key_index = ArrangementKeyIndex::new(&arrangement_keys);
 
         let mut explicit_step_authorizations = BTreeSet::new();
         for segment in explicit_vertical_step_segments {
             let (owner, opposite_owner) =
                 ordered_arrangement_owner_pair(segment.owner(), segment.opposite_owner());
-            for key in &arrangement_keys {
-                if arrangement_key_lies_exactly_on_step_segment(
-                    *key,
-                    segment.start(),
-                    segment.end(),
-                ) {
-                    explicit_step_authorizations.insert((*key, owner, opposite_owner));
+            let bounds = ArrangementKeyBounds::from_segment(segment.start(), segment.end());
+            arrangement_key_index.for_each_key_in_bounds(bounds, |key| {
+                if arrangement_key_lies_exactly_on_step_segment(key, segment.start(), segment.end())
+                {
+                    explicit_step_authorizations.insert((key, owner, opposite_owner));
                 }
-            }
+            });
         }
 
         let exposed_edges = arrangement
@@ -383,12 +382,13 @@ impl ArrangementHeightSplitAuthorizationIndex {
             })
             .collect::<Vec<_>>();
         let mut exposed_owners_by_key = BTreeMap::<_, BTreeSet<arrangement::NodeBandOwner>>::new();
-        for key in arrangement_keys {
-            for (start, end, owner) in &exposed_edges {
-                if arrangement_key_lies_exactly_on_step_segment(key, *start, *end) {
-                    exposed_owners_by_key.entry(key).or_default().insert(*owner);
+        for (start, end, owner) in exposed_edges {
+            let bounds = ArrangementKeyBounds::from_segment(start, end);
+            arrangement_key_index.for_each_key_in_bounds(bounds, |key| {
+                if arrangement_key_lies_exactly_on_step_segment(key, start, end) {
+                    exposed_owners_by_key.entry(key).or_default().insert(owner);
                 }
-            }
+            });
         }
 
         Self {
@@ -432,6 +432,101 @@ impl ArrangementHeightSplitAuthorizationIndex {
             return false;
         };
         exposed_owners.contains(&raised_owner) && !exposed_owners.contains(&lower_owner)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArrangementKeyBounds {
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+}
+
+#[derive(Clone, Debug)]
+struct ArrangementKeyIndex {
+    keys_by_x: Vec<(i64, arrangement::NodeArrangementKey)>,
+    keys_by_z: Vec<(i64, arrangement::NodeArrangementKey)>,
+}
+
+impl ArrangementKeyIndex {
+    fn new(keys: &[arrangement::NodeArrangementKey]) -> Self {
+        let mut keys_by_x = keys
+            .iter()
+            .copied()
+            .map(|key| (key.x_key(), key))
+            .collect::<Vec<_>>();
+        let mut keys_by_z = keys
+            .iter()
+            .copied()
+            .map(|key| (key.z_key(), key))
+            .collect::<Vec<_>>();
+        keys_by_x.sort_unstable();
+        keys_by_z.sort_unstable();
+        Self {
+            keys_by_x,
+            keys_by_z,
+        }
+    }
+
+    fn for_each_key_in_bounds(
+        &self,
+        bounds: ArrangementKeyBounds,
+        mut visit: impl FnMut(arrangement::NodeArrangementKey),
+    ) {
+        let x_span = i128::from(bounds.max_x) - i128::from(bounds.min_x);
+        let z_span = i128::from(bounds.max_z) - i128::from(bounds.min_z);
+        let keys = if x_span <= z_span {
+            self.keys_by_x_in_range(bounds.min_x, bounds.max_x)
+        } else {
+            self.keys_by_z_in_range(bounds.min_z, bounds.max_z)
+        };
+        for &(_, key) in keys {
+            if bounds.contains(key) {
+                visit(key);
+            }
+        }
+    }
+
+    fn keys_by_x_in_range(
+        &self,
+        min_x: i64,
+        max_x: i64,
+    ) -> &[(i64, arrangement::NodeArrangementKey)] {
+        let start = self.keys_by_x.partition_point(|(x, _)| *x < min_x);
+        let end = self.keys_by_x.partition_point(|(x, _)| *x <= max_x);
+        &self.keys_by_x[start..end]
+    }
+
+    fn keys_by_z_in_range(
+        &self,
+        min_z: i64,
+        max_z: i64,
+    ) -> &[(i64, arrangement::NodeArrangementKey)] {
+        let start = self.keys_by_z.partition_point(|(z, _)| *z < min_z);
+        let end = self.keys_by_z.partition_point(|(z, _)| *z <= max_z);
+        &self.keys_by_z[start..end]
+    }
+}
+
+impl ArrangementKeyBounds {
+    fn from_segment(
+        start: arrangement::NodeArrangementKey,
+        end: arrangement::NodeArrangementKey,
+    ) -> Self {
+        Self {
+            min_x: start.x_key().min(end.x_key()),
+            min_z: start.z_key().min(end.z_key()),
+            max_x: start.x_key().max(end.x_key()),
+            max_z: start.z_key().max(end.z_key()),
+        }
+    }
+
+    fn contains(self, key: arrangement::NodeArrangementKey) -> bool {
+        self.min_x <= key.x_key()
+            && key.x_key() <= self.max_x
+            && self.min_z <= key.z_key()
+            && key.z_key() <= self.max_z
     }
 }
 

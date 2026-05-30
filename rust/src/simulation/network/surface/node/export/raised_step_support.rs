@@ -52,6 +52,25 @@ struct NodeTopSupportEdge {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct NodeTopSupportEdgeCandidate {
+    edge: NodeTopSupportEdge,
+    bounds: SurfaceKeyBounds,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NodeTopSupportEdgeIndex {
+    edges_by_kind: BTreeMap<RoadSurfaceBandKind, Vec<NodeTopSupportEdgeCandidate>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfaceKeyBounds {
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct FinalRequiredRaisedStepSpan {
     lower_owner: NodeBandOwner,
     raised_owner: NodeBandOwner,
@@ -196,6 +215,7 @@ fn final_required_raised_step_spans(
 ) -> Vec<FinalRequiredRaisedStepSpan> {
     let mut spans = Vec::new();
     let mut emitted = BTreeSet::<RaisedStepFaceSupportKey>::new();
+    let top_edge_index = NodeTopSupportEdgeIndex::new(top_edges);
     for (step_index, source_segment) in explicit_vertical_step_segments.iter().copied().enumerate()
     {
         let Some((source_lower_owner, source_raised_owner)) =
@@ -211,14 +231,12 @@ fn final_required_raised_step_spans(
             source_segment.end().x_key(),
             source_segment.end().z_key(),
         );
-        let lower_candidates = support_edge_candidates_on_step_segment(
-            top_edges,
+        let lower_candidates = top_edge_index.support_edge_candidates_on_step_segment(
             source_lower_owner.kind(),
             segment_start,
             segment_end,
         );
-        let raised_candidates = support_edge_candidates_on_step_segment(
-            top_edges,
+        let raised_candidates = top_edge_index.support_edge_candidates_on_step_segment(
             source_raised_owner.kind(),
             segment_start,
             segment_end,
@@ -296,28 +314,6 @@ fn vertical_step_source_for_final_support_owners(
             raised_owner,
         },
     )
-}
-
-fn support_edge_candidates_on_step_segment(
-    top_edges: &[NodeTopSupportEdge],
-    owner_kind: RoadSurfaceBandKind,
-    segment_start: keys::SurfaceXzKey,
-    segment_end: keys::SurfaceXzKey,
-) -> Vec<(
-    NodeTopSupportEdge,
-    keys::SurfaceSegmentParameter,
-    keys::SurfaceSegmentParameter,
-)> {
-    top_edges
-        .iter()
-        .copied()
-        .filter(|edge| edge.owner.kind() == owner_kind)
-        .filter_map(|edge| {
-            let (start_t, end_t) =
-                support_edge_overlap_interval_on_segment(edge, segment_start, segment_end)?;
-            Some((edge, start_t, end_t))
-        })
-        .collect()
 }
 
 fn required_raised_step_face_keys(
@@ -664,6 +660,72 @@ impl NodeTopSupportEdgeKey {
                 end: start,
             }
         }
+    }
+}
+
+impl NodeTopSupportEdgeCandidate {
+    fn new(edge: NodeTopSupportEdge) -> Self {
+        Self {
+            edge,
+            bounds: SurfaceKeyBounds::from_segment(edge.start.xz, edge.end.xz),
+        }
+    }
+}
+
+impl NodeTopSupportEdgeIndex {
+    fn new(top_edges: &[NodeTopSupportEdge]) -> Self {
+        let mut edges_by_kind =
+            BTreeMap::<RoadSurfaceBandKind, Vec<NodeTopSupportEdgeCandidate>>::new();
+        for edge in top_edges.iter().copied() {
+            edges_by_kind
+                .entry(edge.owner.kind())
+                .or_default()
+                .push(NodeTopSupportEdgeCandidate::new(edge));
+        }
+        Self { edges_by_kind }
+    }
+
+    fn support_edge_candidates_on_step_segment(
+        &self,
+        owner_kind: RoadSurfaceBandKind,
+        segment_start: keys::SurfaceXzKey,
+        segment_end: keys::SurfaceXzKey,
+    ) -> Vec<(
+        NodeTopSupportEdge,
+        keys::SurfaceSegmentParameter,
+        keys::SurfaceSegmentParameter,
+    )> {
+        let segment_bounds = SurfaceKeyBounds::from_segment(segment_start, segment_end);
+        self.edges_by_kind
+            .get(&owner_kind)
+            .into_iter()
+            .flat_map(|edges| edges.iter())
+            .filter(|candidate| candidate.bounds.overlaps(segment_bounds))
+            .filter_map(|candidate| {
+                let edge = candidate.edge;
+                let (start_t, end_t) =
+                    support_edge_overlap_interval_on_segment(edge, segment_start, segment_end)?;
+                Some((edge, start_t, end_t))
+            })
+            .collect()
+    }
+}
+
+impl SurfaceKeyBounds {
+    fn from_segment(start: keys::SurfaceXzKey, end: keys::SurfaceXzKey) -> Self {
+        Self {
+            min_x: start.x_key().min(end.x_key()),
+            min_z: start.z_key().min(end.z_key()),
+            max_x: start.x_key().max(end.x_key()),
+            max_z: start.z_key().max(end.z_key()),
+        }
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.min_x <= other.max_x
+            && other.min_x <= self.max_x
+            && self.min_z <= other.max_z
+            && other.min_z <= self.max_z
     }
 }
 

@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::BTreeMap;
 
+const GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS: i64 = 4096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) struct GeneratedMaterialPointContactAuthority {
     pub(super) source_mouth_order_index: usize,
@@ -17,11 +19,22 @@ struct GeneratedContactOwnerPair {
     upper: NodeBandOwner,
 }
 
+#[derive(Clone, Copy)]
+struct GeneratedContactAuthorityConstraint<'a> {
+    constraint: &'a NodeRailConstraint,
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+}
+
 pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedContactAuthorityIndex<
     'a,
 > {
-    constraints_by_kind_owner_pair:
-        BTreeMap<(NodeRailConstraintKind, GeneratedContactOwnerPair), Vec<&'a NodeRailConstraint>>,
+    constraints_by_kind_owner_pair: BTreeMap<
+        (NodeRailConstraintKind, GeneratedContactOwnerPair),
+        Vec<GeneratedContactAuthorityConstraint<'a>>,
+    >,
 }
 
 impl GeneratedContactOwnerPair {
@@ -40,7 +53,7 @@ impl<'a> GeneratedContactAuthorityIndex<'a> {
     ) -> Self {
         let mut constraints_by_kind_owner_pair = BTreeMap::<
             (NodeRailConstraintKind, GeneratedContactOwnerPair),
-            Vec<&'a NodeRailConstraint>,
+            Vec<GeneratedContactAuthorityConstraint<'a>>,
         >::new();
         for constraint in constraints {
             let (Some(owner), Some(opposite_owner)) = (constraint.owner, constraint.opposite_owner)
@@ -53,7 +66,7 @@ impl<'a> GeneratedContactAuthorityIndex<'a> {
                     GeneratedContactOwnerPair::new(owner, opposite_owner),
                 ))
                 .or_default()
-                .push(constraint);
+                .push(GeneratedContactAuthorityConstraint::new(constraint));
         }
         Self {
             constraints_by_kind_owner_pair,
@@ -65,34 +78,149 @@ impl<'a> GeneratedContactAuthorityIndex<'a> {
         kind: NodeRailConstraintKind,
         owner: NodeBandOwner,
         opposite_owner: NodeBandOwner,
-    ) -> &[&'a NodeRailConstraint] {
+    ) -> &[GeneratedContactAuthorityConstraint<'a>] {
         self.constraints_by_kind_owner_pair
             .get(&(kind, GeneratedContactOwnerPair::new(owner, opposite_owner)))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    pub(in crate::simulation::network::surface::node::rails::contacts) fn has_constraints_for(
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn has_constraints_touching_contour_pair(
         &self,
         kind: NodeRailConstraintKind,
         owner: NodeBandOwner,
         opposite_owner: NodeBandOwner,
+        left: &GeneratedContactContourSummary,
+        right: &GeneratedContactContourSummary,
     ) -> bool {
-        self.constraints_by_kind_owner_pair
-            .contains_key(&(kind, GeneratedContactOwnerPair::new(owner, opposite_owner)))
+        self.constraints_for(kind, owner, opposite_owner)
+            .iter()
+            .any(|authority_constraint| {
+                authority_constraint.bounds_touch_summary(left)
+                    && authority_constraint.bounds_touch_summary(right)
+            })
     }
+}
+
+impl<'a> GeneratedContactAuthorityConstraint<'a> {
+    fn new(constraint: &'a NodeRailConstraint) -> Self {
+        let (mut min_x, mut min_z) = (i64::MAX, i64::MAX);
+        let (mut max_x, mut max_z) = (i64::MIN, i64::MIN);
+        for point in constraint.points_xz.iter().copied().map(road_point_key) {
+            min_x = min_x.min(point.0);
+            min_z = min_z.min(point.1);
+            max_x = max_x.max(point.0);
+            max_z = max_z.max(point.1);
+        }
+        if constraint.points_xz.is_empty() {
+            min_x = 1;
+            min_z = 1;
+            max_x = 0;
+            max_z = 0;
+        }
+        Self {
+            constraint,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+        }
+    }
+
+    fn bounds_touch_summary(&self, summary: &GeneratedContactContourSummary) -> bool {
+        if self.min_x > self.max_x
+            || self.min_z > self.max_z
+            || summary.min_x > summary.max_x
+            || summary.min_z > summary.max_z
+        {
+            return false;
+        }
+        self.min_x - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= summary.max_x
+            && summary.min_x <= self.max_x + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+            && self.min_z - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= summary.max_z
+            && summary.min_z <= self.max_z + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+    }
+
+    fn bounds_touch_edge(&self, edge: GeneratedContourEdgeKey) -> bool {
+        let min_x = edge.start.0.min(edge.end.0);
+        let min_z = edge.start.1.min(edge.end.1);
+        let max_x = edge.start.0.max(edge.end.0);
+        let max_z = edge.start.1.max(edge.end.1);
+        self.min_x - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= max_x
+            && min_x <= self.max_x + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+            && self.min_z - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= max_z
+            && min_z <= self.max_z + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+    }
+
+    fn bounds_touch_point(&self, point: NodeRailPointKey) -> bool {
+        self.min_x - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= point.0
+            && point.0 <= self.max_x + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+            && self.min_z - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= point.1
+            && point.1 <= self.max_z + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+    }
+}
+
+pub(super) fn generated_contact_authority_source_edges_touching_contour_pair(
+    kind: NodeRailConstraintKind,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+) -> Vec<GeneratedContourDirectedEdge> {
+    let mut edges = authority_index
+        .constraints_for(kind, owner, opposite_owner)
+        .iter()
+        .filter(|authority_constraint| {
+            authority_constraint.bounds_touch_summary(left_summary)
+                && authority_constraint.bounds_touch_summary(right_summary)
+        })
+        .flat_map(|authority_constraint| {
+            generated_constraint_directed_edges(authority_constraint.constraint)
+                .into_iter()
+                .filter(|edge| {
+                    generated_edge_bounds_touch_summary(*edge, left_summary)
+                        && generated_edge_bounds_touch_summary(*edge, right_summary)
+                })
+        })
+        .collect::<Vec<_>>();
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+fn generated_edge_bounds_touch_summary(
+    edge: GeneratedContourDirectedEdge,
+    summary: &GeneratedContactContourSummary,
+) -> bool {
+    let min_x = edge.start.0.min(edge.end.0);
+    let min_z = edge.start.1.min(edge.end.1);
+    let max_x = edge.start.0.max(edge.end.0);
+    let max_z = edge.start.1.max(edge.end.1);
+    min_x - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= summary.max_x
+        && summary.min_x <= max_x + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
+        && min_z - GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS <= summary.max_z
+        && summary.min_z <= max_z + GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS
 }
 
 pub(super) fn generated_material_authority_points_on_counterpart_contour(
     kind: NodeRailConstraintKind,
     left: &NodeGeneratedContour,
+    left_summary: &GeneratedContactContourSummary,
     right: &NodeGeneratedContour,
+    right_summary: &GeneratedContactContourSummary,
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
     authority_index: &GeneratedContactAuthorityIndex<'_>,
 ) -> Vec<NodeRailPointKey> {
     let mut points = Vec::new();
-    for constraint in authority_index.constraints_for(kind, left_owner, right_owner) {
+    for authority_constraint in authority_index.constraints_for(kind, left_owner, right_owner) {
+        if !authority_constraint.bounds_touch_summary(left_summary)
+            && !authority_constraint.bounds_touch_summary(right_summary)
+        {
+            continue;
+        }
+        let constraint = authority_constraint.constraint;
         for point in constraint.points_xz.iter().copied().map(road_point_key) {
             if generated_contour_contains_key(right, point) {
                 points.push(point);
@@ -173,7 +301,8 @@ pub(super) fn generated_material_point_contact_authority(
     authority_index
         .constraints_for(kind, left_owner, right_owner)
         .iter()
-        .copied()
+        .filter(|authority_constraint| authority_constraint.bounds_touch_point(point))
+        .map(|authority_constraint| authority_constraint.constraint)
         .filter(|constraint| generated_constraint_touches_key(constraint, point))
         .min_by_key(|constraint| constraint.constraint_index)
         .map(|constraint| GeneratedMaterialPointContactAuthority {
@@ -197,7 +326,8 @@ fn generated_exact_owner_pair_contact_authority_for_edge(
             opposite_owner,
         )
         .iter()
-        .copied()
+        .filter(|authority_constraint| authority_constraint.bounds_touch_edge(edge))
+        .map(|authority_constraint| authority_constraint.constraint)
         .filter(|constraint| {
             generated_constraint_contains_key_segment(constraint, edge.start, edge.end)
         })
