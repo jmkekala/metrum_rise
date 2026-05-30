@@ -30,6 +30,12 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [profile.release]
 debug = 1
 
+[profile.test]
+opt-level = 1
+debug = true
+debug-assertions = true
+overflow-checks = true
+
 [[bench]]
 name = "agent_benchmark"
 harness = false

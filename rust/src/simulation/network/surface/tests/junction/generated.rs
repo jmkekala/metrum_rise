@@ -2,12 +2,26 @@
 
 use super::*;
 use crate::simulation::network::surface::NodeOverlayShape;
+use rayon::prelude::*;
 
 pub(in crate::simulation::network::surface::tests::junction) const GENERATED_CONFLICT_MATRIX_EDGE_LENGTH_M:
     f32 = 768.0;
 pub(in crate::simulation::network::surface::tests::junction) const GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES:
     [f32; 7] =
     [1.0, 15.0, 30.0, 60.0, 90.0, 120.0, 150.0];
+
+pub(in crate::simulation::network::surface::tests::junction) fn run_generated_cases_in_parallel<
+    T,
+    F,
+>(
+    cases: &[T],
+    run_case: F,
+) where
+    T: Sync,
+    F: Fn(&T) + Sync + Send,
+{
+    cases.par_iter().for_each(run_case);
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::simulation::network::surface::tests::junction) enum GeneratedEdgeDirection {

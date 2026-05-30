@@ -426,24 +426,30 @@ fn logged_flat_four_way_junction_does_not_emit_curb_width_orphan_caps() {
 
 #[test]
 fn flat_bend_angle_matrix_compiles_conflict_first_owned_regions() {
-    for angle_degrees in GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES {
-        compile_generated_flat_bend(
-            angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-    }
+    run_generated_cases_in_parallel(
+        &GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES,
+        |&angle_degrees| {
+            compile_generated_flat_bend(
+                angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        },
+    );
 }
 
 #[test]
 fn flat_t_junction_angle_matrix_compiles_conflict_first_owned_regions() {
-    for angle_degrees in GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES {
-        compile_generated_flat_t_junction(
-            angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-    }
+    run_generated_cases_in_parallel(
+        &GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES,
+        |&angle_degrees| {
+            compile_generated_flat_t_junction(
+                angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        },
+    );
 }
 
 #[test]
@@ -464,26 +470,32 @@ fn flat_four_way_junction_matrix_compiles_conflict_first_owned_regions() {
 
 #[test]
 fn flat_arbitrary_multiway_junction_matrix_compiles_conflict_first_owned_regions() {
-    for endpoint_angle_degrees in [
-        [0.0, 11.0, 95.0, 194.0, 278.0],
-        [0.0, 37.0, 118.0, 203.0, 291.0],
-    ] {
-        compile_generated_flat_multiway_junction(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-    }
-    for endpoint_angle_degrees in [
-        [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
-        [0.0, 23.0, 61.0, 137.0, 211.0, 304.0],
-    ] {
-        compile_generated_flat_multiway_junction(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-    }
+    run_generated_cases_in_parallel(
+        &[
+            [0.0, 11.0, 95.0, 194.0, 278.0],
+            [0.0, 37.0, 118.0, 203.0, 291.0],
+        ],
+        |endpoint_angle_degrees| {
+            compile_generated_flat_multiway_junction(
+                endpoint_angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[
+            [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
+            [0.0, 23.0, 61.0, 137.0, 211.0, 304.0],
+        ],
+        |endpoint_angle_degrees| {
+            compile_generated_flat_multiway_junction(
+                endpoint_angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            );
+        },
+    );
 }
 
 #[test]
@@ -590,24 +602,17 @@ fn flat_four_way_junction_equivalent_edit_order_preserves_exact_raw_polygon_iden
 
 #[test]
 fn flat_four_way_junction_matrix_preserves_exact_raw_polygon_identity() {
-    for endpoint_angle_degrees in [
-        [0.0, 90.0, 180.0, 270.0],
-        [0.0, 5.0, 96.0, 181.0],
-        [0.0, 35.0, 140.0, 252.0],
-        [0.0, 73.0, 180.0, 244.0],
-    ] {
-        let forward = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
+    run_generated_cases_in_parallel(
+        &[
+            [0.0, 90.0, 180.0, 270.0],
+            [0.0, 5.0, 96.0, 181.0],
+            [0.0, 35.0, 140.0, 252.0],
+            [0.0, 73.0, 180.0, 244.0],
+        ],
+        |endpoint_angle_degrees| {
+            assert_generated_flat_multiway_raw_identity_edit_order(endpoint_angle_degrees);
+        },
+    );
 }
 
 #[test]
@@ -644,178 +649,123 @@ fn flat_six_way_junction_equivalent_edit_order_preserves_exact_raw_polygon_ident
 
 #[test]
 fn flat_mixed_width_junction_matrix_preserves_exact_raw_polygon_identity() {
-    for (endpoint_angle_degrees, edge_widths_m) in [
-        ([0.0, 35.0, 140.0, 252.0], [7.0, 10.5, 5.5, 8.75]),
-        ([0.0, 90.0, 180.0, 270.0], [6.0, 9.0, 7.5, 11.0]),
-    ] {
-        let forward = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
-    for (endpoint_angle_degrees, edge_widths_m) in
-        [([0.0, 11.0, 95.0, 194.0, 278.0], [7.0, 12.0, 5.5, 8.0, 10.0])]
-    {
-        let forward = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
-    for (endpoint_angle_degrees, edge_widths_m) in [(
-        [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
-        [6.5, 9.0, 5.0, 11.0, 8.0, 7.5],
-    )] {
-        let forward = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_with_widths_raw_identity(
-            &endpoint_angle_degrees,
-            &edge_widths_m,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
+    run_generated_cases_in_parallel(
+        &[
+            ([0.0, 35.0, 140.0, 252.0], [7.0, 10.5, 5.5, 8.75]),
+            ([0.0, 90.0, 180.0, 270.0], [6.0, 9.0, 7.5, 11.0]),
+        ],
+        |(endpoint_angle_degrees, edge_widths_m)| {
+            assert_generated_flat_multiway_widths_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+            );
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[([0.0, 11.0, 95.0, 194.0, 278.0], [7.0, 12.0, 5.5, 8.0, 10.0])],
+        |(endpoint_angle_degrees, edge_widths_m)| {
+            assert_generated_flat_multiway_widths_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+            );
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[(
+            [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
+            [6.5, 9.0, 5.0, 11.0, 8.0, 7.5],
+        )],
+        |(endpoint_angle_degrees, edge_widths_m)| {
+            assert_generated_flat_multiway_widths_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+            );
+        },
+    );
 }
 
 #[test]
 fn flat_mixed_profile_mode_junction_matrix_preserves_exact_raw_polygon_identity() {
     use GeneratedEdgeProfileMode::{Shoulder, SidewalkCurb};
 
-    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [
-        (
-            [0.0, 35.0, 140.0, 252.0],
-            [7.0, 10.5, 5.5, 8.75],
-            [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder],
-        ),
-        (
-            [0.0, 90.0, 180.0, 270.0],
-            [6.0, 9.0, 7.5, 11.0],
-            [Shoulder, SidewalkCurb, SidewalkCurb, Shoulder],
-        ),
-    ] {
-        let forward =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Forward,
-            );
-        let reverse =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Reverse,
-            );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
-    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [(
-        [0.0, 11.0, 95.0, 194.0, 278.0],
-        [7.0, 12.0, 5.5, 8.0, 10.0],
-        [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder, SidewalkCurb],
-    )] {
-        let forward =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Forward,
-            );
-        let reverse =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Reverse,
-            );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
-    for (endpoint_angle_degrees, edge_widths_m, edge_profile_modes) in [(
-        [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
-        [6.5, 9.0, 5.0, 11.0, 8.0, 7.5],
-        [
-            SidewalkCurb,
-            Shoulder,
-            SidewalkCurb,
-            Shoulder,
-            SidewalkCurb,
-            Shoulder,
+    run_generated_cases_in_parallel(
+        &[
+            (
+                [0.0, 35.0, 140.0, 252.0],
+                [7.0, 10.5, 5.5, 8.75],
+                [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder],
+            ),
+            (
+                [0.0, 90.0, 180.0, 270.0],
+                [6.0, 9.0, 7.5, 11.0],
+                [Shoulder, SidewalkCurb, SidewalkCurb, Shoulder],
+            ),
         ],
-    )] {
-        let forward =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Forward,
+        |(endpoint_angle_degrees, edge_widths_m, edge_profile_modes)| {
+            assert_generated_flat_multiway_widths_profile_modes_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                edge_profile_modes,
             );
-        let reverse =
-            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
-                &endpoint_angle_degrees,
-                &edge_widths_m,
-                &edge_profile_modes,
-                GeneratedEdgeDirection::FromCenter,
-                GeneratedEditOrder::Reverse,
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[(
+            [0.0, 11.0, 95.0, 194.0, 278.0],
+            [7.0, 12.0, 5.5, 8.0, 10.0],
+            [SidewalkCurb, Shoulder, SidewalkCurb, Shoulder, SidewalkCurb],
+        )],
+        |(endpoint_angle_degrees, edge_widths_m, edge_profile_modes)| {
+            assert_generated_flat_multiway_widths_profile_modes_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                edge_profile_modes,
             );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[(
+            [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
+            [6.5, 9.0, 5.0, 11.0, 8.0, 7.5],
+            [
+                SidewalkCurb,
+                Shoulder,
+                SidewalkCurb,
+                Shoulder,
+                SidewalkCurb,
+                Shoulder,
+            ],
+        )],
+        |(endpoint_angle_degrees, edge_widths_m, edge_profile_modes)| {
+            assert_generated_flat_multiway_widths_profile_modes_raw_identity_edit_order(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                edge_profile_modes,
+            );
+        },
+    );
 }
 
 #[test]
 fn flat_arbitrary_multiway_junction_matrix_preserves_exact_raw_polygon_identity() {
-    for endpoint_angle_degrees in [
-        [0.0, 11.0, 95.0, 194.0, 278.0],
-        [0.0, 37.0, 118.0, 203.0, 291.0],
-    ] {
-        let forward = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
-    for endpoint_angle_degrees in [
-        [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
-        [0.0, 23.0, 61.0, 137.0, 211.0, 304.0],
-    ] {
-        let forward = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Forward,
-        );
-        let reverse = compile_generated_flat_multiway_junction_raw_identity(
-            &endpoint_angle_degrees,
-            GeneratedEdgeDirection::FromCenter,
-            GeneratedEditOrder::Reverse,
-        );
-        assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
-    }
+    run_generated_cases_in_parallel(
+        &[
+            [0.0, 11.0, 95.0, 194.0, 278.0],
+            [0.0, 37.0, 118.0, 203.0, 291.0],
+        ],
+        |endpoint_angle_degrees| {
+            assert_generated_flat_multiway_raw_identity_edit_order(endpoint_angle_degrees);
+        },
+    );
+    run_generated_cases_in_parallel(
+        &[
+            [0.0, 3.0, 47.0, 121.0, 202.0, 305.0],
+            [0.0, 23.0, 61.0, 137.0, 211.0, 304.0],
+        ],
+        |endpoint_angle_degrees| {
+            assert_generated_flat_multiway_raw_identity_edit_order(endpoint_angle_degrees);
+        },
+    );
 }
 
 #[test]
@@ -892,6 +842,77 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             ],
         },
     );
+}
+
+fn assert_generated_flat_multiway_raw_identity_edit_order(endpoint_angle_degrees: &[f32]) {
+    let (forward, reverse) = rayon::join(
+        || {
+            compile_generated_flat_multiway_junction_raw_identity(
+                endpoint_angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            )
+        },
+        || {
+            compile_generated_flat_multiway_junction_raw_identity(
+                endpoint_angle_degrees,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Reverse,
+            )
+        },
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+}
+
+fn assert_generated_flat_multiway_widths_raw_identity_edit_order(
+    endpoint_angle_degrees: &[f32],
+    edge_widths_m: &[f32],
+) {
+    let (forward, reverse) = rayon::join(
+        || {
+            compile_generated_flat_multiway_junction_with_widths_raw_identity(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                GeneratedEditOrder::Forward,
+            )
+        },
+        || {
+            compile_generated_flat_multiway_junction_with_widths_raw_identity(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                GeneratedEditOrder::Reverse,
+            )
+        },
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
+}
+
+fn assert_generated_flat_multiway_widths_profile_modes_raw_identity_edit_order(
+    endpoint_angle_degrees: &[f32],
+    edge_widths_m: &[f32],
+    edge_profile_modes: &[GeneratedEdgeProfileMode],
+) {
+    let (forward, reverse) = rayon::join(
+        || {
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Forward,
+            )
+        },
+        || {
+            compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_identity(
+                endpoint_angle_degrees,
+                edge_widths_m,
+                edge_profile_modes,
+                GeneratedEdgeDirection::FromCenter,
+                GeneratedEditOrder::Reverse,
+            )
+        },
+    );
+    assert_canonical_node_raw_polygon_identity_eq("forward", &forward, "reverse", &reverse);
 }
 
 fn compile_generated_flat_bend(
