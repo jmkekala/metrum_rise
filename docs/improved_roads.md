@@ -96,13 +96,13 @@ patterns.
 - grounded `Standard` road footprints are consumed by the road-touched terrain path
 - Spade is the runtime terrain-patch CDT backend under `simulation::terrain::cdt`
 - road-touched terrain patches emit CDT terrain faces, reject road-footprint faces, and report
-  constraint / face counters through `--debug road-geometry`
+  constraint / face counters through `--debug road`
 - terrain clip input uses an `i_overlay` union of grounded `Standard` span and node footprints
   intersecting the patch query, not raw overlapping per-piece loops
 - the terrain CDT bridge deterministically nodes T-touching, crossing, and collinear-overlap
   roadbed constraints before Spade input; inserted cutter heights use the final road-owned
   top-envelope policy only after road ownership and provenance are solved
-- road-geometry debug output includes compiled node-piece topology, mouth seam, outer-boundary, and
+- road debug output includes compiled node-piece topology, mouth seam, outer-boundary, and
   earthwork-face / top-surface matching diagnostics for dumped edges
 - asphalt, curb / shoulder, sidewalk, and raised-step faces are separate render payloads
 - `Terminal`, `Bend`, and `JunctionN` route through the canonical
@@ -155,7 +155,7 @@ patterns.
   height authority independent of claim-priority lookup. A pre-height-evaluation completeness gate
   resolves every final owned-region vertex through its owner-scoped `NodeBandHeightFieldId` before
   heighted region construction.
-- road-geometry diagnostic dumps serialize stage, backend, owner, source band, height-field,
+- road diagnostic dumps serialize stage, backend, owner, source band, height-field,
   canonical key, point / edge, residual, seam, and constraint metadata as queryable JSON. Missing
   source rails, missing carrier provenance, missing carrier support, rejected residuals, open
   boundaries, duplicate exposed edges, non-explicit boundary vertices, ambiguous carrier
@@ -964,7 +964,7 @@ Core invariants:
   road nodes may use only asphalt-height and sidewalk-height curb rail vertices
 - no rendered node top-surface vertex may sample terrain, full-roadbed interpolation, or zero height
 - a missing band-local grade owner is a geometry error and must be reported through
-  `--debug road-geometry`; it must not silently fall back to a nearby unrelated domain
+  `--debug road`; it must not silently fall back to a nearby unrelated domain
 - every required mouth material-change vertex and outer-footprint vertex must have a matching final
   rendered top-surface vertex at the same overlay coordinate unless asphalt-priority ownership
   deliberately removes that non-road island
@@ -1105,7 +1105,7 @@ and sidewalk, or between terrain and road, for a rendered node top-surface verte
 
 Debug contract:
 
-`--debug road-geometry` must include node band-grade diagnostics for every compiled `Bend` and
+`--debug road` must include node band-grade diagnostics for every compiled `Bend` and
 `JunctionN`:
 
 - node ID and piece kind
@@ -1731,7 +1731,7 @@ The terrain CDT hardcut is the accepted baseline. Its shipped properties are:
 - Road-touched terrain patches use CDT output instead of seam strips or conservative terrain-cell
   omission.
 - CDT diagnostics report constraints, accepted faces, rejected faces, invalid constraints, and
-  preserved seam-edge counts through road-geometry debug output.
+  preserved seam-edge counts through road debug output.
 - Live terrain CDT uses `try_bulk_load_cdt`; malformed constraints are debug-counted and must not
   panic the simulation thread or re-enable an older terrain path.
 
@@ -1755,7 +1755,7 @@ Shipped runtime structure:
    - direct dependencies are limited to accepted backends used by the implementation: `glam`,
      `cavalier_contours`, `splines`, `parry2d`, and optional `lyon_geom`
    - `i_overlay`, `rstar`, and Spade remain accepted backends
-   - the road-geometry adapter layer converts between Godot vectors, `RoadVec2` / `RoadVec3`,
+   - the geometry adapter layer converts between Godot vectors, `RoadVec2` / `RoadVec3`,
      overlay contours, Spade points, and backend contour types
    - Godot `Vector2` / `Vector3` stay out of core geometry structs except at bridge and output
      conversion boundaries
@@ -1816,7 +1816,7 @@ Shipped runtime structure:
    - debug output must name the failing stage and backend: contour generation, boolean ownership,
      height evaluation, validation, or CDT triangulation
    - report rejected residuals, non-explicit boundary vertices, height conflicts, open boundaries,
-     duplicate exposed edges, and invalid constraints as structured road-geometry diagnostics
+     duplicate exposed edges, and invalid constraints as structured road diagnostics
 
 9. Runtime integration:
    - `build_terminal_visual_node_piece`, `build_bend_visual_node_piece`, and
@@ -1841,7 +1841,7 @@ Maintenance gates:
 - deterministic rebuild tests that compare canonical arrangement keys and emitted mesh indices
 - terrain seam tests proving every exported footprint loop equals the resolved boolean footprint and
   every emitted top-surface centroid lies inside it
-- road-geometry debug tests proving failures are reported before visual fallback can hide them
+- road debug tests proving failures are reported before visual fallback can hide them
 - Godot headless load with road-touched terrain enabled
 
 ### Road-Piece CDT Rules
@@ -2055,7 +2055,7 @@ Output contract:
 
 Debug contract:
 
-- `--debug road-geometry` must report, per node piece:
+- `--debug road` must report, per node piece:
   - node class
   - incident mouth count
   - full-roadbed corridor candidate count
@@ -2142,7 +2142,7 @@ Regression coverage for the conflict-first node hardcut:
 - reversed edge direction and equivalent edit order produce the same canonical regions
 - terrain seam footprint equals the node-piece resolved outer footprint exactly
 - crosswalk anchors stay inside resolved asphalt and never create holes
-- `--debug road-geometry` reports the same region counts for repeated builds of the same save
+- `--debug road` reports the same region counts for repeated builds of the same save
 
 ### Later Extensions
 

@@ -124,6 +124,7 @@ const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
+const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
 
 #[derive(Default)]
@@ -1461,6 +1462,8 @@ impl SimulationNode {
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
         let mut sample_keys = BTreeMap::new();
+        let grid_step_m =
+            Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
         Self::append_terrain_cdt_grid_samples(
             terrain,
             patch,
@@ -1468,7 +1471,7 @@ impl SimulationNode {
             min_z,
             max_x,
             max_z,
-            safe_render_step_m,
+            grid_step_m,
             &mut source_samples,
             &mut sample_keys,
         );
@@ -1597,9 +1600,12 @@ impl SimulationNode {
         bounds: (f32, f32, f32, f32),
     ) -> TerrainCdtInput {
         let (min_x, min_z, max_x, max_z) = bounds;
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
         let mut sample_keys = BTreeMap::new();
+        let grid_step_m =
+            Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
         Self::append_terrain_cdt_grid_samples(
             terrain,
             patch,
@@ -1607,7 +1613,7 @@ impl SimulationNode {
             min_z,
             max_x,
             max_z,
-            render_step_m.max(f32::EPSILON),
+            grid_step_m,
             &mut source_samples,
             &mut sample_keys,
         );
@@ -1617,11 +1623,32 @@ impl SimulationNode {
             min_z,
             max_x,
             max_z,
-            render_step_m.max(f32::EPSILON),
+            safe_render_step_m,
             &mut source_samples,
             &mut sample_keys,
         );
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
+    }
+
+    fn terrain_cdt_grid_sample_step_m(
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        render_step_m: f32,
+    ) -> f32 {
+        let safe_step_m = render_step_m.max(f32::EPSILON);
+        let width_m = (max_x - min_x).max(0.0);
+        let height_m = (max_z - min_z).max(0.0);
+        let sample_x = (width_m / safe_step_m).ceil() + 1.0;
+        let sample_z = (height_m / safe_step_m).ceil() + 1.0;
+        let estimated_samples = sample_x * sample_z;
+        if estimated_samples <= TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES {
+            return safe_step_m;
+        }
+
+        let scale = (estimated_samples / TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES).sqrt();
+        (safe_step_m * scale).max(safe_step_m)
     }
 
     fn terrain_cdt_window_key(input: &TerrainCdtInput) -> RefinedTerrainCdtWindowKey {
@@ -5688,6 +5715,19 @@ mod tests {
                 .iter()
                 .any(|sample| sample.x == 18.0 && sample.z == 29.0),
             "local CDT windows must seed non-corner vertices along arbitrary horizontal boundaries"
+        );
+    }
+
+    #[test]
+    fn terrain_cdt_grid_sampling_is_bounded_for_large_local_windows() {
+        let small_step = SimulationNode::terrain_cdt_grid_sample_step_m(0.0, 0.0, 32.0, 32.0, 1.0);
+        assert_eq!(small_step, 1.0);
+
+        let large_step =
+            SimulationNode::terrain_cdt_grid_sample_step_m(0.0, 0.0, 512.0, 512.0, 1.0);
+        assert!(
+            large_step > 1.0,
+            "large CDT windows must not keep one source sample per metre across the whole area"
         );
     }
 

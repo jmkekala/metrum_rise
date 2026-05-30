@@ -19,6 +19,8 @@ extends Node
 var _road_debug_enabled: bool = false
 var _road_geometry_debug_enabled: bool = false
 
+const ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS := 64
+
 func _ready() -> void:
 	_road_debug_enabled = _is_road_debug_enabled()
 	_road_geometry_debug_enabled = _is_road_geometry_debug_enabled()
@@ -87,7 +89,7 @@ func _is_road_debug_enabled() -> bool:
 	if debug_value != "1":
 		return false
 	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter == "road" or filter == "road-geometry"
+	return filter == "road"
 
 func _is_road_geometry_debug_enabled() -> bool:
 	if OS.get_environment("METRUM_DEBUG_ROAD_GEOMETRY_DUMP").strip_edges() == "1":
@@ -96,14 +98,23 @@ func _is_road_geometry_debug_enabled() -> bool:
 	if debug_value != "1":
 		return false
 	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter == "road-geometry"
+	return filter == "road"
 
 func _print_road_geometry_patch_debug(dirty_terrain_patch_keys: PackedInt32Array) -> void:
 	var diagnostic_start_us := Time.get_ticks_usec()
+	var dirty_pair_count := int(dirty_terrain_patch_keys.size() / 2)
 	print(
 		"[DEBUG:road] road_geometry_patch_debug dirty_patch_pairs=%d"
-		% int(dirty_terrain_patch_keys.size() / 2)
+		% dirty_pair_count
 	)
+	if dirty_pair_count > ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS:
+		print(
+			"[DEBUG:road] road_patch_debug_skipped dirty_patch_pairs=%d limit=%d reason=too_many_dirty_patches"
+			% [dirty_pair_count, ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS]
+		)
+		var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
+		print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
+		return
 	if terrain and terrain.has_method("road_geometry_debug_patch_lines"):
 		var terrain_lines: Array = terrain.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in terrain_lines:

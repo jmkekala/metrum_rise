@@ -292,6 +292,7 @@ func _create_patch(key: Vector2i) -> void:
 		"world_origin_x": world_origin_x,
 		"world_origin_z": world_origin_z,
 		"lod_step": initial_lod_step,
+		"last_patch_data": patch_data,
 	}
 
 func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
@@ -309,6 +310,7 @@ func _upload_patch(key: Vector2i) -> void:
 		return
 
 	var patch: Dictionary = patches[key]
+	patch["last_patch_data"] = patch_data
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
 
@@ -439,11 +441,11 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		lines.append("water_patch none")
 		return lines
 	for key in keys:
-		var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
-		if patch_data.is_empty():
-			lines.append("water_patch key=(%d,%d) missing_patch_data=true" % [key.x, key.y])
-			continue
 		var patch: Dictionary = patches.get(key, {})
+		var patch_data: Dictionary = patch.get("last_patch_data", {})
+		if patch_data.is_empty():
+			lines.append("water_patch key=(%d,%d) missing_cached_patch_data=true" % [key.x, key.y])
+			continue
 		var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 		var mesh: Mesh = null
 		if patch_node != null:
@@ -1127,6 +1129,7 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	if patch_data.is_empty():
 		return
 	patch["lod_step"] = target_lod_step
+	patch["last_patch_data"] = patch_data
 	patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step)
 
 func _ensure_fallback_height_texture() -> void:

@@ -578,10 +578,14 @@ impl TerrainSystem {
         self.source_data.replace_from_dense(dense)
     }
 
-    /// Writes one integer-grid visual terrain sample without modifying the authored source terrain.
-    pub(crate) fn set_visual_height_at_grid(&mut self, grid_x: usize, grid_z: usize, value: f32) {
+    /// Writes one visual terrain sample after the caller has marked the enclosing render region.
+    pub(crate) fn set_visual_height_at_grid_unmarked(
+        &mut self,
+        grid_x: usize,
+        grid_z: usize,
+        value: f32,
+    ) {
         self.data.set(grid_x, grid_z, value);
-        self.mark_render_patches_for_grid_rect(grid_x, grid_x, grid_z, grid_z);
     }
 
     /// Returns the full terrain extent in metres.

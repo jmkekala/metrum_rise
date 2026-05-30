@@ -399,7 +399,7 @@ func _terrain_patch_cull_far_m(camera: Camera3D) -> float:
 func _create_patch(key: Vector2i) -> void:
 	if patches.has(key):
 		return
-	var patch_data: Dictionary = _terrain_patch_data_for_key(key, _road_geometry_debug_enabled)
+	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false)
 	if patch_data.is_empty():
 		return
 
@@ -519,7 +519,6 @@ func _create_patch(key: Vector2i) -> void:
 		"subdivision_factor": initial_subdivision_factor,
 		"height_is_baked": height_is_baked,
 		"last_patch_data": patch_data,
-		"last_patch_data_has_debug": _road_geometry_debug_enabled,
 	}
 
 func _upload_patch(key: Vector2i) -> void:
@@ -527,7 +526,7 @@ func _upload_patch(key: Vector2i) -> void:
 		return
 	var total_start_us := Time.get_ticks_usec()
 	var fetch_start_us := Time.get_ticks_usec()
-	var patch_data: Dictionary = _terrain_patch_data_for_key(key, _road_geometry_debug_enabled)
+	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false)
 	var fetch_ms := float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
 	if patch_data.is_empty():
 		_remove_patch(key)
@@ -544,7 +543,6 @@ func _upload_patch(key: Vector2i) -> void:
 		return
 	var patch: Dictionary = patches[key]
 	patch["last_patch_data"] = patch_data
-	patch["last_patch_data_has_debug"] = _road_geometry_debug_enabled
 	var metadata_start_us := Time.get_ticks_usec()
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
@@ -644,7 +642,7 @@ func _upload_patch(key: Vector2i) -> void:
 				key.x,
 				key.y,
 				str(road_locked_patch_lookup.has(key)),
-				str(_road_geometry_debug_enabled),
+				"false",
 				fetch_ms,
 				metadata_ms,
 				texture_ms,
@@ -786,13 +784,8 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 	for key in keys:
 		var patch: Dictionary = patches.get(key, {})
 		var patch_data: Dictionary = patch.get("last_patch_data", {})
-		if patch_data.is_empty() or not bool(patch.get("last_patch_data_has_debug", false)):
-			patch_data = _terrain_patch_data_for_key(key, true)
-			if not patch.is_empty():
-				patch["last_patch_data"] = patch_data
-				patch["last_patch_data_has_debug"] = true
 		if patch_data.is_empty():
-			lines.append("terrain_patch key=(%d,%d) missing_patch_data=true" % [key.x, key.y])
+			lines.append("terrain_patch key=(%d,%d) missing_cached_patch_data=true" % [key.x, key.y])
 			continue
 		var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 		var mesh: Mesh = null
@@ -1248,7 +1241,7 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 		return
 	var patch_data: Dictionary = patch.get("last_patch_data", {})
 	if patch_data.is_empty():
-		patch_data = _terrain_patch_data_for_key(key, _road_geometry_debug_enabled)
+		patch_data = _terrain_patch_data_for_key(key, false)
 	if patch_data.is_empty():
 		return
 	patch["lod_step"] = target_lod_step
@@ -2255,7 +2248,7 @@ func _road_debug_is_enabled() -> bool:
 		return true
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "road" or entry == "road-geometry":
+		if entry == "road":
 			return true
 	return false
 
@@ -2268,7 +2261,7 @@ func _road_geometry_debug_is_enabled() -> bool:
 	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "road-geometry":
+		if entry == "road":
 			return true
 	return false
 

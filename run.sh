@@ -4,7 +4,9 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, road-geometry, border, terrain
+#                        Common categories: isect, economy, demand, road, border, terrain
+#   --debug road         Road placement timings, committed-road geometry dumps,
+#                        terrain/water patch diagnostics, and road-surface overlay
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
 #                        Shows resident patch counts, desired bounds, cull distance, patch
 #                        create/remove/upload churn, and average renderer timings while flying.
@@ -64,10 +66,15 @@ while [ $i -le $# ]; do
     i=$((i + 1))
 done
 
+if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
+    echo "Error: --debug road-geometry was removed. Use --debug road." >&2
+    exit 2
+fi
+
 if [ $DEBUG -eq 1 ]; then
     export METRUM_DEBUG=1
     if [ -n "$DEBUG_CATEGORY" ]; then
-        if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
+        if [ "$DEBUG_CATEGORY" = "road" ]; then
             export METRUM_DEBUG_FILTER="road"
             export METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1
             export METRUM_DEBUG_SURFACE=1
@@ -76,9 +83,6 @@ if [ $DEBUG -eq 1 ]; then
         fi
         echo "Debug logging enabled for category '$DEBUG_CATEGORY' (output goes to stdout)"
         if [ "$DEBUG_CATEGORY" = "road" ]; then
-            echo "  Road placement timing summaries enabled."
-            echo "  Use '--debug road-geometry' when you want the full committed-road geometry dump."
-        elif [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
             echo "  Road placement timing summaries enabled."
             echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
             echo "  Includes edge geometry, node class/throat diagnostics, compiled loops, and source/visual terrain samples."

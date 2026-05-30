@@ -744,10 +744,10 @@ Deterministic Godot-bridge rules:
   `get_water_velocity_data()` were removed from the steady-state terrain / water render bridge
 - any future dense helper kept for compatibility, debug tooling, or offline export must stay
   outside the steady-state gameplay and WorldEditor render path
-- `road-geometry` water diagnostics must report authored baseline depth, dynamic source/sink
+- `road` water diagnostics must report authored baseline depth, dynamic source/sink
   depth, and composed visible depth separately so dark water-patch regressions identify the owning
   water layer instead of only the final rendered sum
-- when a road-touched water patch contains authored baseline water, `road-geometry` diagnostics
+- when a road-touched water patch contains authored baseline water, `road` diagnostics
   must also list the committed `Lake Fill` / `Open Water` records or active preview that actually
   contributed non-zero samples inside that patch
 - chunk-local snapshot APIs expose enough metadata for deterministic reconstruction of one

@@ -8,7 +8,7 @@ use super::super::{
 use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 const EARTHWORK_MIN_TRIANGLE_DOUBLE_AREA_M2: f64 = 1.0e-8;
 const EARTHWORK_MIN_TRIANGLE_ALTITUDE_M: f64 = 0.01;
@@ -69,7 +69,7 @@ impl RoadSurfaceSystem {
         height_offset_m: f32,
     ) {
         let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
-        let mut candidates: BTreeMap<(usize, usize), (f32, f32)> = BTreeMap::new();
+        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
 
         for region in &piece.owned_regions {
             if !self.node_earthwork_owner_uses_visible_earthwork(
@@ -95,7 +95,7 @@ impl RoadSurfaceSystem {
         }
 
         for ((grid_x, grid_z), (_, height_sample)) in candidates {
-            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
+            terrain.set_visual_height_at_grid_unmarked(grid_x, grid_z, height_sample);
         }
     }
 
@@ -107,7 +107,7 @@ impl RoadSurfaceSystem {
         height_offset_m: f32,
     ) {
         let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
-        let mut candidates: BTreeMap<(usize, usize), (f32, f32)> = BTreeMap::new();
+        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
 
         for region in regions {
             Self::visit_visual_polygon_triangles(&region.polygon, &mut |triangle| {
@@ -123,7 +123,7 @@ impl RoadSurfaceSystem {
         }
 
         for ((grid_x, grid_z), (_, height_sample)) in candidates {
-            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
+            terrain.set_visual_height_at_grid_unmarked(grid_x, grid_z, height_sample);
         }
     }
 
@@ -134,7 +134,7 @@ impl RoadSurfaceSystem {
         triangle: [RoadVec3; 3],
         conservative_margin_m: f32,
         height_offset_m: f32,
-        candidates: &mut BTreeMap<(usize, usize), (f32, f32)>,
+        candidates: &mut HashMap<(usize, usize), (f32, f32)>,
     ) {
         if !Self::earthwork_triangle_has_area_xz(triangle) {
             return;

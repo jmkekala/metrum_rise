@@ -121,7 +121,7 @@ func _road_debug_is_enabled() -> bool:
 		return true
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "road" or entry == "road-geometry":
+		if entry == "road":
 			return true
 	return false
 
