@@ -35,6 +35,9 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
         BTreeMap::<([NodeBandOwner; 2], SourceAuthorizedTargetGroupKey), Vec<_>>::new();
     for source_constraint in source_authority.constraints() {
         for target_group in &target_groups {
+            if source_constraint.bounds_disjoint_group(target_group) {
+                continue;
+            }
             let target_contacts = target_pair_cache
                 .entry((source_constraint.source.owners, target_group.key))
                 .or_insert_with(|| {
@@ -48,7 +51,8 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
             if target_contacts.is_empty() {
                 continue;
             }
-            for source_edge in generated_constraint_directed_edges(source_constraint.constraint) {
+            for source_edge in &source_constraint.edges {
+                let source_edge = *source_edge;
                 if target_group.bounds_disjoint_edge(source_edge) {
                     continue;
                 }
@@ -200,8 +204,19 @@ impl<'a> RaisedStepSourceAuthority<'a> {
             constraints: constraints
                 .iter()
                 .filter_map(|constraint| {
-                    generated_raised_step_endpoint_source(constraint)
-                        .map(|source| RaisedStepSourceConstraint { source, constraint })
+                    generated_raised_step_endpoint_source(constraint).map(|source| {
+                        let edges = generated_constraint_directed_edges(constraint);
+                        let (min_x, min_z, max_x, max_z) = generated_constraint_bounds(constraint);
+                        RaisedStepSourceConstraint {
+                            source,
+                            constraint,
+                            edges,
+                            min_x,
+                            min_z,
+                            max_x,
+                            max_z,
+                        }
+                    })
                 })
                 .collect(),
         }
@@ -221,7 +236,8 @@ impl<'a> RaisedStepSourceAuthority<'a> {
                     .constraints
                     .iter()
                     .filter(|source_constraint| {
-                        generated_constraint_touches_key(source_constraint.constraint, point)
+                        source_constraint.bounds_contains_key(point)
+                            && generated_constraint_touches_key(source_constraint.constraint, point)
                     })
                     .map(|source_constraint| source_constraint.source)
                     .collect::<Vec<_>>();
@@ -244,10 +260,13 @@ fn generated_raised_step_source_contact_points(
         .collect::<BTreeSet<_>>();
     for left_index in 0..source_constraints.len() {
         for right_index in left_index + 1..source_constraints.len() {
-            let left = source_constraints[left_index].constraint;
-            let right = source_constraints[right_index].constraint;
-            for left_edge in generated_constraint_directed_edges(left) {
-                for right_edge in generated_constraint_directed_edges(right) {
+            let left = &source_constraints[left_index];
+            let right = &source_constraints[right_index];
+            if left.bounds_disjoint_source(right) {
+                continue;
+            }
+            for left_edge in &left.edges {
+                for right_edge in &right.edges {
                     points.extend(generated_source_edge_contact_points(left_edge, right_edge));
                 }
             }
@@ -257,8 +276,8 @@ fn generated_raised_step_source_contact_points(
 }
 
 fn generated_source_edge_contact_points(
-    left: GeneratedContourDirectedEdge,
-    right: GeneratedContourDirectedEdge,
+    left: &GeneratedContourDirectedEdge,
+    right: &GeneratedContourDirectedEdge,
 ) -> Vec<NodeRailPointKey> {
     let mut points = Vec::new();
     if let Some(point) =
@@ -279,6 +298,21 @@ fn generated_source_edge_contact_points(
     points.sort_unstable();
     points.dedup();
     points
+}
+
+fn generated_constraint_bounds(constraint: &NodeRailConstraint) -> (i64, i64, i64, i64) {
+    let (mut min_x, mut min_z) = (i64::MAX, i64::MAX);
+    let (mut max_x, mut max_z) = (i64::MIN, i64::MIN);
+    for point in constraint.points_xz.iter().copied().map(road_point_key) {
+        min_x = min_x.min(point.0);
+        min_z = min_z.min(point.1);
+        max_x = max_x.max(point.0);
+        max_z = max_z.max(point.1);
+    }
+    if constraint.points_xz.is_empty() {
+        return (1, 1, 0, 0);
+    }
+    (min_x, min_z, max_x, max_z)
 }
 
 fn generated_raised_step_endpoint_source(

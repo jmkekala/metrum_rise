@@ -6,6 +6,8 @@ use super::super::{
     NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
 };
 
+const SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS: i64 = 4096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedSameBandContactConstraint
 {
@@ -44,7 +46,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         [NodeBandOwner; 2],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) struct RaisedStepSourceConstraint<
     'a,
 > {
@@ -52,6 +54,12 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         GeneratedRaisedStepEndpointSource,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) constraint:
         &'a NodeRailConstraint,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) edges:
+        Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_x: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_z: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) max_x: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) max_z: i64,
 }
 
 pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) struct RaisedStepSourceAuthority<
@@ -131,5 +139,41 @@ impl SourceAuthorizedTargetGroup {
             || max_x + 1 < self.min_x
             || self.max_z + 1 < min_z
             || max_z + 1 < self.min_z
+    }
+}
+
+impl RaisedStepSourceConstraint<'_> {
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn bounds_disjoint_group(
+        &self,
+        group: &SourceAuthorizedTargetGroup,
+    ) -> bool {
+        self.bounds_disjoint(group.min_x, group.min_z, group.max_x, group.max_z)
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn bounds_disjoint_source(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.bounds_disjoint(other.min_x, other.min_z, other.max_x, other.max_z)
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn bounds_contains_key(
+        &self,
+        point: NodeRailPointKey,
+    ) -> bool {
+        self.min_x - SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS <= point.0
+            && point.0 <= self.max_x + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS
+            && self.min_z - SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS <= point.1
+            && point.1 <= self.max_z + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS
+    }
+
+    fn bounds_disjoint(&self, min_x: i64, min_z: i64, max_x: i64, max_z: i64) -> bool {
+        if self.min_x > self.max_x || self.min_z > self.max_z || min_x > max_x || min_z > max_z {
+            return true;
+        }
+        self.max_x + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS < min_x
+            || max_x + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS < self.min_x
+            || self.max_z + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS < min_z
+            || max_z + SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS < self.min_z
     }
 }

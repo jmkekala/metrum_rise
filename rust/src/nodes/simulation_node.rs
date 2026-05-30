@@ -4260,7 +4260,7 @@ impl SimulationNode {
     /// Returns terrain render patches that must keep full mesh resolution where compiled road ownership is visible.
     #[func]
     pub fn get_road_locked_terrain_patches(&self) -> PackedInt32Array {
-        let mut core = self.lock_core();
+        let core = self.lock_core();
         core.get_road_locked_terrain_patches_internal()
     }
 
@@ -5211,6 +5211,7 @@ impl INode3D for SimulationNode {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
+            road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
@@ -5369,16 +5370,17 @@ impl SimCore {
         self.transit_network
             .road_surface
             .compile_dirty(&self.region_graph, &self.heightmap);
-        let road_locked_keys: HashSet<(usize, usize)> = self
+        let road_locked_key_vec = self
             .transit_network
             .road_surface
             .terrain_render_patch_keys_with_visible_road_margin(
                 &self.region_graph,
                 &self.heightmap,
                 road_locked_margin_m,
-            )
-            .into_iter()
-            .collect();
+            );
+        let road_locked_keys: HashSet<(usize, usize)> =
+            road_locked_key_vec.iter().copied().collect();
+        self.road_locked_terrain_patch_keys = road_locked_key_vec;
         let road_locked_ms = road_locked_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);

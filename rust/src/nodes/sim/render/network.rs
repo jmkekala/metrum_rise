@@ -2,9 +2,7 @@
 //!
 //! Handles road mesh generation and road connection utility calculations.
 
-use crate::nodes::sim::core::{
-    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore, terrain_cdt_local_sample_margin_m,
-};
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::{debug, debug_log};
 use godot::prelude::*;
@@ -228,24 +226,9 @@ impl SimCore {
     }
 
     /// Returns terrain render-patch keys that must keep full mesh resolution over compiled road ownership.
-    pub fn get_road_locked_terrain_patches_internal(&mut self) -> PackedInt32Array {
-        self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
-        let keys = self
-            .transit_network
-            .road_surface
-            .terrain_render_patch_keys_with_visible_road_margin(
-                &self.region_graph,
-                &self.heightmap,
-                terrain_cdt_local_sample_margin_m(
-                    &self.heightmap,
-                    ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-                ),
-            );
-
+    pub fn get_road_locked_terrain_patches_internal(&self) -> PackedInt32Array {
         let mut packed = PackedInt32Array::new();
-        for (patch_x, patch_z) in keys {
+        for (patch_x, patch_z) in self.road_locked_terrain_patch_keys.iter().copied() {
             packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
             packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
         }

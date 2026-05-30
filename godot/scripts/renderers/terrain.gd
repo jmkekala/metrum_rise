@@ -253,7 +253,8 @@ func update_terrain_visuals() -> void:
 		for key in dirty_keys:
 			if patches.has(key):
 				_upload_patch(key)
-	_rebuild_border_skirt()
+	if dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys):
+		_rebuild_border_skirt()
 	_sync_water_patch_textures()
 
 func _sync_patch_residency(force_full_sync: bool = false) -> bool:
@@ -774,6 +775,12 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 	for index in range(pair_count):
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
+
+func _dirty_patch_keys_touch_border(keys: Array[Vector2i]) -> bool:
+	for key in keys:
+		if key.x <= 0 or key.y <= 0 or key.x >= patch_cols - 1 or key.y >= patch_rows - 1:
+			return true
+	return false
 
 func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[String]:
 	var lines: Array[String] = []

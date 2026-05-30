@@ -6,10 +6,9 @@ use super::super::geometry::{
 };
 use super::super::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
-    NodeBandOwner, NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,
-    NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
-    generated_constraint_directed_edges, generated_contour_band_kind,
+    NodeBandOwner, NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraintKind,
+    NodeRailPointKey, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    generated_constraint_contains_key_segment, generated_contour_band_kind,
     generated_contour_directed_edges,
 };
 use super::types::{
@@ -30,21 +29,26 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
     let right_groups = source_authorized_exact_target_groups(target_groups, right_owner);
     for left_group in &left_groups {
         for right_group in &right_groups {
+            if source_constraint.bounds_disjoint_group(left_group)
+                || source_constraint.bounds_disjoint_group(right_group)
+            {
+                continue;
+            }
             for edge in source_authorized_group_edges_inside_group(
-                source_constraint.constraint,
+                source_constraint,
                 left_group,
                 right_group,
                 contours,
             )
             .into_iter()
             .chain(source_authorized_group_edges_inside_group(
-                source_constraint.constraint,
+                source_constraint,
                 right_group,
                 left_group,
                 contours,
             ))
             .chain(source_authorized_source_edges_inside_group_intersection(
-                source_constraint.constraint,
+                source_constraint,
                 left_group,
                 right_group,
             )) {
@@ -75,11 +79,16 @@ fn source_authorized_exact_target_groups(
 }
 
 fn source_authorized_group_edges_inside_group(
-    source_constraint: &NodeRailConstraint,
+    source_constraint: &RaisedStepSourceConstraint<'_>,
     edge_group: &SourceAuthorizedTargetGroup,
     containing_group: &SourceAuthorizedTargetGroup,
     contours: &[NodeGeneratedContour],
 ) -> Vec<GeneratedContourEdgeKey> {
+    if source_constraint.bounds_disjoint_group(edge_group)
+        || source_constraint.bounds_disjoint_group(containing_group)
+    {
+        return Vec::new();
+    }
     let mut edges = BTreeSet::new();
     for contour_index in &edge_group.contour_indices {
         let Some(contour) = contours.get(*contour_index) else {
@@ -102,7 +111,7 @@ fn source_authorized_group_edges_inside_group(
             ));
             for edge in candidate_edges {
                 if generated_constraint_contains_key_segment(
-                    source_constraint,
+                    source_constraint.constraint,
                     edge.start,
                     edge.end,
                 ) {
@@ -115,11 +124,14 @@ fn source_authorized_group_edges_inside_group(
 }
 
 fn source_authorized_source_edges_inside_group_intersection(
-    source_constraint: &NodeRailConstraint,
+    source_constraint: &RaisedStepSourceConstraint<'_>,
     left_group: &SourceAuthorizedTargetGroup,
     right_group: &SourceAuthorizedTargetGroup,
 ) -> Vec<GeneratedContourEdgeKey> {
-    if left_group.bounds_disjoint_group(right_group) {
+    if left_group.bounds_disjoint_group(right_group)
+        || source_constraint.bounds_disjoint_group(left_group)
+        || source_constraint.bounds_disjoint_group(right_group)
+    {
         return Vec::new();
     }
     let Some(intersection_shapes) = RoadSurfaceSystem::overlay_binary_shapes(
@@ -131,14 +143,14 @@ fn source_authorized_source_edges_inside_group_intersection(
     };
     let intersection_edges = generated_overlay_shapes_directed_edges(&intersection_shapes);
     let mut edges = BTreeSet::new();
-    for source_edge in generated_constraint_directed_edges(source_constraint) {
+    for source_edge in &source_constraint.edges {
         edges.extend(generated_directed_edge_segments_inside_shape_edges(
-            source_edge,
+            *source_edge,
             &intersection_edges,
             &intersection_shapes,
         ));
         edges.extend(generated_shape_boundary_segments_on_source_edge(
-            source_edge,
+            *source_edge,
             &intersection_edges,
         ));
     }
