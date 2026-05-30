@@ -160,11 +160,16 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
     let Some(right_shapes) = generated_contour_overlay_shapes(right) else {
         return Vec::new();
     };
-    let Some(intersection) = RoadSurfaceSystem::overlay_binary_shapes(
-        &left_shapes,
-        &right_shapes,
-        OverlayRule::Intersect,
-    ) else {
+    generated_contact_edges_from_overlay_shape_intersection(&left_shapes, &right_shapes)
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contact_edges_from_overlay_shape_intersection(
+    left_shapes: &NodeOverlayShapes,
+    right_shapes: &NodeOverlayShapes,
+) -> Vec<GeneratedContourEdgeKey> {
+    let Some(intersection) =
+        RoadSurfaceSystem::overlay_binary_shapes(left_shapes, right_shapes, OverlayRule::Intersect)
+    else {
         return Vec::new();
     };
     let mut edges = intersection

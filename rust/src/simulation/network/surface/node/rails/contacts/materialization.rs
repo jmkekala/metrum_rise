@@ -1,8 +1,10 @@
 //! Materialization of source-authorized generated rail contacts.
 
 use super::geometry::{
-    generated_contact_edges_from_overlay_intersection, generated_contact_edges_inside_contour,
-    generated_contact_points_from_contour_intersections, generated_contour_contains_key,
+    generated_contact_edges_from_overlay_intersection,
+    generated_contact_edges_from_overlay_shape_intersection,
+    generated_contact_edges_inside_contour, generated_contact_points_from_contour_intersections,
+    generated_contour_contains_key, generated_contour_overlay_shapes,
 };
 use super::source_authority::{
     GeneratedSameBandContactConstraint, collect_source_authorized_raised_step_contacts,
@@ -10,8 +12,8 @@ use super::source_authority::{
 };
 use super::{
     GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair, NodeBandOwner, NodeGeneratedContour,
-    NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
-    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
+    NodeOverlayShapes, NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey,
+    RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
     generated_constraint_directed_edges, generated_constraint_touches_key,
     generated_contour_band_kind, generated_contour_directed_edges, generated_contour_keys,
     generated_contour_supports_same_band_role, generated_point_key_lies_on_segment,
@@ -43,6 +45,8 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         Vec<NodeRailPointKey>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) edges:
         Vec<GeneratedContourEdgeKey>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shapes:
+        Option<NodeOverlayShapes>,
     min_x: i64,
     min_z: i64,
     max_x: i64,
@@ -52,6 +56,13 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
 impl GeneratedContactContourSummary {
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn from_contour(
         contour: &NodeGeneratedContour,
+    ) -> Self {
+        Self::from_contour_with_overlay(contour, false)
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn from_contour_with_overlay(
+        contour: &NodeGeneratedContour,
+        include_overlay_shapes: bool,
     ) -> Self {
         let mut keys = generated_contour_keys(contour);
         keys.sort_unstable();
@@ -88,6 +99,9 @@ impl GeneratedContactContourSummary {
             kind: generated_contour_band_kind(contour),
             keys,
             edges,
+            overlay_shapes: include_overlay_shapes
+                .then(|| generated_contour_overlay_shapes(contour))
+                .flatten(),
             min_x,
             min_z,
             max_x,
@@ -112,6 +126,15 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
     contours
         .iter()
         .map(GeneratedContactContourSummary::from_contour)
+        .collect()
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn generated_contact_contour_summaries_with_overlay(
+    contours: &[NodeGeneratedContour],
+) -> Vec<GeneratedContactContourSummary> {
+    contours
+        .iter()
+        .map(|contour| GeneratedContactContourSummary::from_contour_with_overlay(contour, true))
         .collect()
 }
 

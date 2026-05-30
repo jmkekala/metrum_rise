@@ -5,7 +5,7 @@ use super::super::{
     NodeRailPointKey, RoadSurfaceSystem, SurfaceXzKey,
 };
 
-pub(super) fn generated_contour_overlay_shapes(
+pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contour_overlay_shapes(
     contour: &NodeGeneratedContour,
 ) -> Option<NodeOverlayShapes> {
     RoadSurfaceSystem::overlay_union_contours(&[generated_overlay_contour(contour)])

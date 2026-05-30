@@ -83,6 +83,10 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         NodeOverlayShapes,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_edges:
         Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_x: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_z: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) max_x: i64,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) max_z: i64,
 }
 
 impl GeneratedSameBandContactConstraint {
@@ -97,5 +101,35 @@ impl GeneratedSameBandContactConstraint {
             start: edge.start,
             end: edge.end,
         }
+    }
+}
+
+impl SourceAuthorizedTargetGroup {
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn bounds_disjoint_edge(
+        &self,
+        edge: GeneratedContourDirectedEdge,
+    ) -> bool {
+        let min_x = edge.start.0.min(edge.end.0);
+        let min_z = edge.start.1.min(edge.end.1);
+        let max_x = edge.start.0.max(edge.end.0);
+        let max_z = edge.start.1.max(edge.end.1);
+        self.bounds_disjoint(min_x, min_z, max_x, max_z)
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn bounds_disjoint_group(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.bounds_disjoint(other.min_x, other.min_z, other.max_x, other.max_z)
+    }
+
+    fn bounds_disjoint(&self, min_x: i64, min_z: i64, max_x: i64, max_z: i64) -> bool {
+        if self.min_x > self.max_x || self.min_z > self.max_z || min_x > max_x || min_z > max_z {
+            return true;
+        }
+        self.max_x + 1 < min_x
+            || max_x + 1 < self.min_x
+            || self.max_z + 1 < min_z
+            || max_z + 1 < self.min_z
     }
 }

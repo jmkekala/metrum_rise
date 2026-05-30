@@ -25,7 +25,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
 ) -> GeneratedContactEmissionStats {
     let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
-    let summaries = generated_contact_contour_summaries(contours);
+    let summaries = generated_contact_contour_summaries_with_overlay(contours);
     let mut stats = GeneratedContactEmissionStats::default();
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
@@ -65,6 +65,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 collect_same_material_height_splits_from_edges(
                     left,
                     right,
+                    left_summary.overlay_shapes.as_ref(),
+                    right_summary.overlay_shapes.as_ref(),
                     &shared_sorted_edges(&left_summary.edges, &right_summary.edges),
                     left_owner,
                     right_owner,
@@ -139,7 +141,12 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                 }
             }
             stats.overlay_calls += 1;
-            for edge in generated_contact_edges_from_overlay_intersection(left, right) {
+            for edge in generated_contact_edges_from_summary_overlay(
+                left,
+                right,
+                left_summary.overlay_shapes.as_ref(),
+                right_summary.overlay_shapes.as_ref(),
+            ) {
                 if let Some(source) = generated_contact_edge_source_authority(
                     pair.owner,
                     pair.opposite_owner,
@@ -268,6 +275,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
 fn collect_same_material_height_splits_from_edges(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
+    left_shapes: Option<&NodeOverlayShapes>,
+    right_shapes: Option<&NodeOverlayShapes>,
     shared_edges: &[GeneratedContourEdgeKey],
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
@@ -310,7 +319,8 @@ fn collect_same_material_height_splits_from_edges(
         );
         edges.insert(edge);
     }
-    for edge in generated_contact_edges_from_overlay_intersection(left, right) {
+    for edge in generated_contact_edges_from_summary_overlay(left, right, left_shapes, right_shapes)
+    {
         let (source_mouth_order_index, source_band_index) =
             same_material_height_split_source_name(left, right, left_owner, right_owner);
         insert_same_material_height_split(
@@ -349,6 +359,20 @@ fn collect_same_material_height_splits_from_edges(
             source_mouth_order_index,
             source_band_index,
         );
+    }
+}
+
+fn generated_contact_edges_from_summary_overlay(
+    left: &NodeGeneratedContour,
+    right: &NodeGeneratedContour,
+    left_shapes: Option<&NodeOverlayShapes>,
+    right_shapes: Option<&NodeOverlayShapes>,
+) -> Vec<GeneratedContourEdgeKey> {
+    match (left_shapes, right_shapes) {
+        (Some(left_shapes), Some(right_shapes)) => {
+            generated_contact_edges_from_overlay_shape_intersection(left_shapes, right_shapes)
+        }
+        _ => generated_contact_edges_from_overlay_intersection(left, right),
     }
 }
 
