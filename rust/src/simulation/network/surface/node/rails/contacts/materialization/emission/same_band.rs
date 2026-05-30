@@ -6,6 +6,7 @@ use super::super::authority::{
     generated_exact_owner_pair_contact_authority_at_point,
 };
 use super::super::*;
+use rayon::prelude::*;
 use std::collections::BTreeSet;
 
 type SameMaterialHeightSplitConstraint = (
@@ -16,6 +17,9 @@ type SameMaterialHeightSplitConstraint = (
     usize,
     Option<usize>,
 );
+
+const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 512;
+const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 64;
 
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(
     piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -29,209 +33,33 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     let mut stats = GeneratedContactEmissionStats::default();
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            stats.pair_tests += 1;
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let left_summary = &summaries[left_index];
-            let right_summary = &summaries[right_index];
-            let Some(left_owner) = left_summary.owner else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let Some(right_owner) = right_summary.owner else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            if left_owner == right_owner {
-                stats.kind_rejected += 1;
-                continue;
-            }
-            let Some(kind) = left_summary.kind else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let Some(right_kind) = right_summary.kind else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            if left_summary.aabb_disjoint(right_summary) {
-                stats.aabb_rejected += 1;
-                continue;
-            }
-            stats.processed_pairs += 1;
-            if kind == right_kind {
-                collect_same_material_height_splits_from_edges(
-                    left,
-                    right,
-                    left_summary.overlay_shapes.as_ref(),
-                    right_summary.overlay_shapes.as_ref(),
-                    &shared_sorted_edges(&left_summary.edges, &right_summary.edges),
-                    left_owner,
-                    right_owner,
-                    &mut same_material_height_splits,
-                );
-                continue;
-            }
-            let Some(contact_kind) =
-                generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
-            else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let shared_edges = shared_sorted_edges(&left_summary.edges, &right_summary.edges);
-            let shared_edge_points = shared_edges
-                .iter()
-                .flat_map(|edge| [edge.start, edge.end])
-                .collect::<BTreeSet<_>>();
-            for edge in shared_edges {
-                if let Some(source) = generated_contact_edge_source_authority(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    edge,
-                ) {
-                    insert_generated_contact_constraint(
-                        &mut contact_edges,
-                        contact_kind,
-                        pair.owner,
-                        pair.opposite_owner,
-                        edge,
-                        source,
-                    );
-                }
-            }
-            for edge in generated_contact_edges_inside_contour(left, right) {
-                if let Some(source) = generated_contact_edge_source_authority(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    edge,
-                ) {
-                    insert_generated_contact_constraint(
-                        &mut contact_edges,
-                        contact_kind,
-                        pair.owner,
-                        pair.opposite_owner,
-                        edge,
-                        source,
-                    );
-                }
-            }
-            for edge in generated_contact_edges_inside_contour(right, left) {
-                if let Some(source) = generated_contact_edge_source_authority(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    edge,
-                ) {
-                    insert_generated_contact_constraint(
-                        &mut contact_edges,
-                        contact_kind,
-                        pair.owner,
-                        pair.opposite_owner,
-                        edge,
-                        source,
-                    );
-                }
-            }
-            stats.overlay_calls += 1;
-            for edge in generated_contact_edges_from_summary_overlay(
-                left,
-                right,
-                left_summary.overlay_shapes.as_ref(),
-                right_summary.overlay_shapes.as_ref(),
-            ) {
-                if let Some(source) = generated_contact_edge_source_authority(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    edge,
-                ) {
-                    insert_generated_contact_constraint(
-                        &mut contact_edges,
-                        contact_kind,
-                        pair.owner,
-                        pair.opposite_owner,
-                        edge,
-                        source,
-                    );
-                }
-            }
-            for point in shared_sorted_keys(&left_summary.keys, &right_summary.keys) {
-                if shared_edge_points.contains(&point) {
-                    continue;
-                }
-                if !generated_contact_point_has_explicit_roles(
-                    kind,
-                    right_kind,
-                    left,
-                    right,
+    let pair_indices = same_band_pair_indices(contours.len());
+    let pair_results = if pair_indices.len() >= SAME_BAND_PARALLEL_PAIR_THRESHOLD {
+        pair_indices
+            .par_chunks(SAME_BAND_PARALLEL_PAIR_BATCH)
+            .map(|pair_batch| {
+                collect_same_band_pair_batch_contacts(
+                    contours,
+                    &summaries,
                     constraints,
                     &authority_index,
-                    point,
-                    contact_kind,
-                ) {
-                    continue;
-                }
-                let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    point,
-                ) else {
-                    continue;
-                };
-                contact_edges.insert(GeneratedSameBandContactConstraint {
-                    kind: contact_kind,
-                    owner: pair.owner,
-                    opposite_owner: pair.opposite_owner,
-                    start: point,
-                    end: point,
-                    source_mouth_order_index: source.source_mouth_order_index,
-                    source_band_index: source.source_band_index,
-                });
-            }
-            for point in generated_contact_points_from_contour_intersections(left, right) {
-                if shared_edge_points.contains(&point) {
-                    continue;
-                }
-                if !generated_contact_point_has_explicit_roles(
-                    kind,
-                    right_kind,
-                    left,
-                    right,
-                    constraints,
-                    &authority_index,
-                    point,
-                    contact_kind,
-                ) {
-                    continue;
-                }
-                let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-                    pair.owner,
-                    pair.opposite_owner,
-                    &authority_index,
-                    point,
-                ) else {
-                    continue;
-                };
-                contact_edges.insert(GeneratedSameBandContactConstraint {
-                    kind: contact_kind,
-                    owner: pair.owner,
-                    opposite_owner: pair.opposite_owner,
-                    start: point,
-                    end: point,
-                    source_mouth_order_index: source.source_mouth_order_index,
-                    source_band_index: source.source_band_index,
-                });
-            }
-        }
+                    pair_batch,
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![collect_same_band_pair_batch_contacts(
+            contours,
+            &summaries,
+            constraints,
+            &authority_index,
+            &pair_indices,
+        )]
+    };
+    for mut result in pair_results {
+        merge_contact_emission_stats(&mut stats, result.stats);
+        contact_edges.append(&mut result.contact_edges);
+        same_material_height_splits.append(&mut result.same_material_height_splits);
     }
     let source_constraints = super::source_authority_constraints_for_generated_contacts(
         constraints,
@@ -270,6 +98,297 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     append_same_material_height_split_constraints(constraints, same_material_height_splits);
     stats.emitted_constraints = constraints.len() - before_len;
     stats
+}
+
+fn same_band_pair_indices(contour_count: usize) -> Vec<(usize, usize)> {
+    let mut pair_indices = Vec::with_capacity(contour_count.saturating_mul(contour_count) / 2);
+    for left_index in 0..contour_count {
+        for right_index in left_index + 1..contour_count {
+            pair_indices.push((left_index, right_index));
+        }
+    }
+    pair_indices
+}
+
+struct SameBandContactPairResult {
+    stats: GeneratedContactEmissionStats,
+    contact_edges: BTreeSet<GeneratedSameBandContactConstraint>,
+    same_material_height_splits: BTreeSet<SameMaterialHeightSplitConstraint>,
+}
+
+impl Default for SameBandContactPairResult {
+    fn default() -> Self {
+        Self {
+            stats: GeneratedContactEmissionStats::default(),
+            contact_edges: BTreeSet::new(),
+            same_material_height_splits: BTreeSet::new(),
+        }
+    }
+}
+
+impl SameBandContactPairResult {
+    fn merge(&mut self, mut next: Self) {
+        merge_contact_emission_stats(&mut self.stats, next.stats);
+        self.contact_edges.append(&mut next.contact_edges);
+        self.same_material_height_splits
+            .append(&mut next.same_material_height_splits);
+    }
+}
+
+fn collect_same_band_pair_batch_contacts(
+    contours: &[NodeGeneratedContour],
+    summaries: &[GeneratedContactContourSummary],
+    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    pair_indices: &[(usize, usize)],
+) -> SameBandContactPairResult {
+    let mut batch_result = SameBandContactPairResult::default();
+    for &(left_index, right_index) in pair_indices {
+        batch_result.merge(collect_same_band_pair_contacts(
+            contours,
+            summaries,
+            constraints,
+            authority_index,
+            left_index,
+            right_index,
+        ));
+    }
+    batch_result
+}
+
+fn collect_same_band_pair_contacts(
+    contours: &[NodeGeneratedContour],
+    summaries: &[GeneratedContactContourSummary],
+    constraints: &[NodeRailConstraint],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    left_index: usize,
+    right_index: usize,
+) -> SameBandContactPairResult {
+    let mut result = SameBandContactPairResult::default();
+    result.stats.pair_tests = 1;
+    let left = &contours[left_index];
+    let right = &contours[right_index];
+    let left_summary = &summaries[left_index];
+    let right_summary = &summaries[right_index];
+    let Some(left_owner) = left_summary.owner else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    let Some(right_owner) = right_summary.owner else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    if left_owner == right_owner {
+        result.stats.kind_rejected = 1;
+        return result;
+    }
+    let Some(kind) = left_summary.kind else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    let Some(right_kind) = right_summary.kind else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    if left_summary.aabb_disjoint(right_summary) {
+        result.stats.aabb_rejected = 1;
+        return result;
+    }
+    result.stats.processed_pairs = 1;
+    if kind == right_kind {
+        collect_same_material_height_splits_from_edges(
+            left,
+            right,
+            left_summary.overlay_shapes.as_ref(),
+            right_summary.overlay_shapes.as_ref(),
+            &shared_sorted_edges(&left_summary.edges, &right_summary.edges),
+            left_owner,
+            right_owner,
+            &mut result.same_material_height_splits,
+        );
+        return result;
+    }
+    let Some(contact_kind) = generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
+    else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+        result.stats.kind_rejected = 1;
+        return result;
+    };
+    if !authority_index.has_constraints_for(
+        NodeRailConstraintKind::RaisedStepContact,
+        pair.owner,
+        pair.opposite_owner,
+    ) {
+        result.stats.kind_rejected = 1;
+        return result;
+    }
+    let shared_edges = shared_sorted_edges(&left_summary.edges, &right_summary.edges);
+    let shared_edge_points = shared_edges
+        .iter()
+        .flat_map(|edge| [edge.start, edge.end])
+        .collect::<BTreeSet<_>>();
+    for edge in shared_edges {
+        if let Some(source) = generated_contact_edge_source_authority(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            edge,
+        ) {
+            insert_generated_contact_constraint(
+                &mut result.contact_edges,
+                contact_kind,
+                pair.owner,
+                pair.opposite_owner,
+                edge,
+                source,
+            );
+        }
+    }
+    for edge in generated_contact_edges_inside_contour(left, right) {
+        if let Some(source) = generated_contact_edge_source_authority(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            edge,
+        ) {
+            insert_generated_contact_constraint(
+                &mut result.contact_edges,
+                contact_kind,
+                pair.owner,
+                pair.opposite_owner,
+                edge,
+                source,
+            );
+        }
+    }
+    for edge in generated_contact_edges_inside_contour(right, left) {
+        if let Some(source) = generated_contact_edge_source_authority(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            edge,
+        ) {
+            insert_generated_contact_constraint(
+                &mut result.contact_edges,
+                contact_kind,
+                pair.owner,
+                pair.opposite_owner,
+                edge,
+                source,
+            );
+        }
+    }
+    result.stats.overlay_calls = 1;
+    for edge in generated_contact_edges_from_summary_overlay(
+        left,
+        right,
+        left_summary.overlay_shapes.as_ref(),
+        right_summary.overlay_shapes.as_ref(),
+    ) {
+        if let Some(source) = generated_contact_edge_source_authority(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            edge,
+        ) {
+            insert_generated_contact_constraint(
+                &mut result.contact_edges,
+                contact_kind,
+                pair.owner,
+                pair.opposite_owner,
+                edge,
+                source,
+            );
+        }
+    }
+    for point in shared_sorted_keys(&left_summary.keys, &right_summary.keys) {
+        if shared_edge_points.contains(&point) {
+            continue;
+        }
+        if !generated_contact_point_has_explicit_roles(
+            kind,
+            right_kind,
+            left,
+            right,
+            constraints,
+            authority_index,
+            point,
+            contact_kind,
+        ) {
+            continue;
+        }
+        let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            point,
+        ) else {
+            continue;
+        };
+        result
+            .contact_edges
+            .insert(GeneratedSameBandContactConstraint {
+                kind: contact_kind,
+                owner: pair.owner,
+                opposite_owner: pair.opposite_owner,
+                start: point,
+                end: point,
+                source_mouth_order_index: source.source_mouth_order_index,
+                source_band_index: source.source_band_index,
+            });
+    }
+    for point in generated_contact_points_from_contour_intersections(left, right) {
+        if shared_edge_points.contains(&point) {
+            continue;
+        }
+        if !generated_contact_point_has_explicit_roles(
+            kind,
+            right_kind,
+            left,
+            right,
+            constraints,
+            authority_index,
+            point,
+            contact_kind,
+        ) {
+            continue;
+        }
+        let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            point,
+        ) else {
+            continue;
+        };
+        result
+            .contact_edges
+            .insert(GeneratedSameBandContactConstraint {
+                kind: contact_kind,
+                owner: pair.owner,
+                opposite_owner: pair.opposite_owner,
+                start: point,
+                end: point,
+                source_mouth_order_index: source.source_mouth_order_index,
+                source_band_index: source.source_band_index,
+            });
+    }
+    result
+}
+
+fn merge_contact_emission_stats(
+    stats: &mut GeneratedContactEmissionStats,
+    next: GeneratedContactEmissionStats,
+) {
+    stats.pair_tests += next.pair_tests;
+    stats.aabb_rejected += next.aabb_rejected;
+    stats.kind_rejected += next.kind_rejected;
+    stats.processed_pairs += next.processed_pairs;
+    stats.overlay_calls += next.overlay_calls;
+    stats.emitted_constraints += next.emitted_constraints;
 }
 
 fn collect_same_material_height_splits_from_edges(

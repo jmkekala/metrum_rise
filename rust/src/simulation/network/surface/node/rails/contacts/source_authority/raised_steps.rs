@@ -20,7 +20,14 @@ use super::types::{
     GeneratedRaisedStepEndpointSource, GeneratedSameBandContactConstraint,
     RaisedStepSourceAuthority, RaisedStepSourceConstraint, SourceAuthorizedTargetGroupKey,
 };
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+
+const SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD: usize = 64;
+
+type SourceAuthorizedTargetPair = (NodeBandOwner, NodeBandOwner, bool);
+type SourceAuthorizedTargetPairCache =
+    BTreeMap<([NodeBandOwner; 2], SourceAuthorizedTargetGroupKey), Vec<SourceAuthorizedTargetPair>>;
 
 pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_source_authorized_raised_step_contacts(
     piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -31,76 +38,46 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
     let source_authority = RaisedStepSourceAuthority::from_constraints(constraints);
     let target_groups = source_authorized_target_groups(contours);
     let claim_priorities = source_authorized_target_claim_priorities(contours);
-    let mut target_pair_cache =
-        BTreeMap::<([NodeBandOwner; 2], SourceAuthorizedTargetGroupKey), Vec<_>>::new();
-    for source_constraint in source_authority.constraints() {
-        for target_group in &target_groups {
-            if source_constraint.bounds_disjoint_group(target_group) {
-                continue;
-            }
-            let target_contacts = target_pair_cache
-                .entry((source_constraint.source.owners, target_group.key))
-                .or_insert_with(|| {
-                    source_authorized_raised_step_target_pairs(
+    let target_pair_cache = source_authorized_target_pair_cache(
+        piece_kind,
+        &claim_priorities,
+        source_authority.constraints(),
+        &target_groups,
+    );
+    let source_contacts =
+        if source_authority.constraints().len() >= SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD {
+            source_authority
+                .constraints()
+                .par_iter()
+                .map(|source_constraint| {
+                    collect_source_authorized_contacts_for_source(
                         piece_kind,
+                        contours,
+                        source_constraint,
+                        &target_groups,
                         &claim_priorities,
-                        source_constraint.source,
-                        target_group.key,
+                        &target_pair_cache,
                     )
-                });
-            if target_contacts.is_empty() {
-                continue;
-            }
-            for source_edge in &source_constraint.edges {
-                let source_edge = *source_edge;
-                if target_group.bounds_disjoint_edge(source_edge) {
-                    continue;
-                }
-                let mut source_edges = generated_directed_edge_segments_inside_shape_edges(
-                    source_edge,
-                    &target_group.shape_edges,
-                    &target_group.shapes,
-                )
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-                source_edges.extend(generated_shape_boundary_segments_on_source_edge(
-                    source_edge,
-                    &target_group.shape_edges,
-                ));
-                for edge in source_edges {
-                    for (owner, opposite_owner, include_edge) in target_contacts.iter() {
-                        for (start, end) in source_authorized_contact_segments(edge, *include_edge)
-                        {
-                            contacts.insert(GeneratedSameBandContactConstraint {
-                                kind: NodeRailConstraintKind::RaisedStepContact,
-                                owner: *owner,
-                                opposite_owner: *opposite_owner,
-                                start,
-                                end,
-                                source_mouth_order_index: source_constraint
-                                    .source
-                                    .source_mouth_order_index,
-                                source_band_index: source_constraint.source.source_band_index,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        collect_source_authorized_exact_group_overlap_contacts(
-            source_constraint,
-            contours,
-            &target_groups,
-            contacts,
-        );
-        collect_junctionn_source_authorized_mouth_band_endpoint_handoffs(
-            piece_kind,
-            contours,
-            source_constraint,
-            &target_groups,
-            &claim_priorities,
-            contacts,
-        );
+                })
+                .collect::<Vec<_>>()
+        } else {
+            source_authority
+                .constraints()
+                .iter()
+                .map(|source_constraint| {
+                    collect_source_authorized_contacts_for_source(
+                        piece_kind,
+                        contours,
+                        source_constraint,
+                        &target_groups,
+                        &claim_priorities,
+                        &target_pair_cache,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+    for mut source_contacts in source_contacts {
+        contacts.append(&mut source_contacts);
     }
 
     for (point, sources) in source_authority.sources_by_contact_point() {
@@ -128,6 +105,103 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn collect_so
             }
         }
     }
+}
+
+fn source_authorized_target_pair_cache(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    claim_priorities: &BTreeMap<NodeBandOwner, NodeGeneratedContourClaimPriority>,
+    source_constraints: &[RaisedStepSourceConstraint<'_>],
+    target_groups: &[super::types::SourceAuthorizedTargetGroup],
+) -> SourceAuthorizedTargetPairCache {
+    let mut target_pair_cache = SourceAuthorizedTargetPairCache::new();
+    for source_constraint in source_constraints {
+        for target_group in target_groups {
+            target_pair_cache
+                .entry((source_constraint.source.owners, target_group.key))
+                .or_insert_with(|| {
+                    source_authorized_raised_step_target_pairs(
+                        piece_kind,
+                        claim_priorities,
+                        source_constraint.source,
+                        target_group.key,
+                    )
+                });
+        }
+    }
+    target_pair_cache
+}
+
+fn collect_source_authorized_contacts_for_source(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &[NodeGeneratedContour],
+    source_constraint: &RaisedStepSourceConstraint<'_>,
+    target_groups: &[super::types::SourceAuthorizedTargetGroup],
+    claim_priorities: &BTreeMap<NodeBandOwner, NodeGeneratedContourClaimPriority>,
+    target_pair_cache: &SourceAuthorizedTargetPairCache,
+) -> BTreeSet<GeneratedSameBandContactConstraint> {
+    let mut contacts = BTreeSet::new();
+    for target_group in target_groups {
+        if source_constraint.bounds_disjoint_group(target_group) {
+            continue;
+        }
+        let Some(target_contacts) =
+            target_pair_cache.get(&(source_constraint.source.owners, target_group.key))
+        else {
+            continue;
+        };
+        if target_contacts.is_empty() {
+            continue;
+        }
+        for source_edge in &source_constraint.edges {
+            let source_edge = *source_edge;
+            if target_group.bounds_disjoint_edge(source_edge) {
+                continue;
+            }
+            let mut source_edges = generated_directed_edge_segments_inside_shape_edges(
+                source_edge,
+                &target_group.shape_edges,
+                &target_group.shapes,
+            )
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+            source_edges.extend(generated_shape_boundary_segments_on_source_edge(
+                source_edge,
+                &target_group.shape_edges,
+            ));
+            for edge in source_edges {
+                for (owner, opposite_owner, include_edge) in target_contacts {
+                    for (start, end) in source_authorized_contact_segments(edge, *include_edge) {
+                        contacts.insert(GeneratedSameBandContactConstraint {
+                            kind: NodeRailConstraintKind::RaisedStepContact,
+                            owner: *owner,
+                            opposite_owner: *opposite_owner,
+                            start,
+                            end,
+                            source_mouth_order_index: source_constraint
+                                .source
+                                .source_mouth_order_index,
+                            source_band_index: source_constraint.source.source_band_index,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    collect_source_authorized_exact_group_overlap_contacts(
+        source_constraint,
+        contours,
+        target_groups,
+        &mut contacts,
+    );
+    collect_junctionn_source_authorized_mouth_band_endpoint_handoffs(
+        piece_kind,
+        contours,
+        source_constraint,
+        target_groups,
+        claim_priorities,
+        &mut contacts,
+    );
+    contacts
 }
 
 fn collect_junctionn_source_authorized_mouth_band_endpoint_handoffs(

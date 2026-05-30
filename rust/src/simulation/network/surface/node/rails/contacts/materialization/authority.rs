@@ -71,6 +71,16 @@ impl<'a> GeneratedContactAuthorityIndex<'a> {
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts) fn has_constraints_for(
+        &self,
+        kind: NodeRailConstraintKind,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+    ) -> bool {
+        self.constraints_by_kind_owner_pair
+            .contains_key(&(kind, GeneratedContactOwnerPair::new(owner, opposite_owner)))
+    }
 }
 
 pub(super) fn generated_material_authority_points_on_counterpart_contour(
