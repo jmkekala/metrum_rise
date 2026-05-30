@@ -977,7 +977,8 @@ func _terrain_patch_mesh_from_data(
 	)
 
 func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
-	return patch_data.has("terrain_cdt_status")
+	# Failed CDT keeps diagnostic fields but must not replace the heightmap mesh with an empty bake.
+	return patch_data.has("terrain_cdt_status") and _patch_has_baked_terrain_mesh(patch_data)
 
 func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
 	if not patch_data.has("terrain_mesh_vertices"):

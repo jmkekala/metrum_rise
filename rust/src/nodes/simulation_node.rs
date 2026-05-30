@@ -57,6 +57,7 @@
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
+//! | | `get_preview_road_surface_immediate` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
@@ -82,8 +83,9 @@ use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SimCommand, SimCore, run_road_preview_worker,
-    run_sim_thread,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SimCommand, SimCore,
+    compile_road_preview_from_context, run_road_preview_worker, run_sim_thread,
+    terrain_cdt_local_sample_margin_m,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -121,9 +123,6 @@ const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
 const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
-const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
 
@@ -200,6 +199,15 @@ impl TerrainCdtTriangleBufferExport {
             emitted_faces: 0,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct TerrainCdtWindowBounds {
+    min_x: f32,
+    min_z: f32,
+    max_x: f32,
+    max_z: f32,
+    boundary_step_m: f32,
 }
 
 #[derive(GodotClass)]
@@ -528,6 +536,7 @@ impl SimulationNode {
             &mut dict,
             &base_patch,
             cdt_input,
+            safe_render_step_m,
             road_clip_query.source_count > 0,
             true,
             road_clip_query.clip_error_label,
@@ -691,6 +700,7 @@ impl SimulationNode {
             dict,
             &cached.patch,
             &successful_windows,
+            (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
             include_debug,
         );
     }
@@ -702,6 +712,7 @@ impl SimulationNode {
             &CachedRefinedTerrainCdtWindow,
             &crate::simulation::terrain::cdt::TerrainCdtMesh,
         )],
+        boundary_step_m: f32,
         include_debug: bool,
     ) {
         let road_debug = crate::debug::category_enabled("road");
@@ -709,7 +720,7 @@ impl SimulationNode {
         let terrain_buffer_start = road_debug.then(Instant::now);
         let mut terrain_buffers = TerrainCdtTriangleBufferExport::empty();
         let mut retaining_buffers = TerrainCdtTriangleBufferExport::empty();
-        let mut cdt_patches = Vec::with_capacity(windows.len());
+        let mut cdt_windows = Vec::with_capacity(windows.len());
         for (window, mesh) in windows {
             let window_terrain_buffers = Self::terrain_cdt_triangle_buffers(
                 patch,
@@ -727,12 +738,16 @@ impl SimulationNode {
                 include_debug,
             );
             Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
-            cdt_patches.push(window.cdt_patch);
+            if let Some(bounds) =
+                Self::terrain_cdt_window_bounds(patch, window.cdt_patch, boundary_step_m)
+            {
+                cdt_windows.push(bounds);
+            }
         }
         Self::append_regular_terrain_mesh_outside_cdt_windows(
             &mut terrain_buffers,
             patch,
-            &cdt_patches,
+            &cdt_windows,
         );
         let terrain_buffer_ms = terrain_buffer_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -938,6 +953,7 @@ impl SimulationNode {
         dict: &mut VarDictionary,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         cdt_input: TerrainCdtInput,
+        render_step_m: f32,
         has_grounded_road_contributors: bool,
         requires_road_clip: bool,
         clip_error_label: Option<&'static str>,
@@ -1098,7 +1114,14 @@ impl SimulationNode {
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
                 let mesh_export_start = road_debug.then(Instant::now);
-                Self::append_cdt_mesh_buffers(dict, patch, cdt_patch, &mesh, include_debug);
+                Self::append_cdt_mesh_buffers(
+                    dict,
+                    patch,
+                    cdt_patch,
+                    &mesh,
+                    render_step_m,
+                    include_debug,
+                );
                 let mesh_export_ms = mesh_export_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
@@ -1449,6 +1472,16 @@ impl SimulationNode {
             &mut source_samples,
             &mut sample_keys,
         );
+        Self::append_terrain_cdt_window_boundary_samples(
+            terrain,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            safe_render_step_m,
+            &mut source_samples,
+            &mut sample_keys,
+        );
 
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
     }
@@ -1578,6 +1611,16 @@ impl SimulationNode {
             &mut source_samples,
             &mut sample_keys,
         );
+        Self::append_terrain_cdt_window_boundary_samples(
+            terrain,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            render_step_m.max(f32::EPSILON),
+            &mut source_samples,
+            &mut sample_keys,
+        );
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
     }
 
@@ -1679,9 +1722,7 @@ impl SimulationNode {
             return None;
         }
 
-        let margin_m = TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M
-            .max(render_step_m * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS)
-            .max(terrain.cell_size_m() * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS);
+        let margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
         let patch_max_x = patch.world_origin_x + patch.world_size_x;
@@ -1739,6 +1780,46 @@ impl SimulationNode {
                 );
             }
         }
+    }
+
+    fn append_terrain_cdt_window_boundary_samples(
+        terrain: &TerrainSystem,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        step_m: f32,
+        source_samples: &mut Vec<TerrainCdtVertex>,
+        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    ) {
+        let safe_step_m = step_m.max(f32::EPSILON);
+        let xs = Self::terrain_cdt_axis_samples(min_x, max_x, safe_step_m);
+        let zs = Self::terrain_cdt_axis_samples(min_z, max_z, safe_step_m);
+        for &x in &xs {
+            Self::push_terrain_cdt_source_sample(terrain, x, min_z, source_samples, sample_keys);
+            Self::push_terrain_cdt_source_sample(terrain, x, max_z, source_samples, sample_keys);
+        }
+        for &z in &zs {
+            Self::push_terrain_cdt_source_sample(terrain, min_x, z, source_samples, sample_keys);
+            Self::push_terrain_cdt_source_sample(terrain, max_x, z, source_samples, sample_keys);
+        }
+    }
+
+    fn terrain_cdt_axis_samples(min: f32, max: f32, step_m: f32) -> Vec<f32> {
+        let safe_step_m = step_m.max(f32::EPSILON);
+        let mut samples = vec![min];
+        let mut next = min + safe_step_m;
+        while next < max - 0.001 {
+            samples.push(next);
+            next += safe_step_m;
+        }
+        if samples
+            .last()
+            .is_none_or(|last| (*last - max).abs() > 0.001)
+        {
+            samples.push(max);
+        }
+        samples
     }
 
     fn push_terrain_cdt_source_sample(
@@ -1819,6 +1900,7 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         cdt_patch: TerrainCdtPatch,
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
+        boundary_step_m: f32,
         include_debug: bool,
     ) {
         let road_debug = crate::debug::category_enabled("road");
@@ -1832,7 +1914,12 @@ impl SimulationNode {
             include_debug,
         );
         let mut terrain_buffers = terrain_buffers;
-        Self::append_regular_terrain_mesh_outside_cdt_patch(&mut terrain_buffers, patch, cdt_patch);
+        Self::append_regular_terrain_mesh_outside_cdt_patch(
+            &mut terrain_buffers,
+            patch,
+            cdt_patch,
+            boundary_step_m,
+        );
         let terrain_buffer_ms = terrain_buffer_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -2090,29 +2177,23 @@ impl SimulationNode {
         export: &mut TerrainCdtTriangleBufferExport,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         cdt_patch: TerrainCdtPatch,
+        boundary_step_m: f32,
     ) {
-        Self::append_regular_terrain_mesh_outside_cdt_windows(export, patch, &[cdt_patch]);
+        let windows = Self::terrain_cdt_window_bounds(patch, cdt_patch, boundary_step_m)
+            .into_iter()
+            .collect::<Vec<_>>();
+        Self::append_regular_terrain_mesh_outside_cdt_windows(export, patch, &windows);
     }
 
     fn append_regular_terrain_mesh_outside_cdt_windows(
         export: &mut TerrainCdtTriangleBufferExport,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        cdt_patches: &[TerrainCdtPatch],
+        windows: &[TerrainCdtWindowBounds],
     ) {
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
         let patch_max_x = patch.world_origin_x + patch.world_size_x;
         let patch_max_z = patch.world_origin_z + patch.world_size_z;
-        let mut windows = Vec::new();
-        for cdt_patch in cdt_patches {
-            let min_x = (cdt_patch.min_x as f32).clamp(patch_min_x, patch_max_x);
-            let min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
-            let max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
-            let max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
-            if max_x > min_x + 0.001 && max_z > min_z + 0.001 {
-                windows.push((min_x, min_z, max_x, max_z));
-            }
-        }
         if windows.is_empty() {
             Self::append_regular_terrain_grid_region(
                 export,
@@ -2129,9 +2210,9 @@ impl SimulationNode {
 
         let mut x_lines = vec![patch_min_x, patch_max_x];
         let mut z_lines = vec![patch_min_z, patch_max_z];
-        for (min_x, min_z, max_x, max_z) in &windows {
-            x_lines.extend([*min_x, *max_x]);
-            z_lines.extend([*min_z, *max_z]);
+        for window in windows {
+            x_lines.extend([window.min_x, window.max_x]);
+            z_lines.extend([window.min_z, window.max_z]);
         }
         Self::sort_dedup_axis_lines(&mut x_lines);
         Self::sort_dedup_axis_lines(&mut z_lines);
@@ -2149,22 +2230,88 @@ impl SimulationNode {
                 }
                 let mid_x = (min_x + max_x) * 0.5;
                 let mid_z = (min_z + max_z) * 0.5;
-                if windows
-                    .iter()
-                    .any(|(win_min_x, win_min_z, win_max_x, win_max_z)| {
-                        mid_x >= *win_min_x
-                            && mid_x <= *win_max_x
-                            && mid_z >= *win_min_z
-                            && mid_z <= *win_max_z
-                    })
-                {
+                if windows.iter().any(|window| {
+                    mid_x >= window.min_x
+                        && mid_x <= window.max_x
+                        && mid_z >= window.min_z
+                        && mid_z <= window.max_z
+                }) {
                     continue;
                 }
-                Self::append_regular_terrain_grid_region(
-                    export, patch, min_x, min_z, max_x, max_z, step_m,
+                let mut xs =
+                    Self::regular_terrain_axis_samples_aligned(min_x, max_x, step_m, patch_min_x);
+                let mut zs =
+                    Self::regular_terrain_axis_samples_aligned(min_z, max_z, step_m, patch_min_z);
+                Self::refine_regular_terrain_axes_for_cdt_window_sides(
+                    &mut xs, &mut zs, min_x, min_z, max_x, max_z, windows,
                 );
+                Self::append_regular_terrain_grid_region_with_axes(export, patch, &xs, &zs);
             }
         }
+    }
+
+    fn terrain_cdt_window_bounds(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        cdt_patch: TerrainCdtPatch,
+        boundary_step_m: f32,
+    ) -> Option<TerrainCdtWindowBounds> {
+        let patch_min_x = patch.world_origin_x;
+        let patch_min_z = patch.world_origin_z;
+        let patch_max_x = patch.world_origin_x + patch.world_size_x;
+        let patch_max_z = patch.world_origin_z + patch.world_size_z;
+        let min_x = (cdt_patch.min_x as f32).clamp(patch_min_x, patch_max_x);
+        let min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
+        let max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
+        let max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
+        if max_x <= min_x + 0.001 || max_z <= min_z + 0.001 {
+            return None;
+        }
+        Some(TerrainCdtWindowBounds {
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            boundary_step_m: boundary_step_m.max(f32::EPSILON),
+        })
+    }
+
+    fn refine_regular_terrain_axes_for_cdt_window_sides(
+        xs: &mut Vec<f32>,
+        zs: &mut Vec<f32>,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        windows: &[TerrainCdtWindowBounds],
+    ) {
+        for window in windows {
+            let z_overlap_min = min_z.max(window.min_z);
+            let z_overlap_max = max_z.min(window.max_z);
+            if z_overlap_max > z_overlap_min + 0.001
+                && (Self::axis_lines_touch(max_x, window.min_x)
+                    || Self::axis_lines_touch(min_x, window.max_x))
+            {
+                Self::extend_axis_samples(zs, z_overlap_min, z_overlap_max, window.boundary_step_m);
+            }
+
+            let x_overlap_min = min_x.max(window.min_x);
+            let x_overlap_max = max_x.min(window.max_x);
+            if x_overlap_max > x_overlap_min + 0.001
+                && (Self::axis_lines_touch(max_z, window.min_z)
+                    || Self::axis_lines_touch(min_z, window.max_z))
+            {
+                Self::extend_axis_samples(xs, x_overlap_min, x_overlap_max, window.boundary_step_m);
+            }
+        }
+    }
+
+    fn axis_lines_touch(left: f32, right: f32) -> bool {
+        (left - right).abs() <= 0.001
+    }
+
+    fn extend_axis_samples(samples: &mut Vec<f32>, min: f32, max: f32, step_m: f32) {
+        samples.extend(Self::terrain_cdt_axis_samples(min, max, step_m));
+        Self::sort_dedup_axis_lines(samples);
     }
 
     fn sort_dedup_axis_lines(values: &mut Vec<f32>) {
@@ -2183,13 +2330,21 @@ impl SimulationNode {
             .max(TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M)
     }
 
-    fn regular_terrain_axis_samples(min: f32, max: f32, step_m: f32) -> Vec<f32> {
+    fn regular_terrain_axis_samples_aligned(
+        min: f32,
+        max: f32,
+        step_m: f32,
+        anchor: f32,
+    ) -> Vec<f32> {
         let safe_step_m = step_m.max(f32::EPSILON);
         let mut samples = vec![min];
-        let mut next = min + safe_step_m;
-        while next < max - 0.001 {
-            samples.push(next);
-            next += safe_step_m;
+        let first = ((min - anchor) / safe_step_m).ceil() as i64;
+        let last = ((max - anchor) / safe_step_m).floor() as i64;
+        for index in first..=last {
+            let sample = anchor + index as f32 * safe_step_m;
+            if sample > min + 0.001 && sample < max - 0.001 {
+                samples.push(sample);
+            }
         }
         if samples
             .last()
@@ -2197,6 +2352,7 @@ impl SimulationNode {
         {
             samples.push(max);
         }
+        Self::sort_dedup_axis_lines(&mut samples);
         samples
     }
 
@@ -2213,8 +2369,19 @@ impl SimulationNode {
             return;
         }
 
-        let xs = Self::regular_terrain_axis_samples(min_x, max_x, step_m);
-        let zs = Self::regular_terrain_axis_samples(min_z, max_z, step_m);
+        let xs =
+            Self::regular_terrain_axis_samples_aligned(min_x, max_x, step_m, patch.world_origin_x);
+        let zs =
+            Self::regular_terrain_axis_samples_aligned(min_z, max_z, step_m, patch.world_origin_z);
+        Self::append_regular_terrain_grid_region_with_axes(export, patch, &xs, &zs);
+    }
+
+    fn append_regular_terrain_grid_region_with_axes(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        xs: &[f32],
+        zs: &[f32],
+    ) {
         if xs.len() < 2 || zs.len() < 2 {
             return;
         }
@@ -2222,8 +2389,8 @@ impl SimulationNode {
         let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
         let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
         let base_index = export.vertices.len();
-        for &z in &zs {
-            for &x in &xs {
+        for &z in zs {
+            for &x in xs {
                 export.vertices.push(Vector3::new(
                     x - center_x,
                     Self::terrain_patch_height_at_world_m(patch, x, z),
@@ -3833,7 +4000,7 @@ impl SimulationNode {
     /// Requests temporary preview-surface compilation for the road tool.
     ///
     /// The result is published asynchronously through [`get_preview_road_surface_result`], so the
-    /// Godot main thread never runs the road-surface compiler directly.
+    /// commit path can wait for a valid preview without blocking on the simulation mutex.
     #[func]
     pub fn request_preview_road_surface(
         &self,
@@ -3885,6 +4052,59 @@ impl SimulationNode {
         i64::try_from(request_id).unwrap_or(i64::MAX)
     }
 
+    /// Compiles a current-frame road-tool preview from immutable Rust preview state.
+    ///
+    /// This uses the same mesh-only road-surface compiler as the background preview worker, but
+    /// returns immediately so the live cursor preview and the idle preview share one geometry path.
+    #[func]
+    pub fn get_preview_road_surface_immediate(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Variant {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let point_count = points.len();
+        let clone_start = road_debug.then(Instant::now);
+        let points = points.to_vec();
+        let clone_ms = clone_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let compile_start = road_debug.then(Instant::now);
+        let preview = {
+            let context = self.road_preview_context.read().unwrap();
+            compile_road_preview_from_context(
+                &context,
+                RoadPreviewRequest {
+                    request_id: 0,
+                    points,
+                    fwd_lanes,
+                    bkw_lanes,
+                },
+            )
+        };
+        let compile_ms = compile_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if road_debug {
+            debug_log!(
+                "road",
+                "preview_surface_immediate points={} prepared_points={} surface_vertices={} valid={} clone_ms={:.3} compile_ms={:.3} total_ms={:.3}",
+                point_count,
+                preview.prepared_points.len(),
+                preview.surface_vertices.len(),
+                preview.is_valid,
+                clone_ms,
+                compile_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
+        Self::road_preview_snapshot_to_variant(&preview)
+    }
+
     /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
     #[func]
     pub fn get_preview_road_surface_result(&self, request_id: i64) -> Variant {
@@ -3899,6 +4119,10 @@ impl SimulationNode {
             return Variant::nil();
         }
 
+        Self::road_preview_snapshot_to_variant(preview)
+    }
+
+    fn road_preview_snapshot_to_variant(preview: &RoadPreviewSnapshot) -> Variant {
         let mut dict = VarDictionary::new();
         dict.set(
             "request_id",
@@ -4760,18 +4984,6 @@ impl SimulationNode {
         config::LANE_WIDTH
     }
 
-    /// Returns the half-width of the roadbed footprint that road placement will build.
-    #[func]
-    pub fn get_preview_roadbed_half_width(&self, fwd_lanes: i32, bkw_lanes: i32) -> f32 {
-        let lane_count =
-            fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
-        if lane_count <= 0 {
-            return 1.0;
-        }
-
-        (lane_count as f32 * config::LANE_WIDTH).max(2.0) * 0.5 + config::SIDEWALK_WIDTH
-    }
-
     /// High-level city setup for performance testing.
     #[func]
     pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {
@@ -5029,6 +5241,9 @@ impl SimCore {
             return Vec::new();
         }
 
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let road_locked_margin_m =
+            terrain_cdt_local_sample_margin_m(&self.heightmap, safe_render_step_m);
         let road_locked_start = road_debug.then(Instant::now);
         self.transit_network
             .road_surface
@@ -5036,14 +5251,17 @@ impl SimCore {
         let road_locked_keys: HashSet<(usize, usize)> = self
             .transit_network
             .road_surface
-            .terrain_render_patch_keys_with_visible_road(&self.region_graph, &self.heightmap)
+            .terrain_render_patch_keys_with_visible_road_margin(
+                &self.region_graph,
+                &self.heightmap,
+                road_locked_margin_m,
+            )
             .into_iter()
             .collect();
         let road_locked_ms = road_locked_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
 
-        let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let mut inputs = Vec::new();
         for (patch_x, patch_z) in dirty_patches.iter().copied() {
             if !road_locked_keys.contains(&(patch_x, patch_z)) {
@@ -5054,10 +5272,10 @@ impl SimCore {
             };
             let road_clip_query = SimulationNode::road_clip_loop_query_for_bounds(
                 self,
-                base_patch.world_origin_x,
-                base_patch.world_origin_z,
-                base_patch.world_origin_x + base_patch.world_size_x,
-                base_patch.world_origin_z + base_patch.world_size_z,
+                base_patch.world_origin_x - road_locked_margin_m,
+                base_patch.world_origin_z - road_locked_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
             );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
             let previous = self.refined_terrain_patch_cache.get(&key);
@@ -5080,10 +5298,11 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "refined_patch_precompute_inputs dirty_patches={} road_locked_patches={} inputs={} road_locked_ms={:.3} total_ms={:.3}",
+                "refined_patch_precompute_inputs dirty_patches={} road_locked_patches={} inputs={} road_locked_margin_m={:.3} road_locked_ms={:.3} total_ms={:.3}",
                 dirty_patches.len(),
                 road_locked_keys.len(),
                 inputs.len(),
+                road_locked_margin_m,
                 road_locked_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -5412,6 +5631,100 @@ mod tests {
         assert_eq!(status, "ok");
         assert_eq!(error, "none");
         assert_eq!(source_count, 0);
+    }
+
+    #[test]
+    fn terrain_cdt_local_window_input_samples_arbitrary_boundary() {
+        let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
+        let patch = TerrainPatchSnapshot {
+            patch_x: 0,
+            patch_z: 0,
+            sample_width: 5,
+            sample_height: 5,
+            texture_width: 5,
+            texture_height: 5,
+            inner_offset_x: 0,
+            inner_offset_z: 0,
+            world_origin_x: 0.0,
+            world_origin_z: 0.0,
+            world_size_x: 40.0,
+            world_size_z: 40.0,
+            height_data: vec![0.0; 25],
+        };
+
+        let input = SimulationNode::terrain_cdt_input_for_bounds(
+            &terrain,
+            &patch,
+            &[],
+            5.0,
+            (3.0, 4.0, 23.0, 29.0),
+        );
+
+        assert!(
+            input
+                .source_samples
+                .iter()
+                .any(|sample| sample.x == 3.0 && sample.z == 9.0),
+            "local CDT windows must seed non-corner vertices along arbitrary vertical boundaries"
+        );
+        assert!(
+            input
+                .source_samples
+                .iter()
+                .any(|sample| sample.x == 18.0 && sample.z == 29.0),
+            "local CDT windows must seed non-corner vertices along arbitrary horizontal boundaries"
+        );
+    }
+
+    #[test]
+    fn regular_terrain_filler_refines_cdt_window_sides() {
+        let patch = TerrainPatchSnapshot {
+            patch_x: 0,
+            patch_z: 0,
+            sample_width: 5,
+            sample_height: 5,
+            texture_width: 5,
+            texture_height: 5,
+            inner_offset_x: 0,
+            inner_offset_z: 0,
+            world_origin_x: 0.0,
+            world_origin_z: 0.0,
+            world_size_x: 40.0,
+            world_size_z: 40.0,
+            height_data: vec![0.0; 25],
+        };
+        let cdt_patch = TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]);
+        let window = SimulationNode::terrain_cdt_window_bounds(&patch, cdt_patch, 5.0).unwrap();
+        let mut export = TerrainCdtTriangleBufferExport::empty();
+
+        SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(
+            &mut export,
+            &patch,
+            &[window],
+        );
+
+        assert!(
+            export_has_world_xz(&export, &patch, 10.0, 15.0),
+            "regular filler must share non-corner vertical CDT-window boundary samples"
+        );
+        assert!(
+            export_has_world_xz(&export, &patch, 15.0, 10.0),
+            "regular filler must share non-corner horizontal CDT-window boundary samples"
+        );
+    }
+
+    fn export_has_world_xz(
+        export: &TerrainCdtTriangleBufferExport,
+        patch: &TerrainPatchSnapshot,
+        world_x: f32,
+        world_z: f32,
+    ) -> bool {
+        let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        export.vertices.iter().any(|vertex| {
+            (vertex.x - (world_x - center_x)).abs() <= 0.001
+                && (vertex.z - (world_z - center_z)).abs() <= 0.001
+        })
     }
 
     fn test_patch() -> TerrainPatchSnapshot {

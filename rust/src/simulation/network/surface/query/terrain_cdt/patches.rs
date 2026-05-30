@@ -3,12 +3,15 @@
 use super::*;
 
 impl RoadSurfaceSystem {
-    pub(crate) fn terrain_render_patch_keys_with_visible_road(
+    /// Returns render-patch keys covered by visible grounded road plus a seam-safe margin.
+    pub(crate) fn terrain_render_patch_keys_with_visible_road_margin(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
+        margin_m: f32,
     ) -> Vec<(usize, usize)> {
         let mut patch_keys = HashSet::new();
+        let margin_m = f64::from(margin_m.max(0.0));
 
         let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
         span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
@@ -21,10 +24,10 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for key in terrain.render_patch_keys_for_world_bounds(
-                min.x as f32,
-                min.z as f32,
-                max.x as f32,
-                max.z as f32,
+                (min.x - margin_m) as f32,
+                (min.z - margin_m) as f32,
+                (max.x + margin_m) as f32,
+                (max.z + margin_m) as f32,
             ) {
                 patch_keys.insert(key);
             }
@@ -41,10 +44,10 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for key in terrain.render_patch_keys_for_world_bounds(
-                min.x as f32,
-                min.z as f32,
-                max.x as f32,
-                max.z as f32,
+                (min.x - margin_m) as f32,
+                (min.z - margin_m) as f32,
+                (max.x + margin_m) as f32,
+                (max.z + margin_m) as f32,
             ) {
                 patch_keys.insert(key);
             }

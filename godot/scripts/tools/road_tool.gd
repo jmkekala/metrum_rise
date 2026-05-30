@@ -48,9 +48,6 @@ var _preview_request_fwd_lanes: int = -1
 var _preview_request_bkw_lanes: int = -1
 var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
-var _preview_lightweight_points: PackedVector3Array = PackedVector3Array()
-var _preview_lightweight_fwd_lanes: int = -1
-var _preview_lightweight_bkw_lanes: int = -1
 var _preview_update_pending: bool = false
 var _preview_result_pending: bool = false
 var _preview_idle_exact_delay_sec: float = 0.0
@@ -58,7 +55,6 @@ var _preview_exact_waiting: bool = false
 var _commit_waiting_for_preview: bool = false
 var _pending_commit_points: PackedVector3Array = PackedVector3Array()
 var _pending_commit_end_pos: Vector3 = Vector3.ZERO
-var _preview_roadbed_half_width_m: float = 5.0
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
@@ -79,7 +75,6 @@ func _ready():
 	if blueprint_mesh:
 		blueprint_mesh.position.y = ROAD_PREVIEW_RENDER_OFFSET_M
 	_road_debug_enabled = _road_debug_is_enabled()
-	_refresh_preview_roadbed_width()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
 	add_child(_hud_canvas)
@@ -131,7 +126,6 @@ func _road_debug_is_enabled() -> bool:
 	return false
 
 func _update_lanes_label():
-	_refresh_preview_roadbed_width()
 	if active and current_path != null:
 		_queue_preview_update()
 
@@ -306,67 +300,75 @@ func _poll_pending_preview_result() -> void:
 func _draw_blueprint():
 	var preview := _get_compiled_preview_surface()
 	if preview.is_empty():
-		if _draw_lightweight_preview():
+		if _draw_immediate_preview():
 			return
-		blueprint_mesh.mesh = null
-		_preview_drawn_request_id = 0
-		if _info_label:
-			_info_label.visible = false
+		_clear_preview_visual()
 		return
 
+	if not _draw_preview_surface(preview):
+		_clear_preview_visual()
+
+func _clear_preview_visual() -> void:
+	blueprint_mesh.mesh = null
+	_preview_drawn_request_id = 0
+	if _info_label:
+		_info_label.visible = false
+
+func _draw_preview_surface(preview: Dictionary) -> bool:
 	var preview_verts: PackedVector3Array = preview.get("prepared_points", PackedVector3Array())
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	is_valid = is_valid and bool(preview.get("is_valid", false))
-
-	if surface_vertices.size() >= 3:
-		var preview_request_id := int(preview.get("request_id", 0))
-		if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
-			return
-		var arr_mesh = ArrayMesh.new()
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = surface_vertices
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		blueprint_mesh.mesh = arr_mesh
-		_preview_drawn_request_id = preview_request_id
-		_preview_lightweight_points = PackedVector3Array()
-
-		_update_preview_measurement_label(preview_verts)
-	else:
-		blueprint_mesh.mesh = null
-		_preview_drawn_request_id = 0
-		if _info_label:
-			_info_label.visible = false
-
-func _draw_lightweight_preview() -> bool:
-	if current_path == null:
-		return false
-	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
-	if points.size() < 2:
-		return false
-	_update_preview_measurement_label(points)
-	var lightweight_matches := (
-		_preview_lightweight_fwd_lanes == fwd_lanes
-		and _preview_lightweight_bkw_lanes == bkw_lanes
-		and _road_surface_points_match(points, _preview_lightweight_points)
-	)
-	if lightweight_matches:
-		return true
-
-	var surface_vertices := _lightweight_preview_ribbon_vertices(points)
 	if surface_vertices.size() < 3:
 		return false
+
+	var preview_request_id := int(preview.get("request_id", 0))
+	if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
+		_update_preview_measurement_label(preview_verts)
+		return true
+
 	var arr_mesh = ArrayMesh.new()
 	var arrays = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = surface_vertices
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	blueprint_mesh.mesh = arr_mesh
-	_preview_drawn_request_id = 0
-	_preview_lightweight_points = points
-	_preview_lightweight_fwd_lanes = fwd_lanes
-	_preview_lightweight_bkw_lanes = bkw_lanes
+	_preview_drawn_request_id = preview_request_id
+	_update_preview_measurement_label(preview_verts)
 	return true
+
+func _draw_immediate_preview() -> bool:
+	if current_path == null:
+		return false
+
+	var total_start_us := Time.get_ticks_usec()
+	var baked_start_us := Time.get_ticks_usec()
+	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
+	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
+	if points.size() <= 1:
+		_log_preview_surface_detail("", points.size(), 0, true, baked_ms, 0.0, total_start_us)
+		return false
+
+	var rust_start_us := Time.get_ticks_usec()
+	var preview = simulation_node.get_preview_road_surface_immediate(points, fwd_lanes, bkw_lanes)
+	var rust_ms := float(Time.get_ticks_usec() - rust_start_us) / 1000.0
+	if preview == null:
+		_log_preview_surface_detail("", points.size(), 0, false, baked_ms, rust_ms, total_start_us)
+		return false
+
+	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
+	_log_preview_surface_detail(
+		"",
+		points.size(),
+		surface_vertices.size(),
+		bool(preview.get("is_valid", false)),
+		baked_ms,
+		rust_ms,
+		total_start_us
+	)
+	_preview_result_pending = false
+	_preview_exact_waiting = false
+	_remember_preview_surface(points, preview)
+	return _draw_preview_surface(preview)
 
 func _update_preview_measurement_label(points: PackedVector3Array) -> void:
 	if not _info_label or points.size() < 2:
@@ -405,46 +407,6 @@ func _update_preview_measurement_label(points: PackedVector3Array) -> void:
 	mid.y += 2.0
 	_label_world_pos = mid
 	_info_label.visible = true
-
-func _lightweight_preview_ribbon_vertices(points: PackedVector3Array) -> PackedVector3Array:
-	var half_width := _preview_roadbed_half_width_m
-	var left := PackedVector3Array()
-	var right := PackedVector3Array()
-	for index in range(points.size()):
-		var tangent := Vector3.ZERO
-		if index == 0:
-			tangent = points[1] - points[0]
-		elif index == points.size() - 1:
-			tangent = points[index] - points[index - 1]
-		else:
-			tangent = (points[index] - points[index - 1]) + (points[index + 1] - points[index])
-		var dir := _preview_horizontal_dir(tangent)
-		var perp := Vector3(-dir.y, 0.0, dir.x) * half_width
-		left.append(points[index] + perp)
-		right.append(points[index] - perp)
-
-	var vertices := PackedVector3Array()
-	for index in range(points.size() - 1):
-		vertices.append(left[index])
-		vertices.append(right[index])
-		vertices.append(right[index + 1])
-		vertices.append(left[index])
-		vertices.append(right[index + 1])
-		vertices.append(left[index + 1])
-	return vertices
-
-func _refresh_preview_roadbed_width() -> void:
-	if simulation_node:
-		_preview_roadbed_half_width_m = simulation_node.get_preview_roadbed_half_width(
-			fwd_lanes,
-			bkw_lanes
-		)
-
-func _preview_horizontal_dir(vector: Vector3) -> Vector2:
-	var dir := Vector2(vector.x, vector.z)
-	if dir.length_squared() <= 0.000001:
-		return Vector2(1.0, 0.0)
-	return dir.normalized()
 
 func _commit_segment(end_pos):
 	var total_start_us := Time.get_ticks_usec()
@@ -743,9 +705,6 @@ func _clear_preview_cache() -> void:
 	_preview_request_bkw_lanes = -1
 	_preview_request_id = 0
 	_preview_drawn_request_id = 0
-	_preview_lightweight_points = PackedVector3Array()
-	_preview_lightweight_fwd_lanes = -1
-	_preview_lightweight_bkw_lanes = -1
 	_preview_result_pending = false
 	_preview_exact_waiting = false
 	_preview_idle_exact_delay_sec = 0.0

@@ -2,7 +2,9 @@
 //!
 //! Handles road mesh generation and road connection utility calculations.
 
-use crate::nodes::sim::core::SimCore;
+use crate::nodes::sim::core::{
+    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore, terrain_cdt_local_sample_margin_m,
+};
 use crate::simulation::network::render::NetworkMeshData;
 use crate::{debug, debug_log};
 use godot::prelude::*;
@@ -233,7 +235,14 @@ impl SimCore {
         let keys = self
             .transit_network
             .road_surface
-            .terrain_render_patch_keys_with_visible_road(&self.region_graph, &self.heightmap);
+            .terrain_render_patch_keys_with_visible_road_margin(
+                &self.region_graph,
+                &self.heightmap,
+                terrain_cdt_local_sample_margin_m(
+                    &self.heightmap,
+                    ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+                ),
+            );
 
         let mut packed = PackedInt32Array::new();
         for (patch_x, patch_z) in keys {

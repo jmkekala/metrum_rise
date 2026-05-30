@@ -43,7 +43,7 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
         footprint_max_z = footprint_max_z.max(point.z);
     }
 
-    let keys = surface.terrain_render_patch_keys_with_visible_road(&graph, &terrain);
+    let keys = surface.terrain_render_patch_keys_with_visible_road_margin(&graph, &terrain, 0.0);
     assert!(!keys.is_empty());
     assert!(
         keys.len() < terrain.render_patch_cols() * terrain.render_patch_rows() / 8,
@@ -61,6 +61,39 @@ fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
             "road-locked patch ({patch_x}, {patch_z}) must overlap the road footprint, not only the earthwork envelope"
         );
     }
+}
+
+#[test]
+fn road_locked_terrain_patches_expand_for_cdt_seam_margin() {
+    let terrain = flat_terrain(257, 257);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(0.0, 0.0, -48.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![Vector3::new(0.0, 0.0, -48.0), Vector3::new(0.0, 0.0, 48.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let unexpanded =
+        surface.terrain_render_patch_keys_with_visible_road_margin(&graph, &terrain, 0.0);
+    let expanded =
+        surface.terrain_render_patch_keys_with_visible_road_margin(&graph, &terrain, 8.0);
+    assert!(
+        unexpanded.iter().all(|key| expanded.contains(key)),
+        "seam-expanded road-locked patch selection must preserve visible road patches"
+    );
+    assert!(
+        expanded.len() > unexpanded.len(),
+        "local CDT seam margin should road-lock neighboring patches before a patch-edge crack can form"
+    );
 }
 
 #[test]
@@ -99,7 +132,7 @@ fn road_locked_terrain_patches_skip_bridge_and_tunnel_only_surfaces() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let keys = surface.terrain_render_patch_keys_with_visible_road(&graph, &terrain);
+    let keys = surface.terrain_render_patch_keys_with_visible_road_margin(&graph, &terrain, 0.0);
     assert!(
         keys.is_empty(),
         "bridge/tunnel-only surfaces must not request grounded-road CDT terrain clips"
