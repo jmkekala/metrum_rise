@@ -99,6 +99,63 @@ fn preview_matches_committed_sections_for_tunnels() {
 }
 
 #[test]
+fn preview_conditioning_preserves_snapped_visible_road_height() {
+    let terrain = flat_terrain(96, 64);
+    let mut graph = RegionGraph::new();
+    let existing_y = 5.0;
+    let start = graph.add_node(Vector3::new(0.0, existing_y, -16.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(0.0, existing_y, 16.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![
+            Vector3::new(0.0, existing_y, -16.0),
+            Vector3::new(0.0, existing_y, 16.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut existing_surface = RoadSurfaceSystem::new(16.0);
+    existing_surface.compile_dirty(&graph, &terrain);
+    let visible_y = existing_surface
+        .sample_visible_surface_height(&graph, &terrain, 0.0, 0.0)
+        .expect("existing elevated standard road must expose visible snap support");
+    assert!(
+        (visible_y - existing_y).abs() <= 0.05,
+        "test setup expected visible support at the elevated road height: visible={visible_y:.3}"
+    );
+
+    let raw_points = vec![
+        Vector3::new(0.0, visible_y, 0.0),
+        Vector3::new(24.0, 0.0, 0.0),
+    ];
+    let preview_surface = RoadSurfaceSystem::new(16.0);
+    let preview = preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
+        &raw_points,
+        1,
+        1,
+        &terrain,
+        &graph,
+        &existing_surface,
+    );
+
+    assert_eq!(preview.edge_class, EdgeClass::Standard);
+    assert_eq!(preview.prepared_points.len(), 2);
+    assert!(
+        (preview.prepared_points[0].y - visible_y).abs() <= 0.05,
+        "snapped endpoint must keep visible road height instead of source terrain: prepared={:.3} visible={visible_y:.3}",
+        preview.prepared_points[0].y
+    );
+    assert!(
+        preview.prepared_points[1].y.abs() <= 0.001,
+        "non-road endpoint should still ground to source terrain"
+    );
+}
+
+#[test]
 fn standard_road_footprint_uses_stitched_mesh_instead_of_visual_terrain_stamp() {
     let mut terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 0.0);
     for z in 0..65 {

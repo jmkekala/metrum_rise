@@ -118,6 +118,50 @@ impl RoadSurfaceSystem {
     ) -> PreviewRoadSurfaceResult {
         let (conditioned_points, edge_class) =
             Self::classify_and_ground_road_points(raw_points, terrain);
+        self.compile_preview_surface_mesh_only_from_conditioned(
+            conditioned_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            terrain,
+        )
+    }
+
+    /// Compiles the lightweight editor preview while preserving existing visible road-surface
+    /// heights for snapped input endpoints.
+    pub(crate) fn compile_preview_surface_mesh_only_with_existing_surface(
+        &self,
+        raw_points: &[Vector3],
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        terrain: &TerrainSystem,
+        existing_graph: &RegionGraph,
+        existing_surface: &RoadSurfaceSystem,
+    ) -> PreviewRoadSurfaceResult {
+        let (conditioned_points, edge_class) =
+            Self::classify_and_ground_road_points_to_visible_surface(
+                raw_points,
+                terrain,
+                existing_graph,
+                existing_surface,
+            );
+        self.compile_preview_surface_mesh_only_from_conditioned(
+            conditioned_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            terrain,
+        )
+    }
+
+    fn compile_preview_surface_mesh_only_from_conditioned(
+        &self,
+        conditioned_points: Vec<Vector3>,
+        edge_class: EdgeClass,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        terrain: &TerrainSystem,
+    ) -> PreviewRoadSurfaceResult {
         let mut prepared_points = Self::simplify_road_input_points(&conditioned_points);
         Self::taubin_smooth_road_heights(&mut prepared_points);
 

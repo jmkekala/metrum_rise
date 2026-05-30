@@ -31,6 +31,24 @@ pub fn get_closest_point(
     world_pos: Vector3,
     max_dist: f32,
 ) -> Option<Vector3> {
+    get_closest_point_impl(graph, world_pos, max_dist, false)
+}
+
+/// Finds the closest network point using only XZ distance for snap eligibility and scoring.
+pub(crate) fn get_closest_point_xz(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+) -> Option<Vector3> {
+    get_closest_point_impl(graph, world_pos, max_dist, true)
+}
+
+fn get_closest_point_impl(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+    xz_only: bool,
+) -> Option<Vector3> {
     let mut closest_pos = None;
     let mut min_score = f32::MAX;
 
@@ -43,7 +61,7 @@ pub fn get_closest_point(
             continue;
         }
         let node = &graph.nodes()[node_id as usize];
-        let d = node.pos.distance_to(world_pos);
+        let d = snap_distance(node.pos, world_pos, xz_only);
         if d < node_snap_dist {
             let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
             if score < min_score {
@@ -81,10 +99,10 @@ pub fn get_closest_point(
             let p0 = edge.geometry[i];
             let p1 = edge.geometry[i + 1];
 
-            let Some(pos) = get_edge_snap_point(world_pos, p0, p1) else {
+            let Some(pos) = get_edge_snap_point_for_mode(world_pos, p0, p1, xz_only) else {
                 continue;
             };
-            let d_perp = pos.distance_to(world_pos);
+            let d_perp = snap_distance(pos, world_pos, xz_only);
 
             if d_perp < edge_snap_dist {
                 let score = d_perp;
@@ -96,6 +114,16 @@ pub fn get_closest_point(
         }
     }
     closest_pos
+}
+
+fn snap_distance(a: Vector3, b: Vector3, xz_only: bool) -> f32 {
+    if xz_only {
+        let dx = a.x - b.x;
+        let dz = a.z - b.z;
+        (dx * dx + dz * dz).sqrt()
+    } else {
+        a.distance_to(b)
+    }
 }
 
 /// Finds the index of the edge closest to a given world position.
@@ -191,6 +219,29 @@ fn get_edge_snap_point(p: Vector3, a: Vector3, b: Vector3) -> Option<Vector3> {
     Some(a + ab * t)
 }
 
+fn get_edge_snap_point_for_mode(
+    p: Vector3,
+    a: Vector3,
+    b: Vector3,
+    xz_only: bool,
+) -> Option<Vector3> {
+    if !xz_only {
+        return get_edge_snap_point(p, a, b);
+    }
+
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let length_sq = dx * dx + dz * dz;
+    if length_sq <= 0.000001 {
+        return None;
+    }
+
+    let seg_len = length_sq.sqrt();
+    let end_margin = (EDGE_SNAP_ENDPOINT_MARGIN_M / seg_len).min(0.49);
+    let t = (((p.x - a.x) * dx + (p.z - a.z) * dz) / length_sq).clamp(end_margin, 1.0 - end_margin);
+    Some(a + (b - a) * t)
+}
+
 /// Finds the intersection point of two 2D segments (XZ plane)
 /// Returns (t_a, t_b) if they intersect, where t is the factor along the segment [0, 1]
 /// Finds the intersection point of two 2D segments in the XZ plane.
@@ -228,7 +279,9 @@ pub fn find_intersection_2d(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_closest_point, get_edge_snap_point};
+    use super::{
+        get_closest_point, get_closest_point_xz, get_edge_snap_point, get_edge_snap_point_for_mode,
+    };
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::types::NodeType;
     use godot::prelude::Vector3;
@@ -255,5 +308,30 @@ mod tests {
 
         let snapped = get_closest_point(&graph, Vector3::new(0.8, 0.0, 0.0), 5.0).unwrap();
         assert!(snapped.distance_to(Vector3::ZERO) <= 0.001);
+    }
+
+    #[test]
+    fn xz_closest_point_ignores_height_delta_for_editor_snap() {
+        let mut graph = RegionGraph::new();
+        graph.add_node(Vector3::ZERO, NodeType::Junction);
+
+        assert!(get_closest_point(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0).is_none());
+        let snapped = get_closest_point_xz(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0).unwrap();
+        assert!(snapped.distance_to(Vector3::ZERO) <= 0.001);
+    }
+
+    #[test]
+    fn xz_edge_snap_projects_along_horizontal_footprint() {
+        let snapped = get_edge_snap_point_for_mode(
+            Vector3::new(8.0, 30.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 10.0, 0.0),
+            true,
+        )
+        .unwrap();
+
+        assert!((snapped.x - 8.0).abs() < 0.001);
+        assert!((snapped.y - 8.0).abs() < 0.001);
+        assert!(snapped.z.abs() < 0.001);
     }
 }

@@ -417,7 +417,12 @@ impl SimCore {
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
         let (fixed_points, class) =
-            RoadSurfaceSystem::classify_and_ground_road_points(&points, &self.heightmap);
+            RoadSurfaceSystem::classify_and_ground_road_points_to_visible_surface(
+                &points,
+                &self.heightmap,
+                &self.region_graph,
+                &self.transit_network.road_surface,
+            );
 
         // Compute polyline length before fixed_points is moved into add_road.
         let build_length_m: f64 = fixed_points

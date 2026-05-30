@@ -4253,11 +4253,26 @@ impl SimulationNode {
             }
         }
 
-        if let Some(snapped_pos) = crate::simulation::network::interaction::get_closest_point(
+        if let Some(mut snapped_pos) = crate::simulation::network::interaction::get_closest_point_xz(
             &query.region_graph,
             pos,
             5.0,
         ) {
+            snapped_pos.y = query
+                .road_surface
+                .sample_visible_surface_height(
+                    &query.region_graph,
+                    &query.terrain,
+                    snapped_pos.x,
+                    snapped_pos.z,
+                )
+                .unwrap_or_else(|| {
+                    query
+                        .terrain
+                        .sample_visual_height_world(snapped_pos.x, snapped_pos.z)
+                        * crate::config::HEIGHT_SCALE
+                })
+                + altitude_offset_m;
             return snapped_pos.to_variant();
         }
 

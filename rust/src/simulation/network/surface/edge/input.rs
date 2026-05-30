@@ -2,6 +2,7 @@
 
 use super::super::RoadSurfaceSystem;
 use crate::config;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -20,13 +21,37 @@ impl RoadSurfaceSystem {
         raw_points: &[Vector3],
         terrain: &TerrainSystem,
     ) -> (Vec<Vector3>, EdgeClass) {
+        Self::classify_and_ground_road_points_with_support(raw_points, terrain, |_, _| None)
+    }
+
+    /// Conditions road-tool input against already-compiled visible road support before falling
+    /// back to source terrain.
+    pub(crate) fn classify_and_ground_road_points_to_visible_surface(
+        raw_points: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+    ) -> (Vec<Vector3>, EdgeClass) {
+        Self::classify_and_ground_road_points_with_support(raw_points, terrain, |x, z| {
+            road_surface.sample_visible_surface_height(graph, terrain, x, z)
+        })
+    }
+
+    fn classify_and_ground_road_points_with_support(
+        raw_points: &[Vector3],
+        terrain: &TerrainSystem,
+        mut support_height_at: impl FnMut(f32, f32) -> Option<f32>,
+    ) -> (Vec<Vector3>, EdgeClass) {
         let mut fixed_points = raw_points.to_vec();
+        let mut support_heights = Vec::with_capacity(fixed_points.len());
         let mut all_points_above_clearance = !fixed_points.is_empty();
         let mut all_points_below_clearance = !fixed_points.is_empty();
 
         for point in &fixed_points {
             let terrain_h = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
-            let clearance_m = point.y - terrain_h;
+            let support_h = support_height_at(point.x, point.z).unwrap_or(terrain_h);
+            support_heights.push(support_h);
+            let clearance_m = point.y - support_h;
             if clearance_m <= PREVIEW_CLEARANCE_M {
                 all_points_above_clearance = false;
             }
@@ -44,8 +69,8 @@ impl RoadSurfaceSystem {
         };
 
         if class == EdgeClass::Standard {
-            for point in &mut fixed_points {
-                point.y = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+            for (point, support_h) in fixed_points.iter_mut().zip(support_heights) {
+                point.y = support_h;
             }
         }
 

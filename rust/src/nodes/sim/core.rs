@@ -388,6 +388,8 @@ pub(crate) struct RoadPreviewSnapshot {
 #[derive(Clone)]
 pub(crate) struct RoadPreviewWorkerContext {
     terrain: TerrainSystem,
+    region_graph: RegionGraph,
+    road_surface: RoadSurfaceSystem,
     surface_chunk_span_m: f32,
 }
 
@@ -395,6 +397,8 @@ impl RoadPreviewWorkerContext {
     pub(crate) fn from_core(core: &SimCore) -> Self {
         Self {
             terrain: core.heightmap.clone(),
+            region_graph: core.region_graph.clone(),
+            road_surface: core.transit_network.road_surface.clone(),
             surface_chunk_span_m: core.transit_network.road_surface.chunk_span_m(),
         }
     }
@@ -554,11 +558,13 @@ pub(crate) fn compile_road_preview_from_context(
     request: RoadPreviewRequest,
 ) -> RoadPreviewSnapshot {
     let preview_surface = RoadSurfaceSystem::new(context.surface_chunk_span_m);
-    let preview = preview_surface.compile_preview_surface_mesh_only(
+    let preview = preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
         &request.points,
         request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
         request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
         &context.terrain,
+        &context.region_graph,
+        &context.road_surface,
     );
 
     RoadPreviewSnapshot {
