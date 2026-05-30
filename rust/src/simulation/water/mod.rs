@@ -44,6 +44,10 @@ pub(crate) struct WaterPatchSnapshot {
     pub depth_data: Vec<f32>,
     /// Row-major dynamic-water velocity samples including the border ring.
     pub velocity_data: Vec<f32>,
+    /// Number of texture samples with visible composed water depth.
+    pub depth_nonzero_count: usize,
+    /// Number of texture samples with dynamic velocity.
+    pub velocity_nonzero_count: usize,
 }
 
 /// Debug-only layer split for one visible water render patch.
@@ -525,6 +529,8 @@ impl WaterSystem {
         let texture_height = sample_height + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
         let mut depth_data = vec![0.0_f32; texture_width * texture_height];
         let mut velocity_data = vec![0.0_f32; texture_width * texture_height];
+        let mut depth_nonzero_count = 0;
+        let mut velocity_nonzero_count = 0;
 
         for local_z in 0..texture_height {
             let sample_z =
@@ -533,9 +539,17 @@ impl WaterSystem {
                 let sample_x =
                     border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
                 let flat_idx = local_z * texture_width + local_x;
-                depth_data[flat_idx] = self.baseline.depth.get(sample_x, sample_z)
+                let depth = self.baseline.depth.get(sample_x, sample_z)
                     + self.dynamic.depth.get(sample_x, sample_z);
-                velocity_data[flat_idx] = self.dynamic.velocity.get(sample_x, sample_z);
+                let velocity = self.dynamic.velocity.get(sample_x, sample_z);
+                if depth > WATER_DEBUG_VISIBLE_EPSILON {
+                    depth_nonzero_count += 1;
+                }
+                if velocity.abs() > WATER_DEBUG_VISIBLE_EPSILON {
+                    velocity_nonzero_count += 1;
+                }
+                depth_data[flat_idx] = depth;
+                velocity_data[flat_idx] = velocity;
             }
         }
 
@@ -557,6 +571,8 @@ impl WaterSystem {
             world_size_z,
             depth_data,
             velocity_data,
+            depth_nonzero_count,
+            velocity_nonzero_count,
         })
     }
 
@@ -818,6 +834,8 @@ mod tests {
         assert!((patch.world_size_z - 30.0).abs() < 0.0001);
         assert_eq!(patch.depth_data[0], 7.0);
         assert_eq!(patch.depth_data[patch.texture_width + 1], 7.0);
+        assert_eq!(patch.depth_nonzero_count, 4);
+        assert_eq!(patch.velocity_nonzero_count, 0);
         assert_eq!(patch.velocity_data.len(), patch.depth_data.len());
     }
 

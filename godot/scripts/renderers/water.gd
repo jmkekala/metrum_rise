@@ -240,7 +240,9 @@ func _create_patch(key: Vector2i) -> void:
 	var patch_center_x := world_origin_x + world_size_x * 0.5
 	var patch_center_z := world_origin_z + world_size_z * 0.5
 	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
-	var patch_mesh: Mesh = _water_patch_mesh_from_data(patch_data, initial_lod_step)
+	var patch_mesh: Mesh = ArrayMesh.new()
+	if _patch_visible_depth_count(patch_data) > 0:
+		patch_mesh = _water_patch_mesh_from_data(patch_data, initial_lod_step)
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
@@ -287,11 +289,15 @@ func _create_patch(key: Vector2i) -> void:
 		"height_texture": material.get_shader_parameter("heightmap"),
 		"sample_width": sample_width,
 		"sample_height": sample_height,
+		"texture_width": texture_width,
+		"texture_height": texture_height,
 		"world_size_x": world_size_x,
 		"world_size_z": world_size_z,
 		"world_origin_x": world_origin_x,
 		"world_origin_z": world_origin_z,
 		"lod_step": initial_lod_step,
+		"depth_nonzero_count": _patch_visible_depth_count(patch_data),
+		"road_clip_signature": _patch_road_clip_signature(patch_data),
 		"last_patch_data": patch_data,
 	}
 
@@ -299,60 +305,137 @@ func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
 	var dirty_keys: Array[Vector2i] = _dirty_patch_keys(flat_pairs)
 	for key in dirty_keys:
 		if patches.has(key):
-			_upload_patch(key)
+			_upload_patch(key, true)
 
-func _upload_patch(key: Vector2i) -> void:
+func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 	if not patches.has(key):
 		return
+	var total_start_us := Time.get_ticks_usec()
+	var patch: Dictionary = patches[key]
+	var fetch_start_us := total_start_us
+	var fetch_elapsed_ms := 0.0
+	if road_clip_only and simulation_node.has_method("get_water_patch_road_clip"):
+		var clip_data: Dictionary = simulation_node.get_water_patch_road_clip(
+			key.x,
+			key.y,
+			float(patch["world_origin_x"]),
+			float(patch["world_origin_z"]),
+			float(patch["world_origin_x"]) + float(patch["world_size_x"]),
+			float(patch["world_origin_z"]) + float(patch["world_size_z"])
+		)
+		fetch_elapsed_ms = float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
+		if clip_data.is_empty():
+			return
+		var clip_signature := _patch_road_clip_signature(clip_data)
+		var clip_signature_changed := int(patch.get("road_clip_signature", clip_signature - 1)) != clip_signature
+		var cached_depth_nonzero_count := int(patch.get("depth_nonzero_count", 0))
+		if not clip_signature_changed or cached_depth_nonzero_count <= 0:
+			patch["road_clip_signature"] = clip_signature
+			if _terrain_debug_enabled and fetch_elapsed_ms >= 2.0:
+				_water_debug_log(
+					"water_upload key=(%d,%d) road_clip_only=true depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s texture_ms=0.000 mesh_ms=0.000 fetch_ms=%.3f total_ms=%.3f"
+					% [
+						key.x,
+						key.y,
+						cached_depth_nonzero_count,
+						int(clip_data.get("road_clip_loop_count", 0)),
+						int(clip_data.get("road_clip_point_count", 0)),
+						str(clip_signature_changed),
+						fetch_elapsed_ms,
+						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
+					]
+				)
+			return
+		fetch_start_us = Time.get_ticks_usec()
 	var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
+	fetch_elapsed_ms += float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
 	if patch_data.is_empty():
 		_remove_patch(key)
 		return
 
-	var patch: Dictionary = patches[key]
 	patch["last_patch_data"] = patch_data
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
+	var depth_nonzero_count := _patch_visible_depth_count(patch_data)
+	var road_clip_signature := _patch_road_clip_signature(patch_data)
+	var signature_changed := int(patch.get("road_clip_signature", road_clip_signature - 1)) != road_clip_signature
+	var depth_visibility_changed := int(patch.get("depth_nonzero_count", depth_nonzero_count - 1)) != depth_nonzero_count
+	var texture_shape_changed := int(patch.get("texture_width", texture_width)) != texture_width or int(patch.get("texture_height", texture_height)) != texture_height
+	var should_upload_textures := not road_clip_only or texture_shape_changed
+	var texture_elapsed_ms := 0.0
+	if should_upload_textures:
+		var texture_start_us := Time.get_ticks_usec()
+		var depth_image: Image = patch["depth_image"]
+		var depth_texture: ImageTexture = patch["depth_texture"]
+		depth_image.set_data(
+			texture_width,
+			texture_height,
+			false,
+			Image.FORMAT_RF,
+			(patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
+		)
+		depth_texture.update(depth_image)
 
-	var depth_image: Image = patch["depth_image"]
-	var depth_texture: ImageTexture = patch["depth_texture"]
-	depth_image.set_data(
-		texture_width,
-		texture_height,
-		false,
-		Image.FORMAT_RF,
-		(patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
-	)
-	depth_texture.update(depth_image)
-
-	var velocity_image: Image = patch["velocity_image"]
-	var velocity_texture: ImageTexture = patch["velocity_texture"]
-	velocity_image.set_data(
-		texture_width,
-		texture_height,
-		false,
-		Image.FORMAT_RF,
-		(patch_data["velocity_data"] as PackedFloat32Array).to_byte_array()
-	)
-	velocity_texture.update(velocity_image)
-	_water_debug_patch_uploads += 1
+		var velocity_image: Image = patch["velocity_image"]
+		var velocity_texture: ImageTexture = patch["velocity_texture"]
+		velocity_image.set_data(
+			texture_width,
+			texture_height,
+			false,
+			Image.FORMAT_RF,
+			(patch_data["velocity_data"] as PackedFloat32Array).to_byte_array()
+		)
+		velocity_texture.update(velocity_image)
+		texture_elapsed_ms = float(Time.get_ticks_usec() - texture_start_us) / 1000.0
+		_water_debug_patch_uploads += 1
 
 	var patch_node: MeshInstance3D = patch["node"]
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
 	var lod_step := int(patch.get("lod_step", 1))
+	var should_refresh_mesh := not road_clip_only or signature_changed or depth_visibility_changed
+	var mesh_elapsed_ms := 0.0
+	if should_refresh_mesh:
+		var mesh_start_us := Time.get_ticks_usec()
+		if depth_nonzero_count > 0:
+			patch_node.mesh = _water_patch_mesh_from_data(patch_data, lod_step)
+		else:
+			patch_node.mesh = ArrayMesh.new()
+		mesh_elapsed_ms = float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
 	patch["sample_width"] = int(patch_data["sample_width"])
 	patch["sample_height"] = int(patch_data["sample_height"])
+	patch["texture_width"] = texture_width
+	patch["texture_height"] = texture_height
 	patch["world_size_x"] = world_size_x
 	patch["world_size_z"] = world_size_z
 	patch["world_origin_x"] = float(patch_data["world_origin_x"])
 	patch["world_origin_z"] = float(patch_data["world_origin_z"])
-	patch_node.mesh = _water_patch_mesh_from_data(patch_data, lod_step)
+	patch["depth_nonzero_count"] = depth_nonzero_count
+	patch["road_clip_signature"] = road_clip_signature
 	patch_node.position = Vector3(
 		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
 		0.0,
 		float(patch_data["world_origin_z"]) + world_size_z * 0.5
 	)
+	if _terrain_debug_enabled:
+		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
+		if total_elapsed_ms >= 2.0:
+			_water_debug_log(
+				"water_upload key=(%d,%d) road_clip_only=%s depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
+				% [
+					key.x,
+					key.y,
+					str(road_clip_only),
+					depth_nonzero_count,
+					int(patch_data.get("road_clip_loop_count", 0)),
+					int(patch_data.get("road_clip_point_count", 0)),
+					str(signature_changed),
+					texture_elapsed_ms,
+					mesh_elapsed_ms,
+					fetch_elapsed_ms,
+					total_elapsed_ms,
+				]
+			)
 
 func _activate_patch(key: Vector2i) -> void:
 	if resident_patch_lookup.has(key):
@@ -599,6 +682,12 @@ func _water_patch_mesh_from_data(patch_data: Dictionary, lod_step: int) -> Mesh:
 
 func _patch_has_road_clip_failure(patch_data: Dictionary) -> bool:
 	return str(patch_data.get("road_clip_status", "ok")) == "failed"
+
+func _patch_visible_depth_count(patch_data: Dictionary) -> int:
+	return int(patch_data.get("depth_nonzero_count", 1))
+
+func _patch_road_clip_signature(patch_data: Dictionary) -> int:
+	return int(patch_data.get("road_clip_signature", 0))
 
 func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
 	if not _patch_has_road_clip_loops(patch_data):
@@ -1130,7 +1219,12 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 		return
 	patch["lod_step"] = target_lod_step
 	patch["last_patch_data"] = patch_data
-	patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step)
+	patch["depth_nonzero_count"] = _patch_visible_depth_count(patch_data)
+	patch["road_clip_signature"] = _patch_road_clip_signature(patch_data)
+	if _patch_visible_depth_count(patch_data) > 0:
+		patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step)
+	else:
+		patch_node.mesh = ArrayMesh.new()
 
 func _ensure_fallback_height_texture() -> void:
 	if fallback_height_texture != null:

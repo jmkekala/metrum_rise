@@ -7,7 +7,7 @@ use super::super::{
     keys, segments,
 };
 use crate::simulation::network::surface::{
-    RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
+    RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
     band_semantics::ordered_raised_step_kinds,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,7 +44,7 @@ struct NodeTopSupportEdgeKey {
     end: NodeTopSupportVertexKey,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeTopSupportEdge {
     owner: NodeBandOwner,
     start: NodeTopSupportVertexKey,
@@ -57,15 +57,6 @@ struct FinalRequiredRaisedStepSpan {
     raised_owner: NodeBandOwner,
     lower_edge: NodeTopSupportEdge,
     raised_edge: NodeTopSupportEdge,
-    segment_start: keys::SurfaceXzKey,
-    segment_end: keys::SurfaceXzKey,
-    start_t: keys::SurfaceSegmentParameter,
-    end_t: keys::SurfaceSegmentParameter,
-    source: RoadSurfaceVerticalFaceSource,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FinalStepSupportMatch {
     segment_start: keys::SurfaceXzKey,
     segment_end: keys::SurfaceXzKey,
     start_t: keys::SurfaceSegmentParameter,
@@ -205,36 +196,62 @@ fn final_required_raised_step_spans(
 ) -> Vec<FinalRequiredRaisedStepSpan> {
     let mut spans = Vec::new();
     let mut emitted = BTreeSet::<RaisedStepFaceSupportKey>::new();
-    for (left_index, left_edge) in top_edges.iter().copied().enumerate() {
-        for right_edge in top_edges.iter().copied().skip(left_index + 1) {
-            let Some((lower_edge, raised_edge, lower_owner, raised_owner)) =
-                final_top_edges_form_raised_step_pair(left_edge, right_edge)
-            else {
-                continue;
-            };
-            for (step_index, source_segment) in
-                explicit_vertical_step_segments.iter().copied().enumerate()
-            {
-                let Some(support_match) = explicit_vertical_step_final_support_interval(
+    for (step_index, source_segment) in explicit_vertical_step_segments.iter().copied().enumerate()
+    {
+        let Some((source_lower_owner, source_raised_owner)) =
+            vertical_step_lower_and_raised_owners(source_segment)
+        else {
+            continue;
+        };
+        let segment_start = keys::SurfaceXzKey::from_raw_keys(
+            source_segment.start().x_key(),
+            source_segment.start().z_key(),
+        );
+        let segment_end = keys::SurfaceXzKey::from_raw_keys(
+            source_segment.end().x_key(),
+            source_segment.end().z_key(),
+        );
+        let lower_candidates = support_edge_candidates_on_step_segment(
+            top_edges,
+            source_lower_owner.kind(),
+            segment_start,
+            segment_end,
+        );
+        let raised_candidates = support_edge_candidates_on_step_segment(
+            top_edges,
+            source_raised_owner.kind(),
+            segment_start,
+            segment_end,
+        );
+        for (lower_edge, lower_start_t, lower_end_t) in &lower_candidates {
+            for (raised_edge, raised_start_t, raised_end_t) in &raised_candidates {
+                let lower_owner = lower_edge.owner;
+                let raised_owner = raised_edge.owner;
+                let Some(source) = vertical_step_source_for_final_support_owners(
                     step_index,
                     source_segment,
-                    lower_edge,
-                    raised_edge,
+                    source_lower_owner,
+                    source_raised_owner,
                     lower_owner,
                     raised_owner,
                 ) else {
                     continue;
                 };
+                let start_t = (*lower_start_t).max(*raised_start_t);
+                let end_t = (*lower_end_t).min(*raised_end_t);
+                if end_t <= start_t {
+                    continue;
+                }
                 let span = FinalRequiredRaisedStepSpan {
                     lower_owner,
                     raised_owner,
-                    lower_edge,
-                    raised_edge,
-                    segment_start: support_match.segment_start,
-                    segment_end: support_match.segment_end,
-                    start_t: support_match.start_t,
-                    end_t: support_match.end_t,
-                    source: support_match.source,
+                    lower_edge: *lower_edge,
+                    raised_edge: *raised_edge,
+                    segment_start,
+                    segment_end,
+                    start_t,
+                    end_t,
+                    source,
                 };
                 let Some(key) = raised_step_face_support_key_from_span(span) else {
                     continue;
@@ -245,47 +262,8 @@ fn final_required_raised_step_spans(
             }
         }
     }
+    spans.sort_by_key(|span| raised_step_face_support_key_from_span(*span));
     spans
-}
-
-fn explicit_vertical_step_final_support_interval(
-    explicit_vertical_step_index: usize,
-    segment: NodeExplicitVerticalStepSegment,
-    lower_edge: NodeTopSupportEdge,
-    raised_edge: NodeTopSupportEdge,
-    lower_owner: NodeBandOwner,
-    raised_owner: NodeBandOwner,
-) -> Option<FinalStepSupportMatch> {
-    let Some((source_lower_owner, source_raised_owner)) =
-        vertical_step_lower_and_raised_owners(segment)
-    else {
-        return None;
-    };
-    let source = vertical_step_source_for_final_support_owners(
-        explicit_vertical_step_index,
-        segment,
-        source_lower_owner,
-        source_raised_owner,
-        lower_owner,
-        raised_owner,
-    )?;
-    let segment_start =
-        keys::SurfaceXzKey::from_raw_keys(segment.start().x_key(), segment.start().z_key());
-    let segment_end =
-        keys::SurfaceXzKey::from_raw_keys(segment.end().x_key(), segment.end().z_key());
-    let (lower_start_t, lower_end_t) =
-        support_edge_overlap_interval_on_segment(lower_edge, segment_start, segment_end)?;
-    let (raised_start_t, raised_end_t) =
-        support_edge_overlap_interval_on_segment(raised_edge, segment_start, segment_end)?;
-    let start_t = lower_start_t.max(raised_start_t);
-    let end_t = lower_end_t.min(raised_end_t);
-    (end_t > start_t).then_some(FinalStepSupportMatch {
-        segment_start,
-        segment_end,
-        start_t,
-        end_t,
-        source,
-    })
 }
 
 fn vertical_step_source_for_final_support_owners(
@@ -320,22 +298,26 @@ fn vertical_step_source_for_final_support_owners(
     )
 }
 
-fn final_top_edges_form_raised_step_pair(
-    left_edge: NodeTopSupportEdge,
-    right_edge: NodeTopSupportEdge,
-) -> Option<(
+fn support_edge_candidates_on_step_segment(
+    top_edges: &[NodeTopSupportEdge],
+    owner_kind: RoadSurfaceBandKind,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Vec<(
     NodeTopSupportEdge,
-    NodeTopSupportEdge,
-    NodeBandOwner,
-    NodeBandOwner,
+    keys::SurfaceSegmentParameter,
+    keys::SurfaceSegmentParameter,
 )> {
-    let (lower_kind, raised_kind) =
-        ordered_raised_step_kinds(left_edge.owner.kind(), right_edge.owner.kind())?;
-    if left_edge.owner.kind() == lower_kind && right_edge.owner.kind() == raised_kind {
-        Some((left_edge, right_edge, left_edge.owner, right_edge.owner))
-    } else {
-        Some((right_edge, left_edge, right_edge.owner, left_edge.owner))
-    }
+    top_edges
+        .iter()
+        .copied()
+        .filter(|edge| edge.owner.kind() == owner_kind)
+        .filter_map(|edge| {
+            let (start_t, end_t) =
+                support_edge_overlap_interval_on_segment(edge, segment_start, segment_end)?;
+            Some((edge, start_t, end_t))
+        })
+        .collect()
 }
 
 fn required_raised_step_face_keys(

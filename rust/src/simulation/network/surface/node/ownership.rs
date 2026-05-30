@@ -39,11 +39,18 @@ use seams::{
     ConstraintOverlapMode, materialize_noded_region_seam_constraints, seam_constraints_for_shape,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 use topology_keys::{
     NodeOwnershipPointKey, OwnedRegionEdgeKey, overlay_point_from_key,
     ownership_key_from_overlay_point, ownership_key_from_road_point, ownership_mm_key,
     point_key_lies_on_segment, segment_parameter_key,
 };
+
+fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeBooleanOwnership {
@@ -290,6 +297,9 @@ impl NodeBooleanOwnership {
             });
         }
 
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let footprint_start = road_debug.then(Instant::now);
         let footprint_contours =
             overlay_contours_for_domains(rails, |contour| contour.contributes_to_footprint());
         let mut footprint_shapes = overlay_union(&footprint_contours, "footprint_union")?;
@@ -299,7 +309,9 @@ impl NodeBooleanOwnership {
                 node_id: rails.node_id,
             });
         }
+        let footprint_ms = elapsed_profile_ms(footprint_start);
 
+        let material_domain_start = road_debug.then(Instant::now);
         let asphalt_authority_domains = asphalt_authority_domains(rails);
         let asphalt_contours = asphalt_authority_domains
             .iter()
@@ -316,9 +328,11 @@ impl NodeBooleanOwnership {
         let mut non_road_shapes =
             overlay_difference(&footprint_shapes, &asphalt_shapes, "non_road_difference")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut non_road_shapes);
+        let material_domain_ms = elapsed_profile_ms(material_domain_start);
 
         let constraint_overlap_mode = ConstraintOverlapMode::for_piece_kind(rails.piece_kind);
         let mut owned_regions = Vec::new();
+        let region_claim_start = road_debug.then(Instant::now);
         let asphalt_owner_domains = asphalt_owner_domains(rails);
         let asphalt_result = owned_regions_from_domains(
             &asphalt_shapes,
@@ -337,7 +351,9 @@ impl NodeBooleanOwnership {
             "non_road_residual",
         )?;
         reject_residual(non_road_residual, ResidualKind::NonRoad)?;
+        let region_claim_ms = elapsed_profile_ms(region_claim_start);
 
+        let canonical_cleanup_start = road_debug.then(Instant::now);
         sort_boolean_owned_regions(&mut owned_regions);
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
         let rail_canonical_points = canonical_points_for_rail_set(rails);
@@ -366,6 +382,8 @@ impl NodeBooleanOwnership {
             &footprint_shapes,
             &rails.constraints,
         );
+        let base_canonical_cleanup_ms = elapsed_profile_ms(canonical_cleanup_start);
+        let sliver_promotion_start = road_debug.then(Instant::now);
         if promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
             &mut owned_regions,
             &owned_region_arrangement,
@@ -389,7 +407,9 @@ impl NodeBooleanOwnership {
                 &rails.constraints,
             );
         }
+        let sliver_promotion_ms = elapsed_profile_ms(sliver_promotion_start);
         let mut final_boundary_vertices_stable = false;
+        let final_boundary_start = road_debug.then(Instant::now);
         let carrier_context = NodeCarrierProvenanceContext::new(rails, &rail_canonical_points);
         for _ in 0..8 {
             if !materialize_final_boundary_vertices_for_height(
@@ -411,6 +431,8 @@ impl NodeBooleanOwnership {
                 stage: "final_boundary_vertex_materialization",
             });
         }
+        let final_boundary_ms = elapsed_profile_ms(final_boundary_start);
+        let dust_cleanup_start = road_debug.then(Instant::now);
         if discard_unprovenanced_numeric_dust_regions(&mut owned_regions, &carrier_context)? {
             footprint_shapes =
                 final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
@@ -430,15 +452,49 @@ impl NodeBooleanOwnership {
                 &rails.constraints,
             );
         }
+        let dust_cleanup_ms = elapsed_profile_ms(dust_cleanup_start);
+        let validation_start = road_debug.then(Instant::now);
         validate_non_road_regions_have_explicit_profile_seam_rails(
             &owned_regions,
             &rails.constraints,
         )?;
+        let validation_ms = elapsed_profile_ms(validation_start);
+        let carrier_provenance_start = road_debug.then(Instant::now);
         let carrier_provenance = NodeCarrierProvenanceClosure::from_owned_regions(
             &owned_regions,
             rails,
             &rail_canonical_points,
         )?;
+        let carrier_provenance_ms = elapsed_profile_ms(carrier_provenance_start);
+        if road_debug {
+            let total_ms = elapsed_profile_ms(total_start);
+            if total_ms >= 20.0 {
+                crate::debug_log!(
+                    "road",
+                    "node_ownership_detail node={} kind={:?} contours={} constraints={} footprint_shapes={} asphalt_shapes={} non_road_shapes={} owned_regions={} arrangement_edges={} diagnostics={} footprint_ms={:.3} material_domain_ms={:.3} region_claim_ms={:.3} base_canonical_cleanup_ms={:.3} sliver_promotion_ms={:.3} final_boundary_ms={:.3} dust_cleanup_ms={:.3} validation_ms={:.3} carrier_provenance_ms={:.3} total_ms={:.3}",
+                    rails.node_id,
+                    rails.piece_kind,
+                    rails.contours.len(),
+                    rails.constraints.len(),
+                    footprint_shapes.len(),
+                    asphalt_shapes.len(),
+                    non_road_shapes.len(),
+                    owned_regions.len(),
+                    owned_region_arrangement.edges.len(),
+                    owned_region_arrangement.diagnostics.len(),
+                    footprint_ms,
+                    material_domain_ms,
+                    region_claim_ms,
+                    base_canonical_cleanup_ms,
+                    sliver_promotion_ms,
+                    final_boundary_ms,
+                    dust_cleanup_ms,
+                    validation_ms,
+                    carrier_provenance_ms,
+                    total_ms
+                );
+            }
+        }
         Ok(Self {
             node_id: rails.node_id,
             piece_kind: rails.piece_kind,

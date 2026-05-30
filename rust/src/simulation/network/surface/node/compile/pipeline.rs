@@ -134,9 +134,12 @@ impl RoadSurfaceSystem {
         let attach_ms = elapsed_ms(attach_start);
 
         let export_start = road_debug.then(Instant::now);
-        match Self::node_surface_regions_from_arrangement(&arrangement, &ownership.footprint_shapes)
-        {
-            Ok(regions) => {
+        match Self::node_surface_regions_from_arrangement_with_profile(
+            &arrangement,
+            &ownership.footprint_shapes,
+            road_debug,
+        ) {
+            Ok((regions, export_profile)) => {
                 let export_ms = elapsed_ms(export_start);
                 if road_debug {
                     let total_ms = elapsed_ms(total_start);
@@ -247,6 +250,30 @@ impl RoadSurfaceSystem {
                             attach_profile.push_faces_ms,
                             attach_profile.conflict_ms,
                             attach_profile.total_ms
+                        );
+                        crate::debug_log!(
+                            "road",
+                            "node_export_detail node={} kind={:?} arrangement_faces={} owned_regions={} footprint_loops={} earthwork_segments={} terrain_clip_loops={} raised_step_faces={} height_split_ms={:.3} authority_ms={:.3} face_export_ms={:.3} boundary_sources_ms={:.3} raised_step_faces_ms={:.3} material_partition_ms={:.3} footprint_boundary_ms={:.3} earthwork_boundary_ms={:.3} outer_boundary_ms={:.3} terrain_clip_ms={:.3} sorting_ms={:.3} total_ms={:.3}",
+                            node_id,
+                            kind,
+                            export_profile.arrangement_faces,
+                            export_profile.owned_regions,
+                            export_profile.footprint_loops,
+                            export_profile.earthwork_segments,
+                            export_profile.terrain_clip_loops,
+                            export_profile.raised_step_faces,
+                            export_profile.height_split_ms,
+                            export_profile.authority_ms,
+                            export_profile.face_export_ms,
+                            export_profile.boundary_sources_ms,
+                            export_profile.raised_step_faces_ms,
+                            export_profile.material_partition_ms,
+                            export_profile.footprint_boundary_ms,
+                            export_profile.earthwork_boundary_ms,
+                            export_profile.outer_boundary_ms,
+                            export_profile.terrain_clip_ms,
+                            export_profile.sorting_ms,
+                            export_profile.total_ms
                         );
                     }
                 }

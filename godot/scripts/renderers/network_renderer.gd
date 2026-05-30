@@ -111,13 +111,13 @@ func _print_road_geometry_patch_debug(dirty_terrain_patch_keys: PackedInt32Array
 		print(
 			"[DEBUG:road] road_patch_debug_skipped dirty_patch_pairs=%d limit=%d reason=too_many_dirty_patches"
 			% [dirty_pair_count, ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS]
-			)
-			var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
-			print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
-			print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
-			print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
-			print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
-			return
+		)
+		var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
+		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
+		print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
+		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
+		print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
+		return
 	if terrain and terrain.has_method("road_geometry_debug_patch_lines"):
 		var terrain_start_us := Time.get_ticks_usec()
 		var terrain_lines: Array = terrain.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
