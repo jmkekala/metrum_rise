@@ -146,6 +146,33 @@ pub(crate) enum WorldWaterFillKind {
     OpenWater,
 }
 
+/// Debug summary for one authored water fill that contributes to a render patch.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AuthoredWaterPatchFillDebug {
+    /// Authored fill kind that produced the patch contribution.
+    pub(crate) kind: WorldWaterFillKind,
+    /// Committed fill index in its authored list, or `-1` for a transient preview.
+    pub(crate) fill_index: i32,
+    /// Whether this contribution came from the active transient preview.
+    pub(crate) preview: bool,
+    /// Snapped seed X coordinate in world metres.
+    pub(crate) world_x: f32,
+    /// Snapped seed Z coordinate in world metres.
+    pub(crate) world_z: f32,
+    /// Authored flat water surface elevation in metres.
+    pub(crate) surface_elevation_m: f32,
+    /// Number of cells in the complete fill body.
+    pub(crate) filled_cells: usize,
+    /// Whether the complete fill body touches the world edge.
+    pub(crate) touches_world_edge: bool,
+    /// Number of non-zero water samples contributed inside the requested patch.
+    pub(crate) patch_nonzero_samples: usize,
+    /// Maximum contributed water depth inside the requested patch.
+    pub(crate) patch_max_depth_m: f32,
+    /// Sum of contributed water depths inside the requested patch.
+    pub(crate) patch_sum_depth_m: f32,
+}
+
 /// Transient lake-fill preview state owned by the world editor runtime.
 ///
 /// This state is never serialized into `WorldDefinition`. It exists only so the
@@ -341,6 +368,9 @@ pub struct SimCore {
     pub(crate) world_open_water_fills: Vec<AuthoredOpenWaterFill>,
     /// Transient world-editor lake-fill preview. Never saved into `WorldDefinition`.
     pub(crate) world_lake_fill_preview: Option<WorldLakeFillPreview>,
+    /// Cached authored-water fill debug summaries keyed by water render patch.
+    pub(crate) authored_water_patch_fill_debug_cache:
+        HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
     /// True while the world editor is accumulating one terrain brush stroke.
     pub(crate) terrain_stroke_active: bool,
     /// True once the active terrain brush stroke has applied at least one terrain mutation.

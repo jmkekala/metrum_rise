@@ -2781,7 +2781,7 @@ impl SimulationNode {
     }
 
     fn authored_water_patch_fill_debug_dict(
-        fill: &crate::nodes::sim::world_definition::AuthoredWaterPatchFillDebug,
+        fill: &crate::nodes::sim::core::AuthoredWaterPatchFillDebug,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set(
@@ -5120,6 +5120,7 @@ impl INode3D for SimulationNode {
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
+            authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
             water_runtime_realtime_when_paused: world_editor_mode,

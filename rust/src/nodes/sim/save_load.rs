@@ -65,6 +65,7 @@ impl SimCore {
         self.world_lake_fills.clear();
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
+        self.authored_water_patch_fill_debug_cache.clear();
         self.terrain_dirty = true;
         self.water_dirty = true;
         self.cached_road_mesh_data = None;

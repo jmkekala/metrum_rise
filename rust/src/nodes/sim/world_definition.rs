@@ -3,7 +3,8 @@
 use crate::config::HEIGHT_SCALE;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    CityTreasury, SimCore, WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
+    AuthoredWaterPatchFillDebug, CityTreasury, SimCore, WorldLakeFillPreview,
+    WorldLakeFillPreviewStatus, WorldWaterFillKind,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -26,7 +27,7 @@ use crate::simulation::world_definition::{
     save_world_definition_to_sqlite,
 };
 use godot::prelude::Vector2;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 const AUTHORED_WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
@@ -35,41 +36,6 @@ const AUTHORED_WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 struct LakeFillApplication {
     touches_world_edge: bool,
     filled_cells: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct LakeFillPatchContribution {
-    application: LakeFillApplication,
-    patch_nonzero_samples: usize,
-    patch_max_depth_m: f32,
-    patch_sum_depth_m: f32,
-}
-
-/// Debug summary for one authored water fill that contributes to a render patch.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AuthoredWaterPatchFillDebug {
-    /// Authored fill kind that produced the patch contribution.
-    pub(crate) kind: WorldWaterFillKind,
-    /// Committed fill index in its authored list, or `-1` for a transient preview.
-    pub(crate) fill_index: i32,
-    /// Whether this contribution came from the active transient preview.
-    pub(crate) preview: bool,
-    /// Snapped seed X coordinate in world metres.
-    pub(crate) world_x: f32,
-    /// Snapped seed Z coordinate in world metres.
-    pub(crate) world_z: f32,
-    /// Authored flat water surface elevation in metres.
-    pub(crate) surface_elevation_m: f32,
-    /// Number of cells in the complete fill body.
-    pub(crate) filled_cells: usize,
-    /// Whether the complete fill body touches the world edge.
-    pub(crate) touches_world_edge: bool,
-    /// Number of non-zero water samples contributed inside the requested patch.
-    pub(crate) patch_nonzero_samples: usize,
-    /// Maximum contributed water depth inside the requested patch.
-    pub(crate) patch_max_depth_m: f32,
-    /// Sum of contributed water depths inside the requested patch.
-    pub(crate) patch_sum_depth_m: f32,
 }
 
 impl SimCore {
@@ -440,14 +406,17 @@ impl SimCore {
             && self.world_lake_fill_preview.is_none()
         {
             self.watermap = water;
+            self.authored_water_patch_fill_debug_cache.clear();
             self.water_dirty = true;
             return Ok(());
         }
 
         let terrain_world = authored_water_terrain_world_heights(&self.heightmap);
         let mut baseline_depth = vec![0.0; terrain_world.len()];
-        for lake in &self.world_lake_fills {
-            merge_surface_fill_depth(
+        let mut fill_debug_cache: HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>> =
+            HashMap::new();
+        for (fill_index, lake) in self.world_lake_fills.iter().enumerate() {
+            if let Some((application, lake_depth)) = merge_surface_fill_depth(
                 &terrain_world,
                 &water,
                 &mut baseline_depth,
@@ -456,10 +425,23 @@ impl SimCore {
                 lake.world_z,
                 lake.surface_elevation_m,
                 "skip_lake_fill",
-            );
+            ) {
+                push_authored_water_fill_debug_for_depth(
+                    &mut fill_debug_cache,
+                    &water,
+                    WorldWaterFillKind::Lake,
+                    fill_index as i32,
+                    false,
+                    lake.world_x,
+                    lake.world_z,
+                    lake.surface_elevation_m,
+                    application,
+                    &lake_depth,
+                );
+            }
         }
-        for open_water in &self.world_open_water_fills {
-            merge_surface_fill_depth(
+        for (fill_index, open_water) in self.world_open_water_fills.iter().enumerate() {
+            if let Some((application, lake_depth)) = merge_surface_fill_depth(
                 &terrain_world,
                 &water,
                 &mut baseline_depth,
@@ -468,11 +450,24 @@ impl SimCore {
                 open_water.world_z,
                 open_water.surface_elevation_m,
                 "skip_open_water_fill",
-            );
+            ) {
+                push_authored_water_fill_debug_for_depth(
+                    &mut fill_debug_cache,
+                    &water,
+                    WorldWaterFillKind::OpenWater,
+                    fill_index as i32,
+                    false,
+                    open_water.world_x,
+                    open_water.world_z,
+                    open_water.surface_elevation_m,
+                    application,
+                    &lake_depth,
+                );
+            }
         }
         if let Some(preview) = self.world_lake_fill_preview {
             if preview.is_valid() {
-                merge_surface_fill_depth(
+                if let Some((application, lake_depth)) = merge_surface_fill_depth(
                     &terrain_world,
                     &water,
                     &mut baseline_depth,
@@ -484,8 +479,24 @@ impl SimCore {
                         WorldWaterFillKind::Lake => "skip_lake_fill_preview",
                         WorldWaterFillKind::OpenWater => "skip_open_water_fill_preview",
                     },
-                );
+                ) {
+                    push_authored_water_fill_debug_for_depth(
+                        &mut fill_debug_cache,
+                        &water,
+                        preview.kind,
+                        -1,
+                        true,
+                        preview.seed_world_x,
+                        preview.seed_world_z,
+                        preview.surface_elevation_m,
+                        application,
+                        &lake_depth,
+                    );
+                }
             }
+        }
+        for contributors in fill_debug_cache.values_mut() {
+            sort_authored_water_patch_fill_debug(contributors);
         }
         water
             .replace_baseline_depth_from_dense(&baseline_depth)
@@ -504,6 +515,7 @@ impl SimCore {
         water.replace_sources(runtime_sources);
 
         self.watermap = water;
+        self.authored_water_patch_fill_debug_cache = fill_debug_cache;
         self.water_dirty = true;
         Ok(())
     }
@@ -573,6 +585,7 @@ impl SimCore {
         self.world_lake_fills.clear();
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
+        self.authored_water_patch_fill_debug_cache.clear();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
@@ -690,69 +703,10 @@ impl SimCore {
         patch_x: usize,
         patch_z: usize,
     ) -> Vec<AuthoredWaterPatchFillDebug> {
-        let Some((start_x, end_x, start_z, end_z)) = self
-            .watermap
-            .render_patch_owned_sample_bounds(patch_x, patch_z)
-        else {
-            return Vec::new();
-        };
-        let terrain_world = authored_water_terrain_world_heights(&self.heightmap);
-        let mut contributors = Vec::new();
-
-        for (fill_index, lake) in self.world_lake_fills.iter().enumerate() {
-            if let Some(contributor) = self.authored_water_fill_patch_contributor(
-                WorldWaterFillKind::Lake,
-                fill_index as i32,
-                false,
-                lake.world_x,
-                lake.world_z,
-                lake.surface_elevation_m,
-                &terrain_world,
-                (start_x, end_x, start_z, end_z),
-            ) {
-                contributors.push(contributor);
-            }
-        }
-
-        for (fill_index, open_water) in self.world_open_water_fills.iter().enumerate() {
-            if let Some(contributor) = self.authored_water_fill_patch_contributor(
-                WorldWaterFillKind::OpenWater,
-                fill_index as i32,
-                false,
-                open_water.world_x,
-                open_water.world_z,
-                open_water.surface_elevation_m,
-                &terrain_world,
-                (start_x, end_x, start_z, end_z),
-            ) {
-                contributors.push(contributor);
-            }
-        }
-
-        if let Some(preview) = self.world_lake_fill_preview {
-            if preview.is_valid() {
-                if let Some(contributor) = self.authored_water_fill_patch_contributor(
-                    preview.kind,
-                    -1,
-                    true,
-                    preview.seed_world_x,
-                    preview.seed_world_z,
-                    preview.surface_elevation_m,
-                    &terrain_world,
-                    (start_x, end_x, start_z, end_z),
-                ) {
-                    contributors.push(contributor);
-                }
-            }
-        }
-
-        contributors.sort_by(|a, b| {
-            b.patch_sum_depth_m
-                .total_cmp(&a.patch_sum_depth_m)
-                .then_with(|| b.patch_nonzero_samples.cmp(&a.patch_nonzero_samples))
-                .then_with(|| a.fill_index.cmp(&b.fill_index))
-        });
-        contributors
+        self.authored_water_patch_fill_debug_cache
+            .get(&(patch_x, patch_z))
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn refresh_world_water_fill_preview_state_internal(&mut self) {
@@ -767,50 +721,6 @@ impl SimCore {
             preview.seed_world_z,
             preview.surface_elevation_m,
         ));
-    }
-
-    fn authored_water_fill_patch_contributor(
-        &self,
-        kind: WorldWaterFillKind,
-        fill_index: i32,
-        preview: bool,
-        world_x: f32,
-        world_z: f32,
-        surface_elevation_m: f32,
-        terrain_world: &[f32],
-        patch_bounds: (usize, usize, usize, usize),
-    ) -> Option<AuthoredWaterPatchFillDebug> {
-        let (seed_x, seed_z) = self.watermap.world_to_grid_cell_clamped(world_x, world_z);
-        let contribution = collect_lake_fill_patch_contribution(
-            terrain_world,
-            self.watermap.width,
-            self.watermap.height,
-            seed_x,
-            seed_z,
-            surface_elevation_m,
-            patch_bounds,
-        );
-        let is_valid = match kind {
-            WorldWaterFillKind::Lake => !contribution.application.touches_world_edge,
-            WorldWaterFillKind::OpenWater => contribution.application.touches_world_edge,
-        };
-        if !is_valid || contribution.patch_nonzero_samples == 0 {
-            return None;
-        }
-
-        Some(AuthoredWaterPatchFillDebug {
-            kind,
-            fill_index,
-            preview,
-            world_x,
-            world_z,
-            surface_elevation_m,
-            filled_cells: contribution.application.filled_cells,
-            touches_world_edge: contribution.application.touches_world_edge,
-            patch_nonzero_samples: contribution.patch_nonzero_samples,
-            patch_max_depth_m: contribution.patch_max_depth_m,
-            patch_sum_depth_m: contribution.patch_sum_depth_m,
-        })
     }
 }
 
@@ -901,7 +811,7 @@ fn merge_surface_fill_depth(
     world_z: f32,
     surface_elevation_m: f32,
     skip_log_label: &str,
-) {
+) -> Option<(LakeFillApplication, Vec<f32>)> {
     let (seed_x, seed_z) = water.world_to_grid_cell_clamped(world_x, world_z);
     let mut lake_depth = vec![0.0; depth.len()];
     let application = apply_lake_fill_to_depth(
@@ -915,10 +825,10 @@ fn merge_surface_fill_depth(
     );
     if application.touches_world_edge {
         if kind == WorldWaterFillKind::OpenWater {
-            for (dst, src) in depth.iter_mut().zip(lake_depth.into_iter()) {
+            for (dst, src) in depth.iter_mut().zip(lake_depth.iter().copied()) {
                 *dst = f32::max(*dst, src);
             }
-            return;
+            return Some((application, lake_depth));
         }
         debug_log!(
             "world-editor",
@@ -928,7 +838,7 @@ fn merge_surface_fill_depth(
             world_z,
             surface_elevation_m
         );
-        return;
+        return None;
     }
     if kind == WorldWaterFillKind::OpenWater {
         debug_log!(
@@ -939,11 +849,81 @@ fn merge_surface_fill_depth(
             world_z,
             surface_elevation_m
         );
-        return;
+        return None;
     }
-    for (dst, src) in depth.iter_mut().zip(lake_depth.into_iter()) {
+    for (dst, src) in depth.iter_mut().zip(lake_depth.iter().copied()) {
         *dst = f32::max(*dst, src);
     }
+    Some((application, lake_depth))
+}
+
+fn push_authored_water_fill_debug_for_depth(
+    out: &mut HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
+    water: &WaterSystem,
+    kind: WorldWaterFillKind,
+    fill_index: i32,
+    preview: bool,
+    world_x: f32,
+    world_z: f32,
+    surface_elevation_m: f32,
+    application: LakeFillApplication,
+    fill_depth: &[f32],
+) {
+    if fill_depth.len() != water.width.saturating_mul(water.height) {
+        return;
+    }
+
+    for patch_z in 0..water.render_patch_rows() {
+        for patch_x in 0..water.render_patch_cols() {
+            let Some((start_x, end_x, start_z, end_z)) =
+                water.render_patch_owned_sample_bounds(patch_x, patch_z)
+            else {
+                continue;
+            };
+            let mut patch_nonzero_samples = 0usize;
+            let mut patch_max_depth_m = 0.0f32;
+            let mut patch_sum_depth_m = 0.0f32;
+            for z in start_z..=end_z {
+                let row_start = z * water.width;
+                for x in start_x..=end_x {
+                    let depth_m = fill_depth[row_start + x];
+                    if depth_m <= AUTHORED_WATER_DEBUG_VISIBLE_EPSILON {
+                        continue;
+                    }
+                    patch_nonzero_samples += 1;
+                    patch_max_depth_m = patch_max_depth_m.max(depth_m);
+                    patch_sum_depth_m += depth_m;
+                }
+            }
+            if patch_nonzero_samples == 0 {
+                continue;
+            }
+            out.entry((patch_x, patch_z))
+                .or_default()
+                .push(AuthoredWaterPatchFillDebug {
+                    kind,
+                    fill_index,
+                    preview,
+                    world_x,
+                    world_z,
+                    surface_elevation_m,
+                    filled_cells: application.filled_cells,
+                    touches_world_edge: application.touches_world_edge,
+                    patch_nonzero_samples,
+                    patch_max_depth_m,
+                    patch_sum_depth_m,
+                });
+        }
+    }
+}
+
+fn sort_authored_water_patch_fill_debug(contributors: &mut [AuthoredWaterPatchFillDebug]) {
+    contributors.sort_by(|a, b| {
+        b.patch_sum_depth_m
+            .total_cmp(&a.patch_sum_depth_m)
+            .then_with(|| b.patch_nonzero_samples.cmp(&a.patch_nonzero_samples))
+            .then_with(|| a.fill_index.cmp(&b.fill_index))
+    });
 }
 
 fn lake_fill_preview_status_code(status: WorldLakeFillPreviewStatus) -> &'static str {
@@ -1055,102 +1035,6 @@ fn apply_lake_fill_to_depth(
     }
 
     application
-}
-
-fn collect_lake_fill_patch_contribution(
-    terrain_world: &[f32],
-    width: usize,
-    height: usize,
-    seed_x: usize,
-    seed_z: usize,
-    surface_elevation_m: f32,
-    patch_bounds: (usize, usize, usize, usize),
-) -> LakeFillPatchContribution {
-    if seed_x >= width || seed_z >= height || terrain_world.len() != width.saturating_mul(height) {
-        return LakeFillPatchContribution::default();
-    }
-
-    let seed_idx = seed_z * width + seed_x;
-    if terrain_world[seed_idx] >= surface_elevation_m {
-        return LakeFillPatchContribution::default();
-    }
-
-    let (patch_start_x, patch_end_x, patch_start_z, patch_end_z) = patch_bounds;
-    let mut visited = vec![false; width * height];
-    let mut queue = VecDeque::new();
-    let mut contribution = LakeFillPatchContribution::default();
-    visited[seed_idx] = true;
-    queue.push_back((seed_x, seed_z));
-
-    while let Some((x, z)) = queue.pop_front() {
-        let idx = z * width + x;
-        let terrain_height = terrain_world[idx];
-        if terrain_height > surface_elevation_m {
-            continue;
-        }
-
-        if x == 0 || z == 0 || x + 1 == width || z + 1 == height {
-            contribution.application.touches_world_edge = true;
-        }
-
-        let depth_m = surface_elevation_m - terrain_height;
-        contribution.application.filled_cells += 1;
-        if (patch_start_x..=patch_end_x).contains(&x)
-            && (patch_start_z..=patch_end_z).contains(&z)
-            && depth_m > AUTHORED_WATER_DEBUG_VISIBLE_EPSILON
-        {
-            contribution.patch_nonzero_samples += 1;
-            contribution.patch_max_depth_m = contribution.patch_max_depth_m.max(depth_m);
-            contribution.patch_sum_depth_m += depth_m;
-        }
-
-        if x > 0 {
-            enqueue_lake_fill_neighbor(
-                x - 1,
-                z,
-                width,
-                surface_elevation_m,
-                terrain_world,
-                &mut visited,
-                &mut queue,
-            );
-        }
-        if x + 1 < width {
-            enqueue_lake_fill_neighbor(
-                x + 1,
-                z,
-                width,
-                surface_elevation_m,
-                terrain_world,
-                &mut visited,
-                &mut queue,
-            );
-        }
-        if z > 0 {
-            enqueue_lake_fill_neighbor(
-                x,
-                z - 1,
-                width,
-                surface_elevation_m,
-                terrain_world,
-                &mut visited,
-                &mut queue,
-            );
-        }
-        if z + 1 < height {
-            enqueue_lake_fill_neighbor(
-                x,
-                z + 1,
-                width,
-                surface_elevation_m,
-                terrain_world,
-                &mut visited,
-                &mut queue,
-            );
-        }
-    }
-
-    contribution
 }
 
 fn enqueue_lake_fill_neighbor(
@@ -1286,6 +1170,7 @@ mod tests {
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
+            authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
             water_runtime_realtime_when_paused: true,
