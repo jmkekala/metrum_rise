@@ -62,24 +62,48 @@ rust/src/simulation/zoning/mod.rs
 rust/src/simulation/zoning/constants.rs
 rust/src/simulation/zoning/zone_type.rs
 rust/src/simulation/zoning/system.rs
+rust/src/simulation/zoning/system/{queries,preview,editing,restore,occupancy,validation}.rs
 rust/src/simulation/zoning/profiles.rs
+rust/src/simulation/zoning/profiles/{runtime,registry,authored,compile}.rs
 rust/src/simulation/zoning/parcels.rs
 rust/src/simulation/zoning/parcels/types.rs
 rust/src/simulation/zoning/parcels/store.rs
 rust/src/simulation/zoning/parcels/geometry.rs
+rust/src/simulation/zoning/parcels/geometry/{bounds,overlap,road_overlap,polyline,spatial}.rs
 rust/src/simulation/zoning/parcels/placement.rs
+rust/src/simulation/zoning/parcels/placement/projection.rs
+rust/src/simulation/zoning/parcels/placement/run.rs
+rust/src/simulation/zoning/parcels/placement/run/spacing.rs
 ```
 
 - `mod.rs`: public API routing and re-exports
 - `constants.rs`: public parcel defaults and edit limits
 - `zone_type.rs`: broad land-use family enum
-- `system.rs`: `ZoningSystem` state and high-level operations
-- `profiles.rs`: built-in zoning-profile registry
+- `system.rs`: `ZoningSystem` state owner
+- `system/queries.rs`: read-only parcel lookups
+- `system/preview.rs`: non-mutating parcel and stroke previews
+- `system/editing.rs`: mutating create, drag-run, and rezone operations
+- `system/restore.rs`: save/load parcel restoration from road attachment data
+- `system/occupancy.rs`: building claim bookkeeping
+- `system/validation.rs`: shared parcel edit/profile validation
+- `profiles.rs`: profile module routing and public re-exports
+- `profiles/runtime.rs`: density and runtime profile value types
+- `profiles/registry.rs`: public registry API and built-in registry cache
+- `profiles/authored.rs`: TOML loading for zoning and demand growth profiles
+- `profiles/compile.rs`: deterministic profile validation and runtime-id assignment
 - `parcels.rs`: parcel module routing and public re-exports
 - `types.rs`: ids, parcel structs, projected geometry, placement errors
 - `store.rs`: stable parcel storage, chunk lookup, occupancy fields
-- `geometry.rs`: projection helpers, SAT overlap checks, road-corridor conflict checks
-- `placement.rs`: road attachment, single parcel projection, drag-run projection
+- `geometry.rs`: geometry helper routing
+- `geometry/bounds.rs`: parcel rectangle construction and world-bounds checks
+- `geometry/overlap.rs`: SAT rectangle, point, and stroke overlap checks
+- `geometry/road_overlap.rs`: road-corridor conflict checks
+- `geometry/polyline.rs`: road polyline sampling
+- `geometry/spatial.rs`: parcel-local chunk broad-phase helpers
+- `placement.rs`: placement helper routing and single parcel projection
+- `placement/projection.rs`: world-point to road-frontage projection
+- `placement/run.rs`: same-road drag-run projection
+- `placement/run/spacing.rs`: curved-run non-overlap spacing search
 
 ---
 
