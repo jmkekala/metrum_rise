@@ -1474,7 +1474,7 @@ There is no in-simulation recovery path. `is_deserted` is a one-way latch.
 
 A deserted building:
 
-- occupies its land cells in the zoning grid, blocking new spawns at that location
+- occupies its parcel claim, blocking new spawns at that location
 - is ineligible for upgrade or downgrade consideration
 - is not counted in building-level demand snapshot signals (e.g. `commercial_owa_dependency`)
 - is removed when the player demolishes it, or when the demand system's despawn pressure

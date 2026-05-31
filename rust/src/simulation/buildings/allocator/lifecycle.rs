@@ -12,10 +12,10 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::zoning::ZoneType;
+use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 
 const REZONE_GRACE_DAYS: u8 = 3;

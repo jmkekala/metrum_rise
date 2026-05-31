@@ -1,7 +1,7 @@
 use super::data_grid::DataGrid;
 use super::noise::NoiseSystem;
 use super::pollution::PollutionSystem;
-use super::zoning::ZoningSystem;
+use crate::simulation::zoning::ZoningSystem;
 use rayon::prelude::*;
 
 /// A grid-based system that calculates land desirability/value.

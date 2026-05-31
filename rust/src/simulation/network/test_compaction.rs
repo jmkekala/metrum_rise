@@ -5,11 +5,11 @@ mod tests {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::agents::AgentSystem;
-    use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::graph::{Edge, Node};
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+    use crate::simulation::zoning::{ZoneType, ZoningSystem};
     use godot::prelude::*;
     use std::collections::HashMap;
 

@@ -15,9 +15,9 @@
 //! chaining `next_node` lookups. IDM can call this cheaply to anticipate the
 //! upcoming lane sequence for gap-acceptance and merge decisions.
 
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::zoning::ZoneType;
 use std::collections::BinaryHeap;
 
 // ---------------------------------------------------------------------------

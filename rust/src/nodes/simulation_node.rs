@@ -106,7 +106,6 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
@@ -116,6 +115,7 @@ use crate::simulation::terrain::cdt::{
     build_road_touched_terrain_patch,
 };
 use crate::simulation::water::WaterSystem;
+use crate::simulation::zoning::ZoningSystem;
 
 use crate::debug_log;
 use rayon::prelude::*;
@@ -3859,7 +3859,7 @@ impl SimulationNode {
         let core = self.lock_core();
         let mut arr = VarArray::new();
         for parcel in core.zoning.parcels() {
-            let geometry = crate::simulation::grid::zoning::ParcelGeometry {
+            let geometry = crate::simulation::zoning::ParcelGeometry {
                 edge_idx: parcel.edge_idx(),
                 side: parcel.side(),
                 frontage_center_t: parcel.frontage_center_t(),
@@ -3883,96 +3883,6 @@ impl SimulationNode {
             arr.push(&dict.to_variant());
         }
         arr
-    }
-
-    /// Captures one zoning patch bounding box as packed little-endian runtime ids.
-    #[func]
-    pub fn capture_zoning_patch(
-        &self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-    ) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().capture_zoning_patch_internal(
-            grid_x,
-            grid_y,
-            width_cells,
-            height_cells,
-        ))
-    }
-
-    /// Applies one masked zoning paint patch.
-    #[func]
-    pub fn apply_zoning_patch(
-        &mut self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-        target_profile_runtime_id: i32,
-        write_mask: PackedByteArray,
-    ) {
-        self.lock_core().apply_zoning_patch_internal(
-            grid_x,
-            grid_y,
-            width_cells,
-            height_cells,
-            target_profile_runtime_id,
-            write_mask.to_vec(),
-        );
-    }
-
-    /// Restores one full zoning patch bounding box from packed little-endian runtime ids.
-    #[func]
-    pub fn restore_zoning_patch(
-        &mut self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-        profile_ids_le_u16: PackedByteArray,
-    ) {
-        self.lock_core().restore_zoning_patch_internal(
-            grid_x,
-            grid_y,
-            width_cells,
-            height_cells,
-            profile_ids_le_u16.to_vec(),
-        );
-    }
-
-    /// Returns the authoritative zoning-profile grid as RG8 bytes for texture upload.
-    #[func]
-    pub fn get_zone_profile_texture_data_rg8(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_profile_texture_data_rg8())
-    }
-
-    /// Returns the one-row RGBA8 style LUT for the profile-aware zoning overlay.
-    #[func]
-    pub fn get_zone_profile_style_lut_rgba8(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_profile_style_lut_rgba8())
-    }
-
-    /// Returns the occupied grid as a flat byte array (0/1 per cell) for texture upload.
-    #[func]
-    pub fn get_occupied_texture_data(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_occupied_texture_data())
-    }
-
-    /// Returns the distance-to-road grid as a flat byte array for texture upload.
-    #[func]
-    pub fn get_distance_texture_data(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_distance_texture_data())
-    }
-
-    /// Returns the no-build mask as a flat `u8` byte array (0 or 255 per cell).
-    ///
-    /// Cells within ~32 m of a `no_building_spawn` road surface are 255; all others are 0.
-    /// Upload as an R8 texture to drive shader-side zone-tint suppression on no-build roads.
-    #[func]
-    pub fn get_no_build_mask_texture_data(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_no_build_mask_texture_data())
     }
 
     /// Returns the ID of the edge hovered by the mouse.
@@ -4236,7 +4146,7 @@ impl SimulationNode {
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-        use crate::simulation::grid::zoning::ZoneType;
+        use crate::simulation::zoning::ZoneType;
 
         let core = self.lock_core();
 
@@ -5587,21 +5497,11 @@ impl SimulationNode {
     pub fn get_perf_stats(&self) -> VarDictionary {
         self.get_perf_stats_internal()
     }
-
-    /// Returns zone grid dimensions for texture setup.
-    #[func]
-    pub fn get_zone_grid_size(&self) -> Vector2i {
-        let core = self.lock_core();
-        Vector2i::new(
-            core.zoning.grid.width as i32,
-            core.zoning.grid.height as i32,
-        )
-    }
 }
 
 fn zoning_parcel_geometry_dict(
     core: &SimCore,
-    geometry: &crate::simulation::grid::zoning::ParcelGeometry,
+    geometry: &crate::simulation::zoning::ParcelGeometry,
     runtime_id: u16,
     occupied: bool,
     parcel_id: u64,
@@ -5643,7 +5543,7 @@ fn zoning_parcel_color(core: &SimCore, runtime_id: u16, occupied: bool) -> Color
 
 fn zoning_parcel_geometries_array(
     core: &SimCore,
-    geometries: &[crate::simulation::grid::zoning::ParcelGeometry],
+    geometries: &[crate::simulation::zoning::ParcelGeometry],
     runtime_id: u16,
 ) -> VarArray {
     let mut arr = VarArray::new();
@@ -5656,7 +5556,7 @@ fn zoning_parcel_geometries_array(
 
 fn zoning_parcel_geometries_packed_dict(
     core: &SimCore,
-    geometries: &[crate::simulation::grid::zoning::ParcelGeometry],
+    geometries: &[crate::simulation::zoning::ParcelGeometry],
     runtime_id: u16,
 ) -> VarDictionary {
     let mut corners = PackedVector3Array::new();
@@ -5699,7 +5599,7 @@ fn zoning_parcel_cell_dimensions(
 
 fn zoning_parcel_surface_corners(
     core: &SimCore,
-    geometry: &crate::simulation::grid::zoning::ParcelGeometry,
+    geometry: &crate::simulation::zoning::ParcelGeometry,
 ) -> [Vector3; 4] {
     geometry.corners.map(|corner| {
         let surface_y = core.get_world_surface_height_internal(Vector2::new(corner.x, corner.y));
@@ -6153,7 +6053,7 @@ mod tests {
     fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
         let raw_height = 3.25;
         let core = test_core_with_flat_terrain(raw_height);
-        let geometry = crate::simulation::grid::zoning::ParcelGeometry {
+        let geometry = crate::simulation::zoning::ParcelGeometry {
             edge_idx: 0,
             side: 1,
             frontage_center_t: 0.5,

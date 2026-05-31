@@ -2,7 +2,7 @@
 
 use super::data_grid::DataGrid;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::grid::zoning::ZoneType;
+use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 /// A grid-based system that simulates industrial pollution.
@@ -110,7 +110,7 @@ mod tests {
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::WorldConfig;
-    use crate::simulation::grid::zoning::ZoneType;
+    use crate::simulation::zoning::ZoneType;
     use godot::prelude::Vector2;
 
     fn register_test_asset(

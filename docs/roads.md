@@ -211,7 +211,7 @@ Required bounds:
 - independent span and chunk work should use Rayon when mutation boundaries allow it
 - hot-path loops must avoid avoidable allocation
 - road debug output must split terrain, water, zoning, and total patch-debug timings
-- road debug output must use cached zoning statistics instead of scanning whole zoning textures
+- road debug output must use cached zoning statistics instead of scanning parcel payloads
 
 The current remaining large editor hitch is synchronous final `JunctionN` compilation on very large
 multi-mouth nodes. Future responsiveness work should be tracked as new road-performance work:

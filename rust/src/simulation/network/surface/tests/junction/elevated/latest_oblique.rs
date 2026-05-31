@@ -104,7 +104,7 @@ fn logged_latest_elevated_oblique_three_way_compiles_with_endpoint_profile_solve
     let mut edit_graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
     let config = crate::simulation::core::config::WorldConfig::default();
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(&config);
     let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
     network.add_road(
         &mut edit_graph,

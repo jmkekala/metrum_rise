@@ -14,6 +14,7 @@ pub(crate) mod save;
 pub mod terrain;
 pub mod water;
 pub(crate) mod world_definition;
+pub mod zoning;
 
 /// Shared road-configuration table used by parametrized tests across all subsystems.
 ///

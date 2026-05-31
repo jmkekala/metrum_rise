@@ -8,7 +8,7 @@
 use crate::assets::asset::PlacementMode;
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
-use crate::simulation::grid::zoning::load_builtin_profile_registry;
+use crate::simulation::zoning::load_builtin_profile_registry;
 use serde::Deserialize;
 use std::path::Path;
 

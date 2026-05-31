@@ -17,7 +17,6 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
@@ -26,6 +25,7 @@ use crate::simulation::world_definition::{
     LoadedWorldDefinition, WorldDefinitionView, load_world_definition_from_sqlite,
     save_world_definition_to_sqlite,
 };
+use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -1137,10 +1137,10 @@ mod tests {
     use crate::simulation::grid::desirability::DesirabilitySystem;
     use crate::simulation::grid::noise::NoiseSystem;
     use crate::simulation::grid::pollution::PollutionSystem;
-    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
+    use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector2;
     use std::collections::{HashMap, VecDeque};
 

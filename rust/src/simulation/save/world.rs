@@ -10,10 +10,10 @@ use crate::simulation::economy::logistics::{Shipment, ShipmentSystem};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 use rusqlite::{Connection, Transaction, params};
 
@@ -347,7 +347,7 @@ pub(super) fn load_zoning(
 pub(super) fn load_buildings(
     conn: &Connection,
     registry: &crate::assets::AssetRegistry,
-    profiles: &crate::simulation::grid::zoning::profiles::ZoningProfileRegistry,
+    profiles: &crate::simulation::zoning::profiles::ZoningProfileRegistry,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
     let resource_count = load_runtime_economy_catalog()
@@ -496,10 +496,6 @@ pub(super) fn repaint_building_occupancy(
         }
     }
     Ok(())
-}
-
-pub(super) fn rebuild_distance_to_road(zoning: &mut ZoningSystem, graph: &RegionGraph) {
-    zoning.update_distance_to_road(graph);
 }
 
 pub(super) trait GridSystemLoader: Sized {

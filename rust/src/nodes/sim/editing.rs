@@ -269,79 +269,6 @@ impl SimCore {
         self.water_dirty = true;
     }
 
-    /// Captures one zoning patch bounding box as packed little-endian runtime ids.
-    pub fn capture_zoning_patch_internal(
-        &self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-    ) -> Vec<u8> {
-        if width_cells <= 0 || height_cells <= 0 {
-            return Vec::new();
-        }
-        self.zoning
-            .capture_patch(grid_x, grid_y, width_cells as usize, height_cells as usize)
-    }
-
-    /// Applies one masked zoning paint patch.
-    pub fn apply_zoning_patch_internal(
-        &mut self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-        target_profile_runtime_id: i32,
-        write_mask: Vec<u8>,
-    ) {
-        if width_cells <= 0 || height_cells <= 0 {
-            return;
-        }
-        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
-            return;
-        };
-        if runtime_id != 0
-            && self
-                .zoning
-                .profiles
-                .profile_by_runtime_id(runtime_id)
-                .is_none()
-        {
-            return;
-        }
-        self.zoning.apply_patch(
-            grid_x,
-            grid_y,
-            width_cells as usize,
-            height_cells as usize,
-            runtime_id,
-            &write_mask,
-        );
-        self.allocator.dirty = true;
-    }
-
-    /// Restores one full zoning patch bounding box from packed little-endian runtime ids.
-    pub fn restore_zoning_patch_internal(
-        &mut self,
-        grid_x: i32,
-        grid_y: i32,
-        width_cells: i32,
-        height_cells: i32,
-        profile_ids_le_u16: Vec<u8>,
-    ) {
-        if width_cells <= 0 || height_cells <= 0 {
-            return;
-        }
-        self.zoning.restore_patch(
-            grid_x,
-            grid_y,
-            width_cells as usize,
-            height_cells as usize,
-            &profile_ids_le_u16,
-        );
-        self.allocator.dirty = true;
-    }
-
     /// Sets the classification of an edge.
     /// Sets or clears the no-building-spawn flag on an edge.
     pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
@@ -351,7 +278,6 @@ impl SimCore {
         self.region_graph
             .edge_mut(edge_idx as usize)
             .no_building_spawn = enabled;
-        self.zoning.update_no_build_mask(&self.region_graph);
         self.allocator.dirty = true;
         self.rebuild_building_entrances_internal();
     }
@@ -907,7 +833,6 @@ mod tests {
     use crate::simulation::grid::desirability::DesirabilitySystem;
     use crate::simulation::grid::noise::NoiseSystem;
     use crate::simulation::grid::pollution::PollutionSystem;
-    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{
@@ -915,6 +840,7 @@ mod tests {
     };
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
+    use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::{Vector2, Vector3};
     use std::collections::{HashMap, VecDeque};
 

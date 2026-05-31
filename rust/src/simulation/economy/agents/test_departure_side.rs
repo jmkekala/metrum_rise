@@ -8,12 +8,12 @@ mod tests {
     use crate::simulation::economy::agents::{
         ACCESS_PLAN_VALID, AgentSystem, MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_NETWORK,
     };
-    use crate::simulation::grid::zoning::ZoneType;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::lanes::LaneType;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use crate::simulation::pathing::cch::CchGraph;
+    use crate::simulation::zoning::ZoneType;
     use godot::prelude::{Vector2, Vector3};
 
     use crate::simulation::LANE_CONFIGS;

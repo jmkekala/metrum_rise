@@ -21,9 +21,9 @@ use crate::debug_log;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, load_runtime_economy_catalog,
 };
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector2;
 use std::collections::HashMap;
 
@@ -51,9 +51,9 @@ pub struct Building {
     pub center_x: f32,
     /// World-space Z centre of the building footprint (metres, ground-plane Z axis).
     pub center_y: f32,
-    /// Width of the footprint in zoning grid cells.
+    /// Width of the footprint in zoning cells.
     pub width_cells: u16,
-    /// Depth of the footprint in zoning grid cells.
+    /// Depth of the footprint in zoning cells.
     pub depth_cells: u16,
     /// Authoritative runtime zoning-profile id captured when this building was placed.
     pub zone_profile_runtime_id: u16,

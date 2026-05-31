@@ -1,4 +1,4 @@
-//! Spatial grid subsystems: zoning, environmental diffusion, and the generic grid primitive.
+//! Spatial grid subsystems: environmental diffusion and the generic grid primitive.
 //!
 //! All grids use [`data_grid::DataGrid<T>`] as their storage primitive — a flat `Vec<T>`
 //! with row-major indexing and `rayon::par_chunks_mut` parallelism for tick updates.
@@ -14,5 +14,3 @@ pub mod desirability;
 pub mod noise;
 /// Industrial pollution simulation.
 pub mod pollution;
-/// Zoning grid and building obstruction tracking.
-pub mod zoning;

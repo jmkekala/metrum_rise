@@ -44,7 +44,7 @@ impl ZoneDensity {
 /// One validated runtime zoning profile.
 #[derive(Clone, Debug)]
 pub struct ZoneProfileRuntime {
-    /// Dense runtime profile id stored in the zoning grid. `0` is reserved for unpainted cells.
+    /// Runtime profile id assigned to parcels. `0` is reserved for free/unzoned parcels.
     pub runtime_id: u16,
     /// Stable authored TOML id.
     pub id: String,

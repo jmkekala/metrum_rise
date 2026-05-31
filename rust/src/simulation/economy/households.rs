@@ -17,9 +17,9 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::ZoneType;
 
 /// Household stock is healthy and no replenishment is pending.
 pub const REPLENISHMENT_STABLE: u8 = 0;

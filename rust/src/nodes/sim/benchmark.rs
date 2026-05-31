@@ -78,11 +78,8 @@ impl SimCore {
         );
 
         let t1 = Instant::now();
-        self.transit_network.finalize_bulk_load(
-            &mut self.region_graph,
-            &mut self.zoning,
-            &mut self.allocator,
-        );
+        self.transit_network
+            .finalize_bulk_load(&mut self.region_graph, &mut self.allocator);
         godot_print!(
             "[bench] finalize_bulk_load: {:.1}s  RSS {}MB  lanes={}",
             t1.elapsed().as_secs_f32(),

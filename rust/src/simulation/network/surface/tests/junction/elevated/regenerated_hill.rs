@@ -20,7 +20,7 @@ fn logged_regenerated_elevated_hill_three_way_compiles_full_pipeline() {
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
     let config = crate::simulation::core::config::WorldConfig::default();
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(&config);
     let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
     network.add_road(
         &mut graph,
@@ -138,7 +138,7 @@ fn logged_current_elevated_hill_right_angle_three_way_compiles_full_pipeline() {
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
     let config = crate::simulation::core::config::WorldConfig::default();
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(&config);
     let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
     network.add_road(
         &mut graph,

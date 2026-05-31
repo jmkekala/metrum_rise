@@ -17,8 +17,7 @@ Terminology note: this file mirrors durable code-facing names on purpose. When s
 | Terrain chunk | `512 m` (`terrain_chunk_m`) | Canonical authored terrain chunk size in `WorldConfig`. |
 | Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `WorldConfig`. |
 | Runtime terrain grid (default map) | `2001 × 2001` | Derived from `round(width_m / terrain_cell_m) + 1`; terrain samples include both world edges. |
-| World-space zoning grid (default map) | `2000 × 2000` | Derived from `width_m / zone_cell_m` and `height_m / zone_cell_m`. |
-| Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint, not a cadastral parcel model. |
+| Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint measured from `zone_cell_m`. |
 | Reference zoning depth | `12` cells | `DEFAULT_ZONING_DEPTH`; tooling / fade heuristic only, not a hard cap. |
 | Lane width | `3.5 m` | `LANE_WIDTH`. |
 | Sidewalk width | `1.5 m` each side | `SIDEWALK_WIDTH`. |
@@ -44,7 +43,7 @@ Terminology note: this file mirrors durable code-facing names on purpose. When s
 ### Key Design Patterns
 
 - **Sparse chunk-backed terrain/water storage**: runtime terrain and water keep only touched chunks resident, with dense row-major buffers materialized only for save/load and renderer upload boundaries.
-- **`DataGrid<T>`**: flat row-major `Vec<T>` with width stride. Used for pollution, noise, desirability, and the world-space zoning textures / masks.
+- **`DataGrid<T>`**: flat row-major `Vec<T>` with width stride. Used for pollution, noise, and desirability.
 - **Environmental diffusion with swap buffers**: `PollutionSystem` and `NoiseSystem` use pre-allocated swap grids and `std::mem::swap()`; no per-tick `grid.clone()` in the hot path.
 - **SoA via `soa_derive`**: `AgentSystem` is generated from `#[derive(StructOfArray)]` on `Agent`, producing `AgentVec` plus explicit scratch buffers around it.
 - **Lane buckets for IDM**: per-lane occupancy / scratch lists are built and cleared incrementally each tick for car-following and overlap correction.
@@ -84,7 +83,7 @@ Benchmark-history rule:
 | Terrain visual sparse chunks (`2001²` worst case) | `up to 16 MB` | Full-cost only when the entire runtime terrain is materialized away from the base elevation. |
 | Terrain source sparse chunks (`2001²` worst case) | `up to 16 MB` | Same upper bound as visual terrain; untouched chunks stay implicit. |
 | 3 environmental grids at `500²` | `~3 MB` | Pollution, noise, desirability. |
-| World-space zoning grids at `2000²` | `~12 MB` | Zone, occupied, and distance-to-road layers. |
+| Zoning parcels | Bounded by authored lots | Stable parcel records plus chunk lookup; no full-map zoning surface. |
 | Road edges (`50k × ~512 B`) | `~25 MB` | Order-of-magnitude planning estimate. |
 | Road nodes (`100k × ~128 B`) | `~12 MB` | Order-of-magnitude planning estimate. |
 | Agent SoA base state (`1M`) | `~120 MB` | Approximate base scalar state; actual memory also depends on route `Vec` capacity and scratch buffers. |

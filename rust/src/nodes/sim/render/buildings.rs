@@ -3,7 +3,7 @@
 //! Handles building instance transform generation and plot/foundation visuals.
 
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::grid::zoning::ZoneType;
+use crate::simulation::zoning::ZoneType;
 use godot::prelude::*;
 
 impl SimCore {

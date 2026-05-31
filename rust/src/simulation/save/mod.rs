@@ -11,12 +11,12 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::simulation::zoning::ZoningSystem;
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::collections::{BTreeSet, HashMap};
@@ -297,7 +297,6 @@ pub(crate) fn load_from_sqlite(
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;
-    world::rebuild_distance_to_road(&mut zoning, &graph);
     transit_network.cch_graph = CchGraph::build(&graph);
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
 

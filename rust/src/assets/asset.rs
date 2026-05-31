@@ -62,7 +62,7 @@ pub enum AnchorType {
 
 /// Land-use category for a zoned building asset.
 ///
-/// Maps onto [`crate::simulation::grid::zoning::ZoneType`] during registry step.
+/// Maps onto [`crate::simulation::zoning::ZoneType`] during registry step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoneClass {
@@ -100,9 +100,9 @@ pub struct BuildingData {
     pub zone_type: Option<ZoneClass>,
     /// Density tier for painted-zoning legality.
     pub density: Option<String>,
-    /// Footprint width in zoning grid cells (along the road).
+    /// Footprint width in zoning cells (along the road).
     pub lot_width_cells: u16,
-    /// Footprint depth in zoning grid cells (away from the road).
+    /// Footprint depth in zoning cells (away from the road).
     pub lot_depth_cells: u16,
     /// Minimum zoned width accepted for this building. Defaults to `lot_width_cells`.
     pub min_zone_width_cells: Option<u16>,

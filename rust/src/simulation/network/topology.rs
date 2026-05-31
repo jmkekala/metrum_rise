@@ -571,7 +571,7 @@ fn apply_splits(
     all_splits: HashMap<usize, Vec<(f32, u32)>>,
     network: &mut TransitNetwork,
     graph: &mut RegionGraph,
-    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
     for (eid, mut splits) in all_splits {
@@ -617,7 +617,7 @@ fn migrate_split_dependents(
     split_x: usize,
     new_len_first: f32,
     new_len_second: f32,
-    zoning: &crate::simulation::grid::zoning::ZoningSystem,
+    zoning: &crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
     let cell_size = zoning.config.zone_cell_m;
@@ -759,7 +759,7 @@ pub fn process_intersections(
     network: &mut TransitNetwork,
     graph: &mut RegionGraph,
     edge_id: usize,
-    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
     let t0 = std::time::Instant::now();
@@ -824,7 +824,7 @@ pub fn split_edge(
     segment_idx: usize,
     _t: f32,
     junction_node_id: u32,
-    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
     let old_edge = graph.edge(edge_id);
@@ -923,8 +923,6 @@ pub fn split_edge(
         allocator,
     );
 
-    // distance_to_road grid does not need updating per split; it is recomputed
-    // once after the full road placement in add_road / finalize_bulk_load.
     network.mark_point_dirty(split_pos);
     if network.bulk_load {
         network.bulk_dirty_edges.insert(edge_id);
@@ -939,8 +937,8 @@ mod tests {
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
-    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
+    use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector3;
 
     fn register_test_asset(
@@ -1058,7 +1056,7 @@ mod tests {
                 depth_cells: 3,
                 zone_profile_runtime_id: 0,
                 parcel_id: 0,
-                zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
+                zone_type: crate::simulation::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
                 side_offset: 1.0,

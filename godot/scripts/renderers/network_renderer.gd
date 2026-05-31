@@ -61,8 +61,8 @@ func _process(_delta: float) -> void:
 	road_tool.drain_pending_border_checks()
 	var border_checks_ms := float(Time.get_ticks_usec() - border_checks_start_us) / 1000.0
 
-	# 5. Road geometry changed → distance_to_road was recomputed by Rust; re-upload the texture.
-	if zoning_overlay: zoning_overlay.mark_distance_dirty()
+	# 5. Road geometry changed → refresh no-build edge overlay geometry.
+	if zoning_overlay: zoning_overlay.mark_no_build_dirty()
 
 	# 6. Clear the flag now that the refresh is done — same pattern as clear_terrain_dirty().
 	simulation_node.clear_network_dirty()

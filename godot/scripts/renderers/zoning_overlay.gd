@@ -46,9 +46,6 @@ func mark_zone_dirty():
 func mark_occupied_dirty():
 	_zone_dirty = true
 
-func mark_distance_dirty():
-	_no_build_dirty = true
-
 func mark_no_build_dirty():
 	_no_build_dirty = true
 

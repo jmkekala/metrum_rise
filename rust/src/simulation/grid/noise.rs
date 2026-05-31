@@ -2,8 +2,8 @@
 
 use super::data_grid::DataGrid;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 /// A grid-based system that simulates noise pollution.

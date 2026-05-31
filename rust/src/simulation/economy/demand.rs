@@ -12,9 +12,9 @@ use crate::simulation::economy::households::{
     building_total_output_inventory, household_reserve_days, industrial_input_coverage_factor,
     industrial_output_headroom_factor, level_tuning_value,
 };
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -1731,11 +1731,11 @@ mod tests {
     use crate::simulation::economy::households::{
         Household, HouseholdSystem, REPLENISHMENT_STABLE,
     };
-    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{
         EdgeClass, TransitFlags, TransitType, VehicleFrontageAccess,
     };
+    use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::{Vector2, Vector3};
 
     fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {

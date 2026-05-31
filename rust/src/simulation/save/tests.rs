@@ -14,7 +14,6 @@ use crate::simulation::economy::logistics::{
 };
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
@@ -22,6 +21,7 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rusqlite::Connection;
 use std::fs;
@@ -86,14 +86,6 @@ fn register_test_asset(
         String::new(),
     );
     format!("{pack_id}:{asset_id}")
-}
-
-fn paint_zone_rect(zoning: &mut ZoningSystem, x0: f32, z0: f32, x1: f32, z1: f32, zone: ZoneType) {
-    let runtime_id = zoning
-        .profiles
-        .default_runtime_id_for_zone_type(zone)
-        .expect("tests should only paint baseline zones");
-    zoning.set_zone_profile_rect(x0, z0, x1, z1, runtime_id);
 }
 
 fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
@@ -171,7 +163,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
-    paint_zone_rect(&mut zoning, -20.0, -15.0, 20.0, 15.0, ZoneType::Residential);
     let residential_profile = zoning
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Residential)

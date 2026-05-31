@@ -4,12 +4,12 @@ mod tests {
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
-    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{
         EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
     };
+    use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector3;
 
     fn register_test_asset(
@@ -390,7 +390,7 @@ mod tests {
                 depth_cells: 2,
                 zone_profile_runtime_id: 0,
                 parcel_id: 0,
-                zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
+                zone_type: crate::simulation::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.75,
                 side_offset: 5.0,

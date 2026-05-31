@@ -130,9 +130,9 @@ impl TransitNetwork {
 
     /// Completes a bulk-load sequence started by setting `bulk_load = true`.
     ///
-    /// Rebuilds intersection clips incrementally for the dirty edge set, then updates
-    /// the distance-to-road grid. Returns the set of edges that were rebuilt so the caller
-    /// can pass it to [`AgentSystem::invalidate_lane_ids_for_edges`].
+    /// Rebuilds intersection clips incrementally for the dirty edge set. Returns the set of
+    /// edges that were rebuilt so the caller can pass it to
+    /// [`AgentSystem::invalidate_lane_ids_for_edges`].
     ///
     /// **Callers that need agent invalidation** should call
     /// `agent_system.invalidate_lane_ids_for_edges(&dirty, &self.lane_system)` **before**
@@ -142,7 +142,6 @@ impl TransitNetwork {
     pub fn finalize_bulk_load(
         &mut self,
         graph: &mut RegionGraph,
-        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> HashSet<usize> {
         self.bulk_load = false;
@@ -150,14 +149,13 @@ impl TransitNetwork {
         let dirty = std::mem::take(&mut self.bulk_dirty_edges);
         self.lane_system.rebuild_edges_incremental(graph, &dirty);
         allocator.rebuild_entrance_cache(graph, &self.lane_system);
-        zoning.update_distance_to_road(graph);
         dirty
     }
 
     /// Clears the entire network, including zoning and building allocations.
     pub fn clear(
         &mut self,
-        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
         self.cch_graph = CchGraph::new(0);
@@ -178,7 +176,7 @@ impl TransitNetwork {
         fwd_lanes: u8,
         bkw_lanes: u8,
         class: EdgeClass,
-        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
         // 1. Simplify points using the same threshold shared with preview compilation.
@@ -224,10 +222,6 @@ impl TransitNetwork {
                 allocator,
             );
         }
-
-        if !self.bulk_load {
-            zoning.update_distance_to_road(graph);
-        }
     }
 
     /// Helper to consistently add a road edge and handle its side effects
@@ -240,7 +234,7 @@ impl TransitNetwork {
         fwd: u8,
         bkw: u8,
         class: EdgeClass,
-        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
         if start == end {

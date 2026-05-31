@@ -1310,7 +1310,7 @@ Reference systems are class-specific.
 
 For buildings:
 
-- show the zoning grid
+- show the zoning-cell reference
 - use the current game cell size
 - present a resizable plot rectangle, not a fixed `3 x 3` box
 - edit explicit `lot_width_cells` and `lot_depth_cells`

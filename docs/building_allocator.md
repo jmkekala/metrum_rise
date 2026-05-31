@@ -129,25 +129,20 @@ natural fallback ordering for any later deterministic tie-break.
 
 ### Legality checks
 
-`resolve_slot()` currently validates a candidate site in this order:
+`resolve_slot()` currently validates a candidate parcel in this order:
 
-1. parent edge exists, is not deleted, allows building spawn, and has enough frontage columns
-2. `edge_occupancy` says the leading column on that side is free
-3. the frontage ownership check rejects sites that really belong to a closer road surface
-4. the frontage-adjacent zoning cell resolves to one non-zero runtime `ZoneProfile`
-5. that frontage `ZoneProfile` accepts the candidate asset's baseline `zone_type`, `density`, and
-   authored tag filters
-6. every covered cell in the full `width_cells x depth_cells` footprint resolves to that same
-   runtime `ZoneProfile`
-7. the rotated footprint does not overlap the occupied grid
-8. the footprint body does not overlap the road carriageway
+1. parent edge exists, is not deleted, and allows building spawn
+2. the parcel is not already occupied
+3. the parcel has a non-zero runtime `ZoneProfile`
+4. that `ZoneProfile` accepts the candidate asset's baseline `zone_type`, `density`, and authored
+   tag filters
+5. the asset footprint fits inside the parcel frontage and depth
 
 If all checks pass, the allocator commits placement by:
 
-1. marking the footprint occupied in `ZoningSystem`
-2. claiming the frontage column in `edge_occupancy`
-3. pushing the new `Building`
-4. setting `dirty`, `dirty_index`, `entrances_dirty`, and the building's `dirty_zones` entry
+1. claiming the parcel in `ZoningSystem`
+2. pushing the new `Building`
+3. setting `dirty`, `dirty_index`, `entrances_dirty`, and the building's `dirty_zones` entry
 
 ## Removal And Synchronization
 
@@ -164,12 +159,11 @@ If all checks pass, the allocator commits placement by:
 
 Removal order is important and currently deterministic:
 
-1. clear the footprint from the zoning occupied grid
-2. clear the claimed frontage column from `edge_occupancy`
-3. invalidate logistics references to the removed building
-4. if `swap_remove` will move another building, remap moved building indices in dependent systems
-5. `swap_remove` from `buildings`
-6. mark indices and entrance cache dirty
+1. clear the parcel claim in `ZoningSystem`
+2. invalidate logistics references to the removed building
+3. if `swap_remove` will move another building, remap moved building indices in dependent systems
+4. `swap_remove` from `buildings`
+5. mark indices and entrance cache dirty
 
 Important invariant:
 
@@ -181,9 +175,8 @@ Important invariant:
 
 ### Save/load and topology rebuilds
 
-- `edge_occupancy` is not saved directly; it is rebuilt from building attachment data
-- the occupied grid is rebuilt from saved building footprints
-- `update_edge_indices()` remaps `Building.edge_idx` and `edge_occupancy` after road compaction
+- parcel occupancy is rebuilt from saved building parcel ids
+- `update_edge_indices()` remaps `Building.edge_idx` and parcel road attachments after road compaction
 - `recompute_derived_transforms()` rebuilds `center_x`, `center_y`, and `facing_dir` from saved
   attachment data plus live road geometry
 
@@ -273,8 +266,7 @@ Recommended interpretation:
 
 Recommended ownership split:
 
-- [`zoning.md`](zoning.md): painted legal area, occupied-footprint helpers, distance-to-road and
-  no-build masking data
+- [`zoning.md`](zoning.md): parcel legality, parcel geometry, and parcel occupancy helpers
 - road/network systems: authoritative road-edge geometry, edge existence, and
   `no_building_spawn` policy
 - [`asset_editor.md`](asset_editor.md): asset-authored footprint dimensions, baseline `zone_type`,

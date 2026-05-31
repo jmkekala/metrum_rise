@@ -787,7 +787,7 @@ fn evaluate_planned_trip_candidate(
 fn build_exact_path_for_candidate(
     candidate: &PlannedTripCandidate,
     target_building: usize,
-    target_zone: crate::simulation::grid::zoning::ZoneType,
+    target_zone: crate::simulation::zoning::ZoneType,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
@@ -1180,12 +1180,12 @@ fn maybe_schedule_work_trip(
         .or_else(|| {
             let current_zone = work_building_ref.zone_type;
             operational_clock.work_profile_for_zone_type(match current_zone {
-                crate::simulation::grid::zoning::ZoneType::Commercial => "commercial",
-                crate::simulation::grid::zoning::ZoneType::Industrial => "industrial",
-                crate::simulation::grid::zoning::ZoneType::Residential
-                | crate::simulation::grid::zoning::ZoneType::Office
-                | crate::simulation::grid::zoning::ZoneType::Mixed
-                | crate::simulation::grid::zoning::ZoneType::None => return None,
+                crate::simulation::zoning::ZoneType::Commercial => "commercial",
+                crate::simulation::zoning::ZoneType::Industrial => "industrial",
+                crate::simulation::zoning::ZoneType::Residential
+                | crate::simulation::zoning::ZoneType::Office
+                | crate::simulation::zoning::ZoneType::Mixed
+                | crate::simulation::zoning::ZoneType::None => return None,
             })
         })?;
 

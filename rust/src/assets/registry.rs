@@ -229,7 +229,7 @@ impl AssetRegistry {
             .unwrap_or(&[])
     }
 
-    /// Returns the lot footprint in zoning grid cells `(width, depth)` for an asset.
+    /// Returns the lot footprint in zoning cells `(width, depth)` for an asset.
     ///
     /// Falls back to `(1, 1)` if the asset is unknown or is not a building.
     pub fn lot_size(&self, qualified_id: &str) -> (usize, usize) {

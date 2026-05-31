@@ -10,8 +10,8 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
-use crate::simulation::grid::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
 

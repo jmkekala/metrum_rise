@@ -10,7 +10,7 @@
 //! 1. [`config`] — global constants (map size, grid cell sizes, lane widths).
 //! 2. [`simulation::network::graph`] — road graph schema (`Node`, `Edge`, `RegionGraph`).
 //! 3. [`simulation::economy::agents`] — agent state machine and SoA layout.
-//! 4. [`simulation::grid::zoning`] — zoning cell grid attached to each road edge.
+//! 4. [`simulation::zoning`] — road-aligned zoning parcels.
 //! 5. [`simulation::pathing::cch`] — CCH/CRP pathfinding (bidirectional Dijkstra on contracted graph).
 
 use godot::prelude::*;

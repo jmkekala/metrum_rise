@@ -7,7 +7,7 @@ use godot::prelude::Vector2;
 pub struct ParcelId(u64);
 
 impl ParcelId {
-    /// Reserved non-parcel value used by legacy or explicit non-zoned buildings.
+    /// Reserved non-parcel value used by explicit non-zoned buildings.
     pub const NONE: Self = Self(0);
 
     /// Creates a parcel id from its persisted integer representation.

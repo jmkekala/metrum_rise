@@ -1,13 +1,13 @@
-//! World configuration and dense-grid sizing helpers.
+//! World configuration and bounded-grid sizing helpers.
 //!
-//! `WorldConfig` is the chunk-aware replacement for the legacy map-size config.
+//! `WorldConfig` is the chunk-aware world-size config.
 //! It owns authoritative world extents in metres plus the cell sizes used by
-//! terrain, zoning, and environmental grids.
+//! terrain, parcel zoning, and environmental grids.
 
 /// Chunk-aware world configuration shared by gameplay, saves, and editor sandboxes.
 ///
 /// The world extent is defined by physical dimensions plus terrain chunk metadata.
-/// Dense helper grids still derive their dimensions from this config, but their
+/// Bounded helper grids still derive their dimensions from this config, but their
 /// world-space coordinates are canonical metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldConfig {
@@ -23,7 +23,7 @@ pub struct WorldConfig {
     pub terrain_base_elevation_m: f32,
     /// Physical size of one environmental grid cell (pollution, noise, desirability) in metres.
     pub env_cell_m: f32,
-    /// Physical size of one zoning grid cell in metres.
+    /// Physical size of one zoning/building footprint cell in metres.
     pub zone_cell_m: f32,
 }
 
@@ -56,7 +56,7 @@ impl WorldConfig {
         }
     }
 
-    /// Overrides the terrain chunk metadata while keeping the current dense-grid sizing.
+    /// Overrides the terrain chunk metadata while keeping current grid sizing.
     pub fn with_chunking(mut self, terrain_chunk_m: f32, terrain_base_elevation_m: f32) -> Self {
         self.terrain_chunk_m = terrain_chunk_m;
         self.terrain_base_elevation_m = terrain_base_elevation_m;
@@ -109,16 +109,6 @@ impl WorldConfig {
         ((self.height_m / self.terrain_cell_m).round() as usize) + 1
     }
 
-    /// Returns the number of cells in the zoning grid along the X axis.
-    pub fn zone_grid_width(&self) -> usize {
-        (self.width_m / self.zone_cell_m).round() as usize
-    }
-
-    /// Returns the number of cells in the zoning grid along the Y axis.
-    pub fn zone_grid_height(&self) -> usize {
-        (self.height_m / self.zone_cell_m).round() as usize
-    }
-
     /// Returns the number of cells in the environmental grid along the X axis.
     pub fn env_grid_width(&self) -> usize {
         (self.width_m / self.env_cell_m).round() as usize
@@ -137,11 +127,6 @@ impl WorldConfig {
     /// Helper to get (width, height) for the runtime terrain grid.
     pub fn get_terrain_grid_size(&self) -> (usize, usize) {
         (self.terrain_grid_width(), self.terrain_grid_height())
-    }
-
-    /// Helper to get (width, height) for zoning grid.
-    pub fn get_zone_grid_size(&self) -> (usize, usize) {
-        (self.zone_grid_width(), self.zone_grid_height())
     }
 
     /// Maps world-space coordinates in metres to environmental-grid coordinates.

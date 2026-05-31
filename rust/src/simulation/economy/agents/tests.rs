@@ -3,11 +3,11 @@ use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use crate::simulation::pathing::cch::CchGraph;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 

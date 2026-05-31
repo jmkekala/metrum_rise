@@ -1,8 +1,8 @@
 //! Building search indices and vacancy management.
 
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector3;
 
 impl BuildingAllocator {

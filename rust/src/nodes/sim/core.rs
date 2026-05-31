@@ -25,7 +25,6 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::NetworkMeshData;
@@ -38,6 +37,7 @@ use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
     AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
 };
+use crate::simulation::zoning::ZoningSystem;
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -336,7 +336,7 @@ pub struct SimCore {
     pub region_graph: crate::simulation::network::graph::RegionGraph,
     /// Lane system, CCH pathfinder, and road mutation helpers.
     pub transit_network: TransitNetwork,
-    /// Edge-aligned zoning grid.
+    /// Road-aligned parcel zoning.
     pub zoning: ZoningSystem,
     /// Pollution diffusion grid.
     pub pollution: PollutionSystem,
@@ -682,7 +682,7 @@ impl SimCore {
 
     fn print_daily_building_economy(&self, day_index: u32) {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-        use crate::simulation::grid::zoning::ZoneType;
+        use crate::simulation::zoning::ZoneType;
 
         if !crate::debug::category_enabled("economy") {
             return;

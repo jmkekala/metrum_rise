@@ -14,10 +14,10 @@ use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
+use crate::simulation::zoning::ZoneType;
 
 /// The shipment originates from a local supplier building.
 pub const SHIPMENT_SOURCE_LOCAL: u8 = 0;

@@ -51,6 +51,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
+  Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See
+  [`zoning.md`](zoning.md).
 - Transitioned the residential simulation to a **household-centric occupancy model**, replacing legacy per-resident capacity with family slots (`household_capacity`).
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.

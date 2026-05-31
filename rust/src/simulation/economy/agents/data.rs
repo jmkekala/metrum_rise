@@ -10,8 +10,8 @@ use super::{
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::ZoneType;
 
 use rand::Rng;
 use soa_derive::StructOfArray;
