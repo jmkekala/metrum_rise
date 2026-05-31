@@ -143,6 +143,7 @@ impl RoadSurfaceSystem {
                 let export_ms = elapsed_ms(export_start);
                 if road_debug {
                     let total_ms = elapsed_ms(total_start);
+                    Self::log_node_surface_smoothness_detail(node_id, kind, &regions);
                     if total_ms >= 50.0 {
                         crate::debug_log!(
                             "road",
