@@ -193,6 +193,9 @@ impl ZoningSystem {
         if self.parcels.overlaps_existing(&geometry) {
             return Err(ParcelPlacementError::OverlapsExistingParcel);
         }
+        if parcels::geometry_overlaps_road(graph, &geometry) {
+            return Err(ParcelPlacementError::OverlapsRoad);
+        }
         Ok(geometry)
     }
 
@@ -201,6 +204,14 @@ impl ZoningSystem {
         self.parcels
             .find_at_point(Vector2::new(world_x, world_z))
             .is_some()
+    }
+
+    /// Returns the runtime zoning-profile id of the parcel under one world-space point.
+    pub fn parcel_profile_runtime_id_at(&self, world_x: f32, world_z: f32) -> Option<u16> {
+        let id = self.parcels.find_at_point(Vector2::new(world_x, world_z))?;
+        self.parcels
+            .get(id)
+            .map(|parcel| parcel.zone_profile_runtime_id())
     }
 
     /// Returns the authored parcel geometry under one world-space point.
@@ -223,15 +234,33 @@ impl ZoningSystem {
     ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
         Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         Self::validate_parcel_gap(gap_m)?;
-        let geometries = parcels::project_parcel_run_at(
-            graph,
-            Vector2::new(start_x, start_z),
-            Vector2::new(end_x, end_z),
-            frontage_m,
-            depth_m,
-            gap_m,
-        )?;
-        self.validate_parcel_run_geometries(&geometries)?;
+        let start_point = Vector2::new(start_x, start_z);
+        let end_point = Vector2::new(end_x, end_z);
+        let existing_start = self
+            .parcels
+            .find_at_point(start_point)
+            .and_then(|id| self.parcels.get(id))
+            .map(parcels::geometry_for_parcel);
+        let geometries = if let Some(existing_geometry) = existing_start.as_ref() {
+            parcels::project_parcel_run_from_existing(
+                graph,
+                existing_geometry,
+                end_point,
+                frontage_m,
+                depth_m,
+                gap_m,
+            )?
+        } else {
+            parcels::project_parcel_run_at(
+                graph,
+                start_point,
+                end_point,
+                frontage_m,
+                depth_m,
+                gap_m,
+            )?
+        };
+        self.validate_parcel_run_geometries(&geometries, graph)?;
         Ok(geometries)
     }
 
@@ -392,6 +421,9 @@ impl ZoningSystem {
         if self.parcels.overlaps_existing(&geometry) {
             return Err(ParcelPlacementError::OverlapsExistingParcel);
         }
+        if parcels::geometry_overlaps_road(graph, &geometry) {
+            return Err(ParcelPlacementError::OverlapsRoad);
+        }
         self.parcels.insert_loaded(id, geometry, runtime_id);
         Ok(id)
     }
@@ -420,12 +452,16 @@ impl ZoningSystem {
     fn validate_parcel_run_geometries(
         &self,
         geometries: &[ParcelGeometry],
+        graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Result<(), ParcelPlacementError> {
         for geometry in geometries {
             if !parcels::geometry_inside_world(geometry, self.config.width_m, self.config.height_m)
             {
                 return Err(ParcelPlacementError::OutsideWorld);
             }
+        }
+        if parcels::any_geometry_overlaps_road(graph, geometries) {
+            return Err(ParcelPlacementError::OverlapsRoad);
         }
         if self.parcels.overlaps_any_existing(geometries)
             || parcels::geometries_have_overlap(geometries)

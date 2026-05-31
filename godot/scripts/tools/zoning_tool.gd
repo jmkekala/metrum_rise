@@ -2,7 +2,7 @@
 ##
 ## Rust methods called: get_zone_profiles(), get_zoning_parcel_preview(),
 ##   get_zoning_parcel_drag_preview_packed(), apply_zoning_parcel_at(),
-##   apply_zoning_parcel_drag(), has_zoning_parcel_at(),
+##   apply_zoning_parcel_drag(), get_zoning_parcel_profile_runtime_id_at(),
 ##   get_zoning_parcel_rezone_drag_preview_packed(),
 ##   apply_zoning_parcel_rezone_drag(), intersect_world_surface()
 extends Node3D
@@ -120,7 +120,14 @@ func _begin_drag() -> void:
 	dragging = drag_start_world != null
 	drag_mode = DRAG_MODE_NONE
 	if dragging:
-		drag_mode = DRAG_MODE_REZONE if simulation_node.has_zoning_parcel_at(drag_start_world.x, drag_start_world.y) else DRAG_MODE_CREATE
+		var start_profile: int = int(simulation_node.get_zoning_parcel_profile_runtime_id_at(
+			drag_start_world.x,
+			drag_start_world.y
+		))
+		if start_profile >= 0 and start_profile != current_profile_runtime_id:
+			drag_mode = DRAG_MODE_REZONE
+		else:
+			drag_mode = DRAG_MODE_CREATE
 	_clear_preview_cache()
 
 func _finish_drag() -> void:

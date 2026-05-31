@@ -72,6 +72,7 @@
 //! | | `get_zoning_parcel_drag_preview_packed` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_drag` | `zoning_tool.gd` |
 //! | | `has_zoning_parcel_at` | `zoning_tool.gd` |
+//! | | `get_zoning_parcel_profile_runtime_id_at` | `zoning_tool.gd` |
 //! | | `get_zoning_parcel_rezone_drag_preview_packed` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_rezone_drag` | `zoning_tool.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
@@ -3662,6 +3663,16 @@ impl SimulationNode {
     #[func]
     pub fn has_zoning_parcel_at(&self, world_x: f32, world_z: f32) -> bool {
         self.lock_core().zoning.has_parcel_at(world_x, world_z)
+    }
+
+    /// Returns the parcel profile id at a world-space point, or `-1` when no parcel is present.
+    #[func]
+    pub fn get_zoning_parcel_profile_runtime_id_at(&self, world_x: f32, world_z: f32) -> i32 {
+        self.lock_core()
+            .zoning
+            .parcel_profile_runtime_id_at(world_x, world_z)
+            .map(i32::from)
+            .unwrap_or(-1)
     }
 
     /// Returns preview geometry for an all-or-nothing road-side parcel drag run.

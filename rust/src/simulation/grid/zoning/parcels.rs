@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 const OVERLAP_EPSILON_M: f32 = 0.001;
 const CURVE_RUN_SPACING_SEARCH_STEP_M: f32 = 0.5;
 const CURVE_RUN_SPACING_BINARY_STEPS: usize = 10;
+const ROAD_OVERLAP_QUERY_PAD_M: f32 = 128.0;
 
 /// Stable parcel identifier persisted in saves and referenced by buildings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -190,6 +191,8 @@ pub enum ParcelPlacementError {
     InvalidGap,
     /// The requested rectangle overlaps an existing parcel.
     OverlapsExistingParcel,
+    /// The requested rectangle overlaps another road-owned corridor.
+    OverlapsRoad,
     /// One or more parcel corners would sit outside the authored world extent.
     OutsideWorld,
 }
@@ -474,6 +477,90 @@ pub(crate) fn project_parcel_run_at(
     gap_m: f32,
 ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
     let start = project_buildable_road_point_at(graph, start_pos, frontage_m, depth_m)?;
+    project_parcel_run_from_projected_start(graph, start, end_pos, frontage_m, depth_m, gap_m)
+}
+
+pub(crate) fn project_parcel_run_from_existing(
+    graph: &RegionGraph,
+    existing: &ParcelGeometry,
+    end_pos: Vector2,
+    frontage_m: f32,
+    depth_m: f32,
+    gap_m: f32,
+) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
+    let edge_idx = existing.edge_idx;
+    if edge_idx >= graph.edge_count() {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+    let edge = graph.edge(edge_idx);
+    if edge.deleted
+        || edge.no_building_spawn
+        || edge.physical_length <= frontage_m
+        || edge.physical_geometry.len() < 2
+    {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+    let s_m = existing.frontage_center_t.clamp(0.0, 1.0) * edge.physical_length;
+    if s_m < existing.frontage_m * 0.5 || s_m > edge.physical_length - existing.frontage_m * 0.5 {
+        return Err(ParcelPlacementError::FrontageOutOfBounds);
+    }
+    let Some(end) = project_point_to_edge(graph, edge_idx, end_pos) else {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    };
+
+    let max_centerline_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + depth_m + 8.0;
+    if end.dist_m > max_centerline_dist {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+
+    let spacing_m = frontage_m + gap_m;
+    if spacing_m <= 0.0 || !spacing_m.is_finite() {
+        return Err(ParcelPlacementError::InvalidGap);
+    }
+
+    let direction = if end.s_m >= s_m { 1.0 } else { -1.0 };
+    let first_offset_m = existing.frontage_m * 0.5 + gap_m + frontage_m * 0.5;
+    let limit_s = end.s_m;
+    let mut center_s = s_m + direction * first_offset_m;
+    let mut geometries = Vec::new();
+
+    while directed_s_within_limit(center_s, limit_s, direction) {
+        if center_s < frontage_m * 0.5 || center_s > edge.physical_length - frontage_m * 0.5 {
+            return Err(ParcelPlacementError::FrontageOutOfBounds);
+        }
+        let Some((accepted_s, geometry)) = next_non_overlapping_run_geometry_directed(
+            graph,
+            edge_idx,
+            if existing.side >= 0 { 1 } else { -1 },
+            center_s,
+            limit_s,
+            direction,
+            edge.physical_length,
+            frontage_m,
+            depth_m,
+            &geometries,
+            Some(existing),
+        ) else {
+            break;
+        };
+        geometries.push(geometry);
+        center_s = accepted_s + direction * spacing_m;
+    }
+
+    if geometries.is_empty() {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+    Ok(geometries)
+}
+
+fn project_parcel_run_from_projected_start(
+    graph: &RegionGraph,
+    start: ProjectedRoadPoint,
+    end_pos: Vector2,
+    frontage_m: f32,
+    depth_m: f32,
+    gap_m: f32,
+) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
     let edge = graph.edge(start.edge_idx);
     let Some(end) = project_point_to_edge(graph, start.edge_idx, end_pos) else {
         return Err(ParcelPlacementError::NoRoadAttachment);
@@ -531,9 +618,40 @@ fn next_non_overlapping_run_geometry(
     depth_m: f32,
     previous_geometries: &[ParcelGeometry],
 ) -> Option<(f32, ParcelGeometry)> {
+    next_non_overlapping_run_geometry_directed(
+        graph,
+        edge_idx,
+        side,
+        min_center_s,
+        max_center_s,
+        1.0,
+        edge_len_m,
+        frontage_m,
+        depth_m,
+        previous_geometries,
+        None,
+    )
+}
+
+fn next_non_overlapping_run_geometry_directed(
+    graph: &RegionGraph,
+    edge_idx: usize,
+    side: i8,
+    min_center_s: f32,
+    limit_s: f32,
+    direction: f32,
+    edge_len_m: f32,
+    frontage_m: f32,
+    depth_m: f32,
+    previous_geometries: &[ParcelGeometry],
+    blocking_geometry: Option<&ParcelGeometry>,
+) -> Option<(f32, ParcelGeometry)> {
     let mut low_s = min_center_s;
     let mut high_s = min_center_s;
     loop {
+        if !directed_s_within_limit(high_s, limit_s, direction) {
+            return None;
+        }
         let geometry = geometry_from_attachment(
             graph,
             edge_idx,
@@ -542,20 +660,18 @@ fn next_non_overlapping_run_geometry(
             frontage_m,
             depth_m,
         );
-        if !previous_geometries
-            .iter()
-            .any(|previous| geometries_overlap(previous, &geometry))
-        {
+        if !geometry_overlaps_previous_or_blocking(
+            &geometry,
+            previous_geometries,
+            blocking_geometry,
+        ) {
             break;
         }
         low_s = high_s;
-        high_s += CURVE_RUN_SPACING_SEARCH_STEP_M;
-        if high_s > max_center_s + OVERLAP_EPSILON_M {
-            return None;
-        }
+        high_s += direction * CURVE_RUN_SPACING_SEARCH_STEP_M;
     }
 
-    if high_s <= min_center_s + OVERLAP_EPSILON_M {
+    if (high_s - min_center_s).abs() <= OVERLAP_EPSILON_M {
         return Some((
             high_s,
             geometry_from_attachment(
@@ -579,9 +695,7 @@ fn next_non_overlapping_run_geometry(
             frontage_m,
             depth_m,
         );
-        if previous_geometries
-            .iter()
-            .any(|previous| geometries_overlap(previous, &geometry))
+        if geometry_overlaps_previous_or_blocking(&geometry, previous_geometries, blocking_geometry)
         {
             low_s = mid_s;
         } else {
@@ -600,6 +714,25 @@ fn next_non_overlapping_run_geometry(
             depth_m,
         ),
     ))
+}
+
+fn directed_s_within_limit(s_m: f32, limit_s: f32, direction: f32) -> bool {
+    if direction >= 0.0 {
+        s_m <= limit_s + OVERLAP_EPSILON_M
+    } else {
+        s_m >= limit_s - OVERLAP_EPSILON_M
+    }
+}
+
+fn geometry_overlaps_previous_or_blocking(
+    geometry: &ParcelGeometry,
+    previous_geometries: &[ParcelGeometry],
+    blocking_geometry: Option<&ParcelGeometry>,
+) -> bool {
+    blocking_geometry.is_some_and(|blocking| geometries_overlap(blocking, geometry))
+        || previous_geometries
+            .iter()
+            .any(|previous| geometries_overlap(previous, geometry))
 }
 
 fn project_buildable_road_point_at(
@@ -729,6 +862,34 @@ pub(crate) fn geometries_have_overlap(geometries: &[ParcelGeometry]) -> bool {
     false
 }
 
+pub(crate) fn geometry_overlaps_road(graph: &RegionGraph, geometry: &ParcelGeometry) -> bool {
+    let min = Vector3::new(
+        geometry.aabb_min.x - ROAD_OVERLAP_QUERY_PAD_M,
+        0.0,
+        geometry.aabb_min.y - ROAD_OVERLAP_QUERY_PAD_M,
+    );
+    let max = Vector3::new(
+        geometry.aabb_max.x + ROAD_OVERLAP_QUERY_PAD_M,
+        0.0,
+        geometry.aabb_max.y + ROAD_OVERLAP_QUERY_PAD_M,
+    );
+    graph
+        .get_edges_near_aabb(min, max)
+        .into_iter()
+        .any(|edge_idx| {
+            edge_idx != geometry.edge_idx && geometry_overlaps_edge(graph, geometry, edge_idx)
+        })
+}
+
+pub(crate) fn any_geometry_overlaps_road(
+    graph: &RegionGraph,
+    geometries: &[ParcelGeometry],
+) -> bool {
+    geometries
+        .iter()
+        .any(|geometry| geometry_overlaps_road(graph, geometry))
+}
+
 pub(crate) fn geometry_for_parcel(parcel: &ZoningParcel) -> ParcelGeometry {
     ParcelGeometry {
         edge_idx: parcel.edge_idx,
@@ -805,6 +966,59 @@ fn cross2(a: Vector2, b: Vector2) -> f32 {
 fn rectangles_overlap_geometry(geometry: &ParcelGeometry, parcel: &ZoningParcel) -> bool {
     let parcel_geometry = geometry_for_parcel(parcel);
     geometries_overlap(geometry, &parcel_geometry)
+}
+
+fn geometry_overlaps_edge(graph: &RegionGraph, geometry: &ParcelGeometry, edge_idx: usize) -> bool {
+    let edge = graph.edge(edge_idx);
+    if edge.deleted || edge.physical_geometry.len() < 2 {
+        return false;
+    }
+    let half_width = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+    edge.physical_geometry.windows(2).any(|window| {
+        parcel_overlaps_road_segment(
+            geometry,
+            Vector2::new(window[0].x, window[0].z),
+            Vector2::new(window[1].x, window[1].z),
+            half_width,
+        )
+    })
+}
+
+fn parcel_overlaps_road_segment(
+    geometry: &ParcelGeometry,
+    start: Vector2,
+    end: Vector2,
+    half_width: f32,
+) -> bool {
+    let segment = end - start;
+    if segment.length_squared() <= OVERLAP_EPSILON_M * OVERLAP_EPSILON_M {
+        return false;
+    }
+    let tangent = segment.normalized();
+    let normal = Vector2::new(tangent.y, -tangent.x);
+    let road_corners = [
+        start - normal * half_width,
+        end - normal * half_width,
+        end + normal * half_width,
+        start + normal * half_width,
+    ];
+    rectangles_overlap_on_axes(
+        &geometry.corners,
+        &road_corners,
+        [geometry.tangent, geometry.normal, tangent, normal],
+    )
+}
+
+fn rectangles_overlap_on_axes(
+    a_corners: &[Vector2; 4],
+    b_corners: &[Vector2; 4],
+    axes: [Vector2; 4],
+) -> bool {
+    axes.into_iter().all(|axis| {
+        let (a_min, a_max) = project_corners(a_corners, axis);
+        let (b_min, b_max) = project_corners(b_corners, axis);
+        a_max > b_min + OVERLAP_EPSILON_M && b_max > a_min + OVERLAP_EPSILON_M
+    })
 }
 
 fn project_corners(corners: &[Vector2; 4], axis: Vector2) -> (f32, f32) {

@@ -966,6 +966,8 @@ Completed in the current implementation:
   instead of broad `ZoneType`.
 - The live zoning tool and overlay now create, rezone, and display Rust-owned road-aligned parcels
   with registry-driven profile selection.
+- Parcel preview, single placement, drag placement, and parcel restore reject candidate rectangles
+  that overlap any non-owner road corridor.
 - Allocator legality, stale-building cleanup, and rezoning compatibility now consume the
   profile-based zoning contract, including the deterministic rezoning grace period for
   incompatible repainting.
@@ -1331,6 +1333,7 @@ The first implementation is deliberately narrow:
 - one parcel stores one `zone_profile_runtime_id`; `0` means free / unzoned
 - one parcel may host at most one private zoned building
 - parcels must not overlap each other
+- parcels must not overlap any non-owner road corridor
 - parcels are private zoning land only; explicit city-owned service / utility buildings remain
   outside this painted-zoning path
 - parcels are not engineered-ground clients in the first slice: they do not flatten terrain, own a
@@ -1443,6 +1446,7 @@ Live Rust-side bridge surface:
 get_zoning_parcel_preview(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
 apply_zoning_parcel_at(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
 has_zoning_parcel_at(world_x, world_z)
+get_zoning_parcel_profile_runtime_id_at(world_x, world_z)
 get_zoning_parcel_drag_preview_packed(start_x, start_z, end_x, end_z, selected_profile_runtime_id, frontage_cells, depth_cells, gap_m)
 apply_zoning_parcel_drag(start_x, start_z, end_x, end_z, selected_profile_runtime_id, frontage_cells, depth_cells, gap_m)
 get_zoning_parcel_rezone_drag_preview_packed(start_x, start_z, end_x, end_z, selected_profile_runtime_id)
@@ -1463,6 +1467,10 @@ configuration, rejects unsupported dimensions, and returns the final projected g
 Drag-run placement is deliberately narrow:
 
 - the run is generated on the road edge and side selected by the drag start point
+- if the drag starts inside an existing parcel with the same selected profile, Rust extends the run
+  from that parcel's stored road attachment and filters out the already-existing start parcel
+- the first generated extension parcel is offset by `existing_frontage / 2 + gap_m + new_frontage / 2`,
+  so `gap_m = 0` places it edge-to-edge with the existing parcel
 - the drag end projects onto that same edge; connected-edge wrapping is deferred
 - `gap_m` is the minimum requested gap; straight and outer-curve runs use
   `frontage_m + gap_m` center spacing when that is legal
@@ -1474,8 +1482,9 @@ Drag-run placement is deliberately narrow:
 
 Rezone drag is a separate existing-parcel stroke gesture:
 
-- Godot asks Rust whether the drag start is inside an authored parcel
-- if the drag starts inside a parcel, the drag is a rezone stroke instead of a parcel-run create
+- Godot asks Rust for the profile id of the authored parcel under the drag start
+- if the drag starts inside a parcel with a different selected profile, the drag is a rezone stroke
+  instead of a parcel-run create
 - Rust selects every authored parcel whose rectangle intersects the world-space stroke segment
 - commit changes the selected parcels to the current runtime profile id, including `0` for free
 - if the drag starts outside a parcel, the existing parcel-run creation rules apply
@@ -1590,7 +1599,9 @@ The first live tool mode supports:
 - create free parcel
 - create pre-zoned parcel with selected profile
 - drag a same-road parcel run with the selected profile
+- drag from a matching existing parcel to extend that parcel run
 - rezone an existing parcel by clicking it with the selected profile
+- drag from an existing parcel with a different selected profile to rezone all touched parcels
 - compact parcel options opened by a `⚙` glyph button, currently width/frontage cells, depth cells,
   and run gap metres
 
@@ -1624,6 +1635,8 @@ The first implementation has focused coverage for:
 
 - creating a `20 m x 30 m` parcel on both sides of a straight road
 - overlap rejection between adjacent or crossing parcels
+- road-overlap rejection for single parcel creation and all-or-nothing drag-run creation
+- drag-run extension from an existing same-profile start parcel without duplicating that parcel
 - all-or-nothing drag-run generation, gap spacing, direction independence, and existing-overlap
   rejection
 - pre-zoned parcels spawn compatible assets
