@@ -55,9 +55,14 @@ Each parcel stores:
 Parcel ids are persisted and used by buildings. Parcel geometry is reconstructed from road
 attachment during load so saves stay road-provenance based.
 
-### Parcel Modules
+### Rust Modules
 
 ```text
+rust/src/simulation/zoning/mod.rs
+rust/src/simulation/zoning/constants.rs
+rust/src/simulation/zoning/zone_type.rs
+rust/src/simulation/zoning/system.rs
+rust/src/simulation/zoning/profiles.rs
 rust/src/simulation/zoning/parcels.rs
 rust/src/simulation/zoning/parcels/types.rs
 rust/src/simulation/zoning/parcels/store.rs
@@ -65,11 +70,16 @@ rust/src/simulation/zoning/parcels/geometry.rs
 rust/src/simulation/zoning/parcels/placement.rs
 ```
 
+- `mod.rs`: public API routing and re-exports
+- `constants.rs`: public parcel defaults and edit limits
+- `zone_type.rs`: broad land-use family enum
+- `system.rs`: `ZoningSystem` state and high-level operations
+- `profiles.rs`: built-in zoning-profile registry
+- `parcels.rs`: parcel module routing and public re-exports
 - `types.rs`: ids, parcel structs, projected geometry, placement errors
 - `store.rs`: stable parcel storage, chunk lookup, occupancy fields
 - `geometry.rs`: projection helpers, SAT overlap checks, road-corridor conflict checks
 - `placement.rs`: road attachment, single parcel projection, drag-run projection
-- `parcels.rs`: constants, module routing, public re-exports
 
 ---
 
