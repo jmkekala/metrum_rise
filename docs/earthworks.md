@@ -23,7 +23,7 @@ It does not own:
 - terrain chunk storage internals or water runtime rules
 - zoning legality, frontage semantics, or building program rules
 
-Those remain owned by [`improved_roads.md`](improved_roads.md), [`terrain.md`](terrain.md),
+Those remain owned by [`roads.md`](roads.md), [`terrain.md`](terrain.md),
 [`zoning.md`](zoning.md), and [`building_allocator.md`](building_allocator.md).
 
 ## Document Conventions
@@ -183,7 +183,7 @@ Deterministic seam contract:
   - Spade is the chosen CDT backend; `ghx_constrained_delaunay` is not part of this spec, is not a
     fallback, and may only be reconsidered through a new explicit benchmarked spec change
   - road node contour construction, grade evaluation, spatial lookup, and validation follow the
-    accepted geometry-backend responsibilities in [`improved_roads.md`](improved_roads.md);
+    accepted geometry-backend responsibilities in [`roads.md`](roads.md);
     earthworks must not depend on hand-rolled road offset, boundary recovery, or sampled-height
     repair paths to produce a valid seam
   - road / earthwork seam math should use the same internal `glam` vector representation and
@@ -316,7 +316,7 @@ That means:
 - tunnel earthworks remain portal-only and use class-owned endpoint ranges so visible portals are
   not trimmed away before portal visibility is evaluated
 
-Road-specific section and junction rules continue to live in [`improved_roads.md`](improved_roads.md).
+Road-specific section and junction rules continue to live in [`roads.md`](roads.md).
 
 ### 2. Former Whole-Map Render Boundary Is No Longer The Blocker
 
@@ -350,7 +350,7 @@ The current deterministic characterization now proves:
   whole-map dense renderer upload path
 
 So terrain density may improve far-field blend quality, but the accepted seam representation is the
-Spade CDT terrain-patch hardcut in [`improved_roads.md`](improved_roads.md).
+Spade CDT terrain-patch hardcut in [`roads.md`](roads.md).
 
 ### 4. Current Runtime Compatibility Gap On Post-Placement Terrain Edits
 
@@ -603,7 +603,7 @@ For the roads-first rewrite, the following are deterministic and implemented:
   order
 - road-touched terrain patches are currently generated in Rust as baked terrain `ArrayMesh`
   payloads whose boundary vertices reuse the road / sidewalk seam height
-- the Spade CDT terrain-patch hardcut in [`improved_roads.md`](improved_roads.md) is now the live
+- the Spade CDT terrain-patch hardcut in [`roads.md`](roads.md) is now the live
   road-touched terrain patch path; the provisional seam-strip / cell-triangle hybrid has been
   removed rather than polished further
 
@@ -728,7 +728,7 @@ Deterministic conclusion:
   same world-space engineered-ground cases on that split render path
 
 The selected non-density seam representation is the Spade CDT terrain-patch hardcut in
-[`improved_roads.md`](improved_roads.md); density changes remain a later quality / cost decision.
+[`roads.md`](roads.md); density changes remain a later quality / cost decision.
 
 ### 4. Transition Path Preserves Ownership Even If The Terrain Runtime Changes
 

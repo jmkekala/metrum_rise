@@ -178,6 +178,9 @@ patterns.
 
 - Future terrain closure variants beyond the current retaining-wall path should be tracked as new
   explicit `EARTH-*` work, not reopened under `ROAD-01`.
+- Road editing responsiveness work that requires async final compile, immutable compile snapshots,
+  or incremental `JunctionN` compilation should be tracked as a new road-performance task rather
+  than reopening the shipped `ROAD-01` hardcuts.
 
 ### Post ROAD-01 Guardrails
 
@@ -190,6 +193,31 @@ render-order priority.
 elevated 4-way / 5-way / 6-way `JunctionN` fixtures now exercise mixed sidewalk / curb and
 no-sidewalk curb / shoulder profile modes without weakening canonical identity, provenance, or
 terrain-CDT gates.
+
+### Closed Implementation Plan Index
+
+The following former implementation plans are shipped or retired as maintenance contracts, not
+active task lists:
+
+- [`Piece-Owned Chunk Coverage Hardcut`](#piece-owned-chunk-coverage-hardcut): shipped. Dirty
+  surface, terrain, and query rebuilds use compiled-piece coverage and `old_coverage union
+  new_coverage`.
+- [`Spade CDT Terrain-Patch Hardcut`](#spade-cdt-terrain-patch-hardcut): shipped. Road-touched
+  terrain patches use Rust-side Spade CDT over unioned road-owned footprint loops.
+- [`Library-Backed Node Runtime Contract`](#library-backed-node-runtime-contract): shipped. Live
+  `Terminal`, `Bend`, and `JunctionN` pieces route through canonical rails, boolean ownership,
+  height carriers, Spade triangulation, and provenance validation.
+- [`Conflict-First Node Candidate Hardcut`](#conflict-first-node-candidate-hardcut): shipped.
+  `Bend` and `JunctionN` ownership is derived from full-roadbed and carriageway corridor
+  candidates, not adjacent-mouth strips.
+- [`General Carrier-Provenance Closure Contract`](#general-carrier-provenance-closure-contract):
+  shipped. Post-boolean height support materializes from closure records, not repair sampling.
+- [`Closed Note: JunctionN Raised-Step Coverage Closure`](#closed-note-junctionn-raised-step-coverage-closure):
+  closed as a rendered-hole plan and kept only as guardrails against downstream repair paths.
+- Road-debug performance hardening is shipped for the current instrumentation scope: provider
+  timings are split, zoning debug uses cached stats, and earthwork stamping emits counters from the
+  chunk-local candidate path. Remaining responsiveness work belongs to a future async /
+  incremental-compile task.
 
 ### Closed Note: JunctionN Raised-Step Coverage Closure
 
@@ -1503,19 +1531,20 @@ Preferred cache structure:
 - avoid inventing a second unrelated spatial ownership grid when one of the existing chunk systems
   can index the same work
 
-Earthwork stamping performance contract:
+Shipped earthwork stamping performance contract:
 
-- instrument the stamping path with counters for chunks, owners, regions, triangles
-  visited, degenerate triangles, grid cells scanned from triangle bounds, point / triangle tests,
-  candidate inserts, candidate replacements, and final unique writes
-- preserve the current support-candidate rule exactly: closest projected support triangle wins, and
+- the stamping path reports counters for chunks, owners, regions, triangles visited, degenerate
+  triangles, grid cells scanned from triangle bounds, point / triangle tests, candidate inserts,
+  candidate replacements, and final unique writes
+- the support-candidate rule is unchanged: closest projected support triangle wins, and
   equal-distance candidates choose the lower support height
-- use chunk-local candidate building instead of triangle-first terrain-grid scanning:
+- structural stamping uses chunk-local candidate building instead of triangle-first
+  terrain-grid scanning:
   - collect valid span / node support triangles for the dirty chunk
   - bucket prepared triangles into small chunk-local sample tiles
   - for each terrain sample, test only triangles from nearby buckets
   - write each final winning terrain sample once
-- parallelize candidate-map construction across independent dirty chunks with Rayon, then apply
+- candidate-map construction can run across independent dirty chunks with Rayon, then apply
   visual-terrain resets and writes sequentially in canonical chunk order
 - keep this as an acceleration of existing structural visual-terrain stamping only; it must not
   become a fallback seam carrier, mask, cap strip, closure strip, or replacement for the Rust CDT
@@ -1912,6 +1941,10 @@ Road-piece CDT is now part of the accepted visual carrier for node pieces:
   back to nearest-material classification, centroid voting, render order, or paired strip sectors
 
 ### Conflict-First Node Candidate Hardcut
+
+Status: shipped for `ROAD-01` / `ROAD-02`. This section is now the maintenance contract for
+conflict-first `Bend` / `JunctionN` ownership and for keeping the retired adjacent-mouth strip
+model out of live reachability.
 
 The node-piece hardcut replaces the paired adjacent-mouth strip candidate model. The old strip model
 can produce malformed local wedges: one missing asphalt wedge lets sidewalk own the junction

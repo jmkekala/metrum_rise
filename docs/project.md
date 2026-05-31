@@ -38,7 +38,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Area                                                        | Owning doc                                             |
 | -------------------------------------------------------------| --------------------------------------------------------|
 | Current status / priorities                                 | [`project.md`](project.md), [`roadmap.md`](roadmap.md) |
-| Stable constants / bridge API / formats                     | [`reference.md`](reference.md)                         |
+| Stable constants / formats / vocabulary                     | [`reference.md`](reference.md)                         |
 | Entrance / exit / trip attachment                           | [`entrance_and_exit.md`](entrance_and_exit.md)         |
 | Economy / freight / household runtime                       | [`economy.md`](economy.md)                             |
 | Demand / city-growth pressure / admission-removal ownership | [`demand.md`](demand.md)                               |
@@ -47,7 +47,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Building placement / removal / frontage attachment          | [`building_allocator.md`](building_allocator.md)       |
 | Gameplay HUD / menus / floating windows                     | [`ui.md`](ui.md)                                       |
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
-| Road surface / roadbed replacement                         | [`improved_roads.md`](improved_roads.md)               |
+| Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 
 ## Recent Structural Changes
 
@@ -67,7 +67,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   solved edge elevation profile already stored on the graph instead of silently re-sampling source
   terrain during render / earthwork compilation. This keeps preview, committed surface mesh, and
   terrain earthworks on the same longitudinal grade solve in authored sloped worlds. See
-  [`improved_roads.md`](improved_roads.md).
+  [`roads.md`](roads.md).
 - `ROAD-01` core roadbed ownership is live: `TransitNetwork` now owns one `RoadSurfaceSystem`
   cache that deterministically compiles preview geometry, committed road / sidewalk surfaces,
   bridge decks, tunnel portals, lane-divider markings, terrain earthworks, and world-surface
@@ -223,7 +223,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   vertices preserve source-owned height provenance at exact canonical split keys.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
-  [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
+  [`roads.md`](roads.md) and terrain storage / chunking rules staying in
   [`terrain.md`](terrain.md).
 - `ROAD-01` node earthwork visibility is now owner-scoped: mixed Standard / Bridge or visible
   Tunnel nodes retain Standard boundary roots for terrain/CDT, but render, query, and stamp only
@@ -258,7 +258,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Earthworks cleanup note: the old whole-map terrain render boundary is no longer the active
   blocker for engineered ground. The remaining blocker is now the near-road representation itself:
   the current corridor-sheet prototype is retired, and [`earthworks.md`](earthworks.md) plus
-  [`improved_roads.md`](improved_roads.md) now reset the target to a closed road-owned earthwork
+  [`roads.md`](roads.md) now reset the target to a closed road-owned earthwork
   mesh carried by a separate piece/profile visual road layer rather than by graph-derived node
   fills.
 - Terrain / water patch rendering now also uses deterministic distance-based mesh LOD on top of the
@@ -271,18 +271,18 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   rebuilds and visible-surface precedence remain required, and terrain / road ownership stays
   explicit, but the thin corridor-sheet visual carrier is now retired in favor of road-owned top
   surfaces, band-owned node geometry, and Rust-stitched terrain topology. See [`earthworks.md`](earthworks.md),
-  [`improved_roads.md`](improved_roads.md), and [`terrain.md`](terrain.md).
+  [`roads.md`](roads.md), and [`terrain.md`](terrain.md).
 - `ROAD-01` is now pinned to one deterministic target architecture: the next road geometry pass
   must stop treating the logical graph as the visible-shape carrier and instead compile a separate
   deterministic piece/profile geometry layer with `Span`, `Bend`, `Terminal`, and `JunctionN`
   pieces, while the elevated `Bend` / `JunctionN` hardcut replaces post-overlay height sampling
   with band-owned regions and `NodeBandHeightField` surfaces identified by
   `NodeBandHeightFieldId`. The existing graph / clip / lane ownership layers stay intact. See
-  [`improved_roads.md`](improved_roads.md).
+  [`roads.md`](roads.md).
 - The retired annulus/corridor prototype still produced useful conclusions that remain valid after
   the code revert: arbitrary-angle bends and multi-arm junctions need explicit road and sidewalk
   piece ownership, not one sampled outer loop plus one sampled inner loop with triangulation
-  layered on afterward. See [`improved_roads.md`](improved_roads.md).
+  layered on afterward. See [`roads.md`](roads.md).
 - Gameplay and `WorldEditor` now share one terrain-aware world-camera core in `CameraNode`, including a common terrain-clearance rule that keeps the camera above the terrain surface while preserving separate scene-level zoom and clip policy. See [`ui.md`](ui.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).
 - Gameplay `File -> New Game` now opens a `user://worlds/` picker and loads the selected `WorldDefinition` into the live gameplay scene, pausing immediately after the refresh. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).

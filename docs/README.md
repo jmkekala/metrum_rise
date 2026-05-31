@@ -8,7 +8,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 |------|------|
 | [`project.md`](project.md) | Current dashboard: shipped status, current focus, recent changes, and links to the owning docs. |
 | [`roadmap.md`](roadmap.md) | Active tracked work, stable IDs, validated bugs, and later priorities. |
-| [`reference.md`](reference.md) | Stable lookup tables, bridge API inventory, data formats, and vocabulary. |
+| [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
 | [`economy.md`](economy.md) | Economy and freight design/spec. |
 | [`demand.md`](demand.md) | Demand, growth pressure, and household admission/removal ownership. |
@@ -16,7 +16,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`building_allocator.md`](building_allocator.md) | Building placement, removal, frontage attachment, and allocator ownership boundaries. |
 | [`buildings.md`](buildings.md) | Reserved for a future building type catalog. See `economy.md` and `demand.md` for current building specs. |
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
-| [`improved_roads.md`](improved_roads.md) | Long-term road surface / roadbed replacement spec. |
+| [`roads.md`](roads.md) | Live road surface / roadbed runtime contract. |
 | [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads, pads, and future foundations. |
 | [`terrain.md`](terrain.md) | Terrain source ingest, chunked terrain runtime, and large-world terrain ownership. |
 | [`ui.md`](ui.md) | UI paradigm, surface ownership, style conventions, and migration plan. |
@@ -31,3 +31,4 @@ This directory stays intentionally flat for now. Each file should have one clear
 ## Archive
 
 - [`archive/project_legacy_2026-04-09.md`](archive/project_legacy_2026-04-09.md) preserves the old monolithic project ledger and numbered backlog for historical reference only. It is not the live planning source anymore.
+- [`archive/roads_hardcut_history_2026-05-31.md`](archive/roads_hardcut_history_2026-05-31.md) preserves the old full roadbed hardcut spec for historical reference only. [`roads.md`](roads.md) is the live road contract.

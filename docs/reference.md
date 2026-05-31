@@ -1,8 +1,8 @@
 # Metrum Rise — Reference
 
-Stable lookup tables for architecture constants, Godot bridge API, and data formats. Update this file when specs change. For current status see [`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
+Stable lookup tables for architecture constants, runtime vocabulary, memory budgets, and data formats. Update this file when specs change. For current status see [`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
 
-Terminology note: this file mirrors current code and API names on purpose. When subsystem specs use broader gameplay terms such as `build site`, this reference may still show code-facing names such as `lot_width_cells` or `get_building_plot_transforms()` until the underlying runtime API changes.
+Terminology note: this file mirrors durable code-facing names on purpose. When subsystem specs use broader gameplay terms such as `build site`, this reference may still show names such as `lot_width_cells` until the underlying runtime data model changes.
 
 ---
 
@@ -96,91 +96,11 @@ Benchmark-history rule:
 
 ---
 
-## Godot Layer
+## Runtime Boundary Note
 
-The Godot side is a thin bridge: no authoritative simulation logic lives here. GDScript handles rendering, input routing, and editor UX while `SimulationNode` owns the simulation state in Rust.
+Godot is a rendering, input, and editor bridge. Authoritative simulation state and gameplay decisions live in Rust. This file intentionally does not maintain an exhaustive script-to-`SimulationNode` inventory; that API changes too quickly for a hand-written reference. Use `rust/src/nodes/simulation_node.rs` and `rg "simulation_node\.|sim\." godot/scripts` when auditing current bridge calls.
 
-Normal startup now routes through `Router.tscn` into `MainMenu.tscn`. Gameplay `Main.tscn`
-is only entered after the player selects a world/save through the `LaunchState` handoff, or
-when benchmark-style command-line flags explicitly request direct gameplay boot.
-
-The asset editor, economy editor, and world editor are separate launch modes inside the same
-Godot project. See [`asset_editor.md`](asset_editor.md) for the asset-tool contract,
-[`economy.md`](economy.md) for the economy-tool contract, and [`terrain.md`](terrain.md) for the
-world-editor terrain ownership contract.
-
-### Startup Shells
-
-| Scene / singleton | Type | Script | Role |
-|-------------------|------|--------|------|
-| Router | `Node` | `launch_router.gd` | Project entry point. Routes normal launch to `MainMenu.tscn` and editor / benchmark flags to their dedicated scenes. |
-| MainMenu | `Control` | `main_menu.gd` | Front-door menu with `New Game`, `Load Game`, `World Editor`, and `Quit`. No simulation scene graph is present here. |
-| LaunchState | Autoload singleton | `launch_state.gd` | Holds the pending selected world/save path between the main menu and gameplay scene startup. |
-
-### Main Gameplay Scene (`godot/scenes/Main.tscn`)
-
-| Node | Type | Script | Role |
-|------|------|--------|------|
-| Main | `Node3D` | `main_scene.gd` | Root gameplay scene. Consumes pending `LaunchState` request on startup or returns to `MainMenu.tscn` when launched without content. |
-| WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
-| DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
-| SimulationNode | Rust native | — | Owns simulation state and exposes `#[func]` methods. |
-| Terrain | `MeshInstance3D` | `terrain.gd` | Live terrain renderer with hillshade, contour lines, cliff cues, and the render-only border skirt. |
-| Water | `MeshInstance3D` | `water.gd` | Baseline-plus-dynamic water renderer with shoreline treatment and the render-only map-edge water curtain. |
-| RoadTool | `Node3D` | `road_tool.gd` | Road authoring tool and road mesh owner. |
-| ZoningOverlay | `MeshInstance3D` | `zoning_overlay.gd` | Full-map zoning / occupancy / distance overlay. |
-| ZoningTool | `Node3D` | `zoning_tool.gd` | World-space zoning paint tool. |
-| Buildings | `Node3D` | `buildings.gd` | One MultiMesh per registered asset ID, plus foundations by zone. |
-| Agents | `Node3D` | `agents.gd` | Per-type pedestrian and car MultiMesh renderers plus debug overlay. |
-| LaneTool | `Node3D` | `lane_tool.gd` | Junction lane-connection editor. |
-| MoveTool | `Node3D` | `move_tool.gd` | Road node drag / reposition tool. |
-| NetworkRenderer | `Node` | `network_renderer.gd` | Async network-dirty refresh coordinator. |
-| InputManager | `Node` | `input_manager.gd` | Global tool selection, save/load, undo, sim-speed routing. |
-| CameraNode | `CameraNode` | — | Shared terrain-aware world-camera core for gameplay. |
-| MainUI | `CanvasLayer` | `main_ui.gd` | Procedurally built HUD and road property panel. |
-
-Runtime-spawned tools:
-
-- `SelectTool` is instantiated by `InputManager` at runtime for road-edge selection, crosswalk toggles, and edge-class editing.
-- `CulDeSacTool` is instantiated by `InputManager` at runtime for dead-end cap toggles.
-
-### World Editor Scene (`godot/scenes/WorldEditor.tscn`)
-
-| Node | Type | Script | Role |
-|------|------|--------|------|
-| WorldEditor | `Node3D` | `world_editor.gd` | Root blank-world authoring scene. |
-| WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
-| DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
-| SimulationNode | Rust native | — | Owns the paused shared runtime and `WorldDefinition` bridge methods. |
-| Terrain | `Node3D` | `terrain.gd` | Terrain patch renderer and dirty-flag refresh owner, shared with gameplay. |
-| Water | `Node3D` | `water.gd` | Water patch renderer for authored-water preview and live water depth, shared with gameplay. |
-| CameraNode | `CameraNode` | — | Shared terrain-aware world-camera core for WorldEditor. |
-| EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor input wrapper and UI-capture gate around the shared `CameraNode` policy. |
-
-### Script → Rust Method Inventory
-
-| Script | `SimulationNode` methods called |
-|--------|---------------------------------|
-| `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `load_world_definition()`, `set_simulation_speed()` |
-| `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
-| `terrain.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_terrain_patch_layout()`, `get_dirty_terrain_patches()`, `get_terrain_patch()`, `get_terrain_border_loop()`, `intersect_terrain()`, `sculpt_terrain()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
-| `water.gd` | `get_water_patch()`, `get_dirty_water_patches()`, `get_water_border_depths()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
-| `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
-| `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
-| `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
-| `economy_editor.gd` | `is_economy_editor_mode()`, `load_economy_project()`, `export_economy_project()`, `run_economy_sandbox()` |
-| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `get_height_at()`, `intersect_terrain()`, `begin_terrain_stroke()`, `sculpt_terrain_stroke_step()`, `level_terrain_stroke_step()`, `smooth_terrain_stroke_step()`, `slope_terrain_stroke_step()`, `end_terrain_stroke()`, `clear_terrain_dirty()`, `add_world_water_source()`, `add_world_water_sink()`, `remove_world_water_source_near()`, `remove_world_water_sink_near()`, `begin_world_lake_fill_preview()`, `update_world_lake_fill_preview()`, `get_world_lake_fill_preview()`, `commit_world_lake_fill_preview()`, `cancel_world_lake_fill_preview()`, `remove_world_lake_fill_near()`, `begin_world_open_water_fill_preview()`, `update_world_open_water_fill_preview()`, `get_world_open_water_fill_preview()`, `commit_world_open_water_fill_preview()`, `cancel_world_open_water_fill_preview()`, `remove_world_open_water_fill_near()`, `get_world_water_authoring_markers()` |
-| `network_tool.gd` | `intersect_world_surface()`, `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_road_ghost_guides()`, `get_road_surface_debug_data()` |
-| `road_tool.gd` | inherited `NetworkTool` methods, plus `check_border_candidate()` and `set_border_connection()` through deferred border checks |
-| `network_renderer.gd` | `is_network_dirty()`, `rebuild_network_surface_terrain()`, `clear_terrain_dirty()`, `clear_network_dirty()` |
-| `move_tool.gd` | `get_closest_network_point()`, `get_closest_node()`, `get_world_surface_height()`, `move_network_node()` |
-| `lane_tool.gd` | `intersect_world_surface()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_node_pos()` |
-| `zoning_tool.gd` | `intersect_terrain()`, `capture_zoning_patch()`, `apply_zoning_patch()`, `restore_zoning_patch()`, `get_zone_profiles()`, `get_zone_grid_size()` |
-| `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_terrain_world_size()`, `get_zone_profile_texture_data_rg8()`, `get_zone_profile_style_lut_rgba8()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
-| `select_tool.gd` | `intersect_world_surface()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `get_node_pos()`, `has_crosswalk()`, `set_crosswalk_override()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_edge_nodes()`, `get_hovered_edge()`, `set_edge_class()`, `set_no_building_spawn()`, `get_edge_geometry_3d()`, `get_edge_width()` |
-| `cul_de_sac_tool.gd` | `get_closest_node()`, `get_node_connection_count()`, `has_cul_de_sac()`, `set_node_cul_de_sac()` |
-
-### Data Format Reference
+## Data Format Reference
 
 | Buffer / return value | Type | Layout / meaning |
 |-----------------------|------|------------------|

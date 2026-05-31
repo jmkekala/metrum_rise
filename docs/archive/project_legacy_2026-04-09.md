@@ -628,5 +628,5 @@ Instead of one CCH hierarchy, build a separate contraction hierarchy per cost fu
 
 ---
 
-See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, Godot scene tree, script→Rust method inventory, and data buffer formats. See [`docs/improved_roads.md`](improved_roads.md) for the current road-renderer architecture notes.
+See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, and data buffer formats. See [`docs/roads.md`](roads.md) for the current road-renderer architecture notes.
 See [`docs/economy.md`](economy.md) for the building-centric economy, household supply, logistics, and economy-editor specification.

@@ -246,7 +246,7 @@ Remaining limitation:
   treated as fully shipped
 - terrain density alone is no longer the target fix for road / terrain gaps
 - the live road-touched seam path is the Spade CDT patch builder described in
-  [`improved_roads.md`](improved_roads.md):
+  [`roads.md`](roads.md):
   road footprint loops become hard constraints, terrain faces inside those loops are omitted, and
   road seam constraint edges are preserved exactly
 - current grounded-road terrain editing must keep placed `Standard` road geometry fixed and rebuild
@@ -777,7 +777,7 @@ Deterministic density gate:
   - terrain brush cost
   - earthwork restamp cost
 - the accepted road / terrain seam fix is not a density move; it is the Spade CDT terrain-patch
-  hardcut in [`improved_roads.md`](improved_roads.md)
+  hardcut in [`roads.md`](roads.md)
 
 Deterministic transition rules:
 
