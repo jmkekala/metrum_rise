@@ -9,6 +9,8 @@ extends Node3D
 
 var active: bool = false
 var current_profile_runtime_id: int = 0
+var parcel_width_cells: int = 2
+var parcel_depth_cells: int = 3
 var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
@@ -66,8 +68,9 @@ func select_profile_by_zone_type(zone_type: String) -> void:
 			select_profile(int(profile.get("runtime_id", 0)))
 			return
 
-func set_paint_mode(_mode: String) -> void:
-	pass
+func set_parcel_cells(width_cells: int, depth_cells: int) -> void:
+	parcel_width_cells = clampi(width_cells, 1, 8)
+	parcel_depth_cells = clampi(depth_cells, 1, 12)
 
 func undo() -> void:
 	pass
@@ -76,7 +79,13 @@ func _commit_at_mouse() -> void:
 	var wp = _mouse_world_pos()
 	if wp == null:
 		return
-	if simulation_node.apply_zoning_parcel_at(wp.x, wp.y, current_profile_runtime_id):
+	if simulation_node.apply_zoning_parcel_at(
+		wp.x,
+		wp.y,
+		current_profile_runtime_id,
+		parcel_width_cells,
+		parcel_depth_cells
+	):
 		if zoning_overlay:
 			zoning_overlay.mark_zone_dirty()
 
@@ -88,7 +97,9 @@ func _update_preview() -> void:
 	var payload: Dictionary = simulation_node.get_zoning_parcel_preview(
 		wp.x,
 		wp.y,
-		current_profile_runtime_id
+		current_profile_runtime_id,
+		parcel_width_cells,
+		parcel_depth_cells
 	)
 	if payload.is_empty():
 		preview_mesh.visible = false

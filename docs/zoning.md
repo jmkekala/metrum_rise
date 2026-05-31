@@ -1318,7 +1318,11 @@ The player-facing intent is:
 
 The first implementation is deliberately narrow:
 
-- default parcel size is `20 m` frontage by `30 m` depth
+- default parcel size is `2 x 3` zoning cells, currently `20 m` frontage by `30 m` depth with the
+  shipped `10 m` zoning cell
+- the zoning UI may offer player-selected parcel frontage/depth in whole zoning cells for
+  placement, but Rust converts through `zone_cell_m`, validates the resulting dimensions, and owns
+  the final rectangle
 - one parcel attaches to exactly one road edge and one side
 - one parcel is a road-aligned rectangle; its frontage edge follows the selected road side and its
   depth extends away from the road
@@ -1433,14 +1437,18 @@ currently selected non-zero runtime profile id.
 Live Rust-side bridge surface:
 
 ```text
-get_zoning_parcel_preview(world_x, world_z, selected_profile_runtime_id)
-apply_zoning_parcel_at(world_x, world_z, selected_profile_runtime_id)
+get_zoning_parcel_preview(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
+apply_zoning_parcel_at(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
 get_zoning_parcels_overlay()
 ```
 
 `apply_zoning_parcel_at` creates a parcel when the target point is empty and rezones the existing
 parcel when the target point is already inside one. Dedicated select, delete, merge, split, and
 bulk-edit commands are deferred until they have a gameplay/UI need.
+
+The live bridge also accepts caller-selected parcel frontage/depth cell counts for preview and
+apply. Those values are user options, not authority: Rust converts them to metres using the world
+configuration, rejects unsupported dimensions, and returns the final projected geometry.
 
 Bridge rules:
 
@@ -1549,6 +1557,8 @@ The first live tool mode supports:
 - create free parcel
 - create pre-zoned parcel with selected profile
 - rezone an existing parcel by clicking it with the selected profile
+- compact parcel options opened by a `⚙` glyph button, currently width/frontage cells and depth
+  cells
 
 Deferred tool work:
 

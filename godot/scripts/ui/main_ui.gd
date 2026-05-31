@@ -43,6 +43,11 @@ var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
 var zoning_profile_panel: PanelContainer
 var zoning_profile_menu: HBoxContainer
+var zoning_options_btn: Button
+var zoning_options_popup: PopupPanel
+var zoning_width_spin: SpinBox
+var zoning_depth_spin: SpinBox
+var _zoning_options_open_on_button_down := false
 var _zoning_profiles_by_zone_type: Dictionary = {}
 var _zoning_type_buttons: Dictionary = {}
 var _zoning_profile_buttons: Dictionary = {}
@@ -67,6 +72,9 @@ const ZONING_MAIN_TYPES := [
 	{"id": "commercial", "label": "Commercial"},
 	{"id": "industrial", "label": "Industrial"},
 ]
+
+const ZONING_PARCEL_WIDTH_DEFAULT_CELLS := 2
+const ZONING_PARCEL_DEPTH_DEFAULT_CELLS := 3
 
 const CLOCK_PANEL_WIDTH := 220.0
 const CITY_STATUS_PANEL_WIDTH := 170.0
@@ -328,17 +336,15 @@ func _build_ui():
 
 	zoning_controls_row.add_child(zoning_type_panel)
 
-	var rect_btn = Button.new()
-	rect_btn.text = "Rect"
-	rect_btn.custom_minimum_size = Vector2(70, 50)
-	rect_btn.pressed.connect(func(): input_manager.set_zoning_paint_mode("rectangle"))
-	zoning_mode_menu.add_child(rect_btn)
-
-	var brush_btn = Button.new()
-	brush_btn.text = "Brush"
-	brush_btn.custom_minimum_size = Vector2(70, 50)
-	brush_btn.pressed.connect(func(): input_manager.set_zoning_paint_mode("brush"))
-	zoning_mode_menu.add_child(brush_btn)
+	zoning_options_btn = Button.new()
+	zoning_options_btn.text = "⚙"
+	zoning_options_btn.tooltip_text = "Parcel options"
+	zoning_options_btn.custom_minimum_size = Vector2(70, 50)
+	zoning_options_btn.add_theme_font_size_override("font_size", 24)
+	zoning_options_btn.button_down.connect(_remember_zoning_options_button_down_state)
+	zoning_options_btn.pressed.connect(_toggle_zoning_options_popup)
+	zoning_mode_menu.add_child(zoning_options_btn)
+	_build_zoning_options_popup()
 
 	for entry in ZONING_MAIN_TYPES:
 		var zone_type := str(entry.get("id", ""))
@@ -657,6 +663,93 @@ func _zone_type_color(zone_type: String) -> Color:
 		_:
 			return Color(0.35, 0.35, 0.35, 0.75)
 
+func _build_zoning_options_popup() -> void:
+	zoning_options_popup = PopupPanel.new()
+	zoning_options_popup.name = "ZoningOptions"
+	zoning_options_popup.exclusive = false
+	zoning_options_popup.add_theme_stylebox_override(
+		"panel",
+		UIStyle.panel_style(Color(0.09, 0.09, 0.10, 0.95), UIStyle.CORNER_PANEL, UIStyle.BORDER_ACCENT, 1)
+	)
+	add_child(zoning_options_popup)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_right", 12)
+	margin.add_theme_constant_override("margin_top", 10)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	zoning_options_popup.add_child(margin)
+
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 8)
+	margin.add_child(root)
+
+	zoning_width_spin = _make_zoning_dimension_spin(ZONING_PARCEL_WIDTH_DEFAULT_CELLS, 1.0, 8.0)
+	zoning_depth_spin = _make_zoning_dimension_spin(ZONING_PARCEL_DEPTH_DEFAULT_CELLS, 1.0, 12.0)
+	root.add_child(_make_zoning_dimension_row("Width", zoning_width_spin))
+	root.add_child(_make_zoning_dimension_row("Depth", zoning_depth_spin))
+
+	zoning_width_spin.value_changed.connect(func(_value): _on_zoning_parcel_dimensions_changed())
+	zoning_depth_spin.value_changed.connect(func(_value): _on_zoning_parcel_dimensions_changed())
+
+func _make_zoning_dimension_row(label_text: String, spin: SpinBox) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(58, 0)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(label)
+
+	row.add_child(spin)
+
+	var unit := Label.new()
+	unit.text = "cells"
+	unit.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	unit.custom_minimum_size = Vector2(38, 0)
+	row.add_child(unit)
+	return row
+
+func _make_zoning_dimension_spin(value: float, min_value: float, max_value: float) -> SpinBox:
+	var spin := SpinBox.new()
+	spin.min_value = min_value
+	spin.max_value = max_value
+	spin.step = 1.0
+	spin.value = value
+	spin.custom_minimum_size = Vector2(92, 34)
+	return spin
+
+func _toggle_zoning_options_popup() -> void:
+	if zoning_options_popup == null or zoning_options_btn == null:
+		return
+	if _zoning_options_open_on_button_down or zoning_options_popup.visible:
+		_zoning_options_open_on_button_down = false
+		zoning_options_popup.hide()
+		return
+	_zoning_options_open_on_button_down = false
+
+	var popup_size := Vector2i(250, 118)
+	var viewport_size := get_viewport().get_visible_rect().size
+	var button_pos := zoning_options_btn.global_position
+	var x := clampf(button_pos.x, 12.0, maxf(12.0, viewport_size.x - popup_size.x - 12.0))
+	var y := button_pos.y - float(popup_size.y) - 8.0
+	y = clampf(y, 40.0, maxf(40.0, viewport_size.y - popup_size.y - 12.0))
+	zoning_options_popup.position = Vector2i(int(round(x)), int(round(y)))
+	zoning_options_popup.size = popup_size
+	zoning_options_popup.popup()
+
+func _remember_zoning_options_button_down_state() -> void:
+	_zoning_options_open_on_button_down = zoning_options_popup != null and zoning_options_popup.visible
+
+func _on_zoning_parcel_dimensions_changed() -> void:
+	if input_manager == null or zoning_width_spin == null or zoning_depth_spin == null:
+		return
+	input_manager.set_zoning_parcel_cells(
+		int(round(zoning_width_spin.value)),
+		int(round(zoning_depth_spin.value))
+	)
+
 func _rebuild_zoning_profiles_index() -> void:
 	_zoning_profiles_by_zone_type.clear()
 	var payload = simulation_node.get_zone_profiles()
@@ -725,7 +818,7 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 		_zoning_profile_buttons[runtime_id] = button
 
 	var clear_btn := Button.new()
-	clear_btn.text = "Clear"
+	clear_btn.text = "Free"
 	clear_btn.custom_minimum_size = Vector2(90, 50)
 	clear_btn.toggle_mode = true
 	_apply_colored_button_style(clear_btn, Color(0.45, 0.45, 0.45, 0.60))

@@ -23,6 +23,14 @@ pub use profiles::{
 pub const DEFAULT_PARCEL_FRONTAGE_M: f32 = 20.0;
 /// First-slice authored parcel depth in metres.
 pub const DEFAULT_PARCEL_DEPTH_M: f32 = 30.0;
+/// Smallest player-authored parcel frontage accepted by the Rust placement path.
+pub const MIN_PARCEL_FRONTAGE_M: f32 = 5.0;
+/// Largest player-authored parcel frontage accepted by the Rust placement path.
+pub const MAX_PARCEL_FRONTAGE_M: f32 = 80.0;
+/// Smallest player-authored parcel depth accepted by the Rust placement path.
+pub const MIN_PARCEL_DEPTH_M: f32 = 5.0;
+/// Largest player-authored parcel depth accepted by the Rust placement path.
+pub const MAX_PARCEL_DEPTH_M: f32 = 120.0;
 
 /// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
@@ -150,11 +158,30 @@ impl ZoningSystem {
         world_z: f32,
         graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Result<ParcelGeometry, ParcelPlacementError> {
+        self.preview_parcel_at(
+            world_x,
+            world_z,
+            DEFAULT_PARCEL_FRONTAGE_M,
+            DEFAULT_PARCEL_DEPTH_M,
+            graph,
+        )
+    }
+
+    /// Projects a parcel with caller-selected dimensions without mutating storage.
+    pub fn preview_parcel_at(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        frontage_m: f32,
+        depth_m: f32,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<ParcelGeometry, ParcelPlacementError> {
+        Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         let geometry = parcels::project_default_parcel_at(
             graph,
             Vector2::new(world_x, world_z),
-            DEFAULT_PARCEL_FRONTAGE_M,
-            DEFAULT_PARCEL_DEPTH_M,
+            frontage_m,
+            depth_m,
         )?;
         if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m) {
             return Err(ParcelPlacementError::OutsideWorld);
@@ -175,7 +202,30 @@ impl ZoningSystem {
         runtime_id: u16,
         graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Result<ParcelId, ParcelPlacementError> {
+        self.place_or_rezone_parcel_at(
+            world_x,
+            world_z,
+            runtime_id,
+            DEFAULT_PARCEL_FRONTAGE_M,
+            DEFAULT_PARCEL_DEPTH_M,
+            graph,
+        )
+    }
+
+    /// Creates or rezones a parcel using caller-selected frontage and depth.
+    ///
+    /// Runtime id `0` creates or assigns a free/unzoned parcel.
+    pub fn place_or_rezone_parcel_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        runtime_id: u16,
+        frontage_m: f32,
+        depth_m: f32,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<ParcelId, ParcelPlacementError> {
         self.validate_profile_id(runtime_id)?;
+        Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         let point = Vector2::new(world_x, world_z);
         if let Some(existing_id) = self.parcels.find_at_point(point) {
             self.parcels
@@ -183,7 +233,7 @@ impl ZoningSystem {
             return Ok(existing_id);
         }
 
-        let geometry = self.preview_default_parcel_at(world_x, world_z, graph)?;
+        let geometry = self.preview_parcel_at(world_x, world_z, frontage_m, depth_m, graph)?;
         Ok(self.parcels.insert_new(geometry, runtime_id))
     }
 
@@ -200,6 +250,7 @@ impl ZoningSystem {
         graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Result<ParcelId, ParcelPlacementError> {
         self.validate_profile_id(runtime_id)?;
+        Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         if edge_idx >= graph.edge_count() {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
@@ -235,6 +286,20 @@ impl ZoningSystem {
         }
         self.parcels.insert_loaded(id, geometry, runtime_id);
         Ok(id)
+    }
+
+    fn validate_parcel_dimensions(
+        frontage_m: f32,
+        depth_m: f32,
+    ) -> Result<(), ParcelPlacementError> {
+        if !frontage_m.is_finite()
+            || !depth_m.is_finite()
+            || !(MIN_PARCEL_FRONTAGE_M..=MAX_PARCEL_FRONTAGE_M).contains(&frontage_m)
+            || !(MIN_PARCEL_DEPTH_M..=MAX_PARCEL_DEPTH_M).contains(&depth_m)
+        {
+            return Err(ParcelPlacementError::InvalidDimensions);
+        }
+        Ok(())
     }
 
     /// Claims one parcel for a building index.

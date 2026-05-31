@@ -66,11 +66,9 @@
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
 //! | **Zoning** | `get_zone_profiles` | `zoning_tool.gd`, `asset_editor.gd` |
-//! | | `capture_zoning_patch` | `zoning_tool.gd` |
-//! | | `apply_zoning_patch` | `zoning_tool.gd` |
-//! | | `restore_zoning_patch` | `zoning_tool.gd` |
-//! | | `get_zone_profile_texture_data_rg8` | `zoning_overlay.gd` |
-//! | | `get_zone_profile_style_lut_rgba8` | `zoning_overlay.gd` |
+//! | | `get_zoning_parcel_preview` | `zoning_tool.gd` |
+//! | | `apply_zoning_parcel_at` | `zoning_tool.gd` |
+//! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
@@ -3414,23 +3412,32 @@ impl SimulationNode {
         arr
     }
 
-    /// Creates or rezones a default road-aligned zoning parcel at one world-space point.
+    /// Creates or rezones a road-aligned zoning parcel at one world-space point.
     #[func]
     pub fn apply_zoning_parcel_at(
         &mut self,
         world_x: f32,
         world_z: f32,
         target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
     ) -> bool {
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return false;
         };
         let mut core = self.lock_core();
         let core = &mut *core;
-        let result = core.zoning.place_or_rezone_default_parcel_at(
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return false;
+        };
+        let result = core.zoning.place_or_rezone_parcel_at(
             world_x,
             world_z,
             runtime_id,
+            frontage_m,
+            depth_m,
             &core.region_graph,
         );
         match result {
@@ -3443,22 +3450,32 @@ impl SimulationNode {
         }
     }
 
-    /// Returns preview geometry for a default road-aligned zoning parcel.
+    /// Returns preview geometry for a road-aligned zoning parcel.
     #[func]
     pub fn get_zoning_parcel_preview(
         &self,
         world_x: f32,
         world_z: f32,
         target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
     ) -> VarDictionary {
         let core = self.lock_core();
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
-        let Ok(geometry) =
-            core.zoning
-                .preview_default_parcel_at(world_x, world_z, &core.region_graph)
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
         else {
+            return VarDictionary::new();
+        };
+        let Ok(geometry) = core.zoning.preview_parcel_at(
+            world_x,
+            world_z,
+            frontage_m,
+            depth_m,
+            &core.region_graph,
+        ) else {
             return VarDictionary::new();
         };
         zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0)
@@ -5247,6 +5264,27 @@ fn zoning_parcel_geometry_dict(
     dict
 }
 
+fn zoning_parcel_cell_dimensions(
+    config: &WorldConfig,
+    frontage_cells: i32,
+    depth_cells: i32,
+) -> Option<(f32, f32)> {
+    if frontage_cells <= 0
+        || depth_cells <= 0
+        || !config.zone_cell_m.is_finite()
+        || config.zone_cell_m <= 0.0
+    {
+        return None;
+    }
+    let frontage_m = frontage_cells as f32 * config.zone_cell_m;
+    let depth_m = depth_cells as f32 * config.zone_cell_m;
+    if frontage_m.is_finite() && depth_m.is_finite() {
+        Some((frontage_m, depth_m))
+    } else {
+        None
+    }
+}
+
 fn zoning_parcel_surface_corners(
     core: &SimCore,
     geometry: &crate::simulation::grid::zoning::ParcelGeometry,
@@ -5729,6 +5767,18 @@ mod tests {
         assert!(corners.iter().all(|corner| {
             (corner.y - expected_y).abs() <= 1e-4 && corner.x.abs() == 5.0 && corner.z.abs() == 5.0
         }));
+    }
+
+    #[test]
+    fn zoning_parcel_cell_dimensions_use_world_zone_cell_size() {
+        let mut config = WorldConfig::default();
+        config.zone_cell_m = 10.0;
+
+        assert_eq!(
+            zoning_parcel_cell_dimensions(&config, 2, 3),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(zoning_parcel_cell_dimensions(&config, 0, 3), None);
     }
 
     #[test]

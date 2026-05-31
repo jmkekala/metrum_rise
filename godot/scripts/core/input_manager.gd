@@ -375,11 +375,11 @@ func select_zone_profile(runtime_id: int) -> void:
 	if zoning_tool:
 		zoning_tool.select_profile(runtime_id)
 
-func set_zoning_paint_mode(mode: String) -> void:
+func set_zoning_parcel_cells(width_cells: int, depth_cells: int) -> void:
 	if current_tool != Tool.ZONING:
 		_toggle_tool(Tool.ZONING)
 	if zoning_tool:
-		zoning_tool.set_paint_mode(mode)
+		zoning_tool.set_parcel_cells(width_cells, depth_cells)
 
 func _handle_mouse(event):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:

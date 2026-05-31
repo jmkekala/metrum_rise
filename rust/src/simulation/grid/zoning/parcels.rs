@@ -182,6 +182,8 @@ pub enum ParcelPlacementError {
     NoRoadAttachment,
     /// The projected frontage would extend beyond the road edge ends.
     FrontageOutOfBounds,
+    /// The requested parcel dimensions are outside the supported first-slice edit range.
+    InvalidDimensions,
     /// The requested rectangle overlaps an existing parcel.
     OverlapsExistingParcel,
     /// One or more parcel corners would sit outside the authored world extent.
