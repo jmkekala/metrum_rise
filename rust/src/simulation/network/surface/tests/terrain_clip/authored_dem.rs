@@ -35,7 +35,7 @@ fn authored_dem_span_tie_ins_preserve_production_terrain_agreement() {
             0.0,
             24,
             (-28.0, -18.0, 28.0, 18.0),
-            true,
+            false,
             true,
         ),
         standard_span_dem_case(
@@ -46,7 +46,7 @@ fn authored_dem_span_tie_ins_preserve_production_terrain_agreement() {
             3.0,
             16,
             (-24.0, -18.0, 24.0, 18.0),
-            true,
+            false,
             true,
         ),
     ]);
@@ -76,7 +76,7 @@ fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
         surface,
         bounds: (-52.0, -18.0, 18.0, 52.0),
         sample_step_m: 2.0,
-        expect_retaining_wall: true,
+        expect_retaining_wall: false,
         expect_widened_tie_in: true,
         expected_node_piece: None,
     });
@@ -96,7 +96,7 @@ fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
         surface,
         bounds: (-8.0, -42.0, 34.0, 6.0),
         sample_step_m: 2.0,
-        expect_retaining_wall: true,
+        expect_retaining_wall: false,
         expect_widened_tie_in: true,
         expected_node_piece: Some((terminal_node, RoadSurfaceVisualNodePieceKind::Terminal)),
     });
@@ -109,7 +109,7 @@ fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
             3.0,
             &[(-40.0, 0.0), (40.0, 0.0), (0.0, 40.0)],
             (-56.0, -24.0, 56.0, 56.0),
-            true,
+            false,
             true,
             RoadSurfaceVisualNodePieceKind::JunctionN,
         ),
@@ -120,7 +120,7 @@ fn authored_dem_bend_and_junction_keep_node_footprint_sources_through_cdt() {
             3.0,
             &[(-40.0, 0.0), (40.0, 0.0), (0.0, -40.0), (0.0, 40.0)],
             (-56.0, -56.0, 56.0, 56.0),
-            true,
+            false,
             true,
             RoadSurfaceVisualNodePieceKind::JunctionN,
         ),
@@ -137,7 +137,7 @@ fn authored_dem_junction_edit_order_does_not_change_terrain_cdt_output() {
         3.0,
         &[(-40.0, 0.0), (40.0, 0.0), (0.0, -40.0), (0.0, 40.0)],
         (-56.0, -56.0, 56.0, 56.0),
-        true,
+        false,
         true,
         RoadSurfaceVisualNodePieceKind::JunctionN,
     );
@@ -148,7 +148,7 @@ fn authored_dem_junction_edit_order_does_not_change_terrain_cdt_output() {
         3.0,
         &[(0.0, 40.0), (0.0, -40.0), (40.0, 0.0), (-40.0, 0.0)],
         (-56.0, -56.0, 56.0, 56.0),
-        true,
+        false,
         true,
         RoadSurfaceVisualNodePieceKind::JunctionN,
     );

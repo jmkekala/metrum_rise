@@ -16,7 +16,7 @@ const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
 const MAX_SEAM_QUALITY_SAMPLES: usize = 8;
 const MAX_TIE_IN_SAMPLE_DIAGNOSTICS: usize = 8;
-const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
+pub(crate) const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
 const MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M: f32 = 0.5;
 const MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M: f64 = 0.05;
@@ -164,6 +164,11 @@ pub(crate) struct TerrainCdtRoadLoopSourceEdge {
     pub(crate) start: TerrainCdtVertex,
     pub(crate) end: TerrainCdtVertex,
     pub(crate) source: TerrainCdtRoadBoundarySource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtTieInGuideSample {
+    pub(crate) vertex: TerrainCdtVertex,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -459,6 +464,7 @@ pub(crate) struct TerrainCdtInput {
     pub(crate) patch: TerrainCdtPatch,
     pub(crate) road_loops: Vec<TerrainCdtRoadLoop>,
     pub(crate) source_samples: Vec<TerrainCdtVertex>,
+    pub(crate) tie_in_guide_samples: Vec<TerrainCdtTieInGuideSample>,
 }
 
 impl TerrainCdtInput {
@@ -471,7 +477,16 @@ impl TerrainCdtInput {
             patch,
             road_loops,
             source_samples,
+            tie_in_guide_samples: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_tie_in_guide_samples(
+        mut self,
+        tie_in_guide_samples: Vec<TerrainCdtTieInGuideSample>,
+    ) -> Self {
+        self.tie_in_guide_samples = tie_in_guide_samples;
+        self
     }
 }
 
@@ -917,6 +932,24 @@ fn canonicalize_input(
         });
     }
 
+    input.tie_in_guide_samples.sort_by_key(|sample| {
+        (
+            quantized_coord(sample.vertex.x),
+            quantized_coord(sample.vertex.z),
+            quantized_coord(f64::from(sample.vertex.height_m)),
+        )
+    });
+    for sample in input.tie_in_guide_samples {
+        let vertex = sample.vertex;
+        if !patch_contains(vertex, input.patch) {
+            continue;
+        }
+        if point_inside_any_road_footprint(vertex, &road_loops) {
+            continue;
+        }
+        insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+    }
+
     input.source_samples.sort_by_key(|sample| {
         (
             quantized_coord(sample.x),
@@ -939,7 +972,9 @@ fn canonicalize_input(
                 tie_in_widened_max_y_delta_m.max(tie_in_sample.height_delta_m);
             tie_in_widened_max_slope_ratio =
                 tie_in_widened_max_slope_ratio.max(tie_in_sample.slope_ratio);
-            if tie_in_sample.height_delta_m >= MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M {
+            if tie_in_sample.height_delta_m >= MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M
+                && terrain_cdt_boundary_source_allows_retaining_wall(tie_in_sample.seam_source)
+            {
                 retaining_wall_required_sources.push(tie_in_sample.seam_source);
             }
             insert_tie_in_widened_sample(&mut tie_in_widened_samples, tie_in_sample);
@@ -1179,7 +1214,8 @@ fn harden_terrain_cdt_road_loop_seams(
         let length_m = edge_length_xz_m(start, end);
         let height_delta_m = (end.height_m - start.height_m).abs();
         if length_m + CDT_EPSILON_M < MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M {
-            if height_delta_m > MIN_TIE_IN_HEIGHT_DELTA_M
+            if terrain_cdt_boundary_source_allows_retaining_wall(source)
+                && height_delta_m > MIN_TIE_IN_HEIGHT_DELTA_M
                 && (length_m <= CDT_EPSILON_M
                     || height_delta_m / length_m as f32 > MAX_TERRAIN_TIE_IN_SLOPE_RATIO)
             {
@@ -2436,6 +2472,9 @@ fn classify_terrain_tie_in_face(
     if sources.is_empty() {
         return TerrainCdtTieInKind::OrdinaryTerrain;
     }
+    if !terrain_cdt_sources_allow_retaining_wall(sources) {
+        return TerrainCdtTieInKind::OrdinaryTerrain;
+    }
     if terrain_sources_include_retaining_wall_required_source(
         sources,
         retaining_wall_required_sources,
@@ -2447,6 +2486,29 @@ fn classify_terrain_tie_in_face(
         TerrainCdtTieInKind::RetainingWall
     } else {
         TerrainCdtTieInKind::OrdinaryTerrain
+    }
+}
+
+fn terrain_cdt_sources_allow_retaining_wall(sources: &[TerrainCdtRoadBoundarySource]) -> bool {
+    sources
+        .iter()
+        .copied()
+        .any(terrain_cdt_boundary_source_allows_retaining_wall)
+}
+
+fn terrain_cdt_boundary_source_allows_retaining_wall(source: TerrainCdtRoadBoundarySource) -> bool {
+    match source {
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+            edge_class,
+            support_policy,
+            ..
+        } => {
+            edge_class != TerrainCdtEdgeClass::Standard
+                || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+        }
+        TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
+        | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. } => false,
+        TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
     }
 }
 
@@ -3202,12 +3264,13 @@ mod tests {
                 .all(|sample| sample.sources.contains(&source)),
             "road seam diagnostics must name the explicit road boundary source"
         );
-        assert!(!mesh.retaining_wall_face_samples.is_empty());
+        assert!(mesh.retaining_wall_face_samples.is_empty());
+        assert!(mesh.retaining_wall_triangles.is_empty());
         assert!(
-            mesh.retaining_wall_face_samples
-                .iter()
-                .all(|sample| sample.sources.contains(&source)),
-            "retaining wall diagnostics must preserve the same boundary source"
+            mesh.emitted_faces.iter().any(|face| {
+                face.kind == TerrainCdtTieInKind::OrdinaryTerrain && face.sources.contains(&source)
+            }),
+            "ordinary grounded node boundary faces must preserve their road boundary source"
         );
     }
 
@@ -3242,7 +3305,7 @@ mod tests {
 
     #[test]
     fn cdt_emitted_retaining_wall_faces_preserve_boundary_sources() {
-        let source = test_node_boundary_source(43, TerrainCdtRoadBandKind::Sidewalk, 4);
+        let source = test_structural_span_boundary_source(43, TerrainCdtRoadBandKind::Sidewalk, 4);
         let road = vec![
             TerrainCdtVertex::new(4.0, 4.0, 4.0),
             TerrainCdtVertex::new(6.0, 4.0, 4.0),
@@ -3279,6 +3342,34 @@ mod tests {
                 .filter(|face| face.kind == TerrainCdtTieInKind::RetainingWall)
                 .all(|face| face.sources.contains(&source)),
             "the first-class emitted-face model must preserve retaining-wall provenance"
+        );
+    }
+
+    #[test]
+    fn cdt_standard_grounded_span_sources_do_not_emit_retaining_walls() {
+        let source = test_span_boundary_source(45, TerrainCdtRoadBandKind::Sidewalk, 4);
+        let road = vec![
+            TerrainCdtVertex::new(4.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 4.0),
+            TerrainCdtVertex::new(6.0, 4.0, 6.0),
+            TerrainCdtVertex::new(4.0, 4.0, 6.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![sourced_road_loop(45, 0, road, source)],
+            Vec::new(),
+        );
+
+        let mesh =
+            build_road_touched_terrain_patch(input).expect("sourced road loop should triangulate");
+
+        assert_eq!(mesh.stats.retaining_wall_faces, 0);
+        assert!(mesh.retaining_wall_triangles.is_empty());
+        assert!(
+            mesh.emitted_faces.iter().any(|face| {
+                face.kind == TerrainCdtTieInKind::OrdinaryTerrain && face.sources.contains(&source)
+            }),
+            "grounded Standard span seams must preserve provenance through ordinary terrain faces"
         );
     }
 
@@ -3412,13 +3503,7 @@ mod tests {
 
     #[test]
     fn cdt_promotes_high_delta_omitted_tie_in_source_to_retaining_wall() {
-        let source = TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-            node_id: 1,
-            node_kind: TerrainCdtNodePieceKind::Terminal,
-            owner_kind: TerrainCdtRoadBandKind::Sidewalk,
-            owner_index: 0,
-            boundary_source: None,
-        };
+        let source = test_structural_span_boundary_source(1, TerrainCdtRoadBandKind::Sidewalk, 0);
         let road = vec![
             TerrainCdtVertex::new(48.0, 1.2, 48.0),
             TerrainCdtVertex::new(52.0, 1.2, 48.0),
@@ -4388,6 +4473,29 @@ mod tests {
             end_section_index,
             start_s_m,
             end_s_m,
+        }
+    }
+
+    fn test_structural_span_boundary_source(
+        edge_idx: u64,
+        band_kind: TerrainCdtRoadBandKind,
+        source_band_index: u32,
+    ) -> TerrainCdtRoadBoundarySource {
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+            edge_idx,
+            edge_class: TerrainCdtEdgeClass::Bridge,
+            support_policy: TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
+            source_band_index,
+            band_kind,
+            role: match band_kind {
+                TerrainCdtRoadBandKind::Carriageway => TerrainCdtSpanRegionRole::Asphalt,
+                TerrainCdtRoadBandKind::CurbOrShoulder => TerrainCdtSpanRegionRole::CurbOrShoulder,
+                _ => TerrainCdtSpanRegionRole::NonRoad,
+            },
+            start_section_index: 3,
+            end_section_index: 4,
+            start_s_m: 12.0,
+            end_s_m: 16.0,
         }
     }
 

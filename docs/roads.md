@@ -29,6 +29,8 @@ The roadbed rewrite is shipped for the current surface-road scope:
   triangulation, and validation
 - grounded `Standard` road-touched terrain patches are generated in Rust with Spade CDT over
   unioned road-owned footprint loops
+- ordinary grounded-road tie-ins use Rust-generated grade-limited guide samples around the final
+  road-owned footprint; they do not emit retaining-wall mesh as a visual cleanup path
 - Godot is a thin input/render bridge: it uploads cached payloads and must not decide road
   topology, heights, terrain holes, or material ownership
 
@@ -154,9 +156,15 @@ Road-touched terrain patches obey this contract:
   order
 - road footprint constraints are clipped and split at patch boundaries before Spade input
 - source-terrain samples are inserted only outside road-owned footprints
+- Rust inserts deterministic grade-limited tie-in guide samples outside grounded `Standard`
+  footprints before ordinary source terrain samples, so CDT has explicit near-road terrain
+  vertices instead of fanning large triangles from the road seam to the terrain grid
 - accepted terrain faces stay outside the unioned road-owned footprint
 - rejected road-footprint faces are not emitted
 - emitted terrain seam vertices reuse road-owned outer-edge coordinates and heights
+- ordinary `Standard` span and node seam sources stay in the terrain bucket even when the authored
+  terrain is steep; retaining-wall output is reserved for explicit structural bridge / tunnel /
+  future retaining sources
 - no shader mask, water plane, closure carpet, guard strip, or seam strip may replace missing
   topology
 

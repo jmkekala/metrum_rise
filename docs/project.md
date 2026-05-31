@@ -204,17 +204,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   road-owned top-surface envelope when grounded support overlaps terminal caps or raised bands, and
   bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
   visible tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
-  samples omitted to widen over-steep cut / fill tie-ins, and over-budget road-seam faces are
-  exported as explicit retaining-wall tie-in geometry instead of ordinary terrain. Synthetic DEM
-  validation now covers supportive ordinary tie-ins, near-road source-sample widening, raised and
-  lowered retaining-wall cuts, and mixed widening-plus-wall cases while preserving exact road seam
-  constraints. Production road-surface authored DEM coverage now also validates supportive spans,
-  steep along-slope and extreme cross-slope spans, raised retaining-wall spans, raised terminals
-  and bends near authored ridge / valley terrain, raised multiway junctions on flat and steep
-  authored terrain, and edit-order-stable emitted terrain-CDT topology through final road-owned
-  terrain loops. Production imported DEM coverage now bakes a compact Kuopio height window and
-  validates ordinary lower-shelf tie-ins, grounded steep terrain, raised spans, raised terminals /
-  bends, raised `JunctionN`, widened tie-in diagnostics, retaining-wall provenance, and
+  samples omitted to widen over-steep cut / fill tie-ins, and `ROAD-03` keeps ordinary grounded
+  `Standard` seams on the terrain path with explicit grade-limited guide samples around the final
+  road-owned footprint instead of retaining-wall teeth. Synthetic DEM validation still covers
+  structural retaining-wall classification while preserving exact road seam constraints.
+  Production road-surface authored DEM coverage now also validates supportive spans, steep
+  along-slope and extreme cross-slope spans, raised standard spans, raised terminals and bends near
+  authored ridge / valley terrain, raised multiway junctions on flat and steep authored terrain,
+  and edit-order-stable emitted terrain-CDT topology through final road-owned terrain loops.
+  Production imported DEM coverage now bakes a compact Kuopio height window and validates ordinary
+  lower-shelf tie-ins, grounded steep terrain, raised spans, raised terminals / bends, raised
+  `JunctionN`, widened tie-in diagnostics, structural retaining-wall provenance, and
   edit-order-stable emitted topology through the same production path. `ROAD-02` generated helper
   hardening now covers mixed sidewalk / curb and no-sidewalk curb / shoulder profile modes across
   flat and elevated mixed-width 4-way / 5-way / 6-way `JunctionN` cases. `CODE-14` is now closed:

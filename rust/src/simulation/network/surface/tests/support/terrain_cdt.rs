@@ -163,6 +163,15 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_terrain_cdt
             mesh.stats.retaining_wall_faces > 0,
             "{case_name}: elevated or extreme authored terrain should expose wall tie-ins"
         );
+    } else {
+        assert_eq!(
+            mesh.stats.retaining_wall_faces, 0,
+            "{case_name}: ordinary grounded road terrain tie-ins must not emit retaining-wall faces"
+        );
+        assert!(
+            mesh.retaining_wall_triangles.is_empty(),
+            "{case_name}: ordinary grounded road terrain tie-ins must not emit retaining-wall topology"
+        );
     }
     assert_cdt_mesh_stays_outside_road_loops(case_name, &mesh, &road_loops);
     assert_cdt_mesh_sources_are_structured(case_name, &mesh);

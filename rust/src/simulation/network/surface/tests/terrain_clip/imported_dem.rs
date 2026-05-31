@@ -28,7 +28,7 @@ fn imported_dem_spans_preserve_real_terrain_cdt_agreement() {
             0.0,
             24,
             (-118.0, -28.0, 118.0, 28.0),
-            true,
+            false,
             true,
         ),
         standard_span_dem_case(
@@ -39,7 +39,7 @@ fn imported_dem_spans_preserve_real_terrain_cdt_agreement() {
             3.0,
             24,
             (-108.0, -66.0, 108.0, 66.0),
-            true,
+            false,
             true,
         ),
     ]);
@@ -62,7 +62,7 @@ fn imported_dem_terminal_and_bend_keep_footprint_sources_through_cdt() {
         surface,
         bounds: (-48.0, -12.0, 14.0, 48.0),
         sample_step_m: 2.0,
-        expect_retaining_wall: true,
+        expect_retaining_wall: false,
         expect_widened_tie_in: true,
         expected_node_piece: Some((terminal_node, RoadSurfaceVisualNodePieceKind::Terminal)),
     });
@@ -80,7 +80,7 @@ fn imported_dem_terminal_and_bend_keep_footprint_sources_through_cdt() {
         surface,
         bounds: (-78.0, -18.0, 18.0, 78.0),
         sample_step_m: 2.0,
-        expect_retaining_wall: true,
+        expect_retaining_wall: false,
         expect_widened_tie_in: true,
         expected_node_piece: Some((center_node, RoadSurfaceVisualNodePieceKind::Bend)),
     });
@@ -121,7 +121,7 @@ fn imported_four_way_junction_case(
         3.0,
         endpoint_offsets,
         (-108.0, -108.0, 116.0, 108.0),
-        true,
+        false,
         true,
         RoadSurfaceVisualNodePieceKind::JunctionN,
     )

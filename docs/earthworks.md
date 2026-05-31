@@ -169,6 +169,12 @@ Deterministic seam contract:
   segment to source terrain outside the footprint before any terrain below the footprint is omitted
 - the seam faces are part of the terrain patch mesh, use terrain material, and are not a second
   road support mesh, visual carpet, or closure strip owned by the road renderer
+- grounded `Standard` seam faces use explicit Rust-generated grade-limited guide samples outside
+  the final road-owned footprint, keyed before ordinary source terrain samples, so the CDT tie-in
+  is an authored topology input rather than a render-side repair
+- ordinary `Standard` span and node footprint seam sources must not be promoted into retaining-wall
+  topology; wall output is reserved for explicit structural bridge / tunnel / future retaining
+  sources with preserved provenance
 - terrain cell triangles may still provide far-field terrain outside the road footprint, but they
   are not allowed to be the only seam carrier because their grid edges rarely coincide with the
   road-owned outer sidewalk / shoulder edge
@@ -244,6 +250,8 @@ For roads, that means:
   - the Rust terrain patch mesh emits no terrain under the road-owned footprint
   - the seam to far-field terrain is formed by terrain triangles whose inner boundary is the
     road-owned outer sidewalk / shoulder edge
+  - grade-limited guide samples around the footprint keep ordinary tie-in triangles local and
+    deterministic without wall teeth beside the road
   - terrain suppression is allowed only as a consequence of the clipped terrain topology
   - the runtime must not render a separate visible cut / fill support mesh or ordinary closure strip
     below or beside grounded asphalt or sidewalk
@@ -603,6 +611,9 @@ For the roads-first rewrite, the following are deterministic and implemented:
   order
 - road-touched terrain patches are currently generated in Rust as baked terrain `ArrayMesh`
   payloads whose boundary vertices reuse the road / sidewalk seam height
+- ordinary grounded-road tie-ins now include grade-limited guide rings generated from final
+  road-owned footprint loops, and ordinary `Standard` / node footprint sources never emit
+  retaining-wall mesh
 - the Spade CDT terrain-patch hardcut in [`roads.md`](roads.md) is now the live
   road-touched terrain patch path; the provisional seam-strip / cell-triangle hybrid has been
   removed rather than polished further
@@ -638,9 +649,9 @@ The following are current hardcut implementation rules:
   render under grounded road-owned asphalt, shoulder / curb, or sidewalk
 - clipped patch topology is validated against flat, diagonal, sloped, bend, terminal,
   `JunctionN`, production authored DEM road cases, and a compact baked Kuopio imported-DEM
-  fixture, including steep spans, raised ridge / valley terminals and bends, steep multiway
-  junctions, edit-order-stable emitted terrain-CDT topology, bridge-midspan, and tunnel-portal
-  structural stamping
+  fixture, including steep ordinary tie-ins without wall teeth, raised ridge / valley terminals
+  and bends, steep multiway junctions, edit-order-stable emitted terrain-CDT topology,
+  bridge-midspan, and tunnel-portal structural stamping
 - imported DEM JunctionN clipping now reports and removes road-owned internal chords from the
   terrain seam constraint set only when both sides of the exact constraint classify as road-owned
   against the final footprint; exposed seam constraints remain hard CDT constraints with source
@@ -648,7 +659,8 @@ The following are current hardcut implementation rules:
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
 - no current `ROAD-01` blocker remains for real-world DEM validation; any future terrain closure
-  variant beyond the retaining-wall path should be tracked as a new explicit earthworks item
+  variant beyond the structural retaining-wall path should be tracked as a new explicit earthworks
+  item
 
 That means the remaining items below are later additions after the clipped terrain boundary itself;
 they are not a substitute for closing the road-to-terrain boundary.
