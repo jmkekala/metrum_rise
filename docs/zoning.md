@@ -1287,3 +1287,292 @@ practice this means:
 This guarantees that cells previously owned by the removed edge get reassigned to their new
 nearest road, and cells previously owned by the remapped edge have their stored index
 corrected — without touching the rest of the grid.
+
+---
+
+## 14. `ZONE-01` Parcel Zoning Replacement Plan
+
+This section owns the proposed replacement plan tracked as [`ZONE-01`](roadmap.md). It is not
+implemented yet.
+
+When `ZONE-01` is implemented, it supersedes the `nearest_road_id` grid work in Section 13 instead
+of layering on top of it. Until the parcel model is implemented, Section 13 remains the documented
+current-grid ownership gap.
+
+### Goal
+
+Replace the authoritative `DataGrid<u16>` painted zoning canvas with user-placed road-aligned
+parcels.
+
+The player-facing intent is:
+
+- players place parcels beside roads
+- a parcel may be created already zoned with the currently selected `ZoneProfile`
+- a parcel may also be created free / unzoned, then painted later
+- private zoned buildings may spawn only inside legal parcels
+- Godot remains input and display only; Rust owns parcel geometry, legality, overlap checks,
+  placement queries, save/load, and deterministic render payloads
+
+### First-Slice Rules
+
+Keep the first implementation deliberately narrow:
+
+- default parcel size is `20 m` frontage by `30 m` depth
+- one parcel attaches to exactly one road edge and one side
+- one parcel is a road-aligned rectangle; its frontage edge follows the selected road side and its
+  depth extends away from the road
+- one parcel stores one `zone_profile_runtime_id`; `0` means free / unzoned
+- one parcel may host at most one private zoned building
+- parcels must not overlap each other
+- parcels are private zoning land only; explicit city-owned service / utility buildings remain
+  outside this painted-zoning path
+- parcels are not engineered-ground clients in the first slice: they do not flatten terrain, own a
+  support surface, generate cut / fill, or create terrain tie-in geometry
+
+Deferred from the first slice:
+
+- corner parcels
+- irregular polygons
+- merging and splitting
+- category-specific default parcel sizes
+- multi-building parcels
+- automatic parcel subdivision
+- arbitrary district or cadastral systems
+- flat building pads, plot foundations, retaining faces, or other terrain-overriding parcel /
+  building support surfaces; those must be tracked as separate earthworks work and extend
+  [`earthworks.md`](earthworks.md)
+
+Accepted first implementation decisions:
+
+- old world-grid zoning saves do not require compatibility; the parcel rewrite may break old saves
+  instead of migrating or reconstructing parcel state from the retired grid
+- the first placement gesture is one click for one parcel
+- curved-road parcels are straight rectangles built from the road tangent at the parcel center
+- buildings sit at the road frontage inside the parcel; unused parcel depth remains rear space
+- overlapping parcels are rejected outright, with no trimming, merging, min/max repair, or hidden
+  geometry fixup
+- selected `zone_profile_runtime_id = 0` creates a free / unzoned parcel
+- selected `zone_profile_runtime_id != 0` creates a pre-zoned parcel
+
+### Rust Data Model
+
+The replacement should live under the zoning module near the code that owns it, for example:
+
+```text
+rust/src/simulation/grid/zoning/parcels.rs
+```
+
+Recommended first data shape:
+
+```text
+ParcelId
+  - stable numeric id, not an array index
+
+Parcel
+  - id
+  - edge_idx
+  - side
+  - frontage_center_t
+  - frontage_m
+  - depth_m
+  - zone_profile_runtime_id
+  - occupied_building: Option<usize>
+  - corner keys / quantized boundary keys
+  - world corners
+  - aabb
+```
+
+Required identity rule:
+
+- parcel boundary identity must use canonical quantized keys / stable IDs
+- runtime array order must not become the authoritative identity
+- if road edge indices are remapped by compaction, parcel edge references must be remapped through
+  the same topology update path as building edge references
+
+### Spatial Index
+
+Parcel queries must be local.
+
+Use a chunk-local parcel index aligned with existing world chunking instead of scanning every
+parcel:
+
+```text
+parcel_chunks: HashMap<ChunkCoord, Vec<ParcelId>>
+```
+
+Required query bound:
+
+- parcel lookup, overlap checks, and allocator candidate discovery are `O(local_parcels)` for the
+  touched chunks
+- no placement, cleanup, or demand pass may scan all parcels for every candidate site
+- chunk membership is rebuilt only for parcels whose geometry changes
+
+### Parcel Creation
+
+Godot may send pointer input and selected profile id, but Rust must decide the final parcel.
+
+Rust creation responsibilities:
+
+1. find the hovered road edge and side
+2. snap frontage to the road-owned geometry deterministically
+3. build a `20 m x 30 m` road-aligned rectangle by default
+4. compute canonical boundary keys and the parcel AABB
+5. reject overlaps against local parcel chunks
+6. reject invalid road attachment
+7. assign a stable `ParcelId`
+8. write the parcel into the parcel store and touched chunk index
+9. return a parcel render / debug payload for Godot upload
+
+Creating a free parcel uses `zone_profile_runtime_id = 0`. Creating a pre-zoned parcel uses the
+currently selected non-zero runtime profile id.
+
+### Parcel Editing
+
+Minimum Rust-side bridge surface:
+
+```text
+preview_parcel_at(world_x, world_z, selected_profile_runtime_id)
+create_parcel_at(world_x, world_z, selected_profile_runtime_id)
+set_parcel_profile(parcel_id, zone_profile_runtime_id)
+delete_parcel(parcel_id)
+get_parcel_at_world(world_x, world_z)
+get_parcel_render_payload()
+```
+
+Bridge rules:
+
+- Godot must not compute parcel corners, parcel overlap, parcel-road ownership, or legality
+- Godot uploads Rust-produced parcel render payloads
+- preview may be visual-only, but the committed parcel must be generated by the same Rust rules as
+  the accepted preview
+
+### Allocator Contract
+
+Building placement changes from "read every world-grid footprint cell" to "find one legal parcel".
+
+A private zoned spawn candidate is legal only when:
+
+1. the parcel is attached to a valid non-deleted road edge
+2. the parcel is not occupied
+3. the parcel has `zone_profile_runtime_id != 0`
+4. the parcel profile accepts the candidate asset's `zone_type + density + tags`
+5. the asset footprint fits inside the parcel:
+
+```text
+asset_width_m  = lot_width_cells * zone_cell_m
+asset_depth_m  = lot_depth_cells * zone_cell_m
+asset_width_m <= parcel.frontage_m
+asset_depth_m <= parcel.depth_m
+```
+
+The allocator still owns final building placement, entrance-cache dirtiness, vacancy indices, and
+building removal execution. Zoning owns parcel legality and parcel occupancy helpers.
+
+### Demand Contract
+
+Demand continues to decide whether private building changes should happen. It does not choose parcel
+geometry or exact asset IDs.
+
+Spawn candidates should be empty legal parcels sorted deterministically by:
+
+```text
+(edge_idx, side_order, frontage_center_t_key, parcel_id)
+```
+
+where `side_order` remains `[1, -1]`.
+
+Fresh-spawn deterministic asset selection should replace the current grid-column key with parcel
+identity:
+
+```text
+strip key: (zone_profile_runtime_id, edge_idx, side)
+site key:  (zone_profile_runtime_id, parcel_id, qualified_asset_id)
+```
+
+### Building Lifecycle And Rezoning
+
+Placed private zoned buildings should store `parcel_id` as their authoritative zoning attachment.
+
+The building may retain derived runtime fields such as `edge_idx`, `side`, `frontage_t`, center,
+and facing direction for rendering, entrances, pathing, and save/load convenience. Those fields must
+not become a second zoning authority.
+
+Rezoning rule:
+
+- changing an occupied parcel to an incompatible profile starts the existing deterministic
+  `pending_redevelopment` grace path
+- changing it back to a compatible profile clears the redevelopment state
+- when the grace expires, allocator removal frees the parcel for future demand-owned redevelopment
+
+Road deletion or road-geometry invalidation remains allocator / attachment cleanup, not a rezoning
+event.
+
+### Save / Load
+
+The replacement save format should persist parcels instead of the whole painted profile grid:
+
+```text
+zoning_parcels
+  - parcel_id
+  - edge_id
+  - side
+  - frontage_center_t
+  - frontage_m
+  - depth_m
+  - zone_profile_runtime_id
+```
+
+Buildings should save their `parcel_id` for private zoned placement ownership.
+
+Old world-grid zoning saves do not require compatibility for this redesign. The parcel save format
+may break old saves instead of carrying a migration path from the retired painted profile grid.
+
+### Overlay And Tooling
+
+The zoning overlay becomes parcel-based:
+
+- Rust emits parcel top faces, borders, selection state, and profile colors or profile ids for
+  Godot upload
+- Godot no longer draws an authoritative 10 m zoning cell grid
+- any texture or mesh used for display is derived from the parcel store and is not a simulation
+  authority
+- profile registry, profile colors, icons, and category grouping remain valid
+
+The first tool mode should support:
+
+- create free parcel
+- create pre-zoned parcel with selected profile
+- select parcel
+- set selected parcel profile
+- delete selected parcel
+
+### Legacy Paths To Remove
+
+Once parcel zoning is live, remove or retire normal-runtime use of:
+
+- `ZoningSystem.grid: DataGrid<u16>` as authoritative painted zoning
+- profile-grid patch APIs
+- grid-profile save/load blob
+- grid-profile overlay texture as an authority source
+- footprint-wide `get_zone_profile_runtime_id_world` placement checks
+- grid-column keys in demand spawn candidate identity
+
+Keep deliberately separate systems only if they still have a non-zoning purpose:
+
+- profile registry and profile legality
+- road-distance / no-build display data, if still useful for UI
+- building occupancy indexing, if replaced by an equal or better parcel-owned occupancy path
+
+### Minimum Validation
+
+The first implementation should add focused tests for:
+
+- creating a `20 m x 30 m` parcel on both sides of a straight road
+- overlap rejection between adjacent or crossing parcels
+- free parcels do not spawn private buildings
+- pre-zoned parcels spawn compatible assets
+- incompatible assets are rejected by profile legality
+- occupied parcel rezoning enters and clears redevelopment grace deterministically
+- parcel save/load preserves IDs, profile ids, and building ownership
+- demand spawn candidate ordering is stable after unrelated parcel creation
+- road edge compaction remaps parcel edge references deterministically

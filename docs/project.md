@@ -27,6 +27,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
+- `ZONE-01`: replace the world-space painted zoning grid with Rust-owned road-aligned parcels.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
