@@ -12,6 +12,8 @@ use crate::simulation::network::surface::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+const TOP_SUPPORT_EDGE_TILE_KEYS: i64 = 8_000_000;
+
 impl RoadSurfaceSystem {
     pub(super) fn retain_raised_step_faces_with_owned_top_support(
         raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
@@ -21,13 +23,8 @@ impl RoadSurfaceSystem {
         let top_edges = owned_top_boundary_edges(owned_regions);
         let required_spans =
             final_required_raised_step_spans(explicit_vertical_step_segments, &top_edges);
-        let required_keys = required_raised_step_face_keys(&required_spans);
         let owner_centroids = raised_step_owner_centroids(owned_regions);
-        complete_raised_step_faces_from_final_spans(
-            raised_step_faces,
-            &required_spans,
-            &required_keys,
-        );
+        complete_raised_step_faces_from_final_spans(raised_step_faces, &required_spans);
         orient_raised_step_faces_from_lower_owner(raised_step_faces, &owner_centroids);
     }
 }
@@ -60,6 +57,7 @@ struct NodeTopSupportEdgeCandidate {
 #[derive(Clone, Debug, Default)]
 struct NodeTopSupportEdgeIndex {
     edges_by_kind: BTreeMap<RoadSurfaceBandKind, Vec<NodeTopSupportEdgeCandidate>>,
+    tile_indices_by_kind: BTreeMap<RoadSurfaceBandKind, BTreeMap<SurfaceKeyTile, Vec<usize>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,14 +70,11 @@ struct SurfaceKeyBounds {
 
 #[derive(Clone, Copy, Debug)]
 struct FinalRequiredRaisedStepSpan {
-    lower_owner: NodeBandOwner,
-    raised_owner: NodeBandOwner,
     lower_edge: NodeTopSupportEdge,
-    raised_edge: NodeTopSupportEdge,
     segment_start: keys::SurfaceXzKey,
     segment_end: keys::SurfaceXzKey,
-    start_t: keys::SurfaceSegmentParameter,
-    end_t: keys::SurfaceSegmentParameter,
+    boundary_keys: RaisedStepBoundaryPointKeys,
+    support_key: RaisedStepFaceSupportKey,
     source: RoadSurfaceVerticalFaceSource,
 }
 
@@ -97,6 +92,12 @@ struct RaisedStepFaceSupportKey {
     raised_owner: NodeBandOwner,
     lower_edge: NodeTopSupportEdgeKey,
     upper_edge: NodeTopSupportEdgeKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SurfaceKeyTile {
+    x: i64,
+    z: i64,
 }
 
 fn owned_top_boundary_edges(owned_regions: &[NodeOwnedRegion]) -> Vec<NodeTopSupportEdge> {
@@ -188,7 +189,6 @@ fn top_support_edge_from_world_points(
 fn complete_raised_step_faces_from_final_spans(
     raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
     required_spans: &[FinalRequiredRaisedStepSpan],
-    required_keys: &BTreeSet<RaisedStepFaceSupportKey>,
 ) {
     // Final owner-wide top boundaries are the rendered authority. Rebuild the face set from these
     // spans so stale arrangement-side quads cannot block corrected final support geometry.
@@ -196,10 +196,7 @@ fn complete_raised_step_faces_from_final_spans(
     let mut emitted = BTreeSet::new();
 
     for span in required_spans.iter().copied() {
-        let Some(key) = raised_step_face_support_key_from_span(span) else {
-            continue;
-        };
-        if !required_keys.contains(&key) || !emitted.insert(key) {
+        if !emitted.insert(span.support_key) {
             continue;
         }
         if let Some(face) = raised_step_face_from_span(span) {
@@ -260,27 +257,36 @@ fn final_required_raised_step_spans(
                 if end_t <= start_t {
                     continue;
                 }
-                let span = FinalRequiredRaisedStepSpan {
-                    lower_owner,
-                    raised_owner,
-                    lower_edge: *lower_edge,
-                    raised_edge: *raised_edge,
+                let Some(boundary_keys) = raised_step_boundary_points_from_top_support(
+                    *lower_edge,
+                    *raised_edge,
                     segment_start,
                     segment_end,
                     start_t,
                     end_t,
-                    source,
-                };
-                let Some(key) = raised_step_face_support_key_from_span(span) else {
+                ) else {
                     continue;
                 };
-                if emitted.insert(key) {
+                let support_key = raised_step_face_support_key_from_boundary_points(
+                    lower_owner,
+                    raised_owner,
+                    boundary_keys,
+                );
+                let span = FinalRequiredRaisedStepSpan {
+                    lower_edge: *lower_edge,
+                    segment_start,
+                    segment_end,
+                    boundary_keys,
+                    support_key,
+                    source,
+                };
+                if emitted.insert(support_key) {
                     spans.push(span);
                 }
             }
         }
     }
-    spans.sort_by_key(|span| raised_step_face_support_key_from_span(*span));
+    spans.sort_by_key(|span| span.support_key);
     spans
 }
 
@@ -316,48 +322,25 @@ fn vertical_step_source_for_final_support_owners(
     )
 }
 
-fn required_raised_step_face_keys(
-    spans: &[FinalRequiredRaisedStepSpan],
-) -> BTreeSet<RaisedStepFaceSupportKey> {
-    spans
-        .iter()
-        .copied()
-        .filter_map(raised_step_face_support_key_from_span)
-        .collect()
-}
-
 fn raised_step_face_from_span(
     span: FinalRequiredRaisedStepSpan,
 ) -> Option<RoadSurfaceRaisedStepFace> {
     raised_step_face_from_top_support(
         span.lower_edge,
-        span.raised_edge,
         span.segment_start,
         span.segment_end,
-        span.start_t,
-        span.end_t,
+        span.boundary_keys,
         span.source,
     )
 }
 
 fn raised_step_face_from_top_support(
     lower_edge: NodeTopSupportEdge,
-    raised_edge: NodeTopSupportEdge,
     segment_start: keys::SurfaceXzKey,
     segment_end: keys::SurfaceXzKey,
-    start_t: keys::SurfaceSegmentParameter,
-    end_t: keys::SurfaceSegmentParameter,
+    keys: RaisedStepBoundaryPointKeys,
     source: RoadSurfaceVerticalFaceSource,
 ) -> Option<RoadSurfaceRaisedStepFace> {
-    let keys = raised_step_boundary_points_from_top_support(
-        lower_edge,
-        raised_edge,
-        segment_start,
-        segment_end,
-        start_t,
-        end_t,
-    )?;
-
     let lower_start = boundary_point_to_world(keys.lower_start);
     let lower_end = boundary_point_to_world(keys.lower_end);
     let raised_start = boundary_point_to_world(keys.raised_start);
@@ -409,26 +392,20 @@ fn raised_step_boundary_points_from_top_support(
     })
 }
 
-fn raised_step_face_support_key_from_span(
-    span: FinalRequiredRaisedStepSpan,
-) -> Option<RaisedStepFaceSupportKey> {
-    let keys = raised_step_boundary_points_from_top_support(
-        span.lower_edge,
-        span.raised_edge,
-        span.segment_start,
-        span.segment_end,
-        span.start_t,
-        span.end_t,
-    )?;
-    Some(RaisedStepFaceSupportKey {
-        lower_owner: span.lower_owner,
-        raised_owner: span.raised_owner,
+fn raised_step_face_support_key_from_boundary_points(
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    keys: RaisedStepBoundaryPointKeys,
+) -> RaisedStepFaceSupportKey {
+    RaisedStepFaceSupportKey {
+        lower_owner,
+        raised_owner,
         lower_edge: NodeTopSupportEdgeKey::from_boundary_points((keys.lower_start, keys.lower_end)),
         upper_edge: NodeTopSupportEdgeKey::from_boundary_points((
             keys.raised_start,
             keys.raised_end,
         )),
-    })
+    }
 }
 
 fn raised_step_owner_centroids(
@@ -676,13 +653,26 @@ impl NodeTopSupportEdgeIndex {
     fn new(top_edges: &[NodeTopSupportEdge]) -> Self {
         let mut edges_by_kind =
             BTreeMap::<RoadSurfaceBandKind, Vec<NodeTopSupportEdgeCandidate>>::new();
+        let mut tile_indices_by_kind =
+            BTreeMap::<RoadSurfaceBandKind, BTreeMap<SurfaceKeyTile, Vec<usize>>>::new();
         for edge in top_edges.iter().copied() {
-            edges_by_kind
-                .entry(edge.owner.kind())
-                .or_default()
-                .push(NodeTopSupportEdgeCandidate::new(edge));
+            let kind = edge.owner.kind();
+            let candidate = NodeTopSupportEdgeCandidate::new(edge);
+            let candidate_index = edges_by_kind.entry(kind).or_default().len();
+            for tile in SurfaceKeyTile::tiles_for_bounds(candidate.bounds) {
+                tile_indices_by_kind
+                    .entry(kind)
+                    .or_default()
+                    .entry(tile)
+                    .or_default()
+                    .push(candidate_index);
+            }
+            edges_by_kind.entry(kind).or_default().push(candidate);
         }
-        Self { edges_by_kind }
+        Self {
+            edges_by_kind,
+            tile_indices_by_kind,
+        }
     }
 
     fn support_edge_candidates_on_step_segment(
@@ -695,11 +685,22 @@ impl NodeTopSupportEdgeIndex {
         keys::SurfaceSegmentParameter,
         keys::SurfaceSegmentParameter,
     )> {
+        let Some(edges) = self.edges_by_kind.get(&owner_kind) else {
+            return Vec::new();
+        };
+        let Some(tile_indices) = self.tile_indices_by_kind.get(&owner_kind) else {
+            return Vec::new();
+        };
         let segment_bounds = SurfaceKeyBounds::from_segment(segment_start, segment_end);
-        self.edges_by_kind
-            .get(&owner_kind)
+        let mut candidate_indices = BTreeSet::new();
+        for tile in SurfaceKeyTile::tiles_for_bounds(segment_bounds) {
+            if let Some(indices) = tile_indices.get(&tile) {
+                candidate_indices.extend(indices.iter().copied());
+            }
+        }
+        candidate_indices
             .into_iter()
-            .flat_map(|edges| edges.iter())
+            .filter_map(|candidate_index| edges.get(candidate_index))
             .filter(|candidate| candidate.bounds.overlaps(segment_bounds))
             .filter_map(|candidate| {
                 let edge = candidate.edge;
@@ -708,6 +709,22 @@ impl NodeTopSupportEdgeIndex {
                 Some((edge, start_t, end_t))
             })
             .collect()
+    }
+}
+
+impl SurfaceKeyTile {
+    fn tiles_for_bounds(bounds: SurfaceKeyBounds) -> Vec<Self> {
+        let min_tile_x = bounds.min_x.div_euclid(TOP_SUPPORT_EDGE_TILE_KEYS);
+        let max_tile_x = bounds.max_x.div_euclid(TOP_SUPPORT_EDGE_TILE_KEYS);
+        let min_tile_z = bounds.min_z.div_euclid(TOP_SUPPORT_EDGE_TILE_KEYS);
+        let max_tile_z = bounds.max_z.div_euclid(TOP_SUPPORT_EDGE_TILE_KEYS);
+        let mut tiles = Vec::new();
+        for x in min_tile_x..=max_tile_x {
+            for z in min_tile_z..=max_tile_z {
+                tiles.push(Self { x, z });
+            }
+        }
+        tiles
     }
 }
 

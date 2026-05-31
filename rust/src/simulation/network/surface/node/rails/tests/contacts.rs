@@ -492,6 +492,81 @@ fn same_material_edge_contact_emits_height_split_constraint() {
 }
 
 #[test]
+fn same_material_same_source_authority_skips_duplicate_height_split() {
+    let first_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let second_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(1),
+        Some(first_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 1.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("first curb contour is valid");
+    push_generated_contour(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        0,
+        Some(1),
+        Some(second_owner),
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, -1.0),
+            RoadVec2::new(0.0, -1.0),
+        ],
+        Some(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, -1.0),
+            RoadVec3::new(0.0, 0.0, -1.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("second curb contour is valid");
+
+    let before_len = constraints.len();
+    let stats = append_generated_same_band_contact_constraints(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &contours,
+        constraints.len(),
+        &mut constraints,
+    );
+
+    assert_eq!(stats.same_authority_skipped, 1);
+    assert_eq!(stats.same_material_candidate_pairs, 0);
+    assert_eq!(constraints.len(), before_len);
+}
+
+#[test]
 fn source_authorized_point_contact_uses_deterministic_source_name() {
     let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);

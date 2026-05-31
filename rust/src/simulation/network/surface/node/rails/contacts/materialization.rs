@@ -14,11 +14,11 @@ use super::source_authority::{
 };
 use super::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
-    NodeBandOwner, NodeGeneratedContour, NodeOverlayShapes, NodeRailConstraint,
-    NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
-    generated_constraint_contains_key_segment, generated_constraint_directed_edges,
-    generated_constraint_touches_key, generated_contour_band_kind,
-    generated_contour_directed_edges, generated_contour_keys,
+    NodeBandOwner, NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeOverlayShapes,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
+    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
+    generated_constraint_directed_edges, generated_constraint_touches_key,
+    generated_contour_band_kind, generated_contour_directed_edges, generated_contour_keys,
     generated_contour_supports_same_band_role, generated_point_key_lies_on_segment,
     generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
     quantized_proper_segment_intersection, road_point_from_key, road_point_key,
@@ -35,6 +35,35 @@ pub(in crate::simulation::network::surface::node::rails) struct GeneratedContact
     pub(in crate::simulation::network::surface::node::rails) processed_pairs: usize,
     pub(in crate::simulation::network::surface::node::rails) overlay_calls: usize,
     pub(in crate::simulation::network::surface::node::rails) emitted_constraints: usize,
+    pub(in crate::simulation::network::surface::node::rails) candidate_pairs: usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_candidate_pairs: usize,
+    pub(in crate::simulation::network::surface::node::rails) raised_step_candidate_pairs: usize,
+    pub(in crate::simulation::network::surface::node::rails) authority_rejected: usize,
+    pub(in crate::simulation::network::surface::node::rails) same_authority_skipped: usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_overlay_calls: usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_height_split_candidates:
+        usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_height_split_appended:
+        usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_height_split_duplicates:
+        usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) struct GeneratedContactAuthorityKey
+{
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) owner:
+        NodeBandOwner,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) kind:
+        RoadSurfaceBandKind,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) source_mouth_order_index:
+        usize,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) source_band_index:
+        Option<usize>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) claim_priority:
+        NodeGeneratedContourClaimPriority,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) has_height_carrier:
+        bool,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +81,8 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         Option<NodeOverlayShapes>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shape_edges:
         Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) authority_key:
+        Option<GeneratedContactAuthorityKey>,
     min_x: i64,
     min_z: i64,
     max_x: i64,
@@ -106,13 +137,29 @@ impl GeneratedContactContourSummary {
             .as_ref()
             .map(generated_overlay_shapes_directed_edges)
             .unwrap_or_default();
+        let owner = contour.owner;
+        let kind = generated_contour_band_kind(contour);
+        let authority_key = owner
+            .zip(kind)
+            .map(|(owner, kind)| GeneratedContactAuthorityKey {
+                owner,
+                kind,
+                source_mouth_order_index: contour.source_mouth_order_index,
+                source_band_index: contour.source_band_index,
+                claim_priority: contour.claim_priority,
+                has_height_carrier: contour
+                    .height_points_world
+                    .as_ref()
+                    .is_some_and(|points| !points.is_empty()),
+            });
         Self {
-            owner: contour.owner,
-            kind: generated_contour_band_kind(contour),
+            owner,
+            kind,
             keys,
             edges,
             overlay_shapes,
             overlay_shape_edges,
+            authority_key,
             min_x,
             min_z,
             max_x,
@@ -128,6 +175,19 @@ impl GeneratedContactContourSummary {
             || other.max_x + 1 < self.min_x
             || self.max_z + 1 < other.min_z
             || other.max_z + 1 < self.min_z
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn bounds_valid(
+        &self,
+    ) -> bool {
+        self.min_x <= self.max_x && self.min_z <= self.max_z
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn bounds(
+        &self,
+    ) -> Option<(i64, i64, i64, i64)> {
+        self.bounds_valid()
+            .then_some((self.min_x, self.min_z, self.max_x, self.max_z))
     }
 }
 

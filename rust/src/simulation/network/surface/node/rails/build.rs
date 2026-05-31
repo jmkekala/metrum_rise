@@ -234,6 +234,20 @@ impl NodeRailContourSet {
         profile.contact_pair_processed += material_contact_profile.processed_pairs;
         profile.contact_overlay_calls += material_contact_profile.overlay_calls;
         profile.contact_constraints_emitted += material_contact_profile.emitted_constraints;
+        profile.contact_candidate_pairs += material_contact_profile.candidate_pairs;
+        profile.contact_same_material_candidate_pairs +=
+            material_contact_profile.same_material_candidate_pairs;
+        profile.contact_raised_step_candidate_pairs +=
+            material_contact_profile.raised_step_candidate_pairs;
+        profile.contact_authority_rejected += material_contact_profile.authority_rejected;
+        profile.contact_same_authority_skipped += material_contact_profile.same_authority_skipped;
+        profile.same_material_overlay_calls += material_contact_profile.same_material_overlay_calls;
+        profile.same_material_height_split_candidates +=
+            material_contact_profile.same_material_height_split_candidates;
+        profile.same_material_height_split_appended +=
+            material_contact_profile.same_material_height_split_appended;
+        profile.same_material_height_split_duplicates +=
+            material_contact_profile.same_material_height_split_duplicates;
         profile.material_contacts_ms = elapsed_profile_ms(material_contacts_start);
         let raised_step_contacts_second_start = profile_enabled.then(Instant::now);
         profile.contact_constraints_emitted += append_source_authorized_raised_step_point_contacts(
@@ -260,6 +274,21 @@ impl NodeRailContourSet {
         profile.contact_pair_processed += same_band_contact_profile.processed_pairs;
         profile.contact_overlay_calls += same_band_contact_profile.overlay_calls;
         profile.contact_constraints_emitted += same_band_contact_profile.emitted_constraints;
+        profile.contact_candidate_pairs += same_band_contact_profile.candidate_pairs;
+        profile.contact_same_material_candidate_pairs +=
+            same_band_contact_profile.same_material_candidate_pairs;
+        profile.contact_raised_step_candidate_pairs +=
+            same_band_contact_profile.raised_step_candidate_pairs;
+        profile.contact_authority_rejected += same_band_contact_profile.authority_rejected;
+        profile.contact_same_authority_skipped += same_band_contact_profile.same_authority_skipped;
+        profile.same_material_overlay_calls +=
+            same_band_contact_profile.same_material_overlay_calls;
+        profile.same_material_height_split_candidates +=
+            same_band_contact_profile.same_material_height_split_candidates;
+        profile.same_material_height_split_appended +=
+            same_band_contact_profile.same_material_height_split_appended;
+        profile.same_material_height_split_duplicates +=
+            same_band_contact_profile.same_material_height_split_duplicates;
         profile.same_band_contacts_ms = elapsed_profile_ms(same_band_contacts_start);
         let contact_noding_third_start = profile_enabled.then(Instant::now);
         node_generated_contact_contours(&mut contours, &mut constraints)?;

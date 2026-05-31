@@ -226,8 +226,6 @@ fn reject_unauthorized_arrangement_height_splits(
     arrangement: &NodeArrangement,
     explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
 ) -> Result<(), NodeBoundaryExportError> {
-    let authorization_index =
-        ArrangementHeightSplitAuthorizationIndex::new(arrangement, explicit_vertical_step_segments);
     let mut vertices_by_key = BTreeMap::<arrangement::NodeArrangementKey, Vec<_>>::new();
     for vertex in arrangement.vertices() {
         vertices_by_key
@@ -236,8 +234,9 @@ fn reject_unauthorized_arrangement_height_splits(
             .push(vertex);
     }
 
-    let mut conflicts_by_owner_pair =
+    let mut candidate_conflicts_by_owner_pair =
         BTreeMap::<(arrangement::NodeBandOwner, arrangement::NodeBandOwner), Vec<_>>::new();
+    let mut candidate_conflict_keys = BTreeSet::new();
     for (key, vertices) in vertices_by_key {
         for left_index in 0..vertices.len() {
             for right in vertices.iter().copied().skip(left_index + 1) {
@@ -250,22 +249,13 @@ fn reject_unauthorized_arrangement_height_splits(
                         if left_owner == right_owner {
                             continue;
                         }
-                        if arrangement_height_split_authorized(
-                            &authorization_index,
-                            key,
-                            left.height_mm(),
-                            *left_owner,
-                            right.height_mm(),
-                            *right_owner,
-                        ) {
-                            continue;
-                        }
                         let owner_pair = if left_owner <= right_owner {
                             (*left_owner, *right_owner)
                         } else {
                             (*right_owner, *left_owner)
                         };
-                        conflicts_by_owner_pair
+                        candidate_conflict_keys.insert(key);
+                        candidate_conflicts_by_owner_pair
                             .entry(owner_pair)
                             .or_default()
                             .push((
@@ -278,6 +268,37 @@ fn reject_unauthorized_arrangement_height_splits(
                     }
                 }
             }
+        }
+    }
+    if candidate_conflicts_by_owner_pair.is_empty() {
+        return Ok(());
+    }
+
+    let candidate_conflict_keys = candidate_conflict_keys.into_iter().collect::<Vec<_>>();
+    let authorization_index = ArrangementHeightSplitAuthorizationIndex::new_for_keys(
+        arrangement,
+        explicit_vertical_step_segments,
+        &candidate_conflict_keys,
+    );
+    let mut conflicts_by_owner_pair =
+        BTreeMap::<(arrangement::NodeBandOwner, arrangement::NodeBandOwner), Vec<_>>::new();
+    for (owner_pair, conflicts) in candidate_conflicts_by_owner_pair {
+        for conflict in conflicts {
+            let (key, left_height_mm, left_owner, right_height_mm, right_owner) = conflict;
+            if arrangement_height_split_authorized(
+                &authorization_index,
+                key,
+                left_height_mm,
+                left_owner,
+                right_height_mm,
+                right_owner,
+            ) {
+                continue;
+            }
+            conflicts_by_owner_pair
+                .entry(owner_pair)
+                .or_default()
+                .push(conflict);
         }
     }
 
@@ -346,15 +367,12 @@ struct ArrangementHeightSplitAuthorizationIndex {
 }
 
 impl ArrangementHeightSplitAuthorizationIndex {
-    fn new(
+    fn new_for_keys(
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+        arrangement_keys: &[arrangement::NodeArrangementKey],
     ) -> Self {
-        let mut arrangement_keys = arrangement
-            .vertices()
-            .iter()
-            .map(|vertex| vertex.key())
-            .collect::<Vec<_>>();
+        let mut arrangement_keys = arrangement_keys.to_vec();
         arrangement_keys.sort_unstable();
         arrangement_keys.dedup();
         let arrangement_key_index = ArrangementKeyIndex::new(&arrangement_keys);

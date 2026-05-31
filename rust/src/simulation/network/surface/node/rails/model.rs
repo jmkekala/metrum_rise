@@ -100,6 +100,15 @@ pub(crate) struct NodeRailBuildProfile {
     pub(crate) contact_pair_processed: usize,
     pub(crate) contact_overlay_calls: usize,
     pub(crate) contact_constraints_emitted: usize,
+    pub(crate) contact_candidate_pairs: usize,
+    pub(crate) contact_same_material_candidate_pairs: usize,
+    pub(crate) contact_raised_step_candidate_pairs: usize,
+    pub(crate) contact_authority_rejected: usize,
+    pub(crate) contact_same_authority_skipped: usize,
+    pub(crate) same_material_overlay_calls: usize,
+    pub(crate) same_material_height_split_candidates: usize,
+    pub(crate) same_material_height_split_appended: usize,
+    pub(crate) same_material_height_split_duplicates: usize,
 }
 
 #[derive(Clone, Debug)]

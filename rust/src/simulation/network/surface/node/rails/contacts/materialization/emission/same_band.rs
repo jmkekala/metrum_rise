@@ -8,7 +8,7 @@ use super::super::authority::{
 };
 use super::super::*;
 use rayon::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 type SameMaterialHeightSplitConstraint = (
     NodeBandOwner,
@@ -21,6 +21,7 @@ type SameMaterialHeightSplitConstraint = (
 
 const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 512;
 const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 64;
+const SAME_BAND_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
 
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(
     piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -31,10 +32,11 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let summaries = generated_contact_contour_summaries_with_overlay(contours);
-    let mut stats = GeneratedContactEmissionStats::default();
+    let indexed_pairs = same_band_candidate_pair_index(&summaries, &authority_index);
+    let mut stats = indexed_pairs.stats;
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
-    let pair_indices = same_band_pair_indices(contours.len());
+    let pair_indices = indexed_pairs.pair_indices;
     let pair_results = if pair_indices.len() >= SAME_BAND_PARALLEL_PAIR_THRESHOLD {
         pair_indices
             .par_chunks(SAME_BAND_PARALLEL_PAIR_BATCH)
@@ -62,6 +64,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
         contact_edges.append(&mut result.contact_edges);
         same_material_height_splits.append(&mut result.same_material_height_splits);
     }
+    stats.same_material_height_split_candidates = same_material_height_splits.len();
     let source_constraints = super::source_authority_constraints_for_generated_contacts(
         constraints,
         source_constraint_count,
@@ -96,19 +99,172 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             ],
         });
     }
-    append_same_material_height_split_constraints(constraints, same_material_height_splits);
+    let append_stats =
+        append_same_material_height_split_constraints(constraints, same_material_height_splits);
+    stats.same_material_height_split_appended = append_stats.appended;
+    stats.same_material_height_split_duplicates = append_stats.duplicates;
     stats.emitted_constraints = constraints.len() - before_len;
     stats
 }
 
-fn same_band_pair_indices(contour_count: usize) -> Vec<(usize, usize)> {
-    let mut pair_indices = Vec::with_capacity(contour_count.saturating_mul(contour_count) / 2);
-    for left_index in 0..contour_count {
-        for right_index in left_index + 1..contour_count {
-            pair_indices.push((left_index, right_index));
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameBandCandidateTile {
+    x: i64,
+    z: i64,
+}
+
+#[derive(Default)]
+struct SameBandCandidatePairIndex {
+    stats: GeneratedContactEmissionStats,
+    pair_indices: Vec<(usize, usize)>,
+}
+
+fn same_band_candidate_pair_index(
+    summaries: &[GeneratedContactContourSummary],
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+) -> SameBandCandidatePairIndex {
+    let mut index = SameBandCandidatePairIndex::default();
+    index.stats.pair_tests = summaries
+        .len()
+        .saturating_mul(summaries.len().saturating_sub(1))
+        / 2;
+
+    let mut indices_by_tile = BTreeMap::<SameBandCandidateTile, Vec<usize>>::new();
+    for (summary_index, summary) in summaries.iter().enumerate() {
+        if summary.owner.is_none() || summary.kind.is_none() || !summary.bounds_valid() {
+            continue;
+        }
+        for tile in same_band_candidate_tiles(summary) {
+            indices_by_tile.entry(tile).or_default().push(summary_index);
         }
     }
-    pair_indices
+
+    let mut tile_pairs = BTreeSet::<(usize, usize)>::new();
+    for indices in indices_by_tile.values() {
+        for left_position in 0..indices.len() {
+            for right_index in indices.iter().copied().skip(left_position + 1) {
+                let left_index = indices[left_position];
+                let pair = if left_index <= right_index {
+                    (left_index, right_index)
+                } else {
+                    (right_index, left_index)
+                };
+                tile_pairs.insert(pair);
+            }
+        }
+    }
+    index.stats.candidate_pairs = tile_pairs.len();
+
+    for (left_index, right_index) in tile_pairs {
+        let left_summary = &summaries[left_index];
+        let right_summary = &summaries[right_index];
+        if !same_band_candidate_pair_can_contact(
+            left_summary,
+            right_summary,
+            authority_index,
+            &mut index.stats,
+        ) {
+            continue;
+        }
+        index.pair_indices.push((left_index, right_index));
+    }
+    index
+}
+
+fn same_band_candidate_tiles(
+    summary: &GeneratedContactContourSummary,
+) -> Vec<SameBandCandidateTile> {
+    let Some((min_x, min_z, max_x, max_z)) = summary.bounds() else {
+        return Vec::new();
+    };
+    let min_tile_x = min_x.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
+    let max_tile_x = max_x.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
+    let min_tile_z = min_z.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
+    let max_tile_z = max_z.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
+    let mut tiles = Vec::new();
+    for x in min_tile_x..=max_tile_x {
+        for z in min_tile_z..=max_tile_z {
+            tiles.push(SameBandCandidateTile { x, z });
+        }
+    }
+    tiles
+}
+
+fn same_band_candidate_pair_can_contact(
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    stats: &mut GeneratedContactEmissionStats,
+) -> bool {
+    let Some(left_owner) = left_summary.owner else {
+        stats.kind_rejected += 1;
+        return false;
+    };
+    let Some(right_owner) = right_summary.owner else {
+        stats.kind_rejected += 1;
+        return false;
+    };
+    if left_owner == right_owner {
+        stats.kind_rejected += 1;
+        return false;
+    }
+    let Some(kind) = left_summary.kind else {
+        stats.kind_rejected += 1;
+        return false;
+    };
+    let Some(right_kind) = right_summary.kind else {
+        stats.kind_rejected += 1;
+        return false;
+    };
+    if left_summary.aabb_disjoint(right_summary) {
+        stats.aabb_rejected += 1;
+        return false;
+    }
+
+    if kind == right_kind {
+        if same_material_pair_has_same_height_authority(left_summary, right_summary) {
+            stats.same_authority_skipped += 1;
+            return false;
+        }
+        stats.processed_pairs += 1;
+        stats.same_material_candidate_pairs += 1;
+        return true;
+    }
+
+    let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+        stats.kind_rejected += 1;
+        return false;
+    };
+    if !authority_index.has_constraints_touching_contour_pair(
+        NodeRailConstraintKind::RaisedStepContact,
+        pair.owner,
+        pair.opposite_owner,
+        left_summary,
+        right_summary,
+    ) {
+        stats.authority_rejected += 1;
+        return false;
+    }
+    stats.processed_pairs += 1;
+    stats.raised_step_candidate_pairs += 1;
+    true
+}
+
+fn same_material_pair_has_same_height_authority(
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
+) -> bool {
+    let (Some(left), Some(right)) = (left_summary.authority_key, right_summary.authority_key)
+    else {
+        return false;
+    };
+    left.kind == right.kind
+        && left.source_mouth_order_index == right.source_mouth_order_index
+        && left.source_band_index.is_some()
+        && left.source_band_index == right.source_band_index
+        && left.claim_priority == right.claim_priority
+        && left.has_height_carrier
+        && right.has_height_carrier
 }
 
 struct SameBandContactPairResult {
@@ -166,7 +322,6 @@ fn collect_same_band_pair_contacts(
     right_index: usize,
 ) -> SameBandContactPairResult {
     let mut result = SameBandContactPairResult::default();
-    result.stats.pair_tests = 1;
     let left = &contours[left_index];
     let right = &contours[right_index];
     let left_summary = &summaries[left_index];
@@ -195,8 +350,8 @@ fn collect_same_band_pair_contacts(
         result.stats.aabb_rejected = 1;
         return result;
     }
-    result.stats.processed_pairs = 1;
     if kind == right_kind {
+        result.stats.same_material_overlay_calls = 1;
         collect_same_material_height_splits_from_edges(
             left,
             right,
@@ -392,6 +547,15 @@ fn merge_contact_emission_stats(
     stats.processed_pairs += next.processed_pairs;
     stats.overlay_calls += next.overlay_calls;
     stats.emitted_constraints += next.emitted_constraints;
+    stats.candidate_pairs += next.candidate_pairs;
+    stats.same_material_candidate_pairs += next.same_material_candidate_pairs;
+    stats.raised_step_candidate_pairs += next.raised_step_candidate_pairs;
+    stats.authority_rejected += next.authority_rejected;
+    stats.same_authority_skipped += next.same_authority_skipped;
+    stats.same_material_overlay_calls += next.same_material_overlay_calls;
+    stats.same_material_height_split_candidates += next.same_material_height_split_candidates;
+    stats.same_material_height_split_appended += next.same_material_height_split_appended;
+    stats.same_material_height_split_duplicates += next.same_material_height_split_duplicates;
 }
 
 fn collect_same_material_height_splits_from_edges(
@@ -540,10 +704,19 @@ fn insert_same_material_height_split(
     ));
 }
 
+struct SameMaterialHeightSplitAppendStats {
+    appended: usize,
+    duplicates: usize,
+}
+
 fn append_same_material_height_split_constraints(
     constraints: &mut Vec<NodeRailConstraint>,
     contacts: BTreeSet<SameMaterialHeightSplitConstraint>,
-) {
+) -> SameMaterialHeightSplitAppendStats {
+    let mut stats = SameMaterialHeightSplitAppendStats {
+        appended: 0,
+        duplicates: 0,
+    };
     let mut existing = constraints
         .iter()
         .filter(|constraint| {
@@ -568,6 +741,7 @@ fn append_same_material_height_split_constraints(
     {
         let edge = GeneratedContourEdgeKey::new(start, end);
         if !existing.insert((owner, opposite_owner, edge)) {
+            stats.duplicates += 1;
             continue;
         }
         constraints.push(NodeRailConstraint {
@@ -580,7 +754,9 @@ fn append_same_material_height_split_constraints(
             opposite_owner: Some(opposite_owner),
             points_xz: vec![road_point_from_key(start), road_point_from_key(end)],
         });
+        stats.appended += 1;
     }
+    stats
 }
 
 fn ordered_owner_pair(
