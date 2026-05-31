@@ -144,6 +144,56 @@ The final node output is a canonical arrangement:
 - missing, ambiguous, or conflicting owner / height support is a hard diagnostic, not a repair path
 - Spade CDT triangulates already-owned material regions; CDT does not decide ownership
 
+### `ROAD-04` Node Top-Surface Quality Plan
+
+`ROAD-04` owns the remaining elevated / curved node quality work for road-owned top surfaces.
+The visible symptom is harsh asphalt bumps or acute triangles in `Bend` and `JunctionN` interiors
+after the road-footprint, terrain-CDT, and render-upload stages have already done the correct
+ownership-preserving work.
+
+This is a road-owned geometry problem, not a terrain or renderer problem. Recent road debug output
+has shown node carriageway faces with tiny plane residuals but near-zero XZ edges, extreme aspect
+ratios, and near-vertical triangle normals. That means the pipeline can preserve ownership while
+still emitting pathological top-surface triangles from numeric-dust vertices or poor same-material
+domain triangulation.
+
+Implementation must proceed in the owning Rust road-surface stages:
+
+- add a hard top-surface triangle-quality gate after node triangulation and before export; the
+  diagnostic must report node ID, piece kind, material, source owner, height field, canonical keys,
+  edge lengths, area, aspect ratio, slope angle, adjacent normal angle, and grade-plane residual
+- canonicalize numeric-dust split / intersection vertices only when the candidate point resolves to
+  the same canonical owner and height authority as the existing endpoint; conflicting nearby support
+  remains a blocking diagnostic
+- rebuild final same-material carriageway domains from canonical road-owned regions, remove only
+  internal same-material seams whose provenance allows removal, preserve raised-step / curb /
+  sidewalk boundaries, and triangulate the resulting domain with deterministic Spade CDT input
+- when a final same-material domain still needs support points, generate deterministic road-owned
+  Steiner / guide vertices in Rust, assign canonical keys and grade authority, and include them in
+  provenance instead of sampling terrain or borrowing render-time state
+- give `Bend` and `JunctionN` carriageway interiors explicit node-asphalt grade authority derived
+  from incident mouth rails and endpoint profile planes; reject the compile when the residual is too
+  high instead of flattening, averaging, or falling back to nearest heights
+
+The first implementation slice should be numeric-dust canonicalization plus the hard triangle-quality
+diagnostic gate. If that removes only the near-zero-edge failures, the broader same-material
+carriageway retriangulation remains the next step for non-degenerate but visually ugly bend /
+junction slopes.
+
+Required tests for `ROAD-04`:
+
+- logged `Bend` and `JunctionN` shapes that previously produced near-zero top-surface edges no
+  longer emit those triangles
+- flat, elevated, and mixed-slope node cases stay deterministic across edit order
+- carriageway output contains no near-vertical asphalt triangle when the local grade-plane residual
+  is small
+- terrain clip loops and earthwork provenance remain unchanged except for consuming the improved
+  final road-owned footprint
+- every generated support vertex has a canonical key, material owner, height-field owner, and grade
+  authority
+- no render z-bias, terrain sampling, nearest-owner / nearest-height repair, min/max repair,
+  averaging, old-road-wins rule, or hidden compatibility fallback is introduced
+
 ## Terrain And Earthworks
 
 Grounded `Standard` roads replace visible terrain inside the road-owned footprint. Terrain under
