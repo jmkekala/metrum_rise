@@ -132,6 +132,90 @@ mod tests {
     }
 
     #[test]
+    fn crossing_roads_from_debug_log_create_shared_junction() {
+        let mut net = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let config = WorldConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
+
+        net.add_road(
+            &mut graph,
+            vec![
+                Vector3::new(-71.690018, 0.0, -74.325249),
+                Vector3::new(103.143341, 0.0, 106.812721),
+            ],
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+
+        net.add_road(
+            &mut graph,
+            vec![
+                Vector3::new(105.070206, 0.0, -61.874428),
+                Vector3::new(-46.610786, 0.0, 51.625542),
+            ],
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+
+        let junction = graph
+            .nodes
+            .iter()
+            .enumerate()
+            .find(|(_, node)| {
+                node.node_type == NodeType::Junction
+                    && (node.pos.x - 9.413908).abs() < 0.01
+                    && (node.pos.z - 9.703340).abs() < 0.01
+            })
+            .map(|(node_id, _)| node_id as u32)
+            .unwrap_or_else(|| {
+                panic!(
+                    "crossing roads should create a junction at the centerline intersection; nodes={:?} edges={:?}",
+                    graph
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .map(|(node_id, node)| (node_id, node.pos.x, node.pos.z))
+                        .collect::<Vec<_>>(),
+                    graph
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .map(|(edge_id, edge)| (
+                            edge_id,
+                            edge.start_node,
+                            edge.end_node,
+                            edge.deleted
+                        ))
+                        .collect::<Vec<_>>()
+                )
+            });
+
+        let active_degree = graph
+            .node_adjacency(junction)
+            .iter()
+            .filter(|&&edge_id| !graph.edge(edge_id).deleted)
+            .count();
+
+        assert_eq!(
+            active_degree, 4,
+            "the centerline crossing must split both roads into four incident spans"
+        );
+        assert_eq!(
+            graph.edges.iter().filter(|edge| !edge.deleted).count(),
+            4,
+            "two crossing road spans should become four active graph edges"
+        );
+    }
+
+    #[test]
     fn test_4_way_intersection() {
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();

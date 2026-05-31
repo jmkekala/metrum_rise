@@ -156,3 +156,51 @@ fn logged_current_elevated_three_way_compiles_with_source_authorized_materializa
         .expect("add_road edit path must create the elevated 3-way junction node");
     assert_compiled_junction_piece(&network.road_surface, &edit_graph, edit_center);
 }
+
+#[test]
+fn logged_elevated_crossing_split_compiles_junction_surface() {
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let config = crate::simulation::core::config::WorldConfig::default();
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+
+    network.add_road(
+        &mut graph,
+        road_points_from_json(
+            r#"[[-61.590626,162.040268,-168.618088],[11.528397,142.048004,-7.698418]]"#,
+        ),
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&graph, &terrain);
+
+    network.add_road(
+        &mut graph,
+        road_points_from_json(
+            r#"[[-78.597305,147.257904,-64.176041],[61.522659,147.871887,-91.057831]]"#,
+        ),
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&graph, &terrain);
+
+    let center = (0..graph.node_count() as u32)
+        .find(|&node_id| {
+            graph
+                .node_adjacency(node_id)
+                .iter()
+                .filter(|&&edge_idx| !graph.edge(edge_idx).deleted)
+                .count()
+                == 4
+        })
+        .expect("logged crossing split must create a four-mouth JunctionN");
+    assert_compiled_junction_piece(&network.road_surface, &graph, center);
+}

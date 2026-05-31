@@ -249,6 +249,14 @@ fn reject_unauthorized_arrangement_height_splits(
                         if left_owner == right_owner {
                             continue;
                         }
+                        if left_owner.kind() == right_owner.kind()
+                            && grade_authorities_have_distinct_source_carrier_provenance(
+                                left.grade_authority(),
+                                right.grade_authority(),
+                            )
+                        {
+                            continue;
+                        }
                         let owner_pair = if left_owner <= right_owner {
                             (*left_owner, *right_owner)
                         } else {
@@ -354,6 +362,16 @@ fn arrangement_height_split_authorized(
     };
     authorization_index.explicit_step_authorizes(key, lower_owner, raised_owner)
         || authorization_index.exposed_final_boundary_authorizes(key, lower_owner, raised_owner)
+}
+
+fn grade_authorities_have_distinct_source_carrier_provenance(
+    left: height::NodeGradeVertexAuthority,
+    right: height::NodeGradeVertexAuthority,
+) -> bool {
+    match (left.source_provenance, right.source_provenance) {
+        (Some(left), Some(right)) => left != right,
+        _ => false,
+    }
 }
 
 struct ArrangementHeightSplitAuthorizationIndex {

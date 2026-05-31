@@ -242,8 +242,6 @@ fn get_edge_snap_point_for_mode(
     Some(a + (b - a) * t)
 }
 
-/// Finds the intersection point of two 2D segments (XZ plane)
-/// Returns (t_a, t_b) if they intersect, where t is the factor along the segment [0, 1]
 /// Finds the intersection point of two 2D segments in the XZ plane.
 ///
 /// Returns `Some((t_a, t_b))` if they intersect, where `t` is the distance along the segment in `[0, 1]`.
@@ -253,25 +251,28 @@ pub fn find_intersection_2d(
     p3: Vector3,
     p4: Vector3,
 ) -> Option<(f32, f32)> {
-    let x1 = p1.x;
-    let z1 = p1.z;
-    let x2 = p2.x;
-    let z2 = p2.z;
-    let x3 = p3.x;
-    let z3 = p3.z;
-    let x4 = p4.x;
-    let z4 = p4.z;
+    fn cross_xz(a: Vector3, b: Vector3) -> f32 {
+        a.x * b.z - a.z * b.x
+    }
 
-    let denom = (x1 - x2) * (z3 - z4) - (z1 - z2) * (x3 - x4);
+    let r = p2 - p1;
+    let s = p4 - p3;
+    let denom = cross_xz(r, s);
     if denom.abs() < 0.0001 {
         return None;
     }
 
-    let t = ((x1 - x3) * (z3 - z4) - (z1 - z3) * (x3 - x4)) / denom;
-    let u = ((x1 - x2) * (z1 - z3) - (z1 - z2) * (x1 - x3)) / denom;
+    let qp = p3 - p1;
+    let t = cross_xz(qp, s) / denom;
+    let u = cross_xz(qp, r) / denom;
 
-    if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
-        Some((t, u))
+    const PARAM_EPSILON: f32 = 0.00001;
+    if t >= -PARAM_EPSILON
+        && t <= 1.0 + PARAM_EPSILON
+        && u >= -PARAM_EPSILON
+        && u <= 1.0 + PARAM_EPSILON
+    {
+        Some((t.clamp(0.0, 1.0), u.clamp(0.0, 1.0)))
     } else {
         None
     }
@@ -280,7 +281,8 @@ pub fn find_intersection_2d(
 #[cfg(test)]
 mod tests {
     use super::{
-        get_closest_point, get_closest_point_xz, get_edge_snap_point, get_edge_snap_point_for_mode,
+        find_intersection_2d, get_closest_point, get_closest_point_xz, get_edge_snap_point,
+        get_edge_snap_point_for_mode,
     };
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::types::NodeType;
@@ -333,5 +335,19 @@ mod tests {
         assert!((snapped.x - 8.0).abs() < 0.001);
         assert!((snapped.y - 8.0).abs() < 0.001);
         assert!(snapped.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn segment_intersection_returns_parameters_on_both_segments() {
+        let (t, u) = find_intersection_2d(
+            Vector3::new(0.0, 0.0, -100.0),
+            Vector3::new(0.0, 0.0, 100.0),
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        )
+        .expect("perpendicular centerlines should intersect");
+
+        assert!((t - 0.5).abs() < 0.0001);
+        assert!((u - 0.5).abs() < 0.0001);
     }
 }
