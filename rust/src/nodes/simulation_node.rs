@@ -69,7 +69,11 @@
 //! | | `get_zoning_parcel_preview` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_at` | `zoning_tool.gd` |
 //! | | `get_zoning_parcel_drag_preview` | `zoning_tool.gd` |
+//! | | `get_zoning_parcel_drag_preview_packed` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_drag` | `zoning_tool.gd` |
+//! | | `has_zoning_parcel_at` | `zoning_tool.gd` |
+//! | | `get_zoning_parcel_rezone_drag_preview_packed` | `zoning_tool.gd` |
+//! | | `apply_zoning_parcel_rezone_drag` | `zoning_tool.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
@@ -3471,6 +3475,9 @@ impl SimulationNode {
         else {
             return VarDictionary::new();
         };
+        if let Some(geometry) = core.zoning.parcel_geometry_at(world_x, world_z) {
+            return zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0);
+        }
         let Ok(geometry) = core.zoning.preview_parcel_at(
             world_x,
             world_z,
@@ -3481,6 +3488,12 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0)
+    }
+
+    /// Returns true when one world-space point is inside an authored zoning parcel.
+    #[func]
+    pub fn has_zoning_parcel_at(&self, world_x: f32, world_z: f32) -> bool {
+        self.lock_core().zoning.has_parcel_at(world_x, world_z)
     }
 
     /// Returns preview geometry for an all-or-nothing road-side parcel drag run.
@@ -3520,6 +3533,75 @@ impl SimulationNode {
         zoning_parcel_geometries_array(&core, &geometries, runtime_id)
     }
 
+    /// Returns packed preview geometry for an all-or-nothing road-side parcel drag run.
+    #[func]
+    pub fn get_zoning_parcel_drag_preview_packed(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
+        gap_m: f32,
+    ) -> VarDictionary {
+        let core = self.lock_core();
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return VarDictionary::new();
+        };
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return VarDictionary::new();
+        };
+        let Ok(geometries) = core.zoning.preview_parcel_run_at(
+            start_x,
+            start_z,
+            end_x,
+            end_z,
+            frontage_m,
+            depth_m,
+            gap_m,
+            &core.region_graph,
+        ) else {
+            return VarDictionary::new();
+        };
+        zoning_parcel_geometries_packed_dict(&core, &geometries, runtime_id)
+    }
+
+    /// Returns packed preview geometry for existing parcels touched by a zoning paint stroke.
+    #[func]
+    pub fn get_zoning_parcel_rezone_drag_preview_packed(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        target_profile_runtime_id: i32,
+    ) -> VarDictionary {
+        let core = self.lock_core();
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return VarDictionary::new();
+        };
+        if core
+            .zoning
+            .profiles
+            .profile_by_runtime_id(runtime_id)
+            .is_none()
+            && runtime_id != 0
+        {
+            return VarDictionary::new();
+        }
+        let geometries = core
+            .zoning
+            .preview_rezone_stroke(start_x, start_z, end_x, end_z);
+        if geometries.is_empty() {
+            return VarDictionary::new();
+        }
+        zoning_parcel_geometries_packed_dict(&core, &geometries, runtime_id)
+    }
+
     /// Creates an all-or-nothing road-side parcel drag run.
     #[func]
     pub fn apply_zoning_parcel_drag(
@@ -3554,6 +3636,34 @@ impl SimulationNode {
             gap_m,
             &core.region_graph,
         );
+        match result {
+            Ok(ids) if !ids.is_empty() => {
+                core.allocator.dirty = true;
+                core.allocator.dirty_index = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Rezones every existing parcel touched by a world-space zoning paint stroke.
+    #[func]
+    pub fn apply_zoning_parcel_rezone_drag(
+        &mut self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        target_profile_runtime_id: i32,
+    ) -> bool {
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return false;
+        };
+        let mut core = self.lock_core();
+        let core = &mut *core;
+        let result = core
+            .zoning
+            .rezone_stroke(start_x, start_z, end_x, end_z, runtime_id);
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
@@ -5322,6 +5432,18 @@ fn zoning_parcel_geometry_dict(
         corners.push(corner);
     }
 
+    let color = zoning_parcel_color(core, runtime_id, occupied);
+
+    let mut dict = VarDictionary::new();
+    dict.set("id", i64::try_from(parcel_id).unwrap_or(i64::MAX));
+    dict.set("profile_runtime_id", i64::from(runtime_id));
+    dict.set("occupied", occupied);
+    dict.set("corners", corners);
+    dict.set("color", color);
+    dict
+}
+
+fn zoning_parcel_color(core: &SimCore, runtime_id: u16, occupied: bool) -> Color {
     let mut color = if runtime_id == 0 {
         Color::from_rgba(0.78, 0.82, 0.78, 0.30)
     } else if let Some(profile) = core.zoning.profiles.profile_by_runtime_id(runtime_id) {
@@ -5337,14 +5459,7 @@ fn zoning_parcel_geometry_dict(
     if occupied {
         color = Color::from_rgba(color.r * 0.55, color.g * 0.55, color.b * 0.55, 0.28);
     }
-
-    let mut dict = VarDictionary::new();
-    dict.set("id", i64::try_from(parcel_id).unwrap_or(i64::MAX));
-    dict.set("profile_runtime_id", i64::from(runtime_id));
-    dict.set("occupied", occupied);
-    dict.set("corners", corners);
-    dict.set("color", color);
-    dict
+    color
 }
 
 fn zoning_parcel_geometries_array(
@@ -5358,6 +5473,28 @@ fn zoning_parcel_geometries_array(
         arr.push(&dict.to_variant());
     }
     arr
+}
+
+fn zoning_parcel_geometries_packed_dict(
+    core: &SimCore,
+    geometries: &[crate::simulation::grid::zoning::ParcelGeometry],
+    runtime_id: u16,
+) -> VarDictionary {
+    let mut corners = PackedVector3Array::new();
+    for geometry in geometries {
+        for corner in zoning_parcel_surface_corners(core, geometry) {
+            corners.push(corner);
+        }
+    }
+
+    let mut dict = VarDictionary::new();
+    dict.set(
+        "parcel_count",
+        i64::try_from(geometries.len()).unwrap_or(i64::MAX),
+    );
+    dict.set("corners", corners);
+    dict.set("color", zoning_parcel_color(core, runtime_id, false));
+    dict
 }
 
 fn zoning_parcel_cell_dimensions(

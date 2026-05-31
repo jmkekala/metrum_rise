@@ -320,8 +320,53 @@ impl ParcelStore {
         })
     }
 
+    pub(crate) fn find_touching_segment(&self, start: Vector2, end: Vector2) -> Vec<ParcelId> {
+        if start.distance_squared_to(end) <= OVERLAP_EPSILON_M * OVERLAP_EPSILON_M {
+            return self.find_at_point(start).into_iter().collect();
+        }
+
+        let min = Vector2::new(start.x.min(end.x), start.y.min(end.y));
+        let max = Vector2::new(start.x.max(end.x), start.y.max(end.y));
+        let mut visited = HashSet::new();
+        let mut touched = Vec::new();
+        for chunk in chunks_for_aabb(min, max) {
+            let Some(ids) = self.chunk_index.get(&chunk) else {
+                continue;
+            };
+            for &id in ids {
+                if !visited.insert(id) {
+                    continue;
+                }
+                let Some(parcel) = self.get(id) else {
+                    continue;
+                };
+                if segment_touches_parcel(start, end, parcel) {
+                    touched.push(id);
+                }
+            }
+        }
+        touched.sort_unstable();
+        touched
+    }
+
     pub(crate) fn overlaps_existing(&self, geometry: &ParcelGeometry) -> bool {
         let mut visited = HashSet::new();
+        self.overlaps_existing_with_scratch(geometry, &mut visited)
+    }
+
+    pub(crate) fn overlaps_any_existing(&self, geometries: &[ParcelGeometry]) -> bool {
+        let mut visited = HashSet::new();
+        geometries.iter().any(|geometry| {
+            visited.clear();
+            self.overlaps_existing_with_scratch(geometry, &mut visited)
+        })
+    }
+
+    fn overlaps_existing_with_scratch(
+        &self,
+        geometry: &ParcelGeometry,
+        visited: &mut HashSet<ParcelId>,
+    ) -> bool {
         for chunk in chunks_for_aabb(geometry.aabb_min, geometry.aabb_max) {
             let Some(ids) = self.chunk_index.get(&chunk) else {
                 continue;
@@ -568,16 +613,34 @@ pub(crate) fn geometries_overlap(a: &ParcelGeometry, b: &ParcelGeometry) -> bool
     })
 }
 
-fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {
-    let rel = point - parcel.center;
-    let along = rel.dot(parcel.tangent);
-    let depth = rel.dot(parcel.normal);
-    along.abs() <= parcel.frontage_m * 0.5 + OVERLAP_EPSILON_M
-        && depth.abs() <= parcel.depth_m * 0.5 + OVERLAP_EPSILON_M
+pub(crate) fn geometries_have_overlap(geometries: &[ParcelGeometry]) -> bool {
+    let mut chunk_index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    let mut visited = HashSet::new();
+    for (index, geometry) in geometries.iter().enumerate() {
+        let chunks = chunks_for_aabb(geometry.aabb_min, geometry.aabb_max);
+        visited.clear();
+        for chunk in &chunks {
+            let Some(previous_indices) = chunk_index.get(chunk) else {
+                continue;
+            };
+            for &previous_index in previous_indices {
+                if !visited.insert(previous_index) {
+                    continue;
+                }
+                if geometries_overlap(&geometries[previous_index], geometry) {
+                    return true;
+                }
+            }
+        }
+        for chunk in chunks {
+            chunk_index.entry(chunk).or_default().push(index);
+        }
+    }
+    false
 }
 
-fn rectangles_overlap_geometry(geometry: &ParcelGeometry, parcel: &ZoningParcel) -> bool {
-    let parcel_geometry = ParcelGeometry {
+pub(crate) fn geometry_for_parcel(parcel: &ZoningParcel) -> ParcelGeometry {
+    ParcelGeometry {
         edge_idx: parcel.edge_idx,
         side: parcel.side,
         frontage_center_t: parcel.frontage_center_t,
@@ -590,7 +653,67 @@ fn rectangles_overlap_geometry(geometry: &ParcelGeometry, parcel: &ZoningParcel)
         corners: parcel.corners,
         aabb_min: parcel.aabb_min,
         aabb_max: parcel.aabb_max,
-    };
+    }
+}
+
+fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {
+    let rel = point - parcel.center;
+    let along = rel.dot(parcel.tangent);
+    let depth = rel.dot(parcel.normal);
+    along.abs() <= parcel.frontage_m * 0.5 + OVERLAP_EPSILON_M
+        && depth.abs() <= parcel.depth_m * 0.5 + OVERLAP_EPSILON_M
+}
+
+fn segment_touches_parcel(start: Vector2, end: Vector2, parcel: &ZoningParcel) -> bool {
+    if point_inside_parcel(start, parcel) || point_inside_parcel(end, parcel) {
+        return true;
+    }
+    for index in 0..4 {
+        if segments_intersect(
+            start,
+            end,
+            parcel.corners[index],
+            parcel.corners[(index + 1) % 4],
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+fn segments_intersect(a0: Vector2, a1: Vector2, b0: Vector2, b1: Vector2) -> bool {
+    let o1 = cross2(a1 - a0, b0 - a0);
+    let o2 = cross2(a1 - a0, b1 - a0);
+    let o3 = cross2(b1 - b0, a0 - b0);
+    let o4 = cross2(b1 - b0, a1 - b0);
+
+    if ((o1 > OVERLAP_EPSILON_M && o2 < -OVERLAP_EPSILON_M)
+        || (o1 < -OVERLAP_EPSILON_M && o2 > OVERLAP_EPSILON_M))
+        && ((o3 > OVERLAP_EPSILON_M && o4 < -OVERLAP_EPSILON_M)
+            || (o3 < -OVERLAP_EPSILON_M && o4 > OVERLAP_EPSILON_M))
+    {
+        return true;
+    }
+
+    (o1.abs() <= OVERLAP_EPSILON_M && point_on_segment(b0, a0, a1))
+        || (o2.abs() <= OVERLAP_EPSILON_M && point_on_segment(b1, a0, a1))
+        || (o3.abs() <= OVERLAP_EPSILON_M && point_on_segment(a0, b0, b1))
+        || (o4.abs() <= OVERLAP_EPSILON_M && point_on_segment(a1, b0, b1))
+}
+
+fn point_on_segment(point: Vector2, start: Vector2, end: Vector2) -> bool {
+    point.x >= start.x.min(end.x) - OVERLAP_EPSILON_M
+        && point.x <= start.x.max(end.x) + OVERLAP_EPSILON_M
+        && point.y >= start.y.min(end.y) - OVERLAP_EPSILON_M
+        && point.y <= start.y.max(end.y) + OVERLAP_EPSILON_M
+}
+
+fn cross2(a: Vector2, b: Vector2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+fn rectangles_overlap_geometry(geometry: &ParcelGeometry, parcel: &ZoningParcel) -> bool {
+    let parcel_geometry = geometry_for_parcel(parcel);
     geometries_overlap(geometry, &parcel_geometry)
 }
 

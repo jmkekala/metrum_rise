@@ -196,6 +196,19 @@ impl ZoningSystem {
         Ok(geometry)
     }
 
+    /// Returns true when one world-space point is inside an authored parcel.
+    pub fn has_parcel_at(&self, world_x: f32, world_z: f32) -> bool {
+        self.parcels
+            .find_at_point(Vector2::new(world_x, world_z))
+            .is_some()
+    }
+
+    /// Returns the authored parcel geometry under one world-space point.
+    pub fn parcel_geometry_at(&self, world_x: f32, world_z: f32) -> Option<ParcelGeometry> {
+        let id = self.parcels.find_at_point(Vector2::new(world_x, world_z))?;
+        self.parcels.get(id).map(parcels::geometry_for_parcel)
+    }
+
     /// Projects an all-or-nothing same-road parcel run without mutating storage.
     pub fn preview_parcel_run_at(
         &self,
@@ -220,6 +233,21 @@ impl ZoningSystem {
         )?;
         self.validate_parcel_run_geometries(&geometries)?;
         Ok(geometries)
+    }
+
+    /// Returns authored parcel geometries touched by one world-space zoning paint stroke.
+    pub fn preview_rezone_stroke(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+    ) -> Vec<ParcelGeometry> {
+        self.parcels
+            .find_touching_segment(Vector2::new(start_x, start_z), Vector2::new(end_x, end_z))
+            .into_iter()
+            .filter_map(|id| self.parcels.get(id).map(parcels::geometry_for_parcel))
+            .collect()
     }
 
     /// Creates a new parcel or changes the profile of the parcel under the given world position.
@@ -290,6 +318,28 @@ impl ZoningSystem {
         let mut ids = Vec::with_capacity(geometries.len());
         for geometry in geometries {
             ids.push(self.parcels.insert_new(geometry, runtime_id));
+        }
+        Ok(ids)
+    }
+
+    /// Changes the zoning profile of every authored parcel touched by one world-space stroke.
+    pub fn rezone_stroke(
+        &mut self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        runtime_id: u16,
+    ) -> Result<Vec<ParcelId>, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        let ids = self
+            .parcels
+            .find_touching_segment(Vector2::new(start_x, start_z), Vector2::new(end_x, end_z));
+        if ids.is_empty() {
+            return Err(ParcelPlacementError::NoRoadAttachment);
+        }
+        for id in &ids {
+            self.parcels.set_zone_profile_runtime_id(*id, runtime_id);
         }
         Ok(ids)
     }
@@ -370,20 +420,16 @@ impl ZoningSystem {
         &self,
         geometries: &[ParcelGeometry],
     ) -> Result<(), ParcelPlacementError> {
-        for (index, geometry) in geometries.iter().enumerate() {
+        for geometry in geometries {
             if !parcels::geometry_inside_world(geometry, self.config.width_m, self.config.height_m)
             {
                 return Err(ParcelPlacementError::OutsideWorld);
             }
-            if self.parcels.overlaps_existing(geometry) {
-                return Err(ParcelPlacementError::OverlapsExistingParcel);
-            }
-            if geometries[..index]
-                .iter()
-                .any(|previous| parcels::geometries_overlap(previous, geometry))
-            {
-                return Err(ParcelPlacementError::OverlapsExistingParcel);
-            }
+        }
+        if self.parcels.overlaps_any_existing(geometries)
+            || parcels::geometries_have_overlap(geometries)
+        {
+            return Err(ParcelPlacementError::OverlapsExistingParcel);
         }
         Ok(())
     }
