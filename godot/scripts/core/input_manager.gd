@@ -124,7 +124,9 @@ func _unhandled_input(event):
 				if event.ctrl_pressed:
 					_handle_save_game()
 			KEY_P: _toggle_agent_paths()
-			KEY_SPACE: _toggle_pause()
+			KEY_SPACE:
+				_toggle_pause()
+				get_viewport().set_input_as_handled()
 			KEY_L:
 				if event.ctrl_pressed:
 					_handle_load_game()
@@ -375,11 +377,11 @@ func select_zone_profile(runtime_id: int) -> void:
 	if zoning_tool:
 		zoning_tool.select_profile(runtime_id)
 
-func set_zoning_parcel_cells(width_cells: int, depth_cells: int) -> void:
+func set_zoning_parcel_options(width_cells: int, depth_cells: int, gap_m: float) -> void:
 	if current_tool != Tool.ZONING:
 		_toggle_tool(Tool.ZONING)
 	if zoning_tool:
-		zoning_tool.set_parcel_cells(width_cells, depth_cells)
+		zoning_tool.set_parcel_options(width_cells, depth_cells, gap_m)
 
 func _handle_mouse(event):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:

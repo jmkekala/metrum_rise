@@ -184,6 +184,8 @@ pub enum ParcelPlacementError {
     FrontageOutOfBounds,
     /// The requested parcel dimensions are outside the supported first-slice edit range.
     InvalidDimensions,
+    /// The requested drag-run gap is outside the supported first-slice edit range.
+    InvalidGap,
     /// The requested rectangle overlaps an existing parcel.
     OverlapsExistingParcel,
     /// One or more parcel corners would sit outside the authored world extent.
@@ -401,6 +403,76 @@ pub(crate) fn project_default_parcel_at(
     frontage_m: f32,
     depth_m: f32,
 ) -> Result<ParcelGeometry, ParcelPlacementError> {
+    let projected = project_buildable_road_point_at(graph, world_pos, frontage_m, depth_m)?;
+    if projected.s_m < frontage_m * 0.5 || projected.s_m > projected.edge_len_m - frontage_m * 0.5 {
+        return Err(ParcelPlacementError::FrontageOutOfBounds);
+    }
+
+    Ok(geometry_from_attachment(
+        graph,
+        projected.edge_idx,
+        projected.side,
+        projected.s_m / projected.edge_len_m,
+        frontage_m,
+        depth_m,
+    ))
+}
+
+pub(crate) fn project_parcel_run_at(
+    graph: &RegionGraph,
+    start_pos: Vector2,
+    end_pos: Vector2,
+    frontage_m: f32,
+    depth_m: f32,
+    gap_m: f32,
+) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
+    let start = project_buildable_road_point_at(graph, start_pos, frontage_m, depth_m)?;
+    let edge = graph.edge(start.edge_idx);
+    let Some(end) = project_point_to_edge(graph, start.edge_idx, end_pos) else {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    };
+
+    let max_centerline_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + depth_m + 8.0;
+    if end.dist_m > max_centerline_dist {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+
+    let spacing_m = frontage_m + gap_m;
+    if spacing_m <= 0.0 || !spacing_m.is_finite() {
+        return Err(ParcelPlacementError::InvalidGap);
+    }
+
+    let min_s = start.s_m.min(end.s_m);
+    let max_s = start.s_m.max(end.s_m);
+    let mut center_s = min_s;
+    let mut geometries = Vec::new();
+    while center_s <= max_s + 0.001 {
+        if center_s < frontage_m * 0.5 || center_s > start.edge_len_m - frontage_m * 0.5 {
+            return Err(ParcelPlacementError::FrontageOutOfBounds);
+        }
+        geometries.push(geometry_from_attachment(
+            graph,
+            start.edge_idx,
+            start.side,
+            center_s / start.edge_len_m,
+            frontage_m,
+            depth_m,
+        ));
+        center_s += spacing_m;
+    }
+
+    if geometries.is_empty() {
+        return Err(ParcelPlacementError::NoRoadAttachment);
+    }
+    Ok(geometries)
+}
+
+fn project_buildable_road_point_at(
+    graph: &RegionGraph,
+    world_pos: Vector2,
+    frontage_m: f32,
+    depth_m: f32,
+) -> Result<ProjectedRoadPoint, ParcelPlacementError> {
     let search_radius = depth_m + frontage_m + 48.0;
     let nearby_edges =
         graph.get_edges_near_point(Vector3::new(world_pos.x, 0.0, world_pos.y), search_radius);
@@ -434,18 +506,7 @@ pub(crate) fn project_default_parcel_at(
     let Some(projected) = best else {
         return Err(ParcelPlacementError::NoRoadAttachment);
     };
-    if projected.s_m < frontage_m * 0.5 || projected.s_m > projected.edge_len_m - frontage_m * 0.5 {
-        return Err(ParcelPlacementError::FrontageOutOfBounds);
-    }
-
-    Ok(geometry_from_attachment(
-        graph,
-        projected.edge_idx,
-        projected.side,
-        projected.s_m / projected.edge_len_m,
-        frontage_m,
-        depth_m,
-    ))
+    Ok(projected)
 }
 
 pub(crate) fn geometry_from_attachment(
@@ -498,6 +559,15 @@ pub(crate) fn geometry_inside_world(
     })
 }
 
+pub(crate) fn geometries_overlap(a: &ParcelGeometry, b: &ParcelGeometry) -> bool {
+    let axes = [a.tangent, a.normal, b.tangent, b.normal];
+    axes.into_iter().all(|axis| {
+        let (a_min, a_max) = project_corners(&a.corners, axis);
+        let (b_min, b_max) = project_corners(&b.corners, axis);
+        a_max > b_min + OVERLAP_EPSILON_M && b_max > a_min + OVERLAP_EPSILON_M
+    })
+}
+
 fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {
     let rel = point - parcel.center;
     let along = rel.dot(parcel.tangent);
@@ -507,17 +577,21 @@ fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {
 }
 
 fn rectangles_overlap_geometry(geometry: &ParcelGeometry, parcel: &ZoningParcel) -> bool {
-    let axes = [
-        geometry.tangent,
-        geometry.normal,
-        parcel.tangent,
-        parcel.normal,
-    ];
-    axes.into_iter().all(|axis| {
-        let (a_min, a_max) = project_corners(&geometry.corners, axis);
-        let (b_min, b_max) = project_corners(&parcel.corners, axis);
-        a_max > b_min + OVERLAP_EPSILON_M && b_max > a_min + OVERLAP_EPSILON_M
-    })
+    let parcel_geometry = ParcelGeometry {
+        edge_idx: parcel.edge_idx,
+        side: parcel.side,
+        frontage_center_t: parcel.frontage_center_t,
+        frontage_m: parcel.frontage_m,
+        depth_m: parcel.depth_m,
+        front_center: parcel.front_center,
+        center: parcel.center,
+        tangent: parcel.tangent,
+        normal: parcel.normal,
+        corners: parcel.corners,
+        aabb_min: parcel.aabb_min,
+        aabb_max: parcel.aabb_max,
+    };
+    geometries_overlap(geometry, &parcel_geometry)
 }
 
 fn project_corners(corners: &[Vector2; 4], axis: Vector2) -> (f32, f32) {

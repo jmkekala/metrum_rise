@@ -212,6 +212,97 @@ fn test_invalid_custom_parcel_dimensions_are_rejected() {
 }
 
 #[test]
+fn test_parcel_drag_run_uses_same_edge_side_and_gap() {
+    let (graph, edge_idx) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    let ids = z
+        .place_parcel_run_at(
+            -30.0,
+            -20.0,
+            30.0,
+            -20.0,
+            residential,
+            20.0,
+            30.0,
+            10.0,
+            &graph,
+        )
+        .expect("parcel run");
+
+    assert_eq!(ids.len(), 3);
+    let centers: Vec<f32> = z
+        .parcels()
+        .iter()
+        .map(|parcel| parcel.front_center().x)
+        .collect();
+    assert_eq!(z.parcels().len(), 3);
+    assert!(
+        z.parcels()
+            .iter()
+            .all(|parcel| parcel.edge_idx() == edge_idx && parcel.side() == 1)
+    );
+    assert!((centers[0] + 30.0).abs() < 1e-4);
+    assert!(centers[1].abs() < 1e-4);
+    assert!((centers[2] - 30.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_parcel_drag_run_is_direction_independent() {
+    let (graph, _) = make_straight_road();
+    let z = make_zoning();
+
+    let forward = z
+        .preview_parcel_run_at(-30.0, -20.0, 30.0, -20.0, 20.0, 30.0, 0.0, &graph)
+        .expect("forward run");
+    let backward = z
+        .preview_parcel_run_at(30.0, -20.0, -30.0, -20.0, 20.0, 30.0, 0.0, &graph)
+        .expect("backward run");
+
+    let forward_centers: Vec<f32> = forward
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+    let backward_centers: Vec<f32> = backward
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+    assert_eq!(forward_centers, backward_centers);
+}
+
+#[test]
+fn test_parcel_drag_run_rejects_existing_overlap() {
+    let (graph, _) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    z.place_or_rezone_parcel_at(0.0, -20.0, residential, 20.0, 30.0, &graph)
+        .expect("existing parcel");
+
+    let result = z.preview_parcel_run_at(-20.0, -20.0, 20.0, -20.0, 20.0, 30.0, 0.0, &graph);
+    assert!(matches!(
+        result,
+        Err(ParcelPlacementError::OverlapsExistingParcel)
+    ));
+}
+
+#[test]
+fn test_parcel_drag_run_rejects_invalid_gap() {
+    let (graph, _) = make_straight_road();
+    let z = make_zoning();
+
+    let result = z.preview_parcel_run_at(-20.0, -20.0, 20.0, -20.0, 20.0, 30.0, 25.0, &graph);
+    assert!(matches!(result, Err(ParcelPlacementError::InvalidGap)));
+}
+
+#[test]
 fn test_default_parcel_overlap_is_rejected() {
     let (graph, _) = make_straight_road();
     let mut z = make_zoning();

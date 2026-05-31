@@ -47,6 +47,7 @@ var zoning_options_btn: Button
 var zoning_options_popup: PopupPanel
 var zoning_width_spin: SpinBox
 var zoning_depth_spin: SpinBox
+var zoning_gap_spin: SpinBox
 var _zoning_options_open_on_button_down := false
 var _zoning_profiles_by_zone_type: Dictionary = {}
 var _zoning_type_buttons: Dictionary = {}
@@ -75,6 +76,7 @@ const ZONING_MAIN_TYPES := [
 
 const ZONING_PARCEL_WIDTH_DEFAULT_CELLS := 2
 const ZONING_PARCEL_DEPTH_DEFAULT_CELLS := 3
+const ZONING_PARCEL_GAP_DEFAULT_M := 0.0
 
 const CLOCK_PANEL_WIDTH := 220.0
 const CITY_STATUS_PANEL_WIDTH := 170.0
@@ -177,12 +179,14 @@ func _build_ui():
 	straight_btn = Button.new()
 	straight_btn.text = "Straight"
 	straight_btn.toggle_mode = true
+	straight_btn.focus_mode = Control.FOCUS_NONE
 	straight_btn.button_pressed = true 
 	road_options_menu.add_child(straight_btn)
 
 	spline_btn = Button.new()
 	spline_btn.text = "Spline"
 	spline_btn.toggle_mode = true
+	spline_btn.focus_mode = Control.FOCUS_NONE
 	road_options_menu.add_child(spline_btn)
 	
 	road_combined_hbox.add_child(options_panel)
@@ -215,29 +219,35 @@ func _build_ui():
 	
 	walkway_btn = Button.new()
 	walkway_btn.text = "Walkway"
+	walkway_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(walkway_btn)
 	
 	road_2l_btn = Button.new()
 	road_2l_btn.text = "2-Lane Road"
+	road_2l_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(road_2l_btn)
 
 	road_4l_btn = Button.new()
 	road_4l_btn.text = "4-Lane Road"
+	road_4l_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(road_4l_btn)
 
 	var ow1_btn = Button.new()
 	ow1_btn.text = "One-Way 1L"
+	ow1_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(ow1_btn)
 	ow1_btn.pressed.connect(func(): _select_road_type(1, 0))
 
 	var ow2_btn = Button.new()
 	ow2_btn.text = "One-Way 2L"
+	ow2_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(ow2_btn)
 	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
 
 	var cul_de_sac_btn = Button.new()
 	cul_de_sac_btn.text = "Cul-De-Sac"
 	cul_de_sac_btn.custom_minimum_size = Vector2(100, 0)
+	cul_de_sac_btn.focus_mode = Control.FOCUS_NONE
 	road_sub_menu.add_child(cul_de_sac_btn)
 	cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	
@@ -252,11 +262,13 @@ func _build_ui():
 	
 	var sculpt_btn = Button.new()
 	sculpt_btn.text = "Raise/Lower Terrain"
+	sculpt_btn.focus_mode = Control.FOCUS_NONE
 	terrain_sub_menu.add_child(sculpt_btn)
 	sculpt_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.SCULPT))
 	
 	var water_btn = Button.new()
 	water_btn.text = "Add Water Source"
+	water_btn.focus_mode = Control.FOCUS_NONE
 	terrain_sub_menu.add_child(water_btn)
 	water_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.WATER))
 	
@@ -340,6 +352,7 @@ func _build_ui():
 	zoning_options_btn.text = "⚙"
 	zoning_options_btn.tooltip_text = "Parcel options"
 	zoning_options_btn.custom_minimum_size = Vector2(70, 50)
+	zoning_options_btn.focus_mode = Control.FOCUS_NONE
 	zoning_options_btn.add_theme_font_size_override("font_size", 24)
 	zoning_options_btn.button_down.connect(_remember_zoning_options_button_down_state)
 	zoning_options_btn.pressed.connect(_toggle_zoning_options_popup)
@@ -456,6 +469,7 @@ func _build_clock_content() -> VBoxContainer:
 	speed_down_btn = Button.new()
 	speed_down_btn.text = "-"
 	speed_down_btn.custom_minimum_size = Vector2(36, 32)
+	speed_down_btn.focus_mode = Control.FOCUS_NONE
 	speed_hbox.add_child(speed_down_btn)
 
 	speed_label = Label.new()
@@ -469,6 +483,7 @@ func _build_clock_content() -> VBoxContainer:
 	speed_up_btn = Button.new()
 	speed_up_btn.text = "+"
 	speed_up_btn.custom_minimum_size = Vector2(36, 32)
+	speed_up_btn.focus_mode = Control.FOCUS_NONE
 	speed_hbox.add_child(speed_up_btn)
 
 	return clock_vbox
@@ -522,6 +537,7 @@ func _create_bottom_group_shell(content: Control) -> PanelContainer:
 	return shell
 
 func _apply_hud_toolbar_text_style(button: Button) -> void:
+	button.focus_mode = Control.FOCUS_NONE
 	button.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
 	button.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	button.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
@@ -633,6 +649,7 @@ func _color_from_hex(hex: String, alpha: float) -> Color:
 	return Color(0.5, 0.5, 0.5, alpha)
 
 func _apply_colored_button_style(button: Button, base_color: Color) -> void:
+	button.focus_mode = Control.FOCUS_NONE
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = base_color
 	normal.set_corner_radius_all(10)
@@ -686,13 +703,16 @@ func _build_zoning_options_popup() -> void:
 
 	zoning_width_spin = _make_zoning_dimension_spin(ZONING_PARCEL_WIDTH_DEFAULT_CELLS, 1.0, 8.0)
 	zoning_depth_spin = _make_zoning_dimension_spin(ZONING_PARCEL_DEPTH_DEFAULT_CELLS, 1.0, 12.0)
-	root.add_child(_make_zoning_dimension_row("Width", zoning_width_spin))
-	root.add_child(_make_zoning_dimension_row("Depth", zoning_depth_spin))
+	zoning_gap_spin = _make_zoning_dimension_spin(ZONING_PARCEL_GAP_DEFAULT_M, 0.0, 20.0)
+	root.add_child(_make_zoning_dimension_row("Width", zoning_width_spin, "cells"))
+	root.add_child(_make_zoning_dimension_row("Depth", zoning_depth_spin, "cells"))
+	root.add_child(_make_zoning_dimension_row("Gap", zoning_gap_spin, "m"))
 
 	zoning_width_spin.value_changed.connect(func(_value): _on_zoning_parcel_dimensions_changed())
 	zoning_depth_spin.value_changed.connect(func(_value): _on_zoning_parcel_dimensions_changed())
+	zoning_gap_spin.value_changed.connect(func(_value): _on_zoning_parcel_dimensions_changed())
 
-func _make_zoning_dimension_row(label_text: String, spin: SpinBox) -> HBoxContainer:
+func _make_zoning_dimension_row(label_text: String, spin: SpinBox, unit_text: String) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 
@@ -705,7 +725,7 @@ func _make_zoning_dimension_row(label_text: String, spin: SpinBox) -> HBoxContai
 	row.add_child(spin)
 
 	var unit := Label.new()
-	unit.text = "cells"
+	unit.text = unit_text
 	unit.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	unit.custom_minimum_size = Vector2(38, 0)
 	row.add_child(unit)
@@ -729,7 +749,7 @@ func _toggle_zoning_options_popup() -> void:
 		return
 	_zoning_options_open_on_button_down = false
 
-	var popup_size := Vector2i(250, 118)
+	var popup_size := Vector2i(250, 154)
 	var viewport_size := get_viewport().get_visible_rect().size
 	var button_pos := zoning_options_btn.global_position
 	var x := clampf(button_pos.x, 12.0, maxf(12.0, viewport_size.x - popup_size.x - 12.0))
@@ -743,11 +763,12 @@ func _remember_zoning_options_button_down_state() -> void:
 	_zoning_options_open_on_button_down = zoning_options_popup != null and zoning_options_popup.visible
 
 func _on_zoning_parcel_dimensions_changed() -> void:
-	if input_manager == null or zoning_width_spin == null or zoning_depth_spin == null:
+	if input_manager == null or zoning_width_spin == null or zoning_depth_spin == null or zoning_gap_spin == null:
 		return
-	input_manager.set_zoning_parcel_cells(
+	input_manager.set_zoning_parcel_options(
 		int(round(zoning_width_spin.value)),
-		int(round(zoning_depth_spin.value))
+		int(round(zoning_depth_spin.value)),
+		float(zoning_gap_spin.value)
 	)
 
 func _rebuild_zoning_profiles_index() -> void:

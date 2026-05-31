@@ -68,6 +68,8 @@
 //! | **Zoning** | `get_zone_profiles` | `zoning_tool.gd`, `asset_editor.gd` |
 //! | | `get_zoning_parcel_preview` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_at` | `zoning_tool.gd` |
+//! | | `get_zoning_parcel_drag_preview` | `zoning_tool.gd` |
+//! | | `apply_zoning_parcel_drag` | `zoning_tool.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
@@ -3481,6 +3483,87 @@ impl SimulationNode {
         zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0)
     }
 
+    /// Returns preview geometry for an all-or-nothing road-side parcel drag run.
+    #[func]
+    pub fn get_zoning_parcel_drag_preview(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
+        gap_m: f32,
+    ) -> VarArray {
+        let core = self.lock_core();
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return VarArray::new();
+        };
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return VarArray::new();
+        };
+        let Ok(geometries) = core.zoning.preview_parcel_run_at(
+            start_x,
+            start_z,
+            end_x,
+            end_z,
+            frontage_m,
+            depth_m,
+            gap_m,
+            &core.region_graph,
+        ) else {
+            return VarArray::new();
+        };
+        zoning_parcel_geometries_array(&core, &geometries, runtime_id)
+    }
+
+    /// Creates an all-or-nothing road-side parcel drag run.
+    #[func]
+    pub fn apply_zoning_parcel_drag(
+        &mut self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
+        gap_m: f32,
+    ) -> bool {
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return false;
+        };
+        let mut core = self.lock_core();
+        let core = &mut *core;
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return false;
+        };
+        let result = core.zoning.place_parcel_run_at(
+            start_x,
+            start_z,
+            end_x,
+            end_z,
+            runtime_id,
+            frontage_m,
+            depth_m,
+            gap_m,
+            &core.region_graph,
+        );
+        match result {
+            Ok(ids) if !ids.is_empty() => {
+                core.allocator.dirty = true;
+                core.allocator.dirty_index = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Returns committed zoning parcels for the Godot overlay mesh.
     #[func]
     pub fn get_zoning_parcels_overlay(&self) -> VarArray {
@@ -5262,6 +5345,19 @@ fn zoning_parcel_geometry_dict(
     dict.set("corners", corners);
     dict.set("color", color);
     dict
+}
+
+fn zoning_parcel_geometries_array(
+    core: &SimCore,
+    geometries: &[crate::simulation::grid::zoning::ParcelGeometry],
+    runtime_id: u16,
+) -> VarArray {
+    let mut arr = VarArray::new();
+    for geometry in geometries {
+        let dict = zoning_parcel_geometry_dict(core, geometry, runtime_id, false, 0);
+        arr.push(&dict.to_variant());
+    }
+    arr
 }
 
 fn zoning_parcel_cell_dimensions(

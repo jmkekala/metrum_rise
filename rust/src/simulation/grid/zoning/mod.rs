@@ -31,6 +31,10 @@ pub const MAX_PARCEL_FRONTAGE_M: f32 = 80.0;
 pub const MIN_PARCEL_DEPTH_M: f32 = 5.0;
 /// Largest player-authored parcel depth accepted by the Rust placement path.
 pub const MAX_PARCEL_DEPTH_M: f32 = 120.0;
+/// Smallest spacing between generated drag-run parcels.
+pub const MIN_PARCEL_GAP_M: f32 = 0.0;
+/// Largest spacing between generated drag-run parcels.
+pub const MAX_PARCEL_GAP_M: f32 = 20.0;
 
 /// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
@@ -192,6 +196,32 @@ impl ZoningSystem {
         Ok(geometry)
     }
 
+    /// Projects an all-or-nothing same-road parcel run without mutating storage.
+    pub fn preview_parcel_run_at(
+        &self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        frontage_m: f32,
+        depth_m: f32,
+        gap_m: f32,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
+        Self::validate_parcel_dimensions(frontage_m, depth_m)?;
+        Self::validate_parcel_gap(gap_m)?;
+        let geometries = parcels::project_parcel_run_at(
+            graph,
+            Vector2::new(start_x, start_z),
+            Vector2::new(end_x, end_z),
+            frontage_m,
+            depth_m,
+            gap_m,
+        )?;
+        self.validate_parcel_run_geometries(&geometries)?;
+        Ok(geometries)
+    }
+
     /// Creates a new parcel or changes the profile of the parcel under the given world position.
     ///
     /// Runtime id `0` creates or assigns a free/unzoned parcel.
@@ -235,6 +265,33 @@ impl ZoningSystem {
 
         let geometry = self.preview_parcel_at(world_x, world_z, frontage_m, depth_m, graph)?;
         Ok(self.parcels.insert_new(geometry, runtime_id))
+    }
+
+    /// Creates an all-or-nothing same-road parcel run.
+    ///
+    /// Drag-run placement never silently skips invalid or occupied space. Any overlap or out of
+    /// bounds geometry rejects the whole run.
+    pub fn place_parcel_run_at(
+        &mut self,
+        start_x: f32,
+        start_z: f32,
+        end_x: f32,
+        end_z: f32,
+        runtime_id: u16,
+        frontage_m: f32,
+        depth_m: f32,
+        gap_m: f32,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<Vec<ParcelId>, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        let geometries = self.preview_parcel_run_at(
+            start_x, start_z, end_x, end_z, frontage_m, depth_m, gap_m, graph,
+        )?;
+        let mut ids = Vec::with_capacity(geometries.len());
+        for geometry in geometries {
+            ids.push(self.parcels.insert_new(geometry, runtime_id));
+        }
+        Ok(ids)
     }
 
     /// Restores one saved parcel from road attachment data.
@@ -298,6 +355,35 @@ impl ZoningSystem {
             || !(MIN_PARCEL_DEPTH_M..=MAX_PARCEL_DEPTH_M).contains(&depth_m)
         {
             return Err(ParcelPlacementError::InvalidDimensions);
+        }
+        Ok(())
+    }
+
+    fn validate_parcel_gap(gap_m: f32) -> Result<(), ParcelPlacementError> {
+        if !gap_m.is_finite() || !(MIN_PARCEL_GAP_M..=MAX_PARCEL_GAP_M).contains(&gap_m) {
+            return Err(ParcelPlacementError::InvalidGap);
+        }
+        Ok(())
+    }
+
+    fn validate_parcel_run_geometries(
+        &self,
+        geometries: &[ParcelGeometry],
+    ) -> Result<(), ParcelPlacementError> {
+        for (index, geometry) in geometries.iter().enumerate() {
+            if !parcels::geometry_inside_world(geometry, self.config.width_m, self.config.height_m)
+            {
+                return Err(ParcelPlacementError::OutsideWorld);
+            }
+            if self.parcels.overlaps_existing(geometry) {
+                return Err(ParcelPlacementError::OverlapsExistingParcel);
+            }
+            if geometries[..index]
+                .iter()
+                .any(|previous| parcels::geometries_overlap(previous, geometry))
+            {
+                return Err(ParcelPlacementError::OverlapsExistingParcel);
+            }
         }
         Ok(())
     }

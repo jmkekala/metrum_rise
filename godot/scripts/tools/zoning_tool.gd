@@ -1,7 +1,8 @@
 ## Road-aligned parcel zoning tool -- sends placement points to Rust and previews returned geometry.
 ##
 ## Rust methods called: get_zone_profiles(), get_zoning_parcel_preview(),
-##   apply_zoning_parcel_at(), intersect_world_surface()
+##   get_zoning_parcel_drag_preview(), apply_zoning_parcel_at(),
+##   apply_zoning_parcel_drag(), intersect_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -11,10 +12,15 @@ var active: bool = false
 var current_profile_runtime_id: int = 0
 var parcel_width_cells: int = 2
 var parcel_depth_cells: int = 3
+var parcel_gap_m: float = 0.0
 var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
 var preview_mesh: MeshInstance3D
+var dragging: bool = false
+var drag_start_world = null
+
+const DRAG_THRESHOLD_M: float = 4.0
 
 func _ready():
 	_reload_profiles()
@@ -34,6 +40,8 @@ func _ready():
 
 func _process(_delta):
 	if not active:
+		dragging = false
+		drag_start_world = null
 		preview_mesh.visible = false
 		return
 	_update_preview()
@@ -42,8 +50,11 @@ func _unhandled_input(event):
 	if not active:
 		return
 
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		_commit_at_mouse()
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_begin_drag()
+		else:
+			_finish_drag()
 
 func _reload_profiles() -> void:
 	profiles.clear()
@@ -68,17 +79,33 @@ func select_profile_by_zone_type(zone_type: String) -> void:
 			select_profile(int(profile.get("runtime_id", 0)))
 			return
 
-func set_parcel_cells(width_cells: int, depth_cells: int) -> void:
+func set_parcel_options(width_cells: int, depth_cells: int, gap_m: float) -> void:
 	parcel_width_cells = clampi(width_cells, 1, 8)
 	parcel_depth_cells = clampi(depth_cells, 1, 12)
+	parcel_gap_m = clampf(gap_m, 0.0, 20.0)
 
 func undo() -> void:
 	pass
 
-func _commit_at_mouse() -> void:
-	var wp = _mouse_world_pos()
-	if wp == null:
+func _begin_drag() -> void:
+	drag_start_world = _mouse_world_pos()
+	dragging = drag_start_world != null
+
+func _finish_drag() -> void:
+	if not dragging:
 		return
+	var start = drag_start_world
+	var end = _mouse_world_pos()
+	dragging = false
+	drag_start_world = null
+	if start == null or end == null:
+		return
+	if start.distance_to(end) >= DRAG_THRESHOLD_M:
+		_commit_drag(start, end)
+	else:
+		_commit_single_at(start)
+
+func _commit_single_at(wp: Vector2) -> void:
 	if simulation_node.apply_zoning_parcel_at(
 		wp.x,
 		wp.y,
@@ -89,11 +116,43 @@ func _commit_at_mouse() -> void:
 		if zoning_overlay:
 			zoning_overlay.mark_zone_dirty()
 
+func _commit_drag(start: Vector2, end: Vector2) -> void:
+	if simulation_node.apply_zoning_parcel_drag(
+		start.x,
+		start.y,
+		end.x,
+		end.y,
+		current_profile_runtime_id,
+		parcel_width_cells,
+		parcel_depth_cells,
+		parcel_gap_m
+	):
+		if zoning_overlay:
+			zoning_overlay.mark_zone_dirty()
+
 func _update_preview() -> void:
 	var wp = _mouse_world_pos()
 	if wp == null:
 		preview_mesh.visible = false
 		return
+	if dragging and drag_start_world != null and drag_start_world.distance_to(wp) >= DRAG_THRESHOLD_M:
+		var drag_payload: Array = simulation_node.get_zoning_parcel_drag_preview(
+			drag_start_world.x,
+			drag_start_world.y,
+			wp.x,
+			wp.y,
+			current_profile_runtime_id,
+			parcel_width_cells,
+			parcel_depth_cells,
+			parcel_gap_m
+		)
+		if drag_payload.is_empty():
+			preview_mesh.visible = false
+			return
+		preview_mesh.mesh = _build_parcels_mesh(drag_payload, true)
+		preview_mesh.visible = preview_mesh.mesh != null
+		return
+
 	var payload: Dictionary = simulation_node.get_zoning_parcel_preview(
 		wp.x,
 		wp.y,
@@ -104,33 +163,46 @@ func _update_preview() -> void:
 	if payload.is_empty():
 		preview_mesh.visible = false
 		return
-	preview_mesh.mesh = _build_parcel_mesh(payload, true)
+	preview_mesh.mesh = _build_parcels_mesh([payload], true)
 	preview_mesh.visible = preview_mesh.mesh != null
 
-func _build_parcel_mesh(payload: Dictionary, include_fill: bool) -> Mesh:
-	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
-	if corners.size() != 4:
+func _build_parcels_mesh(payloads: Array, include_fill: bool) -> Mesh:
+	if payloads.is_empty():
 		return null
-	var color: Color = payload.get("color", Color(0.7, 0.9, 0.7, 0.34))
-	var edge_color := Color(color.r, color.g, color.b, 0.88)
 
 	var im := ImmediateMesh.new()
 	if include_fill:
 		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-		im.surface_set_color(color)
-		im.surface_add_vertex(corners[0])
-		im.surface_add_vertex(corners[1])
-		im.surface_add_vertex(corners[2])
-		im.surface_add_vertex(corners[0])
-		im.surface_add_vertex(corners[2])
-		im.surface_add_vertex(corners[3])
+		for payload in payloads:
+			if not (payload is Dictionary):
+				continue
+			var fill: Dictionary = payload
+			var corners: PackedVector3Array = fill.get("corners", PackedVector3Array())
+			if corners.size() != 4:
+				continue
+			var color: Color = fill.get("color", Color(0.7, 0.9, 0.7, 0.34))
+			im.surface_set_color(color)
+			im.surface_add_vertex(corners[0])
+			im.surface_add_vertex(corners[1])
+			im.surface_add_vertex(corners[2])
+			im.surface_add_vertex(corners[0])
+			im.surface_add_vertex(corners[2])
+			im.surface_add_vertex(corners[3])
 		im.surface_end()
 
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	im.surface_set_color(edge_color)
-	for i in range(4):
-		im.surface_add_vertex(corners[i])
-		im.surface_add_vertex(corners[(i + 1) % 4])
+	for payload in payloads:
+		if not (payload is Dictionary):
+			continue
+		var border: Dictionary = payload
+		var corners: PackedVector3Array = border.get("corners", PackedVector3Array())
+		if corners.size() != 4:
+			continue
+		var color: Color = border.get("color", Color(0.7, 0.9, 0.7, 0.34))
+		im.surface_set_color(Color(color.r, color.g, color.b, 0.88))
+		for i in range(4):
+			im.surface_add_vertex(corners[i])
+			im.surface_add_vertex(corners[(i + 1) % 4])
 	im.surface_end()
 	return im
 

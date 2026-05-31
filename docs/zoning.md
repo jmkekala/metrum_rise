@@ -1323,6 +1323,8 @@ The first implementation is deliberately narrow:
 - the zoning UI may offer player-selected parcel frontage/depth in whole zoning cells for
   placement, but Rust converts through `zone_cell_m`, validates the resulting dimensions, and owns
   the final rectangle
+- drag-run placement may also use a metre `Gap` between adjacent generated parcels; Rust validates
+  the gap and rejects the whole run if any parcel would be illegal
 - one parcel attaches to exactly one road edge and one side
 - one parcel is a road-aligned rectangle; its frontage edge follows the selected road side and its
   depth extends away from the road
@@ -1351,7 +1353,8 @@ Accepted first implementation decisions:
 
 - old world-grid zoning saves do not require compatibility; the parcel rewrite may break old saves
   instead of migrating or reconstructing parcel state from the retired grid
-- the first placement gesture is one click for one parcel
+- the first placement gestures are click for one parcel and same-road drag for an all-or-nothing
+  parcel run
 - curved-road parcels are straight rectangles built from the road tangent at the parcel center
 - buildings sit at the road frontage inside the parcel; unused parcel depth remains rear space
 - overlapping parcels are rejected outright, with no trimming, merging, min/max repair, or hidden
@@ -1439,6 +1442,8 @@ Live Rust-side bridge surface:
 ```text
 get_zoning_parcel_preview(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
 apply_zoning_parcel_at(world_x, world_z, selected_profile_runtime_id, frontage_cells, depth_cells)
+get_zoning_parcel_drag_preview(start_x, start_z, end_x, end_z, selected_profile_runtime_id, frontage_cells, depth_cells, gap_m)
+apply_zoning_parcel_drag(start_x, start_z, end_x, end_z, selected_profile_runtime_id, frontage_cells, depth_cells, gap_m)
 get_zoning_parcels_overlay()
 ```
 
@@ -1449,6 +1454,14 @@ bulk-edit commands are deferred until they have a gameplay/UI need.
 The live bridge also accepts caller-selected parcel frontage/depth cell counts for preview and
 apply. Those values are user options, not authority: Rust converts them to metres using the world
 configuration, rejects unsupported dimensions, and returns the final projected geometry.
+
+Drag-run placement is deliberately narrow:
+
+- the run is generated on the road edge and side selected by the drag start point
+- the drag end projects onto that same edge; connected-edge wrapping is deferred
+- generated parcel centers are spaced by `frontage_m + gap_m`
+- drag direction does not affect generated parcel order
+- overlap, invalid road attachment, out-of-bounds geometry, or invalid gap rejects the entire run
 
 Bridge rules:
 
@@ -1556,9 +1569,10 @@ The first live tool mode supports:
 
 - create free parcel
 - create pre-zoned parcel with selected profile
+- drag a same-road parcel run with the selected profile
 - rezone an existing parcel by clicking it with the selected profile
-- compact parcel options opened by a `⚙` glyph button, currently width/frontage cells and depth
-  cells
+- compact parcel options opened by a `⚙` glyph button, currently width/frontage cells, depth cells,
+  and run gap metres
 
 Deferred tool work:
 
@@ -1590,6 +1604,8 @@ The first implementation has focused coverage for:
 
 - creating a `20 m x 30 m` parcel on both sides of a straight road
 - overlap rejection between adjacent or crossing parcels
+- all-or-nothing drag-run generation, gap spacing, direction independence, and existing-overlap
+  rejection
 - pre-zoned parcels spawn compatible assets
 - incompatible assets are rejected by profile legality
 - occupied parcel rezoning enters and clears redevelopment grace deterministically
