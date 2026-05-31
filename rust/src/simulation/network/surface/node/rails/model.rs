@@ -138,6 +138,7 @@ impl NodeGeneratedContour {
                 NodeGeneratedContourPurpose::FullRoadbedCorridor
                     | NodeGeneratedContourPurpose::TerminalCap
                     | NodeGeneratedContourPurpose::BendSideJoin
+                    | NodeGeneratedContourPurpose::JunctionSideJoin
             )
     }
 
@@ -151,6 +152,7 @@ impl NodeGeneratedContour {
             self.purpose,
             NodeGeneratedContourPurpose::CarriagewayCorridor
                 | NodeGeneratedContourPurpose::BendSideJoin
+                | NodeGeneratedContourPurpose::JunctionSideJoin
         )
     }
 
@@ -167,6 +169,7 @@ impl NodeGeneratedContour {
                     | NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
                     | NodeGeneratedContourPurpose::TerminalCap
                     | NodeGeneratedContourPurpose::BendSideJoin
+                    | NodeGeneratedContourPurpose::JunctionSideJoin
             )
     }
 

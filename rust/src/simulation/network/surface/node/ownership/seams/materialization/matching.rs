@@ -130,6 +130,12 @@ pub(super) fn material_contact_kind_for_owned_edge(
     if owners_form_raised_step_contact(owner, opposite_owner) {
         return Some(NodeRailConstraintKind::RaisedStepContact);
     }
+    if let Some(adjacent_kind) = asphalt_boundary_adjacent_kind(owner, opposite_owner) {
+        return Some(NodeRailConstraintKind::BandBoundary {
+            left_kind: RoadSurfaceBandKind::Carriageway,
+            right_kind: adjacent_kind,
+        });
+    }
     if owners_form_sidewalk_footpath_contact(owner, opposite_owner) {
         return Some(NodeRailConstraintKind::BandBoundary {
             left_kind: RoadSurfaceBandKind::Sidewalk,
@@ -137,6 +143,25 @@ pub(super) fn material_contact_kind_for_owned_edge(
         });
     }
     None
+}
+
+fn asphalt_boundary_adjacent_kind(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> Option<RoadSurfaceBandKind> {
+    match (owner.kind(), opposite_owner.kind()) {
+        (RoadSurfaceBandKind::Carriageway, adjacent_kind)
+            if adjacent_kind != RoadSurfaceBandKind::Carriageway =>
+        {
+            Some(adjacent_kind)
+        }
+        (adjacent_kind, RoadSurfaceBandKind::Carriageway)
+            if adjacent_kind != RoadSurfaceBandKind::Carriageway =>
+        {
+            Some(adjacent_kind)
+        }
+        _ => None,
+    }
 }
 
 fn owners_form_sidewalk_footpath_contact(
@@ -246,5 +271,19 @@ mod tests {
             curb,
             RoadSurfaceVisualNodePieceKind::Bend,
         ));
+    }
+
+    #[test]
+    fn generated_carriageway_sidewalk_contact_is_material_only_boundary() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 9);
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 6);
+
+        assert_eq!(
+            material_contact_kind_for_owned_edge(carriageway, sidewalk),
+            Some(NodeRailConstraintKind::BandBoundary {
+                left_kind: RoadSurfaceBandKind::Carriageway,
+                right_kind: RoadSurfaceBandKind::Sidewalk,
+            })
+        );
     }
 }

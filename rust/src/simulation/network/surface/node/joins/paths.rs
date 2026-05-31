@@ -98,6 +98,11 @@ fn side_join_backend_join_path_xz(
             }
         }
         SideJoinPathMode::JunctionNonRoad => {
+            if let Some(points) =
+                side_join_backend_arc_path_xz(start_xz, start_tangent, end_xz, end_tangent)
+            {
+                return cleaned_open_road_points(points);
+            }
             return side_join_backend_cavalier_join_path_xz(start_xz, join_point_xz, end_xz);
         }
     }
@@ -153,15 +158,8 @@ fn side_join_backend_arc_path_xz(
         return None;
     }
 
-    let ccw_start_tangent = side_join_arc_tangent_xz(center_xz, start_xz, true)?;
-    let cw_start_tangent = side_join_arc_tangent_xz(center_xz, start_xz, false)?;
-    let is_ccw = ccw_start_tangent.dot(start_tangent) >= cw_start_tangent.dot(start_tangent);
-    let end_arc_tangent = side_join_arc_tangent_xz(center_xz, end_xz, is_ccw)?;
-    if end_arc_tangent.dot(end_tangent) <= 0.0 {
-        return None;
-    }
-
-    let sweep_angle = side_join_arc_sweep_angle(center_xz, start_xz, end_xz, is_ccw);
+    let sweep_angle =
+        side_join_short_arc_sweep_angle(center_xz, start_xz, end_xz, start_tangent, end_tangent)?;
     if sweep_angle.abs() <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M || sweep_angle.abs() > PI {
         return None;
     }
@@ -178,6 +176,32 @@ fn side_join_backend_arc_path_xz(
     );
     points.push(end_xz);
     Some(points)
+}
+
+fn side_join_short_arc_sweep_angle(
+    center_xz: RoadVec2,
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
+    start_tangent: RoadVec2,
+    end_tangent: RoadVec2,
+) -> Option<f64> {
+    let mut best_sweep_angle = None;
+    let mut best_tangent_score = f64::NEG_INFINITY;
+    for is_ccw in [true, false] {
+        let sweep_angle = side_join_arc_sweep_angle(center_xz, start_xz, end_xz, is_ccw);
+        let abs_sweep_angle = sweep_angle.abs();
+        if abs_sweep_angle <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M || abs_sweep_angle > PI {
+            continue;
+        }
+        let start_arc_tangent = side_join_arc_tangent_xz(center_xz, start_xz, is_ccw)?;
+        let end_arc_tangent = side_join_arc_tangent_xz(center_xz, end_xz, is_ccw)?;
+        let tangent_score = start_arc_tangent.dot(start_tangent) + end_arc_tangent.dot(end_tangent);
+        if tangent_score > best_tangent_score {
+            best_sweep_angle = Some(sweep_angle);
+            best_tangent_score = tangent_score;
+        }
+    }
+    best_sweep_angle
 }
 
 fn side_join_arc_center_xz(
@@ -356,5 +380,81 @@ fn endpoint_layer_boundary_world(
         Some(interval.endpoint_end_world)
     } else {
         endpoint_boundary_world(mouth, boundary_index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logged_bend_side_join_uses_short_arc_instead_of_miter() {
+        let center = RoadVec2::new(-6.673889, -23.719093);
+        let west = RoadVec2::new(-125.385117, -31.426414);
+        let east = RoadVec2::new(34.735245, 44.360130);
+        let first_direction = normalized_test_direction(east - center);
+        let second_direction = normalized_test_direction(west - center);
+        let first_outer = center + left_perp(first_direction) * 5.0;
+        let second_outer = center - left_perp(second_direction) * 5.0;
+        let join_point = side_join_backend_meet_point_xz(
+            first_outer,
+            first_direction,
+            second_outer,
+            second_direction,
+        )
+        .expect("logged bend offset rails should have a miter meet point");
+
+        let path = side_join_backend_join_path_xz(
+            first_outer,
+            join_point,
+            second_outer,
+            SideJoinPathMode::BendArc,
+        )
+        .expect("logged bend side join should emit a path");
+
+        assert!(
+            path.len() > 3,
+            "bend side join must keep an arc, not the miter fallback: {path:?}"
+        );
+        assert!(
+            path.iter()
+                .all(|point| (point.distance(center) - 5.0).abs() <= 0.01),
+            "bend side join arc must stay on the road-owned endpoint radius: {path:?}"
+        );
+        assert!(
+            path.iter()
+                .all(|point| point.distance(join_point) > SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M),
+            "bend side join arc must not route through the sharp miter point: {path:?}"
+        );
+    }
+
+    fn normalized_test_direction(direction: RoadVec2) -> RoadVec2 {
+        direction / direction.length()
+    }
+
+    #[test]
+    fn junction_non_road_side_join_uses_arc_when_rails_support_it() {
+        let start = RoadVec2::new(5.0, 0.0);
+        let join = RoadVec2::new(5.0, 5.0);
+        let end = RoadVec2::new(0.0, 5.0);
+
+        let path =
+            side_join_backend_join_path_xz(start, join, end, SideJoinPathMode::JunctionNonRoad)
+                .expect("junction side join should emit a path");
+
+        assert!(
+            path.len() > 3,
+            "junction non-road side join must keep an arc, not the miter fallback: {path:?}"
+        );
+        assert!(
+            path.iter()
+                .all(|point| (point.length() - 5.0).abs() <= 0.01),
+            "junction side join arc must stay on the supported radius: {path:?}"
+        );
+        assert!(
+            path.iter()
+                .all(|point| point.distance(join) > SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M),
+            "junction side join arc must not route through the sharp miter point: {path:?}"
+        );
     }
 }

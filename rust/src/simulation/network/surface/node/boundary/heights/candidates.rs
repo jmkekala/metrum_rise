@@ -105,6 +105,12 @@ impl NodeFootprintBoundaryExportSources {
                     .map(|candidate| candidate.height),
             )
             .collect::<Vec<_>>();
+        let final_context_candidates = self.prefer_strongest_final_boundary_context(
+            key,
+            previous_key,
+            next_key,
+            final_context_candidates,
+        );
         if let Some(height_mm) =
             self.boundary_height_mm_from_final_candidates(key, final_context_candidates, true)?
         {
@@ -186,6 +192,11 @@ impl NodeFootprintBoundaryExportSources {
         }
         if let Some(candidate) =
             self.canonical_distinct_source_provenance_candidate(&exact_candidates, &heights)
+        {
+            return Ok(Some(candidate.height_mm));
+        }
+        if let Some(candidate) =
+            self.canonical_endpoint_dust_outer_boundary_candidate(key, &exact_candidates, &heights)
         {
             return Ok(Some(candidate.height_mm));
         }
@@ -280,6 +291,11 @@ impl NodeFootprintBoundaryExportSources {
             }
             if let Some(candidate) =
                 self.canonical_distinct_source_provenance_candidate(&candidates, &heights)
+            {
+                return Ok(Some(candidate));
+            }
+            if let Some(candidate) =
+                self.canonical_endpoint_dust_outer_boundary_candidate(key, &candidates, &heights)
             {
                 return Ok(Some(candidate));
             }
@@ -538,6 +554,89 @@ impl NodeFootprintBoundaryExportSources {
             .collect()
     }
 
+    fn prefer_strongest_final_boundary_context(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+        candidates: Vec<NodeFootprintBoundaryHeightCandidate>,
+    ) -> Vec<NodeFootprintBoundaryHeightCandidate> {
+        if candidates.len() < 2 {
+            return candidates;
+        }
+        let scored = candidates
+            .into_iter()
+            .map(|candidate| {
+                (
+                    self.final_boundary_context_rank(candidate, key, previous_key, next_key),
+                    candidate,
+                )
+            })
+            .collect::<Vec<_>>();
+        let Some(max_rank) = scored.iter().map(|(rank, _)| *rank).max() else {
+            return Vec::new();
+        };
+        if max_rank == (0, 0, 0) || scored.iter().filter(|(rank, _)| *rank == max_rank).count() != 1
+        {
+            return scored.into_iter().map(|(_, candidate)| candidate).collect();
+        }
+        scored
+            .into_iter()
+            .filter_map(|(rank, candidate)| (rank == max_rank).then_some(candidate))
+            .collect()
+    }
+
+    fn final_boundary_context_rank(
+        &self,
+        candidate: NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+        previous_key: arrangement::NodeArrangementKey,
+        next_key: arrangement::NodeArrangementKey,
+    ) -> (u8, u8, u8) {
+        let supports_previous = self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+                && final_height_edge_supports_key(source_edge, previous_key)
+        });
+        let supports_next = self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+                && final_height_edge_supports_key(source_edge, next_key)
+        });
+        let adjacent_context = u8::from(supports_previous) + u8::from(supports_next);
+        let exact_boundary_corner_degree = self
+            .final_height_edges
+            .iter()
+            .filter(|source_edge| {
+                source_edge.owner_kind == candidate.source.owner_kind
+                    && source_edge.owner_index == candidate.source.owner_index
+                    && final_height_edge_supports_key_exactly(source_edge, key)
+            })
+            .count()
+            .min(u8::MAX as usize) as u8;
+        let endpoint_dust_support_count = self
+            .final_height_edges
+            .iter()
+            .filter(|source_edge| {
+                source_edge.owner_kind == candidate.source.owner_kind
+                    && source_edge.owner_index == candidate.source.owner_index
+                    && final_height_edge_endpoint_dust_supports_candidate(
+                        source_edge,
+                        key,
+                        candidate.height_mm,
+                    )
+            })
+            .count()
+            .min(u8::MAX as usize) as u8;
+        (
+            adjacent_context,
+            exact_boundary_corner_degree,
+            endpoint_dust_support_count,
+        )
+    }
+
     fn direct_candidate_final_boundary_context_score(
         &self,
         candidate: NodeFootprintBoundaryHeightCandidate,
@@ -637,6 +736,71 @@ impl NodeFootprintBoundaryExportSources {
             }
             NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. } => None,
         }
+    }
+
+    fn canonical_endpoint_dust_outer_boundary_candidate(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        candidates: &[NodeFootprintBoundaryHeightCandidate],
+        heights: &[i64],
+    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
+        if heights.len() < 2
+            || candidates
+                .iter()
+                .any(|candidate| self.candidate_has_exact_final_boundary_support(*candidate, key))
+        {
+            return None;
+        }
+        let mut ranked_candidates = Vec::new();
+        for candidate in candidates.iter().copied() {
+            if !self.candidate_has_endpoint_dust_final_boundary_support(candidate, key) {
+                return None;
+            }
+            ranked_candidates.push((
+                raised_step_band_rank(candidate.source.owner_kind)?,
+                candidate,
+            ));
+        }
+        let max_rank = ranked_candidates.iter().map(|(rank, _)| *rank).max()?;
+        if ranked_candidates
+            .iter()
+            .filter(|(rank, _)| *rank == max_rank)
+            .count()
+            != 1
+        {
+            return None;
+        }
+        ranked_candidates
+            .into_iter()
+            .find_map(|(rank, candidate)| (rank == max_rank).then_some(candidate))
+    }
+
+    fn candidate_has_exact_final_boundary_support(
+        &self,
+        candidate: NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_supports_key_exactly(source_edge, key)
+        })
+    }
+
+    fn candidate_has_endpoint_dust_final_boundary_support(
+        &self,
+        candidate: NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && final_height_edge_endpoint_dust_supports_candidate(
+                    source_edge,
+                    key,
+                    candidate.height_mm,
+                )
+        })
     }
 
     fn final_boundary_vertex_height_candidates_at_key(
@@ -746,6 +910,24 @@ fn final_height_edge_height_mm_at_key(
         source_edge.end_point_key,
         parameter,
     )
+}
+
+fn final_height_edge_endpoint_dust_supports_candidate(
+    source_edge: &NodeFinalFootprintBoundaryHeightEdge,
+    key: arrangement::NodeArrangementKey,
+    height_mm: i64,
+) -> bool {
+    let point = arrangement_key(key);
+    let start = arrangement_key(source_edge.start_point_key.xz_key());
+    let end = arrangement_key(source_edge.end_point_key.xz_key());
+    let near_start = key_distance_squared(point, start)
+        <= i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS)
+            * i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+    let near_end = key_distance_squared(point, end)
+        <= i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS)
+            * i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+    (near_start && source_edge.start_point_key.y_mm == height_mm)
+        || (near_end && source_edge.end_point_key.y_mm == height_mm)
 }
 
 fn final_source_edge_supports_key(

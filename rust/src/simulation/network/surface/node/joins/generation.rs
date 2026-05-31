@@ -141,12 +141,6 @@ fn side_join_bands(
         if from_layer.band_kind != to_layer.band_kind {
             break;
         }
-        if path_mode == SideJoinPathMode::JunctionNonRoad
-            && from_layer.band_kind == RoadSurfaceBandKind::Carriageway
-        {
-            inner_path_world = None;
-            continue;
-        }
         let height_plane = if path_mode == SideJoinPathMode::JunctionNonRoad {
             endpoint_height_plane_for_band_kind(mouths, from_layer.band_kind)?
         } else {
@@ -224,6 +218,10 @@ fn side_join_band_inner_path(
         let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
             return Ok(None);
         };
+        // Sidewalk joins share the curb's generated seam; keep one canonical height path.
+        if from_layer.band_kind == RoadSurfaceBandKind::Sidewalk {
+            return Ok(Some(path_world));
+        }
         return reheight_side_join_path_world(path_world, inner_start_world.y, inner_end_world.y);
     }
     let Some(inner_start_world) = endpoint_layer_inner_world(from_mouth, from_layer) else {
@@ -232,6 +230,18 @@ fn side_join_band_inner_path(
     let Some(inner_end_world) = endpoint_layer_inner_world(to_mouth, to_layer) else {
         return Ok(None);
     };
+    // Bend and JunctionN carriageway side joins are sectors: both inner rail endpoints can be the node center.
+    if matches!(
+        path_mode,
+        SideJoinPathMode::BendArc | SideJoinPathMode::JunctionNonRoad
+    ) && SurfaceXzKey::from_road_xz(xz_from_road_vec3(inner_start_world))
+        == SurfaceXzKey::from_road_xz(xz_from_road_vec3(inner_end_world))
+    {
+        let mut inner_path_world = vec![inner_start_world, inner_end_world];
+        remove_repeated_road_vec3_xz_points(&mut inner_path_world)
+            .map_err(SideJoinGenerationError::from_path_height_error)?;
+        return Ok((!inner_path_world.is_empty()).then_some(inner_path_world));
+    }
     side_join_boundary_path_world(
         from_mouth,
         inner_start_world,
@@ -250,7 +260,7 @@ fn pushed_side_join_band(
     inner_path_world: Vec<RoadVec3>,
     outer_path_world: Vec<RoadVec3>,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
-    if inner_path_world.len() < 2 || outer_path_world.len() < 2 {
+    if inner_path_world.is_empty() || outer_path_world.len() < 2 {
         return Ok(None);
     }
 

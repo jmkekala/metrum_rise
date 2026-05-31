@@ -150,9 +150,6 @@ pub(super) fn ordered_raised_step_footprint_candidates(
     NodeFootprintBoundaryHeightCandidate,
     NodeFootprintBoundaryHeightCandidate,
 )> {
-    if !raised_step_kinds_can_contact(left.source.owner_kind, right.source.owner_kind) {
-        return None;
-    }
     let left_rank = raised_step_band_rank(left.source.owner_kind)?;
     let right_rank = raised_step_band_rank(right.source.owner_kind)?;
     match left_rank.cmp(&right_rank) {

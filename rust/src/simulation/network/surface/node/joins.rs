@@ -31,7 +31,7 @@ enum SideJoinPathMode {
 }
 
 const SIDE_JOIN_ARC_RADIUS_EPS_M: f64 = 0.001;
-const SIDE_JOIN_ARC_SPLIT_DEPTH: usize = 2;
+const SIDE_JOIN_ARC_SPLIT_DEPTH: usize = 3;
 const SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 const SIDE_JOIN_ENDPOINT_PLANE_HEIGHT_DUST_MM: i64 = 1;
 
@@ -252,20 +252,26 @@ mod tests {
     }
 
     #[test]
-    fn junction_side_join_bands_are_backend_cleaned_non_road_carriers() {
+    fn junction_side_join_bands_are_backend_cleaned_surface_carriers() {
         let bands_by_mouth = side_join_bands_by_mouth(&junction_input())
             .expect("test junction side joins should not have height conflicts");
         let bands = bands_by_mouth.iter().flatten().collect::<Vec<_>>();
 
         assert!(
             !bands.is_empty(),
-            "junction side-join adapter should emit non-road ownership carriers"
+            "junction side-join adapter should emit ownership carriers"
         );
         assert!(
             bands
                 .iter()
-                .all(|band| band.band_kind != RoadSurfaceBandKind::Carriageway),
-            "JunctionN side joins must not add carriageway bubble fill"
+                .any(|band| band.band_kind == RoadSurfaceBandKind::Carriageway),
+            "JunctionN side joins should fill visible asphalt between adjacent mouths"
+        );
+        assert!(
+            bands
+                .iter()
+                .any(|band| band.band_kind != RoadSurfaceBandKind::Carriageway),
+            "JunctionN side joins should keep non-road ownership carriers"
         );
         assert!(
             bands

@@ -191,6 +191,55 @@ fn logged_inside_bend_compiles_with_explicit_point_contact_curb_ownership() {
 }
 
 #[test]
+fn logged_outer_bend_closes_footprint_with_arc_boundary() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-125.385117, 0.0, -31.426414),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(Vector3::new(-6.673889, 0.0, -23.719093), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(34.735245, 0.0, 44.360130), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-125.385117, 0.0, -31.426414),
+            Vector3::new(-6.673889, 0.0, -23.719093),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-6.673889, 0.0, -23.719093),
+            Vector3::new(34.735245, 0.0, 44.360130),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+    let arc_midpoint = logged_exposed_outer_bend_arc_midpoint();
+
+    assert!(
+        visual_polygon_boundary_contains_xz(&bend_piece.outer_boundary_loops, arc_midpoint),
+        "outer bend footprint must expose the rounded side-join arc point; point={arc_midpoint:?} outer_loops={:?}",
+        bend_piece.outer_boundary_loops
+    );
+}
+
+#[test]
 fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
@@ -225,4 +274,38 @@ fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
     assert_compiled_bend_piece(&surface, &graph, bend);
+}
+
+fn logged_exposed_outer_bend_arc_midpoint() -> Vector2 {
+    let center = backend::RoadVec2::new(-6.673889, -23.719093);
+    let west = backend::RoadVec2::new(-125.385117, -31.426414);
+    let northeast = backend::RoadVec2::new(34.735245, 44.360130);
+    let first_direction = normalized_test_direction(northeast - center);
+    let second_direction = normalized_test_direction(west - center);
+    let start = center + test_left_perp(second_direction) * 5.0;
+    let end = center - test_left_perp(first_direction) * 5.0;
+    let start_radius = start - center;
+    let end_radius = end - center;
+    let start_angle = start_radius.y.atan2(start_radius.x);
+    let end_angle = end_radius.y.atan2(end_radius.x);
+    let ccw_sweep = (end_angle - start_angle).rem_euclid(std::f64::consts::TAU);
+    let cw_sweep = -((start_angle - end_angle).rem_euclid(std::f64::consts::TAU));
+    let sweep = if ccw_sweep <= cw_sweep.abs() {
+        ccw_sweep
+    } else {
+        cw_sweep
+    };
+    let mid_angle = start_angle + sweep * 0.5;
+    Vector2::new(
+        (center.x + mid_angle.cos() * 5.0) as f32,
+        (center.y + mid_angle.sin() * 5.0) as f32,
+    )
+}
+
+fn normalized_test_direction(direction: backend::RoadVec2) -> backend::RoadVec2 {
+    direction / direction.length()
+}
+
+fn test_left_perp(direction: backend::RoadVec2) -> backend::RoadVec2 {
+    backend::RoadVec2::new(-direction.y, direction.x)
 }
