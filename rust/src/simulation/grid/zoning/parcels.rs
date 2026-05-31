@@ -5,6 +5,8 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
 const OVERLAP_EPSILON_M: f32 = 0.001;
+const CURVE_RUN_SPACING_SEARCH_STEP_M: f32 = 0.5;
+const CURVE_RUN_SPACING_BINARY_STEPS: usize = 10;
 
 /// Stable parcel identifier persisted in saves and referenced by buildings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -495,21 +497,109 @@ pub(crate) fn project_parcel_run_at(
         if center_s < frontage_m * 0.5 || center_s > start.edge_len_m - frontage_m * 0.5 {
             return Err(ParcelPlacementError::FrontageOutOfBounds);
         }
-        geometries.push(geometry_from_attachment(
+        let Some((accepted_s, geometry)) = next_non_overlapping_run_geometry(
             graph,
             start.edge_idx,
             start.side,
-            center_s / start.edge_len_m,
+            center_s,
+            max_s,
+            start.edge_len_m,
             frontage_m,
             depth_m,
-        ));
-        center_s += spacing_m;
+            &geometries,
+        ) else {
+            break;
+        };
+        geometries.push(geometry);
+        center_s = accepted_s + spacing_m;
     }
 
     if geometries.is_empty() {
         return Err(ParcelPlacementError::NoRoadAttachment);
     }
     Ok(geometries)
+}
+
+fn next_non_overlapping_run_geometry(
+    graph: &RegionGraph,
+    edge_idx: usize,
+    side: i8,
+    min_center_s: f32,
+    max_center_s: f32,
+    edge_len_m: f32,
+    frontage_m: f32,
+    depth_m: f32,
+    previous_geometries: &[ParcelGeometry],
+) -> Option<(f32, ParcelGeometry)> {
+    let mut low_s = min_center_s;
+    let mut high_s = min_center_s;
+    loop {
+        let geometry = geometry_from_attachment(
+            graph,
+            edge_idx,
+            side,
+            high_s / edge_len_m,
+            frontage_m,
+            depth_m,
+        );
+        if !previous_geometries
+            .iter()
+            .any(|previous| geometries_overlap(previous, &geometry))
+        {
+            break;
+        }
+        low_s = high_s;
+        high_s += CURVE_RUN_SPACING_SEARCH_STEP_M;
+        if high_s > max_center_s + OVERLAP_EPSILON_M {
+            return None;
+        }
+    }
+
+    if high_s <= min_center_s + OVERLAP_EPSILON_M {
+        return Some((
+            high_s,
+            geometry_from_attachment(
+                graph,
+                edge_idx,
+                side,
+                high_s / edge_len_m,
+                frontage_m,
+                depth_m,
+            ),
+        ));
+    }
+
+    for _ in 0..CURVE_RUN_SPACING_BINARY_STEPS {
+        let mid_s = (low_s + high_s) * 0.5;
+        let geometry = geometry_from_attachment(
+            graph,
+            edge_idx,
+            side,
+            mid_s / edge_len_m,
+            frontage_m,
+            depth_m,
+        );
+        if previous_geometries
+            .iter()
+            .any(|previous| geometries_overlap(previous, &geometry))
+        {
+            low_s = mid_s;
+        } else {
+            high_s = mid_s;
+        }
+    }
+
+    Some((
+        high_s,
+        geometry_from_attachment(
+            graph,
+            edge_idx,
+            side,
+            high_s / edge_len_m,
+            frontage_m,
+            depth_m,
+        ),
+    ))
 }
 
 fn project_buildable_road_point_at(

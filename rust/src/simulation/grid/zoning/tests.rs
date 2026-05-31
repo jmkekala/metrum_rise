@@ -4,7 +4,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 
 fn make_straight_road() -> (RegionGraph, usize) {
     let mut graph = RegionGraph::new();
@@ -32,6 +32,54 @@ fn make_straight_road() -> (RegionGraph, usize) {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
     });
     (graph, edge_idx)
+}
+
+fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
+    let mut graph = RegionGraph::new();
+    let mut points = Vec::new();
+    for step in 0..=12 {
+        let t = step as f32 / 12.0;
+        let angle = -std::f32::consts::FRAC_PI_2 + t * std::f32::consts::FRAC_PI_2;
+        points.push(Vector3::new(
+            radius_m * angle.cos(),
+            0.0,
+            radius_m * angle.sin(),
+        ));
+    }
+    let length = points
+        .windows(2)
+        .map(|window| window[0].distance_to(window[1]))
+        .sum();
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+    let edge_idx = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 7.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 50.0,
+        base_cost: length,
+        physical_length: length,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: points.clone(),
+        physical_geometry: points,
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+    });
+    (graph, edge_idx)
+}
+
+fn inward_arc_point(radius_m: f32, angle: f32, offset_m: f32) -> Vector2 {
+    let road = Vector2::new(radius_m * angle.cos(), radius_m * angle.sin());
+    let inward = -road.normalized();
+    road + inward * offset_m
 }
 
 fn make_zoning() -> ZoningSystem {
@@ -272,6 +320,32 @@ fn test_parcel_drag_run_is_direction_independent() {
         .map(|geometry| geometry.front_center.x)
         .collect();
     assert_eq!(forward_centers, backward_centers);
+}
+
+#[test]
+fn test_parcel_drag_run_inner_curve_widens_spacing_instead_of_rejecting() {
+    let radius_m = 70.0;
+    let (graph, _) = make_quarter_arc_road(radius_m);
+    let z = make_zoning();
+    let start = inward_arc_point(radius_m, -1.35, 20.0);
+    let end = inward_arc_point(radius_m, -0.20, 20.0);
+
+    let run = z
+        .preview_parcel_run_at(start.x, start.y, end.x, end.y, 20.0, 30.0, 0.0, &graph)
+        .expect("inner curve should place the non-overlapping parcels that fit");
+
+    assert!(run.len() >= 2);
+    assert!(run.iter().all(|geometry| geometry.side == -1));
+    assert!(!parcels::geometries_have_overlap(&run));
+    assert!(
+        run.windows(2).any(|window| {
+            let gap = (window[1].frontage_center_t - window[0].frontage_center_t)
+                * graph.edge(window[0].edge_idx).physical_length
+                - 20.0;
+            gap > 0.5
+        }),
+        "inner curve should need wider than exact zero-gap spacing"
+    );
 }
 
 #[test]

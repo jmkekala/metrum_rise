@@ -1464,9 +1464,13 @@ Drag-run placement is deliberately narrow:
 
 - the run is generated on the road edge and side selected by the drag start point
 - the drag end projects onto that same edge; connected-edge wrapping is deferred
-- generated parcel centers are spaced by `frontage_m + gap_m`
+- `gap_m` is the minimum requested gap; straight and outer-curve runs use
+  `frontage_m + gap_m` center spacing when that is legal
+- on inner curves, Rust deterministically widens center spacing until generated parcels do not
+  overlap; placement stops when no additional parcel can fit inside the drag span
 - drag direction does not affect generated parcel order
-- overlap, invalid road attachment, out-of-bounds geometry, or invalid gap rejects the entire run
+- existing-parcel overlap, invalid road attachment, out-of-bounds geometry, or invalid gap rejects
+  the entire run
 
 Rezone drag is a separate existing-parcel stroke gesture:
 
