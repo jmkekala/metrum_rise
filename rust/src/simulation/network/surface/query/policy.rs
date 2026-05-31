@@ -57,6 +57,17 @@ impl RoadSurfaceSystem {
         piece.edge_class != EdgeClass::Standard
     }
 
+    pub(crate) fn span_earthwork_face_uses_visible_earthwork(
+        &self,
+        face: &RoadSurfaceEarthworkRenderFace,
+    ) -> bool {
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_class, .. } = face.source
+        else {
+            return false;
+        };
+        edge_class != EdgeClass::Standard
+    }
+
     pub(crate) fn node_piece_uses_visible_earthwork(
         &self,
         graph: &RegionGraph,

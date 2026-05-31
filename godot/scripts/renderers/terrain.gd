@@ -42,6 +42,9 @@ const CONTOUR_MINOR_THICKNESS := 0.95
 const CONTOUR_MAJOR_THICKNESS := 1.25
 const CONTOUR_MINOR_STRENGTH := 0.14
 const CONTOUR_MAJOR_STRENGTH := 0.34
+const CONTOUR_ZERO_ELEVATION_FADE_M := 0.75
+const CONTOUR_FLAT_RELIEF_START_M := 0.10
+const CONTOUR_FLAT_RELIEF_END_M := 1.25
 const TERRAIN_BORDER_DEPTH_M := 120.0
 const TERRAIN_BORDER_TOP_COLOR := Color(0.42, 0.40, 0.34)
 const TERRAIN_BORDER_MID_COLOR := Color(0.33, 0.31, 0.27)
@@ -498,6 +501,9 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("contour_major_thickness", CONTOUR_MAJOR_THICKNESS)
 	material.set_shader_parameter("contour_minor_strength", CONTOUR_MINOR_STRENGTH)
 	material.set_shader_parameter("contour_major_strength", CONTOUR_MAJOR_STRENGTH)
+	material.set_shader_parameter("contour_zero_elevation_fade_m", CONTOUR_ZERO_ELEVATION_FADE_M)
+	material.set_shader_parameter("contour_flat_relief_start_m", CONTOUR_FLAT_RELIEF_START_M)
+	material.set_shader_parameter("contour_flat_relief_end_m", CONTOUR_FLAT_RELIEF_END_M)
 	patch_node.material_override = material
 	add_child(patch_node)
 	_terrain_debug_patch_creates += 1

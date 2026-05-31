@@ -47,6 +47,9 @@ uniform vec3 contour_minor_color : source_color = vec3(0.13, 0.19, 0.16);
 uniform vec3 contour_major_color : source_color = vec3(0.10, 0.16, 0.14);
 uniform float contour_minor_strength = 0.14;
 uniform float contour_major_strength = 0.34;
+uniform float contour_zero_elevation_fade_m = 0.75;
+uniform float contour_flat_relief_start_m = 0.10;
+uniform float contour_flat_relief_end_m = 1.25;
 
 varying float h;
 varying vec2 var_centered_uv;
@@ -285,7 +288,18 @@ void fragment() {
 		contour_minor_interval_m,
 		contour_minor_thickness
 	) * (1.0 - major_contour);
-	float contour_visibility = 1.0 - (cliff_face * cliff_contour_fade);
+	float zero_elevation_mask = 1.0 - smoothstep(
+		0.0,
+		max(contour_zero_elevation_fade_m, 0.001),
+		abs(world_elevation)
+	);
+	float flat_relief_mask = smoothstep(
+		contour_flat_relief_start_m,
+		max(contour_flat_relief_end_m, contour_flat_relief_start_m + 0.001),
+		local_relief
+	);
+	float flat_zero_contour_visibility = mix(1.0, flat_relief_mask, zero_elevation_mask);
+	float contour_visibility = (1.0 - (cliff_face * cliff_contour_fade)) * flat_zero_contour_visibility;
 	color = mix(color, contour_minor_color, minor_contour * contour_minor_strength * contour_visibility);
 	color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
 	color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);

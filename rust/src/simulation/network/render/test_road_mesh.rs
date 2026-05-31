@@ -1008,6 +1008,44 @@ mod tests {
     }
 
     #[test]
+    fn test_standard_span_internal_earthwork_is_not_exported_to_visible_earthwork_mesh() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-24.0, 0.0, 0.0),
+            Vector3::new(24.0, 0.0, 0.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        road_surface.compile_dirty(&graph, &terrain);
+        let span_piece = road_surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("standard test span should compile a visible surface piece");
+        assert!(
+            !span_piece.render_earthwork_faces.is_empty(),
+            "standard roads may keep internal terrain-clip provenance faces for CDT ownership"
+        );
+
+        let mesh_data =
+            renderer.generate_mesh_data_with_surface(&graph, &lane_system, &terrain, &road_surface);
+        validate_mesh(&mesh_data, 80.0);
+        assert!(
+            mesh_data.earthwork_vertices.is_empty(),
+            "ordinary grounded Standard span earthwork faces must not be exported as visible mesh"
+        );
+    }
+
+    #[test]
     fn test_compiled_top_surfaces_render_at_solved_physical_height() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);

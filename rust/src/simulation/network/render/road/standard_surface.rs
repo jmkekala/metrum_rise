@@ -135,9 +135,7 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
-        if road_surface.span_piece_uses_visible_earthwork(piece) {
-            emit_structural_earthwork_faces(mesh, &piece.render_earthwork_faces);
-        }
+        emit_structural_span_earthwork_faces(mesh, road_surface, &piece.render_earthwork_faces);
     }
 
     let mut node_ids: Vec<u32> = coverage.node_ids.iter().copied().collect();
@@ -172,6 +170,19 @@ fn emit_structural_earthwork_faces(
                 emit_surface_polygon(mesh, MeshLayer::Concrete, &face.polygon, concrete_color());
             }
         }
+    }
+}
+
+fn emit_structural_span_earthwork_faces(
+    mesh: &mut NetworkMeshData,
+    road_surface: &RoadSurfaceSystem,
+    faces: &[crate::simulation::network::surface::RoadSurfaceEarthworkRenderFace],
+) {
+    for face in faces {
+        if !road_surface.span_earthwork_face_uses_visible_earthwork(face) {
+            continue;
+        }
+        emit_structural_earthwork_faces(mesh, std::slice::from_ref(face));
     }
 }
 
