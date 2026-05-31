@@ -110,7 +110,7 @@ fn triangulates_heighted_owned_regions_with_spade() {
             && !region.triangles.is_empty()
     }));
     assert!(solution.regions.iter().any(|region| {
-        region.kind == RoadSurfaceBandKind::Carriageway && region.triangles.len() == 2
+        region.kind == RoadSurfaceBandKind::Carriageway && region.triangles.len() >= 2
     }));
 }
 
@@ -292,6 +292,123 @@ fn triangulation_vertex_pool_preserves_overlay_grid_distinct_points_inside_same_
 }
 
 #[test]
+fn triangulation_canonicalizes_same_authority_numeric_dust_vertices() {
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let heights = NodeHeightSolution {
+        node_id: 95,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0),
+            height_field_id,
+            shape: vec![vec![
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.00005, 0.0),
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 1.0, 0.0),
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 1.0),
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let solution = triangulation_from_height_solution(&heights)
+        .expect("same-authority numeric dust should canonicalize before CDT export");
+    let region = &solution.regions[0];
+
+    assert_eq!(
+        region.vertices.len(),
+        3,
+        "same owner/height-field dust vertices should reuse the canonical endpoint"
+    );
+    assert!(region.triangles.iter().all(|triangle| {
+        let points = triangle
+            .vertices
+            .map(|index| region.vertices[index].point_world);
+        min_triangle_edge_m(points) >= f64::from(super::super::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+    }));
+}
+
+#[test]
+fn triangulation_keeps_numeric_dust_vertices_with_conflicting_height_authority() {
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let mut dust = flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.00005, 0.0);
+    dust.height_m = 2.01;
+    dust.grade_authority = Some(NodeGradeVertexAuthority::new(
+        dust.point_xz,
+        dust.height_m,
+        NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0),
+        height_field_id,
+        super::super::height::NodeGradeCarrierDecision::SourceCarrier { authority: None },
+    ));
+    let heights = NodeHeightSolution {
+        node_id: 96,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0),
+            height_field_id,
+            shape: vec![vec![
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+                dust,
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 1.0, 0.0),
+                flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 1.0),
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let solution = triangulation_from_height_solution(&heights)
+        .expect("conflicting dust authority remains explicit for validation");
+
+    assert_eq!(
+        solution.regions[0].vertices.len(),
+        4,
+        "nearby vertices with different height authority must not be silently merged"
+    );
+}
+
+#[test]
+fn triangulation_inserts_carriageway_interior_guides_before_cdt() {
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let heights = NodeHeightSolution {
+        node_id: 97,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0),
+            height_field_id,
+            shape: vec![vec![
+                sloped_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 0.0),
+                sloped_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 120.0, 0.0),
+                sloped_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 120.0, 0.01),
+                sloped_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.0, 0.01),
+            ]],
+            area_m2: 1.2,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let solution = triangulation_from_height_solution(&heights)
+        .expect("skinny same-material carriageway should receive deterministic guide support");
+    let region = &solution.regions[0];
+
+    assert!(
+        region.vertices.len() > 4,
+        "pre-CDT guide insertion should add road-owned support vertices"
+    );
+    assert!(region.vertices.iter().skip(4).any(|vertex| {
+        (vertex.point_world.z - 0.005).abs() < 1.0e-9
+            && vertex.point_world.x > 0.0
+            && vertex.point_world.x < 120.0
+    }));
+    assert!(region.vertices.iter().skip(4).all(|vertex| {
+        vertex.height_field_id == height_field_id
+            && vertex.grade_authority.owner
+                == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0)
+            && vertex.grade_authority.height_field_id == height_field_id
+    }));
+}
+
+#[test]
 fn rejects_degenerate_region_contours() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let mut arrangement = NodeArrangement::new(92, RoadSurfaceVisualNodePieceKind::Bend);
@@ -360,10 +477,26 @@ fn flat_region_with_hole() -> NodeHeightedRegion {
 }
 
 fn flat_vertex(x: f64, z: f64) -> NodeHeightedVertex {
+    flat_vertex_with_kind(RoadSurfaceBandKind::Sidewalk, x, z)
+}
+
+fn flat_vertex_with_kind(kind: RoadSurfaceBandKind, x: f64, z: f64) -> NodeHeightedVertex {
+    heighted_vertex_with_kind(kind, x, z, 2.0)
+}
+
+fn sloped_vertex_with_kind(kind: RoadSurfaceBandKind, x: f64, z: f64) -> NodeHeightedVertex {
+    heighted_vertex_with_kind(kind, x, z, 2.0 + x * 0.01)
+}
+
+fn heighted_vertex_with_kind(
+    kind: RoadSurfaceBandKind,
+    x: f64,
+    z: f64,
+    height_m: f64,
+) -> NodeHeightedVertex {
     let point_xz = super::super::backend::RoadVec2::new(x, z);
-    let height_m = 2.0;
-    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
-    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, kind);
+    let owner = NodeBandOwner::new(kind, 0);
     NodeHeightedVertex {
         point_xz,
         height_m,
@@ -378,6 +511,16 @@ fn flat_vertex(x: f64, z: f64) -> NodeHeightedVertex {
             super::super::height::NodeGradeCarrierDecision::SourceCarrier { authority: None },
         )),
     }
+}
+
+fn min_triangle_edge_m(points: [RoadVec3; 3]) -> f64 {
+    [
+        (points[0].x - points[1].x).hypot(points[0].z - points[1].z),
+        (points[1].x - points[2].x).hypot(points[1].z - points[2].z),
+        (points[2].x - points[0].x).hypot(points[2].z - points[0].z),
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
 }
 
 fn arrangement_test_vertex(

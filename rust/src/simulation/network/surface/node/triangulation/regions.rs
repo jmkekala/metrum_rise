@@ -25,6 +25,8 @@ pub(super) fn triangulate_arrangement_region(
     let mut vertices = Vec::new();
     let mut vertex_lookup = BTreeMap::new();
     let mut constraints = BTreeSet::new();
+    let owner = region.owner();
+    let height_field_id = region.height_field_id();
     push_arrangement_constraint_loop(
         node_id,
         region_index,
@@ -47,6 +49,18 @@ pub(super) fn triangulate_arrangement_region(
             &mut constraints,
         )?;
     }
+    let owner_shape = overlay_shape_from_arrangement_region(arrangement, region);
+    insert_carriageway_interior_guides(
+        node_id,
+        region_index,
+        arrangement,
+        region,
+        &owner_shape,
+        owner,
+        height_field_id,
+        &mut vertices,
+        &mut vertex_lookup,
+    )?;
     let spade_vertices = vertices
         .iter()
         .map(|vertex| Point2::new(vertex.point_world.x, vertex.point_world.z))
@@ -69,15 +83,13 @@ pub(super) fn triangulate_arrangement_region(
         });
     }
 
-    let owner_shape = overlay_shape_from_arrangement_region(arrangement, region);
-    let owner = region.owner();
     let mut triangles = Vec::new();
     for face in cdt.inner_faces() {
         let [a, b, c] = face.vertices();
         let triangle = NodeTriangulatedTriangle {
             vertices: [a.fix().index(), b.fix().index(), c.fix().index()],
         };
-        if triangle_double_area_m2(&triangle, &vertices) <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+        if triangle_area_is_numeric_dust(&triangle, &vertices) {
             continue;
         }
         if triangle_is_inside_owner(node_id, region_index, &triangle, &vertices, &owner_shape)? {
@@ -89,7 +101,7 @@ pub(super) fn triangulate_arrangement_region(
                 &triangle,
                 &owner_shape,
                 owner,
-                region.height_field_id(),
+                height_field_id,
                 &mut vertices,
                 &mut vertex_lookup,
                 &mut triangles,
@@ -103,7 +115,7 @@ pub(super) fn triangulate_arrangement_region(
         region,
         &owner_shape,
         owner,
-        region.height_field_id(),
+        height_field_id,
         &mut vertices,
         &mut vertex_lookup,
         &mut triangles,
@@ -122,12 +134,316 @@ pub(super) fn triangulate_arrangement_region(
     Ok(NodeTriangulatedRegion {
         kind: owner.kind(),
         owner,
-        height_field_id: region.height_field_id(),
+        height_field_id,
         vertices,
         boundary_constraints: constraints.into_iter().collect(),
         triangles,
         area_m2: region.area_m2(),
     })
+}
+
+fn triangle_area_is_numeric_dust(
+    triangle: &NodeTriangulatedTriangle,
+    vertices: &[NodeTriangulatedVertex],
+) -> bool {
+    triangle_double_area_m2(triangle, vertices).abs() * 0.5 <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
+}
+
+fn insert_carriageway_interior_guides(
+    node_id: u32,
+    region_index: usize,
+    arrangement: &NodeArrangement,
+    region: &NodeOwnedRegion,
+    owner_shape: &NodeOverlayShape,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    vertices: &mut Vec<NodeTriangulatedVertex>,
+    vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+) -> Result<(), NodeTriangulationError> {
+    if !matches!(
+        arrangement.piece_kind(),
+        RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::JunctionN
+    ) || region.owner().kind() != RoadSurfaceBandKind::Carriageway
+    {
+        return Ok(());
+    }
+    let boundary_points = region_vertices_world(arrangement, region);
+    if !carriageway_region_needs_interior_guides(&boundary_points) {
+        return Ok(());
+    }
+    let Some(plane) = carriageway_region_grade_plane(&boundary_points) else {
+        return Ok(());
+    };
+    let Some((min_x, min_z, max_x, max_z)) = overlay_shape_bounds(owner_shape) else {
+        return Ok(());
+    };
+    let span_x = max_x - min_x;
+    let span_z = max_z - min_z;
+    let longest_span = span_x.max(span_z);
+    if longest_span <= NODE_TRIANGULATION_CARRIAGEWAY_GUIDE_SPACING_M * 2.0 {
+        return Ok(());
+    }
+    let segment_count = ((longest_span / NODE_TRIANGULATION_CARRIAGEWAY_GUIDE_SPACING_M).ceil()
+        as usize)
+        .clamp(1, NODE_TRIANGULATION_MAX_GUIDE_SEGMENTS_PER_EDGE);
+    for guide_index in 1..segment_count {
+        let parameter = guide_index as f64 / segment_count as f64;
+        let point = if span_x >= span_z {
+            RoadVec2::new(min_x + span_x * parameter, (min_z + max_z) * 0.5)
+        } else {
+            RoadVec2::new((min_x + max_x) * 0.5, min_z + span_z * parameter)
+        };
+        let point_key = SurfaceXzKey::from_road_xz(point);
+        let canonical_xz = point_key.to_road_xz();
+        let overlay_point = [canonical_xz.x, canonical_xz.y];
+        if !overlay_shape_contains_interior_point(owner_shape, overlay_point) {
+            continue;
+        }
+        let height_m = plane_height_m(plane, canonical_xz);
+        insert_carriageway_interior_guide_vertex(
+            node_id,
+            region_index,
+            canonical_xz,
+            height_m,
+            owner,
+            height_field_id,
+            vertices,
+            vertex_lookup,
+        )?;
+    }
+    Ok(())
+}
+
+fn carriageway_region_needs_interior_guides(points: &[RoadVec3]) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let min_y = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    max_y - min_y >= NODE_TRIANGULATION_GUIDE_MIN_HEIGHT_DELTA_M
+}
+
+fn carriageway_region_grade_plane(points: &[RoadVec3]) -> Option<[f64; 3]> {
+    if points.len() < 3 {
+        return None;
+    }
+    let first = points[0];
+    let second = *points.iter().skip(1).max_by(|left, right| {
+        xz_distance_squared(first, **left).total_cmp(&xz_distance_squared(first, **right))
+    })?;
+    if xz_distance_squared(first, second) <= 1.0e-12 {
+        return None;
+    }
+    let third = *points.iter().max_by(|left, right| {
+        xz_line_distance_numerator(first, second, **left)
+            .total_cmp(&xz_line_distance_numerator(first, second, **right))
+    })?;
+    if xz_line_distance_numerator(first, second, third) <= 1.0e-9 {
+        return None;
+    }
+    let plane = grade_plane_from_points([first, second, third])?;
+    points
+        .iter()
+        .all(|point| {
+            (plane_height_m(plane, RoadVec2::new(point.x, point.z)) - point.y).abs()
+                <= NODE_TRIANGULATION_GUIDE_PLANE_MAX_RESIDUAL_M
+        })
+        .then_some(plane)
+}
+
+fn xz_distance_squared(a: RoadVec3, b: RoadVec3) -> f64 {
+    let dx = a.x - b.x;
+    let dz = a.z - b.z;
+    dx * dx + dz * dz
+}
+
+fn xz_line_distance_numerator(start: RoadVec3, end: RoadVec3, point: RoadVec3) -> f64 {
+    ((end.x - start.x) * (point.z - start.z) - (end.z - start.z) * (point.x - start.x)).abs()
+}
+
+fn region_vertices_world(arrangement: &NodeArrangement, region: &NodeOwnedRegion) -> Vec<RoadVec3> {
+    let mut points_by_key = BTreeMap::new();
+    for vertex_id in std::iter::once(region.outer_loop())
+        .chain(region.holes().iter().map(Vec::as_slice))
+        .flatten()
+    {
+        if let Some(vertex) = arrangement.vertices().get(vertex_id.index()) {
+            let point = vertex.point_xz();
+            points_by_key.insert(
+                vertex.key(),
+                RoadVec3::new(point.x, vertex.height_m(), point.y),
+            );
+        }
+    }
+    points_by_key.into_values().collect()
+}
+
+fn grade_plane_from_points(points: [RoadVec3; 3]) -> Option<[f64; 3]> {
+    let [a, b, c] = points;
+    let determinant = a.x * (b.z - c.z) + b.x * (c.z - a.z) + c.x * (a.z - b.z);
+    if determinant.abs() <= 1.0e-9 {
+        return None;
+    }
+    Some([
+        (a.y * (b.z - c.z) + b.y * (c.z - a.z) + c.y * (a.z - b.z)) / determinant,
+        (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) / determinant,
+        (a.x * (b.z * c.y - c.z * b.y)
+            + b.x * (c.z * a.y - a.z * c.y)
+            + c.x * (a.z * b.y - b.z * a.y))
+            / determinant,
+    ])
+}
+
+fn plane_height_m(plane: [f64; 3], point: RoadVec2) -> f64 {
+    plane[0] * point.x + plane[1] * point.y + plane[2]
+}
+
+fn insert_carriageway_interior_guide_vertex(
+    node_id: u32,
+    region_index: usize,
+    point_xz: RoadVec2,
+    height_m: f64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    vertices: &mut Vec<NodeTriangulatedVertex>,
+    vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+) -> Result<usize, NodeTriangulationError> {
+    let point_key =
+        NodeTriangulationPointKey::from_world(RoadVec3::new(point_xz.x, height_m, point_xz.y));
+    let height_key = NodeTriangulationHeightKey(quantize_m(height_m));
+    if let Some((index, existing_height_key)) = vertex_lookup.get(&point_key).copied() {
+        if existing_height_key != height_key {
+            return Err(NodeTriangulationError::DuplicateVertexHeightConflict {
+                node_id,
+                region_index,
+                x_mm: point_key.x_mm,
+                z_mm: point_key.z_mm,
+                existing_height_mm: existing_height_key.0,
+                incoming_height_mm: height_key.0,
+            });
+        }
+        return Ok(index);
+    }
+    let grade_authority = NodeGradeVertexAuthority::new(
+        point_xz,
+        height_m,
+        owner,
+        height_field_id,
+        NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
+    );
+    if let Some(index) = same_authority_numeric_dust_vertex(
+        point_key,
+        height_key,
+        grade_authority,
+        vertices,
+        vertex_lookup,
+    ) {
+        return Ok(index);
+    }
+    let index = vertices.len();
+    vertices.push(NodeTriangulatedVertex {
+        point_world: RoadVec3::new(point_xz.x, height_m, point_xz.y),
+        height_field_id,
+        grade_authority,
+    });
+    vertex_lookup.insert(point_key, (index, height_key));
+    Ok(index)
+}
+
+fn overlay_shape_bounds(shape: &NodeOverlayShape) -> Option<(f64, f64, f64, f64)> {
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for point in shape.iter().flatten() {
+        bounds = Some(match bounds {
+            Some((min_x, min_z, max_x, max_z)) => (
+                min_x.min(f64::from(point[0])),
+                min_z.min(f64::from(point[1])),
+                max_x.max(f64::from(point[0])),
+                max_z.max(f64::from(point[1])),
+            ),
+            None => (
+                f64::from(point[0]),
+                f64::from(point[1]),
+                f64::from(point[0]),
+                f64::from(point[1]),
+            ),
+        });
+    }
+    bounds
+}
+
+fn overlay_shape_contains_interior_point(
+    shape: &NodeOverlayShape,
+    point: NodeOverlayPoint,
+) -> bool {
+    let mut inside = false;
+    for contour in shape {
+        if point_lies_on_contour(point, contour) {
+            return false;
+        }
+        if contour_contains_point(contour, point) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn contour_contains_point(contour: &NodeOverlayContour, point: NodeOverlayPoint) -> bool {
+    if contour.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = contour[contour.len() - 1];
+    for current in contour {
+        if (f64::from(current[1]) > f64::from(point[1]))
+            != (f64::from(previous[1]) > f64::from(point[1]))
+        {
+            let crossing_x = f64::from(previous[0])
+                + (f64::from(point[1]) - f64::from(previous[1]))
+                    * (f64::from(current[0]) - f64::from(previous[0]))
+                    / (f64::from(current[1]) - f64::from(previous[1]));
+            if f64::from(point[0]) < crossing_x {
+                inside = !inside;
+            }
+        }
+        previous = *current;
+    }
+    inside
+}
+
+fn point_lies_on_contour(point: NodeOverlayPoint, contour: &NodeOverlayContour) -> bool {
+    if contour.len() < 2 {
+        return false;
+    }
+    (0..contour.len()).any(|index| {
+        point_lies_on_segment(point, contour[index], contour[(index + 1) % contour.len()])
+    })
+}
+
+fn point_lies_on_segment(
+    point: NodeOverlayPoint,
+    start: NodeOverlayPoint,
+    end: NodeOverlayPoint,
+) -> bool {
+    let dx = f64::from(end[0] - start[0]);
+    let dz = f64::from(end[1] - start[1]);
+    let px = f64::from(point[0] - start[0]);
+    let pz = f64::from(point[1] - start[1]);
+    let length = dx.hypot(dz);
+    if length <= f64::EPSILON {
+        return false;
+    }
+    let cross = (dx * pz - dz * px).abs();
+    if cross > f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * length {
+        return false;
+    }
+    let dot = px * dx + pz * dz;
+    dot >= 0.0 && dot <= length * length
 }
 
 fn append_owner_clipped_triangles(
@@ -310,7 +626,7 @@ fn append_triangulated_clipped_shape(
                 local_to_global[c.fix().index()],
             ],
         };
-        if triangle_double_area_m2(&triangle, vertices) <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+        if triangle_area_is_numeric_dust(&triangle, vertices) {
             continue;
         }
         if triangle_is_inside_owner(node_id, region_index, &triangle, vertices, clipped_shape)? {
@@ -429,7 +745,7 @@ fn append_triangulated_missing_owner_shape(
                 local_to_global[c.fix().index()],
             ],
         };
-        if triangle_double_area_m2(&triangle, vertices) <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+        if triangle_area_is_numeric_dust(&triangle, vertices) {
             continue;
         }
         if triangle_is_inside_owner(node_id, region_index, &triangle, vertices, missing_shape)? {
@@ -468,19 +784,29 @@ fn insert_clipped_triangle_vertex(
         return Ok(index);
     }
 
-    let index = vertices.len();
     let point_xz = point_key.road_xz();
+    let grade_authority = NodeGradeVertexAuthority::new(
+        point_xz,
+        height_m,
+        owner,
+        height_field_id,
+        NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
+    );
+    if let Some(index) = same_authority_numeric_dust_vertex(
+        point_key,
+        height_key,
+        grade_authority,
+        vertices,
+        vertex_lookup,
+    ) {
+        return Ok(index);
+    }
+    let index = vertices.len();
     let point_world = RoadVec3::new(point_xz.x, height_m, point_xz.y);
     vertices.push(NodeTriangulatedVertex {
         point_world,
         height_field_id,
-        grade_authority: NodeGradeVertexAuthority::new(
-            point_xz,
-            height_m,
-            owner,
-            height_field_id,
-            NodeGradeCarrierDecision::SameOwnerCanonicalVertex,
-        ),
+        grade_authority,
     });
     vertex_lookup.insert(point_key, (index, height_key));
     Ok(index)
@@ -529,6 +855,15 @@ fn insert_missing_owner_vertex(
                 incoming_height_mm: height_key.0,
             });
         }
+        return Ok(Some(index));
+    }
+    if let Some(index) = same_authority_numeric_dust_vertex(
+        triangulation_key,
+        height_key,
+        grade_authority,
+        vertices,
+        vertex_lookup,
+    ) {
         return Ok(Some(index));
     }
     let index = vertices.len();

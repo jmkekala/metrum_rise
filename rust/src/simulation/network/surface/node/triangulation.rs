@@ -9,10 +9,11 @@ use super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::indices::normalized_vertex_edge;
 use super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
-    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
-    SurfaceCdt,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour,
+    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
+use crate::simulation::network::surface::keys::SURFACE_XZ_KEY_SCALE;
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
@@ -97,6 +98,11 @@ pub(crate) enum NodeTriangulationError {
     },
 }
 
+const NODE_TRIANGULATION_CARRIAGEWAY_GUIDE_SPACING_M: f64 = 12.0;
+const NODE_TRIANGULATION_GUIDE_MIN_HEIGHT_DELTA_M: f64 = 0.01;
+const NODE_TRIANGULATION_GUIDE_PLANE_MAX_RESIDUAL_M: f64 = 0.005;
+const NODE_TRIANGULATION_MAX_GUIDE_SEGMENTS_PER_EDGE: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeTriangulationPointKey {
     x_mm: i64,
@@ -135,12 +141,72 @@ impl NodeTriangulationPointKey {
     fn road_xz(self) -> RoadVec2 {
         SurfaceXzKey::from_raw_keys(self.x_mm, self.z_mm).to_road_xz()
     }
+
+    fn distance_key_units_sq(self, other: Self) -> i128 {
+        let dx = i128::from(self.x_mm - other.x_mm);
+        let dz = i128::from(self.z_mm - other.z_mm);
+        dx * dx + dz * dz
+    }
 }
 
 impl NodeTriangulationHeightKey {
     fn from_arrangement_vertex(vertex: &NodeArrangementVertex) -> Self {
         Self(quantize_m(vertex.height_m()))
     }
+}
+
+fn node_triangulation_dust_key_units() -> i64 {
+    (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).round() as i64
+}
+
+fn same_authority_numeric_dust_vertex(
+    point_key: NodeTriangulationPointKey,
+    height_key: NodeTriangulationHeightKey,
+    grade_authority: NodeGradeVertexAuthority,
+    vertices: &[NodeTriangulatedVertex],
+    vertex_lookup: &BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+) -> Option<usize> {
+    let dust_key_units = node_triangulation_dust_key_units();
+    if dust_key_units <= 0 {
+        return None;
+    }
+    let dust_key_units_sq = i128::from(dust_key_units) * i128::from(dust_key_units);
+    let range_start = NodeTriangulationPointKey {
+        x_mm: point_key.x_mm - dust_key_units,
+        z_mm: i64::MIN,
+    };
+    let range_end = NodeTriangulationPointKey {
+        x_mm: point_key.x_mm + dust_key_units,
+        z_mm: i64::MAX,
+    };
+    vertex_lookup
+        .range(range_start..=range_end)
+        .filter_map(|(candidate_key, (candidate_index, candidate_height_key))| {
+            if *candidate_height_key != height_key
+                || point_key.distance_key_units_sq(*candidate_key) > dust_key_units_sq
+            {
+                return None;
+            }
+            let candidate = vertices.get(*candidate_index)?;
+            same_height_authority_for_numeric_dust(candidate.grade_authority, grade_authority)
+                .then_some((
+                    point_key.distance_key_units_sq(*candidate_key),
+                    *candidate_key,
+                    *candidate_index,
+                ))
+        })
+        .min_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)))
+        .map(|(_, _, index)| index)
+}
+
+fn same_height_authority_for_numeric_dust(
+    existing: NodeGradeVertexAuthority,
+    incoming: NodeGradeVertexAuthority,
+) -> bool {
+    existing.owner == incoming.owner
+        && existing.height_field_id == incoming.height_field_id
+        && existing.height_key == incoming.height_key
+        && existing.source_provenance == incoming.source_provenance
 }
 
 #[cfg(test)]

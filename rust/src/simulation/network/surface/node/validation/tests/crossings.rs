@@ -23,7 +23,8 @@ fn reports_crossing_constraints() {
     }));
     assert!(
         !error.report.has_blocking_diagnostics(),
-        "crossing constraints remain diagnostic-only when CDT output and coverage are valid"
+        "crossing constraints remain diagnostic-only when CDT output and coverage are valid: {}",
+        error.report.debug_dump()
     );
 }
 

@@ -36,13 +36,20 @@ pub(super) fn push_arrangement_constraint_loop(
         })
         .collect::<Result<Vec<_>, _>>()?;
     for index in 0..indices.len() {
-        let constraint =
-            normalized_vertex_edge(indices[index], indices[(index + 1) % indices.len()]);
-        if constraint[0] != constraint[1] {
-            constraints.insert(constraint);
-        }
+        push_constraint(
+            indices[index],
+            indices[(index + 1) % indices.len()],
+            constraints,
+        );
     }
     Ok(())
+}
+
+fn push_constraint(start: usize, end: usize, constraints: &mut BTreeSet<[usize; 2]>) {
+    let constraint = normalized_vertex_edge(start, end);
+    if constraint[0] != constraint[1] {
+        constraints.insert(constraint);
+    }
 }
 
 fn insert_arrangement_vertex(
@@ -67,13 +74,23 @@ fn insert_arrangement_vertex(
         }
         return Ok(index);
     }
+    let grade_authority = vertex.grade_authority();
+    if let Some(index) = same_authority_numeric_dust_vertex(
+        point_key,
+        height_key,
+        grade_authority,
+        vertices,
+        vertex_lookup,
+    ) {
+        return Ok(index);
+    }
 
     let index = vertices.len();
     let point_xz = point_key.road_xz();
     vertices.push(NodeTriangulatedVertex {
         point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
         height_field_id: vertex.height_field_id(),
-        grade_authority: vertex.grade_authority(),
+        grade_authority,
     });
     vertex_lookup.insert(point_key, (index, height_key));
     Ok(index)

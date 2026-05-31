@@ -11,8 +11,8 @@ use super::report::{
     NodeGeometryDiagnosticKind, NodeGeometryStage, NodeValidationError, NodeValidationReport,
 };
 use super::triangles::{
-    validate_cross_region_triangle_edge_heights, validate_triangle_area_coverage,
-    validate_triangles,
+    validate_cross_region_triangle_edge_heights, validate_top_surface_triangle_quality,
+    validate_triangle_area_coverage, validate_triangles,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -115,6 +115,7 @@ fn validate_region(
         diagnostics,
     );
     validate_triangle_area_coverage(solution, region_index, region, diagnostics);
+    validate_top_surface_triangle_quality(solution, region_index, region, diagnostics);
     exposed_edges
 }
 
