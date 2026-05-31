@@ -18,6 +18,7 @@ fn zone_bucket(zone: ZoneType) -> usize {
 
 fn paint_zone_rect(
     zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    graph: &RegionGraph,
     x0: f32,
     z0: f32,
     x1: f32,
@@ -29,6 +30,54 @@ fn paint_zone_rect(
         .default_runtime_id_for_zone_type(zone)
         .unwrap_or(0);
     zoning.set_zone_profile_rect(x0, z0, x1, z1, runtime_id);
+    let min_x = x0.min(x1);
+    let max_x = x0.max(x1);
+    let min_z = z0.min(z1);
+    let max_z = z0.max(z1);
+    let parcel_ids: Vec<u64> = zoning
+        .parcels()
+        .iter()
+        .filter(|parcel| {
+            let center = parcel.center();
+            center.x >= min_x && center.x <= max_x && center.y >= min_z && center.y <= max_z
+        })
+        .map(|parcel| parcel.id().raw())
+        .collect();
+    for parcel_id in parcel_ids {
+        if let Some(parcel) = zoning.parcel_by_raw_id_mut(parcel_id) {
+            parcel.set_zone_profile_runtime_id(runtime_id);
+        }
+    }
+    for edge_idx in 0..graph.edge_count() {
+        let edge = graph.edge(edge_idx);
+        if edge.deleted || edge.physical_length < 20.0 || edge.physical_geometry.len() < 2 {
+            continue;
+        }
+        let count = (edge.physical_length / 20.0).floor() as usize;
+        for side in [1_i8, -1_i8] {
+            for i in 0..count {
+                let s_m = (i as f32 + 0.5) * 20.0;
+                let t = s_m / edge.physical_length;
+                let geometry = crate::simulation::grid::zoning::parcels::geometry_from_attachment(
+                    graph, edge_idx, side, t, 20.0, 30.0,
+                );
+                let center = geometry.center;
+                if center.x < min_x || center.x > max_x || center.y < min_z || center.y > max_z {
+                    continue;
+                }
+                let _ = zoning.restore_parcel_from_attachment(
+                    edge_idx as u64 * 10_000 + side.max(0) as u64 * 1_000 + i as u64 + 1,
+                    edge_idx,
+                    side,
+                    t,
+                    20.0,
+                    30.0,
+                    runtime_id,
+                    graph,
+                );
+            }
+        }
+    }
 }
 
 /// Registers a minimal 1×1 building asset for the given zone type so placement tests pass.
@@ -125,32 +174,22 @@ fn stable_hash_bytes(parts: &[&[u8]]) -> u64 {
     state
 }
 
-fn stable_strip_family_hash(
-    profile_runtime_id: u16,
-    edge_idx: usize,
-    side: i8,
-    family_key: &str,
-) -> u64 {
+fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {
     stable_hash_bytes(&[
         &profile_runtime_id.to_le_bytes(),
-        &(edge_idx as u64).to_le_bytes(),
-        &[side as u8],
+        &parcel_id.to_le_bytes(),
         family_key.as_bytes(),
     ])
 }
 
 fn stable_site_variant_hash(
     profile_runtime_id: u16,
-    edge_idx: usize,
-    side: i8,
-    cell_x: usize,
+    parcel_id: u64,
     qualified_asset_id: &str,
 ) -> u64 {
     stable_hash_bytes(&[
         &profile_runtime_id.to_le_bytes(),
-        &(edge_idx as u64).to_le_bytes(),
-        &[side as u8],
-        &(cell_x as u64).to_le_bytes(),
+        &parcel_id.to_le_bytes(),
         qualified_asset_id.as_bytes(),
     ])
 }
@@ -161,16 +200,11 @@ fn frontage_profile_runtime_id_for_building(
     zoning: &crate::simulation::grid::zoning::ZoningSystem,
     graph: &RegionGraph,
 ) -> u16 {
-    let zone_cell_m = zoning.config.zone_cell_m;
-    let edge = graph.edge(building.edge_idx);
-    let t_col = (building.cell_x as f32 + 0.5) * zone_cell_m / edge.physical_length;
-    let frontage_pos = allocator.get_pos_on_edge(graph, building.edge_idx, t_col);
-    let frontage_tangent = allocator.get_tangent_on_edge(graph, building.edge_idx, t_col);
-    let frontage_normal =
-        Vector2::new(frontage_tangent.y, -frontage_tangent.x) * building.side as f32;
-    let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
-    let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
-    zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y)
+    let _ = (allocator, graph);
+    zoning
+        .parcel_by_raw_id(building.parcel_id)
+        .map(|parcel| parcel.zone_profile_runtime_id())
+        .unwrap_or(0)
 }
 
 fn execute_startup_demand_building_pass(
@@ -240,8 +274,24 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &mut allocator,
     );
     graph.set_node_type(0, NodeType::Border);
-    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -50.0,
+        -50.0,
+        45.0,
+        50.0,
+        ZoneType::Residential,
+    );
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        55.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Commercial,
+    );
 
     let mut demand = DemandSystem::new();
     // Jack up demand and credits to ensure we get buildings in the first tick
@@ -273,29 +323,39 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
     // so push one commercial building directly to give rezoning tests a 2-building city.
     {
-        let edge = graph.edge(0);
-        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
         let zone_cell_m = map_cfg.zone_cell_m;
-        let cell_x = 7_usize;
-        let side = 1_i8;
-        let center_x = (cell_x as f32 + 0.5) * zone_cell_m;
-        let center_y = -(curb_dist + 0.5 * zone_cell_m);
-        let zone_profile_runtime_id = zoning.get_zone_profile_runtime_id_world(center_x, center_y);
+        let parcel = zoning
+            .parcels()
+            .iter()
+            .find(|parcel| {
+                zoning
+                    .profiles
+                    .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+                    == ZoneType::Commercial
+                    && parcel.is_available()
+            })
+            .expect("commercial test parcel")
+            .clone();
+        let edge = graph.edge(parcel.edge_idx());
+        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        let center = parcel.front_center() + parcel.normal() * (zone_cell_m * 0.5);
+        let building_idx = allocator.buildings.len();
         allocator.buildings.push(Building {
-            center_x,
-            center_y,
+            center_x: center.x,
+            center_y: center.y,
             width_cells: 1,
             depth_cells: 1,
-            zone_profile_runtime_id,
+            zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
+            parcel_id: parcel.id().raw(),
             zone_type: ZoneType::Commercial,
-            facing_dir: Vector2::new(0.0, -1.0),
-            frontage_t: (cell_x as f32 + 0.5) * zone_cell_m / edge.physical_length,
+            facing_dir: parcel.normal(),
+            frontage_t: parcel.frontage_center_t(),
             side_offset: curb_dist,
             is_deserted: false,
             budget_distress: false,
-            edge_idx: 0,
-            side,
-            cell_x,
+            edge_idx: parcel.edge_idx(),
+            side: parcel.side(),
+            cell_x: 0,
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
@@ -313,6 +373,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         });
+        zoning.occupy_parcel(parcel.id().raw(), building_idx);
         allocator.rebuild_zone_index();
     }
 
@@ -358,6 +419,7 @@ fn test_zone_index_consistency() {
             width_cells: 3,
             depth_cells: 3,
             zone_profile_runtime_id: 0,
+            parcel_id: 0,
             zone_type: if i % 2 == 0 {
                 ZoneType::Residential
             } else {
@@ -445,6 +507,7 @@ fn test_vacancy_index_consistency() {
             width_cells: 3,
             depth_cells: 3,
             zone_profile_runtime_id: 0,
+            parcel_id: 0,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
@@ -561,6 +624,7 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
     );
     paint_zone_rect(
         &mut zoning,
+        &graph,
         -50.0,
         -50.0,
         150.0,
@@ -616,8 +680,24 @@ fn test_allocator_tick_does_not_place_founding_buildings() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -50.0,
+        -50.0,
+        45.0,
+        50.0,
+        ZoneType::Residential,
+    );
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        55.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Commercial,
+    );
 
     allocator.tick(
         &mut zoning,
@@ -676,8 +756,24 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -50.0,
+        -50.0,
+        45.0,
+        50.0,
+        ZoneType::Residential,
+    );
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        55.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Commercial,
+    );
 
     execute_startup_demand_building_pass(
         &mut allocator,
@@ -696,21 +792,14 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         .expect("pioneer demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
-    let expected_asset_id = if stable_strip_family_hash(
-        profile_runtime_id,
-        residential.edge_idx,
-        residential.side,
-        "family_a",
-    ) <= stable_strip_family_hash(
-        profile_runtime_id,
-        residential.edge_idx,
-        residential.side,
-        "family_b",
-    ) {
-        family_a_id
-    } else {
-        family_b_id
-    };
+    let expected_asset_id =
+        if stable_strip_family_hash(profile_runtime_id, residential.parcel_id, "family_a")
+            <= stable_strip_family_hash(profile_runtime_id, residential.parcel_id, "family_b")
+        {
+            family_a_id
+        } else {
+            family_b_id
+        };
 
     assert_eq!(residential.asset_id, expected_asset_id);
 }
@@ -756,8 +845,24 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -50.0,
+        -50.0,
+        45.0,
+        50.0,
+        ZoneType::Residential,
+    );
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        55.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Commercial,
+    );
 
     execute_startup_demand_building_pass(
         &mut allocator,
@@ -776,23 +881,14 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         .expect("pioneer demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
-    let expected_asset_id = if stable_site_variant_hash(
-        profile_runtime_id,
-        residential.edge_idx,
-        residential.side,
-        residential.cell_x,
-        &variant_a_id,
-    ) <= stable_site_variant_hash(
-        profile_runtime_id,
-        residential.edge_idx,
-        residential.side,
-        residential.cell_x,
-        &variant_b_id,
-    ) {
-        variant_a_id
-    } else {
-        variant_b_id
-    };
+    let expected_asset_id =
+        if stable_site_variant_hash(profile_runtime_id, residential.parcel_id, &variant_a_id)
+            <= stable_site_variant_hash(profile_runtime_id, residential.parcel_id, &variant_b_id)
+        {
+            variant_a_id
+        } else {
+            variant_b_id
+        };
 
     assert_eq!(residential.asset_id, expected_asset_id);
 }
@@ -813,6 +909,7 @@ fn test_incompatible_rezoning_enters_pending_redevelopment_before_removal() {
     let residential = allocator.buildings[residential_idx].clone();
     paint_zone_rect(
         &mut zoning,
+        &graph,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -872,6 +969,7 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
     let residential = allocator.buildings[residential_idx].clone();
     paint_zone_rect(
         &mut zoning,
+        &graph,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -891,6 +989,7 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
 
     paint_zone_rect(
         &mut zoning,
+        &graph,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -951,6 +1050,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
@@ -1068,6 +1168,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
@@ -1138,20 +1239,37 @@ fn test_building_removal_clears_zoning_occupancy() {
         &mut allocator,
     );
 
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -50.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Residential,
+    );
+    let parcel = zoning
+        .parcels()
+        .iter()
+        .find(|parcel| parcel.is_available())
+        .expect("residential test parcel")
+        .clone();
+    let center = parcel.front_center() + parcel.normal() * (map_cfg.zone_cell_m * 0.5);
     allocator.buildings.push(Building {
-        center_x: 5.0,
-        center_y: 10.0,
-        width_cells: 3,
-        depth_cells: 3,
-        zone_profile_runtime_id: 0,
+        center_x: center.x,
+        center_y: center.y,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
+        parcel_id: parcel.id().raw(),
         zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.05,
+        facing_dir: parcel.normal(),
+        frontage_t: parcel.frontage_center_t(),
         side_offset: 1.0,
         is_deserted: false,
         budget_distress: false,
         edge_idx: 0,
-        side: 1,
+        side: parcel.side(),
         cell_x: 0,
         cell_y: 0,
         occupancy: 0,
@@ -1171,14 +1289,15 @@ fn test_building_removal_clears_zoning_occupancy() {
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
-    zoning.mark_occupied_rect(
-        5.0,
-        10.0,
-        godot::prelude::Vector2::new(0.0, 1.0),
-        30.0,
-        30.0,
-        true,
-    );
+    zoning.occupy_parcel(parcel.id().raw(), 0);
+    let commercial_profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Commercial)
+        .expect("commercial profile");
+    zoning
+        .parcel_by_raw_id_mut(parcel.id().raw())
+        .expect("parcel")
+        .set_zone_profile_runtime_id(commercial_profile);
 
     allocator.tick(
         &mut zoning,
@@ -1209,8 +1328,11 @@ fn test_building_removal_clears_zoning_occupancy() {
         "Building should be removed after the rezoning grace expires"
     );
     assert!(
-        !zoning.is_rect_occupied(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 5.0, 5.0),
-        "Zoning occupancy should be cleared after building removal"
+        zoning
+            .parcel_by_raw_id(parcel.id().raw())
+            .and_then(|parcel| parcel.occupied_building())
+            .is_none(),
+        "Parcel occupancy should be cleared after building removal"
     );
 }
 
@@ -1221,7 +1343,7 @@ fn test_immigration_claims_vacant_home() {
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
-    use godot::prelude::{Vector2, Vector3};
+    use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
     let residential_asset_id = register_test_asset(
@@ -1252,26 +1374,41 @@ fn test_immigration_claims_vacant_home() {
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
     paint_zone_rect(
         &mut zoning,
+        &graph,
         -50.0,
         -50.0,
         150.0,
         50.0,
         ZoneType::Residential,
     );
+    let parcel = zoning
+        .parcels()
+        .iter()
+        .find(|parcel| {
+            zoning
+                .profiles
+                .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+                == ZoneType::Residential
+                && parcel.is_available()
+        })
+        .expect("residential test parcel")
+        .clone();
+    let center = parcel.front_center() + parcel.normal() * (map_cfg.zone_cell_m * 0.5);
     allocator.buildings.push(Building {
-        center_x: 10.0,
-        center_y: 10.0,
-        width_cells: 3,
-        depth_cells: 3,
-        zone_profile_runtime_id: 0,
+        center_x: center.x,
+        center_y: center.y,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
+        parcel_id: parcel.id().raw(),
         zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.1,
+        facing_dir: parcel.normal(),
+        frontage_t: parcel.frontage_center_t(),
         side_offset: 1.0,
         is_deserted: false,
         budget_distress: false,
         edge_idx: edge_id,
-        side: 1,
+        side: parcel.side(),
         cell_x: 0,
         cell_y: 0,
         occupancy: 0,
@@ -1291,6 +1428,7 @@ fn test_immigration_claims_vacant_home() {
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
+    zoning.occupy_parcel(parcel.id().raw(), 0);
     allocator.rebuild_zone_index();
 
     allocator.tick(
@@ -1376,6 +1514,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
@@ -1409,6 +1548,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Commercial,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.4,
@@ -1496,7 +1636,15 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    paint_zone_rect(&mut zoning, -40.0, -40.0, 80.0, 40.0, ZoneType::Residential);
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -40.0,
+        -40.0,
+        80.0,
+        40.0,
+        ZoneType::Residential,
+    );
 
     let mut demand = DemandSystem::new();
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
@@ -1566,6 +1714,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     );
     paint_zone_rect(
         &mut zoning,
+        &graph,
         -40.0,
         -40.0,
         120.0,
@@ -1579,6 +1728,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1612,6 +1762,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1645,6 +1796,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
+        parcel_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1680,6 +1832,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
 
     let mut plan = DemandBuildingActionPlan::default();
     plan.residential.despawns.push(DemandBuildingActionKey {
+        parcel_id: 0,
         edge_idx: 0,
         side: 1,
         cell_x: 4,
@@ -1690,6 +1843,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
     plan.residential.downgrades.push(DemandLevelChangeAction {
         building: DemandBuildingActionKey {
+            parcel_id: 0,
             edge_idx: 0,
             side: 1,
             cell_x: 2,
@@ -1702,6 +1856,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
     plan.residential.upgrades.push(DemandLevelChangeAction {
         building: DemandBuildingActionKey {
+            parcel_id: 0,
             edge_idx: 0,
             side: 1,
             cell_x: 0,

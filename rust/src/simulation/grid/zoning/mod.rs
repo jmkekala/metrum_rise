@@ -1,10 +1,9 @@
-//! World-space zoning grid and built-in zoning-profile registry.
+//! Road-aligned zoning parcels and built-in zoning-profile registry.
 //!
-//! The authoritative painted world stores dense runtime `ZoneProfile` ids (`u16`) in one global
-//! grid. Broad [`ZoneType`] values remain as derived helpers for systems that still consume the
-//! larger residential/commercial/industrial families. Buildings still spawn along road frontage,
-//! but legality now reads the profile-derived zone family and density from the global painted grid
-//! rather than from edge-local cells.
+//! User-authored parcels are the zoning authority for private building spawn. Broad zoning-family
+//! values remain derived helpers for systems that consume residential/commercial/industrial
+//! families. The dense profile grid remains only for deprecated paint-patch tooling while the
+//! simulation, demand, allocator, and saves consume stable parcel ids.
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::grid::data_grid::DataGrid;
@@ -12,11 +11,18 @@ use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::sync::Arc;
 
+pub mod parcels;
 pub mod profiles;
 
+pub use parcels::{ParcelGeometry, ParcelId, ParcelPlacementError, ParcelStore, ZoningParcel};
 pub use profiles::{
     ZoneDensity, ZoneProfileRuntime, ZoningProfileRegistry, load_builtin_profile_registry,
 };
+
+/// First-slice authored parcel frontage in metres.
+pub const DEFAULT_PARCEL_FRONTAGE_M: f32 = 20.0;
+/// First-slice authored parcel depth in metres.
+pub const DEFAULT_PARCEL_DEPTH_M: f32 = 30.0;
 
 /// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
@@ -63,16 +69,18 @@ impl ZoneType {
     }
 }
 
-/// World-space zoning system built on three flat grids.
+/// Road-aligned parcel zoning system with supporting debug/display grids.
 ///
-/// Replaces the legacy per-edge `EdgeZoning` / `flush_zoning_updates` pipeline.
-/// All grid coordinates use the map-centred origin: cell (cx, cy) sits at world
-/// position `(-width_m / 2 + (cx + 0.5) * zone_cell_m, -height_m / 2 + (cy + 0.5) * zone_cell_m)`.
+/// Parcels use stable ids and road attachment metadata. Supporting grids use the map-centred
+/// origin: cell (cx, cy) sits at world position
+/// `(-width_m / 2 + (cx + 0.5) * zone_cell_m, -height_m / 2 + (cy + 0.5) * zone_cell_m)`.
 #[derive(Clone)]
 pub struct ZoningSystem {
     /// Validated built-in zoning-profile registry shared by the zoning grid, UI bridge, and saves.
     pub profiles: Arc<ZoningProfileRegistry>,
-    /// Dense runtime zoning-profile id for every painted world cell. `0` means unpainted / none.
+    /// Stable road-aligned parcel store used as zoning authority.
+    pub parcels: ParcelStore,
+    /// Deprecated dense runtime zoning-profile id buffer for old patch APIs. Not simulation authority.
     pub grid: DataGrid<u16>,
     /// Building footprint occupancy. True when a placed building covers this cell.
     pub occupied: DataGrid<bool>,
@@ -95,6 +103,7 @@ impl ZoningSystem {
             .unwrap_or_else(|err| panic!("could not load built-in zoning profiles: {err}"));
         Self {
             profiles,
+            parcels: ParcelStore::default(),
             grid: DataGrid::new(w, h, 0),
             occupied: DataGrid::new(w, h, false),
             distance_to_road: DataGrid::new(w, h, 255u8),
@@ -105,17 +114,158 @@ impl ZoningSystem {
 
     /// Clears all zone, occupancy, distance, and no-build mask data.
     pub fn clear(&mut self) {
+        self.parcels.clear();
         self.grid.data.fill(0);
         self.occupied.data.fill(false);
         self.distance_to_road.data.fill(255);
         self.no_build_mask.data.fill(false);
     }
 
-    /// No-op kept for call-site compatibility with network compaction.
+    /// Remaps parcel road-edge attachments after network compaction.
+    pub fn update_edge_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        self.parcels.remove_edges_not_in_mapping(mapping);
+    }
+
+    // -- Parcel authority ----------------------------------------------------
+
+    /// Returns every authored zoning parcel.
+    pub fn parcels(&self) -> &[ZoningParcel] {
+        self.parcels.parcels()
+    }
+
+    /// Returns one authored parcel by stable raw id.
+    pub fn parcel_by_raw_id(&self, parcel_id: u64) -> Option<&ZoningParcel> {
+        self.parcels.get(ParcelId::from_raw(parcel_id))
+    }
+
+    /// Returns one mutable authored parcel by stable raw id.
+    pub fn parcel_by_raw_id_mut(&mut self, parcel_id: u64) -> Option<&mut ZoningParcel> {
+        self.parcels.get_mut(ParcelId::from_raw(parcel_id))
+    }
+
+    /// Projects a default 20 x 30 m parcel at a world position without mutating storage.
+    pub fn preview_default_parcel_at(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<ParcelGeometry, ParcelPlacementError> {
+        let geometry = parcels::project_default_parcel_at(
+            graph,
+            Vector2::new(world_x, world_z),
+            DEFAULT_PARCEL_FRONTAGE_M,
+            DEFAULT_PARCEL_DEPTH_M,
+        )?;
+        if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m) {
+            return Err(ParcelPlacementError::OutsideWorld);
+        }
+        if self.parcels.overlaps_existing(&geometry) {
+            return Err(ParcelPlacementError::OverlapsExistingParcel);
+        }
+        Ok(geometry)
+    }
+
+    /// Creates a new parcel or changes the profile of the parcel under the given world position.
     ///
-    /// The global grid has no per-edge keys to remap; only `BuildingAllocator::edge_occupancy`
-    /// needs remapping (handled in `BuildingAllocator::update_edge_indices`).
-    pub fn update_edge_indices(&mut self, _mapping: &std::collections::HashMap<usize, usize>) {}
+    /// Runtime id `0` creates or assigns a free/unzoned parcel.
+    pub fn place_or_rezone_default_parcel_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        runtime_id: u16,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<ParcelId, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        let point = Vector2::new(world_x, world_z);
+        if let Some(existing_id) = self.parcels.find_at_point(point) {
+            self.parcels
+                .set_zone_profile_runtime_id(existing_id, runtime_id);
+            return Ok(existing_id);
+        }
+
+        let geometry = self.preview_default_parcel_at(world_x, world_z, graph)?;
+        Ok(self.parcels.insert_new(geometry, runtime_id))
+    }
+
+    /// Restores one saved parcel from road attachment data.
+    pub fn restore_parcel_from_attachment(
+        &mut self,
+        parcel_id: u64,
+        edge_idx: usize,
+        side: i8,
+        frontage_center_t: f32,
+        frontage_m: f32,
+        depth_m: f32,
+        runtime_id: u16,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> Result<ParcelId, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        if edge_idx >= graph.edge_count() {
+            return Err(ParcelPlacementError::NoRoadAttachment);
+        }
+        let edge = graph.edge(edge_idx);
+        if edge.deleted
+            || edge.no_building_spawn
+            || edge.physical_geometry.len() < 2
+            || edge.physical_length <= frontage_m
+        {
+            return Err(ParcelPlacementError::NoRoadAttachment);
+        }
+        let s_m = frontage_center_t.clamp(0.0, 1.0) * edge.physical_length;
+        if s_m < frontage_m * 0.5 || s_m > edge.physical_length - frontage_m * 0.5 {
+            return Err(ParcelPlacementError::FrontageOutOfBounds);
+        }
+        let id = ParcelId::from_raw(parcel_id);
+        if id.is_none() {
+            return Err(ParcelPlacementError::NoRoadAttachment);
+        }
+        let geometry = parcels::geometry_from_attachment(
+            graph,
+            edge_idx,
+            if side >= 0 { 1 } else { -1 },
+            frontage_center_t,
+            frontage_m,
+            depth_m,
+        );
+        if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m) {
+            return Err(ParcelPlacementError::OutsideWorld);
+        }
+        if self.parcels.overlaps_existing(&geometry) {
+            return Err(ParcelPlacementError::OverlapsExistingParcel);
+        }
+        self.parcels.insert_loaded(id, geometry, runtime_id);
+        Ok(id)
+    }
+
+    /// Claims one parcel for a building index.
+    pub fn occupy_parcel(&mut self, parcel_id: u64, building_idx: usize) -> bool {
+        self.parcels
+            .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx)
+    }
+
+    /// Clears a parcel building claim.
+    pub fn clear_parcel_occupancy(&mut self, parcel_id: u64) -> bool {
+        self.parcels
+            .clear_occupied_building(ParcelId::from_raw(parcel_id))
+    }
+
+    /// Remaps a building index inside parcel occupancy after allocator swap-remove.
+    pub fn remap_parcel_occupancy(&mut self, old_idx: usize, new_idx: usize) {
+        self.parcels.remap_occupied_building(old_idx, new_idx);
+    }
+
+    /// Clears every parcel occupancy claim.
+    pub fn clear_all_parcel_occupancy(&mut self) {
+        self.parcels.clear_all_occupancy();
+    }
+
+    fn validate_profile_id(&self, runtime_id: u16) -> Result<(), ParcelPlacementError> {
+        if runtime_id == 0 || self.profiles.profile_by_runtime_id(runtime_id).is_some() {
+            Ok(())
+        } else {
+            Err(ParcelPlacementError::UnknownProfile)
+        }
+    }
 
     // ── Coordinate helpers ──────────────────────────────────────────────────
 

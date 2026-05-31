@@ -3414,6 +3414,88 @@ impl SimulationNode {
         arr
     }
 
+    /// Creates or rezones a default road-aligned zoning parcel at one world-space point.
+    #[func]
+    pub fn apply_zoning_parcel_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        target_profile_runtime_id: i32,
+    ) -> bool {
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return false;
+        };
+        let mut core = self.lock_core();
+        let core = &mut *core;
+        let result = core.zoning.place_or_rezone_default_parcel_at(
+            world_x,
+            world_z,
+            runtime_id,
+            &core.region_graph,
+        );
+        match result {
+            Ok(_) => {
+                core.allocator.dirty = true;
+                core.allocator.dirty_index = true;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Returns preview geometry for a default road-aligned zoning parcel.
+    #[func]
+    pub fn get_zoning_parcel_preview(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        target_profile_runtime_id: i32,
+    ) -> VarDictionary {
+        let core = self.lock_core();
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return VarDictionary::new();
+        };
+        let Ok(geometry) =
+            core.zoning
+                .preview_default_parcel_at(world_x, world_z, &core.region_graph)
+        else {
+            return VarDictionary::new();
+        };
+        zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0)
+    }
+
+    /// Returns committed zoning parcels for the Godot overlay mesh.
+    #[func]
+    pub fn get_zoning_parcels_overlay(&self) -> VarArray {
+        let core = self.lock_core();
+        let mut arr = VarArray::new();
+        for parcel in core.zoning.parcels() {
+            let geometry = crate::simulation::grid::zoning::ParcelGeometry {
+                edge_idx: parcel.edge_idx(),
+                side: parcel.side(),
+                frontage_center_t: parcel.frontage_center_t(),
+                frontage_m: parcel.frontage_m(),
+                depth_m: parcel.depth_m(),
+                front_center: parcel.front_center(),
+                center: parcel.center(),
+                tangent: parcel.tangent(),
+                normal: parcel.normal(),
+                corners: parcel.corners(),
+                aabb_min: parcel.aabb_min(),
+                aabb_max: parcel.aabb_max(),
+            };
+            let dict = zoning_parcel_geometry_dict(
+                &core,
+                &geometry,
+                parcel.zone_profile_runtime_id(),
+                parcel.occupied_building().is_some(),
+                parcel.id().raw(),
+            );
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
     /// Captures one zoning patch bounding box as packed little-endian runtime ids.
     #[func]
     pub fn capture_zoning_patch(
@@ -5128,6 +5210,53 @@ impl SimulationNode {
     }
 }
 
+fn zoning_parcel_geometry_dict(
+    core: &SimCore,
+    geometry: &crate::simulation::grid::zoning::ParcelGeometry,
+    runtime_id: u16,
+    occupied: bool,
+    parcel_id: u64,
+) -> VarDictionary {
+    let mut corners = PackedVector3Array::new();
+    for corner in zoning_parcel_surface_corners(core, geometry) {
+        corners.push(corner);
+    }
+
+    let mut color = if runtime_id == 0 {
+        Color::from_rgba(0.78, 0.82, 0.78, 0.30)
+    } else if let Some(profile) = core.zoning.profiles.profile_by_runtime_id(runtime_id) {
+        Color::from_rgba(
+            profile.ui_color_rgb[0] as f32 / 255.0,
+            profile.ui_color_rgb[1] as f32 / 255.0,
+            profile.ui_color_rgb[2] as f32 / 255.0,
+            0.34,
+        )
+    } else {
+        Color::from_rgba(0.78, 0.82, 0.78, 0.30)
+    };
+    if occupied {
+        color = Color::from_rgba(color.r * 0.55, color.g * 0.55, color.b * 0.55, 0.28);
+    }
+
+    let mut dict = VarDictionary::new();
+    dict.set("id", i64::try_from(parcel_id).unwrap_or(i64::MAX));
+    dict.set("profile_runtime_id", i64::from(runtime_id));
+    dict.set("occupied", occupied);
+    dict.set("corners", corners);
+    dict.set("color", color);
+    dict
+}
+
+fn zoning_parcel_surface_corners(
+    core: &SimCore,
+    geometry: &crate::simulation::grid::zoning::ParcelGeometry,
+) -> [Vector3; 4] {
+    geometry.corners.map(|corner| {
+        let surface_y = core.get_world_surface_height_internal(Vector2::new(corner.x, corner.y));
+        Vector3::new(corner.x, surface_y, corner.y)
+    })
+}
+
 #[godot_api]
 impl INode3D for SimulationNode {
     fn init(base: Base<Node3D>) -> Self {
@@ -5571,6 +5700,38 @@ mod tests {
     };
 
     #[test]
+    fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
+        let raw_height = 3.25;
+        let core = test_core_with_flat_terrain(raw_height);
+        let geometry = crate::simulation::grid::zoning::ParcelGeometry {
+            edge_idx: 0,
+            side: 1,
+            frontage_center_t: 0.5,
+            frontage_m: 20.0,
+            depth_m: 30.0,
+            front_center: Vector2::ZERO,
+            center: Vector2::ZERO,
+            tangent: Vector2::new(1.0, 0.0),
+            normal: Vector2::new(0.0, -1.0),
+            corners: [
+                Vector2::new(-5.0, -5.0),
+                Vector2::new(5.0, -5.0),
+                Vector2::new(5.0, 5.0),
+                Vector2::new(-5.0, 5.0),
+            ],
+            aabb_min: Vector2::new(-5.0, -5.0),
+            aabb_max: Vector2::new(5.0, 5.0),
+        };
+
+        let corners = zoning_parcel_surface_corners(&core, &geometry);
+        let expected_y = raw_height * config::HEIGHT_SCALE;
+
+        assert!(corners.iter().all(|corner| {
+            (corner.y - expected_y).abs() <= 1e-4 && corner.x.abs() == 5.0 && corner.z.abs() == 5.0
+        }));
+    }
+
+    #[test]
     fn terrain_cdt_structured_face_sources_preserve_span_fields() {
         let source = span_source();
         let export = SimulationNode::terrain_cdt_triangle_buffers(
@@ -5878,6 +6039,49 @@ mod tests {
             world_size_x: 10.0,
             world_size_z: 10.0,
             height_data: vec![0.0; 4],
+        }
+    }
+
+    fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
+        let config = WorldConfig::default();
+        SimCore {
+            time: TimeSystem::new(),
+            heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
+            watermap: WaterSystem::from_world_config(&config),
+            region_graph: crate::simulation::network::graph::RegionGraph::new(),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            zoning: ZoningSystem::new(&config),
+            pollution: PollutionSystem::new(&config),
+            noise: NoiseSystem::new(&config),
+            desirability: DesirabilitySystem::new(&config),
+            demand: DemandSystem::new(),
+            allocator: BuildingAllocator::new(),
+            agents: AgentSystem::new(),
+            households: HouseholdSystem::new(),
+            logistics: ShipmentSystem::new(),
+            config,
+            treasury: CityTreasury::new(0.0),
+            undo_stack: std::collections::VecDeque::new(),
+            world_water_boundary_points: Vec::new(),
+            world_lake_fills: Vec::new(),
+            world_open_water_fills: Vec::new(),
+            world_lake_fill_preview: None,
+            authored_water_patch_fill_debug_cache: std::collections::HashMap::new(),
+            terrain_stroke_active: false,
+            terrain_stroke_has_changes: false,
+            water_runtime_realtime_when_paused: false,
+            terrain_dirty: false,
+            water_dirty: false,
+            network_dirty: false,
+            benchmark_mode: false,
+            last_tick_duration: 0.0,
+            last_agent_tick_us: 0,
+            last_road_timing: String::new(),
+            last_surface_debug_edges: Vec::new(),
+            refined_terrain_patch_cache: std::collections::HashMap::new(),
+            road_locked_terrain_patch_keys: Vec::new(),
+            cached_road_mesh_data: None,
+            camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }
 

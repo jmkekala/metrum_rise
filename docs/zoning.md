@@ -962,17 +962,16 @@ Completed in the current implementation:
   and conditional zoning-field export.
 - Old editor-side `office` and `mixed` zoning controls were removed from the asset editor and live
   zoning-related tools so the tooling surface matches the shipped baseline registry.
-- The painted zoning grid, helper bridge, and save-load format now store compiled `ZoneProfile`
-  ids instead of broad `ZoneType`.
-- The live zoning tool and overlay were replaced with the profile-driven brush/rectangle tool,
-  patch bridge, and registry-driven UI described earlier in this document.
+- Parcel zoning, the helper bridge, and the save-load format store compiled `ZoneProfile` ids
+  instead of broad `ZoneType`.
+- The live zoning tool and overlay now create, rezone, and display Rust-owned road-aligned parcels
+  with registry-driven profile selection.
 - Allocator legality, stale-building cleanup, and rezoning compatibility now consume the
   profile-based zoning contract, including the deterministic rezoning grace period for
   incompatible repainting.
 - Deterministic fresh-spawn asset selection now follows the baseline family-order and site-variant
-  rules: strip-stable family preference by `(zone_profile_id, edge_idx, side)` and site-local
-  variant choice by stable hash of `(zone_profile_id, edge_idx, side, leading_cell_x,
-  qualified_asset_id)`.
+  rules: strip-stable family preference by `(zone_profile_id, parcel_id)` and site-local variant
+  choice by stable hash of `(zone_profile_id, parcel_id, qualified_asset_id)`.
 
 Pending to finish Phase 1 fully:
 
@@ -1290,14 +1289,16 @@ corrected — without touching the rest of the grid.
 
 ---
 
-## 14. `ZONE-01` Parcel Zoning Replacement Plan
+## 14. `ZONE-01` Parcel Zoning Replacement
 
-This section owns the proposed replacement plan tracked as [`ZONE-01`](roadmap.md). It is not
-implemented yet.
+This section owns the parcel zoning replacement tracked as [`ZONE-01`](roadmap.md). The first slice
+is implemented: Rust owns user-placed road-aligned parcels, the allocator and demand consume parcel
+legality and occupancy, save/load persists parcels, and Godot only submits input and uploads
+Rust-produced overlay geometry.
 
-When `ZONE-01` is implemented, it supersedes the `nearest_road_id` grid work in Section 13 instead
-of layering on top of it. Until the parcel model is implemented, Section 13 remains the documented
-current-grid ownership gap.
+`ZONE-01` supersedes the `nearest_road_id` grid work in Section 13 instead of layering on top of it.
+The old dense painted zoning grid may remain as deprecated compatibility/debug plumbing, but it is
+not the normal-runtime zoning authority.
 
 ### Goal
 
@@ -1315,7 +1316,7 @@ The player-facing intent is:
 
 ### First-Slice Rules
 
-Keep the first implementation deliberately narrow:
+The first implementation is deliberately narrow:
 
 - default parcel size is `20 m` frontage by `30 m` depth
 - one parcel attaches to exactly one road edge and one side
@@ -1356,13 +1357,13 @@ Accepted first implementation decisions:
 
 ### Rust Data Model
 
-The replacement should live under the zoning module near the code that owns it, for example:
+The replacement lives under the zoning module near the code that owns it:
 
 ```text
 rust/src/simulation/grid/zoning/parcels.rs
 ```
 
-Recommended first data shape:
+Implemented first data shape:
 
 ```text
 ParcelId
@@ -1377,7 +1378,7 @@ Parcel
   - depth_m
   - zone_profile_runtime_id
   - occupied_building: Option<usize>
-  - corner keys / quantized boundary keys
+  - derived world-space rectangle geometry
   - world corners
   - aabb
 ```
@@ -1393,7 +1394,8 @@ Required identity rule:
 
 Parcel queries must be local.
 
-Use a chunk-local parcel index aligned with existing world chunking instead of scanning every
+Parcel overlap and point queries use a chunk-local parcel index aligned with existing world chunking
+instead of scanning every
 parcel:
 
 ```text
@@ -1428,16 +1430,17 @@ currently selected non-zero runtime profile id.
 
 ### Parcel Editing
 
-Minimum Rust-side bridge surface:
+Live Rust-side bridge surface:
 
 ```text
-preview_parcel_at(world_x, world_z, selected_profile_runtime_id)
-create_parcel_at(world_x, world_z, selected_profile_runtime_id)
-set_parcel_profile(parcel_id, zone_profile_runtime_id)
-delete_parcel(parcel_id)
-get_parcel_at_world(world_x, world_z)
-get_parcel_render_payload()
+get_zoning_parcel_preview(world_x, world_z, selected_profile_runtime_id)
+apply_zoning_parcel_at(world_x, world_z, selected_profile_runtime_id)
+get_zoning_parcels_overlay()
 ```
+
+`apply_zoning_parcel_at` creates a parcel when the target point is empty and rezones the existing
+parcel when the target point is already inside one. Dedicated select, delete, merge, split, and
+bulk-edit commands are deferred until they have a gameplay/UI need.
 
 Bridge rules:
 
@@ -1473,7 +1476,7 @@ building removal execution. Zoning owns parcel legality and parcel occupancy hel
 Demand continues to decide whether private building changes should happen. It does not choose parcel
 geometry or exact asset IDs.
 
-Spawn candidates should be empty legal parcels sorted deterministically by:
+Spawn candidates are empty legal parcels sorted deterministically by:
 
 ```text
 (edge_idx, side_order, frontage_center_t_key, parcel_id)
@@ -1481,7 +1484,7 @@ Spawn candidates should be empty legal parcels sorted deterministically by:
 
 where `side_order` remains `[1, -1]`.
 
-Fresh-spawn deterministic asset selection should replace the current grid-column key with parcel
+Fresh-spawn deterministic asset selection replaces the old grid-column key with parcel
 identity:
 
 ```text
@@ -1491,7 +1494,7 @@ site key:  (zone_profile_runtime_id, parcel_id, qualified_asset_id)
 
 ### Building Lifecycle And Rezoning
 
-Placed private zoned buildings should store `parcel_id` as their authoritative zoning attachment.
+Placed private zoned buildings store `parcel_id` as their authoritative zoning attachment.
 
 The building may retain derived runtime fields such as `edge_idx`, `side`, `frontage_t`, center,
 and facing direction for rendering, entrances, pathing, and save/load convenience. Those fields must
@@ -1509,7 +1512,7 @@ event.
 
 ### Save / Load
 
-The replacement save format should persist parcels instead of the whole painted profile grid:
+The replacement save format persists parcels instead of the whole painted profile grid:
 
 ```text
 zoning_parcels
@@ -1522,33 +1525,41 @@ zoning_parcels
   - zone_profile_runtime_id
 ```
 
-Buildings should save their `parcel_id` for private zoned placement ownership.
+Buildings save their `parcel_id` for private zoned placement ownership.
 
 Old world-grid zoning saves do not require compatibility for this redesign. The parcel save format
 may break old saves instead of carrying a migration path from the retired painted profile grid.
 
 ### Overlay And Tooling
 
-The zoning overlay becomes parcel-based:
+The zoning overlay is parcel-based:
 
 - Rust emits parcel top faces, borders, selection state, and profile colors or profile ids for
   Godot upload
+- parcel overlay vertices are projected to the Rust visible world surface for display; the
+  authoritative parcel footprint remains the stable XZ road attachment and does not become an
+  engineered terrain support surface
 - Godot no longer draws an authoritative 10 m zoning cell grid
 - any texture or mesh used for display is derived from the parcel store and is not a simulation
   authority
 - profile registry, profile colors, icons, and category grouping remain valid
 
-The first tool mode should support:
+The first live tool mode supports:
 
 - create free parcel
 - create pre-zoned parcel with selected profile
-- select parcel
-- set selected parcel profile
-- delete selected parcel
+- rezone an existing parcel by clicking it with the selected profile
 
-### Legacy Paths To Remove
+Deferred tool work:
 
-Once parcel zoning is live, remove or retire normal-runtime use of:
+- explicit parcel selection
+- parcel deletion
+- merge / split editing
+- bulk profile assignment
+
+### Legacy Paths Removed Or Retired
+
+Parcel zoning retires normal-runtime use of:
 
 - `ZoningSystem.grid: DataGrid<u16>` as authoritative painted zoning
 - profile-grid patch APIs
@@ -1563,16 +1574,18 @@ Keep deliberately separate systems only if they still have a non-zoning purpose:
 - road-distance / no-build display data, if still useful for UI
 - building occupancy indexing, if replaced by an equal or better parcel-owned occupancy path
 
-### Minimum Validation
+### Validation
 
-The first implementation should add focused tests for:
+The first implementation has focused coverage for:
 
 - creating a `20 m x 30 m` parcel on both sides of a straight road
 - overlap rejection between adjacent or crossing parcels
-- free parcels do not spawn private buildings
 - pre-zoned parcels spawn compatible assets
 - incompatible assets are rejected by profile legality
 - occupied parcel rezoning enters and clears redevelopment grace deterministically
 - parcel save/load preserves IDs, profile ids, and building ownership
 - demand spawn candidate ordering is stable after unrelated parcel creation
 - road edge compaction remaps parcel edge references deterministically
+
+Follow-up hardening should add explicit coverage for free parcels not spawning private buildings
+outside the current allocator-path coverage.

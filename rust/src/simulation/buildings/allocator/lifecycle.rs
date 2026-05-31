@@ -31,7 +31,6 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         lanes: &LaneSystem,
     ) {
-        let zone_cell_m = zoning.config.zone_cell_m;
         let mut removed_any = false;
         let mut i = 0;
         while i < self.buildings.len() {
@@ -43,89 +42,43 @@ impl BuildingAllocator {
                 } else if graph.edge(b.edge_idx).no_building_spawn {
                     None
                 } else {
-                    let half_depth = b.depth_cells as f32 * zone_cell_m * 0.5;
-                    let road_dist = zoning.distance_to_road_world(b.center_x, b.center_y) as f32;
-                    if road_dist < half_depth {
-                        None
-                    } else {
-                        match self.registry.get(&b.asset_id) {
-                            Some(entry) => match entry.manifest.building.as_ref() {
-                                Some(asset_building) if asset_building.is_zoned_private() => {
-                                    match (asset_building.zone_type, asset_building.density_key()) {
-                                        (Some(asset_zone_class), Some(asset_density)) => {
-                                            let expected_zone_type =
-                                                zone_class_to_zone_type(asset_zone_class);
-                                            let edge = graph.edge(b.edge_idx);
-                                            let edge_len = edge.physical_length;
-                                            let cells_long =
-                                                (edge_len / zone_cell_m).floor() as usize;
-                                            if cells_long == 0
-                                                || b.cell_x + b.width_cells as usize > cells_long
-                                            {
+                    match self.registry.get(&b.asset_id) {
+                        Some(entry) => match entry.manifest.building.as_ref() {
+                            Some(asset_building) if asset_building.is_zoned_private() => {
+                                match (asset_building.zone_type, asset_building.density_key()) {
+                                    (Some(asset_zone_class), Some(asset_density)) => {
+                                        if let Some(parcel) = zoning.parcel_by_raw_id(b.parcel_id) {
+                                            if parcel.edge_idx() != b.edge_idx {
                                                 None
                                             } else {
-                                                let curb_dist = edge.width * 0.5
-                                                    + crate::config::SIDEWALK_WIDTH;
-                                                let side = b.side as f32;
-                                                let mut footprint_profile_runtime_id = 0_u16;
-                                                let mut compatible = true;
-                                                'profile_check: for dx in 0..b.width_cells as usize
-                                                {
-                                                    let t_dx = (b.cell_x as f32 + dx as f32 + 0.5)
-                                                        * zone_cell_m
-                                                        / edge_len;
-                                                    let wp = Self::sample_pos_on_edge(
-                                                        graph, b.edge_idx, t_dx,
+                                                let expected_zone_type =
+                                                    zone_class_to_zone_type(asset_zone_class);
+                                                let width_m = b.width_cells as f32
+                                                    * zoning.config.zone_cell_m;
+                                                let depth_m = b.depth_cells as f32
+                                                    * zoning.config.zone_cell_m;
+                                                let compatible = width_m
+                                                    <= parcel.frontage_m() + f32::EPSILON
+                                                    && depth_m <= parcel.depth_m() + f32::EPSILON
+                                                    && zoning.profiles.asset_is_legal(
+                                                        parcel.zone_profile_runtime_id(),
+                                                        expected_zone_type,
+                                                        asset_density,
+                                                        &entry.manifest.tags,
                                                     );
-                                                    let tangent = Self::sample_tangent_on_edge(
-                                                        graph, b.edge_idx, t_dx,
-                                                    );
-                                                    let normal =
-                                                        Vector2::new(tangent.y, -tangent.x) * side;
-                                                    for dy in 0..b.depth_cells as usize {
-                                                        let cell_center = wp
-                                                            + normal
-                                                                * (curb_dist
-                                                                    + (dy as f32 + 0.5)
-                                                                        * zone_cell_m);
-                                                        let runtime_id = zoning
-                                                            .get_zone_profile_runtime_id_world(
-                                                                cell_center.x,
-                                                                cell_center.y,
-                                                            );
-                                                        if footprint_profile_runtime_id == 0 {
-                                                            if runtime_id == 0
-                                                                || !zoning.profiles.asset_is_legal(
-                                                                    runtime_id,
-                                                                    expected_zone_type,
-                                                                    asset_density,
-                                                                    &entry.manifest.tags,
-                                                                )
-                                                            {
-                                                                compatible = false;
-                                                                break 'profile_check;
-                                                            }
-                                                            footprint_profile_runtime_id =
-                                                                runtime_id;
-                                                        } else if runtime_id
-                                                            != footprint_profile_runtime_id
-                                                        {
-                                                            compatible = false;
-                                                            break 'profile_check;
-                                                        }
-                                                    }
-                                                }
                                                 Some(compatible)
                                             }
+                                        } else {
+                                            None
                                         }
-                                        _ => None,
                                     }
+                                    _ => None,
                                 }
-                                Some(_) => Some(true),
-                                None => None,
-                            },
+                            }
+                            Some(_) => Some(true),
                             None => None,
-                        }
+                        },
+                        None => None,
                     }
                 }
             };
@@ -154,34 +107,12 @@ impl BuildingAllocator {
 
             if remove {
                 let b = &self.buildings[i];
-                let b_edge_idx = b.edge_idx;
-                let b_side = b.side;
-                let b_cell_x = b.cell_x;
-                let b_center_x = b.center_x;
-                let b_center_y = b.center_y;
-                let b_facing = b.facing_dir;
-                let b_width = b.width_cells;
-                let b_depth = b.depth_cells;
+                let b_parcel_id = b.parcel_id;
                 let b_zone = b.zone_type;
                 if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
                     self.dirty_zones[zone_idx] = true;
                 }
-
-                let tangent = Vector2::new(-b_facing.y, b_facing.x);
-                let width_m = b_width as f32 * zone_cell_m;
-                let depth_m = b_depth as f32 * zone_cell_m;
-                zoning.mark_occupied_rect(b_center_x, b_center_y, tangent, width_m, depth_m, false);
-
-                if let Some(occ) = self.edge_occupancy.get_mut(&b_edge_idx) {
-                    let slot = if b_side > 0 {
-                        &mut occ.left
-                    } else {
-                        &mut occ.right
-                    };
-                    if b_cell_x < slot.len() {
-                        slot[b_cell_x] = false;
-                    }
-                }
+                zoning.clear_parcel_occupancy(b_parcel_id);
 
                 logistics.invalidate_building(i, self);
                 let last_idx = self.buildings.len() - 1;
@@ -196,6 +127,7 @@ impl BuildingAllocator {
                     agents.remap_building_indices(&mapping);
                     households.remap_building_indices(&mapping);
                     logistics.remap_building_indices(&mapping);
+                    zoning.remap_parcel_occupancy(last_idx, i);
                 }
 
                 households.invalidate_building(i);
@@ -387,25 +319,41 @@ impl BuildingAllocator {
             }
 
             let zone_cell_m = zoning.config.zone_cell_m;
-            let width_cells = building.width_cells as f32;
             let depth_cells = building.depth_cells as f32;
-            let along_offset = width_cells * 0.5 * zone_cell_m;
-            let depth_offset = crate::config::SIDEWALK_WIDTH
-                + (building.cell_y as f32 + depth_cells * 0.5) * zone_cell_m;
-            let edge_t =
-                (building.cell_x as f32 * zone_cell_m / edge.physical_length).clamp(0.0, 1.0);
+            let (center_2d, normal, side_offset) = if building.parcel_id != 0 {
+                let Some(parcel) = zoning.parcel_by_raw_id(building.parcel_id) else {
+                    return Err(format!("building parcel {} missing", building.parcel_id));
+                };
+                let depth_m = depth_cells * zone_cell_m;
+                (
+                    parcel.front_center() + parcel.normal() * (depth_m * 0.5),
+                    parcel.normal(),
+                    edge.width * 0.5 + crate::config::SIDEWALK_WIDTH,
+                )
+            } else {
+                let width_cells = building.width_cells as f32;
+                let along_offset = width_cells * 0.5 * zone_cell_m;
+                let depth_offset = crate::config::SIDEWALK_WIDTH
+                    + (building.cell_y as f32 + depth_cells * 0.5) * zone_cell_m;
+                let edge_t =
+                    (building.cell_x as f32 * zone_cell_m / edge.physical_length).clamp(0.0, 1.0);
 
-            let world_pos_on_edge = Self::sample_pos_on_edge(graph, building.edge_idx, edge_t);
-            let tangent = Self::sample_tangent_on_edge(graph, building.edge_idx, edge_t);
-            let normal = Vector2::new(tangent.y, -tangent.x) * building.side as f32;
-            let center_2d = world_pos_on_edge
-                + normal * (edge.width * 0.5 + depth_offset)
-                + tangent * along_offset;
+                let world_pos_on_edge = Self::sample_pos_on_edge(graph, building.edge_idx, edge_t);
+                let tangent = Self::sample_tangent_on_edge(graph, building.edge_idx, edge_t);
+                let normal = Vector2::new(tangent.y, -tangent.x) * building.side as f32;
+                (
+                    world_pos_on_edge
+                        + normal * (edge.width * 0.5 + depth_offset)
+                        + tangent * along_offset,
+                    normal,
+                    building.side as f32,
+                )
+            };
 
             building.center_x = center_2d.x;
             building.center_y = center_2d.y;
             building.facing_dir = normal;
-            building.side_offset = building.side as f32;
+            building.side_offset = side_offset;
         }
 
         self.dirty = true;
@@ -458,6 +406,7 @@ fn demand_building_action_key(
     building: &crate::simulation::buildings::allocator::Building,
 ) -> DemandBuildingActionKey {
     DemandBuildingActionKey {
+        parcel_id: building.parcel_id,
         edge_idx: building.edge_idx,
         side: building.side,
         cell_x: building.cell_x,
@@ -554,30 +503,8 @@ impl BuildingAllocator {
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
     ) -> Option<(DemandBuildingActionKey, usize)> {
-        let zone_cell_m = zoning.config.zone_cell_m;
         let building = self.buildings.get(building_idx)?.clone();
-        let tangent = Vector2::new(-building.facing_dir.y, building.facing_dir.x);
-        let width_m = building.width_cells as f32 * zone_cell_m;
-        let depth_m = building.depth_cells as f32 * zone_cell_m;
-        zoning.mark_occupied_rect(
-            building.center_x,
-            building.center_y,
-            tangent,
-            width_m,
-            depth_m,
-            false,
-        );
-
-        if let Some(occ) = self.edge_occupancy.get_mut(&building.edge_idx) {
-            let slot = if building.side > 0 {
-                &mut occ.left
-            } else {
-                &mut occ.right
-            };
-            if building.cell_x < slot.len() {
-                slot[building.cell_x] = false;
-            }
-        }
+        zoning.clear_parcel_occupancy(building.parcel_id);
 
         agents.evict_building(building_idx);
         households.invalidate_building(building_idx);
@@ -598,6 +525,7 @@ impl BuildingAllocator {
             agents.remap_building_indices(&mapping);
             households.remap_building_indices(&mapping);
             logistics.remap_building_indices(&mapping);
+            zoning.remap_parcel_occupancy(last_idx, building_idx);
             Some((moved_key, building_idx))
         } else {
             None

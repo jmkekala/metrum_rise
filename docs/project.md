@@ -13,7 +13,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Shipped Foundations
 
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
-- **Zoning and building allocation**: world-space zoning grid, occupancy tracking, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
+- **Zoning and building allocation**: Rust-owned road-aligned parcels, parcel occupancy, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, exact entrance-side freight ETA, unemployment benefit disbursement, and two-day building bankruptcy are all live. See [`economy.md`](economy.md).
@@ -27,7 +27,6 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
-- `ZONE-01`: replace the world-space painted zoning grid with Rust-owned road-aligned parcels.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.

@@ -20,8 +20,9 @@ use rusqlite::{Connection, Transaction, params};
 use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
-    db_to_optional_usize, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_usize, optional_building_to_db,
-    pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob, unpack_flux_blob, usize_to_i64,
+    db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_usize,
+    optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob,
+    unpack_flux_blob, usize_to_i64,
 };
 
 pub(super) fn save_world(
@@ -114,24 +115,30 @@ pub(super) fn save_world(
         ],
     )?;
 
-    // Zoning — serialize the flat world-grid as little-endian runtime profile ids.
+    // Zoning parcels
     {
-        let mut data = Vec::with_capacity(zoning.grid.data.len() * 2);
-        for &runtime_id in &zoning.grid.data {
-            data.extend_from_slice(&runtime_id.to_le_bytes());
+        let mut parcel_stmt = tx.prepare("INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
+        for parcel in zoning.parcels() {
+            let saved_eid = maps
+                .edge_old_to_new
+                .get(&parcel.edge_idx())
+                .copied()
+                .ok_or_else(|| SaveLoadError::custom("missing parcel edge mapping"))?;
+            parcel_stmt.execute(params![
+                i64::try_from(parcel.id().raw())
+                    .map_err(|_| SaveLoadError::custom("parcel id overflow"))?,
+                usize_to_i64(saved_eid)?,
+                i64::from(parcel.side()),
+                parcel.frontage_center_t(),
+                parcel.frontage_m(),
+                parcel.depth_m(),
+                i64::from(parcel.zone_profile_runtime_id()),
+            ])?;
         }
-        tx.execute(
-            "INSERT INTO zoning_world_grid(width, height, data) VALUES (?1, ?2, ?3)",
-            params![
-                usize_to_i64(zoning.grid.width)?,
-                usize_to_i64(zoning.grid.height)?,
-                data
-            ],
-        )?;
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -149,6 +156,8 @@ pub(super) fn save_world(
             .ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
         bld_stmt.execute(params![
             saved_bid_db,
+            i64::try_from(b.parcel_id)
+                .map_err(|_| SaveLoadError::custom("building parcel id overflow"))?,
             usize_to_i64(saved_eid)?,
             b.frontage_t,
             i64::from(b.side),
@@ -301,24 +310,36 @@ pub(super) fn load_water(
     Ok(water)
 }
 
-pub(super) fn load_zoning(conn: &Connection, config: &WorldConfig) -> SaveLoadResult<ZoningSystem> {
+pub(super) fn load_zoning(
+    conn: &Connection,
+    config: &WorldConfig,
+    graph: &RegionGraph,
+) -> SaveLoadResult<ZoningSystem> {
     let mut zoning = ZoningSystem::new(config);
-    // Try the current world-grid format first; fall back to empty grid if the table is absent.
-    let result: rusqlite::Result<(i64, i64, Vec<u8>)> = conn.query_row(
-        "SELECT width, height, data FROM zoning_world_grid LIMIT 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    );
-    if let Ok((w_raw, h_raw, blob)) = result {
-        let w = i64_to_usize(w_raw)?;
-        let h = i64_to_usize(h_raw)?;
-        let expected = w * h * 2;
-        if blob.len() == expected {
-            zoning.grid.data = blob
-                .chunks_exact(2)
-                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-                .collect();
-        }
+    let mut stmt = conn.prepare(
+        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels ORDER BY parcel_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let parcel_id = i64_to_usize(row.get(0)?)? as u64;
+        let edge_idx = i64_to_usize(row.get(1)?)?;
+        let side = i64_to_i8(row.get(2)?)?;
+        let frontage_t: f32 = row.get(3)?;
+        let frontage_m: f32 = row.get(4)?;
+        let depth_m: f32 = row.get(5)?;
+        let profile_runtime_id = i64_to_u16(row.get(6)?)?;
+        zoning
+            .restore_parcel_from_attachment(
+                parcel_id,
+                edge_idx,
+                side,
+                frontage_t,
+                frontage_m,
+                depth_m,
+                profile_runtime_id,
+                graph,
+            )
+            .map_err(|err| SaveLoadError::custom(format!("invalid saved parcel: {err:?}")))?;
     }
     Ok(zoning)
 }
@@ -332,53 +353,46 @@ pub(super) fn load_buildings(
     let resource_count = load_runtime_economy_catalog()
         .map_err(SaveLoadError::custom)?
         .resource_count();
-    // Forward-compatible migrations: add columns absent in older saves.
-    let _ = conn.execute(
-        "ALTER TABLE buildings ADD COLUMN is_deserted INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE buildings ADD COLUMN budget_distress INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    // col: 0=building_id 1=edge_id 2=frontage_t 3=side 4=cell_x 5=cell_y 6=profile_runtime_id
-    //      7=occupancy 8=worker_count 9=revenue 10=operating_budget 11=shipment_cooldown_hours
-    //      12=width 13=depth 14=asset_id 15=level 16=broken 17=pending_redevelopment
-    //      18=rezone_grace_days_remaining 19=is_deserted 20=budget_distress
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress FROM buildings ORDER BY building_id")?;
+    // col: 0=building_id 1=parcel_id 2=edge_id 3=frontage_t 4=side 5=cell_x 6=cell_y
+    //      7=profile_runtime_id 8=occupancy 9=worker_count 10=revenue 11=operating_budget
+    //      12=shipment_cooldown_hours 13=width 14=depth 15=asset_id 16=level 17=broken
+    //      18=pending_redevelopment 19=rezone_grace_days_remaining 20=is_deserted
+    //      21=budget_distress
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() {
             return Err(SaveLoadError::custom("non-contiguous building ids"));
         }
-        let asset_id: String = row.get(14)?;
-        let broken = (row.get::<_, i64>(16)? != 0) || registry.get(&asset_id).is_none();
+        let asset_id: String = row.get(15)?;
+        let broken = (row.get::<_, i64>(17)? != 0) || registry.get(&asset_id).is_none();
         let economy_binding = resolve_building_economy_profile_binding(registry, &asset_id);
-        let profile_runtime_id = i64_to_u16(row.get(6)?)?;
+        let profile_runtime_id = i64_to_u16(row.get(7)?)?;
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            width_cells: i64_to_usize(row.get(12)?)? as u16,
-            depth_cells: i64_to_usize(row.get(13)?)? as u16,
+            width_cells: i64_to_usize(row.get(13)?)? as u16,
+            depth_cells: i64_to_usize(row.get(14)?)? as u16,
             zone_profile_runtime_id: profile_runtime_id,
+            parcel_id: i64_to_usize(row.get(1)?)? as u64,
             zone_type: profiles.zone_type_for_runtime_id(profile_runtime_id),
             facing_dir: Vector2::ZERO,
-            frontage_t: row.get(2)?,
+            frontage_t: row.get(3)?,
             side_offset: 0.0,
-            is_deserted: row.get::<_, i64>(19)? != 0,
-            budget_distress: row.get::<_, i64>(20)? != 0,
-            edge_idx: i64_to_usize(row.get(1)?)?,
-            side: (row.get::<_, i64>(3)?) as i8,
-            cell_x: i64_to_usize(row.get(4)?)?,
-            cell_y: i64_to_usize(row.get(5)?)? as u16,
-            occupancy: i64_to_u32(row.get(7)?)?,
-            worker_count: i64_to_u32(row.get(8)?)?,
+            is_deserted: row.get::<_, i64>(20)? != 0,
+            budget_distress: row.get::<_, i64>(21)? != 0,
+            edge_idx: i64_to_usize(row.get(2)?)?,
+            side: (row.get::<_, i64>(4)?) as i8,
+            cell_x: i64_to_usize(row.get(5)?)?,
+            cell_y: i64_to_usize(row.get(6)?)? as u16,
+            occupancy: i64_to_u32(row.get(8)?)?,
+            worker_count: i64_to_u32(row.get(9)?)?,
             asset_id,
-            revenue: row.get(9)?,
-            operating_budget: row.get(10)?,
-            shipment_cooldown_hours: i64_to_u16(row.get(11)?)?,
-            level: row.get::<_, i64>(15)?.clamp(1, 255) as u8,
+            revenue: row.get(10)?,
+            operating_budget: row.get(11)?,
+            shipment_cooldown_hours: i64_to_u16(row.get(12)?)?,
+            level: row.get::<_, i64>(16)?.clamp(1, 255) as u8,
             broken,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
@@ -386,8 +400,8 @@ pub(super) fn load_buildings(
             // Transient daily accumulators — not persisted; start fresh each session.
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
-            pending_redevelopment: row.get::<_, i64>(17)? != 0,
-            rezone_grace_days_remaining: i64_to_u8(row.get(18)?)?,
+            pending_redevelopment: row.get::<_, i64>(18)? != 0,
+            rezone_grace_days_remaining: i64_to_u8(row.get(19)?)?,
         });
     }
     let mut stmt = conn.prepare(
@@ -472,17 +486,14 @@ pub(super) fn repaint_building_occupancy(
     zoning: &mut ZoningSystem,
     allocator: &BuildingAllocator,
 ) -> SaveLoadResult<()> {
-    zoning.occupied.data.fill(false);
-    for b in &allocator.buildings {
-        let cell_m = zoning.config.zone_cell_m;
-        zoning.mark_occupied_rect(
-            b.center_x,
-            b.center_y,
-            b.facing_dir,
-            b.width_cells as f32 * cell_m,
-            b.depth_cells as f32 * cell_m,
-            true,
-        );
+    zoning.clear_all_parcel_occupancy();
+    for (building_idx, b) in allocator.buildings.iter().enumerate() {
+        if b.parcel_id == 0 {
+            continue;
+        }
+        if !zoning.occupy_parcel(b.parcel_id, building_idx) {
+            return Err(SaveLoadError::custom("building parcel occupancy mismatch"));
+        }
     }
     Ok(())
 }

@@ -976,6 +976,7 @@ mod tests {
             width_cells: 2,
             depth_cells: 2,
             zone_profile_runtime_id: 0,
+            parcel_id: 0,
             zone_type,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,

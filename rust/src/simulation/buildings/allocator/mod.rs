@@ -44,7 +44,7 @@ pub(crate) fn baseline_private_zone_slot(zone: ZoneType) -> Option<usize> {
     }
 }
 
-/// A placed building occupying a variable-footprint area on a zoning grid.
+/// A placed building occupying one authored parcel or an explicit non-zoned site.
 #[derive(Clone)]
 pub struct Building {
     /// World-space X centre of the building footprint (metres, ground-plane X axis).
@@ -57,14 +57,16 @@ pub struct Building {
     pub depth_cells: u16,
     /// Authoritative runtime zoning-profile id captured when this building was placed.
     pub zone_profile_runtime_id: u16,
+    /// Stable authored parcel id claimed by this private zoned building; `0` means no parcel.
+    pub parcel_id: u64,
     /// Cached broad baseline family derived from [`Self::zone_profile_runtime_id`].
     ///
-    /// Kept as a hot-path cache for broad R/C/I grouping and economy lookups. Legality still
-    /// comes from the authoritative zoning-profile id plus the painted world grid.
+    /// Kept as a hot-path cache for broad R/C/I grouping and economy lookups. Legality comes
+    /// from the parcel's authoritative zoning-profile id.
     pub zone_type: ZoneType,
     /// Unit vector pointing from the road toward the building.
     pub facing_dir: Vector2,
-    /// T-coordinate (0.0 to 1.0) along the road edge [`edge_idx`] for this building's frontage.
+    /// T-coordinate (0.0 to 1.0) along [`Self::edge_idx`] for this building's frontage.
     pub frontage_t: f32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right.
     pub side_offset: f32,

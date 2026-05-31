@@ -270,7 +270,7 @@ pub(crate) fn load_from_sqlite(
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
     let mut graph = network::load_graph(&conn)?;
-    let mut zoning = world::load_zoning(&conn, &config)?;
+    let mut zoning = world::load_zoning(&conn, &config, &graph)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
     let households = world::load_households(&conn)?;
     let logistics = world::load_shipments(&conn)?;

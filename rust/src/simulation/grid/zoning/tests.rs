@@ -1,5 +1,38 @@
 use super::*;
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::{
+    EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+};
+use godot::prelude::Vector3;
+
+fn make_straight_road() -> (RegionGraph, usize) {
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 7.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 50.0,
+        base_cost: 120.0,
+        physical_length: 120.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+    });
+    (graph, edge_idx)
+}
 
 fn make_zoning() -> ZoningSystem {
     ZoningSystem::new(&WorldConfig::default())
@@ -113,4 +146,73 @@ fn test_update_edge_indices_noop() {
     let map = std::collections::HashMap::new();
     z.update_edge_indices(&map); // must not panic or clear data
     assert_eq!(zone_at_world(&z, 0.0, 0.0), ZoneType::Industrial);
+}
+
+#[test]
+fn test_default_parcel_creation_on_both_road_sides() {
+    let (graph, edge_idx) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    let south = z
+        .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &graph)
+        .expect("south parcel");
+    let north = z
+        .place_or_rezone_default_parcel_at(0.0, 20.0, residential, &graph)
+        .expect("north parcel");
+
+    assert_ne!(south.raw(), north.raw());
+    assert_eq!(z.parcels().len(), 2);
+    assert!(z.parcels().iter().all(|parcel| {
+        parcel.edge_idx() == edge_idx
+            && (parcel.frontage_m() - DEFAULT_PARCEL_FRONTAGE_M).abs() < 1e-4
+            && (parcel.depth_m() - DEFAULT_PARCEL_DEPTH_M).abs() < 1e-4
+    }));
+
+    let mut sides: Vec<i8> = z.parcels().iter().map(|parcel| parcel.side()).collect();
+    sides.sort_unstable();
+    assert_eq!(sides, vec![-1, 1]);
+}
+
+#[test]
+fn test_default_parcel_overlap_is_rejected() {
+    let (graph, _) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    z.place_or_rezone_default_parcel_at(0.0, -20.0, residential, &graph)
+        .expect("initial parcel");
+
+    let result = z.place_or_rezone_default_parcel_at(15.0, -20.0, residential, &graph);
+    assert!(matches!(
+        result,
+        Err(ParcelPlacementError::OverlapsExistingParcel)
+    ));
+}
+
+#[test]
+fn test_parcel_edge_compaction_remaps_and_drops_missing_edges() {
+    let (graph, edge_idx) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    z.place_or_rezone_default_parcel_at(0.0, -20.0, residential, &graph)
+        .expect("parcel");
+
+    let mut map = std::collections::HashMap::new();
+    map.insert(edge_idx, 7);
+    z.update_edge_indices(&map);
+    assert_eq!(z.parcels()[0].edge_idx(), 7);
+
+    z.update_edge_indices(&std::collections::HashMap::new());
+    assert!(z.parcels().is_empty());
 }

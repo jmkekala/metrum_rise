@@ -111,6 +111,7 @@ impl UseTuningF32 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DemandBuildingActionKey {
+    pub(crate) parcel_id: u64,
     pub(crate) edge_idx: usize,
     pub(crate) side: i8,
     pub(crate) cell_x: usize,
@@ -128,9 +129,7 @@ pub(crate) struct DemandLevelChangeAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DemandSpawnAction {
-    pub(crate) edge_idx: usize,
-    pub(crate) side: i8,
-    pub(crate) cell_x: usize,
+    pub(crate) parcel_id: u64,
     pub(crate) asset_id: String,
 }
 
@@ -1091,8 +1090,9 @@ fn industrial_downgrade_viable(
 
 fn attachment_sort_key(
     building: &crate::simulation::buildings::allocator::Building,
-) -> (usize, u8, usize, u16, u16, u8, &str) {
+) -> (u64, usize, u8, usize, u16, u16, u8, &str) {
     (
+        building.parcel_id,
         building.edge_idx,
         if building.side > 0 { 0 } else { 1 },
         building.cell_x,
@@ -1107,6 +1107,7 @@ fn demand_building_action_key(
     building: &crate::simulation::buildings::allocator::Building,
 ) -> DemandBuildingActionKey {
     DemandBuildingActionKey {
+        parcel_id: building.parcel_id,
         edge_idx: building.edge_idx,
         side: building.side,
         cell_x: building.cell_x,
@@ -1847,6 +1848,7 @@ mod tests {
             width_cells: 2,
             depth_cells: 2,
             zone_profile_runtime_id: 0,
+            parcel_id: 0,
             zone_type,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,

@@ -3,14 +3,14 @@
 use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, EdgeOccupancy, baseline_private_zone_slot,
+    Building, BuildingAllocator, baseline_private_zone_slot,
     resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
 };
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
+use crate::simulation::grid::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
@@ -25,15 +25,20 @@ impl BuildingAllocator {
         let Some(zone_class) = zone_type_to_zone_class(zone_type) else {
             return Vec::new();
         };
-        let mut reserved_frontage: BTreeMap<(usize, i8), Vec<bool>> = BTreeMap::new();
         let mut candidates = Vec::new();
         let mut dbg_edges_no_spawn = 0_u32;
         let mut dbg_edges_active = 0_u32;
-        let mut dbg_cells_no_profile = 0_u32;
-        let mut dbg_cells_wrong_zone = 0_u32;
-        let mut dbg_cells_no_asset = 0_u32;
+        let mut dbg_parcels_free = 0_u32;
+        let mut dbg_parcels_wrong_zone = 0_u32;
+        let mut dbg_parcels_occupied = 0_u32;
+        let mut dbg_parcels_no_asset = 0_u32;
 
-        for edge_idx in 0..graph.edge_count() {
+        for parcel in zoning.parcels() {
+            let edge_idx = parcel.edge_idx();
+            if edge_idx >= graph.edge_count() {
+                dbg_edges_no_spawn += 1;
+                continue;
+            }
             let edge = graph.edge(edge_idx);
             if edge.deleted
                 || edge.no_building_spawn
@@ -47,122 +52,55 @@ impl BuildingAllocator {
             }
             dbg_edges_active += 1;
 
-            let zone_cell_m = zoning.config.zone_cell_m;
-            let cells_long = (edge.physical_length / zone_cell_m).floor() as usize;
-            if cells_long == 0 {
+            if !parcel.is_available() {
+                dbg_parcels_occupied += 1;
+                continue;
+            }
+            let profile_runtime_id = parcel.zone_profile_runtime_id();
+            let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id) else {
+                dbg_parcels_free += 1;
+                continue;
+            };
+            if profile.zone_type != zone_type {
+                dbg_parcels_wrong_zone += 1;
                 continue;
             }
 
-            for side in [1_i8, -1_i8] {
-                for cell_x in 0..cells_long {
-                    let reserved = reserved_frontage
-                        .entry((edge_idx, side))
-                        .or_insert_with(|| vec![false; cells_long]);
-                    if reserved.get(cell_x).copied().unwrap_or(false) {
-                        continue;
-                    }
+            let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
+                zone_class,
+                profile.density.as_str(),
+                profile_runtime_id,
+                parcel,
+                zoning,
+                graph,
+            ) else {
+                dbg_parcels_no_asset += 1;
+                continue;
+            };
 
-                    let Some(profile_runtime_id) = self.frontage_profile_runtime_id_for_site(
-                        edge_idx, side, cell_x, zoning, graph,
-                    ) else {
-                        dbg_cells_no_profile += 1;
-                        continue;
-                    };
-                    let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id)
-                    else {
-                        dbg_cells_no_profile += 1;
-                        continue;
-                    };
-                    if profile.zone_type != zone_type {
-                        dbg_cells_wrong_zone += 1;
-                        continue;
-                    }
-
-                    let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
-                        zone_class,
-                        profile.density.as_str(),
-                        profile_runtime_id,
-                        edge_idx,
-                        side,
-                        cell_x,
-                        zoning,
-                        graph,
-                    ) else {
-                        dbg_cells_no_asset += 1;
-                        continue;
-                    };
-
-                    let required_cells = cell_x + resolved.width_cells;
-                    if required_cells > reserved.len() {
-                        reserved.resize(required_cells, false);
-                    }
-                    if reserved
-                        .iter()
-                        .skip(cell_x)
-                        .take(resolved.width_cells)
-                        .any(|occupied| *occupied)
-                    {
-                        continue;
-                    }
-                    for occupied in reserved.iter_mut().skip(cell_x).take(resolved.width_cells) {
-                        *occupied = true;
-                    }
-
-                    candidates.push(DemandSpawnCandidate {
-                        action: DemandSpawnAction {
-                            edge_idx,
-                            side,
-                            cell_x,
-                            asset_id: resolved.asset_id,
-                        },
-                        density: profile.density.as_str().to_owned(),
-                    });
-                }
-            }
+            candidates.push(DemandSpawnCandidate {
+                action: DemandSpawnAction {
+                    parcel_id: parcel.id().raw(),
+                    asset_id: resolved.asset_id,
+                },
+                density: profile.density.as_str().to_owned(),
+            });
         }
 
         debug_log!(
             "spawn",
             "collect_candidates zone={:?}: active_edges={} no_spawn_flag={} \
-             cells_no_profile={} cells_wrong_zone={} cells_no_asset={} candidates={}",
+             parcels_free={} parcels_wrong_zone={} parcels_occupied={} parcels_no_asset={} candidates={}",
             zone_type,
             dbg_edges_active,
             dbg_edges_no_spawn,
-            dbg_cells_no_profile,
-            dbg_cells_wrong_zone,
-            dbg_cells_no_asset,
+            dbg_parcels_free,
+            dbg_parcels_wrong_zone,
+            dbg_parcels_occupied,
+            dbg_parcels_no_asset,
             candidates.len(),
         );
         candidates
-    }
-
-    fn frontage_profile_runtime_id_for_site(
-        &self,
-        edge_idx: usize,
-        side: i8,
-        cell_x: usize,
-        zoning: &ZoningSystem,
-        graph: &RegionGraph,
-    ) -> Option<u16> {
-        let edge = graph.edge(edge_idx);
-        let edge_len = edge.physical_length;
-        let zone_cell_m = zoning.config.zone_cell_m;
-        if edge_len < zone_cell_m * 0.5 {
-            return None;
-        }
-        let t_col = (cell_x as f32 + 0.5) * zone_cell_m / edge_len;
-        let frontage_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
-        let frontage_tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
-        let frontage_normal = Vector2::new(frontage_tangent.y, -frontage_tangent.x) * side as f32;
-        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
-        let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
-        let profile_runtime_id =
-            zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y);
-        if profile_runtime_id == 0 {
-            None
-        } else {
-            Some(profile_runtime_id)
-        }
     }
 
     fn select_deterministic_fresh_spawn_asset(
@@ -170,9 +108,7 @@ impl BuildingAllocator {
         zone_class: ZoneClass,
         density: &str,
         profile_runtime_id: u16,
-        edge_idx: usize,
-        side: i8,
-        cell_x: usize,
+        parcel: &ZoningParcel,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
@@ -229,7 +165,7 @@ impl BuildingAllocator {
             .map(|(family_key, mut candidate_ids)| {
                 candidate_ids.sort();
                 (
-                    stable_strip_family_hash(profile_runtime_id, edge_idx, side, &family_key),
+                    stable_strip_family_hash(profile_runtime_id, parcel.id().raw(), &family_key),
                     family_key,
                     candidate_ids,
                 )
@@ -243,21 +179,13 @@ impl BuildingAllocator {
                 let Some(params) = self.asset_placement_params(&qualified_id) else {
                     continue;
                 };
-                if let Some(resolved) = self.resolve_slot(
-                    &qualified_id,
-                    &params,
-                    edge_idx,
-                    side,
-                    cell_x,
-                    zoning,
-                    graph,
-                ) {
+                if let Some(resolved) =
+                    self.resolve_slot(&qualified_id, &params, parcel, zoning, graph)
+                {
                     resolved_variants.push((
                         stable_site_variant_hash(
                             profile_runtime_id,
-                            edge_idx,
-                            side,
-                            cell_x,
+                            parcel.id().raw(),
                             &qualified_id,
                         ),
                         qualified_id,
@@ -308,36 +236,19 @@ impl BuildingAllocator {
         &self,
         asset_id: &str,
         params: &AssetPlacementParams,
-        edge_idx: usize,
-        side: i8,
-        cell_x: usize,
+        parcel: &ZoningParcel,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
+        let edge_idx = parcel.edge_idx();
         let edge = graph.edge(edge_idx);
-        let edge_len = edge.physical_length;
         let edge_width = edge.width;
         let zone_cell_m = zoning.config.zone_cell_m;
-        let cells_long = (edge_len / zone_cell_m).floor() as usize;
-        if cells_long == 0 || cell_x + params.width_cells > cells_long {
+        if parcel.occupied_building().is_some() || edge.deleted || edge.no_building_spawn {
             return None;
         }
 
-        if let Some(occ) = self.edge_occupancy.get(&edge_idx) {
-            let slot = if side > 0 { &occ.left } else { &occ.right };
-            if cell_x < slot.len() && slot[cell_x] {
-                return None;
-            }
-        }
-
-        let curb_dist = edge_width * 0.5 + crate::config::SIDEWALK_WIDTH;
-        let t_col = (cell_x as f32 + 0.5) * zone_cell_m / edge_len;
-        let frontage_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
-        let frontage_tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
-        let frontage_normal = Vector2::new(frontage_tangent.y, -frontage_tangent.x) * side as f32;
-        let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
-        let frontage_profile_runtime_id =
-            zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y);
+        let frontage_profile_runtime_id = parcel.zone_profile_runtime_id();
         if frontage_profile_runtime_id == 0 {
             return None;
         }
@@ -350,55 +261,29 @@ impl BuildingAllocator {
             return None;
         }
 
-        let t_center = (cell_x as f32 + params.width_cells as f32 * 0.5) * zone_cell_m / edge_len;
-        let world_pos_on_edge = Self::sample_pos_on_edge(graph, edge_idx, t_center);
-        let tangent_c = Self::sample_tangent_on_edge(graph, edge_idx, t_center);
-        let normal_c = Vector2::new(tangent_c.y, -tangent_c.x) * side as f32;
-        let depth_offset =
-            crate::config::SIDEWALK_WIDTH + (params.depth_cells as f32 * 0.5) * zone_cell_m;
-        let center_2d = world_pos_on_edge + normal_c * (edge_width * 0.5 + depth_offset);
-
-        for dx in 0..params.width_cells {
-            let t_dx = (cell_x as f32 + dx as f32 + 0.5) * zone_cell_m / edge_len;
-            let wp = Self::sample_pos_on_edge(graph, edge_idx, t_dx);
-            let td = Self::sample_tangent_on_edge(graph, edge_idx, t_dx);
-            let nd = Vector2::new(td.y, -td.x) * side as f32;
-            for dy in 0..params.depth_cells {
-                let cell_center = wp + nd * (curb_dist + (dy as f32 + 0.5) * zone_cell_m);
-                if zoning.get_zone_profile_runtime_id_world(cell_center.x, cell_center.y)
-                    != frontage_profile_runtime_id
-                {
-                    return None;
-                }
-            }
-        }
-
         let width_m = params.width_cells as f32 * zone_cell_m;
         let depth_m = params.depth_cells as f32 * zone_cell_m;
-        if zoning.is_rect_occupied(center_2d.x, center_2d.y, tangent_c, width_m, depth_m) {
+        if width_m > parcel.frontage_m() + f32::EPSILON || depth_m > parcel.depth_m() + f32::EPSILON
+        {
             return None;
         }
 
-        let half_depth = depth_m * 0.5;
-        let road_dist = zoning.distance_to_road_world(center_2d.x, center_2d.y) as f32;
-        if road_dist < half_depth {
-            return None;
-        }
+        let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
         Some(ResolvedPlacement {
             asset_id: asset_id.to_owned(),
             zone_profile_runtime_id: frontage_profile_runtime_id,
             zone_type: params.zone_type,
             initial_level: params.initial_level,
+            parcel_id: parcel.id().raw(),
             edge_idx,
-            side,
-            cell_x,
-            cells_long,
+            side: parcel.side(),
+            cell_x: 0,
             width_cells: params.width_cells,
             depth_cells: params.depth_cells,
             center_2d,
-            facing_dir: normal_c,
-            frontage_t: t_center,
+            facing_dir: parcel.normal(),
+            frontage_t: parcel.frontage_center_t(),
             edge_width,
         })
     }
@@ -408,43 +293,9 @@ impl BuildingAllocator {
         placement: ResolvedPlacement,
         zoning: &mut ZoningSystem,
     ) -> usize {
-        let zone_cell_m = zoning.config.zone_cell_m;
-        let tangent = Vector2::new(-placement.facing_dir.y, placement.facing_dir.x);
-        let width_m = placement.width_cells as f32 * zone_cell_m;
-        let depth_m = placement.depth_cells as f32 * zone_cell_m;
-        zoning.mark_occupied_rect(
-            placement.center_2d.x,
-            placement.center_2d.y,
-            tangent,
-            width_m,
-            depth_m,
-            true,
-        );
-
-        let occ = self
-            .edge_occupancy
-            .entry(placement.edge_idx)
-            .or_insert_with(|| EdgeOccupancy {
-                cells_long: placement.cells_long,
-                left: vec![false; placement.cells_long],
-                right: vec![false; placement.cells_long],
-            });
-        let required_cells = placement.cell_x + placement.width_cells;
-        if occ.cells_long < required_cells {
-            occ.left.resize(required_cells, false);
-            occ.right.resize(required_cells, false);
-            occ.cells_long = required_cells;
-        }
-        let slot = if placement.side > 0 {
-            &mut occ.left
-        } else {
-            &mut occ.right
-        };
-        if placement.cell_x < slot.len() {
-            slot[placement.cell_x] = true;
-        }
-
+        let parcel_id = placement.parcel_id;
         let building_idx = self.place_building_instance(placement);
+        zoning.occupy_parcel(parcel_id, building_idx);
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
@@ -475,15 +326,11 @@ impl BuildingAllocator {
         let Some(params) = self.asset_placement_params(&action.asset_id) else {
             return false;
         };
-        let Some(resolved) = self.resolve_slot(
-            &action.asset_id,
-            &params,
-            action.edge_idx,
-            action.side,
-            action.cell_x,
-            zoning,
-            graph,
-        ) else {
+        let Some(parcel) = zoning.parcel_by_raw_id(action.parcel_id) else {
+            return false;
+        };
+        let Some(resolved) = self.resolve_slot(&action.asset_id, &params, parcel, zoning, graph)
+        else {
             return false;
         };
         self.commit_resolved_slot(resolved, zoning);
@@ -562,6 +409,7 @@ impl BuildingAllocator {
 
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
+            parcel_id: placement.parcel_id,
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,
             frontage_t: placement.frontage_t,
@@ -596,32 +444,22 @@ impl BuildingAllocator {
     }
 }
 
-fn stable_strip_family_hash(
-    profile_runtime_id: u16,
-    edge_idx: usize,
-    side: i8,
-    family_key: &str,
-) -> u64 {
+fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {
     let mut hasher = StableHasher::new();
     hasher.write_u16(profile_runtime_id);
-    hasher.write_usize(edge_idx);
-    hasher.write_i8(side);
+    hasher.write_u64(parcel_id);
     hasher.write_str(family_key);
     hasher.finish()
 }
 
 fn stable_site_variant_hash(
     profile_runtime_id: u16,
-    edge_idx: usize,
-    side: i8,
-    cell_x: usize,
+    parcel_id: u64,
     qualified_asset_id: &str,
 ) -> u64 {
     let mut hasher = StableHasher::new();
     hasher.write_u16(profile_runtime_id);
-    hasher.write_usize(edge_idx);
-    hasher.write_i8(side);
-    hasher.write_usize(cell_x);
+    hasher.write_u64(parcel_id);
     hasher.write_str(qualified_asset_id);
     hasher.finish()
 }
@@ -650,12 +488,8 @@ impl StableHasher {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    fn write_usize(&mut self, value: usize) {
-        self.write_bytes(&(value as u64).to_le_bytes());
-    }
-
-    fn write_i8(&mut self, value: i8) {
-        self.write_bytes(&[value as u8]);
+    fn write_u64(&mut self, value: u64) {
+        self.write_bytes(&value.to_le_bytes());
     }
 
     fn write_str(&mut self, value: &str) {
@@ -681,10 +515,10 @@ struct ResolvedPlacement {
     zone_profile_runtime_id: u16,
     zone_type: ZoneType,
     initial_level: u8,
+    parcel_id: u64,
     edge_idx: usize,
     side: i8,
     cell_x: usize,
-    cells_long: usize,
     width_cells: usize,
     depth_cells: usize,
     center_2d: Vector2,

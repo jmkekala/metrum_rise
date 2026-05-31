@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 30;
+pub const SAVE_VERSION: i64 = 31;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -123,13 +123,18 @@ CREATE TABLE lane_connections(
     to_edge INTEGER NOT NULL,
     to_lane INTEGER NOT NULL
 );
-CREATE TABLE zoning_world_grid(
-    width INTEGER NOT NULL,
-    height INTEGER NOT NULL,
-    data BLOB NOT NULL
+CREATE TABLE zoning_parcels(
+    parcel_id INTEGER PRIMARY KEY,
+    edge_id INTEGER NOT NULL,
+    side INTEGER NOT NULL,
+    frontage_t REAL NOT NULL,
+    frontage_m REAL NOT NULL,
+    depth_m REAL NOT NULL,
+    profile_runtime_id INTEGER NOT NULL
 );
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,
+    parcel_id INTEGER NOT NULL,
     edge_id INTEGER NOT NULL,
     frontage_t REAL NOT NULL,
     side INTEGER NOT NULL,

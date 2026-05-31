@@ -97,9 +97,16 @@ fn paint_zone_rect(zoning: &mut ZoningSystem, x0: f32, z0: f32, x1: f32, z1: f32
 }
 
 fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
+    let _ = (x, z);
     zoning
-        .profiles
-        .zone_type_for_runtime_id(zoning.get_zone_profile_runtime_id_world(x, z))
+        .parcels()
+        .first()
+        .map(|parcel| {
+            zoning
+                .profiles
+                .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+        })
+        .unwrap_or(ZoneType::None)
 }
 
 #[test]
@@ -165,6 +172,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
     paint_zone_rect(&mut zoning, -20.0, -15.0, 20.0, 15.0, ZoneType::Residential);
+    let residential_profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .expect("residential runtime id");
+    zoning
+        .restore_parcel_from_attachment(1, edge_id, 1, 0.5, 39.0, 40.0, residential_profile, &graph)
+        .expect("save test parcel");
     let mut pollution = PollutionSystem::new(&config);
     pollution.grid.data[0] = 3.0;
     let mut noise = NoiseSystem::new(&config);
@@ -188,10 +202,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         center_y: 0.0,
         width_cells: 3,
         depth_cells: 3,
-        zone_profile_runtime_id: zoning
-            .profiles
-            .default_runtime_id_for_zone_type(ZoneType::Residential)
-            .expect("residential runtime id"),
+        zone_profile_runtime_id: residential_profile,
+        parcel_id: 1,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
