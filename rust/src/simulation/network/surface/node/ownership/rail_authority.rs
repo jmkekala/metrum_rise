@@ -68,6 +68,7 @@ pub(crate) struct NodeSourceCarrierRegistry {
         BTreeMap<NodeBandOwner, Vec<NodeRailSourceSegmentAuthority>>,
     pub(crate) height_points_by_source:
         BTreeMap<NodeRailHeightSourceKey, Vec<NodeOwnershipPointKey>>,
+    pub(crate) numeric_dust_canonicalized_sources: BTreeSet<NodeRailHeightSourceKey>,
 }
 
 impl NodeSourceCarrierRegistry {
@@ -90,6 +91,13 @@ impl NodeSourceCarrierRegistry {
                 .source_segments_by_owner
                 .get(&owner)
                 .is_some_and(|segments| segments.iter().any(|segment| segment.source == source))
+    }
+
+    pub(super) fn uses_numeric_dust_carrier_canonicalization(
+        &self,
+        source: NodeRailHeightSourceKey,
+    ) -> bool {
+        self.numeric_dust_canonicalized_sources.contains(&source)
     }
 }
 

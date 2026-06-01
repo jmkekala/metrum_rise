@@ -1,6 +1,10 @@
 //! Owned-region ring canonicalization entry points.
 
 use super::*;
+use crate::simulation::network::surface::{
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, keys::SURFACE_XZ_KEY_SCALE,
+};
+use std::collections::BTreeMap;
 
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings(
     regions: &mut [NodeBooleanOwnedRegion],
@@ -24,7 +28,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_fin
         regions,
         footprint_shapes,
         rail_canonical_points,
-        false,
+        SourceCarrierKeyPolicy::none(),
     )
 }
 
@@ -38,7 +42,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_fin
         regions,
         footprint_shapes,
         rail_canonical_points,
-        allow_source_carrier_key_adoption_for_piece_kind(piece_kind),
+        SourceCarrierKeyPolicy::for_piece_kind(piece_kind),
     )
 }
 
@@ -46,18 +50,18 @@ fn canonicalize_final_owned_region_boundary_edges_with_options(
     regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_canonical_points: &NodeRailCanonicalPointSet,
-    allow_source_carrier_key_adoption: bool,
+    source_carrier_key_policy: SourceCarrierKeyPolicy,
 ) -> Result<(), NodeBooleanOwnershipError> {
     canonicalize_owned_region_rings_with_rail_point_set_with_options(
         regions,
         rail_canonical_points,
-        allow_source_carrier_key_adoption,
+        source_carrier_key_policy,
     )?;
     node_owned_region_rings_to_global_points(regions, footprint_shapes);
     canonicalize_owned_region_rings_with_rail_point_set_with_options(
         regions,
         rail_canonical_points,
-        allow_source_carrier_key_adoption,
+        source_carrier_key_policy,
     )?;
     Ok(())
 }
@@ -111,7 +115,11 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
     regions: &mut [NodeBooleanOwnedRegion],
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
-    canonicalize_owned_region_rings_with_rail_point_set_with_options(regions, rail_points, false)
+    canonicalize_owned_region_rings_with_rail_point_set_with_options(
+        regions,
+        rail_points,
+        SourceCarrierKeyPolicy::none(),
+    )
 }
 
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
@@ -122,14 +130,14 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
     canonicalize_owned_region_rings_with_rail_point_set_with_options(
         regions,
         rail_points,
-        allow_source_carrier_key_adoption_for_piece_kind(piece_kind),
+        SourceCarrierKeyPolicy::for_piece_kind(piece_kind),
     )
 }
 
 fn canonicalize_owned_region_rings_with_rail_point_set_with_options(
     regions: &mut [NodeBooleanOwnedRegion],
     rail_points: &NodeRailCanonicalPointSet,
-    allow_source_carrier_key_adoption: bool,
+    source_carrier_key_policy: SourceCarrierKeyPolicy,
 ) -> Result<(), NodeBooleanOwnershipError> {
     if rail_points.all_points.is_empty() {
         return Ok(());
@@ -139,16 +147,39 @@ fn canonicalize_owned_region_rings_with_rail_point_set_with_options(
         canonicalize_owned_region_ring_with_rail_point_set(
             region,
             rail_points,
-            allow_source_carrier_key_adoption,
+            source_carrier_key_policy,
         )?;
     }
     Ok(())
 }
 
-fn allow_source_carrier_key_adoption_for_piece_kind(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-) -> bool {
-    matches!(piece_kind, RoadSurfaceVisualNodePieceKind::Terminal)
+#[derive(Clone, Copy)]
+struct SourceCarrierKeyPolicy {
+    allow_key_adoption: bool,
+    canonicalize_source_height_numeric_dust: bool,
+}
+
+impl SourceCarrierKeyPolicy {
+    fn none() -> Self {
+        Self {
+            allow_key_adoption: false,
+            canonicalize_source_height_numeric_dust: false,
+        }
+    }
+
+    fn for_piece_kind(piece_kind: RoadSurfaceVisualNodePieceKind) -> Self {
+        match piece_kind {
+            RoadSurfaceVisualNodePieceKind::Terminal => Self {
+                allow_key_adoption: true,
+                canonicalize_source_height_numeric_dust: false,
+            },
+            RoadSurfaceVisualNodePieceKind::JunctionN => Self {
+                allow_key_adoption: true,
+                canonicalize_source_height_numeric_dust: true,
+            },
+            RoadSurfaceVisualNodePieceKind::Bend => Self::none(),
+        }
+    }
 }
 
 fn canonicalize_join_or_cap_owned_region_rings_with_rail_point_set(
@@ -163,7 +194,11 @@ fn canonicalize_join_or_cap_owned_region_rings_with_rail_point_set(
         if region.claim_priority != NodeGeneratedContourClaimPriority::JoinOrCap {
             continue;
         }
-        canonicalize_owned_region_ring_with_rail_point_set(region, rail_points, false)?;
+        canonicalize_owned_region_ring_with_rail_point_set(
+            region,
+            rail_points,
+            SourceCarrierKeyPolicy::none(),
+        )?;
     }
     Ok(())
 }
@@ -171,7 +206,7 @@ fn canonicalize_join_or_cap_owned_region_rings_with_rail_point_set(
 fn canonicalize_owned_region_ring_with_rail_point_set(
     region: &mut NodeBooleanOwnedRegion,
     rail_points: &NodeRailCanonicalPointSet,
-    allow_source_carrier_key_adoption: bool,
+    source_carrier_key_policy: SourceCarrierKeyPolicy,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let owner_points = rail_points
         .points_by_owner
@@ -195,9 +230,31 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             ),
         )
     });
+    let source_key = region.source_band_index.map(|source_band_index| {
+        (
+            region.kind,
+            region.source_mouth_order_index,
+            source_band_index,
+        )
+    });
+    let source_uses_numeric_dust_carrier_canonicalization = source_key.is_some_and(|source| {
+        rail_points
+            .source_carriers
+            .uses_numeric_dust_carrier_canonicalization(source)
+    });
+    let canonicalize_source_height_numeric_dust = source_carrier_key_policy
+        .canonicalize_source_height_numeric_dust
+        && source_uses_numeric_dust_carrier_canonicalization;
+    let allow_source_carrier_key_adoption = source_carrier_key_policy.allow_key_adoption
+        && (!source_carrier_key_policy.canonicalize_source_height_numeric_dust
+            || source_uses_numeric_dust_carrier_canonicalization);
     let mut preserved_points = source_height_points.cloned().unwrap_or_default();
-    preserved_points.sort_unstable();
-    preserved_points.dedup();
+    if canonicalize_source_height_numeric_dust {
+        preserved_points = canonical_source_height_numeric_dust_points(preserved_points);
+    } else {
+        preserved_points.sort_unstable();
+        preserved_points.dedup();
+    }
     let authority_points = if let Some(source_height_points) = source_height_points {
         source_height_points.as_slice()
     } else if has_source_carrier {
@@ -212,6 +269,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             &preserved_points,
             point,
             rail_points,
+            canonicalize_source_height_numeric_dust,
         )? {
             source_points.push(point);
         }
@@ -225,6 +283,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
                 &preserved_points,
                 point,
                 rail_points,
+                canonicalize_source_height_numeric_dust,
             )? {
                 source_points.push(point);
             }
@@ -250,6 +309,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             has_source_carrier,
             uses_generated_join_or_cap,
             allow_source_carrier_key_adoption,
+            canonicalize_source_height_numeric_dust,
             rail_points,
         )?;
         *contour = noded_owned_region_contour_with_rail_paths(
@@ -267,8 +327,15 @@ fn region_noding_point_for_owner_source(
     preserved_source_points: &[NodeOwnershipPointKey],
     point: NodeOwnershipPointKey,
     rail_points: &NodeRailCanonicalPointSet,
+    canonicalize_source_height_numeric_dust: bool,
 ) -> Result<Option<NodeOwnershipPointKey>, NodeBooleanOwnershipError> {
     if preserved_source_points.binary_search(&point).is_ok() {
+        return Ok(Some(point));
+    }
+    if canonicalize_source_height_numeric_dust
+        && let Some(point) =
+            unique_preserved_source_numeric_dust_point(preserved_source_points, point)
+    {
         return Ok(Some(point));
     }
     match rail_points.canonicalized_point_for_owner(owner, point) {
@@ -278,6 +345,58 @@ fn region_noding_point_for_owner_source(
     }
 }
 
+fn canonical_source_height_numeric_dust_points(
+    mut points: Vec<NodeOwnershipPointKey>,
+) -> Vec<NodeOwnershipPointKey> {
+    points.sort_unstable();
+    points.dedup();
+    let mut canonical = Vec::with_capacity(points.len());
+    let mut indices_by_mm = BTreeMap::<NodeOwnershipPointKey, Vec<usize>>::new();
+    for point in points {
+        let point_mm = ownership_mm_key(point);
+        if indices_by_mm.get(&point_mm).is_some_and(|indices| {
+            indices
+                .iter()
+                .copied()
+                .any(|index| source_points_are_numeric_dust_duplicates(canonical[index], point))
+        }) {
+            continue;
+        }
+        let index = canonical.len();
+        canonical.push(point);
+        indices_by_mm.entry(point_mm).or_default().push(index);
+    }
+    canonical
+}
+
+fn unique_preserved_source_numeric_dust_point(
+    preserved_source_points: &[NodeOwnershipPointKey],
+    point: NodeOwnershipPointKey,
+) -> Option<NodeOwnershipPointKey> {
+    let point_mm = ownership_mm_key(point);
+    let mut candidates = preserved_source_points
+        .iter()
+        .copied()
+        .filter(|candidate| ownership_mm_key(*candidate) == point_mm)
+        .filter(|candidate| source_points_are_numeric_dust_duplicates(*candidate, point));
+    let first = candidates.next()?;
+    candidates.next().is_none().then_some(first)
+}
+
+fn source_points_are_numeric_dust_duplicates(
+    first: NodeOwnershipPointKey,
+    second: NodeOwnershipPointKey,
+) -> bool {
+    let dx = i128::from(first.0 - second.0);
+    let dz = i128::from(first.1 - second.1);
+    let dust = i128::from(source_numeric_dust_key_units());
+    dx * dx + dz * dz <= dust * dust
+}
+
+fn source_numeric_dust_key_units() -> i64 {
+    (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).round() as i64
+}
+
 fn canonicalize_owned_region_contour_to_owner_source_points(
     contour: &mut NodeOverlayContour,
     owner: NodeBandOwner,
@@ -285,6 +404,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     has_source_carrier: bool,
     uses_generated_join_or_cap: bool,
     allow_source_carrier_key_adoption: bool,
+    canonicalize_source_height_numeric_dust: bool,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
     for point in contour.iter_mut() {
@@ -294,8 +414,13 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
         }
         if has_source_carrier {
             if (uses_generated_join_or_cap || allow_source_carrier_key_adoption)
-                && let Some(canonical) =
-                    region_noding_point_for_owner_source(owner, source_points, key, rail_points)?
+                && let Some(canonical) = region_noding_point_for_owner_source(
+                    owner,
+                    source_points,
+                    key,
+                    rail_points,
+                    canonicalize_source_height_numeric_dust,
+                )?
                 && canonical != key
             {
                 *point = overlay_point_from_key(canonical);

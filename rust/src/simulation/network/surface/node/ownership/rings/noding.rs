@@ -8,7 +8,8 @@ use super::super::super::rails::NodeGeneratedContourClaimPriority;
 use super::super::rail_authority::NodeRailCanonicalPointSet;
 use super::super::topology_keys::{
     NodeOwnershipPointKey, overlay_point_from_key, ownership_key_from_overlay_point,
-    point_key_lies_exactly_on_segment, point_key_lies_on_segment, segment_parameter_key,
+    ownership_mm_key, point_key_lies_exactly_on_segment, point_key_lies_on_segment,
+    segment_parameter_key,
 };
 use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 

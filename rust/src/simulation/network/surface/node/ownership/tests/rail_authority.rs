@@ -31,6 +31,7 @@ fn source_local_owned_boundary_does_not_adopt_owner_wide_endpoint() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner: BTreeMap::new(),
             height_points_by_source,
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, vec![canonical_endpoint])],
@@ -201,6 +202,7 @@ fn source_height_rail_defers_same_mm_hill_junction_cluster_to_closure() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner: BTreeMap::new(),
             height_points_by_source: BTreeMap::from([(source_key, owner_points.clone())]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points.clone())],
@@ -249,6 +251,7 @@ fn source_height_rail_scope_defers_single_candidate_owner_ambiguity_to_closure()
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner: BTreeMap::new(),
             height_points_by_source: BTreeMap::from([(source_key, vec![source_candidate])]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(sidewalk, owner_points)],
@@ -293,6 +296,7 @@ fn source_height_rail_adopts_unique_same_mm_source_vertex() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner: BTreeMap::new(),
             height_points_by_source: BTreeMap::from([(source_key, vec![source_candidate])]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points)],
@@ -345,6 +349,7 @@ fn source_height_rail_defers_source_scoped_same_mm_cluster_with_unrelated_owner_
                 source_key,
                 vec![first_source_candidate, second_source_candidate],
             )]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(sidewalk, owner_points)],
@@ -399,6 +404,7 @@ fn source_segment_projection_is_left_for_carrier_closure() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::from([(source_key, vec![canonical_source_point])]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points)],
@@ -457,6 +463,7 @@ fn multiple_source_segment_authorizations_are_deferred_to_closure() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::new(),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points)],
@@ -517,6 +524,7 @@ fn source_segment_projection_on_boolean_key_is_deferred_to_closure() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::new(),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points)],
@@ -576,6 +584,7 @@ fn split_source_segments_with_unique_same_mm_source_point_are_deferred_to_closur
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::from([(source_key, vec![source_point])]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points)],
@@ -634,6 +643,7 @@ fn adjacent_source_endpoint_cluster_is_deferred_to_closure() {
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::from([(source_key, owner_points.clone())]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points.clone())],
@@ -693,6 +703,7 @@ fn split_source_segments_with_source_scoped_duplicate_cluster_are_deferred_to_cl
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::from([(source_key, owner_points.clone())]),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: canonical_points_by_mm_key_by_owner(&BTreeMap::from(
             [(carriageway, owner_points.clone())],

@@ -7,8 +7,8 @@ use super::super::{
     keys, segments,
 };
 use crate::simulation::network::surface::{
-    RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
-    band_semantics::ordered_raised_step_kinds,
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualPolygon, RoadVec3, band_semantics::ordered_raised_step_kinds,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -512,22 +512,55 @@ fn support_edge_overlap_interval_on_segment(
     segment_start: keys::SurfaceXzKey,
     segment_end: keys::SurfaceXzKey,
 ) -> Option<(keys::SurfaceSegmentParameter, keys::SurfaceSegmentParameter)> {
-    clipped_endpoint_parameter_interval(edge.start.xz, edge.end.xz, segment_start, segment_end)
+    let mut parameters = [keys::SurfaceSegmentParameter::zero(); 4];
+    let mut parameter_count = 0;
+    for point in [edge.start.xz, edge.end.xz] {
+        if let Some(parameter) = endpoint_parameter_on_segment(point, segment_start, segment_end) {
+            insert_support_overlap_parameter(
+                &mut parameters,
+                &mut parameter_count,
+                clamped_unit_parameter(parameter),
+            );
+        }
+    }
+    for (point, parameter) in [
+        (segment_start, keys::SurfaceSegmentParameter::zero()),
+        (segment_end, keys::SurfaceSegmentParameter::one()),
+    ] {
+        if bounded_endpoint_parameter_on_segment(point, edge.start.xz, edge.end.xz).is_some() {
+            insert_support_overlap_parameter(&mut parameters, &mut parameter_count, parameter);
+        }
+    }
+    if parameter_count == 0 {
+        return None;
+    }
+    let start = parameters[0];
+    let end = parameters[parameter_count - 1];
+    (end > start).then_some((start, end))
 }
 
-fn clipped_endpoint_parameter_interval(
-    overlap_start: keys::SurfaceXzKey,
-    overlap_end: keys::SurfaceXzKey,
-    segment_start: keys::SurfaceXzKey,
-    segment_end: keys::SurfaceXzKey,
-) -> Option<(keys::SurfaceSegmentParameter, keys::SurfaceSegmentParameter)> {
-    let start = endpoint_parameter_on_segment(overlap_start, segment_start, segment_end)?;
-    let end = endpoint_parameter_on_segment(overlap_end, segment_start, segment_end)?;
-    let low = start.min(end);
-    let high = start.max(end);
-    let start = low.max(keys::SurfaceSegmentParameter::zero());
-    let end = high.min(keys::SurfaceSegmentParameter::one());
-    (end > start).then_some((start, end))
+fn insert_support_overlap_parameter(
+    parameters: &mut [keys::SurfaceSegmentParameter; 4],
+    parameter_count: &mut usize,
+    parameter: keys::SurfaceSegmentParameter,
+) {
+    if parameters[..*parameter_count]
+        .iter()
+        .any(|existing| *existing == parameter)
+    {
+        return;
+    }
+    debug_assert!(*parameter_count < parameters.len());
+    if *parameter_count == parameters.len() {
+        return;
+    }
+    let mut insert_index = *parameter_count;
+    while insert_index > 0 && parameter < parameters[insert_index - 1] {
+        parameters[insert_index] = parameters[insert_index - 1];
+        insert_index -= 1;
+    }
+    parameters[insert_index] = parameter;
+    *parameter_count += 1;
 }
 
 fn endpoint_parameter_on_segment(
@@ -537,7 +570,31 @@ fn endpoint_parameter_on_segment(
 ) -> Option<keys::SurfaceSegmentParameter> {
     segments::overlay_segment_parameter(point, segment_start, segment_end)
         .or_else(|| segments::exact_line_parameter(point, segment_start, segment_end))
+        .or_else(|| numeric_dust_line_parameter(point, segment_start, segment_end))
         .or_else(|| overlay_grid_line_parameter(point, segment_start, segment_end))
+}
+
+fn bounded_endpoint_parameter_on_segment(
+    point: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<keys::SurfaceSegmentParameter> {
+    segments::overlay_segment_parameter(point, segment_start, segment_end)
+        .or_else(|| {
+            bounded_unit_parameter(segments::exact_line_parameter(
+                point,
+                segment_start,
+                segment_end,
+            )?)
+        })
+        .or_else(|| numeric_dust_line_parameter(point, segment_start, segment_end))
+        .or_else(|| {
+            bounded_unit_parameter(overlay_grid_line_parameter(
+                point,
+                segment_start,
+                segment_end,
+            )?)
+        })
 }
 
 fn overlay_grid_line_parameter(
@@ -557,6 +614,57 @@ fn overlay_grid_line_parameter(
     )
 }
 
+fn numeric_dust_line_parameter(
+    point: keys::SurfaceXzKey,
+    segment_start: keys::SurfaceXzKey,
+    segment_end: keys::SurfaceXzKey,
+) -> Option<keys::SurfaceSegmentParameter> {
+    if segment_start == segment_end {
+        return None;
+    }
+    let dx = i128::from(segment_end.x_key() - segment_start.x_key());
+    let dz = i128::from(segment_end.z_key() - segment_start.z_key());
+    let px = i128::from(point.x_key() - segment_start.x_key());
+    let pz = i128::from(point.z_key() - segment_start.z_key());
+    let denominator = dx * dx + dz * dz;
+    if denominator == 0 {
+        return None;
+    }
+    let numerator = px * dx + pz * dz;
+    let length_key_units = (denominator as f64).sqrt();
+    let dust_key_units = final_step_support_numeric_dust_key_units() as f64;
+    let endpoint_padding = dust_key_units * length_key_units;
+    let numerator_f64 = numerator as f64;
+    if numerator_f64 < -endpoint_padding || numerator_f64 > denominator as f64 + endpoint_padding {
+        return None;
+    }
+    let cross = dx * pz - dz * px;
+    if cross.unsigned_abs() as f64 > dust_key_units * length_key_units {
+        return None;
+    }
+    keys::SurfaceSegmentParameter::new(numerator.clamp(0, denominator), denominator)
+}
+
+fn final_step_support_numeric_dust_key_units() -> i64 {
+    (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * keys::SURFACE_XZ_KEY_SCALE).round() as i64
+}
+
+fn clamped_unit_parameter(
+    parameter: keys::SurfaceSegmentParameter,
+) -> keys::SurfaceSegmentParameter {
+    parameter
+        .max(keys::SurfaceSegmentParameter::zero())
+        .min(keys::SurfaceSegmentParameter::one())
+}
+
+fn bounded_unit_parameter(
+    parameter: keys::SurfaceSegmentParameter,
+) -> Option<keys::SurfaceSegmentParameter> {
+    (parameter >= keys::SurfaceSegmentParameter::zero()
+        && parameter <= keys::SurfaceSegmentParameter::one())
+    .then_some(parameter)
+}
+
 fn support_edge_point_at_segment_parameter(
     edge: NodeTopSupportEdge,
     segment_start: keys::SurfaceXzKey,
@@ -571,10 +679,11 @@ fn support_edge_point_at_xz(
     edge: NodeTopSupportEdge,
     xz: keys::SurfaceXzKey,
 ) -> Option<ArrangementBoundaryPointKey> {
-    let edge_parameter = endpoint_parameter_on_segment(xz, edge.start.xz, edge.end.xz)?;
+    let edge_parameter = bounded_endpoint_parameter_on_segment(xz, edge.start.xz, edge.end.xz)?;
+    let supported_xz = segments::interpolate_key(edge.start.xz, edge.end.xz, edge_parameter);
     Some(ArrangementBoundaryPointKey {
-        x_key: xz.x_key(),
-        z_key: xz.z_key(),
+        x_key: supported_xz.x_key(),
+        z_key: supported_xz.z_key(),
         y_mm: segments::interpolate_height_i64(edge.start.y_mm, edge.end.y_mm, edge_parameter),
     })
 }

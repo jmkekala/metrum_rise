@@ -467,6 +467,7 @@ fn rail_points_with_source_segments(
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source: BTreeMap::new(),
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner: BTreeMap::new(),
         paths_by_owner: BTreeMap::new(),

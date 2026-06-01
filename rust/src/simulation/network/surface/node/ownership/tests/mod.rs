@@ -169,6 +169,7 @@ fn test_rail_canonical_points_from_constraints(
         source_carriers: NodeSourceCarrierRegistry {
             source_segments_by_owner,
             height_points_by_source,
+            numeric_dust_canonicalized_sources: BTreeSet::new(),
         },
         canonical_points_by_mm_key_by_owner,
         paths_by_owner: BTreeMap::new(),

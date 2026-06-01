@@ -1,6 +1,9 @@
 //! Raised-step ownership and visibility debug helpers.
 
 use super::*;
+use crate::simulation::network::surface::{
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, keys::SURFACE_XZ_KEY_SCALE,
+};
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::debug) fn debug_top_matches_form_raised_step_owner_pair(
@@ -177,7 +180,7 @@ impl RoadSurfaceSystem {
             let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
             let start_key = DebugRenderVertexKey::from_point(start).xz();
             let end_key = DebugRenderVertexKey::from_point(end).xz();
-            if start_key != end_key {
+            if !Self::debug_xz_keys_match_with_numeric_dust(start_key, end_key) {
                 span_edges.push((start, end, (start.y + end.y) * 0.5));
             }
         }
@@ -191,6 +194,24 @@ impl RoadSurfaceSystem {
             upper_start: span_edges[1].0,
             upper_end: span_edges[1].1,
         })
+    }
+
+    fn debug_xz_keys_match_with_numeric_dust(
+        start: DebugRenderXzVertexKey,
+        end: DebugRenderXzVertexKey,
+    ) -> bool {
+        if start == end {
+            return true;
+        }
+        let dx = i128::from(end.x_key - start.x_key);
+        let dz = i128::from(end.z_key - start.z_key);
+        let distance_sq = dx * dx + dz * dz;
+        let tolerance = i128::from(Self::debug_numeric_dust_key_units());
+        distance_sq <= tolerance * tolerance
+    }
+
+    fn debug_numeric_dust_key_units() -> i64 {
+        (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).round() as i64
     }
 
     pub(in crate::simulation::network::surface::debug) fn debug_polygon_winding_normal(
