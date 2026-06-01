@@ -279,6 +279,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         agents::LoadedAgentRecord {
             home_building: 0,
             household_id: 0,
+            pending_household_size: 0,
             work_building: usize::MAX,
             current_building: usize::MAX,
             target_building: 0,
@@ -318,6 +319,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         agents::LoadedAgentRecord {
             home_building: 0,
             household_id: 0,
+            pending_household_size: 0,
             work_building: usize::MAX,
             current_building: usize::MAX,
             target_building: 0,

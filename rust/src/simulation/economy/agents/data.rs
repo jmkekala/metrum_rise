@@ -27,6 +27,9 @@ pub struct Agent {
     pub home_building: usize,
     /// Index into `HouseholdSystem::households` for the agent's shared household record.
     pub household_id: usize,
+    /// Pending resident count carried by a border-origin household arrival car; `0` for normal
+    /// agents.
+    pub pending_household_size: u16,
     /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
     pub work_building: usize,
 
@@ -197,6 +200,7 @@ impl AgentSystem {
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
+            pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
@@ -256,6 +260,7 @@ impl AgentSystem {
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
+            pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
@@ -297,6 +302,28 @@ impl AgentSystem {
 
         self.agents.push(agent);
         self.agents.len() - 1
+    }
+
+    /// Spawns one visible border-origin car that represents a whole pending household.
+    pub fn spawn_household_arrival_carrier(
+        &mut self,
+        home: usize,
+        household_size: u16,
+        border_node: u32,
+        init_x: f32,
+        init_y: f32,
+    ) -> usize {
+        let agent_idx = self.spawn_border_arrival_agent(
+            home,
+            u32::MAX,
+            init_x,
+            init_y,
+            border_node,
+            init_x,
+            init_y,
+        );
+        self.agents.pending_household_size[agent_idx] = household_size.max(1);
+        agent_idx
     }
 
     /// Efficiency helper to spawn a large number of agents at once for testing or benchmarks.
@@ -407,6 +434,7 @@ impl AgentSystem {
             if self.agents.home_building[i] == building_id {
                 self.agents.home_building[i] = usize::MAX; // Become Homeless
                 self.agents.household_id[i] = usize::MAX;
+                self.agents.pending_household_size[i] = 0;
             }
             if self.agents.current_building[i] == building_id {
                 // Building collapsed while they were inside!
@@ -422,6 +450,7 @@ impl AgentSystem {
                 } else {
                     // Target destroyed, AND homeless! Become stranded on the street!
                     self.agents.target_building[i] = usize::MAX;
+                    self.agents.pending_household_size[i] = 0;
                     self.agents.transit[i] = TRANSIT_ACCESS_INGRESS;
                 }
             }
@@ -648,6 +677,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,
@@ -689,6 +719,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 150.0,
             pos_y: 0.0,
@@ -761,6 +792,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,

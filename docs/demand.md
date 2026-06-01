@@ -1023,9 +1023,16 @@ For `v0.1`, the immigration rules are simple and deterministic:
 
 If a household is admitted:
 
-- economy creates the household record
-- housing/vacancy logic claims a real home
-- transport may either instantiate the household directly at home or visualize a border-origin arrival
+- housing/vacancy logic claims or reserves one real home immediately, so no second pending
+  household can consume the same slot
+- transport visualizes baseline `v0.1` admission with one border-origin household carrier car,
+  not one car per resident
+- the carrier represents the whole pending household while it is in transit; it may carry the
+  deterministic household size and later age-group composition needed to materialize the household
+- economy creates the actual household record and resident agents when the carrier reaches the
+  claimed home
+- if no required external connection or no legal border-to-home car route exists, admission waits
+  instead of silently instantiating the household inside the home
 
 If a household is removed:
 
@@ -1507,10 +1514,10 @@ allocator- or transport-owned behavior alive.
 - The coarse immigration decision has now moved behind the demand-owned `households_to_admit_today`
   output, and allocator execution consumes that count through
   `execute_demand_household_admission(...)` rather than recomputing pressure locally.
-- Ordinary household admission now uses the explicit housed-admission path in
-  `rust/src/simulation/economy/agents/data.rs::spawn_housed_agent()`. Optional border-origin
-  transport visualization is separate in `spawn_border_arrival_agent()` and remains the only place
-  where `TRANSIT_IMMIGRATING` is still appropriate.
+- Ordinary household admission now launches one border-origin carrier through
+  `rust/src/simulation/economy/agents/data.rs::spawn_household_arrival_carrier()`. That carrier is
+  the only ordinary household-admission use of `TRANSIT_IMMIGRATING`; resident agents are
+  materialized at the claimed home after the carrier arrives.
 - Ordinary private-building despawn, downgrade, upgrade, and spawn now execute from demand-owned
   daily action plans. Stale topology or zoning cleanup remains only as invalid-placement cleanup,
   not as the ordinary building-growth path.

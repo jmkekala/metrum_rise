@@ -12,8 +12,10 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
@@ -145,13 +147,13 @@ impl BuildingAllocator {
         }
     }
 
-    /// Admits the already-decided demand-owned household count and assigns those households to
-    /// claimed homes.
+    /// Admits the already-decided demand-owned household count as border-origin arrival carriers.
     pub(super) fn admit_households_from_demand(
         &mut self,
         households_to_spawn: usize,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
     ) {
         if households_to_spawn == 0 {
             return;
@@ -161,9 +163,6 @@ impl BuildingAllocator {
             "demand-owned household admission planning: households_to_spawn={}",
             households_to_spawn,
         );
-        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
-            panic!("could not load built-in economy catalog during admission: {err}")
-        });
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) = self.claim_home_for_household() else {
                 debug_log!(
@@ -172,52 +171,74 @@ impl BuildingAllocator {
                 );
                 break;
             };
-            let home_door = self.entrances[home_idx].door_pos;
-            let household_id =
-                households.admit_immigrant_household(&catalog, home_idx, household_size);
-            // One household consumes 1 slot of household_capacity regardless of size.
-            self.claim_vacancy(home_idx);
-            debug_log!(
-                "economy",
-                "demand-owned household admission created household_id={} size={} home_building={}",
-                household_id,
-                household_size,
-                home_idx,
-            );
-
-            for _ in 0..household_size {
-                let agent_idx = agents.spawn_housed_agent(home_idx, home_door.x, home_door.y);
-                agents.household_id[agent_idx] = household_id;
-                agents.current_node[agent_idx] = u32::MAX;
-                agents.planned_attach_node[agent_idx] = u32::MAX;
-                agents.planned_detach_node[agent_idx] = u32::MAX;
-                agents.planned_attach_lane_id[agent_idx] = u32::MAX;
-                agents.planned_detach_lane_id[agent_idx] = u32::MAX;
-                agents.planned_attach_lane_d[agent_idx] = 0.0;
-                agents.planned_detach_lane_d[agent_idx] = 0.0;
-                agents.access_flags[agent_idx] = 0;
-                agents.next_replan_time[agent_idx] = 0.0;
-                agents.current_edge[agent_idx] = usize::MAX;
-                agents.current_lane_id[agent_idx] = usize::MAX;
-                agents.lane_distance[agent_idx] = 0.0;
-                agents.speed[agent_idx] = 0.0;
-                agents.pos_x[agent_idx] = home_door.x;
-                agents.pos_y[agent_idx] = home_door.y;
-                agents.activity[agent_idx] = 0;
-                agents.planned_activity[agent_idx] = 0;
-                agents.current_path[agent_idx].clear();
-                agents.current_path_index[agent_idx] = 0;
+            let Some(border_node) =
+                self.household_arrival_border_node(home_idx, transit_network, graph)
+            else {
                 debug_log!(
                     "economy",
-                    "demand-owned household admission housed agent_idx={} household_id={} current_building={} pos=({:.1}, {:.1})",
-                    agent_idx,
-                    household_id,
-                    home_idx,
-                    home_door.x,
-                    home_door.y
+                    "demand-owned household admission waiting: no legal border-to-home car route for home_building={}",
+                    home_idx
                 );
+                break;
+            };
+            // One household consumes 1 slot of household_capacity regardless of size.
+            self.claim_vacancy(home_idx);
+            let border_pos = graph.node(border_node).pos;
+            let carrier_idx = agents.spawn_household_arrival_carrier(
+                home_idx,
+                household_size,
+                border_node,
+                border_pos.x,
+                border_pos.z,
+            );
+            debug_log!(
+                "economy",
+                "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",
+                carrier_idx,
+                household_size,
+                home_idx,
+                border_node,
+            );
+        }
+    }
+
+    fn household_arrival_border_node(
+        &self,
+        home_idx: usize,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<u32> {
+        let mut best: Option<(u32, f32)> = None;
+        for (idx, node) in graph.nodes().iter().enumerate() {
+            if node.node_type != NodeType::Border {
+                continue;
+            }
+            let border_node = idx as u32;
+            let has_car_connection = graph.node_adjacency(border_node).iter().any(|&edge_idx| {
+                let edge = graph.edge(edge_idx);
+                !edge.deleted
+                    && edge.primary_type == TransitType::Road
+                    && (edge.allowed_types & TransitFlags::CAR) != 0
+            });
+            if !has_car_connection {
+                continue;
+            }
+            let Some(eta_s) = self.freight_car_eta_from_border_node(
+                border_node,
+                home_idx,
+                transit_network,
+                graph,
+            ) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|&(best_node, best_eta)| {
+                eta_s < best_eta
+                    || ((eta_s - best_eta).abs() <= f32::EPSILON && border_node < best_node)
+            }) {
+                best = Some((border_node, eta_s));
             }
         }
+        best.map(|(border_node, _)| border_node)
     }
 
     pub(crate) fn execute_demand_building_actions(

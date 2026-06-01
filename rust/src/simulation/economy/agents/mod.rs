@@ -18,7 +18,7 @@ pub const TRANSIT_ACCESS_EGRESS: u8 = 1;
 pub const TRANSIT_NETWORK: u8 = 2;
 /// Agent is traversing the short local segment from the network into the destination building.
 pub const TRANSIT_ACCESS_INGRESS: u8 = 3;
-/// Reserved border-spawn transport state for exceptional/manual arrivals; daily household immigration no longer uses it.
+/// Border-spawn transport state used by household arrival carriers and exceptional/manual arrivals.
 pub const TRANSIT_IMMIGRATING: u8 = 4;
 /// Agent is traversing a bezier curve through a road intersection (lane-change phase).
 pub const TRANSIT_INTERSECTION: u8 = 5;

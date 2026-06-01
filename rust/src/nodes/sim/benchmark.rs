@@ -159,6 +159,7 @@ impl SimCore {
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
                 household_id: usize::MAX,
+                pending_household_size: 0,
                 work_building: usize::MAX,
                 pos_x: node_pos.x,
                 pos_y: node_pos.z,

@@ -317,7 +317,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &network.lane_system,
     );
 
-    allocator.execute_demand_household_admission(2, &mut agents, &mut households); // Occupy buildings to protect from instant removal
+    allocator.execute_demand_household_admission(2, &mut agents, &network, &graph); // Occupy buildings to protect from instant removal
 
     // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
     // so push one commercial building directly to give rezoning tests a 2-building city.
@@ -1438,37 +1438,57 @@ fn test_immigration_claims_vacant_home() {
         &mut network,
         &mut graph,
     );
-    allocator.execute_demand_household_admission(1, &mut agents, &mut households);
+    allocator.execute_demand_household_admission(1, &mut agents, &network, &graph);
 
     assert_eq!(
         agents.len(),
-        2,
-        "One two-resident household should have been admitted from the demand-owned output"
+        1,
+        "One household should launch one arrival carrier from the demand-owned output"
     );
     assert_eq!(
         agents.home_building[0], 0,
-        "Immigrant should have claimed home index 0"
+        "Arrival carrier should reserve home index 0"
     );
     assert_eq!(
-        agents.target_building[0],
-        usize::MAX,
-        "Directly admitted immigrants should not carry a bootstrap target_building trip"
+        agents.target_building[0], 0,
+        "Arrival carrier should target its reserved home"
     );
     assert_eq!(
         agents.transit[0],
-        crate::simulation::economy::agents::TRANSIT_IN_BUILDING,
-        "Immigrant household members should now spawn directly inside their claimed home"
+        crate::simulation::economy::agents::TRANSIT_IMMIGRATING,
+        "Arrival carrier should start on the border-origin immigration path"
     );
-    assert_eq!(agents.current_building[0], 0);
-    assert_eq!(agents.current_node[0], u32::MAX);
+    assert_eq!(
+        agents.transit_mode[0],
+        crate::simulation::economy::agents::MODE_CAR
+    );
+    assert_eq!(agents.pending_household_size[0], 2);
+    assert_eq!(agents.current_building[0], usize::MAX);
+    assert_eq!(agents.current_node[0], 0);
     assert_eq!(agents.current_lane_id[0], usize::MAX);
     assert_eq!(agents.access_flags[0], 0);
     let expected_door = allocator.entrances[0].door_pos;
-    assert!((agents.pos_x[0] - expected_door.x).abs() < 1e-4);
-    assert!((agents.pos_y[0] - expected_door.y).abs() < 1e-4);
-    assert_eq!(agents.household_id[0], agents.household_id[1]);
+    agents.transit[0] = crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
+    agents.current_building[0] = 0;
+    agents.target_building[0] = usize::MAX;
+    agents.pos_x[0] = expected_door.x;
+    agents.pos_y[0] = expected_door.y;
+    households.operational_hour_tick(
+        &mut agents,
+        &mut allocator,
+        &mut logistics,
+        &network,
+        &graph,
+        0,
+        0,
+    );
+    assert_eq!(agents.len(), 2);
     assert_eq!(households.households.len(), 1);
     assert_eq!(households.households[0].member_count, 2);
+    assert_eq!(agents.household_id[0], agents.household_id[1]);
+    assert_eq!(agents.pending_household_size[0], 0);
+    assert!((agents.pos_x[0] - expected_door.x).abs() < 1e-4);
+    assert!((agents.pos_y[0] - expected_door.y).abs() < 1e-4);
     assert_eq!(
         allocator.buildings[0].occupancy, 1,
         "Building occupancy should match the admitted household count (1)"
@@ -1597,12 +1617,13 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     allocator.execute_demand_household_admission(
         demand.households_to_admit_today,
         &mut agents,
-        &mut households,
+        &network,
+        &graph,
     );
 
     assert!(
-        households.households.len() >= 2,
-        "player-seeded startup city should admit another household through the demand-owned startup output"
+        agents.pending_household_size.iter().any(|&size| size > 0),
+        "player-seeded startup city should launch a pending household carrier through the demand-owned startup output"
     );
 }
 

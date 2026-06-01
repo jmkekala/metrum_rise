@@ -10,7 +10,7 @@ use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
 };
 use crate::simulation::economy::agents::{
-    AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+    AgentSystem, MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
@@ -215,6 +215,7 @@ impl HouseholdSystem {
         absolute_hour: u32,
         minute_of_day: u16,
     ) {
+        self.materialize_arrived_household_carriers(agents, allocator);
         self.ensure_agent_households(agents);
         self.rebuild_household_membership(agents);
         self.recount_worker_assignments(agents, allocator);
@@ -236,6 +237,7 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         treasury_balance: &mut f64,
     ) {
+        self.materialize_arrived_household_carriers(agents, allocator);
         self.ensure_agent_households(agents);
         self.rebuild_household_membership(agents);
         self.recount_worker_assignments(agents, allocator);
@@ -411,8 +413,92 @@ impl HouseholdSystem {
         }
     }
 
+    fn materialize_arrived_household_carriers(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+    ) {
+        let mut catalog = None;
+        let mut i = 0;
+        while i < agents.len() {
+            let pending_size = agents.pending_household_size[i];
+            if pending_size == 0 {
+                i += 1;
+                continue;
+            }
+            let home = agents.home_building[i];
+            if home == usize::MAX
+                || home >= allocator.buildings.len()
+                || agents.transit[i] != TRANSIT_IN_BUILDING
+                || agents.current_building[i] != home
+            {
+                i += 1;
+                continue;
+            }
+            if catalog.is_none() {
+                catalog = Some(load_runtime_economy_catalog().unwrap_or_else(|err| {
+                    panic!("could not load built-in economy catalog during carrier arrival: {err}")
+                }));
+            }
+            let catalog_ref = catalog.as_ref().expect("catalog loaded above");
+            let household_id = self.admit_immigrant_household(catalog_ref, home, pending_size);
+            let home_door = allocator
+                .entrances
+                .get(home)
+                .map(|entrance| entrance.door_pos);
+
+            agents.household_id[i] = household_id;
+            agents.pending_household_size[i] = 0;
+            agents.target_building[i] = usize::MAX;
+            agents.planned_target_building[i] = usize::MAX;
+            agents.current_node[i] = u32::MAX;
+            agents.planned_attach_node[i] = u32::MAX;
+            agents.planned_detach_node[i] = u32::MAX;
+            agents.planned_attach_lane_id[i] = u32::MAX;
+            agents.planned_detach_lane_id[i] = u32::MAX;
+            agents.planned_attach_lane_d[i] = 0.0;
+            agents.planned_detach_lane_d[i] = 0.0;
+            agents.access_flags[i] = 0;
+            agents.next_replan_time[i] = 0.0;
+            agents.current_edge[i] = usize::MAX;
+            agents.current_lane_id[i] = usize::MAX;
+            agents.lane_distance[i] = 0.0;
+            agents.speed[i] = 0.0;
+            agents.transit_mode[i] = MODE_WALK;
+            agents.activity[i] = 0;
+            agents.planned_activity[i] = 0;
+            agents.current_path[i].clear();
+            agents.current_path_index[i] = 0;
+            if let Some(door) = home_door {
+                agents.pos_x[i] = door.x;
+                agents.pos_y[i] = door.y;
+            }
+
+            for _ in 1..pending_size {
+                let (x, y) = home_door
+                    .map(|door| (door.x, door.y))
+                    .unwrap_or((agents.pos_x[i], agents.pos_y[i]));
+                let resident_idx = agents.spawn_housed_agent(home, x, y);
+                agents.household_id[resident_idx] = household_id;
+            }
+
+            debug_log!(
+                "economy",
+                "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",
+                household_id,
+                pending_size,
+                home,
+                i,
+            );
+            i += 1;
+        }
+    }
+
     fn ensure_agent_households(&mut self, agents: &mut AgentSystem) {
         for i in 0..agents.len() {
+            if agents.pending_household_size[i] > 0 {
+                continue;
+            }
             let home = agents.home_building[i];
             if home == usize::MAX {
                 agents.household_id[i] = usize::MAX;

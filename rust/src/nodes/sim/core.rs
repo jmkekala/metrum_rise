@@ -906,7 +906,8 @@ impl SimCore {
         self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,
             &mut self.agents,
-            &mut self.households,
+            &self.transit_network,
+            &self.region_graph,
         );
         self.allocator.execute_demand_building_actions(
             &self.demand.building_actions,
