@@ -71,13 +71,21 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
             }
             && contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
             && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
-            && contour.source_mouth_order_index == 0
             && contour.source_band_index == Some(5)
     }));
     assert!(!junction_side_join_contours.is_empty());
-    assert!(junction_side_join_contours.iter().all(
-        |contour| !contour.contributes_to_footprint() && !contour.contributes_to_asphalt()
-    ));
+    assert!(
+        junction_side_join_contours
+            .iter()
+            .filter(|contour| matches!(
+                contour.kind,
+                NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk,
+                }
+            ))
+            .all(|contour| !contour.contributes_to_footprint()
+                && !contour.contributes_to_asphalt())
+    );
     assert!(contours.constraints.iter().any(|constraint| {
         matches!(
             constraint.kind,

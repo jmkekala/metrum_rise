@@ -85,7 +85,18 @@ pub(super) fn assert_production_dem_case(case: ProductionDemCase) -> TerrainCdtM
             case.surface
                 .compiled_visual_node_pieces()
                 .get(&node_id)
-                .unwrap_or_else(|| panic!("{}: expected compiled node piece", case.name))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: expected compiled node piece: {}",
+                        case.name,
+                        canonical_node_pipeline_report(
+                            &case.surface,
+                            &case.graph,
+                            node_id,
+                            expected_kind
+                        )
+                    )
+                })
                 .kind,
             expected_kind,
             "{}: compiled node piece kind changed",

@@ -645,7 +645,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         .iter()
         .map(|vertex| vertex.point2())
         .collect::<Vec<_>>();
-    let mut invalid_constraint_edges = 0usize;
+    let mut invalid_constraint_edges = canonical.invalid_constraint_edges;
     let mut invalid_constraint_samples = Vec::new();
     let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, canonical.constraints.clone(), |edge| {
         invalid_constraint_edges += 1;
@@ -810,6 +810,7 @@ struct CanonicalTerrainCdtInput {
     merged_subbudget_seam_edges: usize,
     retaining_wall_required_seam_edges: usize,
     internal_road_constraint_edges: usize,
+    invalid_constraint_edges: usize,
     retaining_wall_required_sources: Vec<TerrainCdtRoadBoundarySource>,
     blocking_degenerate_seam_edges: usize,
     seam_quality_samples: Vec<TerrainCdtSeamQualitySample>,
@@ -853,6 +854,7 @@ fn canonicalize_input(
     let mut retaining_wall_required_seam_edges = 0usize;
     let mut retaining_wall_required_sources = Vec::new();
     let mut blocking_degenerate_seam_edges = 0usize;
+    let mut invalid_constraint_edges = 0usize;
     let mut seam_quality_samples = Vec::new();
     let mut tie_in_widened_source_samples = 0usize;
     let mut tie_in_widened_max_y_delta_m = 0.0_f32;
@@ -987,7 +989,7 @@ fn canonicalize_input(
         }
     }
 
-    node_road_constraint_edges(
+    invalid_constraint_edges += node_road_constraint_edges(
         &mut vertices,
         &mut vertex_lookup,
         input.patch,
@@ -1017,6 +1019,7 @@ fn canonicalize_input(
         merged_subbudget_seam_edges,
         retaining_wall_required_seam_edges,
         internal_road_constraint_edges,
+        invalid_constraint_edges,
         retaining_wall_required_sources,
         blocking_degenerate_seam_edges,
         seam_quality_samples,
@@ -1685,12 +1688,13 @@ fn node_road_constraint_edges(
     source_sample_vertex_indices: &[usize],
     road_constraint_edges: &mut Vec<[usize; 2]>,
     road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
-) {
+) -> usize {
     if road_constraint_edges.len() < 2 {
-        return;
+        return 0;
     }
 
     let original_edges = road_constraint_edges.clone();
+    let mut invalid_constraint_edges = 0usize;
     let mut split_points = original_edges
         .iter()
         .map(|edge| {
@@ -1739,6 +1743,7 @@ fn node_road_constraint_edges(
                 let Some(intersection_height) =
                     shared_road_constraint_height(first_height, second_height)
                 else {
+                    invalid_constraint_edges += 1;
                     continue;
                 };
                 let Some(vertex_index) = insert_road_constraint_vertex(
@@ -1746,6 +1751,7 @@ fn node_road_constraint_edges(
                     vertices,
                     vertex_lookup,
                 ) else {
+                    invalid_constraint_edges += 1;
                     continue;
                 };
                 split_points[first_index].push(TerrainCdtRoadConstraintSplit {
@@ -1800,6 +1806,7 @@ fn node_road_constraint_edges(
     }
 
     *road_constraint_edges = noded_edges.into_iter().collect();
+    invalid_constraint_edges
 }
 
 fn retain_exposed_road_constraint_edges(

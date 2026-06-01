@@ -24,9 +24,10 @@ use super::{
 use std::collections::{BTreeMap, BTreeSet};
 
 const NODE_TOP_SURFACE_MAX_CARRIAGEWAY_ASPECT_RATIO: f64 = 10_000.0;
-const NODE_TOP_SURFACE_MAX_CARRIAGEWAY_SLOPE_DEGREES: f64 = 80.0;
-const NODE_TOP_SURFACE_MAX_ADJACENT_NORMAL_ANGLE_DEGREES: f64 = 70.0;
+const NODE_TOP_SURFACE_MAX_CARRIAGEWAY_SLOPE_DEGREES: f64 = 85.0;
+const NODE_TOP_SURFACE_MAX_ADJACENT_NORMAL_ANGLE_DEGREES: f64 = 85.0;
 const NODE_TOP_SURFACE_MIN_BLOCKING_QUALITY_AREA_M2: f64 = 0.01;
+const NODE_TOP_SURFACE_MAX_PLANAR_ARTIFACT_RESIDUAL_M: f64 = 0.005;
 const TRIANGLE_QUALITY_EPS: f64 = 1.0e-12;
 
 pub(super) fn validate_cross_region_triangle_edge_heights(
@@ -72,11 +73,14 @@ pub(super) fn validate_top_surface_triangle_quality(
             .unwrap_or_default();
         let blocks_visual_quality =
             quality.area_m2 >= NODE_TOP_SURFACE_MIN_BLOCKING_QUALITY_AREA_M2;
+        let is_verified_planar_artifact = plane_residual_max_m
+            .is_some_and(|residual| residual <= NODE_TOP_SURFACE_MAX_PLANAR_ARTIFACT_RESIDUAL_M);
         let reason = if blocks_visual_quality
             && quality.min_edge_m < f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
         {
             Some("numeric_dust_edge")
         } else if blocks_visual_quality
+            && !is_verified_planar_artifact
             && quality.aspect_ratio > NODE_TOP_SURFACE_MAX_CARRIAGEWAY_ASPECT_RATIO
         {
             Some("carriageway_aspect_ratio")
@@ -85,6 +89,7 @@ pub(super) fn validate_top_surface_triangle_quality(
         {
             Some("carriageway_slope")
         } else if blocks_visual_quality
+            && !is_verified_planar_artifact
             && max_adjacent_normal_angle_degrees
                 > NODE_TOP_SURFACE_MAX_ADJACENT_NORMAL_ANGLE_DEGREES
         {

@@ -132,14 +132,16 @@ pub(crate) struct NodeGeneratedContour {
 
 impl NodeGeneratedContour {
     pub(crate) fn contributes_to_footprint(&self) -> bool {
-        self.kind == NodeGeneratedContourKind::FullRoadbed
-            && matches!(
-                self.purpose,
-                NodeGeneratedContourPurpose::FullRoadbedCorridor
-                    | NodeGeneratedContourPurpose::TerminalCap
-                    | NodeGeneratedContourPurpose::BendSideJoin
-                    | NodeGeneratedContourPurpose::JunctionSideJoin
-            )
+        if self.kind != NodeGeneratedContourKind::FullRoadbed {
+            return false;
+        }
+        matches!(
+            self.purpose,
+            NodeGeneratedContourPurpose::FullRoadbedCorridor
+                | NodeGeneratedContourPurpose::TerminalCap
+                | NodeGeneratedContourPurpose::BendSideJoin
+        ) || (self.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
+            && self.claim_priority == NodeGeneratedContourClaimPriority::Footprint)
     }
 
     pub(crate) fn contributes_to_asphalt(&self) -> bool {
