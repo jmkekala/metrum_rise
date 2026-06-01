@@ -21,6 +21,7 @@ use std::sync::{Arc, OnceLock};
 
 const GROWTH_PROFILES_FILE: &str = "demand/growth_profiles.toml";
 const EPSILON: f32 = 0.0001;
+const DEMAND_HOURLY_CADENCE_FRACTION: f32 = 1.0 / 24.0;
 const SHIPPED_PROFILE_ORDER: [(&str, DemandChannel); 9] = [
     ("residential_low_default", DemandChannel::ResidentialGrowth),
     (
@@ -180,6 +181,12 @@ struct ActionBudgetConfig {
     despawn_batch_fraction_by_use: UseTuningF32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DemandPressureInputs {
+    admission_pressure: f32,
+    removal_pressure: f32,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct DemandConfig {
@@ -305,6 +312,75 @@ impl DemandSystem {
         }
     }
 
+    /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
+    pub(crate) fn run_hourly_pass(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+    ) {
+        self.building_actions = DemandBuildingActionPlan::default();
+        let snapshot =
+            DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
+        let economy_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(allocator, households);
+
+        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.households_to_admit_today = advance_household_action_credit(
+            &mut self.admission_action_credit,
+            pressures.admission_pressure,
+            self.config.household_action.admission_threshold,
+            self.config.action_budget.max_households_per_day,
+            snapshot.vacant_household_slots,
+            DEMAND_HOURLY_CADENCE_FRACTION,
+        );
+        self.plan_private_building_actions(
+            allocator,
+            households,
+            graph,
+            zoning,
+            &snapshot,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            DEMAND_HOURLY_CADENCE_FRACTION,
+            "hourly_pass",
+        );
+    }
+
+    fn update_pressure_channels_from_snapshot(
+        &mut self,
+        snapshot: &DailyDemandSnapshot,
+    ) -> DemandPressureInputs {
+        let housing_shortage = 1.0 - snapshot.housing_availability;
+        let goods_shortage = 1.0 - snapshot.household_stock_stability;
+        let ext_conn = snapshot.external_connection_available;
+
+        // Admission pressure fills existing vacancies. High when there are vacant slots to
+        // fill and tapers as the city approaches full occupancy.
+        let admission_pressure = clamp01(ext_conn * snapshot.housing_availability);
+        let removal_pressure = snapshot.unhoused_household_ratio;
+
+        // Residential demand follows net migration balance rather than raw vacancy.
+        // inflow_desire measures unmet demand for new capacity, while admission pressure
+        // fills existing slots.
+        let inflow_desire = clamp01(ext_conn * housing_shortage);
+        let net_residential = (inflow_desire - removal_pressure).clamp(-1.0, 1.0);
+        self.residential = net_residential * 0.5 + 0.5;
+
+        // Commercial: residents need goods and can afford them. Gated on road connection.
+        self.commercial = clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
+        // Industrial: fraction of commercial input value sourced from OWA rather than local supply.
+        self.industrial = clamp01(snapshot.commercial_owa_dependency * ext_conn);
+
+        DemandPressureInputs {
+            admission_pressure,
+            removal_pressure,
+        }
+    }
+
     pub(crate) fn with_persisted_state(
         residential: f32,
         commercial: f32,
@@ -349,70 +425,45 @@ impl DemandSystem {
         system
     }
 
-    /// Rebuilds the daily city-growth outputs from the post-settlement snapshot.
+    /// Rebuilds the daily settled household-removal output from the post-settlement snapshot.
     pub(crate) fn run_daily_pass(
         &mut self,
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
-        zoning: &ZoningSystem,
+        _zoning: &ZoningSystem,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let snapshot =
             DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
-        let economy_tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let residential_occupants =
-            ResidentialOccupantSnapshot::from_runtime(allocator, households);
-
-        let housing_shortage = 1.0 - snapshot.housing_availability;
-        let goods_shortage = 1.0 - snapshot.household_stock_stability;
-        let ext_conn = snapshot.external_connection_available;
-
-        // Admission pressure: fills existing vacancies. High when there are vacant slots to
-        // fill and tapers as the city approaches full occupancy.
-        let admission_pressure = clamp01(ext_conn * snapshot.housing_availability);
-        self.households_to_admit_today = advance_household_action_credit(
-            &mut self.admission_action_credit,
-            admission_pressure,
-            self.config.household_action.admission_threshold,
-            self.config.action_budget.max_households_per_day,
-            snapshot.vacant_household_slots,
-        );
+        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.households_to_admit_today = 0;
 
         // Removal pressure: households emigrate when they have no home. Shared between
         // the household-action removal output and the residential demand channel.
         // Future: will be extended with an evacuation system when implemented.
-        let removal_pressure = snapshot.unhoused_household_ratio;
         self.households_to_remove_today = advance_household_action_credit(
             &mut self.removal_action_credit,
-            removal_pressure,
+            pressures.removal_pressure,
             self.config.household_action.removal_threshold,
             self.config.action_budget.max_households_per_day,
             snapshot.total_household_count,
+            1.0,
         );
+    }
 
-        // Residential demand: follows net migration balance rather than raw vacancy.
-        // inflow_desire uses housing_shortage (not housing_availability) to measure unmet
-        // demand for *new* capacity — complementary to admission_pressure which fills
-        // existing slots. When vacancy is high, housing_shortage is low → inflow_desire
-        // falls → ResidentialGrowth approaches 0.5 (equilibrium) → no more spawning.
-        // The channel is rescaled to 0.0..1.0 with 0.5 as equilibrium so the existing
-        // GrowthProfile threshold infrastructure applies without modification.
-        let inflow_desire = clamp01(ext_conn * housing_shortage);
-        let net_residential = (inflow_desire - removal_pressure).clamp(-1.0, 1.0);
-        let base_residential = net_residential * 0.5 + 0.5;
-
-        // Commercial: residents need goods and can afford them. Gated on road connection.
-        let base_commercial = clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
-        // Industrial: fraction of commercial input value sourced from OWA rather than local supply.
-        // Smooth 0..1 — one farm partially covering multiple shops yields a proportional value.
-        let base_industrial = clamp01(snapshot.commercial_owa_dependency * ext_conn);
-
-        self.residential = base_residential;
-        self.commercial = base_commercial;
-        self.industrial = base_industrial;
-
+    fn plan_private_building_actions(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        snapshot: &DailyDemandSnapshot,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        cadence_fraction: f32,
+        log_label: &str,
+    ) {
         for use_kind in [
             DemandUse::Residential,
             DemandUse::Commercial,
@@ -425,7 +476,7 @@ impl DemandSystem {
             let existing_candidates = self.collect_existing_building_candidates(
                 allocator,
                 households,
-                economy_tuning.as_ref(),
+                economy_tuning,
                 &residential_occupants,
                 zone_type,
                 growth_pressure,
@@ -458,12 +509,14 @@ impl DemandSystem {
                 self.spawn_action_credit.get_mut(use_kind),
                 spawn_budget_units,
                 spawn_candidates.len(),
+                cadence_fraction,
             );
             debug_log!(
                 "spawn",
-                "daily_pass zone={:?}: pressure={:.3} \
+                "{} zone={:?}: pressure={:.3} \
                  candidates={} norm_pressure={:.3} spawn_limit={:.3} \
                  budget_units={:.3} spawns_today={}",
+                log_label,
                 zone_type,
                 growth_pressure,
                 spawn_candidates.len(),
@@ -537,6 +590,7 @@ impl DemandSystem {
                 self.upgrade_action_credit.get_mut(use_kind),
                 upgrade_budget_units,
                 existing_candidates.upgrades.len(),
+                cadence_fraction,
             );
             let selected_upgrades: Vec<_> = existing_candidates
                 .upgrades
@@ -560,6 +614,7 @@ impl DemandSystem {
                 self.downgrade_action_credit.get_mut(use_kind),
                 downgrade_budget_units,
                 existing_candidates.downgrades.len(),
+                cadence_fraction,
             );
             let selected_downgrades: Vec<_> = existing_candidates
                 .downgrades
@@ -583,6 +638,7 @@ impl DemandSystem {
                 self.despawn_action_credit.get_mut(use_kind),
                 despawn_budget_units,
                 existing_candidates.despawns.len(),
+                cadence_fraction,
             );
             let selected_despawns: Vec<_> = existing_candidates
                 .despawns
@@ -1404,13 +1460,14 @@ fn advance_household_action_credit(
     threshold: f32,
     max_households_per_day: u32,
     max_actionable_households: u32,
+    cadence_fraction: f32,
 ) -> u32 {
     let normalized_action_pressure = if threshold >= 1.0 {
         0.0
     } else {
         clamp01((pressure - threshold) / (1.0 - threshold))
     };
-    *credit += normalized_action_pressure * max_households_per_day as f32;
+    *credit += normalized_action_pressure * max_households_per_day as f32 * cadence_fraction;
     let households_to_act = (*credit).floor().max(0.0) as u32;
     *credit -= households_to_act as f32;
     households_to_act
@@ -1422,8 +1479,9 @@ fn advance_building_action_credit(
     credit: &mut f32,
     budget_units: f32,
     max_actionable_buildings: usize,
+    cadence_fraction: f32,
 ) -> usize {
-    *credit += budget_units.max(0.0);
+    *credit += budget_units.max(0.0) * cadence_fraction;
     let buildings_to_act = (*credit).floor().max(0.0) as usize;
     *credit -= buildings_to_act as f32;
     buildings_to_act.min(max_actionable_buildings)
@@ -2041,7 +2099,7 @@ mod tests {
     }
 
     #[test]
-    fn daily_pass_produces_startup_household_admission_when_capacity_jobs_and_border_exist() {
+    fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_border_exist() {
         let mut allocator = BuildingAllocator::new();
         let residential_asset =
             register_test_asset(&mut allocator, "residential", ZoneType::Residential);
@@ -2067,7 +2125,7 @@ mod tests {
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
 
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
 
         assert!(demand.households_to_admit_today > 0);
     }

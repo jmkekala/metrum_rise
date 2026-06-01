@@ -839,10 +839,13 @@ impl SimCore {
             absolute_hour,
             minute_of_day,
         );
+        if minute_of_day != 0 {
+            self.execute_hourly_demand_pass(day_index, minute_of_day);
+        }
     }
 
     /// Executes one full economy / daily tick (called once per in-game day).
-    pub fn simulate_tick_internal(&mut self) {
+    pub fn simulate_tick_internal(&mut self, day_index: u32) {
         let tick_start = Instant::now();
 
         debug_log!(
@@ -901,28 +904,15 @@ impl SimCore {
             &self.region_graph,
             &self.zoning,
         );
-        // Reset OWA/local input accumulators after the snapshot has been taken.
-        self.allocator.reset_daily_input_accumulators();
-        self.allocator.execute_demand_household_admission(
-            self.demand.households_to_admit_today,
-            &mut self.agents,
-            &self.transit_network,
-            &self.region_graph,
-        );
-        self.allocator.execute_demand_building_actions(
-            &self.demand.building_actions,
-            &mut self.zoning,
-            &mut self.agents,
-            &mut self.households,
-            &mut self.logistics,
-            &self.region_graph,
-            &self.transit_network.lane_system,
-        );
         self.households.execute_demand_household_removal(
             self.demand.households_to_remove_today,
             &mut self.agents,
             &mut self.allocator,
         );
+        self.execute_hourly_demand_pass(day_index, 0);
+        // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
+        // been taken.
+        self.allocator.reset_daily_input_accumulators();
         debug_log!(
             "economy",
             "daily tick end: buildings={} households={} agents={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
@@ -958,6 +948,52 @@ impl SimCore {
             .store(0, std::sync::atomic::Ordering::Relaxed);
 
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
+        self.demand.run_hourly_pass(
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            &self.zoning,
+        );
+        self.allocator.execute_demand_household_admission(
+            self.demand.households_to_admit_today,
+            &mut self.agents,
+            &self.transit_network,
+            &self.region_graph,
+        );
+        self.allocator.execute_demand_building_actions(
+            &self.demand.building_actions,
+            &mut self.zoning,
+            &mut self.agents,
+            &mut self.households,
+            &mut self.logistics,
+            &self.region_graph,
+            &self.transit_network.lane_system,
+        );
+        debug_log!(
+            "economy",
+            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            day_index,
+            minute_of_day,
+            self.demand.net_residential_pressure() * 100.0,
+            self.demand.net_commercial_pressure() * 100.0,
+            self.demand.net_industrial_pressure() * 100.0,
+            self.demand.households_to_admit_today,
+            self.demand.building_actions.residential.spawns.len(),
+            self.demand.building_actions.commercial.spawns.len(),
+            self.demand.building_actions.industrial.spawns.len(),
+            self.demand.building_actions.residential.upgrades.len(),
+            self.demand.building_actions.commercial.upgrades.len(),
+            self.demand.building_actions.industrial.upgrades.len(),
+            self.demand.building_actions.residential.downgrades.len(),
+            self.demand.building_actions.commercial.downgrades.len(),
+            self.demand.building_actions.industrial.downgrades.len(),
+            self.demand.building_actions.residential.despawns.len(),
+            self.demand.building_actions.commercial.despawns.len(),
+            self.demand.building_actions.industrial.despawns.len(),
+        );
     }
 
     /// Called once per in-game day by the tick loop to emit per-building economy lines.
@@ -1431,7 +1467,7 @@ pub(crate) fn run_sim_thread(
                         if step_minute_of_day == 0 {
                             let daily_result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    core.simulate_tick_internal()
+                                    core.simulate_tick_internal(step_day_index)
                                 }));
                             if let Err(e) = daily_result {
                                 let msg = e

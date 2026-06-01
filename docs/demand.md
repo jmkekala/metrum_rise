@@ -43,13 +43,15 @@ Current live behavior:
 - `DemandSystem` loads and validates the shipped `demand/growth_profiles.toml` tuning file at
   startup
 - it computes the baseline city-level `ResidentialGrowth`, `CommercialGrowth`, and
-  `IndustrialGrowth` channels from the daily post-settlement snapshot
+  `IndustrialGrowth` channels from completed operational-hour snapshots and the daily
+  post-settlement snapshot
 - it computes and persists `households_to_admit_today`,
   `households_to_remove_today`, and the carried household-action credits used by the admission or
-  removal thresholds
+  removal thresholds; `households_to_admit_today` is refreshed on the hourly admission cadence,
+  while removal remains a daily settled-snapshot action
 - it also computes and persists the carried building-action credits for spawn, upgrade, downgrade,
   and despawn budgets across residential, commercial, and industrial use families
-- the live runtime now executes ordinary household admission from the demand-owned
+- the live runtime now executes ordinary household admission hourly from the demand-owned
   `households_to_admit_today` output instead of recomputing immigration pressure inside the
   allocator
 - the live runtime now executes ordinary household removal from the demand-owned
@@ -58,7 +60,7 @@ Current live behavior:
 - the live runtime now reads household affordability, relocation, eviction, and `unhoused`
   outcomes from the settled daily economy pass before computing the next demand snapshot
 - the live runtime now executes private building spawn, despawn, upgrade, and downgrade actions
-  from demand-owned daily building-action plans instead of allocator-owned heuristics
+  hourly from demand-owned building-action plans instead of allocator-owned heuristics
 - those building-action plans now also pass through economy-side viability gates backed by the
   authored `runtime_tuning` block in `economy/profiles.toml`
 - industrial building actions now read explicit input-coverage and output-headroom signals from the
@@ -80,9 +82,9 @@ Current derived inputs:
 
 Short version:
 
-- the current system now owns household-admission and removal pressure plus the daily admitted or
-  removed-household counts
-- it also now owns the city's ordinary private building-change decisions through daily action plans
+- the current system now owns household-admission and removal pressure plus the hourly admitted
+  and daily removed household counts
+- it also now owns the city's ordinary private building-change decisions through hourly action plans
 - baseline fresh-map startup now flows through purely organic demand signals; no hidden
   allocator-owned founding path or pioneer floor remains
 
@@ -91,7 +93,7 @@ Short version:
 This document uses the following terms consistently:
 
 - `current DemandSystem`: the live Rust system that now computes baseline `DemandChannel`s plus
-  demand-owned daily household-admission or removal outputs plus ordinary private building-action
+  demand-owned hourly household-admission, daily household-removal outputs, and private building-action
   plans, including the shipped startup-support path for fresh maps
 - `target demand layer`: the full authoritative growth controller described by this document,
   including later extensions that are not all live yet
@@ -125,7 +127,8 @@ The target demand layer is the sole owner of ongoing city-growth decisions.
 Target responsibilities:
 
 - immigration and emigration pressure at whole-household granularity
-- bounded daily outputs such as `households_to_admit_today` and `households_to_remove_today`
+- bounded cadence outputs such as hourly `households_to_admit_today` and daily
+  `households_to_remove_today`
 - baseline `v0.1` private residential, commercial, and industrial spawn pressure
 - later other private-use growth families only if they are added with explicit formulas and shipped
   profile data at the same time
@@ -161,8 +164,8 @@ Deterministic `v0.1` rule:
 
 - `GrowthProfile` tunes one fixed private-building growth evaluator
 - `GrowthProfile` does not define its own formula language or custom aggregation logic
-- whole-city household admission and removal remain demand-owned daily outputs, not `GrowthProfile`
-  outputs
+- whole-city household admission and removal remain demand-owned outputs, not `GrowthProfile`
+  outputs; admission runs hourly and removal runs daily
 - the shipped `GrowthProfile` set is intentionally small and closed in `v0.1`
 - `v0.1` ships exactly one default `GrowthProfile` per shipped baseline private-use family and
   density
@@ -657,11 +660,11 @@ fixed signal families defined in `Modifiers And Signal Sources`.
 
 The demand layer should produce three distinct output families:
 
-- concrete daily household-action outputs
-- concrete daily building-action budgets
+- concrete household-action outputs
+- concrete building-action budgets
 - ongoing building-growth pressure outputs
 
-Concrete daily household-action outputs:
+Concrete household-action outputs:
 
 - `households_to_admit_today`
 - `households_to_remove_today`
@@ -669,16 +672,16 @@ Concrete daily household-action outputs:
 Interpretation:
 
 - these are bounded whole-household counts
-- they are direct daily city-growth actions, not vague pressure scores
+- they are direct city-growth actions, not vague pressure scores
 - economy, household, and vacancy systems consume them to create or remove real households
 
 Deterministic pressure-to-action rule for household outputs:
 
 - household admission and removal start from normalized whole-city pressure values in `0.0..1.0`
 - each action has a fixed threshold in `0.0..1.0`
-- pressure below threshold produces `0` action today
-- pressure above threshold produces a bounded daily household count derived from the excess above
-  threshold
+- pressure below threshold produces `0` action on that cadence
+- pressure above threshold produces a bounded household count derived from the excess above
+  threshold and the active cadence fraction
 
 Deterministic conversion rule:
 
@@ -686,10 +689,10 @@ Deterministic conversion rule:
 normalized_action_pressure =
     clamp((pressure - action_threshold) / (1.0 - action_threshold), 0.0, 1.0)
 
-daily_action_credit += normalized_action_pressure * max_households_per_day
+action_credit += normalized_action_pressure * max_households_per_day * cadence_fraction
 
-households_to_act_today = floor(daily_action_credit)
-daily_action_credit -= households_to_act_today
+households_to_act = floor(action_credit)
+action_credit -= households_to_act
 ```
 
 Authoring rule:
@@ -701,43 +704,45 @@ Authoring rule:
 - admission uses `action_threshold = admission_threshold`
 - removal uses `action_threshold = removal_threshold`
 - baseline `v0.1` uses one shared authored daily household-action cap for both admission and
-  removal instead of hard-coded runtime constants
+  removal instead of hard-coded runtime constants; admission uses `cadence_fraction = 1/24`, while
+  removal uses `cadence_fraction = 1.0`
 
 Interpretation:
 
 - the farther pressure is above the threshold, the faster household action accumulates
-- weak but persistent pressure still produces deterministic action over multiple days
-- stronger pressure produces larger daily household counts, but never above the bounded daily cap
+- weak but persistent pressure still produces deterministic action over multiple cadence steps
+- stronger pressure produces larger household counts, but never above the bounded daily cap
 
-Concrete daily building-action budgets:
+Concrete building-action budgets:
 
-- `residential_spawns_today`
-- `commercial_spawns_today`
-- `industrial_spawns_today`
-- `residential_upgrades_today`
-- `commercial_upgrades_today`
-- `industrial_upgrades_today`
-- `residential_downgrades_today`
-- `commercial_downgrades_today`
-- `industrial_downgrades_today`
-- `residential_despawns_today`
-- `commercial_despawns_today`
-- `industrial_despawns_today`
+- `residential_spawns_this_hour`
+- `commercial_spawns_this_hour`
+- `industrial_spawns_this_hour`
+- `residential_upgrades_this_hour`
+- `commercial_upgrades_this_hour`
+- `industrial_upgrades_this_hour`
+- `residential_downgrades_this_hour`
+- `commercial_downgrades_this_hour`
+- `industrial_downgrades_this_hour`
+- `residential_despawns_this_hour`
+- `commercial_despawns_this_hour`
+- `industrial_despawns_this_hour`
 
 Interpretation:
 
 - these are bounded whole-building or whole-site counts, not vague pressure scores
-- demand computes them once from one frozen daily city snapshot and one frozen eligible-candidate
+- demand computes them once per hourly pass from one frozen hourly city snapshot and one frozen eligible-candidate
   snapshot
-- buildings placed, upgraded, downgraded, or removed during that pass do not change the same-day
-  budgets; they affect the next daily demand pass
-- there is no separate allocator-owned arbitrary cap on top of these demand-owned daily budgets
+- buildings placed, upgraded, downgraded, or removed during that pass do not change the same-hour
+  budgets; they affect the next hourly demand pass
+- there is no separate allocator-owned arbitrary cap on top of these demand-owned budgets
 
 Deterministic budget rule for building actions:
 
 For each use family `use` and action type `action`, demand first builds the eligible candidate list
-from the frozen daily snapshot. It then computes the bounded daily budget from the relevant
-normalized action pressure, the eligible candidate count, and a carried action-credit buffer.
+from the frozen hourly snapshot. It then computes the bounded budget from the relevant normalized
+action pressure, the eligible candidate count, the carried action-credit buffer, and
+`cadence_fraction = 1/24`.
 
 Implementation note for mixed-density candidate sets:
 
@@ -757,11 +762,12 @@ spawn_action_credit[use] +=
     normalized_spawn_pressure
   * (eligible_spawn_count[use] * spawn_batch_fraction_by_use[use])
   * spawn_limit[use]
+  * cadence_fraction
 
-spawns_today[use] =
+spawns_this_pass[use] =
     min(eligible_spawn_count[use], floor(spawn_action_credit[use]))
 
-spawn_action_credit[use] -= spawns_today[use]
+spawn_action_credit[use] -= spawns_this_pass[use]
 ```
 
 For upgrade:
@@ -774,11 +780,12 @@ upgrade_action_credit[use] +=
     normalized_upgrade_pressure
   * eligible_upgrade_count[use]
   * upgrade_batch_fraction_by_use[use]
+  * cadence_fraction
 
-upgrades_today[use] =
+upgrades_this_pass[use] =
     min(eligible_upgrade_count[use], floor(upgrade_action_credit[use]))
 
-upgrade_action_credit[use] -= upgrades_today[use]
+upgrade_action_credit[use] -= upgrades_this_pass[use]
 ```
 
 For downgrade:
@@ -795,11 +802,12 @@ downgrade_action_credit[use] +=
     normalized_downgrade_pressure
   * eligible_downgrade_count[use]
   * downgrade_batch_fraction_by_use[use]
+  * cadence_fraction
 
-downgrades_today[use] =
+downgrades_this_pass[use] =
     min(eligible_downgrade_count[use], floor(downgrade_action_credit[use]))
 
-downgrade_action_credit[use] -= downgrades_today[use]
+downgrade_action_credit[use] -= downgrades_this_pass[use]
 ```
 
 For despawn:
@@ -816,11 +824,12 @@ despawn_action_credit[use] +=
     normalized_despawn_pressure
   * eligible_despawn_count[use]
   * despawn_batch_fraction_by_use[use]
+  * cadence_fraction
 
-despawns_today[use] =
+despawns_this_pass[use] =
     min(eligible_despawn_count[use], floor(despawn_action_credit[use]))
 
-despawn_action_credit[use] -= despawns_today[use]
+despawn_action_credit[use] -= despawns_this_pass[use]
 ```
 
 Authoring rule:
@@ -834,17 +843,25 @@ Authoring rule:
 
 Deterministic execution order:
 
-- daily demand outputs consume in this exact order at the midnight boundary:
-  `households_to_remove_today`, then all private building actions, then
-  `households_to_admit_today`, then one lightweight post-admission workplace-assignment pass for
-  the newly admitted households
+- hourly demand telemetry refreshes `ResidentialGrowth`, `CommercialGrowth`, and
+  `IndustrialGrowth` from the latest operational-hour economy state
+- hourly household admission advances `admission_action_credit` at `1/24` of the authored daily
+  household cap, then consumes `households_to_admit_today` immediately by launching household
+  arrival carriers for available reserved homes
+- hourly private building actions advance their carried action credits at `1/24` of the authored
+  daily building-action budget, then execute the selected private building plan immediately
+- the `00:00` hourly demand pass runs after daily settlement and `households_to_remove_today`, so
+  the system still executes 24 hourly `1/24` demand slices per operational day
+- daily demand output consumption at the midnight boundary is limited to
+  `households_to_remove_today`
 - `households_to_remove_today` uses only the deterministic settled-snapshot candidate order owned
-  by [`economy.md`](economy.md); same-boundary admissions must not enter that candidate set
-- household admission claims vacancy only after the same-boundary building actions complete, so
-  fresh residential spawns may be filled immediately on that same midnight boundary
-- demand builds all eligible candidate lists once per daily pass before any building change is
+  by [`economy.md`](economy.md); hourly admissions must not enter that same daily removal candidate
+  set
+- household admission claims vacancy on the hourly cadence after residential capacity exists; fresh
+  residential spawns from an hourly pass may be filled by the next hourly admission pass
+- demand builds all eligible candidate lists once per hourly building-action pass before any building change is
   executed
-- use families iterate in this exact order for the daily pass: `residential`, then `commercial`,
+- use families iterate in this exact order for the hourly building-action pass: `residential`, then `commercial`,
   then `industrial`
 - spawn candidates sort by the allocator's deterministic build-site order:
   `(edge_idx, side_order, cell_x, width_cells, depth_cells, zone_profile_id)` where
@@ -854,18 +871,17 @@ Deterministic execution order:
   `(edge_idx, side_order, cell_x, width_cells, depth_cells, level, asset_id)`
 - for each use family, execution order is `despawn`, then `downgrade`, then `upgrade`, then
   `spawn`
-- a building or empty site may be affected at most once per daily demand pass
+- a building or empty site may be affected at most once per hourly demand pass
 
 Interpretation:
 
-- large legally zoned estates under strong pressure can fill in visible daily batches rather than
+- large legally zoned estates under strong pressure can fill in visible hourly batches rather than
   one building at a time
 - weak but persistent pressure still produces deterministic building change over multiple days
 - startup support can intentionally make early-city spawn batches larger so the city forms a real
   starter neighborhood instead of stalling at tiny-village scale
-- newly admitted households may receive workplaces before the next daytime trip window, but that
-  post-admission assignment does not rerun the daily demand pass or rewrite the frozen daily
-  demand snapshot
+- newly arrived households may receive workplaces on a later economy tick, but hourly admission
+  does not rerun daily settlement or daily removal selection
 
 Ongoing building-growth pressure outputs:
 
@@ -915,25 +931,26 @@ Deterministic `v0.1` day-boundary rule:
    - `external_connection_available`
    - `commercial_owa_dependency`
 5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
-6. Evaluate every active `GrowthProfile` whose cadence matches that day boundary.
-7. Compute `households_to_admit_today`, `households_to_remove_today`, and all building-action
-   budgets from that same frozen snapshot.
-8. Execute the resulting demand-owned daily actions before the next operational day's sub-daily
+6. Compute `households_to_remove_today` from that same frozen snapshot.
+7. Execute the resulting demand-owned removal action before the next operational day's sub-daily
    economy steps begin.
 
 Deterministic cadence rule:
 
-- the demand layer runs exactly once per operational day boundary
-- household-action outputs and building-action budgets are rebuilt on every daily demand pass from
-  the current frozen post-settlement snapshot
+- demand refreshes RCI telemetry, household admission, and private building-action budgets once per
+  completed operational hour
+- hourly admission and building-action credits use `cadence_fraction = 1/24` against their authored
+  daily caps
+- household removal is rebuilt only on the daily demand pass from the frozen post-settlement
+  snapshot
 
 Interpretation:
 
 - demand does not read half-settled hourly economy state
 - demand does not recompute after each spawned, removed, upgraded, or downgraded building inside
-  the same day-boundary pass
-- demand-owned actions at one day boundary change the city's runtime state for the next operational
-  day and therefore affect the next daily demand pass
+  the same hourly pass
+- demand-owned hourly actions change the city's runtime state for the next operational hour and
+  therefore affect the next hourly demand pass
 - the economy layer owns the sub-daily work, stock, utility, wage, and affordability updates that
   produce the settled snapshot; demand owns the once-per-day growth decision taken from that
   snapshot
@@ -1014,11 +1031,13 @@ Interpretation:
 
 For `v0.1`, the immigration rules are simple and deterministic:
 
-- evaluate immigration and emigration on a coarse daily cadence
+- refresh RCI telemetry, household admission, and private building actions on a coarse hourly
+  cadence
+- evaluate emigration/removal on the daily settled-snapshot cadence
 - if there is no valid housing capacity, admit `0` households
 - if there is no required external connection, admit `0` households
 - admit whole households only
-- the number admitted per day must be bounded
+- the number admitted per hour must come from the authored daily cap scaled by `1/24`
 - the result should come from coarse pressure signals, not from a hidden startup path or a transport-state side effect
 
 If a household is admitted:
@@ -1098,15 +1117,15 @@ Deterministic `v0.1` spawn rule:
 2. The relevant `GrowthProfile` evaluates that pressure and makes spawn eligible only if
    `final_growth_score >= spawn_threshold`.
 3. Demand builds the frozen eligible spawn-candidate list, sorts it in deterministic allocator
-   build-site order, and computes `spawns_today[use]` from the daily batch-budget rule described
-   above.
+   build-site order, and computes `spawns_this_hour[use]` from the hourly `1/24` batch-budget rule
+   described above.
 4. Zoning and allocator rules must then find at least one legal build site for the active
    `ZoneProfile`.
 5. Economy viability must allow the spawn for that zone type:
    - `Residential`: enough demand plus a legal site and ordinary residential viability
    - `Commercial`, `Industrial`: enough demand plus a legal site and the relevant business-side
      viability gate from [`economy.md`](economy.md)
-6. The allocator chooses up to `spawns_today[use]` concrete legal build sites from the sorted
+6. The allocator chooses up to `spawns_this_hour[use]` concrete legal build sites from the sorted
    candidate list.
 7. Zoning-side asset selection chooses one legal `level = 1` asset deterministically from the
    allowed family pool.
@@ -1117,7 +1136,7 @@ Interpretation:
 - zoning alone does not create a building
 - economy viability alone does not create a building
 - spawn happens only when demand, zoning, economy, and allocator all pass, and only up to the
-  bounded daily spawn budget for that use family
+  bounded hourly spawn budget for that use family
 - baseline `v0.1` fresh spawn stays at `level = 1`; higher-level direct spawn is a later explicit
   extension
 
@@ -1128,9 +1147,9 @@ or no consumers to absorb their output, is the root cause of zombie businesses a
 Two deterministic per-candidate gates enforce economic readiness before a non-residential spawn
 is allowed to execute.
 
-These gates apply **after** the budget (`spawns_today[use]`) has been computed and **during** final
+These gates apply **after** the budget (`spawns_this_pass[use]`) has been computed and **during** final
 candidate selection. Candidates that fail either gate are removed from the selected set; the
-remaining budget is not redistributed to other candidates on the same day.
+remaining budget is not redistributed to other candidates on the same hourly pass.
 
 #### Labour Gate
 
@@ -1140,7 +1159,7 @@ Deterministic rule:
 
 ```text
 available_unemployed =
-    open_reachable_job_slots   # from the frozen daily snapshot
+    housed_resident_count   # from the frozen hourly snapshot
 
 required_workers = worker_capacity of the candidate's bound economy profile
                    (0 if the profile has no workers, e.g. utility nodes)
@@ -1152,13 +1171,13 @@ labour_gate_passes =
 
 Where:
 
-- `open_reachable_job_slots` is taken from the frozen daily economy snapshot
+- `housed_resident_count` is taken from the frozen hourly economy snapshot
 - `required_workers` is read from the compiled economy catalog for the candidate's bound profile
 - a candidate with `required_workers == 0` always passes (utility buildings, warehouses)
 - if the economy profile binding is missing or the catalog cannot be read, the gate fails safe
   (spawn is rejected)
 - the gate consumes `required_workers` from the running `available_unemployed` count as each
-  candidate passes, so a single daily pass does not spawn more buildings than there are workers
+  candidate passes, so a single hourly pass does not spawn more buildings than there are workers
 
 Interpretation:
 
@@ -1511,15 +1530,15 @@ These paths are listed so they can be replaced or deleted. The goal is one autho
 demand-owned decision path per growth behavior, without long-term fallback logic that keeps the old
 allocator- or transport-owned behavior alive.
 
-- The coarse immigration decision has now moved behind the demand-owned `households_to_admit_today`
-  output, and allocator execution consumes that count through
+- The coarse immigration decision has now moved behind the hourly demand-owned
+  `households_to_admit_today` output, and allocator execution consumes that count through
   `execute_demand_household_admission(...)` rather than recomputing pressure locally.
 - Ordinary household admission now launches one border-origin carrier through
   `rust/src/simulation/economy/agents/data.rs::spawn_household_arrival_carrier()`. That carrier is
   the only ordinary household-admission use of `TRANSIT_IMMIGRATING`; resident agents are
   materialized at the claimed home after the carrier arrives.
 - Ordinary private-building despawn, downgrade, upgrade, and spawn now execute from demand-owned
-  daily action plans. Stale topology or zoning cleanup remains only as invalid-placement cleanup,
+  hourly action plans. Stale topology or zoning cleanup remains only as invalid-placement cleanup,
   not as the ordinary building-growth path.
 - Building-loss displacement currently has no dedicated demand/economy ownership boundary. `AgentSystem::evict_building()` still forces some agents into `TRANSIT_ACCESS_INGRESS` as a fake rubble/street fallback. That should be replaced by an explicit rehousing, homelessness, disaster, or removal contract rather than by reusing ordinary entrance-travel semantics.
 - Debug logging and tooling should stop implying that immigration is fundamentally a border-spawn FSM process when the real source of truth is the demand-layer household-admission decision.

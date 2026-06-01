@@ -218,16 +218,22 @@ fn execute_startup_demand_building_pass(
     use crate::simulation::economy::demand::DemandSystem;
 
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(allocator, households, graph, zoning);
-    allocator.execute_demand_building_actions(
-        &demand.building_actions,
-        zoning,
-        agents,
-        households,
-        logistics,
-        graph,
-        &network.lane_system,
-    );
+    for _ in 0..24 {
+        let building_count_before = allocator.buildings.len();
+        demand.run_hourly_pass(allocator, households, graph, zoning);
+        allocator.execute_demand_building_actions(
+            &demand.building_actions,
+            zoning,
+            agents,
+            households,
+            logistics,
+            graph,
+            &network.lane_system,
+        );
+        if allocator.buildings.len() > building_count_before {
+            break;
+        }
+    }
 }
 
 fn setup_startup_spawn_city_for_rezoning() -> (
@@ -299,7 +305,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     demand.spawn_action_credit.residential = 10.0;
     demand.spawn_action_credit.commercial = 10.0;
 
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
     let mut startup_plan = DemandBuildingActionPlan::default();
     if let Some(action) = demand.building_actions.residential.spawns.first() {
         startup_plan.residential.spawns.push(action.clone());
@@ -1608,11 +1614,12 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     households.households[household_id].stock = 6.0;
     households.households[household_id].stock_days = 3.0;
 
+    let zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
     assert!(
         demand.households_to_admit_today > 0,
-        "demand should produce a household-admission output using pioneer demand limit"
+        "hourly demand should produce a household-admission output from vacant housing"
     );
     allocator.execute_demand_household_admission(
         demand.households_to_admit_today,
@@ -1628,7 +1635,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
 }
 
 #[test]
-fn test_demand_building_spawn_plan_executes_from_daily_budget() {
+fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     use crate::simulation::economy::demand::DemandSystem;
     use godot::prelude::Vector3;
 
@@ -1667,10 +1674,15 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
     );
 
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+    for _ in 0..24 {
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
+        if !demand.building_actions.residential.spawns.is_empty() {
+            break;
+        }
+    }
     assert!(
         !demand.building_actions.residential.spawns.is_empty(),
-        "pioneer demand and legal zoning should produce at least one residential spawn action"
+        "pioneer demand and legal zoning should produce at least one residential spawn action across hourly demand credit"
     );
 
     allocator.execute_demand_building_actions(

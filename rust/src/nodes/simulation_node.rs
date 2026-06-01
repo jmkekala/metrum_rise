@@ -4141,11 +4141,15 @@ impl SimulationNode {
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
     /// `worker_capacity`, `operating_budget`, `revenue`, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
-    /// `economy_profile`, `center_x`, `center_z`, and `inventory`
-    /// (Array of `{name, amount}` Dictionaries).
+    /// `economy_profile`, `center_x`, `center_z`, residential household aggregates,
+    /// and `inventory` (Array of `{name, amount}` Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::economy::households::{
+            REPLENISHMENT_COOLDOWN, REPLENISHMENT_FULFILLED, REPLENISHMENT_NEEDS,
+            REPLENISHMENT_PICKUP_PENDING, REPLENISHMENT_RESERVED, REPLENISHMENT_STABLE,
+        };
         use crate::simulation::zoning::ZoneType;
 
         let core = self.lock_core();
@@ -4213,14 +4217,84 @@ impl SimulationNode {
         dict.set("center_z", b.center_y as f64);
 
         let mut total_agents = 0i32;
+        let mut household_count = 0i32;
+        let mut household_budget_total = 0.0f32;
+        let mut household_stock_total = 0.0f32;
+        let mut household_stock_days_total = 0.0f32;
+        let mut household_stock_days_min = f32::INFINITY;
+        let mut household_replenishment_active = 0i32;
+        let mut first_replenishment_state = None;
+        let mut mixed_replenishment_state = false;
         if b.zone_type == ZoneType::Residential {
             for h in &core.households.households {
-                if h.home_building_id == best_idx && h.member_count > 0 {
+                if h.home_building_id == best_idx {
+                    household_count += 1;
                     total_agents += h.member_count as i32;
+                    household_budget_total += h.budget;
+                    household_stock_total += h.stock;
+                    household_stock_days_total += h.stock_days;
+                    household_stock_days_min = household_stock_days_min.min(h.stock_days);
+                    if h.replenishment_state != REPLENISHMENT_STABLE {
+                        household_replenishment_active += 1;
+                    }
+                    match first_replenishment_state {
+                        Some(state) if state != h.replenishment_state => {
+                            mixed_replenishment_state = true;
+                        }
+                        None => {
+                            first_replenishment_state = Some(h.replenishment_state);
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
         dict.set("agent_count", total_agents);
+        if b.zone_type == ZoneType::Residential {
+            let household_divisor = household_count.max(1) as f32;
+            let replenishment_state = if household_count == 0 {
+                "-"
+            } else if mixed_replenishment_state {
+                "Mixed"
+            } else {
+                match first_replenishment_state.unwrap_or(REPLENISHMENT_STABLE) {
+                    REPLENISHMENT_STABLE => "Stable",
+                    REPLENISHMENT_NEEDS => "Needs restock",
+                    REPLENISHMENT_RESERVED => "Reserved",
+                    REPLENISHMENT_PICKUP_PENDING => "Pickup pending",
+                    REPLENISHMENT_FULFILLED => "Fulfilled",
+                    REPLENISHMENT_COOLDOWN => "Cooldown",
+                    _ => "Unknown",
+                }
+            };
+            dict.set("household_count", household_count);
+            dict.set("household_budget_total", household_budget_total as f64);
+            dict.set(
+                "household_budget_avg",
+                (household_budget_total / household_divisor) as f64,
+            );
+            dict.set("household_stock_total", household_stock_total as f64);
+            dict.set(
+                "household_stock_days_avg",
+                (household_stock_days_total / household_divisor) as f64,
+            );
+            dict.set(
+                "household_stock_days_min",
+                if household_stock_days_min.is_finite() {
+                    household_stock_days_min as f64
+                } else {
+                    0.0
+                },
+            );
+            dict.set(
+                "household_replenishment_active",
+                household_replenishment_active,
+            );
+            dict.set(
+                "household_replenishment_state",
+                GString::from(replenishment_state),
+            );
+        }
         dict.set("worker_count", b.worker_count as i32);
         dict.set("worker_capacity", worker_capacity as i32);
         dict.set("operating_budget", b.operating_budget as f64);

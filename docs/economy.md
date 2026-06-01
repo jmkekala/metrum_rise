@@ -130,9 +130,11 @@ Authoring units should follow this scale:
 - wages and operating costs: `currency/day` or `currency/workday`
 - prices: `currency/unit`
 
-### Daily demand handoff
+### Demand Handoff
 
-The demand layer must not read half-updated hourly economy state.
+The demand layer must not read half-updated economy state. Hourly demand telemetry, household
+admission, and private building actions run only after a completed operational-hour economy step;
+daily removals run only after the daily settlement snapshot.
 
 Deterministic day-boundary rule:
 
@@ -149,28 +151,38 @@ Deterministic day-boundary rule:
      external-connection state
 4. Freeze that post-settlement city snapshot.
 5. Run the daily demand pass exactly once from that frozen snapshot.
-6. Apply the resulting demand-owned daily outputs in this exact order before the next operational
-   day's sub-daily economy steps begin:
-   - execute `households_to_remove_today` first from the already-frozen settled household snapshot
-   - execute the demand-owned private building actions next
-   - execute `households_to_admit_today` after those building actions so fresh residential spawns
-     may contribute same-boundary vacancy
-   - run one lightweight post-admission workplace-assignment pass for newly admitted households,
-     without rerunning daily settlement or the daily demand pass
+6. Execute `households_to_remove_today` from the already-frozen settled household snapshot before
+   the next operational day's sub-daily economy steps begin.
+
+Deterministic hourly-demand rule:
+
+1. Run the completed operational-hour economy step.
+2. Refresh RCI telemetry from that hourly state.
+3. Advance `admission_action_credit` by `1/24` of the authored daily household-admission cap.
+4. Execute `households_to_admit_today` immediately by launching household arrival carriers for
+   available homes.
+5. Advance private building-action credits by `1/24` of the authored daily building-action budgets.
+6. Execute the selected demand-owned private building actions.
+7. Do not execute household removal or daily settlement from this hourly pass.
+
+At minute `00:00`, the hourly demand pass runs after the daily settlement and removal pass, so the
+`1/24` cadence still produces 24 hourly demand slices per operational day without reading
+pre-settlement midnight state.
 
 Interpretation:
 
 - demand reads one post-settlement city snapshot per operational day
+- demand also reads completed operational-hour snapshots for RCI telemetry, household admission,
+  and private building actions
 - buildings or households created, removed, upgraded, downgraded, relocated, or evicted during
-  that demand pass do not rewrite the same day's demand inputs
-- those changes become part of the next operational day's economy state and therefore affect the
-  next daily demand pass
-- same-boundary admissions are not eligible for same-boundary removals, because removal executes
-  first from the settled candidate list
-- same-boundary fresh residential spawns may be filled immediately by admissions later on that same
-  midnight boundary
-- newly admitted households may receive workplaces before the first daytime departure window, but
-  that post-admission assignment pass does not rewrite the already-frozen daily demand inputs
+  a demand pass do not rewrite that pass's frozen demand inputs
+- those changes become part of the next operational-hour economy state and therefore affect the
+  next hourly demand pass
+- hourly admissions are not eligible for same-day removals that were already selected from the
+  settled daily snapshot
+- fresh residential spawns may be filled by the next hourly admission pass
+- newly arrived households may receive workplaces on a later economy tick, but admission and
+  building actions do not rewrite the already-frozen hourly demand inputs
 
 ### Operational clock runtime state
 
@@ -2031,7 +2043,7 @@ Goal: turn baseline services into real runtime constraints without treating util
 Current status:
 
 - largely complete
-- demand-owned household admission, removal, startup support, and daily building action plans are
+- demand-owned household admission, removal, startup support, and hourly building action plans are
   already integrated into the live runtime
 - economy-side relocation, eviction, viability, and building-change gates already participate in
   that handoff

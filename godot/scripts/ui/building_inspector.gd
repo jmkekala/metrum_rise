@@ -196,8 +196,33 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	_add_row(stats_body, "Type", "%s   Level %d" % [_zone_label(zone), int(info.get("level", 0))])
 
 	if zone == "residential":
-		_add_row(stats_body, "Households", str(info.get("occupancy", 0)))
+		_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
 		_add_row(stats_body, "Residents", str(info.get("agent_count", 0)))
+		_add_section(stats_body, "Household Economy")
+		_add_row(
+			stats_body,
+			"Household Money",
+			"$%.1f total / $%.1f avg" % [
+				float(info.get("household_budget_total", 0.0)),
+				float(info.get("household_budget_avg", 0.0)),
+			]
+		)
+		_add_row(
+			stats_body,
+			"Stock",
+			"%.1f d avg / %.1f d min" % [
+				float(info.get("household_stock_days_avg", 0.0)),
+				float(info.get("household_stock_days_min", 0.0)),
+			]
+		)
+		_add_row(stats_body, "Stock Units", "%.1f" % float(info.get("household_stock_total", 0.0)))
+		_add_row(stats_body, "Restock", str(info.get("household_replenishment_state", "-")))
+		if int(info.get("household_replenishment_active", 0)) > 0:
+			_add_row(
+				stats_body,
+				"Active Restocks",
+				str(info.get("household_replenishment_active", 0))
+			)
 	else:
 		_add_section(stats_body, "Staff")
 		_add_row(
@@ -205,12 +230,12 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			"Workers",
 			"%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
 		)
-
-	_add_section(stats_body, "Economy")
-	_add_row(stats_body, "Profile", str(info.get("economy_profile", "-")))
-	_add_row(stats_body, "Budget", "$%.1f" % float(info.get("operating_budget", 0.0)))
-	_add_row(stats_body, "Revenue", "$%.1f" % float(info.get("revenue", 0.0)))
-	_add_row(stats_body, "Utility", "Yes" if info.get("utility_service_available", false) else "No")
+		_add_section(stats_body, "Economy")
+		_add_row(stats_body, "Profile", str(info.get("economy_profile", "-")))
+		_add_row(stats_body, "Budget", "$%.1f" % float(info.get("operating_budget", 0.0)))
+		_add_row(stats_body, "Revenue", "$%.1f" % float(info.get("revenue", 0.0)))
+		if info.has("utility_service_available"):
+			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
 
 	var inventory: Array = info.get("inventory", [])
 	if inventory.size() > 0:
