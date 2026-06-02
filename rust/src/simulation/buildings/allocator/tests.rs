@@ -1605,7 +1605,9 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     allocator.rebuild_zone_index();
 
     let catalog = load_runtime_economy_catalog().expect("catalog");
-    let household_id = households.admit_immigrant_household(&catalog, 0, 2);
+    let tuning =
+        crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
+    let household_id = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
     for _ in 0..2 {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[idx] = household_id;

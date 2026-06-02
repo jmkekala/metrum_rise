@@ -365,10 +365,9 @@ impl ShipmentSystem {
                     continue;
                 }
 
-                let import_unit_price = catalog
-                    .unit_price_for_resource(input_port.resource_runtime_id)
-                    .unwrap_or(profile.unit_price_currency)
-                    * tuning.owa_import_price_multiplier.max(1.0);
+                let import_unit_price =
+                    required_unit_price(&catalog, input_port.resource_runtime_id, &profile.id)
+                        * tuning.owa_import_price_multiplier;
                 if self.try_owa_fallback_for_resource(
                     dest_idx,
                     desired_amount,
@@ -607,7 +606,7 @@ impl ShipmentSystem {
         if border_nodes.is_empty() {
             return;
         }
-        let export_multiplier = tuning.owa_export_price_multiplier.clamp(0.0, 1.0);
+        let export_multiplier = tuning.owa_export_price_multiplier;
         let (reserved_outbound, .., border_job_counts) =
             self.build_reservation_views(resource_count);
 
@@ -653,9 +652,8 @@ impl ShipmentSystem {
                     continue;
                 }
 
-                let local_price = catalog
-                    .unit_price_for_resource(output_port.resource_runtime_id)
-                    .unwrap_or(profile.unit_price_currency);
+                let local_price =
+                    required_unit_price(&catalog, output_port.resource_runtime_id, &profile.id);
                 let export_unit_price = local_price * export_multiplier;
                 let total_revenue = export_amount * export_unit_price;
 
@@ -823,6 +821,21 @@ fn adjusted_unit_price(unit_price: f32, profile: &FreightTimingProfile, minute_o
     } else {
         unit_price * profile.outside_window_cost_multiplier
     }
+}
+
+fn required_unit_price(
+    catalog: &RuntimeEconomyCatalog,
+    resource_runtime_id: ResourceRuntimeId,
+    profile_id: &str,
+) -> f32 {
+    catalog
+        .unit_price_for_resource(resource_runtime_id)
+        .unwrap_or_else(|| {
+            let resource_id = catalog
+                .resource_id_for_runtime_id(resource_runtime_id)
+                .unwrap_or("<unknown>");
+            panic!("resource '{resource_id}' used by profile '{profile_id}' has no catalog price")
+        })
 }
 
 fn eta_hours_from_travel_seconds(travel_seconds: f32) -> u16 {

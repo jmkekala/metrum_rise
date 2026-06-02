@@ -116,7 +116,6 @@ pub fn run_sandbox_json(project_json: &str, scenario_id: &str) -> Result<String,
 struct EconomyProject {
     #[serde(default)]
     profiles: Vec<EconomyProfile>,
-    #[serde(default)]
     runtime_tuning: RuntimeEconomyTuning,
     #[serde(default)]
     controllers: Vec<EconomyController>,
@@ -126,7 +125,6 @@ struct EconomyProject {
 
 /// Authored economy-side runtime tuning used by the live simulation.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default)]
 pub(crate) struct RuntimeEconomyTuning {
     /// Shared operational clock state and authored schedule profiles.
     pub operational_clock: OperationalClockRuntimeTuning,
@@ -134,10 +132,14 @@ pub(crate) struct RuntimeEconomyTuning {
     pub households: HouseholdRuntimeTuning,
     /// Building viability thresholds used by demand-owned level changes.
     pub viability: BuildingViabilityRuntimeTuning,
+    /// Daily OWA utility charge for one commercial building when local utilities are incomplete.
+    pub commercial_owa_utility_cost_per_day: f32,
+    /// Daily OWA utility charge for one industrial building when local utilities are incomplete.
+    pub industrial_owa_utility_cost_per_day: f32,
     /// Multiplier applied to the local resource price when the OWA supplies an import.
     /// Values above 1.0 make OWA imports more expensive than local sourcing, giving local
     /// producers a cost advantage once they are operational. Must be >= 1.0; values below
-    /// 1.0 are clamped to 1.0 at load time.
+    /// 1.0 are rejected at validation time.
     pub owa_import_price_multiplier: f32,
     /// Multiplier applied to the local resource price when an industrial building exports surplus
     /// output to the OWA. Values below 1.0 make OWA exports less profitable than local sales,
@@ -158,7 +160,6 @@ pub(crate) struct RuntimeEconomyTuning {
 
 /// Shared operational-clock tuning used by labor, replenishment, and freight.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default)]
 pub(crate) struct OperationalClockRuntimeTuning {
     /// Real seconds required to advance one authored operational day at `1.0x`.
     pub seconds_per_day: f64,
@@ -230,27 +231,26 @@ pub(crate) struct FreightTimingProfile {
 
 /// Household-side runtime tuning values derived from `economy/profiles.toml`.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default)]
 pub(crate) struct HouseholdRuntimeTuning {
+    /// Pantry days granted to newly-arrived immigrant households.
+    pub immigrant_starting_stock_days: f32,
+    /// Starting currency granted per household member when an immigrant household arrives.
+    pub immigrant_starting_budget_per_member: f32,
+    /// Minimum budget for materialized households that already have a home but no record.
+    pub household_starting_budget_floor: f32,
+    /// Daily household utility charge per resident.
+    pub utility_cost_per_member_per_day: f32,
     /// Minimum reserve-days required to move into each residential level.
     pub residential_move_in_min_reserve_days_by_level: Vec<f32>,
     /// Minimum reserve-days required to remain in each residential level.
     pub residential_stay_min_reserve_days_by_level: Vec<f32>,
     /// Number of consecutive failed stay checks before eviction is allowed.
-    #[serde(
-        default = "default_stay_failure_days",
-        deserialize_with = "deserialize_u32_from_number"
-    )]
+    #[serde(deserialize_with = "deserialize_u32_from_number")]
     pub stay_failure_days_before_eviction: u32,
-}
-
-fn default_stay_failure_days() -> u32 {
-    2
 }
 
 /// Building-side viability thresholds derived from `economy/profiles.toml`.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default)]
 pub(crate) struct BuildingViabilityRuntimeTuning {
     /// Minimum occupancy ratio required to upgrade into each residential target level.
     pub residential_min_occupancy_ratio_for_upgrade: Vec<f32>,
@@ -454,116 +454,6 @@ impl RuntimeEconomyCatalog {
     }
 }
 
-impl Default for RuntimeEconomyTuning {
-    fn default() -> Self {
-        Self {
-            operational_clock: OperationalClockRuntimeTuning::default(),
-            households: HouseholdRuntimeTuning::default(),
-            viability: BuildingViabilityRuntimeTuning::default(),
-            owa_import_price_multiplier: 1.5,
-            owa_export_price_multiplier: 0.6,
-            startup_treasury_balance: 100_000.0,
-            unemployment_daily_benefit_per_member: 15.0,
-            unemployment_max_days: 30,
-        }
-    }
-}
-
-impl Default for OperationalClockRuntimeTuning {
-    fn default() -> Self {
-        let daytime = WorkTimingProfile {
-            id: "daytime_work".to_owned(),
-            arrival_windows: vec![MinuteWindow {
-                start_minute: 7 * 60,
-                end_minute: 9 * 60,
-            }],
-            departure_windows: vec![MinuteWindow {
-                start_minute: 16 * 60,
-                end_minute: 18 * 60,
-            }],
-            reliability_buffer_minutes: 15,
-        };
-        let three_shift = WorkTimingProfile {
-            id: "three_shift_work".to_owned(),
-            arrival_windows: vec![
-                MinuteWindow {
-                    start_minute: 5 * 60 + 30,
-                    end_minute: 6 * 60 + 30,
-                },
-                MinuteWindow {
-                    start_minute: 13 * 60 + 30,
-                    end_minute: 14 * 60 + 30,
-                },
-                MinuteWindow {
-                    start_minute: 21 * 60 + 30,
-                    end_minute: 22 * 60 + 30,
-                },
-            ],
-            departure_windows: vec![
-                MinuteWindow {
-                    start_minute: 13 * 60,
-                    end_minute: 14 * 60,
-                },
-                MinuteWindow {
-                    start_minute: 21 * 60,
-                    end_minute: 22 * 60,
-                },
-                MinuteWindow {
-                    start_minute: 5 * 60,
-                    end_minute: 6 * 60,
-                },
-            ],
-            reliability_buffer_minutes: 10,
-        };
-        Self {
-            seconds_per_day: 24.0 * 60.0,
-            travel_estimate_refresh_minutes: 360,
-            household_replenishment_check_interval_hours: 6,
-            household_pickup_eta_hours: 1,
-            household_replenishment_retry_cooldown_hours: 1,
-            shipment_retry_cooldown_hours: 1,
-            work_profiles: vec![daytime, three_shift],
-            freight_profiles: vec![
-                FreightTimingProfile {
-                    id: "always_open".to_owned(),
-                    preferred_windows: vec![MinuteWindow {
-                        start_minute: 0,
-                        end_minute: 24 * 60,
-                    }],
-                    outside_window_eta_penalty_minutes: 0,
-                    outside_window_cost_multiplier: 1.0,
-                },
-                FreightTimingProfile {
-                    id: "daytime_receive".to_owned(),
-                    preferred_windows: vec![MinuteWindow {
-                        start_minute: 7 * 60,
-                        end_minute: 18 * 60,
-                    }],
-                    outside_window_eta_penalty_minutes: 60,
-                    outside_window_cost_multiplier: 1.1,
-                },
-                FreightTimingProfile {
-                    id: "early_morning_preferred".to_owned(),
-                    preferred_windows: vec![MinuteWindow {
-                        start_minute: 4 * 60,
-                        end_minute: 8 * 60,
-                    }],
-                    outside_window_eta_penalty_minutes: 60,
-                    outside_window_cost_multiplier: 1.05,
-                },
-            ],
-            work_profile_by_zone_type: BTreeMap::from([
-                ("commercial".to_owned(), "daytime_work".to_owned()),
-                ("industrial".to_owned(), "three_shift_work".to_owned()),
-            ]),
-            freight_profile_by_zone_type: BTreeMap::from([
-                ("commercial".to_owned(), "daytime_receive".to_owned()),
-                ("industrial".to_owned(), "always_open".to_owned()),
-            ]),
-        }
-    }
-}
-
 impl Default for WorkTimingProfile {
     fn default() -> Self {
         Self {
@@ -601,33 +491,6 @@ impl OperationalClockRuntimeTuning {
         self.freight_profiles
             .iter()
             .find(|profile| profile.id == *profile_id)
-    }
-}
-
-impl Default for HouseholdRuntimeTuning {
-    fn default() -> Self {
-        Self {
-            residential_move_in_min_reserve_days_by_level: vec![0.0, 6.0, 12.0],
-            residential_stay_min_reserve_days_by_level: vec![0.0, 4.0, 8.0],
-            stay_failure_days_before_eviction: 2,
-        }
-    }
-}
-
-impl Default for BuildingViabilityRuntimeTuning {
-    fn default() -> Self {
-        Self {
-            residential_min_occupancy_ratio_for_upgrade: vec![0.0, 0.65, 0.85],
-            residential_max_occupancy_ratio_for_downgrade: vec![1.0, 0.20, 0.15],
-            nonresidential_min_buffer_days_by_level: vec![0.0, 4.0, 8.0],
-            nonresidential_max_buffer_days_for_downgrade: vec![1.0, 1.5, 2.0],
-            nonresidential_min_staffing_ratio_for_upgrade: 0.85,
-            nonresidential_max_staffing_ratio_for_downgrade: 0.25,
-            industrial_min_input_coverage_for_upgrade: 0.75,
-            industrial_min_output_headroom_for_upgrade: 0.25,
-            industrial_max_input_coverage_for_downgrade: 0.20,
-            industrial_max_output_headroom_for_downgrade: 0.10,
-        }
     }
 }
 
@@ -751,7 +614,6 @@ struct ScenarioControllerLink {
 struct ProfilesFile {
     #[serde(default)]
     profiles: Vec<EconomyProfile>,
-    #[serde(default)]
     runtime_tuning: RuntimeEconomyTuning,
 }
 
@@ -1031,7 +893,77 @@ fn compile_runtime_catalog(
         catalog.profiles.push(compiled);
     }
 
+    validate_required_runtime_catalog(&catalog)?;
     Ok(catalog)
+}
+
+fn validate_required_runtime_catalog(catalog: &RuntimeEconomyCatalog) -> Result<(), String> {
+    for profile in catalog.all_profiles() {
+        for port in profile.inputs.iter().chain(profile.outputs.iter()) {
+            let Some(unit_price) = catalog.unit_price_for_resource(port.resource_runtime_id) else {
+                let resource_id = catalog
+                    .resource_id_for_runtime_id(port.resource_runtime_id)
+                    .unwrap_or("<unknown>");
+                return Err(format!(
+                    "resource '{resource_id}' used by profile '{}' must have a positive unit price",
+                    profile.id
+                ));
+            };
+            if unit_price <= 0.0 {
+                let resource_id = catalog
+                    .resource_id_for_runtime_id(port.resource_runtime_id)
+                    .unwrap_or("<unknown>");
+                return Err(format!(
+                    "resource '{resource_id}' used by profile '{}' must have a positive unit price",
+                    profile.id
+                ));
+            }
+        }
+    }
+
+    let household_profile = catalog
+        .profile_for_id("basic_household_demand")
+        .ok_or_else(|| {
+            "runtime economy catalog requires profile 'basic_household_demand'".to_owned()
+        })?;
+    if household_profile.kind != EconomyProfileRuntimeKind::DemandSink {
+        return Err("profile 'basic_household_demand' must have kind = \"demand_sink\"".to_owned());
+    }
+    if household_profile.consumption_rate_per_resident <= 0.0 {
+        return Err(
+            "profile 'basic_household_demand'.consumption_rate_per_resident must be > 0".to_owned(),
+        );
+    }
+    if household_profile.stock_target_days <= 0.0 {
+        return Err("profile 'basic_household_demand'.stock_target_days must be > 0".to_owned());
+    }
+    if household_profile.reorder_threshold_days <= 0.0 {
+        return Err(
+            "profile 'basic_household_demand'.reorder_threshold_days must be > 0".to_owned(),
+        );
+    }
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .ok_or_else(|| {
+            "runtime economy catalog requires resource 'household_supplies'".to_owned()
+        })?;
+    if !household_profile
+        .inputs
+        .iter()
+        .any(|port| port.resource_runtime_id == household_supplies)
+    {
+        return Err(
+            "profile 'basic_household_demand' must consume resource 'household_supplies'"
+                .to_owned(),
+        );
+    }
+    let Some(unit_price) = catalog.unit_price_for_resource(household_supplies) else {
+        return Err("resource 'household_supplies' must have a positive unit price".to_owned());
+    };
+    if unit_price <= 0.0 {
+        return Err("resource 'household_supplies' must have a positive unit price".to_owned());
+    }
+    Ok(())
 }
 
 fn compile_runtime_profile(
@@ -1216,6 +1148,10 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
         validate_scenario(scenario, &profile_map, &controller_map, &mut messages);
     }
 
+    if let Err(err) = compile_runtime_catalog(&project.profiles, &project.runtime_tuning) {
+        messages.push(error("invalid_runtime_catalog", "project.profiles", err));
+    }
+
     messages
 }
 
@@ -1275,8 +1211,44 @@ fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> 
             "runtime_tuning.operational_clock.shipment_retry_cooldown_hours must be > 0".to_owned(),
         );
     }
+    validate_range(
+        tuning.commercial_owa_utility_cost_per_day,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.commercial_owa_utility_cost_per_day",
+    )?;
+    validate_range(
+        tuning.industrial_owa_utility_cost_per_day,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.industrial_owa_utility_cost_per_day",
+    )?;
     validate_work_profiles(&tuning.operational_clock)?;
     validate_freight_profiles(&tuning.operational_clock)?;
+    validate_range(
+        tuning.households.immigrant_starting_stock_days,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.households.immigrant_starting_stock_days",
+    )?;
+    validate_range(
+        tuning.households.immigrant_starting_budget_per_member,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.households.immigrant_starting_budget_per_member",
+    )?;
+    validate_range(
+        tuning.households.household_starting_budget_floor,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.households.household_starting_budget_floor",
+    )?;
+    validate_range(
+        tuning.households.utility_cost_per_member_per_day,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.households.utility_cost_per_member_per_day",
+    )?;
     validate_nonempty_level_array(
         &tuning
             .households
@@ -1365,6 +1337,12 @@ fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> 
         0.0,
         1.0,
         "runtime_tuning.viability.industrial_max_output_headroom_for_downgrade",
+    )?;
+    validate_range(
+        tuning.owa_import_price_multiplier,
+        1.0,
+        f32::INFINITY,
+        "runtime_tuning.owa_import_price_multiplier",
     )?;
     validate_range(
         tuning.owa_export_price_multiplier,
@@ -2523,15 +2501,97 @@ resource = "household_supplies"
 units_per_day = 200.0
 
 [[profiles]]
-id = "household_demand_sink"
+id = "basic_household_demand"
 display_name = "Household Demand Sink"
 kind = "demand_sink"
 description = "Starter sink"
 consumption_rate_per_resident = 1.0
+stock_target_days = 5.0
+reorder_threshold_days = 2.5
+critical_threshold_days = 1.0
+min_shipment_units = 1.0
 
 [[profiles.inputs]]
 resource = "household_supplies"
 units_per_day = 1.0
+
+[runtime_tuning]
+owa_import_price_multiplier = 1.75
+owa_export_price_multiplier = 0.6
+commercial_owa_utility_cost_per_day = 8.0
+industrial_owa_utility_cost_per_day = 12.0
+startup_treasury_balance = 100000.0
+unemployment_daily_benefit_per_member = 30.0
+unemployment_max_days = 30
+
+[runtime_tuning.operational_clock]
+seconds_per_day = 1440.0
+travel_estimate_refresh_minutes = 360
+household_replenishment_check_interval_hours = 6
+household_pickup_eta_hours = 1
+household_replenishment_retry_cooldown_hours = 1
+shipment_retry_cooldown_hours = 1
+
+[[runtime_tuning.operational_clock.work_profiles]]
+id = "daytime_work"
+arrival_windows = [{ start_minute = 420, end_minute = 540 }]
+departure_windows = [{ start_minute = 960, end_minute = 1080 }]
+reliability_buffer_minutes = 15
+
+[[runtime_tuning.operational_clock.work_profiles]]
+id = "three_shift_work"
+arrival_windows = [
+    { start_minute = 330, end_minute = 390 },
+    { start_minute = 810, end_minute = 870 },
+    { start_minute = 1290, end_minute = 1350 },
+]
+departure_windows = [
+    { start_minute = 780, end_minute = 840 },
+    { start_minute = 1260, end_minute = 1320 },
+    { start_minute = 300, end_minute = 360 },
+]
+reliability_buffer_minutes = 10
+
+[[runtime_tuning.operational_clock.freight_profiles]]
+id = "always_open"
+preferred_windows = [{ start_minute = 0, end_minute = 1440 }]
+outside_window_eta_penalty_minutes = 0
+outside_window_cost_multiplier = 1.0
+
+[[runtime_tuning.operational_clock.freight_profiles]]
+id = "daytime_receive"
+preferred_windows = [{ start_minute = 420, end_minute = 1080 }]
+outside_window_eta_penalty_minutes = 60
+outside_window_cost_multiplier = 1.1
+
+[runtime_tuning.operational_clock.work_profile_by_zone_type]
+commercial = "daytime_work"
+industrial = "three_shift_work"
+
+[runtime_tuning.operational_clock.freight_profile_by_zone_type]
+commercial = "daytime_receive"
+industrial = "always_open"
+
+[runtime_tuning.households]
+immigrant_starting_stock_days = 3.0
+immigrant_starting_budget_per_member = 15.0
+household_starting_budget_floor = 10.0
+utility_cost_per_member_per_day = 3.0
+residential_move_in_min_reserve_days_by_level = [0.0, 6.0, 12.0]
+residential_stay_min_reserve_days_by_level = [0.5, 3.0, 6.0]
+stay_failure_days_before_eviction = 2
+
+[runtime_tuning.viability]
+residential_min_occupancy_ratio_for_upgrade = [0.0, 0.65, 0.85]
+residential_max_occupancy_ratio_for_downgrade = [1.0, 0.20, 0.15]
+nonresidential_min_buffer_days_by_level = [0.0, 4.0, 8.0]
+nonresidential_max_buffer_days_for_downgrade = [1.0, 1.5, 2.0]
+nonresidential_min_staffing_ratio_for_upgrade = 0.85
+nonresidential_max_staffing_ratio_for_downgrade = 0.25
+industrial_min_input_coverage_for_upgrade = 0.75
+industrial_min_output_headroom_for_upgrade = 0.25
+industrial_max_input_coverage_for_downgrade = 0.20
+industrial_max_output_headroom_for_downgrade = 0.10
 "#,
         )
         .unwrap();
@@ -2581,7 +2641,7 @@ position = [460.0, 180.0]
 [[scenarios.nodes]]
 id = "households"
 ref_kind = "profile"
-ref_id = "household_demand_sink"
+ref_id = "basic_household_demand"
 position = [820.0, 180.0]
 
 [[scenarios.nodes]]

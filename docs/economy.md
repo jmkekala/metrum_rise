@@ -696,9 +696,9 @@ In `v0.1`, household replenishment should be represented as a household-side eco
 
 The **Household Economic Model** is data-driven via the `basic_household_demand` profile:
 - `consumption_rate_per_resident`: base units consumed per agent per day.
-- `stock_target_days`: the ideal pantry size (default: 5.0 days).
-- `reorder_threshold_days`: the trigger point for a standard restock (default: 2.5 days).
-- `critical_threshold_days`: the "starvation" trigger for emergency restock (default: 1.0 day).
+- `stock_target_days`: the ideal pantry size, currently `5.0` in `economy/profiles.toml`.
+- `reorder_threshold_days`: the trigger point for a standard restock, currently `2.5`.
+- `critical_threshold_days`: the emergency restock trigger, currently `1.0`.
 
 This layer operates on the operational clock and consumes the pressures produced by the demand system.
 
@@ -1577,7 +1577,12 @@ Rules:
 
 - replenishment is driven by the household stock system on coarse economy cadence, not by adding a new baseline `TRANSIT_*` movement state
 - when stock falls below the household's replenishment threshold, the household creates a replenishment request
+- when stock reaches `0.0 days`, the household may bypass its normal staggered check offset if a
+  valid commercial store currently has sellable household supply; reservation and cooldown guards
+  still apply
 - that request reserves a valid supply source and then waits for pickup-side fulfillment
+- if the household cannot afford the full target refill, it may reserve the largest affordable
+  partial basket from the store's available stock rather than failing the request outright
 - on successful fulfillment, household stock increases and the request enters cooldown
 - if fulfillment fails, the request follows the same bounded retry and cooldown rules as other economy requests
 
@@ -1638,9 +1643,9 @@ Example:
 
 - the developer places a `food_processor` node with output `staple_food`
 - the developer places a `grocery` node with input `staple_food` and output `household_supplies`
-- the developer places a `household_demand_sink` node with input `household_supplies`
+- the developer places a `basic_household_demand` node with input `household_supplies`
 - the developer places a household stock or cost controller that affects replenishment pressure
-- the graph then connects `food_processor -> grocery -> household_demand_sink`, with the controller linked to the household demand sink
+- the graph then connects `food_processor -> grocery -> basic_household_demand`, with the controller linked to the household demand sink
 
 At this stage the developer is defining the structure of the economy chain, not yet testing whether the numbers are balanced.
 
@@ -1690,7 +1695,7 @@ The tool should allow a developer to:
 Example: `Grocery Bottleneck` test case
 
 - Left panel: select the `Grocery Bottleneck` preset from a list of developer test cases.
-- Center graph: show `food_processor -> grocery -> household_demand_sink`, with an optional replenishment-pressure controller connected to the household demand sink.
+- Center graph: show `food_processor -> grocery -> basic_household_demand`, with an optional replenishment-pressure controller connected to the household demand sink.
 - Right inspector: expose values such as household count, household size, shop distance, pickup cadence, grocery throughput, and stock target.
 - Bottom diagnostics: show stock days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
 
@@ -1811,7 +1816,7 @@ A good starter chain for both simulation and developer-tool tuning is:
 - `grocery` or `distribution_center`
   - inputs: `staple_food`, `labor`
   - outputs: `household_supplies`
-- `household_demand_sink`
+- `basic_household_demand`
   - inputs: `household_supplies`
   - runtime variables: `household_size`, `stock_days`, `consumption_rate` (`household_supplies / day / resident`), `replenishment_mode`
 
@@ -1839,33 +1844,39 @@ This example is intentionally broad. It avoids modeling "one loaf of bread per p
 
 The first playable implementation should ship with a small shared seed-balance set so the example chain is runnable before the economy editor is heavily used for tuning.
 
-These are implementation defaults, not final balance targets:
+These are shipped `economy/profiles.toml` values, not Rust defaults:
 
 - household `consumption_rate`: `1.0 household_supplies / day / resident`
-- household replenishment target: `3.0 days` of stock
-- household replenishment trigger: below `1.5 days` of stock
+- household replenishment target: `5.0 days` of stock
+- household replenishment trigger: below `2.5 days` of stock
+- immigrant starting stock: `3.0 days`
+- immigrant starting budget: `15.0 currency / resident`
+- unemployment benefit: `30.0 currency / unemployed resident / day`
+- household utility cost: `3.0 currency / resident / day`
+- residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
 - `food_processor` `base_rate`: `160 staple_food / day`
-- `food_processor` worker capacity: `4`
-- `food_processor` wage band: `90-110 currency / workday`
+- `food_processor` worker capacity: `10`
+- `food_processor` wage band: `80-100 currency / workday`
 - `grocery` or `distribution_center` throughput target: `200 household_supplies / day`
-- `grocery` worker capacity: `3`
+- `grocery` worker capacity: `15`
 - `grocery` wage band: `80-100 currency / workday`
 - grocery stock target: `3.0 days` of supply
 - grocery reorder threshold: `2.0 days` of supply
 - grocery critical threshold: `0.5 days` of supply
-- grocery minimum shipment size: `40 household_supplies`
-- local base price for `staple_food`: `4 currency / unit`
-- local base price for `household_supplies`: `6 currency / unit`
-- `OWA import_ask` for `staple_food`: `7 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
-- `OWA import_ask` for `household_supplies`: `10.5 currency / unit` (local × 1.75)
-- initial `OWA export_bid` for `staple_food`: `2.4 currency / unit` (local × `owa_export_price_multiplier = 0.6`)
+- grocery minimum shipment size: `40 staple_food`
+- local base price for `staple_food`: `15 currency / unit`
+- local base price for `household_supplies`: `25 currency / unit`
+- `OWA import_ask` for `staple_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
+- `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
+- initial `OWA export_bid` for `staple_food`: `9 currency / unit` (local × `owa_export_price_multiplier = 0.6`)
+- OWA utility cost when local utility service is incomplete: `8 currency/day` for commercial and `12 currency/day` for industrial
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
 **`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer and no local buyer is available, the logistics system creates an outbound export shipment. The OWA pays `local_unit_price × owa_export_price_multiplier`. A value of `0.6` means the OWA pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Values outside `[0.0, 1.0]` are rejected at validation time.
 
-These numbers are only a bootstrap reference pack. They should ship in the first editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges.
+These numbers are only a bootstrap reference pack. They live in editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges. Runtime code must validate this data and fail loudly when required values are missing; it must not silently substitute balance values from Rust.
 
 ## Suggested Implementation Order
 
@@ -1985,14 +1996,14 @@ Goal: support more than one production chain without rewriting the logistics fou
 Why this is needed before Phase 6:
 
 - The grocery store (`grocery_basic`) requires `staple_food` input to produce `household_supplies`.
-  Until a producing building and freight chain exist, stores produce nothing and household stock
-  drains to zero.
-- Once stock hits zero, `household_stock_stability` collapses to `0.0`, which kills
+  The bootstrap path therefore needs explicit money and freight support before local industry is
+  stable.
+- Once household stock hits zero, `household_stock_stability` collapses to `0.0`, which kills
   `city_stability_factor` and drives admission pressure to zero regardless of startup support.
   Population cannot grow past the first wave of immigrants.
-- Phase 5 must introduce either a seeded starting inventory for stores or a no-input starter
-  profile, so the first household supply loop closes before the full production chain is in place.
-  Without this, startup support cannot bootstrap the city population as designed.
+- Phase 5 must close the first household supply loop through authored profile data: startup
+  operating float, paid `OWA` imports when local suppliers are absent, and household starting
+  stock. The runtime must not silently seed store inventory from Rust.
 
 Current status:
 
@@ -2001,8 +2012,11 @@ Current status:
 - startup balance initialised at `100,000` currency
 - road placement deducts `100 currency/meter` from the treasury; balance may go negative per spec
 - daily road upkeep deducts `0.1 currency/meter/day` on the daily fiscal settlement pass
-- `grocery_basic` now spawns with `starting_inventory_days = 3.0` (600 units of `household_supplies`)
-  seeded in output slots, closing the first supply loop before the full production chain exists
+- commercial and industrial startup budgets now include a seven-day wage runway plus the expected
+  first full `OWA` input import cost, computed from authored profile prices and
+  `runtime_tuning.owa_import_price_multiplier`
+- `grocery_basic` currently ships with `starting_inventory_days = 0.0`; stores do not receive
+  hidden Rust-seeded output inventory
 - save version bumped to 24; treasury is persisted in the `city_treasury` SQLite table
 - `get_treasury_balance()` Godot func exposes the live balance for UI display
 
@@ -2145,13 +2159,15 @@ else if treasury.balance > 0.0:
 
 ### Authored Tuning Parameters
 
-`unemployment_daily_benefit_per_member`, `unemployment_max_days`, and `startup_treasury_balance` all live in the `runtime_tuning` block of `economy/profiles.toml`. `STARTUP_TREASURY_BALANCE` is currently a hardcoded Rust constant in `nodes/sim/core.rs` and must be migrated to the TOML tuning block as part of this implementation.
+`unemployment_daily_benefit_per_member`, `unemployment_max_days`, `startup_treasury_balance`, household starter values, household utility cost, and OWA utility costs all live in the `runtime_tuning` block of `economy/profiles.toml`.
 
 | Parameter | Location | Role |
 |---|---|---|
-| `startup_treasury_balance` | `economy/profiles.toml` runtime_tuning (migrate from Rust constant) | Total treasury at map start — currently hardcoded at $100,000 |
-| `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning (new) | Currency paid per unemployed household member per day |
-| `unemployment_max_days` | `economy/profiles.toml` runtime_tuning (new) | Days before an unemployed household becomes emigration-eligible |
+| `startup_treasury_balance` | `economy/profiles.toml` runtime_tuning | Total treasury at map start |
+| `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning | Currency paid per unemployed household member per day |
+| `unemployment_max_days` | `economy/profiles.toml` runtime_tuning | Days before an unemployed household becomes emigration-eligible |
+| `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter stock, reserve rules, and utility cost |
+| `commercial_owa_utility_cost_per_day` / `industrial_owa_utility_cost_per_day` | `economy/profiles.toml` runtime_tuning | OWA utility cost when local utility service is incomplete |
 
 ### Spawn Signal: Replacing the Pioneer Floor
 
@@ -2173,8 +2189,15 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | Parameter | Value | Role |
 |---|---|---|
 | `startup_treasury_balance` | 100,000 | Total treasury at map start |
-| `unemployment_daily_benefit_per_member` | 15.0 | Currency paid per unemployed member per day |
+| `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed member per day |
 | `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
+| `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Pantry days granted to arriving households |
+| `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |
+| `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum budget for materialized legacy households |
+| `runtime_tuning.households.utility_cost_per_member_per_day` | 3.0 | Daily utility cost per resident |
+| `runtime_tuning.households.residential_stay_min_reserve_days_by_level` | [0.5, 3.0, 6.0] | Reserve days required to stay housed by residential level |
+| `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
+| `industrial_owa_utility_cost_per_day` | 12.0 | OWA utility charge per industrial building |
 
 ## Building Bankruptcy
 
@@ -2212,10 +2235,15 @@ When a commercial or industrial building first spawns it receives a one-time sta
 construction time in the spawn path:
 
 ```
-startup_budget = max(worker_capacity × average_daily_wage × STARTUP_RUNWAY_DAYS, STARTUP_OPERATING_FLOAT)
+startup_budget = max(
+  worker_capacity * average_daily_wage * STARTUP_RUNWAY_DAYS + first_owa_input_import_cost,
+  STARTUP_OPERATING_FLOAT
+)
 ```
 
-Constants: `STARTUP_RUNWAY_DAYS = 7`, `STARTUP_OPERATING_FLOAT = 500.0`.
+`first_owa_input_import_cost` is computed from the building profile's input target units, the
+catalog resource unit price, and `runtime_tuning.owa_import_price_multiplier`. Constants:
+`STARTUP_RUNWAY_DAYS = 7`, `STARTUP_OPERATING_FLOAT = 500.0`.
 
 No daily refill mechanism. The float is given once at spawn. If the building spends it without
 becoming viable, the daily settlement sequence handles the outcome.
@@ -2410,14 +2438,15 @@ As of the first full implementation of the agent-driven demand system, the simul
 
 ### 1. ~~The "Salary Bomb" Deadlock~~ — Fixed
 
-Startup capital is now computed as `max(500, worker_capacity × avg_daily_wage × 7)` for all commercial and industrial buildings at spawn. The same formula is used in the pre-revenue hourly refill (`ensure_building_startup_float`). A 16-worker farm at $100/day receives **$11,200** on spawn instead of $500 — enough to pay all workers for a full week. The `$500` floor still applies to low-wage or zero-worker buildings.
+Startup capital is now computed as `max(500, worker_capacity * avg_daily_wage * 7 + first_owa_input_import_cost)` for all commercial and industrial buildings at spawn. The shipped `food_processor_basic` profile has 10 workers at an average 90/day wage, so it receives **6,300** at spawn. The shipped `grocery_basic` profile also pre-budgets its first full `OWA` input import, so it receives **22,050** at spawn with current prices and `owa_import_price_multiplier = 1.75`. The `500` floor still applies to low-wage or zero-worker buildings.
 
 ### 2. The "Starving Pioneer" Trap — Mostly Resolved
 
-Immigrant households arrive with a starting budget of **$15/member** ($30 for a standard 2-person household).
-- **Utility Drain**: Daily utility costs average **$6/day** ($3/member/day). Budget runway on utilities alone: ~5 days.
-- **Starting stock**: 3 days of household supplies pre-loaded on spawn.
-- **Gap**: Starting stock runs out around day 4. From day 4 to ~day 7 (first wages), households may be unable to restock.
+Immigrant households arrive with `runtime_tuning.households.immigrant_starting_budget_per_member = 15.0` (30 for a standard 2-person household).
+- **Utility Drain**: `runtime_tuning.households.utility_cost_per_member_per_day = 3.0`, so a 2-person household pays 6/day. Budget runway on utilities alone is about 5 days.
+- **Starting stock**: `runtime_tuning.households.immigrant_starting_stock_days = 3.0` days of household supplies pre-loaded on spawn.
+- **Benefit floor**: `unemployment_daily_benefit_per_member = 30.0`, slightly above the current `28.0` per-resident daily essentials cost when household supplies are available.
+- **Gap**: Starting stock runs out around day 4. If no valid store has sellable stock, households may still be unable to restock even with adequate benefit income.
 
 With the salary bomb resolved, business wages reach workers by day 7. The 2–3 day starvation window (days 4–7) is the remaining residual of this trap and is acceptable for the pioneer phase. The circular deadlock that previously kept households permanently broke is broken.
 
@@ -2447,7 +2476,7 @@ Households that find themselves broke and starving are currently "trapped" in th
 **Observed**: In a 594-day run, the grocery (idx=22) entered a permanent freeze on Day 64 at `budget=-2.0`, `utility_service_available=false`. Eight farms entered the same state with `budget=0.0`. All remained frozen for 530+ days with inventory sitting unused.
 
 **Mechanism**:
-1. Hourly utility charge (`UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY`) fires in `resolve_building_utilities`.
+1. In the older implementation, an hourly utility charge derived from Rust constants fired in `resolve_building_utilities`.
 2. If `operating_budget < hourly_cost` → `utility_service_available = false`.
 3. `utility_service_available = false` sets `utility_factor = 0.0` in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
 4. No revenue → budget never recovers → permanent freeze with no exit.
@@ -2465,7 +2494,7 @@ Households that find themselves broke and starving are currently "trapped" in th
 placed_capacity = sum of nominal output (units/day) for all non-broken, non-economy_broken buildings
 consumer_demand = consumption_rate_per_resident × housed_resident_count
 ```
-The grocery profile outputs 200 `household_supplies`/day. The `household_demand_sink` profile has `consumption_rate_per_resident = 1.0`. At 131 residents: `consumer_demand = 131`. Gate condition `placed_capacity < consumer_demand` → `200 < 131` → **false** → second grocery permanently blocked.
+The grocery profile outputs 200 `household_supplies`/day. The `basic_household_demand` profile has `consumption_rate_per_resident = 1.0`. At 131 residents: `consumer_demand = 131`. Gate condition `placed_capacity < consumer_demand` -> `200 < 131` -> **false** -> second grocery permanently blocked.
 
 The gate does not check `utility_service_available`. A frozen, non-functional grocery still counts at full 200/day nominal capacity. The self-correction mechanism the economy needs (spawn a second grocery when the first fails) is blocked by the very building that failed.
 

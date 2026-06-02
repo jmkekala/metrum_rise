@@ -5,7 +5,8 @@ use crate::simulation::buildings::allocator::{
     BuildingAllocator, resolve_building_economy_profile_binding,
 };
 use crate::simulation::economy::definitions::{
-    RuntimeEconomyTuning, load_runtime_economy_catalog, load_runtime_economy_tuning,
+    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyTuning,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::{
     HouseholdSystem, building_operating_buffer_days, building_staffing_ratio,
@@ -356,6 +357,14 @@ impl DemandSystem {
     ) -> DemandPressureInputs {
         let housing_shortage = 1.0 - snapshot.housing_availability;
         let goods_shortage = 1.0 - snapshot.household_stock_stability;
+        let commercial_need = goods_shortage.max(snapshot.commercial_capacity_deficit);
+        let household_purchase_power = clamp01(
+            snapshot.household_affordability
+                * self
+                    .config
+                    .signal_normalization
+                    .household_affordability_target_reserve_days,
+        );
         let ext_conn = snapshot.external_connection_available;
 
         // Admission pressure fills existing vacancies. High when there are vacant slots to
@@ -370,8 +379,10 @@ impl DemandSystem {
         let net_residential = (inflow_desire - removal_pressure).clamp(-1.0, 1.0);
         self.residential = net_residential * 0.5 + 0.5;
 
-        // Commercial: residents need goods and can afford them. Gated on road connection.
-        self.commercial = clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
+        // Commercial: residents need both existing stocked households and enough shop output
+        // capacity to keep those stocks stable. Uses short-run purchase power rather than the
+        // long-run reserve target so starter cities can spawn shops before household stockout.
+        self.commercial = clamp01(commercial_need * household_purchase_power * ext_conn);
         // Industrial: fraction of commercial input value sourced from OWA rather than local supply.
         self.industrial = clamp01(snapshot.commercial_owa_dependency * ext_conn);
 
@@ -691,6 +702,8 @@ impl ResidentialOccupantSnapshot {
     fn from_runtime(allocator: &BuildingAllocator, households: &HouseholdSystem) -> Self {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let mut household_count_by_building = vec![0_u32; allocator.buildings.len()];
         let mut min_reserve_days_by_building = vec![f32::INFINITY; allocator.buildings.len()];
         for household in &households.households {
@@ -708,7 +721,7 @@ impl ResidentialOccupantSnapshot {
                 household_count_by_building[home_building_id].saturating_add(1);
             min_reserve_days_by_building[home_building_id] = min_reserve_days_by_building
                 [home_building_id]
-                .min(household_reserve_days(&catalog, household));
+                .min(household_reserve_days(&catalog, &tuning, household));
         }
 
         Self {
@@ -1059,7 +1072,9 @@ fn nonresidential_upgrade_viable(
             .nonresidential_min_buffer_days_by_level,
         target_level,
     );
-    if building_operating_buffer_days(&catalog, building) + EPSILON < min_buffer_days {
+    if building_operating_buffer_days(&catalog, economy_tuning, building) + EPSILON
+        < min_buffer_days
+    {
         return false;
     }
     if matches!(building.zone_type, ZoneType::Commercial)
@@ -1081,7 +1096,7 @@ fn nonresidential_downgrade_viable(
         return false;
     };
     let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
-    let buffer_days = building_operating_buffer_days(&catalog, building);
+    let buffer_days = building_operating_buffer_days(&catalog, economy_tuning, building);
     let max_buffer_days = level_tuning_value(
         &economy_tuning
             .viability
@@ -1503,6 +1518,34 @@ fn normalized_negative_pressure(pressure: f32, threshold: f32) -> f32 {
     }
 }
 
+fn add_resource_amount(
+    amounts: &mut Vec<(ResourceRuntimeId, f32)>,
+    resource_runtime_id: ResourceRuntimeId,
+    amount: f32,
+) {
+    if amount <= 0.0 {
+        return;
+    }
+    if let Some((_, existing)) = amounts
+        .iter_mut()
+        .find(|(resource, _)| *resource == resource_runtime_id)
+    {
+        *existing += amount;
+    } else {
+        amounts.push((resource_runtime_id, amount));
+    }
+}
+
+fn resource_amount(
+    amounts: &[(ResourceRuntimeId, f32)],
+    resource_runtime_id: ResourceRuntimeId,
+) -> f32 {
+    amounts
+        .iter()
+        .find_map(|(resource, amount)| (*resource == resource_runtime_id).then_some(*amount))
+        .unwrap_or(0.0)
+}
+
 struct DailyDemandSnapshot {
     vacant_household_slots: u32,
     total_household_count: u32,
@@ -1510,6 +1553,7 @@ struct DailyDemandSnapshot {
     housing_availability: f32,
     household_affordability: f32,
     household_stock_stability: f32,
+    commercial_capacity_deficit: f32,
     external_connection_available: f32,
     /// Fraction of commercial input value sourced from OWA rather than local industrial.
     ///
@@ -1538,6 +1582,42 @@ impl DailyDemandSnapshot {
 
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let mut commercial_profile_output_resources = Vec::new();
+        for profile in catalog.all_profiles() {
+            if profile.kind != EconomyProfileRuntimeKind::Store {
+                continue;
+            }
+            for output_port in &profile.outputs {
+                add_resource_amount(
+                    &mut commercial_profile_output_resources,
+                    output_port.resource_runtime_id,
+                    1.0,
+                );
+            }
+        }
+        let mut demand_sink_rates_by_resource = Vec::new();
+        for profile in catalog.all_profiles() {
+            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+                continue;
+            }
+            for input_port in &profile.inputs {
+                if resource_amount(
+                    &commercial_profile_output_resources,
+                    input_port.resource_runtime_id,
+                ) <= 0.0
+                {
+                    continue;
+                }
+                add_resource_amount(
+                    &mut demand_sink_rates_by_resource,
+                    input_port.resource_runtime_id,
+                    profile.consumption_rate_per_resident,
+                );
+            }
+        }
+        let mut commercial_output_capacity_by_resource = Vec::new();
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
             if building.broken || building.economy_broken {
@@ -1569,10 +1649,31 @@ impl DailyDemandSnapshot {
                 if let Some(profile) =
                     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
                 {
+                    for output_port in &profile.outputs {
+                        if resource_amount(
+                            &demand_sink_rates_by_resource,
+                            output_port.resource_runtime_id,
+                        ) > 0.0
+                        {
+                            add_resource_amount(
+                                &mut commercial_output_capacity_by_resource,
+                                output_port.resource_runtime_id,
+                                output_port.units_per_day,
+                            );
+                        }
+                    }
                     for input_port in &profile.inputs {
                         let resource_price = catalog
                             .unit_price_for_resource(input_port.resource_runtime_id)
-                            .unwrap_or(0.0);
+                            .unwrap_or_else(|| {
+                                let resource_id = catalog
+                                    .resource_id_for_runtime_id(input_port.resource_runtime_id)
+                                    .unwrap_or("<unknown>");
+                                panic!(
+                                    "resource '{resource_id}' used by profile '{}' has no catalog price",
+                                    profile.id
+                                )
+                            });
                         total_commercial_expected_input +=
                             input_port.units_per_day * resource_price;
                     }
@@ -1600,7 +1701,7 @@ impl DailyDemandSnapshot {
                 housed_resident_count =
                     housed_resident_count.saturating_add(household.member_count as u32);
                 household_affordability_sum += clamp01(
-                    household_reserve_days(&catalog, household)
+                    household_reserve_days(&catalog, &tuning, household)
                         / config
                             .signal_normalization
                             .household_affordability_target_reserve_days,
@@ -1631,6 +1732,24 @@ impl DailyDemandSnapshot {
             1.0
         } else {
             clamp01(household_stock_stability_sum / housed_household_count as f32)
+        };
+        let mut total_commercial_consumer_demand = 0.0_f32;
+        let mut unmet_commercial_consumer_demand = 0.0_f32;
+        for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
+        {
+            let consumer_demand = consumption_rate_per_resident * housed_resident_count as f32;
+            if consumer_demand <= 0.0 {
+                continue;
+            }
+            let placed_capacity =
+                resource_amount(&commercial_output_capacity_by_resource, resource_runtime_id);
+            total_commercial_consumer_demand += consumer_demand;
+            unmet_commercial_consumer_demand += (consumer_demand - placed_capacity).max(0.0);
+        }
+        let commercial_capacity_deficit = if total_commercial_consumer_demand <= 0.0 {
+            0.0
+        } else {
+            clamp01(unmet_commercial_consumer_demand / total_commercial_consumer_demand)
         };
         let connected_border_count = graph
             .nodes()
@@ -1671,7 +1790,7 @@ impl DailyDemandSnapshot {
         debug_log!(
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
-             unhoused_ratio={:.2} stock_stab={:.2} afford={:.2} owa_dep={:.2} \
+             unhoused_ratio={:.2} stock_stab={:.2} afford={:.2} com_cap_def={:.2} owa_dep={:.2} \
              private_buildings={}",
             connected_border_count,
             external_connection_available,
@@ -1679,6 +1798,7 @@ impl DailyDemandSnapshot {
             unhoused_household_ratio,
             household_stock_stability,
             household_affordability,
+            commercial_capacity_deficit,
             commercial_owa_dependency,
             existing_private_building_count,
         );
@@ -1690,6 +1810,7 @@ impl DailyDemandSnapshot {
             housing_availability,
             household_affordability,
             household_stock_stability,
+            commercial_capacity_deficit,
             external_connection_available,
             commercial_owa_dependency,
             housed_resident_count,
@@ -2026,6 +2147,66 @@ mod tests {
 
         assert!(demand.commercial > 0.0);
         assert!(demand.industrial > 0.0);
+    }
+
+    #[test]
+    fn daily_pass_raises_commercial_pressure_when_residents_lack_shop_capacity() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            1,
+            0,
+            residential_asset,
+        ));
+
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(housed_household(0, 5, 1_000.0, 3.0));
+
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+
+        assert!(
+            demand.commercial > 0.95,
+            "commercial demand should anticipate missing shop capacity, got={:.3}",
+            demand.commercial
+        );
+    }
+
+    #[test]
+    fn daily_pass_uses_short_run_purchase_power_for_missing_shop_capacity() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            1,
+            0,
+            residential_asset,
+        ));
+
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(housed_household(0, 5, 140.0, 3.0));
+
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+
+        assert!(
+            demand.commercial > 0.95,
+            "one reserve day should still represent immediate grocery buying power, got={:.3}",
+            demand.commercial
+        );
     }
 
     #[test]

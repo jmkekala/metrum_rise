@@ -14,7 +14,7 @@ use crate::simulation::economy::agents::{
 };
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
+    RuntimeEconomyTuning, load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -34,28 +34,11 @@ pub const REPLENISHMENT_FULFILLED: u8 = 4;
 /// Household is waiting before retrying another replenishment attempt.
 pub const REPLENISHMENT_COOLDOWN: u8 = 5;
 
-const HOUSEHOLD_CONSUMPTION_RATE: f32 = 1.0;
-const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
-const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
-const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 3.0;
-// $15/member gives a 2-member household $30 starting — roughly 5 days of utility runway
-// ($6/day) before wages arrive, while keeping income_pressure ≈ 0.44 at spawn so agents
-// remain motivated to seek work.
-const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 15.0;
-// $3/member/day ≈ 6% of a single $100 wage, consistent with the business OWA utility bands
-// ($8–12/day). Previously $2/member felt too low relative to wages.
-const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 3.0;
-const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
-
-const UTILITY_COST_COMMERCIAL: f32 = 8.0;
-const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
-
-// Local rates charged to consumers when all three utility buildings are present.
-// Combined total (6.5/day) is lower than either OWA rate, making local utilities cheaper.
-const UTILITY_LOCAL_POWER: f32 = 3.0;
-const UTILITY_LOCAL_WATER: f32 = 2.0;
-const UTILITY_LOCAL_SEWAGE: f32 = 1.5;
-const UTILITY_LOCAL_TOTAL: f32 = UTILITY_LOCAL_POWER + UTILITY_LOCAL_WATER + UTILITY_LOCAL_SEWAGE;
+const HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
+const HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
+const UTILITY_SERVICE_POWER: &str = "power";
+const UTILITY_SERVICE_WATER: &str = "water";
+const UTILITY_SERVICE_SEWAGE: &str = "sewage";
 
 const W_INCOME: f32 = 0.35;
 const W_STOCK: f32 = 0.35;
@@ -72,6 +55,31 @@ const JOB_SEARCH_CANDIDATES: usize = 24;
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
+
+#[derive(Default)]
+struct ReplenishmentDiagnostics {
+    attempts: u32,
+    successes: u32,
+    failed_no_store_candidates: u32,
+    failed_no_sale: u32,
+    urgent_cooldown_skips: u32,
+    candidate_count: u32,
+    rejected_empty: u32,
+    rejected_invalid_store: u32,
+    rejected_missing_profile: u32,
+    rejected_not_output: u32,
+    rejected_unaffordable: u32,
+    rejected_zero_desired: u32,
+    rejected_zero_amount: u32,
+    reserved_amount: f32,
+    reserved_cost: f32,
+}
+
+impl ReplenishmentDiagnostics {
+    fn has_signal(&self) -> bool {
+        self.attempts > 0 || self.urgent_cooldown_skips > 0
+    }
+}
 
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
@@ -164,30 +172,23 @@ impl HouseholdSystem {
     pub(crate) fn admit_immigrant_household(
         &mut self,
         catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
         home_building_id: usize,
         member_count: u16,
     ) -> usize {
-        let profile = get_household_demand_profile(catalog);
-        let consumption_rate = profile
-            .map(|p| p.consumption_rate_per_resident)
-            .unwrap_or(HOUSEHOLD_CONSUMPTION_RATE);
-        let target_days = profile
-            .map(|p| p.stock_target_days)
-            .unwrap_or(HOUSEHOLD_TARGET_STOCK_DAYS);
+        let profile = household_demand_profile(catalog);
+        let consumption_rate = profile.consumption_rate_per_resident;
+        let target_days = profile.stock_target_days;
+        let starting_stock_days = target_days.min(tuning.households.immigrant_starting_stock_days);
 
         let member_count = member_count.max(1);
         self.households.push(Household {
             home_building_id,
-            // Founding households arrive with modest savings so the first town
-            // has a real incentive to take available jobs instead of idling on
-            // a large abstract cash cushion.
-            budget: IMMIGRANT_STARTING_BUDGET_PER_MEMBER * member_count as f32,
-            stock: member_count as f32
-                * consumption_rate
-                * target_days.min(IMMIGRANT_STARTING_STOCK_DAYS),
+            budget: tuning.households.immigrant_starting_budget_per_member * member_count as f32,
+            stock: member_count as f32 * consumption_rate * starting_stock_days,
             member_count,
             consumption_rate,
-            stock_days: target_days.min(IMMIGRANT_STARTING_STOCK_DAYS),
+            stock_days: starting_stock_days,
             replenishment_state: REPLENISHMENT_STABLE,
             cooldown_hours: 0,
             reserved_store_building_id: usize::MAX,
@@ -361,11 +362,13 @@ impl HouseholdSystem {
         let mut housed_candidates = Vec::new();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         for (household_id, household) in self.households.iter().enumerate() {
             if household.member_count == 0 {
                 continue;
             }
-            let reserve_days = household_reserve_days(&catalog, household);
+            let reserve_days = household_reserve_days(&catalog, &tuning, household);
             let candidate = (household_id, reserve_days, household.stock_days);
             if household_is_housed(household, allocator) {
                 housed_candidates.push(candidate);
@@ -419,6 +422,7 @@ impl HouseholdSystem {
         allocator: &BuildingAllocator,
     ) {
         let mut catalog = None;
+        let mut tuning = None;
         let mut i = 0;
         while i < agents.len() {
             let pending_size = agents.pending_household_size[i];
@@ -440,8 +444,15 @@ impl HouseholdSystem {
                     panic!("could not load built-in economy catalog during carrier arrival: {err}")
                 }));
             }
+            if tuning.is_none() {
+                tuning = Some(load_runtime_economy_tuning().unwrap_or_else(|err| {
+                    panic!("could not load built-in economy tuning during carrier arrival: {err}")
+                }));
+            }
             let catalog_ref = catalog.as_ref().expect("catalog loaded above");
-            let household_id = self.admit_immigrant_household(catalog_ref, home, pending_size);
+            let tuning_ref = tuning.as_ref().expect("tuning loaded above");
+            let household_id =
+                self.admit_immigrant_household(catalog_ref, tuning_ref, home, pending_size);
             let home_door = allocator
                 .entrances
                 .get(home)
@@ -512,15 +523,14 @@ impl HouseholdSystem {
                 let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
                     panic!("could not load built-in economy catalog during re-housing: {err}")
                 });
-                let profile = get_household_demand_profile(&catalog);
-                let consumption_rate = profile
-                    .map(|p| p.consumption_rate_per_resident)
-                    .unwrap_or(HOUSEHOLD_CONSUMPTION_RATE);
-                let target_days = profile
-                    .map(|p| p.stock_target_days)
-                    .unwrap_or(HOUSEHOLD_TARGET_STOCK_DAYS);
+                let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+                    panic!("could not load built-in economy tuning during re-housing: {err}")
+                });
+                let profile = household_demand_profile(&catalog);
+                let consumption_rate = profile.consumption_rate_per_resident;
+                let target_days = profile.stock_target_days;
 
-                let budget = agents.money[i].max(HOUSEHOLD_STARTING_BUDGET);
+                let budget = agents.money[i].max(tuning.households.household_starting_budget_floor);
                 self.households.push(Household {
                     home_building_id: home,
                     budget,
@@ -614,6 +624,8 @@ impl HouseholdSystem {
     fn settle_daily_utilities(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
 
         // Phase 1: find operational utility provider buildings.
         let mut utility_provider_indices: Vec<usize> = Vec::new();
@@ -642,14 +654,15 @@ impl HouseholdSystem {
             }
             utility_provider_indices.push(idx);
             match profile.utility_service.as_deref() {
-                Some("power") => power_available = true,
-                Some("water") => water_available = true,
-                Some("sewage") => sewage_available = true,
+                Some(UTILITY_SERVICE_POWER) => power_available = true,
+                Some(UTILITY_SERVICE_WATER) => water_available = true,
+                Some(UTILITY_SERVICE_SEWAGE) => sewage_available = true,
                 _ => {}
             }
         }
 
         let all_local = power_available && water_available && sewage_available;
+        let local_utility_total = local_utility_total_cost(&catalog);
 
         // Phase 2 (daily): charge each commercial/industrial building the full daily utility
         // cost unconditionally. Budget may go negative.
@@ -666,16 +679,16 @@ impl HouseholdSystem {
             let (daily_cost, is_local) = match building.zone_type {
                 ZoneType::Commercial => {
                     if all_local {
-                        (UTILITY_LOCAL_TOTAL, true)
+                        (local_utility_total, true)
                     } else {
-                        (UTILITY_COST_COMMERCIAL, false)
+                        (tuning.commercial_owa_utility_cost_per_day, false)
                     }
                 }
                 ZoneType::Industrial => {
                     if all_local {
-                        (UTILITY_LOCAL_TOTAL, true)
+                        (local_utility_total, true)
                     } else {
-                        (UTILITY_COST_INDUSTRIAL, false)
+                        (tuning.industrial_owa_utility_cost_per_day, false)
                     }
                 }
                 _ => continue,
@@ -774,6 +787,8 @@ impl HouseholdSystem {
     }
 
     fn consume_household_stock(&mut self, agents: &mut AgentSystem) {
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         for hid in 0..self.households.len() {
             let household = &mut self.households[hid];
             if household.member_count == 0 {
@@ -783,7 +798,7 @@ impl HouseholdSystem {
                 / OPERATIONAL_HOURS_PER_DAY;
             household.stock = (household.stock - hourly_consumption).max(0.0);
             let hourly_utility_cost = household.member_count as f32
-                * HOUSEHOLD_UTILITY_COST_PER_MEMBER
+                * tuning.households.utility_cost_per_member_per_day
                 / OPERATIONAL_HOURS_PER_DAY;
             household.budget = (household.budget - hourly_utility_cost).max(0.0);
             household.stock_days = stock_days(
@@ -834,7 +849,7 @@ impl HouseholdSystem {
                 continue;
             }
 
-            let reserve_days = household_reserve_days(&catalog, household);
+            let reserve_days = household_reserve_days(&catalog, &config, household);
             let current_home = household.home_building_id;
             let is_housed = household_is_housed(household, allocator);
 
@@ -1080,16 +1095,29 @@ impl HouseholdSystem {
             self.progress_household_replenishment(hid, allocator);
         }
 
-        let profile = get_household_demand_profile(&catalog);
-        let target_days = profile
-            .map(|p| p.stock_target_days)
-            .unwrap_or(HOUSEHOLD_TARGET_STOCK_DAYS);
-        let trigger_days = profile
-            .map(|p| p.reorder_threshold_days)
-            .unwrap_or(HOUSEHOLD_TRIGGER_STOCK_DAYS);
+        let profile = household_demand_profile(&catalog);
+        let target_days = profile.stock_target_days;
+        let trigger_days = profile.reorder_threshold_days;
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        let stock_critical_purchase_available = allocator.buildings.iter().any(|store| {
+            !store.broken
+                && !store.economy_broken
+                && matches!(store.zone_type, ZoneType::Commercial)
+                && store.inventory_units(household_supply_resource) > 0.0
+                && economy_profile_for_building(&catalog, store)
+                    .is_some_and(|profile| profile.output_port(household_supply_resource).is_some())
+        });
+        let mut diagnostics = ReplenishmentDiagnostics::default();
 
         for hid in 0..self.households.len() {
             let household = &self.households[hid];
+            let check_offset_matches = absolute_hour % check_interval
+                == u32::from(household.replenishment_offset_hours % check_interval as u16);
+            let stock_critical_urgent =
+                household.stock_days == 0.0 && stock_critical_purchase_available;
+            if stock_critical_urgent && household.cooldown_hours > 0 {
+                diagnostics.urgent_cooldown_skips += 1;
+            }
             if household.member_count == 0
                 || household.home_building_id == usize::MAX
                 || household.home_building_id >= allocator.buildings.len()
@@ -1097,16 +1125,11 @@ impl HouseholdSystem {
                 || household.replenishment_state == REPLENISHMENT_PICKUP_PENDING
                 || household.cooldown_hours > 0
                 || household.stock_days >= trigger_days
-                || absolute_hour % check_interval
-                    != u32::from(household.replenishment_offset_hours % check_interval as u16)
+                || (!stock_critical_urgent && !check_offset_matches)
             {
                 continue;
             }
 
-            let Some(household_supply_resource) = household_supply_resource_runtime_id(&catalog)
-            else {
-                continue;
-            };
             let home = &allocator.buildings[household.home_building_id];
             let candidates = allocator.find_nearby_buildings_by_zones(
                 home.center_x,
@@ -1115,6 +1138,11 @@ impl HouseholdSystem {
                 GROCERY_SEARCH_MAX_RING,
                 GROCERY_SEARCH_CANDIDATES,
             );
+            diagnostics.attempts += 1;
+            diagnostics.candidate_count += candidates.len() as u32;
+            if candidates.is_empty() {
+                diagnostics.failed_no_store_candidates += 1;
+            }
 
             let daily_consumption = household.member_count as f32 * household.consumption_rate;
             let target_stock = target_days * daily_consumption;
@@ -1130,23 +1158,44 @@ impl HouseholdSystem {
                     || store.broken
                     || store.economy_broken
                 {
+                    if store.broken || store.economy_broken {
+                        diagnostics.rejected_invalid_store += 1;
+                    } else {
+                        diagnostics.rejected_empty += 1;
+                    }
                     continue;
                 }
                 let Some(store_profile) = economy_profile_for_building(&catalog, store) else {
+                    diagnostics.rejected_missing_profile += 1;
                     continue;
                 };
                 if store_profile
                     .output_port(household_supply_resource)
                     .is_none()
                 {
+                    diagnostics.rejected_not_output += 1;
                     continue;
                 }
                 let available_stock = store.inventory_units(household_supply_resource);
-                let amount = desired_amount.min(available_stock);
+                let max_affordable_amount = if store_profile.unit_price_currency > 0.0 {
+                    household.budget / store_profile.unit_price_currency
+                } else {
+                    f32::MAX
+                };
+                let amount = desired_amount
+                    .min(available_stock)
+                    .min(max_affordable_amount);
                 let total_cost = amount * store_profile.unit_price_currency;
                 if amount > 0.0 && household.budget >= total_cost {
                     found_sale = Some((candidate, amount, total_cost));
                     break;
+                }
+                if desired_amount <= 0.0 {
+                    diagnostics.rejected_zero_desired += 1;
+                } else if max_affordable_amount <= 0.0 || household.budget < total_cost {
+                    diagnostics.rejected_unaffordable += 1;
+                } else {
+                    diagnostics.rejected_zero_amount += 1;
                 }
                 desired_amount = desired_amount.min(available_stock);
             }
@@ -1161,12 +1210,43 @@ impl HouseholdSystem {
                 household.reserved_total_cost = total_cost;
                 household.pickup_eta_hours = tuning.operational_clock.household_pickup_eta_hours;
                 household.replenishment_state = REPLENISHMENT_RESERVED;
+                diagnostics.successes += 1;
+                diagnostics.reserved_amount += amount;
+                diagnostics.reserved_cost += total_cost;
             } else {
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
                 household.cooldown_hours = tuning
                     .operational_clock
                     .household_replenishment_retry_cooldown_hours;
+                diagnostics.failed_no_sale += 1;
             }
+        }
+
+        if diagnostics.has_signal() {
+            debug_log!(
+                "economy",
+                "household replenishment diagnostics: hour={} attempts={} success={} failed={} \
+                 urgent_cooldown_skips={} candidates={} no_store_candidates={} \
+                 rejected_empty={} rejected_invalid_store={} rejected_missing_profile={} \
+                 rejected_not_output={} rejected_unaffordable={} rejected_zero_desired={} \
+                 rejected_zero_amount={} reserved_amount={:.1} reserved_cost={:.1}",
+                absolute_hour,
+                diagnostics.attempts,
+                diagnostics.successes,
+                diagnostics.failed_no_sale,
+                diagnostics.urgent_cooldown_skips,
+                diagnostics.candidate_count,
+                diagnostics.failed_no_store_candidates,
+                diagnostics.rejected_empty,
+                diagnostics.rejected_invalid_store,
+                diagnostics.rejected_missing_profile,
+                diagnostics.rejected_not_output,
+                diagnostics.rejected_unaffordable,
+                diagnostics.rejected_zero_desired,
+                diagnostics.rejected_zero_amount,
+                diagnostics.reserved_amount,
+                diagnostics.reserved_cost
+            );
         }
     }
 
@@ -1223,10 +1303,10 @@ impl HouseholdSystem {
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let profile = get_household_demand_profile(&catalog);
-        let target_days = profile
-            .map(|p| p.stock_target_days)
-            .unwrap_or(HOUSEHOLD_TARGET_STOCK_DAYS);
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let profile = household_demand_profile(&catalog);
+        let target_days = profile.stock_target_days;
 
         let mut reserved_workers: Vec<u32> =
             allocator.buildings.iter().map(|b| b.worker_count).collect();
@@ -1278,7 +1358,7 @@ impl HouseholdSystem {
                 candidates.push(agents.work_building[i]);
             }
 
-            let income_pressure = household_income_pressure(&catalog, household);
+            let income_pressure = household_income_pressure(&catalog, &tuning, household);
             let stock_pressure = (1.0
                 - (household.stock_days / target_days.max(0.1)).clamp(0.0, 1.0))
             .clamp(0.0, 1.0);
@@ -1456,10 +1536,8 @@ impl HouseholdSystem {
         ) {
             let store_idx = household.reserved_store_building_id;
             if store_idx < allocator.buildings.len() {
-                if let Ok(catalog) = load_runtime_economy_catalog()
-                    && let Some(resource_runtime_id) =
-                        household_supply_resource_runtime_id(&catalog)
-                {
+                if let Ok(catalog) = load_runtime_economy_catalog() {
+                    let resource_runtime_id = household_supply_resource_runtime_id(&catalog);
                     allocator.buildings[store_idx]
                         .add_inventory_units(resource_runtime_id, household.reserved_amount);
                 }
@@ -1518,13 +1596,12 @@ fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
 /// utility payment. Bypasses the normal `min_shipment_units` buffer check. If inventory is
 /// empty the function is a no-op and `budget_distress` will still be set by the caller.
 ///
-/// Price = `catalog.unit_price_for_resource × owa_export_price_multiplier` (default 0.6×),
-/// matching the normal OWA export path. Falls back to `profile.unit_price_currency` when no
-/// catalog price is registered.
+/// Price = `catalog.unit_price_for_resource × owa_export_price_multiplier`, matching the normal
+/// OWA export path.
 fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatalog) {
     let tuning = load_runtime_economy_tuning()
         .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-    let export_multiplier = tuning.owa_export_price_multiplier.clamp(0.0, 1.0);
+    let export_multiplier = tuning.owa_export_price_multiplier;
     let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) else {
         return;
     };
@@ -1535,7 +1612,15 @@ fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatal
         }
         let unit_price = catalog
             .unit_price_for_resource(output_port.resource_runtime_id)
-            .unwrap_or(profile.unit_price_currency)
+            .unwrap_or_else(|| {
+                let resource_id = catalog
+                    .resource_id_for_runtime_id(output_port.resource_runtime_id)
+                    .unwrap_or("<unknown>");
+                panic!(
+                    "resource '{resource_id}' used by profile '{}' has no catalog price",
+                    profile.id
+                )
+            })
             * export_multiplier;
         let revenue = available * unit_price;
         building.operating_budget += revenue;
@@ -1554,23 +1639,38 @@ fn economy_profile_for_building<'a>(
     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
 }
 
-/// Lookup helper for the authoritative household demand profile.
-fn get_household_demand_profile<'a>(
-    catalog: &'a RuntimeEconomyCatalog,
-) -> Option<&'a EconomyProfileRuntime> {
-    catalog.profile_for_id("basic_household_demand")
+fn household_demand_profile(catalog: &RuntimeEconomyCatalog) -> &EconomyProfileRuntime {
+    catalog
+        .profile_for_id(HOUSEHOLD_DEMAND_PROFILE_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "runtime economy catalog missing required profile '{}'",
+                HOUSEHOLD_DEMAND_PROFILE_ID
+            )
+        })
 }
 
-fn household_supply_resource_runtime_id(
-    catalog: &RuntimeEconomyCatalog,
-) -> Option<ResourceRuntimeId> {
-    catalog.resource_runtime_id_for_id("household_supplies")
+fn household_supply_resource_runtime_id(catalog: &RuntimeEconomyCatalog) -> ResourceRuntimeId {
+    catalog
+        .resource_runtime_id_for_id(HOUSEHOLD_SUPPLY_RESOURCE_ID)
+        .unwrap_or_else(|| {
+            panic!(
+                "runtime economy catalog missing required resource '{}'",
+                HOUSEHOLD_SUPPLY_RESOURCE_ID
+            )
+        })
 }
 
 fn household_supply_unit_price(catalog: &RuntimeEconomyCatalog) -> f32 {
-    household_supply_resource_runtime_id(catalog)
-        .and_then(|resource_runtime_id| catalog.unit_price_for_resource(resource_runtime_id))
-        .unwrap_or(0.0)
+    let resource_runtime_id = household_supply_resource_runtime_id(catalog);
+    catalog
+        .unit_price_for_resource(resource_runtime_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "runtime economy catalog missing unit price for '{}'",
+                HOUSEHOLD_SUPPLY_RESOURCE_ID
+            )
+        })
 }
 
 pub(crate) fn building_total_output_inventory(
@@ -1589,12 +1689,13 @@ pub(crate) fn building_total_output_inventory(
 
 pub(crate) fn household_reserve_days(
     catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
     household: &Household,
 ) -> f32 {
     let members = household.member_count.max(1) as f32;
     let daily_supply_cost =
         members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
-    let daily_utility_cost = members * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
+    let daily_utility_cost = members * tuning.households.utility_cost_per_member_per_day;
     let daily_essential_cost = daily_supply_cost + daily_utility_cost;
     if daily_essential_cost <= 0.0 {
         0.0
@@ -1625,15 +1726,19 @@ fn stable_replenishment_offset_hours(home_building_id: usize, household_seed: u3
     (mixed % OPERATIONAL_HOURS_PER_DAY as u64) as u16
 }
 
-fn household_income_pressure(catalog: &RuntimeEconomyCatalog, household: &Household) -> f32 {
-    let profile = get_household_demand_profile(catalog);
-    let target_days = profile
-        .map(|p| p.stock_target_days)
-        .unwrap_or(HOUSEHOLD_TARGET_STOCK_DAYS);
+fn household_income_pressure(
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
+    household: &Household,
+) -> f32 {
+    let profile = household_demand_profile(catalog);
+    let target_days = profile.stock_target_days;
 
     let daily_consumption = household.member_count.max(1) as f32 * household.consumption_rate;
     let reserve_target = daily_consumption * household_supply_unit_price(catalog) * target_days
-        + household.member_count.max(1) as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER * target_days;
+        + household.member_count.max(1) as f32
+            * tuning.households.utility_cost_per_member_per_day
+            * target_days;
     (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
@@ -1652,19 +1757,41 @@ pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
         .unwrap_or(0.0)
 }
 
+fn local_utility_total_cost(catalog: &RuntimeEconomyCatalog) -> f32 {
+    [
+        UTILITY_SERVICE_POWER,
+        UTILITY_SERVICE_WATER,
+        UTILITY_SERVICE_SEWAGE,
+    ]
+    .into_iter()
+    .filter_map(|service| {
+        catalog
+            .all_profiles()
+            .iter()
+            .find(|profile| profile.utility_service.as_deref() == Some(service))
+            .map(|profile| profile.unit_price_currency)
+    })
+    .sum()
+}
+
+fn owa_utility_cost_for_zone(tuning: &RuntimeEconomyTuning, zone_type: ZoneType) -> f32 {
+    match zone_type {
+        ZoneType::Commercial => tuning.commercial_owa_utility_cost_per_day,
+        ZoneType::Industrial => tuning.industrial_owa_utility_cost_per_day,
+        _ => 0.0,
+    }
+}
+
 pub(crate) fn building_operating_buffer_days(
     catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
     building: &Building,
 ) -> f32 {
     let Some(profile) = economy_profile_for_building(catalog, building) else {
         return 0.0;
     };
     let daily_operating_cost = building.worker_count as f32 * profile.average_daily_wage()
-        + match building.zone_type {
-            ZoneType::Commercial => UTILITY_COST_COMMERCIAL,
-            ZoneType::Industrial => UTILITY_COST_INDUSTRIAL,
-            _ => 0.0,
-        };
+        + owa_utility_cost_for_zone(tuning, building.zone_type);
     if daily_operating_cost <= 0.0 {
         0.0
     } else {
@@ -1951,10 +2078,142 @@ mod tests {
     }
 
     #[test]
+    fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
+        let mut households = HouseholdSystem::new();
+        households.households.push(Household {
+            home_building_id: 0,
+            budget: 300.0,
+            stock: 0.0,
+            member_count: 2,
+            consumption_rate: 1.0,
+            stock_days: 0.0,
+            replenishment_state: REPLENISHMENT_STABLE,
+            cooldown_hours: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            pickup_eta_hours: 0,
+            stay_failure_days: 0,
+            replenishment_offset_hours: 5,
+            unemployment_days_elapsed: 0,
+        });
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "urgent_replenish_res",
+            ZoneClass::Residential,
+        );
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "urgent_replenish_com",
+            ZoneClass::Commercial,
+        );
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            &residential_asset,
+            0.0,
+        ));
+        allocator.buildings.push(make_building(
+            20.0,
+            ZoneType::Commercial,
+            &commercial_asset,
+            50.0,
+        ));
+        allocator.rebuild_zone_index();
+
+        households.run_household_replenishment(&mut allocator, 0);
+
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_RESERVED
+        );
+    }
+
+    #[test]
+    fn low_stock_household_can_buy_affordable_partial_restock() {
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let unit_price = catalog
+            .profile_for_id("grocery_basic")
+            .expect("grocery starter profile")
+            .unit_price_currency;
+        let partial_units = 5.0;
+
+        let mut households = HouseholdSystem::new();
+        households.households.push(Household {
+            home_building_id: 0,
+            budget: partial_units * unit_price,
+            stock: 0.0,
+            member_count: 2,
+            consumption_rate: 1.0,
+            stock_days: 0.0,
+            replenishment_state: REPLENISHMENT_NEEDS,
+            cooldown_hours: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            pickup_eta_hours: 0,
+            stay_failure_days: 0,
+            replenishment_offset_hours: 0,
+            unemployment_days_elapsed: 0,
+        });
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "partial_restock_res",
+            ZoneClass::Residential,
+        );
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "partial_restock_com",
+            ZoneClass::Commercial,
+        );
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            &residential_asset,
+            0.0,
+        ));
+        allocator.buildings.push(make_building(
+            20.0,
+            ZoneType::Commercial,
+            &commercial_asset,
+            50.0,
+        ));
+        allocator.rebuild_zone_index();
+
+        households.run_household_replenishment(&mut allocator, 0);
+
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_RESERVED
+        );
+        assert!((households.households[0].reserved_amount - partial_units).abs() < f32::EPSILON);
+        assert_eq!(households.households[0].budget, 0.0);
+
+        households.run_household_replenishment(&mut allocator, 0);
+        households.run_household_replenishment(&mut allocator, 0);
+
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_FULFILLED
+        );
+        assert!((households.households[0].stock - partial_units).abs() < f32::EPSILON);
+        assert!((households.households[0].stock_days - 2.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn immigrant_household_assigns_nearby_work_during_founding() {
         let mut households = HouseholdSystem::new();
         let catalog = load_runtime_economy_catalog().expect("catalog");
-        let hid = households.admit_immigrant_household(&catalog, 0, 2);
+        let tuning = load_runtime_economy_tuning().expect("tuning");
+        let hid = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
         households.households[hid].budget = 0.0;
         households.households[hid].stock = 1.0;
         households.households[hid].stock_days = 0.5;
@@ -2006,10 +2265,13 @@ mod tests {
     ) -> Household {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let consumption_rate = 1.0;
         let daily_supply_cost =
             member_count.max(1) as f32 * consumption_rate * household_supply_unit_price(&catalog);
-        let daily_utility_cost = member_count.max(1) as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
+        let daily_utility_cost =
+            member_count.max(1) as f32 * tuning.households.utility_cost_per_member_per_day;
         let daily_essential_cost = daily_supply_cost + daily_utility_cost;
         Household {
             home_building_id,

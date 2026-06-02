@@ -405,6 +405,8 @@ Baseline `v0.1` city-level signal families:
 - `housing_availability`
 - `household_affordability`
 - `household_stock_stability`
+- `commercial_capacity_deficit` — fraction of housed-resident demand-sink consumption that is not
+  covered by existing live commercial output capacity
 - `external_connection_available`
 - `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
   than local industrial; computed from daily shipment costs accumulated per building, giving a
@@ -416,6 +418,9 @@ Baseline ownership rule:
   systems
 - `household_affordability` comes from household budgets and essential-cost state owned by economy
 - `household_stock_stability` comes from household stock buffers owned by economy
+- `commercial_capacity_deficit` is derived by the demand snapshot from catalog demand-sink input
+  resources that a store-style commercial profile can produce, comparing housed-resident
+  per-resource demand against live non-deserted commercial output capacity
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
 - `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
@@ -472,6 +477,15 @@ household_stock_stability =
         )
     )
 
+commercial_capacity_deficit =
+    if total_commercial_consumer_demand == 0 then 0.0
+    else clamp(
+        unmet_commercial_consumer_demand
+        / total_commercial_consumer_demand,
+        0.0,
+        1.0
+    )
+
 external_connection_available =
     if connected_border_count > 0 then 1.0 else 0.0
 ```
@@ -482,6 +496,8 @@ Interpretation and source rule:
 - `household_affordability` uses settled economy-owned `household_reserve_days` values from
   [`economy.md`](economy.md)
 - `household_stock_stability` uses settled economy-owned `household_stock_days` values
+- `commercial_capacity_deficit` uses settled commercial building output capacity and settled
+  housed-resident demand-sink consumption rates from the compiled economy catalog
 - `external_connection_available` is a hard gate derived from settled network-border connectivity
 - `household_affordability_target_reserve_days` and `household_stock_stability_target_days` are
   authored in the `signal_normalization` table in
@@ -512,6 +528,13 @@ Baseline helper terms:
 ```text
 housing_shortage = 1.0 - housing_availability
 goods_shortage   = 1.0 - household_stock_stability
+commercial_need  = max(goods_shortage, commercial_capacity_deficit)
+household_purchase_power =
+    clamp(
+        household_affordability * household_affordability_target_reserve_days,
+        0.0,
+        1.0,
+    )
 ```
 
 Evaluation order:
@@ -546,7 +569,7 @@ ResidentialGrowth =
     clamp(net_residential_demand * 0.5 + 0.5, 0.0, 1.0)
 
 CommercialGrowth =
-    clamp(goods_shortage * household_affordability * external_connection_available, 0.0, 1.0)
+    clamp(commercial_need * household_purchase_power * external_connection_available, 0.0, 1.0)
 
 IndustrialGrowth =
     clamp(commercial_owa_dependency * external_connection_available, 0.0, 1.0)
@@ -575,8 +598,9 @@ Interpretation:
 - `ResidentialSpawnLimit = 1.0` is safe because `housing_shortage` is already embedded in
   `inflow_desire`; when vacancy is high, `inflow_desire` falls and `ResidentialGrowth` drops
   toward 0.5 or below, which stops spawning without a separate quadratic throttle
-- `CommercialGrowth` rises when a real resident/customer base exists, household stock is
-  unstable, households can still spend, and the city is healthy enough to support more commerce
+- `CommercialGrowth` rises when a real resident/customer base exists, either household stock is
+  unstable or commercial output capacity is missing, households have enough short-run buying power
+  for essential purchases, and the city is connected enough to support more commerce
 - `IndustrialGrowth` is driven by `commercial_owa_dependency` — the fraction of commercial
   input value sourced from OWA imports rather than local industrial — computed from daily shipment
   costs accumulated per building; one farm that partially covers multiple shops produces a smooth

@@ -340,26 +340,26 @@ impl BuildingAllocator {
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
         let economy_binding =
             resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
-        let catalog = load_runtime_economy_catalog();
-        let resource_count = catalog.as_ref().map(|c| c.resource_count()).unwrap_or(0);
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let resource_count = catalog.resource_count();
 
         // Seed starting inventory for output ports when the profile specifies it.
         // This lets stores open with stock already on shelves before the first freight
         // delivery arrives, which is critical during the startup phase.
         let mut resource_inventory = vec![0.0f32; resource_count];
-        if let Ok(catalog) = catalog.as_ref() {
-            if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id) {
-                if profile.starting_inventory_days > 0.0 {
-                    for output in &profile.outputs {
-                        let cap = profile.output_buffer_capacity_units_for(output);
-                        let seed =
-                            (output.units_per_day * profile.starting_inventory_days).min(cap);
-                        // resource_inventory is 0-indexed; runtime_id is 1-based.
-                        let slot = output.resource_runtime_id as usize;
-                        if slot > 0 && slot <= resource_count {
-                            resource_inventory[slot - 1] = seed;
-                        }
-                    }
+        if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id)
+            && profile.starting_inventory_days > 0.0
+        {
+            for output in &profile.outputs {
+                let cap = profile.output_buffer_capacity_units_for(output);
+                let seed = (output.units_per_day * profile.starting_inventory_days).min(cap);
+                // resource_inventory is 0-indexed; runtime_id is 1-based.
+                let slot = output.resource_runtime_id as usize;
+                if slot > 0 && slot <= resource_count {
+                    resource_inventory[slot - 1] = seed;
                 }
             }
         }
@@ -372,37 +372,47 @@ impl BuildingAllocator {
         const STARTUP_MIN_BUDGET: f32 = 500.0;
         let startup_budget = match placement.zone_type {
             ZoneType::Commercial | ZoneType::Industrial => {
-                let worker_cap = self.worker_capacity_for_asset(&placement.asset_id);
-                let catalog_ref = catalog.as_ref().ok();
-                let profile =
-                    catalog_ref.and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id));
-                let daily_wage = profile.map(|p| p.average_daily_wage()).unwrap_or(0.0);
-                let wage_runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
+                if economy_binding.economy_broken {
+                    0.0
+                } else {
+                    let worker_cap = self.worker_capacity_for_asset(&placement.asset_id);
+                    let profile = catalog
+                        .profile_by_runtime_id(economy_binding.runtime_id)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "asset '{}' references missing runtime economy profile id {}",
+                                placement.asset_id, economy_binding.runtime_id
+                            )
+                        });
+                    let daily_wage = profile.average_daily_wage();
+                    let wage_runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
 
-                // Add expected cost of the first full OWA input import so the building can
-                // absorb it without going into distress on its opening day.
-                let owa_import_multiplier = load_runtime_economy_tuning()
-                    .map(|t| t.owa_import_price_multiplier.max(1.0))
-                    .unwrap_or(1.5);
-                let first_import_cost = profile
-                    .map(|p| {
-                        p.inputs
-                            .iter()
-                            .map(|port| {
-                                let unit_price = catalog_ref
-                                    .and_then(|c| {
-                                        c.unit_price_for_resource(port.resource_runtime_id)
-                                    })
-                                    .unwrap_or(p.unit_price_currency);
-                                p.inventory_target_units_for(port)
-                                    * unit_price
-                                    * owa_import_multiplier
-                            })
-                            .sum::<f32>()
-                    })
-                    .unwrap_or(0.0);
+                    // Add expected cost of the first full OWA input import so the building can
+                    // absorb it without going into distress on its opening day.
+                    let owa_import_multiplier = tuning.owa_import_price_multiplier;
+                    let first_import_cost = profile
+                        .inputs
+                        .iter()
+                        .map(|port| {
+                            let unit_price = catalog
+                                .unit_price_for_resource(port.resource_runtime_id)
+                                .unwrap_or_else(|| {
+                                    let resource_id = catalog
+                                        .resource_id_for_runtime_id(port.resource_runtime_id)
+                                        .unwrap_or("<unknown>");
+                                    panic!(
+                                        "resource '{resource_id}' used by profile '{}' has no catalog price",
+                                        profile.id
+                                    )
+                                });
+                            profile.inventory_target_units_for(port)
+                                * unit_price
+                                * owa_import_multiplier
+                        })
+                        .sum::<f32>();
 
-                (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
+                    (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
+                }
             }
             _ => 0.0,
         };
