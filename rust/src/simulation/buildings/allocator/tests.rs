@@ -220,7 +220,7 @@ fn execute_startup_demand_building_pass(
     let mut demand = DemandSystem::new();
     for _ in 0..24 {
         let building_count_before = allocator.buildings.len();
-        demand.run_hourly_pass(allocator, households, graph, zoning);
+        demand.run_hourly_pass(allocator, households, graph, zoning, 1_000.0);
         allocator.execute_demand_building_actions(
             &demand.building_actions,
             zoning,
@@ -305,7 +305,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     demand.spawn_action_credit.residential = 10.0;
     demand.spawn_action_credit.commercial = 10.0;
 
-    demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
     let mut startup_plan = DemandBuildingActionPlan::default();
     if let Some(action) = demand.building_actions.residential.spawns.first() {
         startup_plan.residential.spawns.push(action.clone());
@@ -1612,13 +1612,13 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[idx] = household_id;
     }
-    households.households[household_id].budget = 120.0;
+    households.households[household_id].budget = 1_000.0;
     households.households[household_id].stock = 6.0;
     households.households[household_id].stock_days = 3.0;
 
     let zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut demand = DemandSystem::new();
-    demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
     assert!(
         demand.households_to_admit_today > 0,
         "hourly demand should produce a household-admission output from vacant housing"
@@ -1677,7 +1677,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
 
     let mut demand = DemandSystem::new();
     for _ in 0..24 {
-        demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
         if !demand.building_actions.residential.spawns.is_empty() {
             break;
         }

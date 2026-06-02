@@ -154,15 +154,16 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-    ) {
+    ) -> usize {
         if households_to_spawn == 0 {
-            return;
+            return 0;
         }
         debug_log!(
             "economy",
             "demand-owned household admission planning: households_to_spawn={}",
             households_to_spawn,
         );
+        let mut launched = 0;
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) = self.claim_home_for_household() else {
                 debug_log!(
@@ -191,6 +192,7 @@ impl BuildingAllocator {
                 border_pos.x,
                 border_pos.z,
             );
+            launched += 1;
             debug_log!(
                 "economy",
                 "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",
@@ -200,6 +202,7 @@ impl BuildingAllocator {
                 border_node,
             );
         }
+        launched
     }
 
     fn household_arrival_border_node(

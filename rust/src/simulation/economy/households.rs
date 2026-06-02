@@ -81,6 +81,21 @@ impl ReplenishmentDiagnostics {
     }
 }
 
+#[derive(Default)]
+struct HousingResolutionDiagnostics {
+    checked_households: u32,
+    housed_households: u32,
+    unhoused_start_households: u32,
+    stay_passed: u32,
+    stay_failed: u32,
+    waiting_for_eviction: u32,
+    relocated_unhoused: u32,
+    relocated_failed_stay: u32,
+    relocated_upgrade: u32,
+    evicted: u32,
+    still_unhoused: u32,
+}
+
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
 pub struct Household {
@@ -110,6 +125,8 @@ pub struct Household {
     pub pickup_eta_hours: u16,
     /// Consecutive daily stay-rule failures for the current home.
     pub stay_failure_days: u32,
+    /// Consecutive settled days with no valid home after the daily rehousing attempt.
+    pub unhoused_days_elapsed: u32,
     /// Stable authored cadence offset used for periodic replenishment checks.
     pub replenishment_offset_hours: u16,
     /// Days elapsed with at least one unemployed member. Resets to 0 when all members are
@@ -196,6 +213,7 @@ impl HouseholdSystem {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             unemployment_days_elapsed: 0,
             replenishment_offset_hours: stable_replenishment_offset_hours(
                 home_building_id,
@@ -353,9 +371,9 @@ impl HouseholdSystem {
         households_to_remove_today: u32,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-    ) {
+    ) -> u32 {
         if households_to_remove_today == 0 || self.households.is_empty() {
-            return;
+            return 0;
         }
 
         let mut unhoused_candidates = Vec::new();
@@ -397,7 +415,7 @@ impl HouseholdSystem {
             .len()
             .min(households_to_remove_today as usize);
         if removal_count == 0 {
-            return;
+            return 0;
         }
 
         let mut selected_households: Vec<_> =
@@ -411,9 +429,11 @@ impl HouseholdSystem {
             selected_households.len()
         );
 
+        let removed_count = selected_households.len() as u32;
         for household_id in selected_households {
             self.remove_household_at_index(household_id, agents, allocator);
         }
+        removed_count
     }
 
     fn materialize_arrived_household_carriers(
@@ -511,11 +531,16 @@ impl HouseholdSystem {
                 continue;
             }
             let home = agents.home_building[i];
+            let hid = agents.household_id[i];
             if home == usize::MAX {
+                if hid < self.households.len()
+                    && self.households[hid].home_building_id == usize::MAX
+                {
+                    continue;
+                }
                 agents.household_id[i] = usize::MAX;
                 continue;
             }
-            let hid = agents.household_id[i];
             let needs_new = hid == usize::MAX
                 || hid >= self.households.len()
                 || self.households[hid].home_building_id != home;
@@ -545,6 +570,7 @@ impl HouseholdSystem {
                     reserved_total_cost: 0.0,
                     pickup_eta_hours: 0,
                     stay_failure_days: 0,
+                    unhoused_days_elapsed: 0,
                     replenishment_offset_hours: stable_replenishment_offset_hours(
                         home,
                         self.households.len() as u32,
@@ -843,17 +869,21 @@ impl HouseholdSystem {
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
 
+        let mut diagnostics = HousingResolutionDiagnostics::default();
         for household_id in 0..self.households.len() {
             let household = &self.households[household_id];
             if household.member_count == 0 {
                 continue;
             }
+            diagnostics.checked_households = diagnostics.checked_households.saturating_add(1);
 
             let reserve_days = household_reserve_days(&catalog, &config, household);
             let current_home = household.home_building_id;
             let is_housed = household_is_housed(household, allocator);
 
             if !is_housed {
+                diagnostics.unhoused_start_households =
+                    diagnostics.unhoused_start_households.saturating_add(1);
                 self.households[household_id].stay_failure_days = 0;
                 if let Some(target_home) = self.find_affordable_home_for_household(
                     household_id,
@@ -869,9 +899,19 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                     );
+                    diagnostics.relocated_unhoused =
+                        diagnostics.relocated_unhoused.saturating_add(1);
+                } else {
+                    self.households[household_id].unhoused_days_elapsed = self.households
+                        [household_id]
+                        .unhoused_days_elapsed
+                        .saturating_add(1);
+                    diagnostics.still_unhoused = diagnostics.still_unhoused.saturating_add(1);
                 }
                 continue;
             }
+            diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
+            self.households[household_id].unhoused_days_elapsed = 0;
 
             let current_level = allocator.buildings[current_home].level;
             let stay_threshold = level_tuning_value(
@@ -880,6 +920,7 @@ impl HouseholdSystem {
             );
 
             if reserve_days >= stay_threshold {
+                diagnostics.stay_passed = diagnostics.stay_passed.saturating_add(1);
                 self.households[household_id].stay_failure_days = 0;
                 if let Some(target_home) = self.find_affordable_home_for_household(
                     household_id,
@@ -896,16 +937,20 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                     );
+                    diagnostics.relocated_upgrade = diagnostics.relocated_upgrade.saturating_add(1);
                 }
                 continue;
             }
 
+            diagnostics.stay_failed = diagnostics.stay_failed.saturating_add(1);
             self.households[household_id].stay_failure_days = self.households[household_id]
                 .stay_failure_days
                 .saturating_add(1);
             if self.households[household_id].stay_failure_days
                 < config.households.stay_failure_days_before_eviction
             {
+                diagnostics.waiting_for_eviction =
+                    diagnostics.waiting_for_eviction.saturating_add(1);
                 continue;
             }
 
@@ -917,10 +962,31 @@ impl HouseholdSystem {
                 &config.households,
             ) {
                 self.relocate_household(household_id, current_home, target_home, agents, allocator);
+                diagnostics.relocated_failed_stay =
+                    diagnostics.relocated_failed_stay.saturating_add(1);
             } else {
                 self.evict_household(household_id, current_home, agents, allocator);
+                diagnostics.evicted = diagnostics.evicted.saturating_add(1);
             }
         }
+
+        debug_log!(
+            "economy",
+            "household housing resolution: checked={} housed={} unhoused_start={} stay_ok={} \
+             stay_failed={} waiting={} relocated_unhoused={} relocated_failed_stay={} \
+             relocated_upgrade={} evicted={} still_unhoused={}",
+            diagnostics.checked_households,
+            diagnostics.housed_households,
+            diagnostics.unhoused_start_households,
+            diagnostics.stay_passed,
+            diagnostics.stay_failed,
+            diagnostics.waiting_for_eviction,
+            diagnostics.relocated_unhoused,
+            diagnostics.relocated_failed_stay,
+            diagnostics.relocated_upgrade,
+            diagnostics.evicted,
+            diagnostics.still_unhoused,
+        );
     }
 
     fn find_affordable_home_for_household(
@@ -1007,6 +1073,7 @@ impl HouseholdSystem {
 
         self.households[household_id].home_building_id = new_home;
         self.households[household_id].stay_failure_days = 0;
+        self.households[household_id].unhoused_days_elapsed = 0;
 
         for agent_idx in 0..agents.len() {
             if agents.household_id[agent_idx] != household_id {
@@ -1053,6 +1120,7 @@ impl HouseholdSystem {
         let household = &mut self.households[household_id];
         household.home_building_id = usize::MAX;
         household.stay_failure_days = 0;
+        household.unhoused_days_elapsed = 0;
         clear_replenishment_request(household);
 
         for agent_idx in 0..agents.len() {
@@ -2016,6 +2084,7 @@ mod tests {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             replenishment_offset_hours: 0,
             unemployment_days_elapsed: 0,
         });
@@ -2094,6 +2163,7 @@ mod tests {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             replenishment_offset_hours: 5,
             unemployment_days_elapsed: 0,
         });
@@ -2157,6 +2227,7 @@ mod tests {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             replenishment_offset_hours: 0,
             unemployment_days_elapsed: 0,
         });
@@ -2287,6 +2358,7 @@ mod tests {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             replenishment_offset_hours: 0,
             unemployment_days_elapsed: 0,
         }
@@ -2401,9 +2473,9 @@ mod tests {
     #[test]
     fn unhoused_household_rehouses_into_affordable_vacant_home() {
         let mut households = HouseholdSystem::new();
-        households
-            .households
-            .push(make_household(usize::MAX, 2, 12.0, 3.0));
+        let mut household = make_household(usize::MAX, 2, 12.0, 3.0);
+        household.unhoused_days_elapsed = 4;
+        households.households.push(household);
 
         let mut allocator = BuildingAllocator::new();
         let residential_asset = register_test_asset(
@@ -2435,11 +2507,29 @@ mod tests {
         households.resolve_household_housing(&mut agents, &mut allocator);
 
         assert_eq!(households.households[0].home_building_id, 0);
+        assert_eq!(households.households[0].unhoused_days_elapsed, 0);
         assert_eq!(allocator.buildings[0].occupancy, 1);
         assert_eq!(households.households.len(), 1);
         assert_eq!(agents.home_building[a1], 0);
         assert_eq!(agents.target_building[a0], 0);
         assert_eq!(agents.target_building[a1], 0);
+    }
+
+    #[test]
+    fn unrehouseable_unhoused_household_accumulates_unhoused_days() {
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(make_household(usize::MAX, 2, 0.0, 0.0));
+
+        let mut allocator = BuildingAllocator::new();
+        let mut agents = AgentSystem::new();
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+        assert_eq!(households.households[0].unhoused_days_elapsed, 1);
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+        assert_eq!(households.households[0].unhoused_days_elapsed, 2);
     }
 
     #[test]
@@ -2482,5 +2572,99 @@ mod tests {
         assert_eq!(agents.current_building[a1], usize::MAX);
         assert_eq!(agents.transit[a0], TRANSIT_ACCESS_INGRESS);
         assert_eq!(agents.transit[a1], TRANSIT_ACCESS_INGRESS);
+    }
+
+    #[test]
+    fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, 2, 0.5, 1.0);
+        household.stay_failure_days = 1;
+        households.households.push(household);
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "tracked_unhoused_res",
+            ZoneClass::Residential,
+        );
+        let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+        home.level = 2;
+        home.occupancy = 1;
+        allocator.buildings.push(home);
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        for a in [a0, a1] {
+            agents.household_id[a] = 0;
+            agents.home_building[a] = 0;
+            agents.current_building[a] = 0;
+            agents.target_building[a] = usize::MAX;
+            agents.planned_target_building[a] = usize::MAX;
+            agents.transit[a] = TRANSIT_IN_BUILDING;
+        }
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+        households.ensure_agent_households(&mut agents);
+        households.rebuild_household_membership(&agents);
+
+        assert_eq!(households.households.len(), 1);
+        assert_eq!(households.households[0].home_building_id, usize::MAX);
+        assert_eq!(households.households[0].member_count, 2);
+        assert_eq!(agents.household_id[a0], 0);
+        assert_eq!(agents.household_id[a1], 0);
+
+        households.execute_demand_household_removal(1, &mut agents, &mut allocator);
+
+        assert_eq!(households.households.len(), 0);
+        assert_eq!(agents.len(), 0);
+    }
+
+    #[test]
+    fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, 2, 0.0, 1.0);
+        household.stay_failure_days = 1;
+        households.households.push(household);
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "zero_reserve_relocate_res",
+            ZoneClass::Residential,
+        );
+        let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+        home.occupancy = 1;
+        allocator.buildings.push(home);
+        allocator.buildings.push(make_building(
+            20.0,
+            ZoneType::Residential,
+            &residential_asset,
+            0.0,
+        ));
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        for a in [a0, a1] {
+            agents.household_id[a] = 0;
+            agents.home_building[a] = 0;
+            agents.current_building[a] = 0;
+            agents.target_building[a] = usize::MAX;
+            agents.planned_target_building[a] = usize::MAX;
+            agents.transit[a] = TRANSIT_IN_BUILDING;
+        }
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+
+        assert_eq!(households.households[0].home_building_id, usize::MAX);
+        assert_eq!(allocator.buildings[0].occupancy, 0);
+        assert_eq!(allocator.buildings[1].occupancy, 0);
+        assert_eq!(agents.home_building[a0], usize::MAX);
+        assert_eq!(agents.home_building[a1], usize::MAX);
     }
 }

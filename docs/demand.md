@@ -305,7 +305,17 @@ max_households_per_day = 48
 
 [household_action]
 admission_threshold = 0.10
+admission_affordability_floor = 0.25
+admission_unhoused_ratio_penalty = 0.75
+admission_zero_budget_penalty = 0.75
+admission_negative_treasury_factor = 0.60
+admission_recent_failure_penalty = 0.85
+recent_failure_daily_decay = 0.50
 removal_threshold = 0.55
+persistent_exit_destitute_stock_days = 0.25
+persistent_exit_destitute_unhoused_days = 2
+persistent_exit_max_unhoused_days = 7
+persistent_exit_daily_fraction = 0.25
 
 [action_budget.spawn_batch_fraction_by_use]
 residential = 0.50
@@ -343,7 +353,17 @@ Deterministic validation rules:
 - `signal_normalization.household_stock_stability_target_days` must be finite and `> 0.0`
 - `action_budget.max_households_per_day` must be a finite integer `>= 0`
 - `household_action.admission_threshold` must be finite and in `0.0..1.0`
+- `household_action.admission_affordability_floor` must be finite and in `0.0..1.0`
+- `household_action.admission_unhoused_ratio_penalty` must be finite and in `0.0..1.0`
+- `household_action.admission_zero_budget_penalty` must be finite and in `0.0..1.0`
+- `household_action.admission_negative_treasury_factor` must be finite and in `0.0..1.0`
+- `household_action.admission_recent_failure_penalty` must be finite and in `0.0..1.0`
+- `household_action.recent_failure_daily_decay` must be finite and in `0.0..1.0`
 - `household_action.removal_threshold` must be finite and in `0.0..1.0`
+- `household_action.persistent_exit_destitute_stock_days` must be finite and in `0.0..365.0`
+- `household_action.persistent_exit_destitute_unhoused_days` must be an integer `>= 1`
+- `household_action.persistent_exit_max_unhoused_days` must be an integer `>= 1`
+- `household_action.persistent_exit_daily_fraction` must be finite and in `0.0..1.0`
 - `action_budget.spawn_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
   and `industrial`
 - every `action_budget.spawn_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
@@ -404,10 +424,12 @@ Baseline `v0.1` city-level signal families:
 
 - `housing_availability`
 - `household_affordability`
+- `zero_budget_household_ratio`
 - `household_stock_stability`
 - `commercial_capacity_deficit` — fraction of housed-resident demand-sink consumption that is not
   covered by existing live commercial output capacity
 - `external_connection_available`
+- `city_treasury_negative`
 - `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
   than local industrial; computed from daily shipment costs accumulated per building, giving a
   smooth 0..1 signal that reflects actual throughput coverage
@@ -417,12 +439,15 @@ Baseline ownership rule:
 - `housing_availability` comes from housing capacity and vacancy state owned by economy/building
   systems
 - `household_affordability` comes from household budgets and essential-cost state owned by economy
+- `zero_budget_household_ratio` is derived from all active household records, including unhoused
+  households, so failed households cannot be hidden by affluent housed survivors
 - `household_stock_stability` comes from household stock buffers owned by economy
 - `commercial_capacity_deficit` is derived by the demand snapshot from catalog demand-sink input
   resources that a store-style commercial profile can produce, comparing housed-resident
   per-resource demand against live non-deserted commercial output capacity
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
+- `city_treasury_negative` is derived from the city treasury owned by the fiscal ledger
 - `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
   `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
   `total_owa / (total_owa + total_local)` across active commercial buildings, `0.0` when no
@@ -466,6 +491,10 @@ household_affordability =
         )
     )
 
+zero_budget_household_ratio =
+    if total_household_count == 0 then 0.0
+    else clamp(zero_budget_household_count / total_household_count, 0.0, 1.0)
+
 household_stock_stability =
     if housed_household_count == 0 then 1.0
     else average_over_housed_households(
@@ -488,6 +517,9 @@ commercial_capacity_deficit =
 
 external_connection_available =
     if connected_border_count > 0 then 1.0 else 0.0
+
+city_treasury_negative =
+    if city_treasury_balance < 0.0 then 1.0 else 0.0
 ```
 
 Interpretation and source rule:
@@ -495,10 +527,14 @@ Interpretation and source rule:
 - `housing_availability` uses settled household-slot capacity after the daily economy pass
 - `household_affordability` uses settled economy-owned `household_reserve_days` values from
   [`economy.md`](economy.md)
+- `zero_budget_household_ratio` counts active households with `budget <= EPSILON`; unlike
+  `household_affordability`, it includes unhoused households
 - `household_stock_stability` uses settled economy-owned `household_stock_days` values
 - `commercial_capacity_deficit` uses settled commercial building output capacity and settled
   housed-resident demand-sink consumption rates from the compiled economy catalog
 - `external_connection_available` is a hard gate derived from settled network-border connectivity
+- `city_treasury_negative` is the only fiscal input consumed by demand in baseline `v0.1`; demand
+  does not inspect the magnitude of the deficit
 - `household_affordability_target_reserve_days` and `household_stock_stability_target_days` are
   authored in the `signal_normalization` table in
   [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
@@ -535,6 +571,18 @@ household_purchase_power =
         0.0,
         1.0,
     )
+admission_affordability_factor =
+    admission_affordability_floor
+    + (1.0 - admission_affordability_floor) * household_affordability
+admission_unhoused_factor =
+    1.0 - admission_unhoused_ratio_penalty * unhoused_household_ratio
+admission_zero_budget_factor =
+    1.0 - admission_zero_budget_penalty * zero_budget_household_ratio
+admission_treasury_factor =
+    1.0 - city_treasury_negative
+        * (1.0 - admission_negative_treasury_factor)
+admission_recent_failure_factor =
+    1.0 - admission_recent_failure_penalty * recent_household_failure_pressure
 ```
 
 Evaluation order:
@@ -550,6 +598,21 @@ Evaluation order:
 // not just ease of filling vacancies that already exist.
 inflow_desire =
     clamp(external_connection_available * housing_shortage, 0.0, 1.0)
+
+// Admission pressure fills existing vacancies, then soft-damps new arrivals when
+// the existing household economy is already failing.
+admission_pressure =
+    clamp(
+        external_connection_available
+        * housing_availability
+        * admission_affordability_factor
+        * admission_unhoused_factor
+        * admission_zero_budget_factor
+        * admission_treasury_factor
+        * admission_recent_failure_factor,
+        0.0,
+        1.0
+    )
 
 // Removal pressure: households leave when they have no home.
 // Future: an evacuation system will extend this signal.
@@ -591,10 +654,12 @@ Interpretation:
 - `ResidentialGrowth < 0.5` means net outflow desire — more people are leaving than arriving,
   or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
 - `inflow_desire` and `admission_pressure` (the household-action signal) are deliberately
-  different formulas: `admission_pressure` uses `housing_availability` to fill existing
-  vacancies fast; `inflow_desire` uses `housing_shortage` to measure unmet demand for new
-  capacity — the two naturally complement each other: high vacancy raises admission pressure
-  while lowering inflow_desire, so the system fills existing buildings before building new ones
+  different formulas: `admission_pressure` uses `housing_availability` to fill existing vacancies,
+  but is soft-damped by household affordability, existing unhoused households, zero-budget
+  households, and negative treasury; `inflow_desire` uses `housing_shortage` to measure unmet
+  demand for new capacity — the two naturally complement each other: high healthy vacancy raises
+  admission pressure while lowering inflow_desire, so the system fills existing buildings before
+  building new ones
 - `ResidentialSpawnLimit = 1.0` is safe because `housing_shortage` is already embedded in
   `inflow_desire`; when vacancy is high, `inflow_desire` falls and `ResidentialGrowth` drops
   toward 0.5 or below, which stops spawning without a separate quadratic throttle
@@ -669,10 +734,13 @@ as:
 - housing capacity and vacancy (`housing_availability` for household admission; `housing_shortage`
   for residential building spawn)
 - resident presence (commercial/industrial demand gating)
-- household affordability (commercial demand; not a residential gate)
-- household stock stability (emigration pressure; commercial demand)
+- household affordability (commercial demand and soft household-admission damping)
+- zero-budget household ratio (soft household-admission damping)
+- household stock stability (commercial demand)
 - commercial OWA dependency (industrial spawn pressure)
 - existence of at least one external connection (hard gate for admission and residential spawn)
+- negative city treasury (soft household-admission damping)
+- recent household failure/removal memory (soft household-admission damping)
 
 These are city-level signals, not per-agent trip decisions.
 
@@ -730,12 +798,30 @@ Authoring rule:
 - baseline `v0.1` uses one shared authored daily household-action cap for both admission and
   removal instead of hard-coded runtime constants; admission uses `cadence_fraction = 1/24`, while
   removal uses `cadence_fraction = 1.0`
+- persistent exit uses `persistent_exit_daily_fraction` and
+  `persistent_exit_eligible_household_count` after the crisis-removal budget has been computed:
+
+```text
+persistent_exit_credit +=
+    persistent_exit_eligible_household_count * persistent_exit_daily_fraction
+
+persistent_exit_removals =
+    min(
+        floor(persistent_exit_credit),
+        persistent_exit_eligible_household_count,
+        max_households_per_day - crisis_removals_this_day
+    )
+
+persistent_exit_credit -= persistent_exit_removals
+```
 
 Interpretation:
 
 - the farther pressure is above the threshold, the faster household action accumulates
 - weak but persistent pressure still produces deterministic action over multiple cadence steps
 - stronger pressure produces larger household counts, but never above the bounded daily cap
+- persistent exit prevents a small failed-unhoused tail from staying forever just below the
+  citywide crisis-removal threshold
 
 Concrete building-action budgets:
 
@@ -999,11 +1085,22 @@ Two distinct pressure formulas drive the residential system. They share the same
 signals but serve different purposes.
 
 **`admission_pressure`** — fills existing vacancies. Used only for the household-action
-`households_to_admit_today` output. High when housing is available (easy to move in today):
+`households_to_admit_today` output. High when housing is available and the existing household
+economy is healthy enough to absorb new arrivals:
 
 ```text
 admission_pressure =
-    clamp(external_connection_available * housing_availability, 0.0, 1.0)
+    clamp(
+        external_connection_available
+        * housing_availability
+        * admission_affordability_factor
+        * admission_unhoused_factor
+        * admission_zero_budget_factor
+        * admission_treasury_factor
+        * admission_recent_failure_factor,
+        0.0,
+        1.0
+    )
 ```
 
 **`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
@@ -1016,8 +1113,16 @@ inflow_desire =
 
 Relationship: `admission_pressure` and `inflow_desire` are complementary by design.
 High vacancy → `housing_availability` is high → `admission_pressure` is high (admit people
-fast) and `housing_shortage` is low → `inflow_desire` is low (no need for new buildings).
-This ensures the system fills existing buildings before spawning new ones.
+fast) when the city is healthy, and `housing_shortage` is low → `inflow_desire` is low (no need
+for new buildings). If the city already has broke or unhoused households, vacancy remains a real
+signal but no longer overrides the soft health damping.
+
+`recent_household_failure_pressure` is demand-owned carried state in `0.0..1.0`. Each daily
+demand pass first decays the previous value by `recent_failure_daily_decay`, then raises it to at
+least that settled day's `failure_pressure`. After actual demand-owned household removal executes,
+the same memory is raised to at least `removed_households / total_household_count` for the
+pre-removal settled snapshot. The value is persisted with `demand_state`, because it affects
+admission behavior after save/load.
 
 **`removal_pressure`** — drives household emigration and residential despawn. Shared between
 the household-action `households_to_remove_today` output and the `net_residential_demand` term
@@ -1038,16 +1143,49 @@ Where:
   eviction have already run for that operational day
 - `removal_threshold = 0.55` means removal fires when more than 55% of households are unhoused
 
-Future: a dedicated evacuation system will extend `removal_pressure` with additional signals
-(e.g. sustained unaffordability, lack of services) when that system is implemented.
+The ratio threshold is the **crisis outflow** rule, not the only household-exit rule. Demand also
+computes a persistent-exit candidate count from explicit economy-owned household state:
+
+```text
+destitute_unhoused =
+    home_is_none
+    AND budget <= epsilon
+    AND stock_days <= persistent_exit_destitute_stock_days
+
+persistent_exit_eligible =
+    home_is_none
+    AND (
+        destitute_unhoused
+        AND unhoused_days_elapsed >= persistent_exit_destitute_unhoused_days
+    OR
+        unhoused_days_elapsed >= persistent_exit_max_unhoused_days
+    )
+```
+
+With the shipped values, a household with no home, no money, and no meaningful stock becomes
+persistent-exit eligible after 2 settled unhoused days. Any household still without a home becomes
+persistent-exit eligible after 7 settled unhoused days, even if it briefly retained money or stock.
+Persistent exit then removes a deterministic fraction of the eligible tail each day after crisis
+removal has consumed its budget share.
+
+Runtime diagnostics also expose a broader `failure_pressure` for analysis:
+
+```text
+failure_pressure = max(unhoused_household_ratio, zero_budget_household_ratio)
+```
+
+This is logged beside `removal_pressure`, raw household counts, persistent-exit eligible count,
+the removal threshold, crisis-removal credit, persistent-exit credit, planned removals, and
+actually removed households. `failure_pressure` still does not directly set the removal count; it
+drives recent-failure admission damping and diagnostics.
 
 Interpretation:
 
-- ordinary low money does not directly remove households from the city in baseline `v0.1`
+- ordinary low money does not directly remove housed households from the city in baseline `v0.1`
 - household affordability failure first flows through the economy-owned relocation, eviction, and
   `unhoused` rules described in [`economy.md`](economy.md)
-- once the settled snapshot contains persistent `unhoused` households, sustained job failure, or
-  persistent stock shortage, demand may convert that state into whole-household city removal
+- once the settled snapshot contains persistent `unhoused` households, demand may convert that
+  explicit state into whole-household city removal
 - baseline `v0.1` household outflow therefore comes from sustained failed living conditions, not
   from one bad hourly dip or one direct poverty-to-deletion shortcut
 
@@ -1076,6 +1214,11 @@ If a household is admitted:
   claimed home
 - if no required external connection or no legal border-to-home car route exists, admission waits
   instead of silently instantiating the household inside the home
+
+The `economy` debug log emits a compact household-admission diagnostic line for each hourly pass.
+It reports the raw admission pressure, base vacancy pressure, individual soft-damping factors,
+the recent-failure memory and factor, threshold, normalized action pressure, carried admission
+credit, planned households, and actually launched arrival carriers.
 
 If a household is removed:
 

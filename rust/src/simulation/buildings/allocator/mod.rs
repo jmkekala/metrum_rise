@@ -418,13 +418,13 @@ impl BuildingAllocator {
         agents: &mut crate::simulation::economy::agents::AgentSystem,
         transit_network: &crate::simulation::network::TransitNetwork,
         graph: &RegionGraph,
-    ) {
+    ) -> u32 {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
             agents,
             transit_network,
             graph,
-        );
+        ) as u32
     }
 
     /// Remaps all building edge indices after a road network compaction.

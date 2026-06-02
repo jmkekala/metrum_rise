@@ -2577,7 +2577,7 @@ immigrant_starting_stock_days = 3.0
 immigrant_starting_budget_per_member = 15.0
 household_starting_budget_floor = 10.0
 utility_cost_per_member_per_day = 3.0
-residential_move_in_min_reserve_days_by_level = [0.0, 6.0, 12.0]
+residential_move_in_min_reserve_days_by_level = [0.5, 6.0, 12.0]
 residential_stay_min_reserve_days_by_level = [0.5, 3.0, 6.0]
 stay_failure_days_before_eviction = 2
 

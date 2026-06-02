@@ -903,12 +903,17 @@ impl SimCore {
             &self.households,
             &self.region_graph,
             &self.zoning,
+            self.treasury.balance,
         );
-        self.households.execute_demand_household_removal(
+        let removed_households = self.households.execute_demand_household_removal(
             self.demand.households_to_remove_today,
             &mut self.agents,
             &mut self.allocator,
         );
+        self.demand
+            .record_household_removal_execution(removed_households);
+        self.demand
+            .log_daily_household_action_diagnostics(day_index);
         self.execute_hourly_demand_pass(day_index, 0);
         // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
         // been taken.
@@ -956,13 +961,16 @@ impl SimCore {
             &self.households,
             &self.region_graph,
             &self.zoning,
+            self.treasury.balance,
         );
-        self.allocator.execute_demand_household_admission(
+        let launched_households = self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,
             &mut self.agents,
             &self.transit_network,
             &self.region_graph,
         );
+        self.demand
+            .record_household_admission_execution(launched_households);
         self.allocator.execute_demand_building_actions(
             &self.demand.building_actions,
             &mut self.zoning,
@@ -972,6 +980,8 @@ impl SimCore {
             &self.region_graph,
             &self.transit_network.lane_system,
         );
+        self.demand
+            .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         debug_log!(
             "economy",
             "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",

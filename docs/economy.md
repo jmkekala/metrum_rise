@@ -628,6 +628,12 @@ Eviction and unhoused rule:
 - becoming `unhoused` is not the same thing as immediate city removal
 - the household remains an explicit runtime record until demand later decides whether
   `households_to_remove_today` should remove it from the city
+- economy tracks `unhoused_days_elapsed` as the number of consecutive settled daily housing
+  passes where the household still had no valid home after rehousing was attempted
+- `unhoused_days_elapsed` resets to `0` when the household is housed or relocated, and starts at
+  `0` on the day a household is first evicted
+- demand owns the authored thresholds that interpret `unhoused_days_elapsed`, current `budget`,
+  and `stock_days` into persistent-exit eligibility
 
 Deterministic `v0.1` household-removal selection rule:
 
@@ -2195,6 +2201,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |
 | `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum budget for materialized legacy households |
 | `runtime_tuning.households.utility_cost_per_member_per_day` | 3.0 | Daily utility cost per resident |
+| `runtime_tuning.households.residential_move_in_min_reserve_days_by_level` | [0.5, 6.0, 12.0] | Reserve days required to move into residential levels |
 | `runtime_tuning.households.residential_stay_min_reserve_days_by_level` | [0.5, 3.0, 6.0] | Reserve days required to stay housed by residential level |
 | `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
 | `industrial_owa_utility_cost_per_day` | 12.0 | OWA utility charge per industrial building |

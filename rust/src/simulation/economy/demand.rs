@@ -169,7 +169,17 @@ struct SignalNormalizationConfig {
 #[derive(Clone, Debug)]
 struct HouseholdActionConfig {
     admission_threshold: f32,
+    admission_affordability_floor: f32,
+    admission_unhoused_ratio_penalty: f32,
+    admission_zero_budget_penalty: f32,
+    admission_negative_treasury_factor: f32,
+    admission_recent_failure_penalty: f32,
+    recent_failure_daily_decay: f32,
     removal_threshold: f32,
+    persistent_exit_destitute_stock_days: f32,
+    persistent_exit_destitute_unhoused_days: u32,
+    persistent_exit_max_unhoused_days: u32,
+    persistent_exit_daily_fraction: f32,
 }
 
 #[allow(dead_code)]
@@ -186,6 +196,61 @@ struct ActionBudgetConfig {
 struct DemandPressureInputs {
     admission_pressure: f32,
     removal_pressure: f32,
+    admission_diagnostics: HouseholdAdmissionDiagnostics,
+    removal_diagnostics: HouseholdRemovalDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HouseholdAdmissionDiagnostics {
+    total_household_count: u32,
+    vacant_household_slots: u32,
+    connected_border_count: u32,
+    housing_availability: f32,
+    household_affordability: f32,
+    affordability_factor: f32,
+    unhoused_household_ratio: f32,
+    unhoused_factor: f32,
+    zero_budget_household_ratio: f32,
+    zero_budget_factor: f32,
+    city_treasury_negative: f32,
+    treasury_factor: f32,
+    recent_failure_pressure: f32,
+    recent_failure_factor: f32,
+    base_pressure: f32,
+    pressure: f32,
+    threshold: f32,
+    normalized_action_pressure: f32,
+    credit_before: f32,
+    credit_after: f32,
+    max_actionable_households: u32,
+    planned_households: u32,
+    launched_households: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HouseholdRemovalDiagnostics {
+    total_household_count: u32,
+    housed_household_count: u32,
+    unhoused_household_count: u32,
+    zero_budget_household_count: u32,
+    persistent_exit_eligible_household_count: u32,
+    unhoused_household_ratio: f32,
+    zero_budget_household_ratio: f32,
+    failure_pressure: f32,
+    removed_household_ratio: f32,
+    recent_failure_before: f32,
+    recent_failure_after: f32,
+    pressure: f32,
+    threshold: f32,
+    normalized_action_pressure: f32,
+    credit_before: f32,
+    credit_after: f32,
+    persistent_exit_credit_before: f32,
+    persistent_exit_credit_after: f32,
+    persistent_exit_planned_households: u32,
+    max_actionable_households: u32,
+    planned_households: u32,
+    removed_households: u32,
 }
 
 #[allow(dead_code)]
@@ -239,7 +304,17 @@ struct AuthoredSignalNormalization {
 #[serde(deny_unknown_fields)]
 struct AuthoredHouseholdAction {
     admission_threshold: f32,
+    admission_affordability_floor: f32,
+    admission_unhoused_ratio_penalty: f32,
+    admission_zero_budget_penalty: f32,
+    admission_negative_treasury_factor: f32,
+    admission_recent_failure_penalty: f32,
+    recent_failure_daily_decay: f32,
     removal_threshold: f32,
+    persistent_exit_destitute_stock_days: f32,
+    persistent_exit_destitute_unhoused_days: u32,
+    persistent_exit_max_unhoused_days: u32,
+    persistent_exit_daily_fraction: f32,
 }
 
 #[derive(Deserialize)]
@@ -284,11 +359,15 @@ pub struct DemandSystem {
     pub(crate) households_to_remove_today: u32,
     pub(crate) admission_action_credit: f32,
     pub(crate) removal_action_credit: f32,
+    pub(crate) persistent_exit_action_credit: f32,
     pub(crate) spawn_action_credit: UseTuningF32,
     pub(crate) upgrade_action_credit: UseTuningF32,
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
+    pub(crate) recent_household_failure_pressure: f32,
     pub(crate) building_actions: DemandBuildingActionPlan,
+    last_admission_diagnostics: HouseholdAdmissionDiagnostics,
+    last_removal_diagnostics: HouseholdRemovalDiagnostics,
 }
 
 impl DemandSystem {
@@ -305,11 +384,15 @@ impl DemandSystem {
             households_to_remove_today: 0,
             admission_action_credit: 0.0,
             removal_action_credit: 0.0,
+            persistent_exit_action_credit: 0.0,
             spawn_action_credit: UseTuningF32::default(),
             upgrade_action_credit: UseTuningF32::default(),
             downgrade_action_credit: UseTuningF32::default(),
             despawn_action_credit: UseTuningF32::default(),
+            recent_household_failure_pressure: 0.0,
             building_actions: DemandBuildingActionPlan::default(),
+            last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
+            last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
         }
     }
 
@@ -320,24 +403,43 @@ impl DemandSystem {
         households: &HouseholdSystem,
         graph: &RegionGraph,
         zoning: &ZoningSystem,
+        treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let snapshot =
-            DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
+        let snapshot = DailyDemandSnapshot::from_runtime(
+            allocator,
+            households,
+            graph,
+            &self.config,
+            treasury_balance,
+        );
         let economy_tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let residential_occupants =
             ResidentialOccupantSnapshot::from_runtime(allocator, households);
 
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        let admission_threshold = self.config.household_action.admission_threshold;
+        let admission_credit_before = self.admission_action_credit;
+        let normalized_admission_pressure =
+            normalized_positive_pressure(pressures.admission_pressure, admission_threshold);
         self.households_to_admit_today = advance_household_action_credit(
             &mut self.admission_action_credit,
             pressures.admission_pressure,
-            self.config.household_action.admission_threshold,
+            admission_threshold,
             self.config.action_budget.max_households_per_day,
             snapshot.vacant_household_slots,
             DEMAND_HOURLY_CADENCE_FRACTION,
         );
+        let mut admission_diagnostics = pressures.admission_diagnostics;
+        admission_diagnostics.threshold = admission_threshold;
+        admission_diagnostics.normalized_action_pressure = normalized_admission_pressure;
+        admission_diagnostics.credit_before = admission_credit_before;
+        admission_diagnostics.credit_after = self.admission_action_credit;
+        admission_diagnostics.max_actionable_households = snapshot.vacant_household_slots;
+        admission_diagnostics.planned_households = self.households_to_admit_today;
+        admission_diagnostics.launched_households = 0;
+        self.last_admission_diagnostics = admission_diagnostics;
         self.plan_private_building_actions(
             allocator,
             households,
@@ -367,10 +469,79 @@ impl DemandSystem {
         );
         let ext_conn = snapshot.external_connection_available;
 
-        // Admission pressure fills existing vacancies. High when there are vacant slots to
-        // fill and tapers as the city approaches full occupancy.
-        let admission_pressure = clamp01(ext_conn * snapshot.housing_availability);
+        // Admission pressure fills existing vacancies, then soft-damps immigration when the
+        // existing household economy is already failing.
+        let admission_base_pressure = ext_conn * snapshot.housing_availability;
+        let admission_affordability_factor =
+            self.config.household_action.admission_affordability_floor
+                + (1.0 - self.config.household_action.admission_affordability_floor)
+                    * snapshot.household_affordability;
+        let admission_unhoused_factor = 1.0
+            - self
+                .config
+                .household_action
+                .admission_unhoused_ratio_penalty
+                * snapshot.unhoused_household_ratio;
+        let admission_zero_budget_factor = 1.0
+            - self.config.household_action.admission_zero_budget_penalty
+                * snapshot.zero_budget_household_ratio;
+        let admission_treasury_factor = 1.0
+            - snapshot.city_treasury_negative
+                * (1.0
+                    - self
+                        .config
+                        .household_action
+                        .admission_negative_treasury_factor);
+        let admission_recent_failure_factor = 1.0
+            - self
+                .config
+                .household_action
+                .admission_recent_failure_penalty
+                * self.recent_household_failure_pressure;
+        let admission_pressure = clamp01(
+            admission_base_pressure
+                * clamp01(admission_affordability_factor)
+                * clamp01(admission_unhoused_factor)
+                * clamp01(admission_zero_budget_factor)
+                * clamp01(admission_treasury_factor)
+                * clamp01(admission_recent_failure_factor),
+        );
         let removal_pressure = snapshot.unhoused_household_ratio;
+        let failure_pressure = snapshot
+            .unhoused_household_ratio
+            .max(snapshot.zero_budget_household_ratio);
+        let admission_diagnostics = HouseholdAdmissionDiagnostics {
+            total_household_count: snapshot.total_household_count,
+            vacant_household_slots: snapshot.vacant_household_slots,
+            connected_border_count: snapshot.connected_border_count,
+            housing_availability: snapshot.housing_availability,
+            household_affordability: snapshot.household_affordability,
+            affordability_factor: clamp01(admission_affordability_factor),
+            unhoused_household_ratio: snapshot.unhoused_household_ratio,
+            unhoused_factor: clamp01(admission_unhoused_factor),
+            zero_budget_household_ratio: snapshot.zero_budget_household_ratio,
+            zero_budget_factor: clamp01(admission_zero_budget_factor),
+            city_treasury_negative: snapshot.city_treasury_negative,
+            treasury_factor: clamp01(admission_treasury_factor),
+            recent_failure_pressure: self.recent_household_failure_pressure,
+            recent_failure_factor: clamp01(admission_recent_failure_factor),
+            base_pressure: admission_base_pressure,
+            pressure: admission_pressure,
+            ..HouseholdAdmissionDiagnostics::default()
+        };
+        let removal_diagnostics = HouseholdRemovalDiagnostics {
+            total_household_count: snapshot.total_household_count,
+            housed_household_count: snapshot.housed_household_count,
+            unhoused_household_count: snapshot.unhoused_household_count,
+            zero_budget_household_count: snapshot.zero_budget_household_count,
+            unhoused_household_ratio: snapshot.unhoused_household_ratio,
+            zero_budget_household_ratio: snapshot.zero_budget_household_ratio,
+            failure_pressure,
+            persistent_exit_eligible_household_count: snapshot
+                .persistent_exit_eligible_household_count,
+            pressure: removal_pressure,
+            ..HouseholdRemovalDiagnostics::default()
+        };
 
         // Residential demand follows net migration balance rather than raw vacancy.
         // inflow_desire measures unmet demand for new capacity, while admission pressure
@@ -389,6 +560,8 @@ impl DemandSystem {
         DemandPressureInputs {
             admission_pressure,
             removal_pressure,
+            admission_diagnostics,
+            removal_diagnostics,
         }
     }
 
@@ -400,10 +573,12 @@ impl DemandSystem {
         households_to_remove_today: u32,
         admission_action_credit: f32,
         removal_action_credit: f32,
+        persistent_exit_action_credit: f32,
         spawn_action_credit: [f32; 3],
         upgrade_action_credit: [f32; 3],
         downgrade_action_credit: [f32; 3],
         despawn_action_credit: [f32; 3],
+        recent_household_failure_pressure: f32,
     ) -> Self {
         let mut system = Self::new();
         system.residential = residential;
@@ -413,6 +588,7 @@ impl DemandSystem {
         system.households_to_remove_today = households_to_remove_today;
         system.admission_action_credit = admission_action_credit;
         system.removal_action_credit = removal_action_credit;
+        system.persistent_exit_action_credit = persistent_exit_action_credit.max(0.0);
         system.spawn_action_credit = UseTuningF32 {
             residential: spawn_action_credit[0],
             commercial: spawn_action_credit[1],
@@ -433,7 +609,111 @@ impl DemandSystem {
             commercial: despawn_action_credit[1],
             industrial: despawn_action_credit[2],
         };
+        system.recent_household_failure_pressure = clamp01(recent_household_failure_pressure);
         system
+    }
+
+    /// Records how many planned household arrivals actually launched as carriers.
+    pub(crate) fn record_household_admission_execution(&mut self, launched_households: u32) {
+        self.last_admission_diagnostics.launched_households = launched_households;
+    }
+
+    /// Records how many planned household removals actually left the city.
+    pub(crate) fn record_household_removal_execution(&mut self, removed_households: u32) {
+        self.last_removal_diagnostics.removed_households = removed_households;
+        let removed_household_ratio = if self.last_removal_diagnostics.total_household_count == 0 {
+            0.0
+        } else {
+            clamp01(
+                removed_households as f32
+                    / self.last_removal_diagnostics.total_household_count as f32,
+            )
+        };
+        self.last_removal_diagnostics.removed_household_ratio = removed_household_ratio;
+        self.recent_household_failure_pressure = self
+            .recent_household_failure_pressure
+            .max(removed_household_ratio);
+        self.last_removal_diagnostics.recent_failure_after = self.recent_household_failure_pressure;
+    }
+
+    /// Emits the most recent household-admission pressure and credit breakdown.
+    pub(crate) fn log_hourly_household_action_diagnostics(
+        &self,
+        day_index: u32,
+        minute_of_day: u16,
+    ) {
+        let diagnostics = self.last_admission_diagnostics;
+        debug_log!(
+            "economy",
+            "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
+             vacancy={:.2} vacant_slots={} households={} border_nodes={} \
+             afford={:.2} afford_factor={:.2} unhoused_ratio={:.2} unhoused_factor={:.2} \
+             zero_budget_ratio={:.2} zero_budget_factor={:.2} treasury_neg={:.0} \
+             treasury_factor={:.2} recent_failure={:.2} recent_failure_factor={:.2} \
+             threshold={:.2} norm={:.3} credit={:.3}->{:.3} cap={} plan={} launched={}",
+            day_index,
+            minute_of_day,
+            diagnostics.pressure,
+            diagnostics.base_pressure,
+            diagnostics.housing_availability,
+            diagnostics.vacant_household_slots,
+            diagnostics.total_household_count,
+            diagnostics.connected_border_count,
+            diagnostics.household_affordability,
+            diagnostics.affordability_factor,
+            diagnostics.unhoused_household_ratio,
+            diagnostics.unhoused_factor,
+            diagnostics.zero_budget_household_ratio,
+            diagnostics.zero_budget_factor,
+            diagnostics.city_treasury_negative,
+            diagnostics.treasury_factor,
+            diagnostics.recent_failure_pressure,
+            diagnostics.recent_failure_factor,
+            diagnostics.threshold,
+            diagnostics.normalized_action_pressure,
+            diagnostics.credit_before,
+            diagnostics.credit_after,
+            diagnostics.max_actionable_households,
+            diagnostics.planned_households,
+            diagnostics.launched_households,
+        );
+    }
+
+    /// Emits the most recent household-removal pressure and credit breakdown.
+    pub(crate) fn log_daily_household_action_diagnostics(&self, day_index: u32) {
+        let diagnostics = self.last_removal_diagnostics;
+        debug_log!(
+            "economy",
+            "household removal diagnostics: day={} pressure={:.3} failure_pressure={:.3} \
+             households={} housed={} unhoused={} zero_budget={} unhoused_ratio={:.2} \
+             zero_budget_ratio={:.2} persistent_exit_eligible={} threshold={:.2} \
+             norm={:.3} credit={:.3}->{:.3} persistent_credit={:.3}->{:.3} \
+             persistent_plan={} \
+             cap={} plan={} removed={} removed_ratio={:.3} recent_failure={:.3}->{:.3}",
+            day_index,
+            diagnostics.pressure,
+            diagnostics.failure_pressure,
+            diagnostics.total_household_count,
+            diagnostics.housed_household_count,
+            diagnostics.unhoused_household_count,
+            diagnostics.zero_budget_household_count,
+            diagnostics.unhoused_household_ratio,
+            diagnostics.zero_budget_household_ratio,
+            diagnostics.persistent_exit_eligible_household_count,
+            diagnostics.threshold,
+            diagnostics.normalized_action_pressure,
+            diagnostics.credit_before,
+            diagnostics.credit_after,
+            diagnostics.persistent_exit_credit_before,
+            diagnostics.persistent_exit_credit_after,
+            diagnostics.persistent_exit_planned_households,
+            diagnostics.max_actionable_households,
+            diagnostics.planned_households,
+            diagnostics.removed_households,
+            diagnostics.removed_household_ratio,
+            diagnostics.recent_failure_before,
+            diagnostics.recent_failure_after,
+        );
     }
 
     /// Rebuilds the daily settled household-removal output from the post-settlement snapshot.
@@ -443,24 +723,74 @@ impl DemandSystem {
         households: &HouseholdSystem,
         graph: &RegionGraph,
         _zoning: &ZoningSystem,
+        treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let snapshot =
-            DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
+        let snapshot = DailyDemandSnapshot::from_runtime(
+            allocator,
+            households,
+            graph,
+            &self.config,
+            treasury_balance,
+        );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         self.households_to_admit_today = 0;
+        let recent_failure_before = self.recent_household_failure_pressure;
+        let decayed_recent_failure =
+            recent_failure_before * self.config.household_action.recent_failure_daily_decay;
+        self.recent_household_failure_pressure =
+            clamp01(decayed_recent_failure.max(pressures.removal_diagnostics.failure_pressure));
 
         // Removal pressure: households emigrate when they have no home. Shared between
         // the household-action removal output and the residential demand channel.
         // Future: will be extended with an evacuation system when implemented.
-        self.households_to_remove_today = advance_household_action_credit(
+        let removal_threshold = self.config.household_action.removal_threshold;
+        let removal_credit_before = self.removal_action_credit;
+        let persistent_exit_credit_before = self.persistent_exit_action_credit;
+        let normalized_removal_pressure =
+            normalized_positive_pressure(pressures.removal_pressure, removal_threshold);
+        let crisis_removals = advance_household_action_credit(
             &mut self.removal_action_credit,
             pressures.removal_pressure,
-            self.config.household_action.removal_threshold,
+            removal_threshold,
             self.config.action_budget.max_households_per_day,
             snapshot.total_household_count,
             1.0,
         );
+        let persistent_exit_capacity = self
+            .config
+            .action_budget
+            .max_households_per_day
+            .saturating_sub(crisis_removals)
+            .min(
+                snapshot
+                    .total_household_count
+                    .saturating_sub(crisis_removals),
+            );
+        let persistent_exit_removals = advance_persistent_exit_credit(
+            &mut self.persistent_exit_action_credit,
+            snapshot.persistent_exit_eligible_household_count,
+            self.config.household_action.persistent_exit_daily_fraction,
+            persistent_exit_capacity,
+        );
+        self.households_to_remove_today = crisis_removals
+            .saturating_add(persistent_exit_removals)
+            .min(snapshot.total_household_count);
+        let mut removal_diagnostics = pressures.removal_diagnostics;
+        removal_diagnostics.threshold = removal_threshold;
+        removal_diagnostics.normalized_action_pressure = normalized_removal_pressure;
+        removal_diagnostics.credit_before = removal_credit_before;
+        removal_diagnostics.credit_after = self.removal_action_credit;
+        removal_diagnostics.persistent_exit_credit_before = persistent_exit_credit_before;
+        removal_diagnostics.persistent_exit_credit_after = self.persistent_exit_action_credit;
+        removal_diagnostics.persistent_exit_planned_households = persistent_exit_removals;
+        removal_diagnostics.max_actionable_households = snapshot.total_household_count;
+        removal_diagnostics.planned_households = self.households_to_remove_today;
+        removal_diagnostics.removed_households = 0;
+        removal_diagnostics.removed_household_ratio = 0.0;
+        removal_diagnostics.recent_failure_before = recent_failure_before;
+        removal_diagnostics.recent_failure_after = self.recent_household_failure_pressure;
+        self.last_removal_diagnostics = removal_diagnostics;
     }
 
     fn plan_private_building_actions(
@@ -1271,10 +1601,72 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         "household_action.admission_threshold",
     )?;
     validate_range_f32(
+        authored.household_action.admission_affordability_floor,
+        0.0,
+        1.0,
+        "household_action.admission_affordability_floor",
+    )?;
+    validate_range_f32(
+        authored.household_action.admission_unhoused_ratio_penalty,
+        0.0,
+        1.0,
+        "household_action.admission_unhoused_ratio_penalty",
+    )?;
+    validate_range_f32(
+        authored.household_action.admission_zero_budget_penalty,
+        0.0,
+        1.0,
+        "household_action.admission_zero_budget_penalty",
+    )?;
+    validate_range_f32(
+        authored.household_action.admission_negative_treasury_factor,
+        0.0,
+        1.0,
+        "household_action.admission_negative_treasury_factor",
+    )?;
+    validate_range_f32(
+        authored.household_action.admission_recent_failure_penalty,
+        0.0,
+        1.0,
+        "household_action.admission_recent_failure_penalty",
+    )?;
+    validate_range_f32(
+        authored.household_action.recent_failure_daily_decay,
+        0.0,
+        1.0,
+        "household_action.recent_failure_daily_decay",
+    )?;
+    validate_range_f32(
         authored.household_action.removal_threshold,
         0.0,
         1.0,
         "household_action.removal_threshold",
+    )?;
+    validate_range_f32(
+        authored
+            .household_action
+            .persistent_exit_destitute_stock_days,
+        0.0,
+        365.0,
+        "household_action.persistent_exit_destitute_stock_days",
+    )?;
+    if authored
+        .household_action
+        .persistent_exit_destitute_unhoused_days
+        == 0
+    {
+        return Err(
+            "household_action.persistent_exit_destitute_unhoused_days must be >= 1".to_owned(),
+        );
+    }
+    if authored.household_action.persistent_exit_max_unhoused_days == 0 {
+        return Err("household_action.persistent_exit_max_unhoused_days must be >= 1".to_owned());
+    }
+    validate_range_f32(
+        authored.household_action.persistent_exit_daily_fraction,
+        0.0,
+        1.0,
+        "household_action.persistent_exit_daily_fraction",
     )?;
 
     let spawn_batch_fraction_by_use = validate_use_tuning(
@@ -1401,7 +1793,31 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
 
         household_action: HouseholdActionConfig {
             admission_threshold: authored.household_action.admission_threshold,
+            admission_affordability_floor: authored.household_action.admission_affordability_floor,
+            admission_unhoused_ratio_penalty: authored
+                .household_action
+                .admission_unhoused_ratio_penalty,
+            admission_zero_budget_penalty: authored.household_action.admission_zero_budget_penalty,
+            admission_negative_treasury_factor: authored
+                .household_action
+                .admission_negative_treasury_factor,
+            admission_recent_failure_penalty: authored
+                .household_action
+                .admission_recent_failure_penalty,
+            recent_failure_daily_decay: authored.household_action.recent_failure_daily_decay,
             removal_threshold: authored.household_action.removal_threshold,
+            persistent_exit_destitute_stock_days: authored
+                .household_action
+                .persistent_exit_destitute_stock_days,
+            persistent_exit_destitute_unhoused_days: authored
+                .household_action
+                .persistent_exit_destitute_unhoused_days,
+            persistent_exit_max_unhoused_days: authored
+                .household_action
+                .persistent_exit_max_unhoused_days,
+            persistent_exit_daily_fraction: authored
+                .household_action
+                .persistent_exit_daily_fraction,
         },
         action_budget: ActionBudgetConfig {
             max_households_per_day: authored.action_budget.max_households_per_day,
@@ -1490,6 +1906,25 @@ fn advance_household_action_credit(
         .min(max_actionable_households)
 }
 
+fn advance_persistent_exit_credit(
+    credit: &mut f32,
+    eligible_households: u32,
+    daily_fraction: f32,
+    max_actionable_households: u32,
+) -> u32 {
+    if eligible_households == 0 {
+        *credit = 0.0;
+        return 0;
+    }
+    *credit += eligible_households as f32 * daily_fraction.max(0.0);
+    let households_to_act = (*credit).floor().max(0.0) as u32;
+    let households_to_act = households_to_act
+        .min(eligible_households)
+        .min(max_actionable_households);
+    *credit -= households_to_act as f32;
+    households_to_act
+}
+
 fn advance_building_action_credit(
     credit: &mut f32,
     budget_units: f32,
@@ -1549,12 +1984,19 @@ fn resource_amount(
 struct DailyDemandSnapshot {
     vacant_household_slots: u32,
     total_household_count: u32,
+    housed_household_count: u32,
+    unhoused_household_count: u32,
+    zero_budget_household_count: u32,
+    persistent_exit_eligible_household_count: u32,
     unhoused_household_ratio: f32,
+    zero_budget_household_ratio: f32,
     housing_availability: f32,
     household_affordability: f32,
     household_stock_stability: f32,
     commercial_capacity_deficit: f32,
     external_connection_available: f32,
+    connected_border_count: u32,
+    city_treasury_negative: f32,
     /// Fraction of commercial input value sourced from OWA rather than local industrial.
     ///
     /// Computed from the daily `daily_owa_input_value` / `daily_local_input_value` accumulators
@@ -1572,6 +2014,7 @@ impl DailyDemandSnapshot {
         households: &HouseholdSystem,
         graph: &RegionGraph,
         config: &DemandConfig,
+        treasury_balance: f64,
     ) -> Self {
         let mut total_household_slots = 0_u32;
         let mut occupied_household_slots = 0_u32;
@@ -1686,12 +2129,17 @@ impl DailyDemandSnapshot {
         let mut housed_resident_count = 0_u32;
         let mut housed_household_count = 0_u32;
         let mut unhoused_household_count = 0_u32;
+        let mut zero_budget_household_count = 0_u32;
+        let mut persistent_exit_eligible_household_count = 0_u32;
         let mut household_affordability_sum = 0.0;
         let mut household_stock_stability_sum = 0.0;
 
         for household in &households.households {
             if household.member_count == 0 {
                 continue;
+            }
+            if household.budget <= EPSILON {
+                zero_budget_household_count = zero_budget_household_count.saturating_add(1);
             }
             let is_housed = household.home_building_id < allocator.buildings.len()
                 && !allocator.buildings[household.home_building_id].broken
@@ -1714,6 +2162,20 @@ impl DailyDemandSnapshot {
                 );
             } else {
                 unhoused_household_count = unhoused_household_count.saturating_add(1);
+                let is_destitute = household.budget <= EPSILON
+                    && household.stock_days
+                        <= config.household_action.persistent_exit_destitute_stock_days;
+                let destitute_exit_eligible = is_destitute
+                    && household.unhoused_days_elapsed
+                        >= config
+                            .household_action
+                            .persistent_exit_destitute_unhoused_days;
+                let max_unhoused_exit_eligible = household.unhoused_days_elapsed
+                    >= config.household_action.persistent_exit_max_unhoused_days;
+                if destitute_exit_eligible || max_unhoused_exit_eligible {
+                    persistent_exit_eligible_household_count =
+                        persistent_exit_eligible_household_count.saturating_add(1);
+                }
             }
         }
 
@@ -1771,6 +2233,11 @@ impl DailyDemandSnapshot {
         } else {
             clamp01(unhoused_household_count as f32 / total_household_count as f32)
         };
+        let zero_budget_household_ratio = if total_household_count == 0 {
+            0.0
+        } else {
+            clamp01(zero_budget_household_count as f32 / total_household_count as f32)
+        };
 
         // Fraction of commercial input value sourced from OWA vs local industrial.
         // Uses expected daily input cost as a minimum denominator so a tiny OWA
@@ -1790,28 +2257,37 @@ impl DailyDemandSnapshot {
         debug_log!(
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
-             unhoused_ratio={:.2} stock_stab={:.2} afford={:.2} com_cap_def={:.2} owa_dep={:.2} \
-             private_buildings={}",
+             unhoused_ratio={:.2} zero_budget_ratio={:.2} stock_stab={:.2} afford={:.2} \
+             com_cap_def={:.2} owa_dep={:.2} treasury_neg={:.0} private_buildings={}",
             connected_border_count,
             external_connection_available,
             housing_availability,
             unhoused_household_ratio,
+            zero_budget_household_ratio,
             household_stock_stability,
             household_affordability,
             commercial_capacity_deficit,
             commercial_owa_dependency,
+            if treasury_balance < 0.0 { 1.0 } else { 0.0 },
             existing_private_building_count,
         );
 
         Self {
             vacant_household_slots,
             total_household_count,
+            housed_household_count,
+            unhoused_household_count,
+            zero_budget_household_count,
+            persistent_exit_eligible_household_count,
             unhoused_household_ratio,
+            zero_budget_household_ratio,
             housing_availability,
             household_affordability,
             household_stock_stability,
             commercial_capacity_deficit,
             external_connection_available,
+            connected_border_count,
+            city_treasury_negative: if treasury_balance < 0.0 { 1.0 } else { 0.0 },
             commercial_owa_dependency,
             housed_resident_count,
         }
@@ -2076,9 +2552,14 @@ mod tests {
             reserved_total_cost: 0.0,
             pickup_eta_hours: 0,
             stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
             replenishment_offset_hours: 0,
             unemployment_days_elapsed: 0,
         }
+    }
+
+    fn unhoused_household(member_count: u16, budget: f32, stock_days: f32) -> Household {
+        housed_household(usize::MAX, member_count, budget, stock_days)
     }
 
     fn graph_with_connected_border() -> RegionGraph {
@@ -2143,7 +2624,7 @@ mod tests {
         let graph = graph_with_connected_border();
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         assert!(demand.commercial > 0.0);
         assert!(demand.industrial > 0.0);
@@ -2170,7 +2651,7 @@ mod tests {
         let graph = graph_with_connected_border();
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         assert!(
             demand.commercial > 0.95,
@@ -2200,7 +2681,7 @@ mod tests {
         let graph = graph_with_connected_border();
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         assert!(
             demand.commercial > 0.95,
@@ -2250,7 +2731,7 @@ mod tests {
         let graph = graph_with_connected_border();
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         assert!(demand.residential > 0.50);
     }
@@ -2263,7 +2744,7 @@ mod tests {
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
 
-        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         // No external connection means inflow_desire = 0.0 and removal_pressure = 0.0
         // (no households → unhoused_ratio = 0), so ResidentialGrowth is at equilibrium
@@ -2306,9 +2787,250 @@ mod tests {
         let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
 
-        demand.run_hourly_pass(&allocator, &households, &graph, &zoning);
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
         assert!(demand.households_to_admit_today > 0);
+    }
+
+    #[test]
+    fn hourly_admission_soft_damps_when_household_economy_is_failing() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            1,
+            0,
+            residential_asset,
+        ));
+
+        let mut households = HouseholdSystem::new();
+        households.households.push(housed_household(0, 1, 0.0, 0.0));
+        for _ in 0..3 {
+            households.households.push(unhoused_household(1, 0.0, 0.0));
+        }
+
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, -100.0);
+
+        assert_eq!(
+            demand.households_to_admit_today, 0,
+            "vacancy alone must not keep admitting households while affordability is zero, many households are unhoused, and the treasury is negative"
+        );
+    }
+
+    #[test]
+    fn household_admission_diagnostics_record_pressure_breakdown() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            0,
+            0,
+            residential_asset,
+        ));
+
+        let households = HouseholdSystem::new();
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+        let diagnostics = demand.last_admission_diagnostics;
+
+        assert_eq!(diagnostics.total_household_count, 0);
+        assert_eq!(
+            diagnostics.vacant_household_slots,
+            allocator.household_capacity(0)
+        );
+        assert_eq!(diagnostics.connected_border_count, 1);
+        assert!(diagnostics.base_pressure > 0.0);
+        assert_eq!(
+            diagnostics.planned_households,
+            demand.households_to_admit_today
+        );
+
+        demand.record_household_admission_execution(1);
+
+        assert_eq!(demand.last_admission_diagnostics.launched_households, 1);
+    }
+
+    #[test]
+    fn household_removal_diagnostics_record_failure_signal_counts() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            1,
+            0,
+            residential_asset,
+        ));
+
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(housed_household(0, 1, 200.0, 3.0));
+        households.households.push(unhoused_household(1, 0.0, 0.0));
+        households.households.push(unhoused_household(1, 0.0, 0.0));
+
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+        let diagnostics = demand.last_removal_diagnostics;
+
+        assert_eq!(diagnostics.total_household_count, 3);
+        assert_eq!(diagnostics.housed_household_count, 1);
+        assert_eq!(diagnostics.unhoused_household_count, 2);
+        assert_eq!(diagnostics.zero_budget_household_count, 2);
+        assert!((diagnostics.pressure - (2.0 / 3.0)).abs() < 1e-4);
+        assert!((diagnostics.failure_pressure - (2.0 / 3.0)).abs() < 1e-4);
+        assert_eq!(diagnostics.recent_failure_before, 0.0);
+        assert!((diagnostics.recent_failure_after - (2.0 / 3.0)).abs() < 1e-4);
+        assert!((demand.recent_household_failure_pressure - (2.0 / 3.0)).abs() < 1e-4);
+        assert_eq!(
+            diagnostics.planned_households,
+            demand.households_to_remove_today
+        );
+
+        demand.record_household_removal_execution(2);
+
+        assert_eq!(demand.last_removal_diagnostics.removed_households, 2);
+    }
+
+    #[test]
+    fn persistent_exit_removes_failed_unhoused_tail_below_crisis_threshold() {
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            7,
+            0,
+            residential_asset,
+        ));
+
+        let mut households = HouseholdSystem::new();
+        for _ in 0..7 {
+            households
+                .households
+                .push(housed_household(0, 1, 200.0, 3.0));
+        }
+        for _ in 0..8 {
+            let mut household = unhoused_household(1, 0.0, 0.0);
+            household.unhoused_days_elapsed = 2;
+            households.households.push(household);
+        }
+
+        let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+        let diagnostics = demand.last_removal_diagnostics;
+
+        assert_eq!(diagnostics.unhoused_household_count, 8);
+        assert_eq!(diagnostics.total_household_count, 15);
+        assert!(diagnostics.pressure < diagnostics.threshold);
+        assert_eq!(diagnostics.normalized_action_pressure, 0.0);
+        assert_eq!(diagnostics.persistent_exit_eligible_household_count, 8);
+        assert_eq!(diagnostics.persistent_exit_planned_households, 2);
+        assert_eq!(demand.households_to_remove_today, 2);
+    }
+
+    #[test]
+    fn recent_failure_memory_damps_household_admission_pressure() {
+        fn healthy_vacant_snapshot() -> DailyDemandSnapshot {
+            DailyDemandSnapshot {
+                vacant_household_slots: 10,
+                total_household_count: 4,
+                housed_household_count: 4,
+                unhoused_household_count: 0,
+                zero_budget_household_count: 0,
+                persistent_exit_eligible_household_count: 0,
+                unhoused_household_ratio: 0.0,
+                zero_budget_household_ratio: 0.0,
+                housing_availability: 1.0,
+                household_affordability: 1.0,
+                household_stock_stability: 1.0,
+                commercial_capacity_deficit: 0.0,
+                external_connection_available: 1.0,
+                connected_border_count: 1,
+                city_treasury_negative: 0.0,
+                commercial_owa_dependency: 0.0,
+                housed_resident_count: 10,
+            }
+        }
+
+        let mut healthy_demand = DemandSystem::new();
+        let healthy = healthy_demand
+            .update_pressure_channels_from_snapshot(&healthy_vacant_snapshot())
+            .admission_pressure;
+        let mut cooling_demand = DemandSystem::new();
+        cooling_demand.recent_household_failure_pressure = 0.8;
+        let cooling_inputs =
+            cooling_demand.update_pressure_channels_from_snapshot(&healthy_vacant_snapshot());
+
+        assert!(
+            cooling_inputs.admission_pressure < healthy * 0.40,
+            "recent failure memory should substantially reduce otherwise healthy vacancy admission"
+        );
+        assert_eq!(
+            cooling_inputs.admission_diagnostics.recent_failure_pressure,
+            0.8
+        );
+        assert!(cooling_inputs.admission_diagnostics.recent_failure_factor < 0.35);
+    }
+
+    #[test]
+    fn admission_pressure_counts_zero_budget_households() {
+        fn snapshot_with_zero_budget_ratio(
+            zero_budget_household_ratio: f32,
+        ) -> DailyDemandSnapshot {
+            DailyDemandSnapshot {
+                vacant_household_slots: 10,
+                total_household_count: 10,
+                housed_household_count: 10,
+                unhoused_household_count: 0,
+                zero_budget_household_count: (zero_budget_household_ratio * 10.0).round() as u32,
+                persistent_exit_eligible_household_count: 0,
+                unhoused_household_ratio: 0.0,
+                zero_budget_household_ratio,
+                housing_availability: 1.0,
+                household_affordability: 1.0,
+                household_stock_stability: 1.0,
+                commercial_capacity_deficit: 0.0,
+                external_connection_available: 1.0,
+                connected_border_count: 1,
+                city_treasury_negative: 0.0,
+                commercial_owa_dependency: 0.0,
+                housed_resident_count: 10,
+            }
+        }
+
+        let mut healthy_demand = DemandSystem::new();
+        let healthy_pressure = healthy_demand
+            .update_pressure_channels_from_snapshot(&snapshot_with_zero_budget_ratio(0.0))
+            .admission_pressure;
+        let mut failing_demand = DemandSystem::new();
+        let failing_pressure = failing_demand
+            .update_pressure_channels_from_snapshot(&snapshot_with_zero_budget_ratio(0.8))
+            .admission_pressure;
+
+        assert!(
+            failing_pressure < healthy_pressure,
+            "zero-budget households must soft-damp admission pressure even when surviving housed households look affordable"
+        );
     }
 
     #[test]
@@ -2329,7 +3051,8 @@ mod tests {
         let graph = graph_with_connected_border();
         let config = load_builtin_demand_config().expect("built-in demand config must load");
 
-        let snapshot = DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config);
+        let snapshot =
+            DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
         assert!(
             (snapshot.commercial_owa_dependency - 0.03125).abs() < 1e-4,

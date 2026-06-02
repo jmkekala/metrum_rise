@@ -181,6 +181,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     demand.households_to_admit_today = 2;
     demand.admission_action_credit = 1.25;
     demand.removal_action_credit = 0.50;
+    demand.persistent_exit_action_credit = 0.75;
+    demand.recent_household_failure_pressure = 0.75;
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_test_asset(
         &mut allocator,
@@ -249,6 +251,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         reserved_total_cost: 15.0,
         pickup_eta_hours: 1,
         stay_failure_days: 1,
+        unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
     });
@@ -417,6 +420,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.demand.removal_action_credit,
         demand.removal_action_credit
     );
+    assert_eq!(
+        loaded.demand.persistent_exit_action_credit,
+        demand.persistent_exit_action_credit
+    );
+    assert_eq!(
+        loaded.demand.recent_household_failure_pressure,
+        demand.recent_household_failure_pressure
+    );
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
     assert_eq!(loaded.graph.edge_count(), 1);
@@ -438,6 +449,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].reserved_total_cost, 15.0);
     assert_eq!(loaded.households.households[0].pickup_eta_hours, 1);
     assert_eq!(loaded.households.households[0].stay_failure_days, 1);
+    assert_eq!(loaded.households.households[0].unhoused_days_elapsed, 0);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.planned_attach_node[0], 0);

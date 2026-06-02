@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 32;
+pub const SAVE_VERSION: i64 = 33;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -58,6 +58,7 @@ CREATE TABLE demand_state(
     households_to_remove_today INTEGER NOT NULL,
     admission_action_credit REAL NOT NULL,
     removal_action_credit REAL NOT NULL,
+    persistent_exit_action_credit REAL NOT NULL,
     spawn_action_credit_residential REAL NOT NULL,
     spawn_action_credit_commercial REAL NOT NULL,
     spawn_action_credit_industrial REAL NOT NULL,
@@ -69,7 +70,8 @@ CREATE TABLE demand_state(
     downgrade_action_credit_industrial REAL NOT NULL,
     despawn_action_credit_residential REAL NOT NULL,
     despawn_action_credit_commercial REAL NOT NULL,
-    despawn_action_credit_industrial REAL NOT NULL
+    despawn_action_credit_industrial REAL NOT NULL,
+    recent_household_failure_pressure REAL NOT NULL
 );
 CREATE TABLE pollution_state(
     width INTEGER NOT NULL,
@@ -177,6 +179,7 @@ CREATE TABLE households(
     reserved_total_cost REAL NOT NULL,
     pickup_eta_hours INTEGER NOT NULL,
     stay_failure_days INTEGER NOT NULL,
+    unhoused_days_elapsed INTEGER NOT NULL,
     replenishment_offset_hours INTEGER NOT NULL,
     unemployment_days_elapsed INTEGER NOT NULL
 );
