@@ -37,7 +37,7 @@ use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
     AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
 };
-use crate::simulation::zoning::ZoningSystem;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -358,6 +358,8 @@ pub struct SimCore {
     pub config: WorldConfig,
     /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
     pub treasury: CityTreasury,
+    /// Runtime-only economy debug counter reset after each daily diagnostic line.
+    pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
     /// Authored-world inflow / outflow points when editing or playing from a `WorldDefinition`.
@@ -407,6 +409,26 @@ pub struct SimCore {
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
     pub camera_aabb: (f32, f32, f32, f32),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DailyCityFlowDiagnostics {
+    active_households: u32,
+    housed_households: u32,
+    unhoused_households: u32,
+    zero_budget_households: u32,
+    stock_empty_households: u32,
+    stock_low_households: u32,
+    total_household_slots: u32,
+    vacant_household_slots: u32,
+    resident_agents: u32,
+    pending_household_carriers: u32,
+    employed_agents: u32,
+    unemployed_agents: u32,
+    commercial_job_capacity: u32,
+    commercial_filled_jobs: u32,
+    industrial_job_capacity: u32,
+    industrial_filled_jobs: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -680,9 +702,164 @@ impl SimCore {
         );
     }
 
+    fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
+        let mut diagnostics = DailyCityFlowDiagnostics::default();
+
+        for (building_idx, building) in self.allocator.buildings.iter().enumerate() {
+            if matches!(building.zone_type, ZoneType::Residential) {
+                let household_capacity = self.allocator.household_capacity(building_idx);
+                diagnostics.total_household_slots = diagnostics
+                    .total_household_slots
+                    .saturating_add(household_capacity);
+                diagnostics.vacant_household_slots =
+                    diagnostics.vacant_household_slots.saturating_add(
+                        household_capacity
+                            .saturating_sub(building.occupancy.min(household_capacity)),
+                    );
+            }
+
+            let worker_capacity = self.allocator.worker_capacity(building_idx);
+            match building.zone_type {
+                ZoneType::Commercial => {
+                    diagnostics.commercial_job_capacity = diagnostics
+                        .commercial_job_capacity
+                        .saturating_add(worker_capacity);
+                }
+                ZoneType::Industrial => {
+                    diagnostics.industrial_job_capacity = diagnostics
+                        .industrial_job_capacity
+                        .saturating_add(worker_capacity);
+                }
+                _ => {}
+            }
+        }
+
+        for household in &self.households.households {
+            if household.member_count == 0 {
+                continue;
+            }
+            diagnostics.active_households = diagnostics.active_households.saturating_add(1);
+            if household.home_building_id < self.allocator.buildings.len() {
+                diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
+            } else {
+                diagnostics.unhoused_households = diagnostics.unhoused_households.saturating_add(1);
+            }
+            if household.budget <= f32::EPSILON {
+                diagnostics.zero_budget_households =
+                    diagnostics.zero_budget_households.saturating_add(1);
+            }
+            if household.stock_days <= f32::EPSILON {
+                diagnostics.stock_empty_households =
+                    diagnostics.stock_empty_households.saturating_add(1);
+            }
+            if household.stock_days <= 1.0 {
+                diagnostics.stock_low_households =
+                    diagnostics.stock_low_households.saturating_add(1);
+            }
+        }
+
+        for agent_idx in 0..self.agents.len() {
+            if self.agents.pending_household_size[agent_idx] > 0 {
+                diagnostics.pending_household_carriers =
+                    diagnostics.pending_household_carriers.saturating_add(1);
+                continue;
+            }
+            let household_id = self.agents.household_id[agent_idx];
+            if household_id == usize::MAX || household_id >= self.households.households.len() {
+                continue;
+            }
+            diagnostics.resident_agents = diagnostics.resident_agents.saturating_add(1);
+
+            let work_building = self.agents.work_building[agent_idx];
+            if work_building >= self.allocator.buildings.len()
+                || self.allocator.worker_capacity(work_building) == 0
+            {
+                diagnostics.unemployed_agents = diagnostics.unemployed_agents.saturating_add(1);
+                continue;
+            }
+
+            diagnostics.employed_agents = diagnostics.employed_agents.saturating_add(1);
+            match self.allocator.buildings[work_building].zone_type {
+                ZoneType::Commercial => {
+                    diagnostics.commercial_filled_jobs =
+                        diagnostics.commercial_filled_jobs.saturating_add(1);
+                }
+                ZoneType::Industrial => {
+                    diagnostics.industrial_filled_jobs =
+                        diagnostics.industrial_filled_jobs.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        diagnostics
+    }
+
+    fn log_daily_city_flow_diagnostics(&self, day_index: u32, removed_households: u32) {
+        if !crate::debug::category_enabled("economy") {
+            return;
+        }
+
+        let diagnostics = self.daily_city_flow_diagnostics();
+        let total_job_capacity = diagnostics
+            .commercial_job_capacity
+            .saturating_add(diagnostics.industrial_job_capacity);
+        let filled_jobs = diagnostics
+            .commercial_filled_jobs
+            .saturating_add(diagnostics.industrial_filled_jobs);
+        let open_jobs = total_job_capacity.saturating_sub(filled_jobs);
+        let commercial_open_jobs = diagnostics
+            .commercial_job_capacity
+            .saturating_sub(diagnostics.commercial_filled_jobs);
+        let industrial_open_jobs = diagnostics
+            .industrial_job_capacity
+            .saturating_sub(diagnostics.industrial_filled_jobs);
+        let occupied_household_slots = diagnostics
+            .total_household_slots
+            .saturating_sub(diagnostics.vacant_household_slots);
+        let net_households =
+            self.debug_household_admissions_since_daily as i32 - removed_households as i32;
+
+        debug_log!(
+            "economy",
+            "city flow diagnostics: day={} net_households={:+} admitted_since_daily={} \
+             removed_today={} households={} housed={} unhoused={} zero_budget={} \
+             stock_empty={} stock_low={} resident_agents={} pending_carriers={} \
+             employed={} unemployed={} jobs={}/{} open_jobs={} commercial_jobs={}/{} \
+             commercial_open={} industrial_jobs={}/{} industrial_open={} homes={}/{} \
+             vacant_homes={} treasury={:.0}",
+            day_index,
+            net_households,
+            self.debug_household_admissions_since_daily,
+            removed_households,
+            diagnostics.active_households,
+            diagnostics.housed_households,
+            diagnostics.unhoused_households,
+            diagnostics.zero_budget_households,
+            diagnostics.stock_empty_households,
+            diagnostics.stock_low_households,
+            diagnostics.resident_agents,
+            diagnostics.pending_household_carriers,
+            diagnostics.employed_agents,
+            diagnostics.unemployed_agents,
+            filled_jobs,
+            total_job_capacity,
+            open_jobs,
+            diagnostics.commercial_filled_jobs,
+            diagnostics.commercial_job_capacity,
+            commercial_open_jobs,
+            diagnostics.industrial_filled_jobs,
+            diagnostics.industrial_job_capacity,
+            industrial_open_jobs,
+            occupied_household_slots,
+            diagnostics.total_household_slots,
+            diagnostics.vacant_household_slots,
+            self.treasury.balance,
+        );
+    }
+
     fn print_daily_building_economy(&self, day_index: u32) {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-        use crate::simulation::zoning::ZoneType;
 
         if !crate::debug::category_enabled("economy") {
             return;
@@ -915,6 +1092,8 @@ impl SimCore {
         self.demand
             .log_daily_household_action_diagnostics(day_index);
         self.execute_hourly_demand_pass(day_index, 0);
+        self.log_daily_city_flow_diagnostics(day_index, removed_households);
+        self.debug_household_admissions_since_daily = 0;
         // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
         // been taken.
         self.allocator.reset_daily_input_accumulators();
@@ -969,6 +1148,9 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        self.debug_household_admissions_since_daily = self
+            .debug_household_admissions_since_daily
+            .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
         self.allocator.execute_demand_building_actions(

@@ -1220,6 +1220,21 @@ It reports the raw admission pressure, base vacancy pressure, individual soft-da
 the recent-failure memory and factor, threshold, normalized action pressure, carried admission
 credit, planned households, and actually launched arrival carriers.
 
+The daily `city flow diagnostics` line summarizes the settled city state after daily household
+settlement, removal execution, and the midnight demand pass. It reports:
+
+- `net_households`, `admitted_since_daily`, and `removed_today` for the household flow since the
+  previous daily diagnostic
+- housed, unhoused, zero-budget, stock-empty, and low-stock household counts
+- resident agents, pending household carriers, employed residents, unemployed residents, and open
+  commercial or industrial job capacity
+- occupied/vacant household slots and treasury balance
+
+This line is diagnostic only. It must not become a new demand input or hidden repair path. Its
+purpose is to distinguish healthy low-volume inflow from churn: in a crisis run, outflow plus
+persistent exit should exceed or roughly balance the damped trickle of new admissions unless the
+city has recovered enough jobs, household budgets, and stock stability to grow again.
+
 If a household is removed:
 
 - demand still owns the whole-household removal count

@@ -58,6 +58,7 @@ impl SimCore {
         self.logistics = loaded.logistics;
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
+        self.debug_household_admissions_since_daily = 0;
         self.time.speed_multiplier = 0.0;
         self.transit_network.flow_fields.mark_all_dirty();
         self.undo_stack.clear();

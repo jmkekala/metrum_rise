@@ -864,6 +864,7 @@ mod tests {
             logistics: ShipmentSystem::new(),
             config,
             treasury: CityTreasury::new(0.0),
+            debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
             world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),

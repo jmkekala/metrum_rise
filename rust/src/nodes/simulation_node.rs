@@ -5746,6 +5746,7 @@ impl INode3D for SimulationNode {
                     .map(|t| t.startup_treasury_balance)
                     .unwrap_or(100_000.0),
             ),
+            debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
             world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
@@ -6557,6 +6558,7 @@ mod tests {
             logistics: ShipmentSystem::new(),
             config,
             treasury: CityTreasury::new(0.0),
+            debug_household_admissions_since_daily: 0,
             undo_stack: std::collections::VecDeque::new(),
             world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
