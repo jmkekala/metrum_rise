@@ -13,6 +13,7 @@ extends Node3D
 var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
+var texture_cache: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
@@ -85,7 +86,7 @@ func _ready():
 
 		var mat := ShaderMaterial.new()
 		mat.shader = walk_shader
-		mat.set_shader_parameter("albedo_texture", load(person_skins[p_type]))
+		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_skins[p_type]))
 		mat.set_shader_parameter("vat_texture",    vat_tex)
 		mat.set_shader_parameter("num_frames",     31.0)
 		mmi.material_override = mat
@@ -106,37 +107,23 @@ func _ready():
 	# Each variation will have its own MMI node
 	# Keys in car_mmis will be: (vehicle_type * 10) + color_variant
 	var color_offsets = [0.0, 0.1, 0.2, 0.3, 0.4] # Horizontal UV shifts
+	var car_colors = [
+		Color(0.22, 0.42, 0.78),
+		Color(0.72, 0.16, 0.14),
+		Color(0.17, 0.55, 0.38),
+		Color(0.88, 0.78, 0.30),
+		Color(0.82, 0.84, 0.86),
+	]
+	var car_texture_cache_ready = _import_dest_files_exist(
+		"res://assets/models/vehicles/civilian/Textures/colormap.png.import"
+	)
 
 	for v_type in car_models:
-		var model_path = car_models[v_type]
-		var gltf_doc := GLTFDocument.new()
-		var gltf_state := GLTFState.new()
-		var err := gltf_doc.append_from_file(model_path, gltf_state)
-		
-		if err == OK:
-			var node := gltf_doc.generate_scene(gltf_state)
-			if node:
-				for variant_id in range(color_offsets.size()):
-					var uv_shift = color_offsets[variant_id]
-					var mesh = _extract_mesh(node, uv_shift, 0.0, Vector3(0, PI, 0))
-					if not mesh: continue
-					
-					var mmi = MultiMeshInstance3D.new()
-					var mm = MultiMesh.new()
-					mm.transform_format = MultiMesh.TRANSFORM_3D
-					mm.use_colors = false
-					mm.use_custom_data = false
-					mm.instance_count = 0
-					mm.mesh = mesh
-					mmi.multimesh = mm
-					add_child(mmi)
-					
-					var key = (v_type * 10) + variant_id
-					car_mmis[key] = mmi
-					
-				node.free()
-		else:
-			push_error("Failed to load car model: " + model_path)
+		var loaded_model = false
+		if car_texture_cache_ready:
+			loaded_model = _add_car_model_variants(v_type, car_models[v_type], color_offsets)
+		if not loaded_model:
+			_add_procedural_car_variants(v_type, car_colors)
 
 	debug_mesh_instance = MeshInstance3D.new()
 	debug_mesh = ImmediateMesh.new()
@@ -233,11 +220,79 @@ func update_swarm():
 				debug_mesh.surface_add_vertex(points[i])
 			debug_mesh.surface_end()
 
+func _load_source_texture(path: String) -> Texture2D:
+	if texture_cache.has(path):
+		return texture_cache[path]
+
+	var tex: Texture2D = null
+	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
+	if image:
+		tex = ImageTexture.create_from_image(image)
+	else:
+		push_error("Could not load texture source: " + path)
+
+	texture_cache[path] = tex
+	return tex
+
+func _import_dest_files_exist(import_path: String) -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(import_path) != OK:
+		return false
+
+	var dest_files = cfg.get_value("deps", "dest_files", [])
+	for dest_file in dest_files:
+		if not FileAccess.file_exists(ProjectSettings.globalize_path(dest_file)):
+			return false
+	return not dest_files.is_empty()
+
+func _add_car_model_variants(v_type: int, model_path: String, color_offsets: Array) -> bool:
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	var err := gltf_doc.append_from_file(model_path, gltf_state)
+	if err != OK:
+		push_error("Failed to load car model: " + model_path)
+		return false
+
+	var node := gltf_doc.generate_scene(gltf_state)
+	if not node:
+		push_error("Could not generate scene from car model: " + model_path)
+		return false
+
+	var added_count := 0
+	for variant_id in range(color_offsets.size()):
+		var uv_shift = color_offsets[variant_id]
+		var mesh = _extract_mesh(node, uv_shift, 0.0, Vector3(0, PI, 0))
+		if not mesh:
+			continue
+		_add_car_multimesh(v_type, variant_id, mesh)
+		added_count += 1
+
+	node.free()
+	return added_count > 0
+
+func _add_procedural_car_variants(v_type: int, colors: Array) -> void:
+	for variant_id in range(colors.size()):
+		_add_car_multimesh(v_type, variant_id, _build_car_mesh(colors[variant_id]))
+
+func _add_car_multimesh(v_type: int, variant_id: int, mesh: Mesh) -> void:
+	var mmi = MultiMeshInstance3D.new()
+	var mm = MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = false
+	mm.use_custom_data = false
+	mm.instance_count = 0
+	mm.mesh = mesh
+	mmi.multimesh = mm
+	add_child(mmi)
+
+	var key = (v_type * 10) + variant_id
+	car_mmis[key] = mmi
+
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
 # Car faces along local -Z (Godot forward). Origin at bottom-centre of body.
 # Body: 1.8 m wide × 0.55 m tall × 4.2 m long
 # Cabin: 1.8 m wide × 1.2 m tall × 2.2 m long, full-height to seal the body opening at z=±1.1
-func _build_car_mesh() -> ArrayMesh:
+func _build_car_mesh(body_color: Color) -> ArrayMesh:
 	# Use plain Array (reference type) so helpers can append to the caller's arrays.
 	# Converted to PackedVector3Array only when passing to add_surface_from_arrays.
 	var verts: Array = []
@@ -257,7 +312,7 @@ func _build_car_mesh() -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.22, 0.42, 0.78)  # body colour; will vary per model once item 47 ships
+	mat.albedo_color = body_color
 	mat.roughness = 0.8
 	mat.metallic = 0.0   # metallic without an HDR environment looks glassy/see-through
 	mesh.surface_set_material(0, mat)
