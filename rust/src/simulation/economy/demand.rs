@@ -169,11 +169,12 @@ struct SignalNormalizationConfig {
 #[derive(Clone, Debug)]
 struct HouseholdActionConfig {
     admission_threshold: f32,
-    admission_affordability_floor: f32,
     admission_unhoused_ratio_penalty: f32,
     admission_zero_budget_penalty: f32,
-    admission_negative_treasury_factor: f32,
     admission_recent_failure_penalty: f32,
+    move_in_min_search_runway_days: f32,
+    move_in_target_search_runway_days: f32,
+    move_in_benefit_treasury_coverage_days: f32,
     recent_failure_daily_decay: f32,
     removal_threshold: f32,
     persistent_exit_destitute_stock_days: f32,
@@ -207,13 +208,30 @@ struct HouseholdAdmissionDiagnostics {
     connected_border_count: u32,
     housing_availability: f32,
     household_affordability: f32,
-    affordability_factor: f32,
+    move_in_acceptance: f32,
+    move_in_search_runway_days: f32,
+    move_in_runway_factor: f32,
+    candidate_household_size: f32,
+    candidate_effective_workers: f32,
+    open_job_slots: u32,
+    existing_unemployed_member_count: u32,
+    expected_employed_members: f32,
+    expected_unemployed_members: f32,
+    expected_entry_wage_per_day: f32,
+    expected_wage_income_per_day: f32,
+    benefit_reliability: f32,
+    existing_benefit_claim_per_day: f32,
+    candidate_benefit_claim_per_day: f32,
+    total_benefit_claim_per_day: f32,
+    expected_benefit_income_per_day: f32,
+    starter_savings: f32,
+    daily_essential_cost: f32,
+    daily_deficit: f32,
     unhoused_household_ratio: f32,
     unhoused_factor: f32,
     zero_budget_household_ratio: f32,
     zero_budget_factor: f32,
-    city_treasury_negative: f32,
-    treasury_factor: f32,
+    failure_factor: f32,
     recent_failure_pressure: f32,
     recent_failure_factor: f32,
     base_pressure: f32,
@@ -251,6 +269,27 @@ struct HouseholdRemovalDiagnostics {
     max_actionable_households: u32,
     planned_households: u32,
     removed_households: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MoveInAcceptance {
+    candidate_household_size: f32,
+    candidate_effective_workers: f32,
+    expected_employed_members: f32,
+    expected_unemployed_members: f32,
+    expected_entry_wage_per_day: f32,
+    expected_wage_income_per_day: f32,
+    existing_benefit_claim_per_day: f32,
+    candidate_benefit_claim_per_day: f32,
+    total_benefit_claim_per_day: f32,
+    benefit_reliability: f32,
+    expected_benefit_income_per_day: f32,
+    starter_savings: f32,
+    daily_essential_cost: f32,
+    daily_deficit: f32,
+    search_runway_days: f32,
+    runway_factor: f32,
+    acceptance: f32,
 }
 
 #[allow(dead_code)]
@@ -304,11 +343,12 @@ struct AuthoredSignalNormalization {
 #[serde(deny_unknown_fields)]
 struct AuthoredHouseholdAction {
     admission_threshold: f32,
-    admission_affordability_floor: f32,
     admission_unhoused_ratio_penalty: f32,
     admission_zero_budget_penalty: f32,
-    admission_negative_treasury_factor: f32,
     admission_recent_failure_penalty: f32,
+    move_in_min_search_runway_days: f32,
+    move_in_target_search_runway_days: f32,
+    move_in_benefit_treasury_coverage_days: f32,
     recent_failure_daily_decay: f32,
     removal_threshold: f32,
     persistent_exit_destitute_stock_days: f32,
@@ -470,12 +510,10 @@ impl DemandSystem {
         let ext_conn = snapshot.external_connection_available;
 
         // Admission pressure fills existing vacancies, then soft-damps immigration when the
-        // existing household economy is already failing.
+        // candidate household does not have a credible benefit-backed job-search runway or
+        // the existing household economy is already failing.
         let admission_base_pressure = ext_conn * snapshot.housing_availability;
-        let admission_affordability_factor =
-            self.config.household_action.admission_affordability_floor
-                + (1.0 - self.config.household_action.admission_affordability_floor)
-                    * snapshot.household_affordability;
+        let move_in = compute_move_in_acceptance(&self.config, snapshot);
         let admission_unhoused_factor = 1.0
             - self
                 .config
@@ -485,26 +523,19 @@ impl DemandSystem {
         let admission_zero_budget_factor = 1.0
             - self.config.household_action.admission_zero_budget_penalty
                 * snapshot.zero_budget_household_ratio;
-        let admission_treasury_factor = 1.0
-            - snapshot.city_treasury_negative
-                * (1.0
-                    - self
-                        .config
-                        .household_action
-                        .admission_negative_treasury_factor);
         let admission_recent_failure_factor = 1.0
             - self
                 .config
                 .household_action
                 .admission_recent_failure_penalty
                 * self.recent_household_failure_pressure;
+        let admission_failure_factor = clamp01(admission_unhoused_factor)
+            * clamp01(admission_zero_budget_factor)
+            * clamp01(admission_recent_failure_factor);
         let admission_pressure = clamp01(
             admission_base_pressure
-                * clamp01(admission_affordability_factor)
-                * clamp01(admission_unhoused_factor)
-                * clamp01(admission_zero_budget_factor)
-                * clamp01(admission_treasury_factor)
-                * clamp01(admission_recent_failure_factor),
+                * clamp01(move_in.acceptance)
+                * clamp01(admission_failure_factor),
         );
         let removal_pressure = snapshot.unhoused_household_ratio;
         let failure_pressure = snapshot
@@ -516,13 +547,30 @@ impl DemandSystem {
             connected_border_count: snapshot.connected_border_count,
             housing_availability: snapshot.housing_availability,
             household_affordability: snapshot.household_affordability,
-            affordability_factor: clamp01(admission_affordability_factor),
+            move_in_acceptance: clamp01(move_in.acceptance),
+            move_in_search_runway_days: move_in.search_runway_days,
+            move_in_runway_factor: clamp01(move_in.runway_factor),
+            candidate_household_size: move_in.candidate_household_size,
+            candidate_effective_workers: move_in.candidate_effective_workers,
+            open_job_slots: snapshot.open_job_slots,
+            existing_unemployed_member_count: snapshot.existing_unemployed_member_count,
+            expected_employed_members: move_in.expected_employed_members,
+            expected_unemployed_members: move_in.expected_unemployed_members,
+            expected_entry_wage_per_day: move_in.expected_entry_wage_per_day,
+            expected_wage_income_per_day: move_in.expected_wage_income_per_day,
+            benefit_reliability: move_in.benefit_reliability,
+            existing_benefit_claim_per_day: move_in.existing_benefit_claim_per_day,
+            candidate_benefit_claim_per_day: move_in.candidate_benefit_claim_per_day,
+            total_benefit_claim_per_day: move_in.total_benefit_claim_per_day,
+            expected_benefit_income_per_day: move_in.expected_benefit_income_per_day,
+            starter_savings: move_in.starter_savings,
+            daily_essential_cost: move_in.daily_essential_cost,
+            daily_deficit: move_in.daily_deficit,
             unhoused_household_ratio: snapshot.unhoused_household_ratio,
             unhoused_factor: clamp01(admission_unhoused_factor),
             zero_budget_household_ratio: snapshot.zero_budget_household_ratio,
             zero_budget_factor: clamp01(admission_zero_budget_factor),
-            city_treasury_negative: snapshot.city_treasury_negative,
-            treasury_factor: clamp01(admission_treasury_factor),
+            failure_factor: clamp01(admission_failure_factor),
             recent_failure_pressure: self.recent_household_failure_pressure,
             recent_failure_factor: clamp01(admission_recent_failure_factor),
             base_pressure: admission_base_pressure,
@@ -647,9 +695,14 @@ impl DemandSystem {
             "economy",
             "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
              vacancy={:.2} vacant_slots={} households={} border_nodes={} \
-             afford={:.2} afford_factor={:.2} unhoused_ratio={:.2} unhoused_factor={:.2} \
-             zero_budget_ratio={:.2} zero_budget_factor={:.2} treasury_neg={:.0} \
-             treasury_factor={:.2} recent_failure={:.2} recent_failure_factor={:.2} \
+             afford={:.2} accept={:.2} runway={:.2} runway_factor={:.2} \
+             candidate_size={:.1} workers={:.1} open_jobs={} existing_unemployed={} \
+             expected_employed={:.1} expected_unemployed={:.1} entry_wage={:.1} wage_income={:.1} \
+             benefit_rel={:.2} existing_benefit_claim={:.1} candidate_benefit_claim={:.1} \
+             total_benefit_claim={:.1} benefit_income={:.1} starter={:.1} daily_cost={:.1} \
+             daily_deficit={:.1} unhoused_ratio={:.2} unhoused_factor={:.2} \
+             zero_budget_ratio={:.2} zero_budget_factor={:.2} failure_factor={:.2} \
+             recent_failure={:.2} recent_failure_factor={:.2} \
              threshold={:.2} norm={:.3} credit={:.3}->{:.3} cap={} plan={} launched={}",
             day_index,
             minute_of_day,
@@ -660,13 +713,30 @@ impl DemandSystem {
             diagnostics.total_household_count,
             diagnostics.connected_border_count,
             diagnostics.household_affordability,
-            diagnostics.affordability_factor,
+            diagnostics.move_in_acceptance,
+            diagnostics.move_in_search_runway_days,
+            diagnostics.move_in_runway_factor,
+            diagnostics.candidate_household_size,
+            diagnostics.candidate_effective_workers,
+            diagnostics.open_job_slots,
+            diagnostics.existing_unemployed_member_count,
+            diagnostics.expected_employed_members,
+            diagnostics.expected_unemployed_members,
+            diagnostics.expected_entry_wage_per_day,
+            diagnostics.expected_wage_income_per_day,
+            diagnostics.benefit_reliability,
+            diagnostics.existing_benefit_claim_per_day,
+            diagnostics.candidate_benefit_claim_per_day,
+            diagnostics.total_benefit_claim_per_day,
+            diagnostics.expected_benefit_income_per_day,
+            diagnostics.starter_savings,
+            diagnostics.daily_essential_cost,
+            diagnostics.daily_deficit,
             diagnostics.unhoused_household_ratio,
             diagnostics.unhoused_factor,
             diagnostics.zero_budget_household_ratio,
             diagnostics.zero_budget_factor,
-            diagnostics.city_treasury_negative,
-            diagnostics.treasury_factor,
+            diagnostics.failure_factor,
             diagnostics.recent_failure_pressure,
             diagnostics.recent_failure_factor,
             diagnostics.threshold,
@@ -994,6 +1064,82 @@ impl DemandSystem {
             plan.downgrades.extend(selected_downgrades);
             plan.despawns.extend(selected_despawns);
         }
+    }
+}
+
+fn compute_move_in_acceptance(
+    config: &DemandConfig,
+    snapshot: &DailyDemandSnapshot,
+) -> MoveInAcceptance {
+    if snapshot.vacant_household_slots == 0 || snapshot.candidate_household_size <= EPSILON {
+        return MoveInAcceptance::default();
+    }
+
+    let candidate_household_size = snapshot.candidate_household_size.max(1.0);
+    let candidate_effective_workers = candidate_household_size;
+    let expected_employed_members = candidate_effective_workers.min(snapshot.open_job_slots as f32);
+    let expected_unemployed_members =
+        (candidate_effective_workers - expected_employed_members).max(0.0);
+    let expected_entry_wage_per_day = snapshot.average_open_job_wage_per_day.max(0.0);
+    let expected_wage_income_per_day = expected_employed_members * expected_entry_wage_per_day;
+
+    let benefit_per_member = snapshot.unemployment_daily_benefit_per_member.max(0.0);
+    let existing_benefit_claim_per_day =
+        snapshot.existing_unemployed_member_count as f32 * benefit_per_member;
+    let candidate_benefit_claim_per_day = expected_unemployed_members * benefit_per_member;
+    let total_benefit_claim_per_day =
+        existing_benefit_claim_per_day + candidate_benefit_claim_per_day;
+    let coverage_days = config
+        .household_action
+        .move_in_benefit_treasury_coverage_days
+        .max(EPSILON);
+    let benefit_reliability = if total_benefit_claim_per_day <= EPSILON {
+        1.0
+    } else {
+        clamp01(
+            snapshot.city_treasury_balance.max(0.0) / (total_benefit_claim_per_day * coverage_days),
+        )
+    };
+    let expected_benefit_income_per_day = candidate_benefit_claim_per_day * benefit_reliability;
+    let expected_daily_income = expected_wage_income_per_day + expected_benefit_income_per_day;
+
+    let starter_savings = snapshot.immigrant_starter_savings_per_household.max(0.0);
+    let daily_essential_cost = snapshot.candidate_daily_essential_cost.max(0.0);
+    let daily_deficit = (daily_essential_cost - expected_daily_income).max(0.0);
+    let target_days = config
+        .household_action
+        .move_in_target_search_runway_days
+        .max(EPSILON);
+    let min_days = config
+        .household_action
+        .move_in_min_search_runway_days
+        .max(0.0);
+    let search_runway_days = if daily_deficit <= EPSILON {
+        target_days
+    } else {
+        starter_savings / daily_deficit
+    };
+    let runway_span = (target_days - min_days).max(EPSILON);
+    let runway_factor = clamp01((search_runway_days - min_days) / runway_span);
+
+    MoveInAcceptance {
+        candidate_household_size,
+        candidate_effective_workers,
+        expected_employed_members,
+        expected_unemployed_members,
+        expected_entry_wage_per_day,
+        expected_wage_income_per_day,
+        existing_benefit_claim_per_day,
+        candidate_benefit_claim_per_day,
+        total_benefit_claim_per_day,
+        benefit_reliability,
+        expected_benefit_income_per_day,
+        starter_savings,
+        daily_essential_cost,
+        daily_deficit,
+        search_runway_days,
+        runway_factor,
+        acceptance: runway_factor,
     }
 }
 
@@ -1601,12 +1747,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         "household_action.admission_threshold",
     )?;
     validate_range_f32(
-        authored.household_action.admission_affordability_floor,
-        0.0,
-        1.0,
-        "household_action.admission_affordability_floor",
-    )?;
-    validate_range_f32(
         authored.household_action.admission_unhoused_ratio_penalty,
         0.0,
         1.0,
@@ -1619,16 +1759,32 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         "household_action.admission_zero_budget_penalty",
     )?;
     validate_range_f32(
-        authored.household_action.admission_negative_treasury_factor,
-        0.0,
-        1.0,
-        "household_action.admission_negative_treasury_factor",
-    )?;
-    validate_range_f32(
         authored.household_action.admission_recent_failure_penalty,
         0.0,
         1.0,
         "household_action.admission_recent_failure_penalty",
+    )?;
+    validate_positive_f32(
+        authored.household_action.move_in_min_search_runway_days,
+        "household_action.move_in_min_search_runway_days",
+    )?;
+    validate_positive_f32(
+        authored.household_action.move_in_target_search_runway_days,
+        "household_action.move_in_target_search_runway_days",
+    )?;
+    if authored.household_action.move_in_target_search_runway_days
+        <= authored.household_action.move_in_min_search_runway_days
+    {
+        return Err(
+            "household_action.move_in_target_search_runway_days must be greater than move_in_min_search_runway_days"
+                .to_owned(),
+        );
+    }
+    validate_positive_f32(
+        authored
+            .household_action
+            .move_in_benefit_treasury_coverage_days,
+        "household_action.move_in_benefit_treasury_coverage_days",
     )?;
     validate_range_f32(
         authored.household_action.recent_failure_daily_decay,
@@ -1793,17 +1949,22 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
 
         household_action: HouseholdActionConfig {
             admission_threshold: authored.household_action.admission_threshold,
-            admission_affordability_floor: authored.household_action.admission_affordability_floor,
             admission_unhoused_ratio_penalty: authored
                 .household_action
                 .admission_unhoused_ratio_penalty,
             admission_zero_budget_penalty: authored.household_action.admission_zero_budget_penalty,
-            admission_negative_treasury_factor: authored
-                .household_action
-                .admission_negative_treasury_factor,
             admission_recent_failure_penalty: authored
                 .household_action
                 .admission_recent_failure_penalty,
+            move_in_min_search_runway_days: authored
+                .household_action
+                .move_in_min_search_runway_days,
+            move_in_target_search_runway_days: authored
+                .household_action
+                .move_in_target_search_runway_days,
+            move_in_benefit_treasury_coverage_days: authored
+                .household_action
+                .move_in_benefit_treasury_coverage_days,
             recent_failure_daily_decay: authored.household_action.recent_failure_daily_decay,
             removal_threshold: authored.household_action.removal_threshold,
             persistent_exit_destitute_stock_days: authored
@@ -1996,7 +2157,14 @@ struct DailyDemandSnapshot {
     commercial_capacity_deficit: f32,
     external_connection_available: f32,
     connected_border_count: u32,
-    city_treasury_negative: f32,
+    city_treasury_balance: f32,
+    candidate_household_size: f32,
+    immigrant_starter_savings_per_household: f32,
+    candidate_daily_essential_cost: f32,
+    unemployment_daily_benefit_per_member: f32,
+    existing_unemployed_member_count: u32,
+    open_job_slots: u32,
+    average_open_job_wage_per_day: f32,
     /// Fraction of commercial input value sourced from OWA rather than local industrial.
     ///
     /// Computed from the daily `daily_owa_input_value` / `daily_local_input_value` accumulators
@@ -2022,6 +2190,11 @@ impl DailyDemandSnapshot {
         let mut total_commercial_owa_input = 0.0_f32;
         let mut total_commercial_local_input = 0.0_f32;
         let mut total_commercial_expected_input = 0.0_f32;
+        let mut candidate_household_size_sum = 0.0_f32;
+        let mut candidate_household_slot_count = 0_u32;
+        let mut filled_job_count = 0_u32;
+        let mut open_job_slots = 0_u32;
+        let mut open_job_wage_sum = 0.0_f32;
 
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -2060,6 +2233,24 @@ impl DailyDemandSnapshot {
                 );
             }
         }
+        let mut daily_supply_cost_per_resident = 0.0_f32;
+        for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
+        {
+            let resource_price = catalog
+                .unit_price_for_resource(resource_runtime_id)
+                .unwrap_or_else(|| {
+                    let resource_id = catalog
+                        .resource_id_for_runtime_id(resource_runtime_id)
+                        .unwrap_or("<unknown>");
+                    panic!(
+                        "resource '{resource_id}' used by household demand sink has no catalog price"
+                    )
+                });
+            daily_supply_cost_per_resident +=
+                consumption_rate_per_resident.max(0.0) * resource_price.max(0.0);
+        }
+        let daily_essential_cost_per_resident =
+            daily_supply_cost_per_resident + tuning.households.utility_cost_per_member_per_day;
         let mut commercial_output_capacity_by_resource = Vec::new();
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
@@ -2080,8 +2271,42 @@ impl DailyDemandSnapshot {
             if matches!(building.zone_type, ZoneType::Residential) {
                 let household_capacity = allocator.household_capacity(idx);
                 total_household_slots = total_household_slots.saturating_add(household_capacity);
-                occupied_household_slots = occupied_household_slots
-                    .saturating_add(building.occupancy.min(household_capacity));
+                let occupied = building.occupancy.min(household_capacity);
+                occupied_household_slots = occupied_household_slots.saturating_add(occupied);
+                let free_slots = household_capacity.saturating_sub(occupied);
+                if free_slots > 0 {
+                    let candidate_size =
+                        candidate_household_size_from_flat_size(allocator.flat_size_m2(idx));
+                    candidate_household_size_sum += candidate_size as f32 * free_slots as f32;
+                    candidate_household_slot_count =
+                        candidate_household_slot_count.saturating_add(free_slots);
+                }
+            }
+
+            if !building.is_deserted
+                && matches!(
+                    building.zone_type,
+                    ZoneType::Commercial | ZoneType::Industrial
+                )
+            {
+                let worker_capacity = allocator.worker_capacity(idx);
+                if worker_capacity > 0 {
+                    let average_daily_wage = catalog
+                        .profile_by_runtime_id(building.economy_profile_runtime_id)
+                        .map(|profile| profile.average_daily_wage())
+                        .unwrap_or(0.0);
+                    let filled_workers = building.worker_count.min(worker_capacity);
+                    filled_job_count = filled_job_count.saturating_add(filled_workers);
+                    if average_daily_wage <= 0.1 {
+                        continue;
+                    }
+                    let budget_capacity =
+                        (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
+                    let effective_capacity = worker_capacity.min(budget_capacity);
+                    let open_slots = effective_capacity.saturating_sub(filled_workers);
+                    open_job_slots = open_job_slots.saturating_add(open_slots);
+                    open_job_wage_sum += open_slots as f32 * average_daily_wage.max(0.0);
+                }
             }
 
             // Sum OWA vs local input spend across active commercial buildings.
@@ -2125,6 +2350,20 @@ impl DailyDemandSnapshot {
         }
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
+        let candidate_household_size = if candidate_household_slot_count == 0 {
+            0.0
+        } else {
+            candidate_household_size_sum / candidate_household_slot_count as f32
+        };
+        let immigrant_starter_savings_per_household =
+            candidate_household_size * tuning.households.immigrant_starting_budget_per_member;
+        let candidate_daily_essential_cost =
+            candidate_household_size * daily_essential_cost_per_resident;
+        let average_open_job_wage_per_day = if open_job_slots == 0 {
+            0.0
+        } else {
+            open_job_wage_sum / open_job_slots as f32
+        };
 
         let mut housed_resident_count = 0_u32;
         let mut housed_household_count = 0_u32;
@@ -2238,6 +2477,8 @@ impl DailyDemandSnapshot {
         } else {
             clamp01(zero_budget_household_count as f32 / total_household_count as f32)
         };
+        let existing_unemployed_member_count =
+            housed_resident_count.saturating_sub(filled_job_count);
 
         // Fraction of commercial input value sourced from OWA vs local industrial.
         // Uses expected daily input cost as a minimum denominator so a tiny OWA
@@ -2258,7 +2499,8 @@ impl DailyDemandSnapshot {
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
              unhoused_ratio={:.2} zero_budget_ratio={:.2} stock_stab={:.2} afford={:.2} \
-             com_cap_def={:.2} owa_dep={:.2} treasury_neg={:.0} private_buildings={}",
+             com_cap_def={:.2} owa_dep={:.2} treasury={:.0} cand_size={:.1} \
+             open_jobs={} existing_unemployed={} private_buildings={}",
             connected_border_count,
             external_connection_available,
             housing_availability,
@@ -2268,7 +2510,10 @@ impl DailyDemandSnapshot {
             household_affordability,
             commercial_capacity_deficit,
             commercial_owa_dependency,
-            if treasury_balance < 0.0 { 1.0 } else { 0.0 },
+            treasury_balance,
+            candidate_household_size,
+            open_job_slots,
+            existing_unemployed_member_count,
             existing_private_building_count,
         );
 
@@ -2287,10 +2532,25 @@ impl DailyDemandSnapshot {
             commercial_capacity_deficit,
             external_connection_available,
             connected_border_count,
-            city_treasury_negative: if treasury_balance < 0.0 { 1.0 } else { 0.0 },
+            city_treasury_balance: treasury_balance as f32,
+            candidate_household_size,
+            immigrant_starter_savings_per_household,
+            candidate_daily_essential_cost,
+            unemployment_daily_benefit_per_member: tuning.unemployment_daily_benefit_per_member,
+            existing_unemployed_member_count,
+            open_job_slots,
+            average_open_job_wage_per_day,
             commercial_owa_dependency,
             housed_resident_count,
         }
+    }
+}
+
+fn candidate_household_size_from_flat_size(flat_size_m2: f32) -> u16 {
+    if flat_size_m2 > 1.0 {
+        ((flat_size_m2 / 40.0).ceil() as u16).clamp(1, 5)
+    } else {
+        2
     }
 }
 
@@ -2592,6 +2852,35 @@ mod tests {
 
     fn empty_zoning() -> ZoningSystem {
         ZoningSystem::new(&WorldConfig::default())
+    }
+
+    fn vacant_admission_snapshot() -> DailyDemandSnapshot {
+        DailyDemandSnapshot {
+            vacant_household_slots: 10,
+            total_household_count: 4,
+            housed_household_count: 4,
+            unhoused_household_count: 0,
+            zero_budget_household_count: 0,
+            persistent_exit_eligible_household_count: 0,
+            unhoused_household_ratio: 0.0,
+            zero_budget_household_ratio: 0.0,
+            housing_availability: 1.0,
+            household_affordability: 1.0,
+            household_stock_stability: 1.0,
+            commercial_capacity_deficit: 0.0,
+            external_connection_available: 1.0,
+            connected_border_count: 1,
+            city_treasury_balance: 100_000.0,
+            candidate_household_size: 2.0,
+            immigrant_starter_savings_per_household: 30.0,
+            candidate_daily_essential_cost: 56.0,
+            unemployment_daily_benefit_per_member: 30.0,
+            existing_unemployed_member_count: 0,
+            open_job_slots: 0,
+            average_open_job_wage_per_day: 0.0,
+            commercial_owa_dependency: 0.0,
+            housed_resident_count: 10,
+        }
     }
 
     #[test]
@@ -2950,36 +3239,14 @@ mod tests {
 
     #[test]
     fn recent_failure_memory_damps_household_admission_pressure() {
-        fn healthy_vacant_snapshot() -> DailyDemandSnapshot {
-            DailyDemandSnapshot {
-                vacant_household_slots: 10,
-                total_household_count: 4,
-                housed_household_count: 4,
-                unhoused_household_count: 0,
-                zero_budget_household_count: 0,
-                persistent_exit_eligible_household_count: 0,
-                unhoused_household_ratio: 0.0,
-                zero_budget_household_ratio: 0.0,
-                housing_availability: 1.0,
-                household_affordability: 1.0,
-                household_stock_stability: 1.0,
-                commercial_capacity_deficit: 0.0,
-                external_connection_available: 1.0,
-                connected_border_count: 1,
-                city_treasury_negative: 0.0,
-                commercial_owa_dependency: 0.0,
-                housed_resident_count: 10,
-            }
-        }
-
         let mut healthy_demand = DemandSystem::new();
         let healthy = healthy_demand
-            .update_pressure_channels_from_snapshot(&healthy_vacant_snapshot())
+            .update_pressure_channels_from_snapshot(&vacant_admission_snapshot())
             .admission_pressure;
         let mut cooling_demand = DemandSystem::new();
         cooling_demand.recent_household_failure_pressure = 0.8;
         let cooling_inputs =
-            cooling_demand.update_pressure_channels_from_snapshot(&healthy_vacant_snapshot());
+            cooling_demand.update_pressure_channels_from_snapshot(&vacant_admission_snapshot());
 
         assert!(
             cooling_inputs.admission_pressure < healthy * 0.40,
@@ -2997,25 +3264,13 @@ mod tests {
         fn snapshot_with_zero_budget_ratio(
             zero_budget_household_ratio: f32,
         ) -> DailyDemandSnapshot {
-            DailyDemandSnapshot {
-                vacant_household_slots: 10,
-                total_household_count: 10,
-                housed_household_count: 10,
-                unhoused_household_count: 0,
-                zero_budget_household_count: (zero_budget_household_ratio * 10.0).round() as u32,
-                persistent_exit_eligible_household_count: 0,
-                unhoused_household_ratio: 0.0,
-                zero_budget_household_ratio,
-                housing_availability: 1.0,
-                household_affordability: 1.0,
-                household_stock_stability: 1.0,
-                commercial_capacity_deficit: 0.0,
-                external_connection_available: 1.0,
-                connected_border_count: 1,
-                city_treasury_negative: 0.0,
-                commercial_owa_dependency: 0.0,
-                housed_resident_count: 10,
-            }
+            let mut snapshot = vacant_admission_snapshot();
+            snapshot.total_household_count = 10;
+            snapshot.housed_household_count = 10;
+            snapshot.zero_budget_household_count =
+                (zero_budget_household_ratio * 10.0).round() as u32;
+            snapshot.zero_budget_household_ratio = zero_budget_household_ratio;
+            snapshot
         }
 
         let mut healthy_demand = DemandSystem::new();
@@ -3030,6 +3285,56 @@ mod tests {
         assert!(
             failing_pressure < healthy_pressure,
             "zero-budget households must soft-damp admission pressure even when surviving housed households look affordable"
+        );
+    }
+
+    #[test]
+    fn move_in_acceptance_accounts_for_benefit_treasury_coverage() {
+        let mut covered_snapshot = vacant_admission_snapshot();
+        covered_snapshot.existing_unemployed_member_count = 100;
+        covered_snapshot.city_treasury_balance = 100_000.0;
+
+        let mut depleted_snapshot = vacant_admission_snapshot();
+        depleted_snapshot.existing_unemployed_member_count = 100;
+        depleted_snapshot.city_treasury_balance = 0.0;
+
+        let mut covered_demand = DemandSystem::new();
+        let covered_inputs =
+            covered_demand.update_pressure_channels_from_snapshot(&covered_snapshot);
+        let mut depleted_demand = DemandSystem::new();
+        let depleted_inputs =
+            depleted_demand.update_pressure_channels_from_snapshot(&depleted_snapshot);
+
+        assert!(
+            covered_inputs.admission_pressure > 0.9,
+            "covered benefit runway should admit into available housing"
+        );
+        assert_eq!(
+            depleted_inputs.admission_diagnostics.benefit_reliability,
+            0.0
+        );
+        assert_eq!(
+            depleted_inputs.admission_diagnostics.move_in_acceptance,
+            0.0
+        );
+        assert_eq!(depleted_inputs.admission_pressure, 0.0);
+    }
+
+    #[test]
+    fn open_jobs_make_move_in_viable_without_benefits() {
+        let mut snapshot = vacant_admission_snapshot();
+        snapshot.city_treasury_balance = 0.0;
+        snapshot.open_job_slots = 2;
+        snapshot.average_open_job_wage_per_day = 100.0;
+
+        let mut demand = DemandSystem::new();
+        let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
+
+        assert_eq!(inputs.admission_diagnostics.expected_employed_members, 2.0);
+        assert_eq!(inputs.admission_diagnostics.daily_deficit, 0.0);
+        assert!(
+            inputs.admission_pressure > 0.9,
+            "budget-backed open jobs should make the candidate household viable without benefit treasury"
         );
     }
 

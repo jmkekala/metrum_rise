@@ -1502,7 +1502,7 @@ fn test_immigration_claims_vacant_home() {
 }
 
 #[test]
-fn test_startup_immigration_floor_avoids_zero_rounding() {
+fn test_hourly_startup_admission_avoids_zero_rounding() {
     use crate::simulation::economy::demand::DemandSystem;
     use godot::prelude::Vector3;
 
@@ -1550,7 +1550,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         side: 1,
         cell_x: 0,
         cell_y: 0,
-        occupancy: 2,
+        occupancy: 1,
         worker_count: 0,
         asset_id: residential_asset.clone(),
         level: 1,
@@ -1621,7 +1621,9 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
     assert!(
         demand.households_to_admit_today > 0,
-        "hourly demand should produce a household-admission output from vacant housing"
+        "hourly demand should produce a household-admission output from vacant housing; credit={:.3} residential={:.3}",
+        demand.admission_action_credit,
+        demand.residential,
     );
     allocator.execute_demand_household_admission(
         demand.households_to_admit_today,

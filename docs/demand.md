@@ -305,11 +305,12 @@ max_households_per_day = 48
 
 [household_action]
 admission_threshold = 0.10
-admission_affordability_floor = 0.25
 admission_unhoused_ratio_penalty = 0.75
 admission_zero_budget_penalty = 0.75
-admission_negative_treasury_factor = 0.60
 admission_recent_failure_penalty = 0.85
+move_in_min_search_runway_days = 1.0
+move_in_target_search_runway_days = 4.0
+move_in_benefit_treasury_coverage_days = 3.0
 recent_failure_daily_decay = 0.50
 removal_threshold = 0.55
 persistent_exit_destitute_stock_days = 0.25
@@ -353,11 +354,13 @@ Deterministic validation rules:
 - `signal_normalization.household_stock_stability_target_days` must be finite and `> 0.0`
 - `action_budget.max_households_per_day` must be a finite integer `>= 0`
 - `household_action.admission_threshold` must be finite and in `0.0..1.0`
-- `household_action.admission_affordability_floor` must be finite and in `0.0..1.0`
 - `household_action.admission_unhoused_ratio_penalty` must be finite and in `0.0..1.0`
 - `household_action.admission_zero_budget_penalty` must be finite and in `0.0..1.0`
-- `household_action.admission_negative_treasury_factor` must be finite and in `0.0..1.0`
 - `household_action.admission_recent_failure_penalty` must be finite and in `0.0..1.0`
+- `household_action.move_in_min_search_runway_days` must be finite and `> 0.0`
+- `household_action.move_in_target_search_runway_days` must be finite and greater than
+  `move_in_min_search_runway_days`
+- `household_action.move_in_benefit_treasury_coverage_days` must be finite and `> 0.0`
 - `household_action.recent_failure_daily_decay` must be finite and in `0.0..1.0`
 - `household_action.removal_threshold` must be finite and in `0.0..1.0`
 - `household_action.persistent_exit_destitute_stock_days` must be finite and in `0.0..365.0`
@@ -429,7 +432,14 @@ Baseline `v0.1` city-level signal families:
 - `commercial_capacity_deficit` — fraction of housed-resident demand-sink consumption that is not
   covered by existing live commercial output capacity
 - `external_connection_available`
-- `city_treasury_negative`
+- `city_treasury_balance`
+- `candidate_household_size`
+- `candidate_daily_essential_cost`
+- `immigrant_starter_savings_per_household`
+- `unemployment_daily_benefit_per_member`
+- `existing_unemployed_member_count`
+- `open_job_slots`
+- `average_open_job_wage_per_day`
 - `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
   than local industrial; computed from daily shipment costs accumulated per building, giving a
   smooth 0..1 signal that reflects actual throughput coverage
@@ -447,7 +457,16 @@ Baseline ownership rule:
   per-resource demand against live non-deserted commercial output capacity
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
-- `city_treasury_negative` is derived from the city treasury owned by the fiscal ledger
+- `city_treasury_balance` is read from the city treasury owned by the fiscal ledger
+- `candidate_household_size` is the vacancy-weighted expected household size for currently open
+  residential slots, using the same authored flat-size rule as the allocator
+- `candidate_daily_essential_cost` combines household demand-sink resource prices and
+  per-member utility cost for that candidate size
+- `immigrant_starter_savings_per_household` comes from economy-owned household starter tuning
+- `unemployment_daily_benefit_per_member` comes from economy-owned unemployment tuning
+- `existing_unemployed_member_count`, `open_job_slots`, and `average_open_job_wage_per_day` come
+  from the settled household and non-residential building job state; open jobs count only
+  commercial or industrial slots with a positive authored wage and current operating budget
 - `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
   `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
   `total_owa / (total_owa + total_local)` across active commercial buildings, `0.0` when no
@@ -517,9 +536,6 @@ commercial_capacity_deficit =
 
 external_connection_available =
     if connected_border_count > 0 then 1.0 else 0.0
-
-city_treasury_negative =
-    if city_treasury_balance < 0.0 then 1.0 else 0.0
 ```
 
 Interpretation and source rule:
@@ -533,8 +549,8 @@ Interpretation and source rule:
 - `commercial_capacity_deficit` uses settled commercial building output capacity and settled
   housed-resident demand-sink consumption rates from the compiled economy catalog
 - `external_connection_available` is a hard gate derived from settled network-border connectivity
-- `city_treasury_negative` is the only fiscal input consumed by demand in baseline `v0.1`; demand
-  does not inspect the magnitude of the deficit
+- fiscal state affects household admission only through the benefit-backed move-in acceptance
+  formula below; demand reads the current treasury balance but does not own benefit disbursement
 - `household_affordability_target_reserve_days` and `household_stock_stability_target_days` are
   authored in the `signal_normalization` table in
   [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
@@ -571,18 +587,57 @@ household_purchase_power =
         0.0,
         1.0,
     )
-admission_affordability_factor =
-    admission_affordability_floor
-    + (1.0 - admission_affordability_floor) * household_affordability
+
+candidate_effective_workers = candidate_household_size
+expected_employed_members =
+    min(candidate_effective_workers, open_job_slots)
+expected_unemployed_members =
+    max(candidate_effective_workers - expected_employed_members, 0.0)
+expected_wage_income_per_day =
+    expected_employed_members * average_open_job_wage_per_day
+
+existing_benefit_claim_per_day =
+    existing_unemployed_member_count * unemployment_daily_benefit_per_member
+candidate_benefit_claim_per_day =
+    expected_unemployed_members * unemployment_daily_benefit_per_member
+total_benefit_claim_per_day =
+    existing_benefit_claim_per_day + candidate_benefit_claim_per_day
+benefit_reliability =
+    if total_benefit_claim_per_day <= EPSILON then 1.0
+    else clamp(
+        max(city_treasury_balance, 0.0)
+        / (total_benefit_claim_per_day * move_in_benefit_treasury_coverage_days),
+        0.0,
+        1.0
+    )
+expected_benefit_income_per_day =
+    candidate_benefit_claim_per_day * benefit_reliability
+expected_daily_income =
+    expected_wage_income_per_day + expected_benefit_income_per_day
+daily_deficit =
+    max(candidate_daily_essential_cost - expected_daily_income, 0.0)
+move_in_search_runway_days =
+    if daily_deficit <= EPSILON then move_in_target_search_runway_days
+    else immigrant_starter_savings_per_household / daily_deficit
+move_in_runway_factor =
+    clamp(
+        (move_in_search_runway_days - move_in_min_search_runway_days)
+        / (move_in_target_search_runway_days - move_in_min_search_runway_days),
+        0.0,
+        1.0
+    )
+move_in_acceptance = move_in_runway_factor
+
 admission_unhoused_factor =
     1.0 - admission_unhoused_ratio_penalty * unhoused_household_ratio
 admission_zero_budget_factor =
     1.0 - admission_zero_budget_penalty * zero_budget_household_ratio
-admission_treasury_factor =
-    1.0 - city_treasury_negative
-        * (1.0 - admission_negative_treasury_factor)
 admission_recent_failure_factor =
     1.0 - admission_recent_failure_penalty * recent_household_failure_pressure
+admission_failure_factor =
+    admission_unhoused_factor
+    * admission_zero_budget_factor
+    * admission_recent_failure_factor
 ```
 
 Evaluation order:
@@ -605,11 +660,8 @@ admission_pressure =
     clamp(
         external_connection_available
         * housing_availability
-        * admission_affordability_factor
-        * admission_unhoused_factor
-        * admission_zero_budget_factor
-        * admission_treasury_factor
-        * admission_recent_failure_factor,
+        * move_in_acceptance
+        * admission_failure_factor,
         0.0,
         1.0
     )
@@ -655,11 +707,10 @@ Interpretation:
   or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
 - `inflow_desire` and `admission_pressure` (the household-action signal) are deliberately
   different formulas: `admission_pressure` uses `housing_availability` to fill existing vacancies,
-  but is soft-damped by household affordability, existing unhoused households, zero-budget
-  households, and negative treasury; `inflow_desire` uses `housing_shortage` to measure unmet
-  demand for new capacity — the two naturally complement each other: high healthy vacancy raises
-  admission pressure while lowering inflow_desire, so the system fills existing buildings before
-  building new ones
+  but is soft-damped by deterministic move-in acceptance plus existing household failure state;
+  `inflow_desire` uses `housing_shortage` to measure unmet demand for new capacity — the two
+  naturally complement each other: high healthy vacancy raises admission pressure while lowering
+  inflow_desire, so the system fills existing buildings before building new ones
 - `ResidentialSpawnLimit = 1.0` is safe because `housing_shortage` is already embedded in
   `inflow_desire`; when vacancy is high, `inflow_desire` falls and `ResidentialGrowth` drops
   toward 0.5 or below, which stops spawning without a separate quadratic throttle
@@ -1078,30 +1129,34 @@ Rules:
 
 - early game should favor agent admission while vacant housing and external connections exist
 - immigration pressure is driven by coarse city signals only, not by hidden magic or static floors
-- no job requirement for initial settlement: people move to a new city before jobs exist; the
-  unemployment benefit sustains them during the bootstrap window
+- no hard job requirement for initial settlement: people may move to a new city before jobs exist
+  when starter savings and reliable unemployment benefit provide the authored search runway
 
 Two distinct pressure formulas drive the residential system. They share the same economic
 signals but serve different purposes.
 
 **`admission_pressure`** — fills existing vacancies. Used only for the household-action
 `households_to_admit_today` output. High when housing is available and the existing household
-economy is healthy enough to absorb new arrivals:
+economy plus candidate move-in terms are healthy enough to absorb new arrivals:
 
 ```text
 admission_pressure =
     clamp(
         external_connection_available
         * housing_availability
-        * admission_affordability_factor
-        * admission_unhoused_factor
-        * admission_zero_budget_factor
-        * admission_treasury_factor
-        * admission_recent_failure_factor,
+        * move_in_acceptance
+        * admission_failure_factor,
         0.0,
         1.0
     )
 ```
+
+`move_in_acceptance` is deterministic candidate-side viability. It estimates the household that
+would fill the current residential vacancies, then asks whether starter savings plus expected wage
+income and benefit-backed unemployment support provide at least the authored search runway. Jobs
+count only paid, budget-backed commercial or industrial open slots. Benefit support is reliable
+only to the extent that the current treasury can cover existing unemployed residents plus the
+candidate household for `move_in_benefit_treasury_coverage_days`.
 
 **`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
 High when buildings are nearly full and the city is welcoming (unmet demand for new slots):
@@ -1216,9 +1271,12 @@ If a household is admitted:
   instead of silently instantiating the household inside the home
 
 The `economy` debug log emits a compact household-admission diagnostic line for each hourly pass.
-It reports the raw admission pressure, base vacancy pressure, individual soft-damping factors,
-the recent-failure memory and factor, threshold, normalized action pressure, carried admission
-credit, planned households, and actually launched arrival carriers.
+It reports the raw admission pressure, base vacancy pressure, household affordability telemetry,
+candidate move-in acceptance, search-runway days, candidate household size, budget-backed open
+jobs, expected employed and unemployed members, expected wage income, benefit reliability and
+claims, starter savings, daily essential cost, daily deficit, individual household-failure damping
+factors, the recent-failure memory and factor, threshold, normalized action pressure, carried
+admission credit, planned households, and actually launched arrival carriers.
 
 The daily `city flow diagnostics` line summarizes the settled city state after daily household
 settlement, removal execution, and the midnight demand pass. It reports:

@@ -12,11 +12,12 @@ max_households_per_day = 48
 
 [household_action]
 admission_threshold = 0.10
-admission_affordability_floor = 0.25
 admission_unhoused_ratio_penalty = 0.75
 admission_zero_budget_penalty = 0.75
-admission_negative_treasury_factor = 0.60
 admission_recent_failure_penalty = 0.85
+move_in_min_search_runway_days = 1.0
+move_in_target_search_runway_days = 4.0
+move_in_benefit_treasury_coverage_days = 3.0
 recent_failure_daily_decay = 0.50
 removal_threshold = 0.55
 persistent_exit_destitute_stock_days = 0.25

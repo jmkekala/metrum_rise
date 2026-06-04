@@ -149,6 +149,9 @@ Deterministic day-boundary rule:
      normalized input signals, such as household-slot capacity and vacancy, housed residents,
      reachable open jobs, stock stability, utility-service satisfaction, and
      external-connection state
+   - candidate move-in inputs such as household starter savings, daily essential cost,
+     unemployment benefit amount, treasury balance, and budget-backed open commercial or
+     industrial jobs; demand owns the admission formula, while economy owns these source values
 4. Freeze that post-settlement city snapshot.
 5. Run the daily demand pass exactly once from that frozen snapshot.
 6. Execute `households_to_remove_today` from the already-frozen settled household snapshot before
@@ -556,6 +559,9 @@ For `v0.1`, the economy-side contract is:
 - household admission and household removal happen at whole-household granularity, not one unrelated resident at a time
 - economy creates and owns the admitted `Household` runtime record once demand has already decided the outcome
 - admitted households receive startup state such as shared savings and household stock through the economy rules in this document
+- demand may read economy-owned starter savings, essential cost, unemployment benefit amount,
+  treasury balance, and budget-backed job openings to calculate deterministic move-in acceptance;
+  economy still owns the actual benefit payment and household materialization
 - the economy spec does not require a physically simulated border-entry transport visualization path in `v0.1`
 - whether a later transport layer visualizes arrival or departure through border spawns or exits is a separate transport-layer decision
 - births and other within-household demographic change are later systems, not part of the `v0.1` economy model
@@ -2101,7 +2107,10 @@ The unemployment benefit is a **household-level cash disbursement** paid to ever
 
 ### Ownership
 
-This section owns the unemployment benefit spec. `demand.md` documents the (now removed) Pioneer floor. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the `CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
+This section owns the unemployment benefit spec. `demand.md` documents the demand-owned
+move-in acceptance formula that reads the benefit amount and treasury balance as source values.
+`households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the
+`CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
 
 ### Design Invariants
 
@@ -2177,7 +2186,7 @@ else if treasury.balance > 0.0:
 
 ### Spawn Signal: Replacing the Pioneer Floor
 
-The Pioneer demand floor (`pioneer_demand = 0.70`) currently exists because `stock_stab` and `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal. The unemployment benefit restores these signals through real economic activity:
+The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because `stock_stab` and `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal. The unemployment benefit restores these signals through real economic activity:
 
 1. Disbursement gives households money → `afford` rises.
 2. Households with money attempt grocery replenishment → `stock_stab` rises.
@@ -2186,7 +2195,8 @@ The Pioneer demand floor (`pioneer_demand = 0.70`) currently exists because `sto
 5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
 
 The pioneer demand floor has been removed from `demand.rs`. The unemployment benefit is the
-replacement and is now the sole bootstrap mechanism.
+cash-support mechanism that keeps early households solvent, and demand also uses its reliability
+when calculating deterministic move-in acceptance.
 
 ### Shipped Tuning
 
