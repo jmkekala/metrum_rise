@@ -2,6 +2,7 @@
 //!
 //! Handles building instance transform generation and plot/foundation visuals.
 
+use crate::assets::{AnchorType, AssetEntry};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::*;
@@ -30,14 +31,14 @@ impl SimCore {
             let world_z = b.center_y;
             let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
 
-            let fd = b.facing_dir.normalized();
-            let b_zx = fd.x;
-            let b_zz = fd.y;
-            let b_xx = fd.y;
-            let b_xz = -fd.x;
-
             // Scale: prefer per-asset preview_scale, fall back to BUILDING_VISUAL_SCALE.
             let entry = self.allocator.registry.get(asset_id);
+            let (basis_x, basis_z) =
+                building_local_xz_basis(b.facing_dir, main_anchor_forward(entry));
+            let b_xx = basis_x.x;
+            let b_xz = basis_x.y;
+            let b_zx = basis_z.x;
+            let b_zz = basis_z.y;
             let s = entry
                 .and_then(|e| e.manifest.building.as_ref())
                 .and_then(|b| b.preview_scale)
@@ -91,13 +92,13 @@ impl SimCore {
             let world_z = b.center_y;
             let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
 
-            let fd = b.facing_dir.normalized();
-            let b_zx = fd.x;
-            let b_zz = fd.y;
-            let b_xx = fd.y;
-            let b_xz = -fd.x;
-
             let entry = self.allocator.registry.get(asset_id);
+            let (basis_x, basis_z) =
+                building_local_xz_basis(b.facing_dir, main_anchor_forward(entry));
+            let b_xx = basis_x.x;
+            let b_xz = basis_x.y;
+            let b_zx = basis_z.x;
+            let b_zz = basis_z.y;
             let s = entry
                 .and_then(|e| e.manifest.building.as_ref())
                 .and_then(|b| b.preview_scale)
@@ -185,6 +186,42 @@ impl SimCore {
     }
 }
 
+fn main_anchor_forward(entry: Option<&AssetEntry>) -> [f32; 3] {
+    entry
+        .and_then(|entry| {
+            entry
+                .manifest
+                .anchors
+                .iter()
+                .find(|anchor| anchor.anchor_type == AnchorType::Entrance && anchor.name == "main")
+        })
+        .map(|anchor| anchor.forward)
+        .unwrap_or([0.0, 0.0, 1.0])
+}
+
+fn building_local_xz_basis(facing_dir: Vector2, anchor_forward: [f32; 3]) -> (Vector2, Vector2) {
+    let world_front = if facing_dir.length_squared() > 1e-12 {
+        facing_dir.normalized()
+    } else {
+        Vector2::new(0.0, 1.0)
+    };
+    let local_front = asset_local_front_xz(anchor_forward);
+    let world_right = Vector2::new(world_front.y, -world_front.x);
+    let basis_x = world_right * local_front.y + world_front * local_front.x;
+    let basis_z = world_front * local_front.y - world_right * local_front.x;
+
+    (basis_x, basis_z)
+}
+
+fn asset_local_front_xz(anchor_forward: [f32; 3]) -> Vector2 {
+    let front = Vector2::new(anchor_forward[0], anchor_forward[2]);
+    if front.length_squared() > 1e-12 {
+        front.normalized()
+    } else {
+        Vector2::new(0.0, 1.0)
+    }
+}
+
 /// Returns the scale factor for a building.
 /// Standard assets use 1:10 scale (1 unit = 10m), so we scale by [`crate::config::BUILDING_VISUAL_SCALE`].
 pub fn get_building_visual_scale() -> (f32, f32, f32) {
@@ -195,6 +232,17 @@ pub fn get_building_visual_scale() -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_vec2_close(actual: Vector2, expected: Vector2) {
+        assert!(
+            (actual.x - expected.x).abs() < 1e-5 && (actual.y - expected.y).abs() < 1e-5,
+            "expected ({:.3}, {:.3}), got ({:.3}, {:.3})",
+            expected.x,
+            expected.y,
+            actual.x,
+            actual.y
+        );
+    }
 
     #[test]
     fn test_building_visual_scale_is_adequate() {
@@ -214,5 +262,16 @@ mod tests {
             sz >= 10.0,
             "Building depth scale must be at least 10.0 to match asset scale"
         );
+    }
+
+    #[test]
+    fn test_building_basis_aligns_authored_front_to_road_facing_dir() {
+        let world_front = Vector2::new(0.0, -1.0);
+
+        let (basis_x, basis_z) = building_local_xz_basis(world_front, [0.0, 0.0, 1.0]);
+        assert_vec2_close(basis_x * 0.0 + basis_z * 1.0, world_front);
+
+        let (basis_x, basis_z) = building_local_xz_basis(world_front, [0.0, 0.0, -1.0]);
+        assert_vec2_close(basis_x * 0.0 + basis_z * -1.0, world_front);
     }
 }

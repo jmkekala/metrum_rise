@@ -78,6 +78,10 @@ need the baseline residential/commercial/industrial family. Later systems such a
 planning, economy, and rendering consume these fields rather than inventing their own separate
 placement truth.
 
+`facing_dir` is the road-facing frontage direction: the direction the building's authored front
+points in world space. It is the negative of the zoning parcel `normal`, because parcel `normal`
+points from the road into the parcel while a building frontage faces back toward the road.
+
 ### `EdgeOccupancy`
 
 `edge_occupancy: HashMap<usize, EdgeOccupancy>` tracks claimed frontage columns per road edge side.
@@ -143,6 +147,10 @@ If all checks pass, the allocator commits placement by:
 1. claiming the parcel in `ZoningSystem`
 2. pushing the new `Building`
 3. setting `dirty`, `dirty_index`, `entrances_dirty`, and the building's `dirty_zones` entry
+
+The committed building center is still `front_center + parcel.normal * depth / 2`. Only the
+frontage orientation flips: `Building::facing_dir = -parcel.normal`. Runtime render and entrance
+transforms then align the asset's authored `main` entrance `forward` vector to `facing_dir`.
 
 ## Removal And Synchronization
 

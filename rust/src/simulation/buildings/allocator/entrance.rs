@@ -67,7 +67,7 @@ impl BuildingAllocator {
             return entrance;
         };
 
-        entrance.door_pos = world_door_pos(building, anchor.position);
+        entrance.door_pos = world_door_pos(building, anchor.position, anchor.forward);
         entrance.curb_pos = entrance.door_pos;
 
         if building.edge_idx >= graph.edge_count() {
@@ -199,17 +199,39 @@ fn main_entrance_anchor(anchors: &[crate::assets::Anchor]) -> Option<&crate::ass
     match_idx.map(|idx| &anchors[idx])
 }
 
-fn world_door_pos(building: &Building, anchor_position: [f32; 3]) -> Vector2 {
-    let basis_z = if building.facing_dir.length_squared() > 1e-12 {
-        building.facing_dir.normalized()
-    } else {
-        Vector2::new(0.0, 1.0)
-    };
-    let basis_x = Vector2::new(basis_z.y, -basis_z.x);
+fn world_door_pos(
+    building: &Building,
+    anchor_position: [f32; 3],
+    anchor_forward: [f32; 3],
+) -> Vector2 {
+    let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, anchor_forward);
     let local_x = anchor_position[0];
     let local_z = anchor_position[2];
 
     Vector2::new(building.center_x, building.center_y) + basis_x * local_x + basis_z * local_z
+}
+
+fn building_local_xz_basis(facing_dir: Vector2, anchor_forward: [f32; 3]) -> (Vector2, Vector2) {
+    let world_front = if facing_dir.length_squared() > 1e-12 {
+        facing_dir.normalized()
+    } else {
+        Vector2::new(0.0, 1.0)
+    };
+    let local_front = asset_local_front_xz(anchor_forward);
+    let world_right = Vector2::new(world_front.y, -world_front.x);
+    let basis_x = world_right * local_front.y + world_front * local_front.x;
+    let basis_z = world_front * local_front.y - world_right * local_front.x;
+
+    (basis_x, basis_z)
+}
+
+fn asset_local_front_xz(anchor_forward: [f32; 3]) -> Vector2 {
+    let front = Vector2::new(anchor_forward[0], anchor_forward[2]);
+    if front.length_squared() > 1e-12 {
+        front.normalized()
+    } else {
+        Vector2::new(0.0, 1.0)
+    }
 }
 
 fn derive_foot_lanes(

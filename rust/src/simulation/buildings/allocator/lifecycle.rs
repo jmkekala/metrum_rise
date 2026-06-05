@@ -376,7 +376,7 @@ impl BuildingAllocator {
 
             building.center_x = center_2d.x;
             building.center_y = center_2d.y;
-            building.facing_dir = normal;
+            building.facing_dir = normal * -1.0;
             building.side_offset = side_offset;
         }
 

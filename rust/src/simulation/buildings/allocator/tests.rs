@@ -1211,6 +1211,30 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         "authored entrance anchors are stored in lot-space meters and must not be scaled or shifted by mesh preview settings"
     );
     assert!(entrance.curb_pos.y > entrance.door_pos.y);
+
+    let mut reverse_manifest = allocator
+        .registry
+        .get("base:b.res.anchor_units")
+        .expect("registered anchor test asset")
+        .manifest
+        .clone();
+    reverse_manifest.asset_id = "b.res.anchor_units_reverse".to_owned();
+    reverse_manifest.anchors[0].position = [0.0, 0.0, -0.5];
+    reverse_manifest.anchors[0].forward = [0.0, 0.0, -1.0];
+    allocator
+        .registry
+        .register("base", reverse_manifest, String::new());
+
+    let mut reverse_building = allocator.buildings[0].clone();
+    reverse_building.asset_id = "base:b.res.anchor_units_reverse".to_owned();
+    allocator.buildings.push(reverse_building);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    assert_eq!(
+        allocator.entrances[1].door_pos,
+        Vector2::new(10.0, -10.5),
+        "asset-local -Z frontage anchors must align with the same road-facing direction"
+    );
 }
 
 #[test]

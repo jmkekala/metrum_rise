@@ -282,7 +282,7 @@ impl BuildingAllocator {
             width_cells: params.width_cells,
             depth_cells: params.depth_cells,
             center_2d,
-            facing_dir: parcel.normal(),
+            facing_dir: parcel.normal() * -1.0,
             frontage_t: parcel.frontage_center_t(),
             edge_width,
         })

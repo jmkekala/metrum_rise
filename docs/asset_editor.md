@@ -679,6 +679,10 @@ Canonical local basis:
 - `+Z` = front / forward
 - `+X` = right
 
+Building assets should use canonical `+Z` frontage when practical. The exported `main` entrance
+anchor `forward` vector is still authoritative for runtime alignment, so imported meshes whose
+frontage is not yet canonical can be represented without pack-specific runtime fixes.
+
 Vehicle compatibility rule:
 
 - Newly imported vehicle assets normalize to canonical `+Z` forward during import and export.
@@ -1537,7 +1541,8 @@ Optional `[[anchors]]` table:
 - `type`: enum, one of `entrance`, `service`, `prop_socket`, `wheel`, `light`
 - `name`: string
 - `position`: `[f32, f32, f32]`
-- `forward`: optional `[f32, f32, f32]`
+- `forward`: `[f32, f32, f32]`; for building `main` entrance anchors this is the asset-local
+  frontage direction that the runtime aligns to the placed building's road-facing direction
 
 Optional `[[lods]]` table for mesh assets:
 
@@ -1696,6 +1701,8 @@ Building rules:
 - `placement_mode = "explicit"` may use `service_class = "none"` for landmarks or a non-`none`
   value for explicit service or utility buildings.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
+- The `main` entrance anchor's `forward` vector defines the asset-local frontage direction used by
+  building placement, rendering, and entrance-cache derivation.
 - Additional building-side access points for freight, garages, or utilities use `type = "service"`, not a second generic `entrance` anchor.
 - In v1, `service` anchors are authored extension points only. The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret service-anchor capacity or queue behavior yet.
 - In the normal case, `min_zone_*` equals the footprint size.

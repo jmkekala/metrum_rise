@@ -64,7 +64,7 @@ pub struct Building {
     /// Kept as a hot-path cache for broad R/C/I grouping and economy lookups. Legality comes
     /// from the parcel's authoritative zoning-profile id.
     pub zone_type: ZoneType,
-    /// Unit vector pointing from the road toward the building.
+    /// Unit vector pointing from the building frontage toward the road.
     pub facing_dir: Vector2,
     /// T-coordinate (0.0 to 1.0) along [`Self::edge_idx`] for this building's frontage.
     pub frontage_t: f32,

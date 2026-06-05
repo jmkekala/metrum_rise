@@ -307,7 +307,9 @@ Use this exact derivation:
    - optional `service` anchors may exist, but they do not participate in this generic entrance/exit system
    - if any check fails, the entrance is invalid and all lane IDs are set to the invalid sentinel
 3. Compute the world-space primary building entry point from the asset anchor.
-   - use the building's world transform derived from authoritative placement fields, with asset local `+Z` aligned to runtime `facing_dir`
+   - use the building's world transform derived from authoritative placement fields
+   - `facing_dir` is road-facing: for parcel-owned buildings it is `-parcel.normal`
+   - align the asset-local `main` entrance anchor `forward` vector to runtime `facing_dir`; canonical `+Z`-front assets are the common case, but authored non-`+Z` frontage vectors are honored deterministically
    - apply that transform to the `main` entrance anchor's local `position`
    - `door_pos = transformed_anchor_position.xz()`
 4. Project `door_pos` onto the parent edge centerline to define the canonical frontage reference:
