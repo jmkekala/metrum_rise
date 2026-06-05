@@ -32,8 +32,9 @@ Terminology note: this file mirrors durable code-facing names on purpose. When s
 
 | Mode | Speed | Status | Notes |
 |------|-------|--------|-------|
-| Walking | `4.0 m/s` (`14.4 km/h`) | Implemented | Used by pedestrian agents. |
-| Driving (car) | `20.0 m/s` (`72 km/h`) | Implemented | Current free-flow / target value for civilian cars. |
+| Walking | `4.0 m/s` (`14.4 km/h`) | Implemented | Used by pedestrian agents on the network. |
+| Driving (car) | `13.89 m/s` (`50 km/h`) | Implemented | Default free-flow speed for the current urban road presets. |
+| Junction car turn | `6.0 m/s` (`21.6 km/h`) | Implemented | Cap while traversing junction connector lanes. |
 | Bicycle | `5.5 m/s` (`20 km/h`) | Planned | First post-car transport mode; see `MOB-01` in [`roadmap.md`](roadmap.md). |
 | Bus | `10–15 m/s` (`36–54 km/h`) | Planned | Lower effective speed due to stops and dwell time; see `TRANSIT-01` in [`roadmap.md`](roadmap.md). |
 | Train / Metro | `20–40 m/s` (`72–144 km/h`) | Planned | Metro at lower end, intercity rail at higher end; see `TRANSIT-02` in [`roadmap.md`](roadmap.md). |

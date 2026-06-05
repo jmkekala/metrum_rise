@@ -78,6 +78,7 @@
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
+//! | | `get_car_render_ids` | `agent_renderer.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
 
 use godot::classes::{INode3D, Node3D};
@@ -3987,6 +3988,13 @@ impl SimulationNode {
     pub fn get_car_transforms(&self) -> VarDictionary {
         use super::sim::bridge::agents::get_car_transforms;
         get_car_transforms(&self.snapshot.read().unwrap())
+    }
+
+    /// Returns render IDs for visible car agents, keyed to match `get_car_transforms`.
+    #[func]
+    pub fn get_car_render_ids(&self) -> VarDictionary {
+        use super::sim::bridge::agents::get_car_render_ids;
+        get_car_render_ids(&self.snapshot.read().unwrap())
     }
 
     /// Returns debug path geometry for active agents.

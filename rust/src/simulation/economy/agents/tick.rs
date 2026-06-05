@@ -26,7 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 // ---------------------------------------------------------------------------
 
 use crate::config::{
-    AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_LENGTH, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD,
+    AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS,
+    CAR_LENGTH, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD,
 };
 use crate::simulation::network::lanes::LaneType;
 
@@ -51,6 +52,27 @@ fn lane_attach_slot_clear(bucket: &[(f32, usize)], attach_d: f32) -> bool {
         return false;
     }
     true
+}
+
+#[inline(always)]
+fn live_lane_bucket_transit(transit: u8) -> bool {
+    transit == TRANSIT_NETWORK || transit == TRANSIT_INTERSECTION
+}
+
+#[inline(always)]
+fn lane_entry_slot_clear(lane_id: usize, lane_buckets: &[Vec<(f32, usize)>]) -> bool {
+    lane_buckets
+        .get(lane_id)
+        .map(|bucket| lane_attach_slot_clear(bucket, 0.0))
+        .unwrap_or(false)
+}
+
+#[inline(always)]
+fn claim_lane_entry(lane_id: usize, lane_attach_claimed: &[AtomicBool]) -> bool {
+    lane_attach_claimed
+        .get(lane_id)
+        .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
+        .unwrap_or(false)
 }
 
 /// Dispatches `f` over `0..n` sequentially when `n < PAR_THRESHOLD`, otherwise in
@@ -83,6 +105,16 @@ fn idm_new_speed(v: f32, v_max: f32, gap: f32, dt: f32) -> f32 {
         IDM_A_MAX * (1.0 - free)
     };
     (v + acc * dt).clamp(0.0, v_max)
+}
+
+#[inline(always)]
+fn junction_car_speed(speed: f32) -> f32 {
+    speed.min(CAR_JUNCTION_SPEED_MS)
+}
+
+#[inline(always)]
+fn junction_entry_speed(speed: f32) -> f32 {
+    junction_car_speed(speed).max(CAR_JUNCTION_MIN_SPEED_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +214,40 @@ fn lane_terminal_node(
     } else {
         edge.start_node
     })
+}
+
+fn connection_lane_to_target(
+    from_lane_id: usize,
+    target_lane_id: usize,
+    transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_attach_claimed: &[AtomicBool],
+) -> (Option<usize>, bool) {
+    let Some(from_lane) = transit_network.lane_system.lanes.get(from_lane_id) else {
+        return (None, false);
+    };
+
+    let mut any_routing_valid = false;
+    for &conn_lane_id in &from_lane.next_lanes {
+        let Some(conn_lane) = transit_network.lane_system.lanes.get(conn_lane_id) else {
+            continue;
+        };
+        if conn_lane.edge_id != usize::MAX {
+            continue;
+        }
+        if conn_lane.next_lanes.first().copied() != Some(target_lane_id) {
+            continue;
+        }
+
+        any_routing_valid = true;
+        if lane_entry_slot_clear(conn_lane_id, lane_buckets)
+            && claim_lane_entry(conn_lane_id, lane_attach_claimed)
+        {
+            return (Some(conn_lane_id), true);
+        }
+    }
+
+    (None, any_routing_valid)
 }
 
 fn segment_distance(a: Vector2, b: Vector2) -> f32 {
@@ -1535,7 +1601,7 @@ impl AgentSystem {
         }
         self.dirty_lanes.clear();
         for i in 0..n {
-            if self.agents.transit[i] == TRANSIT_NETWORK {
+            if live_lane_bucket_transit(self.agents.transit[i]) {
                 let lid = self.agents.current_lane_id[i];
                 if lid != usize::MAX && lid < lane_count {
                     if !self.lane_is_dirty[lid] {
@@ -1567,8 +1633,6 @@ impl AgentSystem {
             }
         }
 
-        // Build junction gate snapshot.
-        self.build_conn_occupied_snapshot(lane_count);
         if self.lane_attach_claimed.len() < lane_count {
             self.lane_attach_claimed
                 .resize_with(lane_count, || AtomicBool::new(false));
@@ -1599,7 +1663,7 @@ impl AgentSystem {
                 let transit = *s_transit_idm.get(i);
                 let tmode = *s_tmode_idm.get(i);
 
-                if transit != TRANSIT_NETWORK || tmode != MODE_CAR {
+                if !live_lane_bucket_transit(transit) || tmode != MODE_CAR {
                     *new_spd_raw.get_mut(i) = cur_spd;
                     return;
                 }
@@ -1608,10 +1672,12 @@ impl AgentSystem {
                 let my_d = *s_lane_d_idm.get(i);
                 let eid = *s_cur_e_idm.get(i);
 
-                let v_max = if eid != usize::MAX && eid < graph.edge_count() {
+                let v_max = if transit == TRANSIT_INTERSECTION {
+                    CAR_JUNCTION_SPEED_MS
+                } else if eid != usize::MAX && eid < graph.edge_count() {
                     graph.edge(eid).speed_limit
                 } else {
-                    20.0_f32
+                    DEFAULT_URBAN_ROAD_SPEED_MS
                 };
 
                 let gap = if lid < buckets.len() {
@@ -1665,7 +1731,6 @@ impl AgentSystem {
             walk_phase: RawSlice::new(&mut self.agents.walk_phase),
         };
 
-        let conn_occupied = &self.conn_occupied;
         let lane_buckets = &self.lane_buckets;
         let lane_attach_claimed = &self.lane_attach_claimed;
         let sim_time = self.sim_time;
@@ -1685,7 +1750,6 @@ impl AgentSystem {
                 transit_network,
                 graph,
                 &self.pathfind_count,
-                conn_occupied,
                 lane_buckets,
                 lane_attach_claimed,
                 &economy_tuning.operational_clock,
@@ -1712,7 +1776,7 @@ impl AgentSystem {
             self.edge_agent_cnt.resize(edge_count, 0_u32);
 
             for i in 0..n {
-                if self.agents.transit[i] == TRANSIT_NETWORK {
+                if live_lane_bucket_transit(self.agents.transit[i]) {
                     let lid = self.agents.current_lane_id[i];
                     if lid != usize::MAX && lid < lane_count {
                         if !self.lane_is_dirty[lid] {
@@ -1721,10 +1785,12 @@ impl AgentSystem {
                         }
                         self.lane_buckets[lid].push((self.agents.lane_distance[i], i));
                     }
-                    let eid = self.agents.current_edge[i];
-                    if eid != usize::MAX && eid < edge_count {
-                        self.edge_speed_sum[eid] += self.agents.speed[i];
-                        self.edge_agent_cnt[eid] += 1;
+                    if self.agents.transit[i] == TRANSIT_NETWORK {
+                        let eid = self.agents.current_edge[i];
+                        if eid != usize::MAX && eid < edge_count {
+                            self.edge_speed_sum[eid] += self.agents.speed[i];
+                            self.edge_agent_cnt[eid] += 1;
+                        }
                     }
                 }
             }
@@ -1854,7 +1920,6 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
-        conn_occupied: &Vec<bool>,
         lane_buckets: &Vec<Vec<(f32, usize)>>,
         lane_attach_claimed: &Vec<AtomicBool>,
         operational_clock: &OperationalClockRuntimeTuning,
@@ -2461,8 +2526,10 @@ impl AgentSystem {
 
                     let speed = if *s_tmode.get(i) == MODE_CAR {
                         if *s_transit.get(i) == TRANSIT_INTERSECTION {
-                            // Slow through intersections; still IDM-bounded.
-                            (*s_speed.get(i) * 0.5).max(2.0)
+                            // Turn movement uses a junction-specific cap, separate from road design speed.
+                            let turn_speed = junction_car_speed(*s_speed.get(i));
+                            *s_speed.get_mut(i) = turn_speed;
+                            turn_speed
                         } else {
                             *s_speed.get(i)
                         }
@@ -2744,12 +2811,19 @@ impl AgentSystem {
                                 };
 
                                 let path_len = s_path.get(i).len();
-                                let should_hold_frontage_idx =
-                                    (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
-                                        && path_len >= 1
-                                        && *s_path_idx.get(i) == 1
-                                        && *s_cur_n.get(i) == s_path.get(i)[0];
-                                if !should_hold_frontage_idx {
+                                let access_plan_valid =
+                                    (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
+                                let path_idx_before_lane_end = (*s_path_idx.get(i)).min(path_len);
+                                if path_idx_before_lane_end != *s_path_idx.get(i) {
+                                    *s_path_idx.get_mut(i) = path_idx_before_lane_end;
+                                }
+                                let should_hold_frontage_idx = access_plan_valid
+                                    && path_len >= 1
+                                    && path_idx_before_lane_end == 1
+                                    && *s_cur_n.get(i) == s_path.get(i)[0];
+                                let should_hold_access_tail_idx =
+                                    access_plan_valid && path_idx_before_lane_end >= path_len;
+                                if !should_hold_frontage_idx && !should_hold_access_tail_idx {
                                     *s_path_idx.get_mut(i) += 1;
                                 }
                                 let path_idx = *s_path_idx.get(i);
@@ -2760,9 +2834,6 @@ impl AgentSystem {
                                         graph.get_edge_between_nodes(*s_cur_n.get(i), next_node)
                                     {
                                         let mut wait_for_gap = false;
-                                        let cur_node_idx = *s_cur_n.get(i) as usize;
-                                        let is_junction =
-                                            graph.node_adjacency(cur_node_idx as u32).len() >= 3;
                                         VALID_CONNS.with(|v| {
                                             let mut valid_conns = v.borrow_mut();
                                             valid_conns.clear();
@@ -2784,12 +2855,10 @@ impl AgentSystem {
                                                                 == best_e
                                                         {
                                                             any_routing_valid = true;
-                                                            let occupied = is_junction
-                                                                && conn_occupied
-                                                                    .get(c_id)
-                                                                    .copied()
-                                                                    .unwrap_or(false);
-                                                            if !occupied {
+                                                            if lane_entry_slot_clear(
+                                                                c_id,
+                                                                lane_buckets,
+                                                            ) {
                                                                 valid_conns.push(c_id);
                                                             }
                                                         }
@@ -2797,16 +2866,110 @@ impl AgentSystem {
                                                 }
                                             }
                                             if !valid_conns.is_empty() {
-                                                *s_lane_id.get_mut(i) = valid_conns
-                                                    [rng.gen_range(0..valid_conns.len())];
-                                                *s_lane_d.get_mut(i) = 0.0;
-                                                *s_transit.get_mut(i) = TRANSIT_INTERSECTION;
-                                                *s_cur_e.get_mut(i) = usize::MAX;
+                                                let start =
+                                                    rng.gen_range(0..valid_conns.len());
+                                                let mut chosen_conn = usize::MAX;
+                                                for offset in 0..valid_conns.len() {
+                                                    let candidate = valid_conns
+                                                        [(start + offset) % valid_conns.len()];
+                                                    if claim_lane_entry(
+                                                        candidate,
+                                                        lane_attach_claimed,
+                                                    ) {
+                                                        chosen_conn = candidate;
+                                                        break;
+                                                    }
+                                                }
+                                                if chosen_conn != usize::MAX {
+                                                    *s_lane_id.get_mut(i) = chosen_conn;
+                                                    *s_lane_d.get_mut(i) = 0.0;
+                                                    *s_transit.get_mut(i) =
+                                                        TRANSIT_INTERSECTION;
+                                                    *s_cur_e.get_mut(i) = usize::MAX;
+                                                    if *s_tmode.get(i) == MODE_CAR {
+                                                        let turn_speed =
+                                                            junction_entry_speed(*s_speed.get(i));
+                                                        let time_left = if speed > 1.0e-5 {
+                                                            remaining_dist / speed
+                                                        } else {
+                                                            0.0
+                                                        };
+                                                        remaining_dist = turn_speed * time_left;
+                                                        *s_speed.get_mut(i) = turn_speed;
+                                                    }
+                                                    if crate::debug::is_traffic_enabled() {
+                                                        let conn_lane = &transit_network
+                                                            .lane_system
+                                                            .lanes[chosen_conn];
+                                                        let target_lane = conn_lane
+                                                            .next_lanes
+                                                            .first()
+                                                            .copied()
+                                                            .unwrap_or(usize::MAX);
+                                                        let target_edge = transit_network
+                                                            .lane_system
+                                                            .lanes
+                                                            .get(target_lane)
+                                                            .map(|lane| lane.edge_id)
+                                                            .unwrap_or(usize::MAX);
+                                                        traffic_log!(
+                                                            "[JUNCTION_ENTER] agent={} node={} from_lane={} from_edge={} conn_lane={} conn_len={:.2} to_lane={} to_edge={} speed={:.2} remaining_dist={:.2} path_idx={}/{}",
+                                                            i,
+                                                            *s_cur_n.get(i),
+                                                            lane_id,
+                                                            lane.edge_id,
+                                                            chosen_conn,
+                                                            conn_lane.length,
+                                                            target_lane,
+                                                            target_edge,
+                                                            *s_speed.get(i),
+                                                            remaining_dist,
+                                                            *s_path_idx.get(i),
+                                                            path_len,
+                                                        );
+                                                    }
+                                                } else {
+                                                    *s_path_idx.get_mut(i) =
+                                                        path_idx_before_lane_end;
+                                                    *s_lane_d.get_mut(i) = lane.length;
+                                                    wait_for_gap = true;
+                                                    traffic_log!(
+                                                        "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} to_edge={} path_idx={}/{} reason=connector-entry-claimed",
+                                                        i,
+                                                        *s_cur_n.get(i),
+                                                        lane_id,
+                                                        lane.edge_id,
+                                                        best_e,
+                                                        *s_path_idx.get(i),
+                                                        path_len,
+                                                    );
+                                                }
                                             } else if any_routing_valid {
-                                                *s_path_idx.get_mut(i) -= 1;
+                                                *s_path_idx.get_mut(i) =
+                                                    path_idx_before_lane_end;
                                                 *s_lane_d.get_mut(i) = lane.length;
                                                 wait_for_gap = true;
+                                                traffic_log!(
+                                                    "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} to_edge={} path_idx={}/{} reason=connector-occupied",
+                                                    i,
+                                                    *s_cur_n.get(i),
+                                                    lane_id,
+                                                    lane.edge_id,
+                                                    best_e,
+                                                    *s_path_idx.get(i),
+                                                    path_len,
+                                                );
                                             } else {
+                                                traffic_log!(
+                                                    "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
+                                                    i,
+                                                    *s_cur_n.get(i),
+                                                    lane_id,
+                                                    lane.edge_id,
+                                                    best_e,
+                                                    *s_path_idx.get(i),
+                                                    path_len,
+                                                );
                                                 // No connection lane exists for this turn.
                                                 // Clear the path so the agent re-pathfinds on
                                                 // the next tick — the updated CCH will now route
@@ -2822,15 +2985,21 @@ impl AgentSystem {
                                             break;
                                         }
                                     } else {
+                                        traffic_log!(
+                                            "[JUNCTION_MISSING_EDGE] agent={} node={} from_lane={} from_edge={} next_node={} path_idx={}/{} reason=no-road-edge",
+                                            i,
+                                            *s_cur_n.get(i),
+                                            lane_id,
+                                            lane.edge_id,
+                                            next_node,
+                                            *s_path_idx.get(i),
+                                            path_len,
+                                        );
                                         s_path.get_mut(i).clear();
                                         *s_lane_id.get_mut(i) = usize::MAX;
                                         break;
                                     }
                                 } else {
-                                    s_path.get_mut(i).clear();
-                                    *s_lane_id.get_mut(i) = usize::MAX;
-                                    let access_plan_valid =
-                                        (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
                                     if access_plan_valid
                                         && *s_cur_n.get(i) == *s_plan_detach_n.get(i)
                                         && *s_plan_detach_lane.get(i) != u32::MAX
@@ -2840,19 +3009,89 @@ impl AgentSystem {
                                             lane_origin_node(detach_lane_id, transit_network, graph)
                                         {
                                             if detach_origin == *s_plan_detach_n.get(i) {
-                                                *s_cur_n.get_mut(i) = detach_origin;
-                                                *s_cur_e.get_mut(i) = transit_network
-                                                    .lane_system
-                                                    .lanes[detach_lane_id]
-                                                    .edge_id;
-                                                *s_lane_id.get_mut(i) = detach_lane_id;
-                                                *s_lane_d.get_mut(i) = 0.0;
-                                                *s_speed.get_mut(i) =
-                                                    graph.edge(*s_cur_e.get(i)).speed_limit;
-                                                break;
+                                                let (conn_lane_id, any_routing_valid) =
+                                                    connection_lane_to_target(
+                                                        lane_id,
+                                                        detach_lane_id,
+                                                        transit_network,
+                                                        lane_buckets,
+                                                        lane_attach_claimed,
+                                                    );
+                                                if let Some(conn_lane_id) = conn_lane_id {
+                                                    *s_lane_id.get_mut(i) = conn_lane_id;
+                                                    *s_lane_d.get_mut(i) = 0.0;
+                                                    *s_transit.get_mut(i) = TRANSIT_INTERSECTION;
+                                                    *s_cur_e.get_mut(i) = usize::MAX;
+                                                    if *s_tmode.get(i) == MODE_CAR {
+                                                        let turn_speed =
+                                                            junction_entry_speed(*s_speed.get(i));
+                                                        let time_left = if speed > 1.0e-5 {
+                                                            remaining_dist / speed
+                                                        } else {
+                                                            0.0
+                                                        };
+                                                        remaining_dist = turn_speed * time_left;
+                                                        *s_speed.get_mut(i) = turn_speed;
+                                                    }
+                                                    if crate::debug::is_traffic_enabled() {
+                                                        let conn_lane = &transit_network
+                                                            .lane_system
+                                                            .lanes[conn_lane_id];
+                                                        let target_edge = transit_network
+                                                            .lane_system
+                                                            .lanes
+                                                            .get(detach_lane_id)
+                                                            .map(|lane| lane.edge_id)
+                                                            .unwrap_or(usize::MAX);
+                                                        traffic_log!(
+                                                            "[JUNCTION_ENTER] agent={} node={} from_lane={} from_edge={} conn_lane={} conn_len={:.2} to_lane={} to_edge={} speed={:.2} remaining_dist={:.2} path_idx={}/{} reason=zero-hop-access",
+                                                            i,
+                                                            *s_cur_n.get(i),
+                                                            lane_id,
+                                                            lane.edge_id,
+                                                            conn_lane_id,
+                                                            conn_lane.length,
+                                                            detach_lane_id,
+                                                            target_edge,
+                                                            *s_speed.get(i),
+                                                            remaining_dist,
+                                                            *s_path_idx.get(i),
+                                                            path_len,
+                                                        );
+                                                    }
+                                                    continue;
+                                                }
+                                                if any_routing_valid {
+                                                    *s_path_idx.get_mut(i) = path_idx.min(path_len);
+                                                    *s_lane_d.get_mut(i) = lane.length;
+                                                    *s_speed.get_mut(i) = 0.0;
+                                                    traffic_log!(
+                                                        "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} to_lane={} path_idx={}/{} reason=zero-hop-connector-occupied",
+                                                        i,
+                                                        *s_cur_n.get(i),
+                                                        lane_id,
+                                                        lane.edge_id,
+                                                        detach_lane_id,
+                                                        *s_path_idx.get(i),
+                                                        path_len,
+                                                    );
+                                                    break;
+                                                }
+                                                traffic_log!(
+                                                    "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_lane={} path_idx={}/{} reason=zero-hop-no-connection-lane",
+                                                    i,
+                                                    *s_cur_n.get(i),
+                                                    lane_id,
+                                                    lane.edge_id,
+                                                    detach_lane_id,
+                                                    *s_path_idx.get(i),
+                                                    path_len,
+                                                );
                                             }
                                         }
                                     }
+                                    s_path.get_mut(i).clear();
+                                    *s_lane_id.get_mut(i) = usize::MAX;
                                     if access_plan_valid {
                                         if sim_time >= *s_next_replan_time.get(i) {
                                             if let Some(replan) = plan_network_replan(
@@ -2895,18 +3134,47 @@ impl AgentSystem {
                                 if !lane.next_lanes.is_empty() {
                                     let tgt_road_lane = lane.next_lanes[0];
                                     if tgt_road_lane < transit_network.lane_system.lanes.len() {
+                                        let target_edge = transit_network.lane_system.lanes
+                                            [tgt_road_lane]
+                                            .edge_id;
+                                        traffic_log!(
+                                            "[JUNCTION_EXIT] agent={} node={} conn_lane={} conn_len={:.2} to_lane={} to_edge={} speed={:.2} remaining_dist={:.2} path_idx={}/{}",
+                                            i,
+                                            lane.node_id,
+                                            lane_id,
+                                            lane.length,
+                                            tgt_road_lane,
+                                            target_edge,
+                                            *s_speed.get(i),
+                                            remaining_dist,
+                                            *s_path_idx.get(i),
+                                            s_path.get(i).len(),
+                                        );
                                         *s_lane_id.get_mut(i) = tgt_road_lane;
                                         *s_lane_d.get_mut(i) = 0.0;
                                         *s_transit.get_mut(i) = TRANSIT_NETWORK;
-                                        *s_cur_e.get_mut(i) = transit_network.lane_system.lanes
-                                            [tgt_road_lane]
-                                            .edge_id;
+                                        *s_cur_e.get_mut(i) = target_edge;
                                     } else {
+                                        traffic_log!(
+                                            "[JUNCTION_MISSING_EXIT] agent={} node={} conn_lane={} conn_len={:.2} next_lane={} reason=invalid-target-lane",
+                                            i,
+                                            lane.node_id,
+                                            lane_id,
+                                            lane.length,
+                                            tgt_road_lane,
+                                        );
                                         s_path.get_mut(i).clear();
                                         *s_lane_id.get_mut(i) = usize::MAX;
                                         break;
                                     }
                                 } else {
+                                    traffic_log!(
+                                        "[JUNCTION_MISSING_EXIT] agent={} node={} conn_lane={} conn_len={:.2} reason=no-next-lane",
+                                        i,
+                                        lane.node_id,
+                                        lane_id,
+                                        lane.length,
+                                    );
                                     s_path.get_mut(i).clear();
                                     *s_lane_id.get_mut(i) = usize::MAX;
                                     break;
@@ -3207,31 +3475,25 @@ impl AgentSystem {
             }
         }
     }
-
-    /// Build junction gate snapshot: mark every connection lane that already has an
-    /// agent in TRANSIT_INTERSECTION.
-    pub(crate) fn build_conn_occupied_snapshot(&mut self, lane_count: usize) {
-        let n = self.agents.len();
-        if self.conn_occupied.len() < lane_count {
-            self.conn_occupied.resize(lane_count, false);
-        }
-        self.conn_occupied.fill(false);
-        for i in 0..n {
-            if self.agents.transit[i] == TRANSIT_INTERSECTION {
-                let lid = self.agents.current_lane_id[i];
-                if lid < self.conn_occupied.len() {
-                    self.conn_occupied[lid] = true;
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalAccessPath, advance_along_local_access_path, dispatch_agents};
+    use super::{
+        LocalAccessPath, advance_along_local_access_path, dispatch_agents, junction_car_speed,
+        junction_entry_speed,
+    };
+    use crate::config::{CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS};
     use godot::prelude::Vector2;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn test_junction_car_speed_caps_fast_turns() {
+        assert_eq!(junction_car_speed(50.0), CAR_JUNCTION_SPEED_MS);
+        assert_eq!(junction_car_speed(0.0), 0.0);
+        assert_eq!(junction_car_speed(4.0), 4.0);
+        assert_eq!(junction_entry_speed(0.0), CAR_JUNCTION_MIN_SPEED_MS);
+    }
 
     /// Verifies that `dispatch_agents` visits every index in `0..n` exactly once,
     /// both below the PAR_THRESHOLD (sequential path) and above it (parallel path).

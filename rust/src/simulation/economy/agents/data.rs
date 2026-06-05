@@ -8,6 +8,7 @@
 use super::{
     MODE_CAR, MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
 };
+use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::graph::RegionGraph;
@@ -37,6 +38,8 @@ pub struct Agent {
     pub pos_x: f32,
     /// World-space Z position (metres, Godot forward axis).
     pub pos_y: f32,
+    /// Runtime-stable identifier used by render interpolation; not persisted in saves.
+    pub render_id: u64,
 
     /// Current activity: `0` = Home, `1` = Work, `2` = other non-home stop.
     pub activity: u8,
@@ -140,12 +143,6 @@ pub struct AgentSystem {
     /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
     /// the parallel IDM pass.
     pub new_speed: Vec<f32>,
-    /// Scratch buffer: per-connection-lane occupancy snapshot.
-    /// `conn_occupied[lane_id] == true` when at least one `TRANSIT_INTERSECTION` agent
-    /// occupies that connection lane at the start of the current tick.
-    /// Built sequentially before the parallel movement pass; shared as a read-only
-    /// reference during it so no synchronisation is needed.
-    pub conn_occupied: Vec<bool>,
     /// Scratch buffer: one-tick local-access handoff claims for car lane attach/detach.
     /// Prevents multiple cars from claiming the same exact frontage handoff on the same lane
     /// in a single tick when households or workplaces release or receive several agents at once.
@@ -158,6 +155,8 @@ pub struct AgentSystem {
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
     pub lane_vehicle_cnt: Vec<u32>,
+    /// Monotonic source for transient render IDs assigned to newly spawned agents.
+    next_render_id: u64,
 }
 
 impl Deref for AgentSystem {
@@ -184,19 +183,27 @@ impl AgentSystem {
             lane_is_dirty: Vec::new(),
             dirty_lanes: Vec::new(),
             new_speed: Vec::new(),
-            conn_occupied: Vec::new(),
             lane_attach_claimed: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
+            next_render_id: 0,
         }
+    }
+
+    /// Allocates a runtime-stable render ID for one newly inserted agent.
+    pub(crate) fn allocate_render_id(&mut self) -> u64 {
+        let render_id = self.next_render_id;
+        self.next_render_id = self.next_render_id.saturating_add(1);
+        render_id
     }
 
     /// Spawns one agent already housed inside a building.
     pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
         let mut rng = rand::thread_rng();
         let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
+        let render_id = self.allocate_render_id();
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -204,6 +211,7 @@ impl AgentSystem {
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
+            render_id,
             activity: 0,
             transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,
@@ -257,6 +265,7 @@ impl AgentSystem {
     ) -> usize {
         let mut rng = rand::thread_rng();
         let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
+        let render_id = self.allocate_render_id();
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -264,6 +273,7 @@ impl AgentSystem {
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
+            render_id,
             activity: 0, // Heading Home
             transit: TRANSIT_IMMIGRATING,
             happiness: 50.0,
@@ -287,7 +297,7 @@ impl AgentSystem {
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
-            speed: 20.0,
+            speed: DEFAULT_URBAN_ROAD_SPEED_MS,
             transit_mode: MODE_CAR,
             planned_activity: 0,
             current_path: Vec::new(),
@@ -354,6 +364,7 @@ impl AgentSystem {
         self.agents.clear();
         self.sim_time = 0.0;
         self.pathfind_count.store(0, Ordering::Relaxed);
+        self.next_render_id = 0;
     }
 
     /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
@@ -674,6 +685,7 @@ mod tests {
 
         let mut sys = AgentSystem::new();
         // Spawn minimal agents and manually set their lane IDs.
+        let render_id_0 = sys.allocate_render_id();
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
@@ -681,6 +693,7 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,
+            render_id: render_id_0,
             activity: 0,
             transit: TRANSIT_NETWORK,
             happiness: 50.0,
@@ -716,6 +729,7 @@ mod tests {
             job_lock_days: 0,
             consecutive_unpaid_days: 0,
         });
+        let render_id_1 = sys.allocate_render_id();
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
@@ -723,6 +737,7 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 150.0,
             pos_y: 0.0,
+            render_id: render_id_1,
             activity: 0,
             transit: TRANSIT_NETWORK,
             happiness: 50.0,
@@ -789,6 +804,7 @@ mod tests {
         let (_graph, lane_system) = make_simple_lane_system();
 
         let mut sys = AgentSystem::new();
+        let render_id = sys.allocate_render_id();
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
@@ -796,6 +812,7 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,
+            render_id,
             activity: 0,
             transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,

@@ -66,7 +66,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         width: ((fwd_lanes + bkw_lanes) as f32 * config::LANE_WIDTH).max(2.0),
         fwd_lanes,
         bkw_lanes,
-        speed_limit: 50.0,
+        speed_limit: config::DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 0.0,
         physical_length,
         current_congestion: 0.0,
@@ -252,8 +252,8 @@ impl TransitNetwork {
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
-        // Auto-flag high-speed roads: speed_limit is stored in km/h.
-        if graph.edges[edge_id].speed_limit >= 80.0 {
+        // Auto-flag high-speed roads; speed_limit is stored in m/s.
+        if graph.edges[edge_id].speed_limit >= config::HIGH_SPEED_ROAD_THRESHOLD_MS {
             graph.edges[edge_id].no_building_spawn = true;
         }
 

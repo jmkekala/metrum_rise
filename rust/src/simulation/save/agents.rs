@@ -1,5 +1,6 @@
 //! Agent SoA and path serialization.
 
+use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
     ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, Agent, AgentSystem, MODE_CAR,
@@ -223,6 +224,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
 }
 
 pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord) {
+    let render_id = agents.allocate_render_id();
     agents.agents.push(Agent {
         home_building: rec.home_building,
         household_id: rec.household_id,
@@ -230,6 +232,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         work_building: rec.work_building,
         pos_x: rec.pos_x,
         pos_y: rec.pos_y,
+        render_id,
         activity: rec.activity,
         transit: rec.transit,
         happiness: rec.happiness,
@@ -254,7 +257,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         current_lane_id: rec.current_lane_id as usize,
         lane_distance: rec.lane_distance,
         speed: if rec.transit_mode == MODE_CAR {
-            20.0
+            DEFAULT_URBAN_ROAD_SPEED_MS
         } else {
             4.0
         },

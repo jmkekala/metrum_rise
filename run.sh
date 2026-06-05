@@ -18,7 +18,7 @@
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
-#                        reports, and agent routing decisions.
+#                        reports, agent routing decisions, and visual traffic overlay labels.
 #   --debug-world-editor Alias for --debug world-editor
 #                        Shows world-editor create/open/save/tool activity (stdout)
 #   --debug-sim          Hourly simulation summaries (stdout)
@@ -111,6 +111,8 @@ if [ $DEBUG_TRAFFIC -eq 1 ]; then
     echo "Traffic/routing + road-network debug logging enabled (output goes to stderr)"
     echo "  Per road placement: [ROAD] split details"
     echo "  After CCH rebuild:  [ROAD_NET] connectivity report (1 line if OK, component list if disconnected)"
+    echo "  Visual overlay: car lane/connector debug auto-enabled; press P to toggle."
+    echo "  Junction logs: [JUNCTION_ENTER], [JUNCTION_EXIT], [JUNCTION_WAIT], [JUNCTION_MISSING_CONN]"
 fi
 if [ $DEBUG_SIM -eq 1 ]; then
     export METRUM_DEBUG_SIM=1

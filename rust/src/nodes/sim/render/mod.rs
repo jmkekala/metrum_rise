@@ -7,6 +7,8 @@
 pub mod agents;
 /// Building-specific rendering (asset transforms, plots).
 pub mod buildings;
+/// Shared lane pose sampling for render transforms.
+pub mod lane_pose;
 /// Road-network rendering (mesh data, connection helpers).
 pub mod network;
 /// Zoning and environment rendering (image overlays).

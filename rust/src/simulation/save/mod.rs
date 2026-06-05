@@ -183,7 +183,7 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    if version != SAVE_VERSION {
+    if version != SAVE_VERSION && version != LAST_KMH_ROAD_SPEED_SAVE_VERSION {
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let config = conn.query_row(
@@ -275,7 +275,7 @@ pub(crate) fn load_from_sqlite(
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
-    let mut graph = network::load_graph(&conn)?;
+    let mut graph = network::load_graph(&conn, version)?;
     let mut zoning = world::load_zoning(&conn, &config, &graph)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
     let households = world::load_households(&conn)?;

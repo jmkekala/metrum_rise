@@ -184,7 +184,10 @@ func _toggle_agent_paths():
 	if agents_node:
 		agents_node.show_paths = not agents_node.show_paths
 		if not agents_node.show_paths:
-			agents_node.debug_mesh.clear_surfaces()
+			if agents_node.has_method("clear_debug_overlay"):
+				agents_node.clear_debug_overlay()
+			else:
+				agents_node.debug_mesh.clear_surfaces()
 		print("Agent Path Debug: ", agents_node.show_paths)
 
 # --- Logic Hub ---

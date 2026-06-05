@@ -51,6 +51,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
+  and capped car movement through junction connector lanes at `6 m/s`. See
+  [`reference.md`](reference.md).
 - `ROAD-04` is closed for the current node top-surface quality pass: `Bend` / `JunctionN`
   carriageway triangulation now canonicalizes same-owner / same-height / same-provenance numeric
   dust, can insert road-owned interior guide support before CDT, and validates visible

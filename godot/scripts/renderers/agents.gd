@@ -1,7 +1,7 @@
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_agent_paths_debug(),
-##   get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
+## Rust methods called: get_agent_transforms(), get_car_transforms(), get_car_render_ids(),
+##   get_agent_paths_debug(), get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [basis.x(3), basis.y(3), basis.z(3), origin(3)] — matches Godot's Transform3D memory layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -14,10 +14,19 @@ var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
 var texture_cache: Dictionary = {}
+const CAR_TRANSFORM_STRIDE := 12
+const CAR_INTERPOLATION_RATE := 24.0
+const CAR_INTERPOLATION_SNAP_DISTANCE_M := 80.0
+const DEBUG_LABEL_LIMIT := 96
+var _car_visual_origins: Dictionary = {}
+var _car_next_visual_origins: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
+var debug_labels: Array = []
 var show_paths = false
+var _traffic_debug_visual := false
+var _debug_overlay_visible := false
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -137,12 +146,16 @@ func _ready():
 	debug_mesh_instance.mesh = debug_mesh
 	add_child(debug_mesh_instance)
 
+	_traffic_debug_visual = _env_flag_enabled("METRUM_DEBUG_TRAFFIC")
+	if _traffic_debug_visual:
+		show_paths = true
+		print("Traffic visual debug overlay enabled (P toggles)")
+
 
 func _process(delta):
 	_update_camera_aabb()
-	# Refresh visual swarms very often for smooth movement
-	if Engine.get_frames_drawn() % 5 == 0:
-		update_swarm()
+	# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+	update_swarm(delta)
 
 func _update_camera_aabb():
 	var camera = get_viewport().get_camera_3d()
@@ -178,7 +191,7 @@ func _update_camera_aabb():
 	var pad = SimulationNode.get_agent_cull_padding_m()
 	simulation_node.set_camera_aabb(x_min - pad, x_max + pad, z_min - pad, z_max + pad)
 
-func update_swarm():
+func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
 	var walker_data = simulation_node.get_agent_transforms()
 	for p_type in walker_mmis:
@@ -194,23 +207,38 @@ func update_swarm():
 
 	# Cars (Now grouped by vehicle type and color variant)
 	var car_data = simulation_node.get_car_transforms()
+	var car_ids = simulation_node.get_car_render_ids()
+	var interpolation_alpha := 1.0
+	if delta > 0.0:
+		interpolation_alpha = clampf(delta * CAR_INTERPOLATION_RATE, 0.0, 1.0)
+	_car_next_visual_origins.clear()
 	
 	# Clear types that are no longer present in the simulation (optional, but clean)
 	for type_key in car_mmis:
 		var mmi = car_mmis[type_key]
 		var buffer = car_data.get(type_key, PackedFloat32Array())
-		var count = buffer.size() / 12
+		var ids = car_ids.get(type_key, PackedInt64Array())
+		var count := int(buffer.size() / CAR_TRANSFORM_STRIDE)
 		
 		if count != mmi.multimesh.instance_count:
 			mmi.multimesh.instance_count = count
 		if count > 0:
-			mmi.multimesh.buffer = buffer
+			if ids.size() == count:
+				mmi.multimesh.buffer = _interpolate_car_buffer(buffer, ids, count, interpolation_alpha)
+			else:
+				mmi.multimesh.buffer = buffer
+
+	var old_origins = _car_visual_origins
+	_car_visual_origins = _car_next_visual_origins
+	_car_next_visual_origins = old_origins
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()
 		debug_mesh.clear_surfaces()
 		var points = data.get("points", PackedVector3Array())
 		var colors = data.get("colors", PackedColorArray())
+		var label_positions = data.get("label_positions", PackedVector3Array())
+		var labels = data.get("labels", PackedStringArray())
 		
 		if points.size() > 0:
 			debug_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
@@ -219,6 +247,80 @@ func update_swarm():
 					debug_mesh.surface_set_color(colors[i])
 				debug_mesh.surface_add_vertex(points[i])
 			debug_mesh.surface_end()
+		_sync_debug_labels(label_positions, labels)
+		_debug_overlay_visible = true
+	else:
+		if _debug_overlay_visible:
+			clear_debug_overlay()
+
+func clear_debug_overlay() -> void:
+	if debug_mesh:
+		debug_mesh.clear_surfaces()
+	_hide_debug_labels()
+	_debug_overlay_visible = false
+
+func _sync_debug_labels(label_positions: PackedVector3Array, labels: PackedStringArray) -> void:
+	var count := mini(mini(label_positions.size(), labels.size()), DEBUG_LABEL_LIMIT)
+	while debug_labels.size() < count:
+		var label := Label3D.new()
+		label.name = "TrafficDebugLabel%d" % debug_labels.size()
+		label.font_size = 64
+		label.pixel_size = 0.015
+		label.no_depth_test = true
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.modulate = Color(1.0, 1.0, 1.0, 0.9)
+		add_child(label)
+		debug_labels.append(label)
+
+	for i in range(debug_labels.size()):
+		var label: Label3D = debug_labels[i]
+		if i < count:
+			label.text = labels[i]
+			label.global_position = label_positions[i]
+			label.visible = true
+		else:
+			label.visible = false
+
+func _hide_debug_labels() -> void:
+	for label in debug_labels:
+		label.visible = false
+
+func _env_flag_enabled(name: String) -> bool:
+	var value := OS.get_environment(name).strip_edges().to_lower()
+	return not value.is_empty() and value != "0" and value != "false" and value != "off"
+
+func _interpolate_car_buffer(
+	target_buffer: PackedFloat32Array,
+	render_ids: PackedInt64Array,
+	count: int,
+	alpha: float
+) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(count * CAR_TRANSFORM_STRIDE)
+	var snap_distance_sq := CAR_INTERPOLATION_SNAP_DISTANCE_M * CAR_INTERPOLATION_SNAP_DISTANCE_M
+
+	for i in range(count):
+		var base := i * CAR_TRANSFORM_STRIDE
+		for j in range(CAR_TRANSFORM_STRIDE):
+			out[base + j] = target_buffer[base + j]
+
+		var target_origin := Vector3(
+			target_buffer[base + 3],
+			target_buffer[base + 7],
+			target_buffer[base + 11]
+		)
+		var render_id: int = render_ids[i]
+		var previous_origin: Vector3 = _car_visual_origins.get(render_id, target_origin)
+		var visual_origin := target_origin
+		if previous_origin.distance_squared_to(target_origin) <= snap_distance_sq:
+			visual_origin = previous_origin.lerp(target_origin, alpha)
+
+		out[base + 3] = visual_origin.x
+		out[base + 7] = visual_origin.y
+		out[base + 11] = visual_origin.z
+		_car_next_visual_origins[render_id] = visual_origin
+
+	return out
 
 func _load_source_texture(path: String) -> Texture2D:
 	if texture_cache.has(path):

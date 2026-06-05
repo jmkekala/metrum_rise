@@ -4,6 +4,10 @@ use super::{Lane, LaneType};
 use godot::prelude::*;
 use std::collections::HashMap;
 
+const VEHICLE_CONNECTION_MAX_STEP_M: f32 = 1.0;
+const VEHICLE_CONNECTION_MIN_STEPS: usize = 8;
+const VEHICLE_CONNECTION_MAX_STEPS: usize = 64;
+
 /// Builds vehicle intersection connection lanes at a single node.
 pub fn build_vehicle_connections_at_node(
     lanes: &mut Vec<Lane>,
@@ -122,7 +126,7 @@ pub fn build_vehicle_connections_at_node(
             let p1 = p0 + p1_base * cd;
             let p2 = p3 - p2_base * cd;
 
-            let steps = 5;
+            let steps = vehicle_connection_steps(dist);
             let mut conn_geom = Vec::with_capacity(steps + 1);
             let mut conn_len = 0.0;
             for k in 0..=steps {
@@ -157,4 +161,9 @@ pub fn build_vehicle_connections_at_node(
             lanes[in_lane_id].next_lanes.push(conn_id);
         }
     }
+}
+
+fn vehicle_connection_steps(chord_distance_m: f32) -> usize {
+    ((chord_distance_m / VEHICLE_CONNECTION_MAX_STEP_M).ceil() as usize)
+        .clamp(VEHICLE_CONNECTION_MIN_STEPS, VEHICLE_CONNECTION_MAX_STEPS)
 }

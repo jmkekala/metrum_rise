@@ -559,11 +559,13 @@ fn load_graph_migrates_missing_vehicle_frontage_access_column_to_bothsides() {
     )
     .expect("phys geom 1");
 
-    let graph = network::load_graph(&conn).expect("migrated graph");
+    let graph =
+        network::load_graph(&conn, LAST_KMH_ROAD_SPEED_SAVE_VERSION).expect("migrated graph");
     assert_eq!(graph.edge_count(), 1);
     assert_eq!(
         graph.edge(0).vehicle_frontage_access,
         VehicleFrontageAccess::BothSides
     );
     assert!(!graph.edge(0).no_building_spawn);
+    assert!((graph.edge(0).speed_limit - 50.0 / 3.6).abs() < f32::EPSILON);
 }

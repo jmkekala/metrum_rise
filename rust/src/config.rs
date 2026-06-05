@@ -85,6 +85,27 @@ pub const IDM_S_MIN: f32 = 0.1;
 /// representative average; adjust if packing feels too tight or loose.
 pub const CAR_LENGTH: f32 = 2.6;
 
+/// Multiplier for converting kilometres per hour into the simulation's internal m/s units.
+pub const KMH_TO_MPS: f32 = 1.0 / 3.6;
+
+/// Default design speed for the currently supported urban road presets: 50 km/h.
+pub const DEFAULT_URBAN_ROAD_SPEED_MS: f32 = 50.0 * KMH_TO_MPS;
+
+/// Speed threshold where a road is treated as high-speed frontage-hostile infrastructure: 80 km/h.
+pub const HIGH_SPEED_ROAD_THRESHOLD_MS: f32 = 80.0 * KMH_TO_MPS;
+
+/// Speed threshold where road traffic emits higher environmental noise: 60 km/h.
+pub const HIGH_NOISE_ROAD_THRESHOLD_MS: f32 = 60.0 * KMH_TO_MPS;
+
+/// Maximum car speed while traversing a junction connector lane, about 22 km/h.
+pub const CAR_JUNCTION_SPEED_MS: f32 = 6.0;
+
+/// Minimum crawl speed once a car is admitted into a junction connector lane.
+pub const CAR_JUNCTION_MIN_SPEED_MS: f32 = 2.0;
+
+/// Small denominator floor for route-cost calculations on malformed or very slow edges.
+pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
+
 /// Walking speed for agents on foot (m/s). Used for driveway/building-entry phases.
 /// 1.4 m/s is a realistic pedestrian pace (~5 km/h).
 pub const AGENT_WALK_SPEED_MS: f32 = 1.4;

@@ -7,6 +7,8 @@
 use crate::simulation::network::graph::Edge;
 use godot::prelude::Vector3;
 
+use crate::config::MIN_ROUTE_SPEED_MS;
+
 /// Stateless helper that computes traversal costs for a single [`Edge`].
 pub struct CostCalculator;
 
@@ -43,7 +45,7 @@ impl CostCalculator {
         }
 
         // Base time cost
-        let speed = edge.speed_limit.max(10.0);
+        let speed = edge.speed_limit.max(MIN_ROUTE_SPEED_MS);
         let time_cost = total_distance / speed;
 
         // Exponential penalty for slopes above 10% (0.1)

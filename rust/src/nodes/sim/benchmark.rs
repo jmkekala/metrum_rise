@@ -99,6 +99,7 @@ impl SimCore {
     /// Called from `run_benchmark_from_save` on the Godot main thread (while
     /// holding the `SimCore` lock).
     pub(crate) fn spawn_benchmark_agents(&mut self) {
+        use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
         use crate::simulation::economy::agents::data::Agent;
         use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
         use crate::simulation::network::types::TransitFlags;
@@ -156,6 +157,7 @@ impl SimCore {
             let start_idx = (i * path_len / agent_count).min(path_len.saturating_sub(2));
             let current_node = route[start_idx];
             let node_pos = self.region_graph.node(current_node).pos;
+            let render_id = self.agents.allocate_render_id();
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
                 household_id: usize::MAX,
@@ -163,6 +165,7 @@ impl SimCore {
                 work_building: usize::MAX,
                 pos_x: node_pos.x,
                 pos_y: node_pos.z,
+                render_id,
                 activity: 0,
                 transit: TRANSIT_NETWORK,
                 happiness: 50.0,
@@ -183,7 +186,7 @@ impl SimCore {
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
                 lane_distance: 0.0,
-                speed: 20.0,
+                speed: DEFAULT_URBAN_ROAD_SPEED_MS,
                 transit_mode: MODE_CAR,
                 planned_activity: 0,
                 current_path: route,

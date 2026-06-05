@@ -492,6 +492,36 @@ fn vehicle_conns_for_turn(
     result
 }
 
+#[test]
+fn test_vehicle_turn_connection_uses_dense_curve_geometry() {
+    let (mut graph, n_jct, e_w, _e_e, e_n) = build_t_junction();
+    graph.rebuild_intersection_clips();
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    let conns = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_w, e_n);
+    assert_eq!(conns.len(), 1);
+
+    let conn = &lanes.lanes[conns[0]];
+    assert_eq!(conn.edge_id, usize::MAX);
+    assert_eq!(conn.lane_type, LaneType::Vehicle);
+    assert!(
+        conn.geometry.len() >= 9,
+        "vehicle turn connector should be densely sampled, got {} points",
+        conn.geometry.len()
+    );
+
+    let max_segment = conn
+        .geometry
+        .windows(2)
+        .map(|window| window[0].distance_to(window[1]))
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_segment <= 1.5,
+        "vehicle turn connector segment too long: {max_segment:.2} m"
+    );
+}
+
 /// With no connections configured at a T-junction, every inbound arm should be able
 /// to reach every other arm (open-junction fallback).
 #[test]

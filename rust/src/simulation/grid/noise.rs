@@ -1,6 +1,7 @@
 //! Traffic and building noise emission/diffusion system.
 
 use super::data_grid::DataGrid;
+use crate::config::HIGH_NOISE_ROAD_THRESHOLD_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
@@ -69,7 +70,11 @@ impl NoiseSystem {
             if edge.deleted {
                 continue;
             }
-            let road_noise = if edge.speed_limit > 60.0 { 4.0 } else { 1.0 };
+            let road_noise = if edge.speed_limit > HIGH_NOISE_ROAD_THRESHOLD_MS {
+                4.0
+            } else {
+                1.0
+            };
             for p in &edge.physical_geometry {
                 let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z, w, h);
                 let gx = gx_raw.round() as i32;
@@ -130,6 +135,7 @@ impl NoiseSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DEFAULT_URBAN_ROAD_SPEED_MS, KMH_TO_MPS};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::network::graph::RegionGraph;
@@ -155,7 +161,7 @@ mod tests {
             class: EdgeClass::Standard,
             fwd_lanes: 1,
             bkw_lanes: 1,
-            speed_limit: 50.0, // Should emit '1.0' units
+            speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS, // Should emit '1.0' units
             base_cost: 0.0,
             physical_length: 50.0,
             current_congestion: 0.0,
@@ -236,7 +242,7 @@ mod tests {
         graph_low.add_edge(crate::simulation::network::graph::Edge {
             start_node: n1_l,
             end_node: n2_l,
-            speed_limit: 40.0, // Low speed
+            speed_limit: 40.0 * KMH_TO_MPS, // Low speed
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 10.0,
@@ -261,7 +267,7 @@ mod tests {
         graph_high.add_edge(crate::simulation::network::graph::Edge {
             start_node: n1_h,
             end_node: n2_h,
-            speed_limit: 100.0, // High speed
+            speed_limit: 100.0 * KMH_TO_MPS, // High speed
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 10.0,

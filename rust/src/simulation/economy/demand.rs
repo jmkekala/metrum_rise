@@ -2814,8 +2814,7 @@ impl DailyDemandSnapshot {
                     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
                 {
                     for output_port in &profile.outputs {
-                        if resource_is_commercial_input(&catalog, output_port.resource_runtime_id)
-                        {
+                        if resource_is_commercial_input(&catalog, output_port.resource_runtime_id) {
                             add_resource_amount(
                                 &mut local_industrial_output_capacity_by_resource,
                                 output_port.resource_runtime_id,
@@ -2944,11 +2943,12 @@ impl DailyDemandSnapshot {
                         "resource '{resource_id}' used by commercial input capacity has no catalog price"
                     )
                 });
-            let local_units =
-                resource_amount(&local_industrial_output_capacity_by_resource, resource_runtime_id);
+            let local_units = resource_amount(
+                &local_industrial_output_capacity_by_resource,
+                resource_runtime_id,
+            );
             commercial_input_need_value += need_units.max(0.0) * resource_price.max(0.0);
-            local_industrial_input_capacity_value +=
-                local_units.max(0.0) * resource_price.max(0.0);
+            local_industrial_input_capacity_value += local_units.max(0.0) * resource_price.max(0.0);
             industrial_missing_input_value +=
                 (need_units - local_units).max(0.0) * resource_price.max(0.0);
         }
@@ -3412,17 +3412,7 @@ mod tests {
             .default_runtime_id_for_zone_type(zone_type)
             .expect("zoning profile");
         zoning
-            .place_parcel_run_at(
-                10.0,
-                -20.0,
-                40.0,
-                -20.0,
-                profile,
-                20.0,
-                30.0,
-                0.0,
-                graph,
-            )
+            .place_parcel_run_at(10.0, -20.0, 40.0, -20.0, profile, 20.0, 30.0, 0.0, graph)
             .expect("zoning run");
         zoning
     }
@@ -3599,13 +3589,9 @@ mod tests {
             "missing industrial input capacity should drive industrial pressure"
         );
 
-        allocator.buildings.push(building(
-            ZoneType::Industrial,
-            0.0,
-            0,
-            0,
-            industrial_asset,
-        ));
+        allocator
+            .buildings
+            .push(building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset));
         let covered_snapshot =
             DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 

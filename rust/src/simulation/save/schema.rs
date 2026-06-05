@@ -4,7 +4,9 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 33;
+pub const SAVE_VERSION: i64 = 34;
+/// Last save version that persisted road `speed_limit` values as km/h-authored literals.
+pub const LAST_KMH_ROAD_SPEED_SAVE_VERSION: i64 = 33;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 

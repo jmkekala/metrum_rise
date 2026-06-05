@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::debug_log;
+use crate::nodes::sim::render::lane_pose::sample_lane_pose;
 use crate::nodes::sim::road_tool::RoadGhostSnapIndex;
 use godot::prelude::{Vector3, godot_error};
 
@@ -494,6 +495,8 @@ pub struct RenderSnapshot {
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
     /// Per `(vehicle_type * 10 + color_variant)` → flat 12-float `Transform3D` buffer.
     pub car_transforms: HashMap<u8, Vec<f32>>,
+    /// Per car transform bucket → render IDs matching `car_transforms` instance order.
+    pub car_render_ids: HashMap<u8, Vec<i64>>,
     /// Mirrors `SimCore::terrain_dirty` at snapshot time.
     pub terrain_dirty: bool,
     /// Mirrors `SimCore::water_dirty` at snapshot time.
@@ -531,6 +534,7 @@ impl Default for RenderSnapshot {
         Self {
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
+            car_render_ids: HashMap::new(),
             terrain_dirty: true,
             water_dirty: true,
             network_dirty: false,
@@ -1204,6 +1208,7 @@ impl SimCore {
 
         let mut pedestrian_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
         let mut car_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
+        let mut car_render_ids: HashMap<u8, Vec<i64>> = HashMap::new();
 
         let (aabb_x_min, aabb_x_max, aabb_z_min, aabb_z_max) = self.camera_aabb;
         let cull = aabb_x_min < aabb_x_max; // false when default "show all"
@@ -1213,8 +1218,18 @@ impl SimCore {
                 continue;
             }
 
-            let world_x = self.agents.pos_x[i];
-            let world_z = self.agents.pos_y[i];
+            let mut world_x = self.agents.pos_x[i];
+            let mut world_z = self.agents.pos_y[i];
+            let mut lane_pose = None;
+            let lane_id = self.agents.current_lane_id[i];
+            if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
+                let lane = &self.transit_network.lane_system.lanes[lane_id];
+                lane_pose = sample_lane_pose(lane, self.agents.lane_distance[i]);
+                if let Some((pos, _)) = lane_pose {
+                    world_x = pos.x;
+                    world_z = pos.z;
+                }
+            }
 
             if cull
                 && (world_x < aabb_x_min
@@ -1237,24 +1252,14 @@ impl SimCore {
                 let mut basis_z = Vector3::BACK;
                 let world_y = terrain_y + 0.05; // small lift so feet clear terrain surface
 
-                let lane_id = self.agents.current_lane_id[i];
-                if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
-                    let l = &self.transit_network.lane_system.lanes[lane_id];
-                    let dist = self.agents.lane_distance[i];
-                    if l.geometry.len() >= 2 && !l.cum_dist.is_empty() {
-                        let seg = l.cum_dist.partition_point(|&d| d <= dist).saturating_sub(1);
-                        let seg = seg.min(l.geometry.len() - 2);
-                        let raw = l.geometry[seg + 1] - l.geometry[seg];
-                        if raw.length_squared() > 1e-6 {
-                            // GLTF export converts Blender -Y (character facing) to +Z, so the
-                            // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
-                            basis_z = raw.normalized();
-                            let right = Vector3::UP.cross(basis_z);
-                            if right.length_squared() > 1e-6 {
-                                basis_x = right.normalized();
-                                basis_y = basis_z.cross(basis_x).normalized();
-                            }
-                        }
+                if let Some((_, tangent)) = lane_pose {
+                    // GLTF export converts Blender -Y (character facing) to +Z, so the
+                    // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
+                    basis_z = tangent;
+                    let right = Vector3::UP.cross(basis_z);
+                    if right.length_squared() > 1e-6 {
+                        basis_x = right.normalized();
+                        basis_y = basis_z.cross(basis_x).normalized();
                     }
                 } else {
                     let transit = self.agents.transit[i];
@@ -1306,44 +1311,27 @@ impl SimCore {
             } else {
                 // Car — oriented along lane geometry.
                 let v_type = self.agents.vehicle_type[i];
-                let variant_id = (i % 5) as u8;
+                let render_id = self.agents.render_id[i];
+                let variant_id = (render_id % 5) as u8;
                 let model_key = (v_type * 10) + variant_id;
                 let buffer = car_transforms.entry(model_key).or_default();
+                car_render_ids
+                    .entry(model_key)
+                    .or_default()
+                    .push(render_id.min(i64::MAX as u64) as i64);
 
                 let mut basis_x = Vector3::RIGHT;
                 let mut basis_y = Vector3::UP;
                 let mut basis_z = Vector3::BACK;
                 let mut world_y = terrain_y + 0.02;
 
-                let lane_id = self.agents.current_lane_id[i];
-                if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
-                    let l = &self.transit_network.lane_system.lanes[lane_id];
-                    let dist = self.agents.lane_distance[i];
-                    if l.geometry.len() >= 2 {
-                        let mut curr = 0.0_f32;
-                        for j in 0..l.geometry.len() - 1 {
-                            let p0 = l.geometry[j];
-                            let p1 = l.geometry[j + 1];
-                            let d = p0.distance_to(p1);
-                            if curr + d >= dist || j == l.geometry.len() - 2 {
-                                let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                                world_y = p0.y + (p1.y - p0.y) * t.clamp(0.0, 1.0) + 0.02;
-                                let raw = p1 - p0;
-                                if raw.length_squared() > 1e-6 {
-                                    let fwd = raw.normalized();
-                                    basis_z = -fwd;
-                                    let right = Vector3::UP.cross(basis_z);
-                                    if right.length_squared() > 1e-6 {
-                                        basis_x = right.normalized();
-                                        basis_y = basis_z.cross(basis_x).normalized();
-                                    }
-                                }
-                                break;
-                            }
-                            curr += d;
-                        }
-                    } else if !l.geometry.is_empty() {
-                        world_y = l.geometry[0].y + 0.02;
+                if let Some((pos, tangent)) = lane_pose {
+                    world_y = pos.y + 0.02;
+                    basis_z = -tangent;
+                    let right = Vector3::UP.cross(basis_z);
+                    if right.length_squared() > 1e-6 {
+                        basis_x = right.normalized();
+                        basis_y = basis_z.cross(basis_x).normalized();
                     }
                 } else {
                     let transit = self.agents.transit[i];
@@ -1403,6 +1391,7 @@ impl SimCore {
         RenderSnapshot {
             pedestrian_transforms,
             car_transforms,
+            car_render_ids,
             terrain_dirty: self.terrain_dirty,
             water_dirty: self.water_dirty,
             network_dirty: self.network_dirty,
