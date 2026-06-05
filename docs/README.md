@@ -10,6 +10,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`roadmap.md`](roadmap.md) | Active tracked work, stable IDs, validated bugs, and later priorities. |
 | [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
+| [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, and traffic debug. |
 | [`economy.md`](economy.md) | Economy and freight design/spec. |
 | [`demand.md`](demand.md) | Demand, growth pressure, and household admission/removal ownership. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |

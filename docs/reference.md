@@ -30,6 +30,9 @@ Terminology note: this file mirrors durable code-facing names on purpose. When s
 
 ### Movement Speeds
 
+Detailed vehicle movement behavior, including junction turn caps and lane changes, is owned by
+[`traffic.md`](traffic.md).
+
 | Mode | Speed | Status | Notes |
 |------|-------|--------|-------|
 | Walking | `4.0 m/s` (`14.4 km/h`) | Implemented | Used by pedestrian agents on the network. |
