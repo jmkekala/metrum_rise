@@ -1532,6 +1532,11 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     );
     let edge_id = graph.edge_count() - 1;
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let grocery_profile_runtime_id = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile")
+        .runtime_id;
 
     allocator.buildings.push(Building {
         center_x: 10.0,
@@ -1589,7 +1594,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         asset_id: commercial_asset,
         level: 1,
         broken: false,
-        economy_profile_runtime_id: 0,
+        economy_profile_runtime_id: grocery_profile_runtime_id,
         economy_broken: false,
         resource_inventory: Vec::new(),
         revenue: 0.0,
@@ -1604,7 +1609,6 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
-    let catalog = load_runtime_economy_catalog().expect("catalog");
     let tuning =
         crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
     let household_id = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
@@ -1621,7 +1625,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
     assert!(
         demand.households_to_admit_today > 0,
-        "hourly demand should produce a household-admission output from vacant housing; credit={:.3} residential={:.3}",
+        "hourly demand should produce a household-admission output from open-job pull; credit={:.3} residential={:.3}",
         demand.admission_action_credit,
         demand.residential,
     );

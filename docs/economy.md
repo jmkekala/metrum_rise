@@ -2529,33 +2529,13 @@ The gate does not check `utility_service_available`. A frozen, non-functional gr
 
 **Observed**: Adding roads between two daily ticks caused commercial candidates to jump from 13 → 79 and industrial from 34 → 90, spawning 4 grocery stores and 5 farms in a single day — far exceeding the 0–1 that is normal when the road network is stable.
 
-**Mechanism**: `normalized_spawn_pressure` in `demand.rs` is computed as a **sum** over all spawn candidates:
-
-```rust
-let normalized_spawn_pressure = spawn_candidates.iter()
-    .filter_map(|c| profile.map(|p| normalized_positive_pressure(pressure, p.spawn_threshold)))
-    .sum::<f32>();
-```
-
-Since all candidates of the same zone/density share the same profile and the same growth_pressure, each candidate contributes an equal fixed value. The total is therefore:
-
-```
-spawn_budget_units ≈ candidate_count × per_candidate_value × batch_fraction × spawn_limit
-```
-
-More roads → more zoned cells → more candidates → proportionally larger spawn budget. This is the wrong signal for commercial and industrial: the spawn rate should reflect economic demand (purchasing power, labour supply, output absorption) — not how much land was zoned this tick.
-
-Residential is less sensitive because its `spawn_limit` is bounded by `housing_shortage²`, which is a real demand signal. Non-residential `spawn_limit` uses `resident_presence.max(pioneer_demand * 0.5)` and provides no candidate-count damping.
-
-**Fix direction**: For commercial and industrial, replace the candidate-sum with either a single representative pressure value (max, or one sample) or a mean. The candidate list should gate *which* slots are eligible, not *how many* buildings spawn.
+**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path now computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial need is based on active commercial input capacity not covered by local industrial output. The exact formulas are owned by [`demand.md`](demand.md).
 
 ### 10. ECON-05: Pioneer Demand Floor Leaks into Non-Residential Spawn Rate
 
 **Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
 
-**Intended role**: Allows the first commercial and industrial buildings to appear before the population fully materialises, bootstrapping the supply chain. Once ECON-04 is fixed (spawn volume no longer scales with candidate count), this floor directly controls the pioneer-era spawn rate.
-
-**Planned replacement**: The pioneer demand system (flat income floor, pioneer_demand coefficient) is scheduled to be replaced by an explicit unemployment-benefits mechanism. When that change lands, the `pioneer_demand * 0.5` spawn floor should be removed or replaced by a signal derived from the new system, since the concept of a "pioneer pressure" constant will no longer exist.
+**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs. Unemployment benefit is the bootstrap income source for households.
 
 ## Future Calibration Targets
 

@@ -308,20 +308,15 @@ admission_threshold = 0.10
 admission_unhoused_ratio_penalty = 0.75
 admission_zero_budget_penalty = 0.75
 admission_recent_failure_penalty = 0.85
-move_in_min_search_runway_days = 1.0
-move_in_target_search_runway_days = 4.0
-move_in_benefit_treasury_coverage_days = 3.0
+move_in_min_search_runway_days = 2.0
+move_in_target_search_runway_days = 6.0
+move_in_benefit_treasury_coverage_days = 7.0
 recent_failure_daily_decay = 0.50
 removal_threshold = 0.55
 persistent_exit_destitute_stock_days = 0.25
 persistent_exit_destitute_unhoused_days = 2
 persistent_exit_max_unhoused_days = 7
 persistent_exit_daily_fraction = 0.25
-
-[action_budget.spawn_batch_fraction_by_use]
-residential = 0.50
-commercial = 0.40
-industrial = 0.40
 
 [action_budget.upgrade_batch_fraction_by_use]
 residential = 0.25
@@ -367,9 +362,6 @@ Deterministic validation rules:
 - `household_action.persistent_exit_destitute_unhoused_days` must be an integer `>= 1`
 - `household_action.persistent_exit_max_unhoused_days` must be an integer `>= 1`
 - `household_action.persistent_exit_daily_fraction` must be finite and in `0.0..1.0`
-- `action_budget.spawn_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
-  and `industrial`
-- every `action_budget.spawn_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
 - `action_budget.upgrade_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
   and `industrial`
 - every `action_budget.upgrade_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
@@ -440,9 +432,16 @@ Baseline `v0.1` city-level signal families:
 - `existing_unemployed_member_count`
 - `open_job_slots`
 - `average_open_job_wage_per_day`
+- `industrial_input_capacity_deficit` — fraction of commercial input value not covered by live
+  local industrial output capacity; this is the `IndustrialGrowth` pressure source
+- `commercial_input_need_value` — daily value of active commercial input capacity demand
+- `local_industrial_input_capacity_value` — daily value of live local industrial output capacity
+  for resources consumed by commercial profiles
+- `industrial_missing_input_value` — daily commercial input value still missing after local
+  industrial capacity is subtracted resource-by-resource
 - `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
-  than local industrial; computed from daily shipment costs accumulated per building, giving a
-  smooth 0..1 signal that reflects actual throughput coverage
+  than local industrial; retained as throughput telemetry and no longer the industrial spawn
+  source
 
 Baseline ownership rule:
 
@@ -467,10 +466,16 @@ Baseline ownership rule:
 - `existing_unemployed_member_count`, `open_job_slots`, and `average_open_job_wage_per_day` come
   from the settled household and non-residential building job state; open jobs count only
   commercial or industrial slots with a positive authored wage and current operating budget
+- `commercial_input_need_value`, `local_industrial_input_capacity_value`,
+  `industrial_missing_input_value`, and `industrial_input_capacity_deficit` are derived by the
+  demand snapshot from compiled economy-profile ports. Active commercial inputs define the target;
+  live non-deserted industrial outputs for those same resources define local capacity; missing
+  value is computed resource-by-resource before being summed.
 - `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
   `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
-  `total_owa / (total_owa + total_local)` across active commercial buildings, `0.0` when no
-  commercial buildings exist or none have transacted yet
+  `total_owa / max(total_owa + total_local, total_expected_commercial_input_value)` across active
+  commercial buildings, `0.0` when no commercial buildings exist or none have transacted yet. This
+  remains useful diagnostics for actual throughput, but it does not set industrial spawn count.
 
 Normalization rule:
 
@@ -578,9 +583,15 @@ Deterministic `v0.1` `DemandChannel` formulas:
 Baseline helper terms:
 
 ```text
-housing_shortage = 1.0 - housing_availability
 goods_shortage   = 1.0 - household_stock_stability
 commercial_need  = max(goods_shortage, commercial_capacity_deficit)
+industrial_input_capacity_deficit =
+    if commercial_input_need_value <= EPSILON then 0.0
+    else clamp(
+        industrial_missing_input_value / commercial_input_need_value,
+        0.0,
+        1.0
+    )
 household_purchase_power =
     clamp(
         household_affordability * household_affordability_target_reserve_days,
@@ -627,6 +638,7 @@ move_in_runway_factor =
         1.0
     )
 move_in_acceptance = move_in_runway_factor
+construction_move_in_acceptance = move_in_runway_factor
 
 admission_unhoused_factor =
     1.0 - admission_unhoused_ratio_penalty * unhoused_household_ratio
@@ -638,6 +650,16 @@ admission_failure_factor =
     admission_unhoused_factor
     * admission_zero_budget_factor
     * admission_recent_failure_factor
+residential_construction_viability =
+    construction_move_in_acceptance * admission_failure_factor
+open_job_household_pull =
+    open_job_slots / max(candidate_effective_workers, 1.0)
+bootstrap_household_pull =
+    if total_household_count == 0 then 1.0 else 0.0
+incoming_household_need =
+    max(open_job_household_pull, bootstrap_household_pull)
+incoming_household_pressure =
+    clamp(incoming_household_need, 0.0, 1.0)
 ```
 
 Evaluation order:
@@ -647,19 +669,24 @@ Evaluation order:
 3. Compute the residential intermediate terms:
 
 ```text
-// Desire for new residential capacity: high when the city attracts settlers and buildings
-// are nearly full; low when buildings are mostly empty or the city is unwelcoming.
-// Uses housing_shortage (not housing_availability) to measure unmet demand for new slots,
-// not just ease of filling vacancies that already exist.
+// Desire for new residential capacity: high when incoming household pull exists and
+// move-in economics are viable. Existing vacancies satisfy this pressure, but do not
+// decide whether households want to enter the city.
 inflow_desire =
-    clamp(external_connection_available * housing_shortage, 0.0, 1.0)
+    clamp(
+        external_connection_available
+        * incoming_household_pressure
+        * residential_construction_viability,
+        0.0,
+        1.0
+    )
 
-// Admission pressure fills existing vacancies, then soft-damps new arrivals when
-// the existing household economy is already failing.
+// Admission pressure is incoming household pull after viability and failure damping.
+// Vacant household slots cap execution later; they do not lower this pressure.
 admission_pressure =
     clamp(
         external_connection_available
-        * housing_availability
+        * incoming_household_pressure
         * move_in_acceptance
         * admission_failure_factor,
         0.0,
@@ -687,7 +714,7 @@ CommercialGrowth =
     clamp(commercial_need * household_purchase_power * external_connection_available, 0.0, 1.0)
 
 IndustrialGrowth =
-    clamp(commercial_owa_dependency * external_connection_available, 0.0, 1.0)
+    clamp(industrial_input_capacity_deficit * external_connection_available, 0.0, 1.0)
 ```
 
 5. Compute the action-limit gate for building spawns. All use families are uncapped so they can
@@ -705,22 +732,24 @@ Interpretation:
   buildings are filling up; spawn threshold fires somewhere above 0.5
 - `ResidentialGrowth < 0.5` means net outflow desire — more people are leaving than arriving,
   or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
-- `inflow_desire` and `admission_pressure` (the household-action signal) are deliberately
-  different formulas: `admission_pressure` uses `housing_availability` to fill existing vacancies,
-  but is soft-damped by deterministic move-in acceptance plus existing household failure state;
-  `inflow_desire` uses `housing_shortage` to measure unmet demand for new capacity — the two
-  naturally complement each other: high healthy vacancy raises admission pressure while lowering
-  inflow_desire, so the system fills existing buildings before building new ones
-- `ResidentialSpawnLimit = 1.0` is safe because `housing_shortage` is already embedded in
-  `inflow_desire`; when vacancy is high, `inflow_desire` falls and `ResidentialGrowth` drops
-  toward 0.5 or below, which stops spawning without a separate quadratic throttle
+- `incoming_household_need` is the deterministic household pull from budget-backed open jobs,
+  plus a one-household bootstrap pull when the city has no households yet
+- `admission_pressure` and `inflow_desire` deliberately read the same incoming household pressure:
+  vacant homes satisfy that pressure and cap actual admission, but they do not create or remove the
+  desire for households to enter the city
+- both formulas read deterministic move-in viability and the existing household failure state;
+  this keeps residential construction and household admission coupled to the same city-health
+  signal without merging them into one action
+- failing move-in viability lowers both admission and residential construction pressure
+- `ResidentialSpawnLimit = 1.0` is safe because residential spawn need is computed from incoming
+  household need and available vacancies; zoning candidates only cap placement
 - `CommercialGrowth` rises when a real resident/customer base exists, either household stock is
   unstable or commercial output capacity is missing, households have enough short-run buying power
   for essential purchases, and the city is connected enough to support more commerce
-- `IndustrialGrowth` is driven by `commercial_owa_dependency` — the fraction of commercial
-  input value sourced from OWA imports rather than local industrial — computed from daily shipment
-  costs accumulated per building; one farm that partially covers multiple shops produces a smooth
-  intermediate signal rather than the binary 0/1 of a headcount ratio
+- `IndustrialGrowth` is driven by local industrial input-capacity deficit. Active commercial
+  profiles define daily input need, live industrial profiles define local output capacity for those
+  input resources, and the missing value ratio becomes the pressure. OWA dependency remains
+  throughput telemetry, not the source of spawn volume.
 - `NonResidentialSpawnLimit = 1.0` so commercial and industrial buildings can bootstrap without
   waiting for a large population
 - baseline `v0.1` intentionally does not define `OfficeGrowth` or `MixedGrowth`; office and mixed
@@ -782,13 +811,14 @@ The same ownership pattern should later apply to private buildings:
 Baseline `v0.1` immigration and emigration pressure is derived from coarse city signals such
 as:
 
-- housing capacity and vacancy (`housing_availability` for household admission; `housing_shortage`
-  for residential building spawn)
+- incoming household pull from bootstrap entry and budget-backed open jobs
+- housing capacity and vacancy as the execution cap for household admission and as satisfied
+  capacity for residential spawn need
 - resident presence (commercial/industrial demand gating)
 - household affordability (commercial demand and soft household-admission damping)
 - zero-budget household ratio (soft household-admission damping)
 - household stock stability (commercial demand)
-- commercial OWA dependency (industrial spawn pressure)
+- industrial input-capacity deficit for active commercial inputs (industrial spawn pressure)
 - existence of at least one external connection (hard gate for admission and residential spawn)
 - negative city treasury (soft household-admission damping)
 - recent household failure/removal memory (soft household-admission damping)
@@ -825,12 +855,21 @@ Deterministic pressure-to-action rule for household outputs:
 - pressure below threshold produces `0` action on that cadence
 - pressure above threshold produces a bounded household count derived from the excess above
   threshold and the active cadence fraction
+- admission uses `max_actionable_households = vacant_household_slots`; this caps actual household
+  arrivals after pressure is computed, but vacancies do not create or suppress admission pressure
 
 Deterministic conversion rule:
 
 ```text
 normalized_action_pressure =
     clamp((pressure - action_threshold) / (1.0 - action_threshold), 0.0, 1.0)
+
+if normalized_action_pressure <= EPSILON
+or max_households_per_day == 0
+or max_actionable_households == 0:
+    action_credit = 0.0
+    households_to_act = 0
+    stop
 
 action_credit += normalized_action_pressure * max_households_per_day * cadence_fraction
 
@@ -871,6 +910,9 @@ Interpretation:
 - the farther pressure is above the threshold, the faster household action accumulates
 - weak but persistent pressure still produces deterministic action over multiple cadence steps
 - stronger pressure produces larger household counts, but never above the bounded daily cap
+- pressure below threshold or no actionable candidates clears the carried crisis/admission credit
+  for that action, preventing stale credit from emitting delayed households after the signal has
+  recovered or collapsed
 - persistent exit prevents a small failed-unhoused tail from staying forever just below the
   citywide crisis-removal threshold
 
@@ -896,22 +938,46 @@ Interpretation:
   snapshot
 - buildings placed, upgraded, downgraded, or removed during that pass do not change the same-hour
   budgets; they affect the next hourly demand pass
+- pressure below threshold or no eligible candidates clears the carried building-action credit for
+  that use/action, preventing stale spawn, upgrade, downgrade, or despawn decisions
 - there is no separate allocator-owned arbitrary cap on top of these demand-owned budgets
+
+Hourly economy diagnostics emit one `building action diagnostics` line per use family. These lines
+are the first place to check when a visible RCI pressure does not become a building:
+
+- `spawn_candidates` is the frozen legal empty-site count for that use before final gates
+- `spawn_profile_missing` counts candidates whose zone density could not be matched to a shipped
+  growth profile, contributing zero normalized pressure
+- `spawn_norm`, `spawn_need`, and `spawn_credit` show the hourly spawn-need credit calculation
+- `spawn_plan` is the whole-building spawn attempt count before final non-residential gates
+- `spawn_selected` is the number of candidates that entered the action plan
+- `spawn_reject_labour` is retained as diagnostic telemetry but baseline `v0.1` does not hard-block
+  non-residential spawning on pre-existing full staffing
+- `spawn_reject_absorption` counts non-residential candidates rejected by the deterministic
+  output-absorption gate
+- `spawn_skip_budget` counts otherwise unprocessed candidates left over because the hourly
+  whole-building spawn plan was already full, or because the spawn need never reached one building
+- the matching `upgrade_*`, `downgrade_*`, and `despawn_*` fields expose the same candidate,
+  normalized-pressure, budget, credit, planned, and selected counts for existing-building actions
 
 Deterministic budget rule for building actions:
 
 For each use family `use` and action type `action`, demand first builds the eligible candidate list
-from the frozen hourly snapshot. It then computes the bounded budget from the relevant normalized
-action pressure, the eligible candidate count, the carried action-credit buffer, and
-`cadence_fraction = 1/24`.
+from the frozen hourly snapshot. Spawn uses the frozen city snapshot to compute a deterministic
+missing-building need, then uses the eligible candidate count only as a placement cap. Upgrade,
+downgrade, and despawn continue to compute their bounded budgets from normalized action pressure,
+the eligible candidate count, the carried action-credit buffer, and `cadence_fraction = 1/24`.
 
 Implementation note for mixed-density candidate sets:
 
 - when one use family aggregates eligible candidates from multiple density profiles with different
-  thresholds, the runtime sums each candidate's normalized pressure contribution before applying the
-  shared use-family batch fraction
-- when all candidates share the same threshold, this reduces to the simpler `eligible_count *
-  normalized_action_pressure` form shown below
+  thresholds, the spawn path averages each candidate's normalized pressure contribution; candidates
+  whose density profile is missing contribute `0.0`
+- for upgrade, downgrade, and despawn, the runtime still sums each existing-building candidate's
+  normalized pressure contribution before applying the shared use-family batch fraction
+- for every building action, if the resulting spawn need or action budget is `<= EPSILON` or the
+  eligible candidate count is zero, the carried action credit for that use/action is reset to `0.0`
+  and no stale action is emitted
 
 For spawn:
 
@@ -919,17 +985,71 @@ For spawn:
 normalized_spawn_pressure =
     clamp((growth_pressure - spawn_threshold) / (1.0 - spawn_threshold), 0.0, 1.0)
 
-spawn_action_credit[use] +=
-    normalized_spawn_pressure
-  * (eligible_spawn_count[use] * spawn_batch_fraction_by_use[use])
-  * spawn_limit[use]
-  * cadence_fraction
+average_spawn_pressure[use] =
+    average_over_eligible_spawn_candidates(normalized_spawn_pressure)
+
+raw_spawn_need_buildings[use] =
+    deterministic_missing_building_count_from_city_snapshot[use]
+
+spawn_need_buildings[use] =
+    raw_spawn_need_buildings[use] * average_spawn_pressure[use]
+
+if spawn_need_buildings[use] <= EPSILON or eligible_spawn_count[use] == 0:
+    spawn_action_credit[use] = 0.0
+    spawns_this_pass[use] = 0
+    stop
+
+spawn_action_credit[use] += spawn_need_buildings[use]
 
 spawns_this_pass[use] =
     min(eligible_spawn_count[use], floor(spawn_action_credit[use]))
 
 spawn_action_credit[use] -= spawns_this_pass[use]
 ```
+
+Raw spawn-need definitions:
+
+```text
+residential_incoming_slots =
+    ceil(incoming_household_need)
+
+residential_reserve_slots =
+    if total_household_count == 0 then 0
+    else max(ceil(total_household_count * 0.10), 1)
+
+residential_desired_vacant_slots =
+    residential_incoming_slots + residential_reserve_slots
+
+residential_missing_household_slots =
+    max(residential_desired_vacant_slots - vacant_household_slots, 0)
+
+raw_spawn_need_buildings[residential] =
+    ceil(
+        residential_missing_household_slots
+        / average_household_capacity_of_eligible_residential_spawn_candidates
+    )
+
+raw_spawn_need_buildings[commercial] =
+    ceil(
+        unmet_commercial_consumer_demand_units_per_day
+        / average_household-demand_output_units_per_day_of_eligible_commercial_spawn_candidates
+    )
+
+raw_spawn_need_buildings[industrial] =
+    ceil(
+        industrial_missing_input_value_per_day
+        / average_commercial-input_output_value_per_day_of_eligible_industrial_spawn_candidates
+    )
+```
+
+If any denominator is `<= EPSILON`, that use's raw spawn need is `0.0` for the pass. The candidate
+count does not multiply spawn need; it only caps how many deterministic empty sites can be selected.
+This means one valid industrial parcel can receive the full one-factory need immediately instead of
+turning the need into `1 / 24` of a parcel-count-scaled daily drip.
+Because `industrial_missing_input_value_per_day` subtracts existing local capacity, one commercial
+building that needs `160` units/day and one industrial building that outputs `160` units/day yields
+zero further industrial spawn need even if the commercial building imported a large one-time OWA
+starter shipment earlier in the day.
 
 For upgrade:
 
@@ -995,12 +1115,12 @@ despawn_action_credit[use] -= despawns_this_pass[use]
 
 Authoring rule:
 
-- `spawn_batch_fraction_by_use = action_budget.spawn_batch_fraction_by_use`
 - `upgrade_batch_fraction_by_use = action_budget.upgrade_batch_fraction_by_use`
 - `downgrade_batch_fraction_by_use = action_budget.downgrade_batch_fraction_by_use`
 - `despawn_batch_fraction_by_use = action_budget.despawn_batch_fraction_by_use`
 - all of those tables are authored in [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
-- baseline `v0.1` does not hard-code these fractions in runtime code
+- spawn has no authored batch fraction in baseline `v0.1`; its action count is derived from the
+  deterministic missing-building need above
 
 Deterministic execution order:
 
@@ -1009,8 +1129,10 @@ Deterministic execution order:
 - hourly household admission advances `admission_action_credit` at `1/24` of the authored daily
   household cap, then consumes `households_to_admit_today` immediately by launching household
   arrival carriers for available reserved homes
-- hourly private building actions advance their carried action credits at `1/24` of the authored
-  daily building-action budget, then execute the selected private building plan immediately
+- hourly private spawn actions advance their carried action credits by demand-derived missing
+  building units; upgrade, downgrade, and despawn actions advance their carried action credits at
+  `1/24` of their authored daily building-action budget, then execute the selected private building
+  plan immediately
 - the `00:00` hourly demand pass runs after daily settlement and `households_to_remove_today`, so
   the system still executes 24 hourly `1/24` demand slices per operational day
 - daily demand output consumption at the midnight boundary is limited to
@@ -1090,7 +1212,8 @@ Deterministic `v0.1` day-boundary rule:
    - `household_affordability`
    - `household_stock_stability`
    - `external_connection_available`
-   - `commercial_owa_dependency`
+   - `commercial_capacity_deficit`
+   - `industrial_input_capacity_deficit`
 5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
 6. Compute `households_to_remove_today` from that same frozen snapshot.
 7. Execute the resulting demand-owned removal action before the next operational day's sub-daily
@@ -1127,23 +1250,26 @@ pressure on commercial and industrial buildings.
 
 Rules:
 
-- early game should favor agent admission while vacant housing and external connections exist
+- empty-city bootstrap may admit the first household when external connection, move-in viability,
+  and vacant execution capacity exist
+- after bootstrap, budget-backed open jobs define incoming household pull; vacant homes are
+  execution capacity only
 - immigration pressure is driven by coarse city signals only, not by hidden magic or static floors
-- no hard job requirement for initial settlement: people may move to a new city before jobs exist
+- no hard job requirement for the first settlement: people may move to a new city before jobs exist
   when starter savings and reliable unemployment benefit provide the authored search runway
 
 Two distinct pressure formulas drive the residential system. They share the same economic
 signals but serve different purposes.
 
-**`admission_pressure`** — fills existing vacancies. Used only for the household-action
-`households_to_admit_today` output. High when housing is available and the existing household
-economy plus candidate move-in terms are healthy enough to absorb new arrivals:
+**`admission_pressure`** — measures incoming household pull. Used only for the household-action
+`households_to_admit_today` output. High when bootstrap/open-job pull exists and the existing
+household economy plus candidate move-in terms are healthy enough to absorb new arrivals:
 
 ```text
 admission_pressure =
     clamp(
         external_connection_available
-        * housing_availability
+        * incoming_household_pressure
         * move_in_acceptance
         * admission_failure_factor,
         0.0,
@@ -1152,25 +1278,34 @@ admission_pressure =
 ```
 
 `move_in_acceptance` is deterministic candidate-side viability. It estimates the household that
-would fill the current residential vacancies, then asks whether starter savings plus expected wage
+would enter the city, then asks whether starter savings plus expected wage
 income and benefit-backed unemployment support provide at least the authored search runway. Jobs
 count only paid, budget-backed commercial or industrial open slots. Benefit support is reliable
 only to the extent that the current treasury can cover existing unemployed residents plus the
 candidate household for `move_in_benefit_treasury_coverage_days`.
 
 **`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
-High when buildings are nearly full and the city is welcoming (unmet demand for new slots):
+High when incoming household pull exists and the city is welcoming:
 
 ```text
 inflow_desire =
-    clamp(external_connection_available * housing_shortage, 0.0, 1.0)
+    clamp(
+        external_connection_available
+        * incoming_household_pressure
+        * residential_construction_viability,
+        0.0,
+        1.0
+    )
 ```
 
 Relationship: `admission_pressure` and `inflow_desire` are complementary by design.
-High vacancy → `housing_availability` is high → `admission_pressure` is high (admit people
-fast) when the city is healthy, and `housing_shortage` is low → `inflow_desire` is low (no need
-for new buildings). If the city already has broke or unhoused households, vacancy remains a real
-signal but no longer overrides the soft health damping.
+Incoming household pull raises both admission pressure and residential construction pressure.
+Vacant household slots cap how many households can actually arrive on an hourly pass and subtract
+from residential spawn need, but they do not lower the incoming pull itself. If the city already has
+broke or unhoused households, failure damping still reduces both admission and construction
+pressure. If no vacant household slots exist yet, the move-in estimate derives its candidate
+household size from registered level-1 residential assets, so a healthy empty city can still build
+first homes without requiring an already-vacant home.
 
 `recent_household_failure_pressure` is demand-owned carried state in `0.0..1.0`. Each daily
 demand pass first decays the previous value by `recent_failure_daily_decay`, then raises it to at
@@ -1271,12 +1406,14 @@ If a household is admitted:
   instead of silently instantiating the household inside the home
 
 The `economy` debug log emits a compact household-admission diagnostic line for each hourly pass.
-It reports the raw admission pressure, base vacancy pressure, household affordability telemetry,
-candidate move-in acceptance, search-runway days, candidate household size, budget-backed open
-jobs, expected employed and unemployed members, expected wage income, benefit reliability and
-claims, starter savings, daily essential cost, daily deficit, individual household-failure damping
-factors, the recent-failure memory and factor, threshold, normalized action pressure, carried
-admission credit, planned households, and actually launched arrival carriers.
+It reports the raw admission pressure, base incoming-household pressure, vacancy telemetry,
+incoming household need, open-job household pull, household affordability telemetry, candidate
+move-in acceptance, search-runway days, candidate household size, budget-backed open jobs, expected
+employed and unemployed members, expected wage income, benefit reliability and claims, starter
+savings, daily essential cost, daily deficit, construction-side move-in acceptance, construction
+runway, residential construction viability, individual household-failure damping factors, the
+recent-failure memory and factor, threshold, normalized action pressure, carried admission credit,
+planned households, and actually launched arrival carriers.
 
 The daily `city flow diagnostics` line summarizes the settled city state after daily household
 settlement, removal execution, and the midnight demand pass. It reports:
@@ -1382,49 +1519,45 @@ Interpretation:
 
 ### Non-Residential Spawn Gates
 
-Commercial and industrial buildings spawning into a neighbourhood with no workers to staff them,
-or no consumers to absorb their output, is the root cause of zombie businesses and oversupply.
-Two deterministic per-candidate gates enforce economic readiness before a non-residential spawn
-is allowed to execute.
+Commercial and industrial buildings spawning into a neighbourhood with no consumers to absorb their
+output is the root cause of zombie businesses and oversupply. Baseline `v0.1` therefore applies a
+deterministic output-absorption gate before a non-residential spawn is allowed to execute.
 
-These gates apply **after** the budget (`spawns_this_pass[use]`) has been computed and **during** final
-candidate selection. Candidates that fail either gate are removed from the selected set; the
-remaining budget is not redistributed to other candidates on the same hourly pass.
+This gate applies **after** the budget (`spawns_this_pass[use]`) has been computed and **during**
+final candidate selection. Candidates that fail it are removed from the selected set; the remaining
+budget is not redistributed to other candidates on the same hourly pass.
 
-#### Labour Gate
+#### Workforce Is A Pull Signal
 
-A non-residential spawn candidate is rejected if the city cannot plausibly staff it.
+Workplace capacity must not be a hard spawn prerequisite. A commercial or industrial building may
+spawn with fewer current residents than its full `worker_capacity` when demand and output
+absorption justify the building. The new building's budget-backed open jobs then feed
+`incoming_household_need` on the next demand snapshot, which raises household admission and
+residential construction pressure.
 
 Deterministic rule:
 
 ```text
-available_unemployed =
-    housed_resident_count   # from the frozen hourly snapshot
-
 required_workers = worker_capacity of the candidate's bound economy profile
-                   (0 if the profile has no workers, e.g. utility nodes)
 
-labour_gate_passes =
-    required_workers == 0
-    OR available_unemployed >= required_workers
+non_residential_spawn_preexisting_worker_requirement = 0
 ```
 
 Where:
 
-- `housed_resident_count` is taken from the frozen hourly economy snapshot
-- `required_workers` is read from the compiled economy catalog for the candidate's bound profile
-- a candidate with `required_workers == 0` always passes (utility buildings, warehouses)
-- if the economy profile binding is missing or the catalog cannot be read, the gate fails safe
-  (spawn is rejected)
-- the gate consumes `required_workers` from the running `available_unemployed` count as each
-  candidate passes, so a single hourly pass does not spawn more buildings than there are workers
+- `required_workers` still matters for job capacity, wages, startup budget, staffing factor,
+  production throughput, and household admission pull
+- `required_workers` does **not** reject the spawn candidate during final selection
 
 Interpretation:
 
-- a completely empty city can spawn commercial or industrial buildings without a prior population
-  because `NonResidentialSpawnLimit = 1.0`; the labour gate then checks the actual settled
-  open-job count from the snapshot
-- once the city's real workers fill open jobs the gate naturally relaxes again for new spawns
+- a starter city with one 5-person household may place a 15-worker grocery if household demand is
+  unmet and the output-absorption gate passes
+- that grocery's open jobs become deterministic incoming-household pull instead of creating a
+  chicken-and-egg deadlock
+- business viability is still handled by operational systems: partial staffing lowers throughput,
+  wages require operating budget, and persistent failure can later make the building eligible for
+  downgrade/despawn
 
 #### Output-Absorption Gate
 
@@ -1493,10 +1626,10 @@ implicitly `1.0` and no change in gate behavior occurs.
 
 #### Gate Interaction
 
-Both gates are evaluated independently for each candidate. A candidate that fails **either** gate
-is excluded from that day's selected spawn set. The labour gate is evaluated first.
+The output-absorption gate is evaluated for each non-residential candidate. A candidate that fails
+is excluded from that day's selected spawn set.
 
-These gates do not affect residential spawns, upgrades, downgrades, or despawns.
+This gate does not affect residential spawns, upgrades, downgrades, or despawns.
 
 Residential note:
 

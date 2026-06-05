@@ -1164,6 +1164,8 @@ impl SimCore {
         );
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
+        self.demand
+            .log_hourly_building_action_diagnostics(day_index, minute_of_day);
         debug_log!(
             "economy",
             "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
