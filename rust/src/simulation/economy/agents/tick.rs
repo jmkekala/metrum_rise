@@ -101,11 +101,25 @@ const LANE_CHANGE_DURATION_S: f32 = 3.5;
 const LANE_CHANGE_MIN_LENGTH_M: f32 = 18.0;
 const LANE_CHANGE_MAX_LENGTH_M: f32 = 70.0;
 const LANE_CHANGE_FINISH_EPS_M: f32 = 0.25;
+const OVERTAKE_STUCK_TIME_S: f32 = 2.0;
+const OVERTAKE_COOLDOWN_S: f32 = 8.0;
+const OVERTAKE_MIN_SPEED_GAIN_MS: f32 = 2.0;
+const OVERTAKE_MIN_GAP_GAIN_M: f32 = 12.0;
+const OVERTAKE_TARGET_AHEAD_GAP_M: f32 = 30.0;
+const OVERTAKE_RETURN_TARGET_GAP_M: f32 = 20.0;
+const OVERTAKE_EDGE_BUFFER_M: f32 = 12.0;
+const OVERTAKE_DETACH_BUFFER_M: f32 = 25.0;
 
 #[inline(always)]
 fn lane_change_length_for_speed(speed: f32) -> f32 {
     (speed.max(0.0) * LANE_CHANGE_DURATION_S)
         .clamp(LANE_CHANGE_MIN_LENGTH_M, LANE_CHANGE_MAX_LENGTH_M)
+}
+
+#[inline(always)]
+fn overtake_follow_gap(speed: f32) -> f32 {
+    (CAR_LENGTH + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD + 8.0)
+        .max(OVERTAKE_TARGET_AHEAD_GAP_M * 0.5)
 }
 
 fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
@@ -467,6 +481,86 @@ fn lane_change_target_toward(
                 })
         })
         .copied()
+}
+
+fn sibling_vehicle_lane_with_idx(
+    from_lane_id: usize,
+    target_lane_idx: i8,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    if from_lane.edge_id == usize::MAX || from_lane.lane_type != LaneType::Vehicle {
+        return None;
+    }
+    transit_network
+        .lane_system
+        .edge_lanes
+        .get(&from_lane.edge_id)?
+        .iter()
+        .find(|&&lane_id| {
+            transit_network
+                .lane_system
+                .lanes
+                .get(lane_id)
+                .is_some_and(|lane| {
+                    lane.is_fwd == from_lane.is_fwd
+                        && lane.lane_type == LaneType::Vehicle
+                        && lane.lane_idx == target_lane_idx
+                })
+        })
+        .copied()
+}
+
+fn overtaking_lane_target(from_lane_id: usize, transit_network: &TransitNetwork) -> Option<usize> {
+    let lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    let target_idx = if lane.lane_idx > 0 {
+        lane.lane_idx - 1
+    } else if lane.lane_idx < -1 {
+        lane.lane_idx + 1
+    } else {
+        return None;
+    };
+    sibling_vehicle_lane_with_idx(from_lane_id, target_idx, transit_network)
+}
+
+fn cruise_lane_return_target(
+    from_lane_id: usize,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    let target_idx = if lane.lane_idx >= 0 {
+        lane.lane_idx + 1
+    } else {
+        lane.lane_idx - 1
+    };
+    sibling_vehicle_lane_with_idx(from_lane_id, target_idx, transit_network)
+}
+
+fn planned_detach_distance_on_current_edge(
+    current_lane_id: usize,
+    planned_detach_lane_id: usize,
+    lane_d: f32,
+    planned_detach_lane_d: f32,
+    transit_network: &TransitNetwork,
+) -> f32 {
+    let Some(current_lane) = transit_network.lane_system.lanes.get(current_lane_id) else {
+        return f32::MAX;
+    };
+    let Some(detach_lane) = transit_network
+        .lane_system
+        .lanes
+        .get(planned_detach_lane_id)
+    else {
+        return f32::MAX;
+    };
+    if current_lane.edge_id == usize::MAX
+        || current_lane.edge_id != detach_lane.edge_id
+        || current_lane.is_fwd != detach_lane.is_fwd
+        || lane_d >= planned_detach_lane_d
+    {
+        return f32::MAX;
+    }
+    planned_detach_lane_d - lane_d
 }
 
 fn planned_lane_change_target(
@@ -1756,6 +1850,8 @@ pub(crate) struct MovementSlices {
     lane_change_from_lane: RawSlice<u32>,
     lane_change_start_d: RawSlice<f32>,
     lane_change_length: RawSlice<f32>,
+    overtake_blocked_time: RawSlice<f32>,
+    overtake_cooldown: RawSlice<f32>,
     tmode: RawSlice<u8>,
     planned_activity: RawSlice<u8>,
     path: RawSlice<Vec<u32>>,
@@ -1909,6 +2005,8 @@ impl AgentSystem {
             let s_plan_detach_lane_idm = RawSlice::new(&mut self.agents.planned_detach_lane_id);
             let s_plan_detach_lane_d_idm = RawSlice::new(&mut self.agents.planned_detach_lane_d);
             let s_lane_change_from_idm = RawSlice::new(&mut self.agents.lane_change_from_lane_id);
+            let s_overtake_blocked_idm = RawSlice::new(&mut self.agents.overtake_blocked_time_s);
+            let s_overtake_cooldown_idm = RawSlice::new(&mut self.agents.overtake_cooldown_s);
             let s_speed_idm = RawSlice::new(&mut self.agents.speed);
             let new_spd_raw = RawSlice {
                 ptr: self.new_speed.as_mut_ptr(),
@@ -1920,8 +2018,11 @@ impl AgentSystem {
                 let cur_spd = *s_speed_idm.get(i);
                 let transit = *s_transit_idm.get(i);
                 let tmode = *s_tmode_idm.get(i);
+                let cooldown = (*s_overtake_cooldown_idm.get(i) - delta).max(0.0);
+                *s_overtake_cooldown_idm.get_mut(i) = cooldown;
 
                 if !live_lane_bucket_transit(transit) || tmode != MODE_CAR {
+                    *s_overtake_blocked_idm.get_mut(i) = 0.0;
                     *new_spd_raw.get_mut(i) = cur_spd;
                     return;
                 }
@@ -2011,6 +2112,17 @@ impl AgentSystem {
                     }
                 }
 
+                let traffic_blocked = transit == TRANSIT_NETWORK
+                    && *s_lane_change_from_idm.get(i) == u32::MAX
+                    && cooldown <= 0.0
+                    && gap < overtake_follow_gap(cur_spd)
+                    && cur_spd + OVERTAKE_MIN_SPEED_GAIN_MS < v_max;
+                if traffic_blocked {
+                    *s_overtake_blocked_idm.get_mut(i) += delta;
+                } else {
+                    *s_overtake_blocked_idm.get_mut(i) = 0.0;
+                }
+
                 *new_spd_raw.get_mut(i) = limit_speed_change(cur_spd, target_speed, delta);
             });
         }
@@ -2051,6 +2163,8 @@ impl AgentSystem {
             lane_change_from_lane: RawSlice::new(&mut self.agents.lane_change_from_lane_id),
             lane_change_start_d: RawSlice::new(&mut self.agents.lane_change_start_d),
             lane_change_length: RawSlice::new(&mut self.agents.lane_change_length_m),
+            overtake_blocked_time: RawSlice::new(&mut self.agents.overtake_blocked_time_s),
+            overtake_cooldown: RawSlice::new(&mut self.agents.overtake_cooldown_s),
             tmode: RawSlice::new(&mut self.agents.transit_mode),
             planned_activity: RawSlice::new(&mut self.agents.planned_activity),
             path: RawSlice::new(&mut self.agents.current_path),
@@ -2290,6 +2404,8 @@ impl AgentSystem {
             let s_lane_change_from_lane = &slices.lane_change_from_lane;
             let s_lane_change_start_d = &slices.lane_change_start_d;
             let s_lane_change_length = &slices.lane_change_length;
+            let s_overtake_blocked_time = &slices.overtake_blocked_time;
+            let s_overtake_cooldown = &slices.overtake_cooldown;
             let s_pos_x = &slices.pos_x;
             let s_pos_y = &slices.pos_y;
             let s_cur_e = &slices.cur_e;
@@ -2301,6 +2417,7 @@ impl AgentSystem {
                 *s_lane_change_from_lane.get_mut(i) = u32::MAX;
                 *s_lane_change_start_d.get_mut(i) = 0.0;
                 *s_lane_change_length.get_mut(i) = 0.0;
+                *s_overtake_blocked_time.get_mut(i) = 0.0;
             }
 
             // Update walk animation phase if not in a vehicle.
@@ -3127,6 +3244,128 @@ impl AgentSystem {
                             }
                         }
 
+                        if *s_tmode.get(i) == MODE_CAR
+                            && *s_transit.get(i) == TRANSIT_NETWORK
+                            && *s_lane_change_from_lane.get(i) == u32::MAX
+                            && *s_overtake_cooldown.get(i) <= 0.0
+                        {
+                            let planned_detach_lane_id = *s_plan_detach_lane.get(i) as usize;
+                            let planned_target_pending =
+                                (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
+                                    && planned_lane_change_target(
+                                        lane_id,
+                                        planned_detach_lane_id,
+                                        *s_lane_d.get(i),
+                                        *s_plan_detach_lane_d.get(i),
+                                        transit_network,
+                                    )
+                                    .is_some();
+                            if !planned_target_pending {
+                                let source_lane = &transit_network.lane_system.lanes[lane_id];
+                                let maneuver_length = lane_change_length_for_speed(*s_speed.get(i));
+                                let dist_to_edge_end = source_lane.length - *s_lane_d.get(i);
+                                let dist_to_detach = planned_detach_distance_on_current_edge(
+                                    lane_id,
+                                    planned_detach_lane_id,
+                                    *s_lane_d.get(i),
+                                    *s_plan_detach_lane_d.get(i),
+                                    transit_network,
+                                );
+                                let enough_road_left =
+                                    dist_to_edge_end > maneuver_length + OVERTAKE_EDGE_BUFFER_M;
+                                let far_from_detach =
+                                    dist_to_detach > maneuver_length + OVERTAKE_DETACH_BUFFER_M;
+
+                                if source_lane.edge_id != usize::MAX
+                                    && enough_road_left
+                                    && far_from_detach
+                                {
+                                    let current_gap = lane_buckets
+                                        .get(lane_id)
+                                        .map(|bucket| idm_gap_bucket(bucket, *s_lane_d.get(i)))
+                                        .unwrap_or(f32::MAX);
+                                    let overtake_target = if *s_overtake_blocked_time.get(i)
+                                        >= OVERTAKE_STUCK_TIME_S
+                                    {
+                                        overtaking_lane_target(lane_id, transit_network)
+                                            .map(|target| (target, true))
+                                    } else if *s_overtake_blocked_time.get(i) <= 0.0
+                                        && current_gap > OVERTAKE_TARGET_AHEAD_GAP_M
+                                    {
+                                        cruise_lane_return_target(lane_id, transit_network)
+                                            .map(|target| (target, false))
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some((target_lane_id, is_overtake)) = overtake_target {
+                                        let target_lane =
+                                            &transit_network.lane_system.lanes[target_lane_id];
+                                        let lane_d = (*s_lane_d.get(i)).min(target_lane.length);
+                                        let target_gap = lane_buckets
+                                            .get(target_lane_id)
+                                            .map(|bucket| idm_gap_bucket(bucket, lane_d))
+                                            .unwrap_or(f32::MAX);
+                                        let target_clear = lane_buckets
+                                            .get(target_lane_id)
+                                            .map(|bucket| {
+                                                lane_change_gap_clear(
+                                                    bucket,
+                                                    lane_d,
+                                                    *s_speed.get(i),
+                                                )
+                                            })
+                                            .unwrap_or(false);
+                                        let useful_overtake = target_gap
+                                            > current_gap + OVERTAKE_MIN_GAP_GAIN_M
+                                            && target_gap > OVERTAKE_TARGET_AHEAD_GAP_M;
+                                        let safe_return = target_gap > OVERTAKE_RETURN_TARGET_GAP_M;
+
+                                        if target_clear
+                                            && ((is_overtake && useful_overtake)
+                                                || (!is_overtake && safe_return))
+                                        {
+                                            *s_lane_change_from_lane.get_mut(i) = lane_id as u32;
+                                            *s_lane_change_start_d.get_mut(i) = *s_lane_d.get(i);
+                                            *s_lane_change_length.get_mut(i) = maneuver_length;
+                                            *s_lane_id.get_mut(i) = target_lane_id;
+                                            *s_lane_d.get_mut(i) = lane_d;
+                                            *s_cur_e.get_mut(i) = target_lane.edge_id;
+                                            *s_overtake_blocked_time.get_mut(i) = 0.0;
+                                            *s_overtake_cooldown.get_mut(i) = OVERTAKE_COOLDOWN_S;
+                                            lane_id = target_lane_id;
+                                            if is_overtake {
+                                                traffic_log!(
+                                                    "[OVERTAKE_START] agent={} edge={} from_lane={} to_lane={} start_d={:.2} length={:.2} speed={:.2} current_gap={:.2} target_gap={:.2}",
+                                                    i,
+                                                    target_lane.edge_id,
+                                                    *s_lane_change_from_lane.get(i),
+                                                    target_lane_id,
+                                                    *s_lane_change_start_d.get(i),
+                                                    *s_lane_change_length.get(i),
+                                                    *s_speed.get(i),
+                                                    current_gap,
+                                                    target_gap,
+                                                );
+                                            } else {
+                                                traffic_log!(
+                                                    "[OVERTAKE_RETURN] agent={} edge={} from_lane={} to_lane={} start_d={:.2} length={:.2} speed={:.2} target_gap={:.2}",
+                                                    i,
+                                                    target_lane.edge_id,
+                                                    *s_lane_change_from_lane.get(i),
+                                                    target_lane_id,
+                                                    *s_lane_change_start_d.get(i),
+                                                    *s_lane_change_length.get(i),
+                                                    *s_speed.get(i),
+                                                    target_gap,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         let lane = &transit_network.lane_system.lanes[lane_id];
                         let dist_to_end = lane.length - *s_lane_d.get(i);
 
@@ -3831,6 +4070,11 @@ impl AgentSystem {
                             *s_cur_e.get_mut(i) = usize::MAX;
                             *s_lane_id.get_mut(i) = usize::MAX;
                             *s_lane_d.get_mut(i) = 0.0;
+                            *s_lane_change_from_lane.get_mut(i) = u32::MAX;
+                            *s_lane_change_start_d.get_mut(i) = 0.0;
+                            *s_lane_change_length.get_mut(i) = 0.0;
+                            *s_overtake_blocked_time.get_mut(i) = 0.0;
+                            *s_overtake_cooldown.get_mut(i) = 0.0;
                             *s_speed.get_mut(i) = 0.0;
                             s_path.get_mut(i).clear();
                             *s_path_idx.get_mut(i) = 0;
@@ -3924,9 +4168,10 @@ impl AgentSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalAccessPath, advance_along_local_access_path, connector_turn_speed, dispatch_agents,
-        junction_car_speed, junction_entry_speed, lane_change_gap_clear,
-        lane_change_length_for_speed, lane_change_target_toward, limit_speed_change,
+        LocalAccessPath, advance_along_local_access_path, connector_turn_speed,
+        cruise_lane_return_target, dispatch_agents, junction_car_speed, junction_entry_speed,
+        lane_change_gap_clear, lane_change_length_for_speed, lane_change_target_toward,
+        limit_speed_change, overtaking_lane_target,
     };
     use crate::config::{CAR_JUNCTION_SPEED_MS, IDM_B};
     use crate::simulation::network::TransitNetwork;
@@ -4005,6 +4250,28 @@ mod tests {
 
         assert_eq!(lane_change_target_toward(0, 2, &network), Some(1));
         assert_eq!(lane_change_target_toward(1, 2, &network), Some(2));
+    }
+
+    #[test]
+    fn test_overtaking_targets_center_and_returns_outward() {
+        let mut network = TransitNetwork::new();
+        for (is_fwd, lane_idx) in [(true, 0), (true, 1), (false, -1), (false, -2)] {
+            network.lane_system.lanes.push(Lane {
+                edge_id: 7,
+                is_fwd,
+                lane_idx,
+                lane_type: LaneType::Vehicle,
+                ..Default::default()
+            });
+        }
+        network.lane_system.edge_lanes.insert(7, vec![0, 1, 2, 3]);
+
+        assert_eq!(overtaking_lane_target(1, &network), Some(0));
+        assert_eq!(overtaking_lane_target(0, &network), None);
+        assert_eq!(cruise_lane_return_target(0, &network), Some(1));
+        assert_eq!(overtaking_lane_target(3, &network), Some(2));
+        assert_eq!(overtaking_lane_target(2, &network), None);
+        assert_eq!(cruise_lane_return_target(2, &network), Some(3));
     }
 
     /// Verifies that `dispatch_agents` visits every index in `0..n` exactly once,

@@ -57,7 +57,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Traffic movement now uses connector curvature to cap junction turn speed, acceleration/braking
   limits for speed changes, and target-lane gap checks plus speed-scaled S-curve poses for
   same-edge car lane changes. Clear lane changes preserve road speed; blocked target lanes are
-  treated as traffic and can force braking.
+  treated as traffic and can force braking. Conservative same-edge overtaking is live for
+  multi-lane vehicle roads: cars pass only after being traffic-blocked, only toward the center
+  lane, and return outward after a cooldown when the cruising lane is clear.
 - `ROAD-04` is closed for the current node top-surface quality pass: `Bend` / `JunctionN`
   carriageway triangulation now canonicalizes same-owner / same-height / same-provenance numeric
   dust, can insert road-owned interior guide support before CDT, and validates visible

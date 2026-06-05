@@ -95,6 +95,10 @@ pub struct Agent {
     pub lane_change_start_d: f32,
     /// Longitudinal distance over which the active lane-change S-curve completes.
     pub lane_change_length_m: f32,
+    /// Time spent held below free-flow speed by traffic in the current lane.
+    pub overtake_blocked_time_s: f32,
+    /// Remaining cooldown before another discretionary overtaking/return lane change may start.
+    pub overtake_cooldown_s: f32,
     /// Current movement speed in m/s. Updated each tick by the IDM model (cars) or held constant
     /// (pedestrians). Initialised to the edge speed limit on first lane entry.
     pub speed: f32,
@@ -244,6 +248,8 @@ impl AgentSystem {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            overtake_blocked_time_s: 0.0,
+            overtake_cooldown_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_WALK,
             planned_activity: 0,
@@ -309,6 +315,8 @@ impl AgentSystem {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            overtake_blocked_time_s: 0.0,
+            overtake_cooldown_s: 0.0,
             speed: DEFAULT_URBAN_ROAD_SPEED_MS,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -589,6 +597,8 @@ impl AgentSystem {
                 self.agents.lane_change_from_lane_id[i] = u32::MAX;
                 self.agents.lane_change_start_d[i] = 0.0;
                 self.agents.lane_change_length_m[i] = 0.0;
+                self.agents.overtake_blocked_time_s[i] = 0.0;
+                self.agents.overtake_cooldown_s[i] = 0.0;
                 // lane_distance is intentionally NOT zeroed here: the agent keeps its
                 // visual position until the next tick re-attaches it to a new lane.
                 // Zeroing it caused agents to visually teleport to edge position 0
@@ -735,6 +745,8 @@ mod tests {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            overtake_blocked_time_s: 0.0,
+            overtake_cooldown_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -782,6 +794,8 @@ mod tests {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            overtake_blocked_time_s: 0.0,
+            overtake_cooldown_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -860,6 +874,8 @@ mod tests {
             lane_change_from_lane_id: u32::MAX,
             lane_change_start_d: 0.0,
             lane_change_length_m: 0.0,
+            overtake_blocked_time_s: 0.0,
+            overtake_cooldown_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
