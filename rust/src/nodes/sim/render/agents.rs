@@ -3,7 +3,7 @@
 //! Handles pedestrian and car instance transform generation, and agent path visual debug.
 
 use crate::nodes::sim::core::SimCore;
-use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING,
@@ -205,7 +205,33 @@ impl SimCore {
                 && current_lane < self.transit_network.lane_system.lanes.len()
             {
                 let lane = &self.transit_network.lane_system.lanes[current_lane];
-                lane_pose = sample_lane_pose(lane, self.agents.lane_distance[i]);
+                let source_lane_id = self.agents.lane_change_from_lane_id[i];
+                lane_pose = if self.agents.transit[i] == TRANSIT_NETWORK
+                    && source_lane_id != u32::MAX
+                    && (source_lane_id as usize) < self.transit_network.lane_system.lanes.len()
+                    && self.agents.lane_distance[i]
+                        < self.agents.lane_change_start_d[i] + self.agents.lane_change_length_m[i]
+                {
+                    let source_lane =
+                        &self.transit_network.lane_system.lanes[source_lane_id as usize];
+                    if source_lane.edge_id != usize::MAX
+                        && source_lane.edge_id == lane.edge_id
+                        && source_lane.is_fwd == lane.is_fwd
+                        && source_lane.lane_type == lane.lane_type
+                    {
+                        sample_lane_change_pose(
+                            source_lane,
+                            lane,
+                            self.agents.lane_distance[i],
+                            self.agents.lane_change_start_d[i],
+                            self.agents.lane_change_length_m[i],
+                        )
+                    } else {
+                        sample_lane_pose(lane, self.agents.lane_distance[i])
+                    }
+                } else {
+                    sample_lane_pose(lane, self.agents.lane_distance[i])
+                };
                 if let Some((pos, _)) = lane_pose {
                     world_x = pos.x;
                     world_z = pos.z;

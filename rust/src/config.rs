@@ -103,6 +103,10 @@ pub const CAR_JUNCTION_SPEED_MS: f32 = 6.0;
 /// Minimum crawl speed once a car is admitted into a junction connector lane.
 pub const CAR_JUNCTION_MIN_SPEED_MS: f32 = 2.0;
 
+/// Comfortable lateral acceleration target for cars turning through junction connectors.
+/// Used with the connector's approximate turn radius to slow tight turns more than gentle bends.
+pub const CAR_JUNCTION_LATERAL_ACCEL_MS2: f32 = 2.2;
+
 /// Small denominator floor for route-cost calculations on malformed or very slow edges.
 pub const MIN_ROUTE_SPEED_MS: f32 = 1.0;
 

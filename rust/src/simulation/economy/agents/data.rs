@@ -89,6 +89,12 @@ pub struct Agent {
     pub current_lane_id: usize,
     /// Distance (in metres) travelled along the `current_lane_id`.
     pub lane_distance: f32,
+    /// Source lane for an active lane-change maneuver. `u32::MAX` means no active lane change.
+    pub lane_change_from_lane_id: u32,
+    /// Lane distance where the active lane-change S-curve started.
+    pub lane_change_start_d: f32,
+    /// Longitudinal distance over which the active lane-change S-curve completes.
+    pub lane_change_length_m: f32,
     /// Current movement speed in m/s. Updated each tick by the IDM model (cars) or held constant
     /// (pedestrians). Initialised to the edge speed limit on first lane entry.
     pub speed: f32,
@@ -235,6 +241,9 @@ impl AgentSystem {
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
+            lane_change_from_lane_id: u32::MAX,
+            lane_change_start_d: 0.0,
+            lane_change_length_m: 0.0,
             speed: 0.0,
             transit_mode: MODE_WALK,
             planned_activity: 0,
@@ -297,6 +306,9 @@ impl AgentSystem {
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
+            lane_change_from_lane_id: u32::MAX,
+            lane_change_start_d: 0.0,
+            lane_change_length_m: 0.0,
             speed: DEFAULT_URBAN_ROAD_SPEED_MS,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -574,6 +586,9 @@ impl AgentSystem {
             };
             if should_invalidate {
                 self.agents.current_lane_id[i] = usize::MAX;
+                self.agents.lane_change_from_lane_id[i] = u32::MAX;
+                self.agents.lane_change_start_d[i] = 0.0;
+                self.agents.lane_change_length_m[i] = 0.0;
                 // lane_distance is intentionally NOT zeroed here: the agent keeps its
                 // visual position until the next tick re-attaches it to a new lane.
                 // Zeroing it caused agents to visually teleport to edge position 0
@@ -717,6 +732,9 @@ mod tests {
             current_edge: 0,
             current_lane_id: e0_lane,
             lane_distance: 10.0,
+            lane_change_from_lane_id: u32::MAX,
+            lane_change_start_d: 0.0,
+            lane_change_length_m: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -761,6 +779,9 @@ mod tests {
             current_edge: 1,
             current_lane_id: e1_lane,
             lane_distance: 10.0,
+            lane_change_from_lane_id: u32::MAX,
+            lane_change_start_d: 0.0,
+            lane_change_length_m: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -836,6 +857,9 @@ mod tests {
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
+            lane_change_from_lane_id: u32::MAX,
+            lane_change_start_d: 0.0,
+            lane_change_length_m: 0.0,
             speed: 0.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,

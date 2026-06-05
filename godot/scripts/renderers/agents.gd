@@ -16,10 +16,13 @@ var car_mmis: Dictionary = {}
 var texture_cache: Dictionary = {}
 const CAR_TRANSFORM_STRIDE := 12
 const CAR_INTERPOLATION_RATE := 24.0
+const CAR_ROTATION_INTERPOLATION_RATE := 18.0
 const CAR_INTERPOLATION_SNAP_DISTANCE_M := 80.0
 const DEBUG_LABEL_LIMIT := 96
 var _car_visual_origins: Dictionary = {}
 var _car_next_visual_origins: Dictionary = {}
+var _car_visual_bases: Dictionary = {}
+var _car_next_visual_bases: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
@@ -212,6 +215,7 @@ func update_swarm(delta: float = 0.0):
 	if delta > 0.0:
 		interpolation_alpha = clampf(delta * CAR_INTERPOLATION_RATE, 0.0, 1.0)
 	_car_next_visual_origins.clear()
+	_car_next_visual_bases.clear()
 	
 	# Clear types that are no longer present in the simulation (optional, but clean)
 	for type_key in car_mmis:
@@ -231,6 +235,9 @@ func update_swarm(delta: float = 0.0):
 	var old_origins = _car_visual_origins
 	_car_visual_origins = _car_next_visual_origins
 	_car_next_visual_origins = old_origins
+	var old_bases = _car_visual_bases
+	_car_visual_bases = _car_next_visual_bases
+	_car_next_visual_bases = old_bases
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()
@@ -309,16 +316,35 @@ func _interpolate_car_buffer(
 			target_buffer[base + 7],
 			target_buffer[base + 11]
 		)
+		var target_basis := Basis(
+			Vector3(target_buffer[base + 0], target_buffer[base + 4], target_buffer[base + 8]),
+			Vector3(target_buffer[base + 1], target_buffer[base + 5], target_buffer[base + 9]),
+			Vector3(target_buffer[base + 2], target_buffer[base + 6], target_buffer[base + 10])
+		).orthonormalized()
 		var render_id: int = render_ids[i]
 		var previous_origin: Vector3 = _car_visual_origins.get(render_id, target_origin)
+		var previous_basis: Basis = _car_visual_bases.get(render_id, target_basis)
 		var visual_origin := target_origin
+		var visual_basis := target_basis
 		if previous_origin.distance_squared_to(target_origin) <= snap_distance_sq:
 			visual_origin = previous_origin.lerp(target_origin, alpha)
+			var rotation_alpha := clampf(alpha * (CAR_ROTATION_INTERPOLATION_RATE / CAR_INTERPOLATION_RATE), 0.0, 1.0)
+			visual_basis = previous_basis.slerp(target_basis, rotation_alpha).orthonormalized()
 
+		out[base + 0] = visual_basis.x.x
+		out[base + 1] = visual_basis.y.x
+		out[base + 2] = visual_basis.z.x
 		out[base + 3] = visual_origin.x
+		out[base + 4] = visual_basis.x.y
+		out[base + 5] = visual_basis.y.y
+		out[base + 6] = visual_basis.z.y
 		out[base + 7] = visual_origin.y
+		out[base + 8] = visual_basis.x.z
+		out[base + 9] = visual_basis.y.z
+		out[base + 10] = visual_basis.z.z
 		out[base + 11] = visual_origin.z
 		_car_next_visual_origins[render_id] = visual_origin
+		_car_next_visual_bases[render_id] = visual_basis
 
 	return out
 

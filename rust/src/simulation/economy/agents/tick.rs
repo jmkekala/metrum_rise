@@ -26,10 +26,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 // ---------------------------------------------------------------------------
 
 use crate::config::{
-    AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS,
-    CAR_LENGTH, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD,
+    AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_JUNCTION_LATERAL_ACCEL_MS2,
+    CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS, CAR_LENGTH, DEFAULT_URBAN_ROAD_SPEED_MS,
+    IDM_A_MAX, IDM_B, IDM_S_MIN, IDM_T_HEAD,
 };
-use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::lanes::{Lane, LaneType};
 
 /// Returns the bumper-to-bumper gap to the nearest vehicle ahead in a pre-sorted
 /// per-lane bucket. `bucket` must be sorted ascending by distance.
@@ -67,6 +68,18 @@ fn lane_entry_slot_clear(lane_id: usize, lane_buckets: &[Vec<(f32, usize)>]) -> 
         .unwrap_or(false)
 }
 
+fn lane_change_gap_clear(bucket: &[(f32, usize)], target_d: f32, speed: f32) -> bool {
+    let min_sep = CAR_LENGTH + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD;
+    let insert = bucket.partition_point(|entry| entry.0 < target_d);
+    if insert > 0 && target_d - bucket[insert - 1].0 < min_sep {
+        return false;
+    }
+    if insert < bucket.len() && bucket[insert].0 - target_d < min_sep {
+        return false;
+    }
+    true
+}
+
 #[inline(always)]
 fn claim_lane_entry(lane_id: usize, lane_attach_claimed: &[AtomicBool]) -> bool {
     lane_attach_claimed
@@ -84,6 +97,16 @@ const PAR_THRESHOLD: usize = 500;
 const FRONTAGE_DELAY_UPDATE_S: f32 = 1.0;
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
+const LANE_CHANGE_DURATION_S: f32 = 3.5;
+const LANE_CHANGE_MIN_LENGTH_M: f32 = 18.0;
+const LANE_CHANGE_MAX_LENGTH_M: f32 = 70.0;
+const LANE_CHANGE_FINISH_EPS_M: f32 = 0.25;
+
+#[inline(always)]
+fn lane_change_length_for_speed(speed: f32) -> f32 {
+    (speed.max(0.0) * LANE_CHANGE_DURATION_S)
+        .clamp(LANE_CHANGE_MIN_LENGTH_M, LANE_CHANGE_MAX_LENGTH_M)
+}
 
 fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
     if n >= PAR_THRESHOLD {
@@ -113,8 +136,71 @@ fn junction_car_speed(speed: f32) -> f32 {
 }
 
 #[inline(always)]
-fn junction_entry_speed(speed: f32) -> f32 {
-    junction_car_speed(speed).max(CAR_JUNCTION_MIN_SPEED_MS)
+fn limit_speed_change(current: f32, target: f32, dt: f32) -> f32 {
+    if target >= current {
+        target.min(current + IDM_A_MAX * dt)
+    } else {
+        target.max(current - IDM_B * dt)
+    }
+}
+
+#[inline(always)]
+fn braking_speed_for_distance(target_speed: f32, distance_m: f32) -> f32 {
+    (target_speed * target_speed + 2.0 * IDM_B * distance_m.max(0.0)).sqrt()
+}
+
+fn flat_unit(v: Vector3) -> Option<Vector3> {
+    let flat = Vector3::new(v.x, 0.0, v.z);
+    if flat.length_squared() > 1.0e-8 {
+        Some(flat.normalized())
+    } else {
+        None
+    }
+}
+
+fn lane_end_tangent(lane: &Lane, at_start: bool) -> Option<Vector3> {
+    if lane.geometry.len() < 2 {
+        return None;
+    }
+    if at_start {
+        for segment in lane.geometry.windows(2) {
+            if let Some(tangent) = flat_unit(segment[1] - segment[0]) {
+                return Some(tangent);
+            }
+        }
+    } else {
+        for idx in (1..lane.geometry.len()).rev() {
+            if let Some(tangent) = flat_unit(lane.geometry[idx] - lane.geometry[idx - 1]) {
+                return Some(tangent);
+            }
+        }
+    }
+    None
+}
+
+fn connector_turn_speed(connector_lane: &Lane) -> f32 {
+    let Some(start_tangent) = lane_end_tangent(connector_lane, true) else {
+        return CAR_JUNCTION_SPEED_MS;
+    };
+    let Some(end_tangent) = lane_end_tangent(connector_lane, false) else {
+        return CAR_JUNCTION_SPEED_MS;
+    };
+
+    let dot = start_tangent.dot(end_tangent).clamp(-1.0, 1.0);
+    let turn_angle_rad = dot.acos();
+    if turn_angle_rad < 0.15 {
+        return CAR_JUNCTION_SPEED_MS;
+    }
+
+    let radius_m = connector_lane.length.max(0.1) / turn_angle_rad;
+    (CAR_JUNCTION_LATERAL_ACCEL_MS2 * radius_m)
+        .sqrt()
+        .clamp(CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS)
+}
+
+#[inline(always)]
+fn junction_entry_speed(speed: f32, connector_lane: &Lane) -> f32 {
+    speed.min(connector_turn_speed(connector_lane))
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +334,152 @@ fn connection_lane_to_target(
     }
 
     (None, any_routing_valid)
+}
+
+fn connection_lane_to_edge(
+    from_lane_id: usize,
+    target_edge_id: usize,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    for &conn_lane_id in &from_lane.next_lanes {
+        let conn_lane = transit_network.lane_system.lanes.get(conn_lane_id)?;
+        if conn_lane.edge_id != usize::MAX {
+            continue;
+        }
+        let Some(&target_lane_id) = conn_lane.next_lanes.first() else {
+            continue;
+        };
+        let Some(target_lane) = transit_network.lane_system.lanes.get(target_lane_id) else {
+            continue;
+        };
+        if target_lane.edge_id == target_edge_id {
+            return Some(conn_lane_id);
+        }
+    }
+    None
+}
+
+fn connection_lane_to_lane_unclaimed(
+    from_lane_id: usize,
+    target_lane_id: usize,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    for &conn_lane_id in &from_lane.next_lanes {
+        let conn_lane = transit_network.lane_system.lanes.get(conn_lane_id)?;
+        if conn_lane.edge_id == usize::MAX
+            && conn_lane.next_lanes.first().copied() == Some(target_lane_id)
+        {
+            return Some(conn_lane_id);
+        }
+    }
+    None
+}
+
+fn planned_next_connector(
+    lane_id: usize,
+    current_node: u32,
+    path: &[u32],
+    path_idx: usize,
+    access_flags: u8,
+    planned_detach_node: u32,
+    planned_detach_lane_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<usize> {
+    let lane = transit_network.lane_system.lanes.get(lane_id)?;
+    if lane.edge_id == usize::MAX {
+        return None;
+    }
+    let terminal_node = lane_terminal_node(lane_id, transit_network, graph)?;
+
+    if (access_flags & ACCESS_PLAN_VALID) != 0
+        && terminal_node == planned_detach_node
+        && planned_detach_lane_id != usize::MAX
+    {
+        if lane_origin_node(planned_detach_lane_id, transit_network, graph)
+            == Some(planned_detach_node)
+        {
+            return connection_lane_to_lane_unclaimed(
+                lane_id,
+                planned_detach_lane_id,
+                transit_network,
+            );
+        }
+    }
+
+    let next_idx = if path.get(path_idx).copied() == Some(terminal_node) {
+        path_idx + 1
+    } else {
+        path_idx
+    };
+    let next_node = *path.get(next_idx)?;
+    let target_edge = graph.get_edge_between_nodes(terminal_node, next_node)?;
+    let current_edge = lane.edge_id;
+    if target_edge == current_edge && current_node != terminal_node {
+        return None;
+    }
+    connection_lane_to_edge(lane_id, target_edge, transit_network)
+}
+
+fn lane_change_target_toward(
+    from_lane_id: usize,
+    final_target_lane_id: usize,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    if from_lane_id == final_target_lane_id {
+        return None;
+    }
+    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    let target_lane = transit_network
+        .lane_system
+        .lanes
+        .get(final_target_lane_id)?;
+    if from_lane.edge_id == usize::MAX
+        || from_lane.edge_id != target_lane.edge_id
+        || from_lane.is_fwd != target_lane.is_fwd
+        || from_lane.lane_type != LaneType::Vehicle
+        || target_lane.lane_type != LaneType::Vehicle
+    {
+        return None;
+    }
+
+    let lane_idx_delta = target_lane.lane_idx - from_lane.lane_idx;
+    if lane_idx_delta.abs() <= 1 {
+        return Some(final_target_lane_id);
+    }
+    let next_lane_idx = from_lane.lane_idx + lane_idx_delta.signum();
+    transit_network
+        .lane_system
+        .edge_lanes
+        .get(&from_lane.edge_id)?
+        .iter()
+        .find(|&&lane_id| {
+            transit_network
+                .lane_system
+                .lanes
+                .get(lane_id)
+                .is_some_and(|lane| {
+                    lane.is_fwd == from_lane.is_fwd
+                        && lane.lane_type == LaneType::Vehicle
+                        && lane.lane_idx == next_lane_idx
+                })
+        })
+        .copied()
+}
+
+fn planned_lane_change_target(
+    current_lane_id: usize,
+    planned_detach_lane_id: usize,
+    lane_d: f32,
+    planned_detach_lane_d: f32,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    if planned_detach_lane_id == usize::MAX || lane_d >= planned_detach_lane_d {
+        return None;
+    }
+    lane_change_target_toward(current_lane_id, planned_detach_lane_id, transit_network)
 }
 
 fn segment_distance(a: Vector2, b: Vector2) -> f32 {
@@ -1521,6 +1753,9 @@ pub(crate) struct MovementSlices {
     cur_e: RawSlice<usize>,
     lane_id: RawSlice<usize>,
     lane_d: RawSlice<f32>,
+    lane_change_from_lane: RawSlice<u32>,
+    lane_change_start_d: RawSlice<f32>,
+    lane_change_length: RawSlice<f32>,
     tmode: RawSlice<u8>,
     planned_activity: RawSlice<u8>,
     path: RawSlice<Vec<u32>>,
@@ -1610,6 +1845,21 @@ impl AgentSystem {
                     }
                     self.lane_buckets[lid].push((self.agents.lane_distance[i], i));
                 }
+                let source_lane_id = self.agents.lane_change_from_lane_id[i];
+                let source_lid = source_lane_id as usize;
+                if self.agents.transit[i] == TRANSIT_NETWORK
+                    && source_lane_id != u32::MAX
+                    && source_lid < lane_count
+                    && source_lid != lid
+                    && self.agents.lane_distance[i] + LANE_CHANGE_FINISH_EPS_M
+                        < self.agents.lane_change_start_d[i] + self.agents.lane_change_length_m[i]
+                {
+                    if !self.lane_is_dirty[source_lid] {
+                        self.lane_is_dirty[source_lid] = true;
+                        self.dirty_lanes.push(source_lid);
+                    }
+                    self.lane_buckets[source_lid].push((self.agents.lane_distance[i], i));
+                }
             }
         }
         // Parallel sort over dirty lanes. Each lid's Vec is disjoint → safe.
@@ -1651,6 +1901,14 @@ impl AgentSystem {
             let s_lane_idm = RawSlice::new(&mut self.agents.current_lane_id);
             let s_lane_d_idm = RawSlice::new(&mut self.agents.lane_distance);
             let s_cur_e_idm = RawSlice::new(&mut self.agents.current_edge);
+            let s_cur_n_idm = RawSlice::new(&mut self.agents.current_node);
+            let s_path_idm = RawSlice::new(&mut self.agents.current_path);
+            let s_path_idx_idm = RawSlice::new(&mut self.agents.current_path_index);
+            let s_access_flags_idm = RawSlice::new(&mut self.agents.access_flags);
+            let s_plan_detach_n_idm = RawSlice::new(&mut self.agents.planned_detach_node);
+            let s_plan_detach_lane_idm = RawSlice::new(&mut self.agents.planned_detach_lane_id);
+            let s_plan_detach_lane_d_idm = RawSlice::new(&mut self.agents.planned_detach_lane_d);
+            let s_lane_change_from_idm = RawSlice::new(&mut self.agents.lane_change_from_lane_id);
             let s_speed_idm = RawSlice::new(&mut self.agents.speed);
             let new_spd_raw = RawSlice {
                 ptr: self.new_speed.as_mut_ptr(),
@@ -1673,7 +1931,12 @@ impl AgentSystem {
                 let eid = *s_cur_e_idm.get(i);
 
                 let v_max = if transit == TRANSIT_INTERSECTION {
-                    CAR_JUNCTION_SPEED_MS
+                    transit_network
+                        .lane_system
+                        .lanes
+                        .get(lid)
+                        .map(connector_turn_speed)
+                        .unwrap_or(CAR_JUNCTION_SPEED_MS)
                 } else if eid != usize::MAX && eid < graph.edge_count() {
                     graph.edge(eid).speed_limit
                 } else {
@@ -1685,7 +1948,70 @@ impl AgentSystem {
                 } else {
                     f32::MAX
                 };
-                *new_spd_raw.get_mut(i) = idm_new_speed(cur_spd, v_max, gap, delta);
+                let mut target_speed = idm_new_speed(cur_spd, v_max, gap, delta);
+
+                if transit == TRANSIT_NETWORK {
+                    if let Some(lane) = transit_network.lane_system.lanes.get(lid) {
+                        if lane.edge_id != usize::MAX {
+                            let planned_detach_lane_id = *s_plan_detach_lane_idm.get(i) as usize;
+                            if let Some(connector_id) = planned_next_connector(
+                                lid,
+                                *s_cur_n_idm.get(i),
+                                s_path_idm.get(i),
+                                *s_path_idx_idm.get(i),
+                                *s_access_flags_idm.get(i),
+                                *s_plan_detach_n_idm.get(i),
+                                planned_detach_lane_id,
+                                transit_network,
+                                graph,
+                            ) {
+                                let turn_target = transit_network
+                                    .lane_system
+                                    .lanes
+                                    .get(connector_id)
+                                    .map(|connector| {
+                                        if lane_entry_slot_clear(connector_id, buckets) {
+                                            connector_turn_speed(connector)
+                                        } else {
+                                            0.0
+                                        }
+                                    })
+                                    .unwrap_or(CAR_JUNCTION_SPEED_MS);
+                                let dist_to_end = (lane.length - my_d).max(0.0);
+                                target_speed = target_speed
+                                    .min(braking_speed_for_distance(turn_target, dist_to_end));
+                            }
+                        }
+                    }
+
+                    if *s_lane_change_from_idm.get(i) == u32::MAX
+                        && (*s_access_flags_idm.get(i) & ACCESS_PLAN_VALID) != 0
+                    {
+                        let planned_detach_lane_id = *s_plan_detach_lane_idm.get(i) as usize;
+                        let planned_detach_lane_d = *s_plan_detach_lane_d_idm.get(i);
+                        if let Some(target_lane_id) = planned_lane_change_target(
+                            lid,
+                            planned_detach_lane_id,
+                            my_d,
+                            planned_detach_lane_d,
+                            transit_network,
+                        ) {
+                            let target_gap_clear = buckets
+                                .get(target_lane_id)
+                                .map(|bucket| lane_change_gap_clear(bucket, my_d, cur_spd))
+                                .unwrap_or(false);
+                            if !target_gap_clear {
+                                let stop_before_lane_change =
+                                    (planned_detach_lane_d - my_d - LANE_CHANGE_MIN_LENGTH_M)
+                                        .max(0.0);
+                                target_speed = target_speed
+                                    .min(braking_speed_for_distance(0.0, stop_before_lane_change));
+                            }
+                        }
+                    }
+                }
+
+                *new_spd_raw.get_mut(i) = limit_speed_change(cur_spd, target_speed, delta);
             });
         }
         for i in 0..n {
@@ -1722,6 +2048,9 @@ impl AgentSystem {
             cur_e: RawSlice::new(&mut self.agents.current_edge),
             lane_id: RawSlice::new(&mut self.agents.current_lane_id),
             lane_d: RawSlice::new(&mut self.agents.lane_distance),
+            lane_change_from_lane: RawSlice::new(&mut self.agents.lane_change_from_lane_id),
+            lane_change_start_d: RawSlice::new(&mut self.agents.lane_change_start_d),
+            lane_change_length: RawSlice::new(&mut self.agents.lane_change_length_m),
             tmode: RawSlice::new(&mut self.agents.transit_mode),
             planned_activity: RawSlice::new(&mut self.agents.planned_activity),
             path: RawSlice::new(&mut self.agents.current_path),
@@ -1958,6 +2287,9 @@ impl AgentSystem {
             let s_next_replan_time = &slices.next_replan_time;
             let s_lane_id = &slices.lane_id;
             let s_lane_d = &slices.lane_d;
+            let s_lane_change_from_lane = &slices.lane_change_from_lane;
+            let s_lane_change_start_d = &slices.lane_change_start_d;
+            let s_lane_change_length = &slices.lane_change_length;
             let s_pos_x = &slices.pos_x;
             let s_pos_y = &slices.pos_y;
             let s_cur_e = &slices.cur_e;
@@ -1965,6 +2297,11 @@ impl AgentSystem {
             let s_plan_act = &slices.planned_activity;
 
             *s_cur_n.get_mut(i) = graph.get_valid_node(*s_cur_n.get(i));
+            if *s_transit.get(i) != TRANSIT_NETWORK && *s_lane_change_from_lane.get(i) != u32::MAX {
+                *s_lane_change_from_lane.get_mut(i) = u32::MAX;
+                *s_lane_change_start_d.get_mut(i) = 0.0;
+                *s_lane_change_length.get_mut(i) = 0.0;
+            }
 
             // Update walk animation phase if not in a vehicle.
             if *s_tmode.get(i) != MODE_CAR {
@@ -2527,7 +2864,14 @@ impl AgentSystem {
                     let speed = if *s_tmode.get(i) == MODE_CAR {
                         if *s_transit.get(i) == TRANSIT_INTERSECTION {
                             // Turn movement uses a junction-specific cap, separate from road design speed.
-                            let turn_speed = junction_car_speed(*s_speed.get(i));
+                            let lane_id = *s_lane_id.get(i);
+                            let turn_speed = transit_network
+                                .lane_system
+                                .lanes
+                                .get(lane_id)
+                                .map(connector_turn_speed)
+                                .unwrap_or(CAR_JUNCTION_SPEED_MS);
+                            let turn_speed = junction_car_speed(*s_speed.get(i)).min(turn_speed);
                             *s_speed.get_mut(i) = turn_speed;
                             turn_speed
                         } else {
@@ -2698,11 +3042,89 @@ impl AgentSystem {
                         }
 
                         // 3. Movement along lane
-                        let lane_id = *s_lane_id.get(i);
+                        let mut lane_id = *s_lane_id.get(i);
                         if lane_id >= transit_network.lane_system.lanes.len() {
                             *s_lane_id.get_mut(i) = usize::MAX;
+                            *s_lane_change_from_lane.get_mut(i) = u32::MAX;
+                            *s_lane_change_start_d.get_mut(i) = 0.0;
+                            *s_lane_change_length.get_mut(i) = 0.0;
                             s_path.get_mut(i).clear();
                             break;
+                        }
+
+                        if *s_lane_change_from_lane.get(i) != u32::MAX {
+                            let finish_d =
+                                *s_lane_change_start_d.get(i) + *s_lane_change_length.get(i);
+                            if *s_transit.get(i) != TRANSIT_NETWORK
+                                || *s_lane_d.get(i) + LANE_CHANGE_FINISH_EPS_M >= finish_d
+                            {
+                                *s_lane_change_from_lane.get_mut(i) = u32::MAX;
+                                *s_lane_change_start_d.get_mut(i) = 0.0;
+                                *s_lane_change_length.get_mut(i) = 0.0;
+                            }
+                        }
+
+                        if *s_tmode.get(i) == MODE_CAR
+                            && *s_transit.get(i) == TRANSIT_NETWORK
+                            && *s_lane_change_from_lane.get(i) == u32::MAX
+                            && (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
+                        {
+                            let planned_detach_lane_id = *s_plan_detach_lane.get(i) as usize;
+                            if let Some(target_lane_id) = planned_lane_change_target(
+                                lane_id,
+                                planned_detach_lane_id,
+                                *s_lane_d.get(i),
+                                *s_plan_detach_lane_d.get(i),
+                                transit_network,
+                            ) {
+                                let source_lane = &transit_network.lane_system.lanes[lane_id];
+                                let target_lane =
+                                    &transit_network.lane_system.lanes[target_lane_id];
+                                let lane_d = (*s_lane_d.get(i)).min(target_lane.length);
+                                let available_m = (source_lane.length - *s_lane_d.get(i))
+                                    .min(*s_plan_detach_lane_d.get(i) - *s_lane_d.get(i));
+                                let maneuver_length = lane_change_length_for_speed(*s_speed.get(i))
+                                    .min(
+                                        (available_m - LANE_CHANGE_FINISH_EPS_M)
+                                            .max(LANE_CHANGE_MIN_LENGTH_M),
+                                    );
+                                let gap_clear = lane_buckets
+                                    .get(target_lane_id)
+                                    .map(|bucket| {
+                                        lane_change_gap_clear(bucket, lane_d, *s_speed.get(i))
+                                    })
+                                    .unwrap_or(false);
+                                if available_m > LANE_CHANGE_MIN_LENGTH_M && gap_clear {
+                                    *s_lane_change_from_lane.get_mut(i) = lane_id as u32;
+                                    *s_lane_change_start_d.get_mut(i) = *s_lane_d.get(i);
+                                    *s_lane_change_length.get_mut(i) = maneuver_length;
+                                    *s_lane_id.get_mut(i) = target_lane_id;
+                                    *s_lane_d.get_mut(i) = lane_d;
+                                    *s_cur_e.get_mut(i) = target_lane.edge_id;
+                                    lane_id = target_lane_id;
+                                    traffic_log!(
+                                        "[LANE_CHANGE_START] agent={} edge={} from_lane={} to_lane={} start_d={:.2} length={:.2} speed={:.2} detach_lane={} detach_d={:.2}",
+                                        i,
+                                        target_lane.edge_id,
+                                        *s_lane_change_from_lane.get(i),
+                                        target_lane_id,
+                                        *s_lane_change_start_d.get(i),
+                                        *s_lane_change_length.get(i),
+                                        *s_speed.get(i),
+                                        planned_detach_lane_id,
+                                        *s_plan_detach_lane_d.get(i),
+                                    );
+                                } else if !gap_clear {
+                                    traffic_log!(
+                                        "[LANE_CHANGE_WAIT] agent={} lane={} target_lane={} lane_d={:.2} speed={:.2} reason=target-gap",
+                                        i,
+                                        lane_id,
+                                        target_lane_id,
+                                        *s_lane_d.get(i),
+                                        *s_speed.get(i),
+                                    );
+                                }
+                            }
                         }
 
                         let lane = &transit_network.lane_system.lanes[lane_id];
@@ -2887,8 +3309,19 @@ impl AgentSystem {
                                                         TRANSIT_INTERSECTION;
                                                     *s_cur_e.get_mut(i) = usize::MAX;
                                                     if *s_tmode.get(i) == MODE_CAR {
-                                                        let turn_speed =
-                                                            junction_entry_speed(*s_speed.get(i));
+                                                        let turn_speed = transit_network
+                                                            .lane_system
+                                                            .lanes
+                                                            .get(chosen_conn)
+                                                            .map(|conn_lane| {
+                                                                junction_entry_speed(
+                                                                    *s_speed.get(i),
+                                                                    conn_lane,
+                                                                )
+                                                            })
+                                                            .unwrap_or_else(|| {
+                                                                junction_car_speed(*s_speed.get(i))
+                                                            });
                                                         let time_left = if speed > 1.0e-5 {
                                                             remaining_dist / speed
                                                         } else {
@@ -3023,8 +3456,19 @@ impl AgentSystem {
                                                     *s_transit.get_mut(i) = TRANSIT_INTERSECTION;
                                                     *s_cur_e.get_mut(i) = usize::MAX;
                                                     if *s_tmode.get(i) == MODE_CAR {
-                                                        let turn_speed =
-                                                            junction_entry_speed(*s_speed.get(i));
+                                                        let turn_speed = transit_network
+                                                            .lane_system
+                                                            .lanes
+                                                            .get(conn_lane_id)
+                                                            .map(|conn_lane| {
+                                                                junction_entry_speed(
+                                                                    *s_speed.get(i),
+                                                                    conn_lane,
+                                                                )
+                                                            })
+                                                            .unwrap_or_else(|| {
+                                                                junction_car_speed(*s_speed.get(i))
+                                                            });
                                                         let time_left = if speed > 1.0e-5 {
                                                             remaining_dist / speed
                                                         } else {
@@ -3480,11 +3924,14 @@ impl AgentSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalAccessPath, advance_along_local_access_path, dispatch_agents, junction_car_speed,
-        junction_entry_speed,
+        LocalAccessPath, advance_along_local_access_path, connector_turn_speed, dispatch_agents,
+        junction_car_speed, junction_entry_speed, lane_change_gap_clear,
+        lane_change_length_for_speed, lane_change_target_toward, limit_speed_change,
     };
-    use crate::config::{CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS};
-    use godot::prelude::Vector2;
+    use crate::config::{CAR_JUNCTION_SPEED_MS, IDM_B};
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::lanes::{Lane, LaneType};
+    use godot::prelude::{Vector2, Vector3};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -3492,7 +3939,72 @@ mod tests {
         assert_eq!(junction_car_speed(50.0), CAR_JUNCTION_SPEED_MS);
         assert_eq!(junction_car_speed(0.0), 0.0);
         assert_eq!(junction_car_speed(4.0), 4.0);
-        assert_eq!(junction_entry_speed(0.0), CAR_JUNCTION_MIN_SPEED_MS);
+    }
+
+    #[test]
+    fn test_connector_turn_speed_slows_tight_turns() {
+        let straight = Lane {
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            length: 20.0,
+            lane_type: LaneType::Vehicle,
+            ..Default::default()
+        };
+        let tight_turn = Lane {
+            geometry: vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(3.0, 0.0, 0.0),
+                Vector3::new(3.0, 0.0, 3.0),
+            ],
+            length: 6.0,
+            lane_type: LaneType::Vehicle,
+            ..Default::default()
+        };
+
+        assert_eq!(connector_turn_speed(&straight), CAR_JUNCTION_SPEED_MS);
+        assert!(connector_turn_speed(&tight_turn) < CAR_JUNCTION_SPEED_MS);
+        assert!(junction_entry_speed(50.0, &tight_turn) < CAR_JUNCTION_SPEED_MS);
+    }
+
+    #[test]
+    fn test_limit_speed_change_uses_comfortable_braking() {
+        let next = limit_speed_change(14.0, 0.0, 0.1);
+        assert!((next - (14.0 - IDM_B * 0.1)).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn test_lane_change_length_scales_with_speed() {
+        let slow = lane_change_length_for_speed(4.0);
+        let urban = lane_change_length_for_speed(14.0);
+        let fast = lane_change_length_for_speed(40.0);
+
+        assert!(urban > slow);
+        assert!(fast >= urban);
+    }
+
+    #[test]
+    fn test_lane_change_gap_clear_requires_speed_scaled_space() {
+        let bucket = vec![(17.0, 0)];
+
+        assert!(lane_change_gap_clear(&bucket, 10.0, 4.0));
+        assert!(!lane_change_gap_clear(&bucket, 10.0, 14.0));
+    }
+
+    #[test]
+    fn test_lane_change_target_steps_one_lane_at_a_time() {
+        let mut network = TransitNetwork::new();
+        for lane_idx in 0..3 {
+            network.lane_system.lanes.push(Lane {
+                edge_id: 7,
+                is_fwd: true,
+                lane_idx,
+                lane_type: LaneType::Vehicle,
+                ..Default::default()
+            });
+        }
+        network.lane_system.edge_lanes.insert(7, vec![0, 1, 2]);
+
+        assert_eq!(lane_change_target_toward(0, 2, &network), Some(1));
+        assert_eq!(lane_change_target_toward(1, 2, &network), Some(2));
     }
 
     /// Verifies that `dispatch_agents` visits every index in `0..n` exactly once,

@@ -256,6 +256,9 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         current_edge: rec.current_edge,
         current_lane_id: rec.current_lane_id as usize,
         lane_distance: rec.lane_distance,
+        lane_change_from_lane_id: u32::MAX,
+        lane_change_start_d: 0.0,
+        lane_change_length_m: 0.0,
         speed: if rec.transit_mode == MODE_CAR {
             DEFAULT_URBAN_ROAD_SPEED_MS
         } else {
