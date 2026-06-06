@@ -1,7 +1,7 @@
 //! Local building access geometry, legality, and access-time helpers.
 
+use super::super::{MODE_CAR, MODE_WALK};
 use super::lane_nav::{lane_origin_node, lane_terminal_node};
-use super::{MODE_CAR, MODE_WALK};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;

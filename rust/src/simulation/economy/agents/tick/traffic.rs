@@ -1,6 +1,6 @@
 //! Traffic movement helpers for car following, junctions, and lane changes.
 
-use super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use crate::config::{
     CAR_JUNCTION_LATERAL_ACCEL_MS2, CAR_JUNCTION_MIN_SPEED_MS, CAR_JUNCTION_SPEED_MS, CAR_LENGTH,
     IDM_A_MAX, IDM_B, IDM_S_MIN, IDM_T_HEAD,
