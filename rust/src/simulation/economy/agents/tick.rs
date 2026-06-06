@@ -1,5 +1,8 @@
 //! Main simulation loop for agents: transit state machine and movement.
 
+mod runtime;
+mod slices;
+
 use super::data::AgentSystem;
 use super::{
     ACCESS_IMMIGRATION_ORIGIN, ACCESS_PATH_FROM_FLOW_FIELD, ACCESS_PLAN_VALID,
@@ -20,6 +23,9 @@ use rand::Rng;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use runtime::{PAR_THRESHOLD, dispatch_agents};
+use slices::{MovementSlices, RawSlice};
 
 // ---------------------------------------------------------------------------
 // IDM (Intelligent Driver Model) constants — defined in config.rs.
@@ -88,12 +94,6 @@ fn claim_lane_entry(lane_id: usize, lane_attach_claimed: &[AtomicBool]) -> bool 
         .unwrap_or(false)
 }
 
-/// Dispatches `f` over `0..n` sequentially when `n < PAR_THRESHOLD`, otherwise in
-/// parallel via Rayon.  Below the threshold Rayon's worker threads would spin-wait
-/// for ~1 ms after each call looking for more work; at 60 Hz with 3 parallel
-/// sections per tick that idle spin accounts for ~1–2 extra CPU cores even when
-/// the city has only a few hundred agents.
-const PAR_THRESHOLD: usize = 500;
 const FRONTAGE_DELAY_UPDATE_S: f32 = 1.0;
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
@@ -120,14 +120,6 @@ fn lane_change_length_for_speed(speed: f32) -> f32 {
 fn overtake_follow_gap(speed: f32) -> f32 {
     (CAR_LENGTH + IDM_S_MIN + speed.max(0.0) * IDM_T_HEAD + 8.0)
         .max(OVERTAKE_TARGET_AHEAD_GAP_M * 0.5)
-}
-
-fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
-    if n >= PAR_THRESHOLD {
-        (0..n).into_par_iter().for_each(f);
-    } else {
-        (0..n).for_each(f);
-    }
 }
 
 /// Returns the new speed for one IDM time step. Uses the simplified IDM without the
@@ -1783,84 +1775,6 @@ fn plan_immigration_trip(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Unsafe raw-slice wrapper.
-//
-// Safety invariant upheld throughout this module:
-//   Rayon's `(0..n).into_par_iter()` guarantees that each index `i` is
-//   visited by exactly one thread at a time.  All mutable field accesses
-//   below index into disjoint locations, so there is no data race.
-//   The wrapper is `Send + Sync` only within this module; it is never
-//   stored beyond the lifetime of the parallel scope.
-// ---------------------------------------------------------------------------
-struct RawSlice<T> {
-    ptr: *mut T,
-    len: usize,
-}
-unsafe impl<T: Send> Send for RawSlice<T> {}
-unsafe impl<T: Send> Sync for RawSlice<T> {}
-
-impl<T> RawSlice<T> {
-    fn new(v: &mut Vec<T>) -> Self {
-        Self {
-            ptr: v.as_mut_ptr(),
-            len: v.len(),
-        }
-    }
-    #[inline(always)]
-    unsafe fn get(&self, i: usize) -> &T {
-        debug_assert!(i < self.len);
-        unsafe { &*self.ptr.add(i) }
-    }
-    #[inline(always)]
-    unsafe fn get_mut(&self, i: usize) -> &mut T {
-        debug_assert!(i < self.len);
-        unsafe { &mut *self.ptr.add(i) }
-    }
-}
-
-/// Disjoint SoA slices used by `process_agent_movement` for parallel data access.
-pub(crate) struct MovementSlices {
-    home: RawSlice<usize>,
-    work: RawSlice<usize>,
-    pos_x: RawSlice<f32>,
-    pos_y: RawSlice<f32>,
-    activity: RawSlice<u8>,
-    transit: RawSlice<u8>,
-    happiness: RawSlice<f32>,
-    jstart: RawSlice<f32>,
-    schedule_seed: RawSlice<u32>,
-    cached_commute_minutes: RawSlice<u16>,
-    next_commute_refresh_time: RawSlice<f32>,
-    cur_b: RawSlice<usize>,
-    tgt_b: RawSlice<usize>,
-    planned_tgt_b: RawSlice<usize>,
-    cur_n: RawSlice<u32>,
-    planned_attach_n: RawSlice<u32>,
-    planned_detach_n: RawSlice<u32>,
-    planned_attach_lane: RawSlice<u32>,
-    planned_detach_lane: RawSlice<u32>,
-    planned_attach_lane_d: RawSlice<f32>,
-    planned_detach_lane_d: RawSlice<f32>,
-    access_flags: RawSlice<u8>,
-    next_replan_time: RawSlice<f32>,
-    cur_e: RawSlice<usize>,
-    lane_id: RawSlice<usize>,
-    lane_d: RawSlice<f32>,
-    lane_change_from_lane: RawSlice<u32>,
-    lane_change_start_d: RawSlice<f32>,
-    lane_change_length: RawSlice<f32>,
-    overtake_blocked_time: RawSlice<f32>,
-    overtake_cooldown: RawSlice<f32>,
-    tmode: RawSlice<u8>,
-    planned_activity: RawSlice<u8>,
-    path: RawSlice<Vec<u32>>,
-    path_idx: RawSlice<usize>,
-    has_car: RawSlice<bool>,
-    speed: RawSlice<f32>,
-    walk_phase: RawSlice<f32>,
-}
-
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.
     pub fn tick(
@@ -2008,10 +1922,7 @@ impl AgentSystem {
             let s_overtake_blocked_idm = RawSlice::new(&mut self.agents.overtake_blocked_time_s);
             let s_overtake_cooldown_idm = RawSlice::new(&mut self.agents.overtake_cooldown_s);
             let s_speed_idm = RawSlice::new(&mut self.agents.speed);
-            let new_spd_raw = RawSlice {
-                ptr: self.new_speed.as_mut_ptr(),
-                len: n,
-            };
+            let new_spd_raw = RawSlice::new(&mut self.new_speed);
             let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
 
             dispatch_agents(n, |i| unsafe {
