@@ -69,10 +69,8 @@ impl AgentSystem {
         self.clear_dirty_lane_buckets();
 
         let edge_count = graph.edge_count();
-        self.edge_speed_sum.clear();
-        self.edge_speed_sum.resize(edge_count, 0.0_f32);
-        self.edge_agent_cnt.clear();
-        self.edge_agent_cnt.resize(edge_count, 0_u32);
+        self.ensure_edge_congestion_buffers(edge_count);
+        self.clear_dirty_edge_congestion();
 
         for i in 0..n {
             if live_lane_bucket_transit(self.agents.transit[i]) {
@@ -83,8 +81,7 @@ impl AgentSystem {
                 if self.agents.transit[i] == TRANSIT_NETWORK {
                     let eid = self.agents.current_edge[i];
                     if eid != usize::MAX && eid < edge_count {
-                        self.edge_speed_sum[eid] += self.agents.speed[i];
-                        self.edge_agent_cnt[eid] += 1;
+                        self.push_dirty_edge_speed(eid, self.agents.speed[i]);
                     }
                 }
             }
@@ -93,6 +90,34 @@ impl AgentSystem {
         self.sort_dirty_lane_buckets();
         self.correct_lane_overlaps();
         self.commit_edge_congestion(graph, edge_count);
+    }
+
+    fn ensure_edge_congestion_buffers(&mut self, edge_count: usize) {
+        if self.edge_speed_sum.len() < edge_count {
+            self.edge_speed_sum.resize(edge_count, 0.0_f32);
+            self.edge_agent_cnt.resize(edge_count, 0_u32);
+            self.edge_is_dirty.resize(edge_count, false);
+        }
+    }
+
+    fn clear_dirty_edge_congestion(&mut self) {
+        for &eid in &self.dirty_edges {
+            if eid < self.edge_speed_sum.len() {
+                self.edge_speed_sum[eid] = 0.0;
+                self.edge_agent_cnt[eid] = 0;
+                self.edge_is_dirty[eid] = false;
+            }
+        }
+        self.dirty_edges.clear();
+    }
+
+    fn push_dirty_edge_speed(&mut self, eid: usize, speed: f32) {
+        if !self.edge_is_dirty[eid] {
+            self.edge_is_dirty[eid] = true;
+            self.dirty_edges.push(eid);
+        }
+        self.edge_speed_sum[eid] += speed;
+        self.edge_agent_cnt[eid] += 1;
     }
 
     fn clear_dirty_lane_buckets(&mut self) {
@@ -144,7 +169,10 @@ impl AgentSystem {
     }
 
     fn commit_edge_congestion(&mut self, graph: &mut RegionGraph, edge_count: usize) {
-        for eid in 0..edge_count {
+        for &eid in &self.dirty_edges {
+            if eid >= edge_count {
+                continue;
+            }
             if !graph.edge(eid).deleted && self.edge_agent_cnt[eid] > 0 {
                 let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
                 let limit = graph.edge(eid).speed_limit.max(1.0);

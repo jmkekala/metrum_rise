@@ -6,12 +6,12 @@ use super::super::super::super::{
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
+use super::super::super::traffic::deterministic_choice_index;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
-use rand::Rng;
 use std::cell::RefCell;
 use std::sync::atomic::AtomicU32;
 
@@ -33,14 +33,13 @@ pub(super) enum LaneEntryAction {
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn prepare_lane_entry<R: Rng + ?Sized>(
+pub(super) unsafe fn prepare_lane_entry(
     i: usize,
     sim_time: f32,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
-    rng: &mut R,
     slices: &MovementSlices,
 ) -> LaneEntryAction {
     unsafe {
@@ -171,7 +170,10 @@ pub(super) unsafe fn prepare_lane_entry<R: Rng + ?Sized>(
                                 }
                             }
                             if !valid_lanes.is_empty() {
-                                let chosen = valid_lanes[rng.gen_range(0..valid_lanes.len())];
+                                let choice_seed =
+                                    lane_entry_choice_seed(i, *s_cur_n.get(i), next_node, best_e);
+                                let chosen = valid_lanes
+                                    [deterministic_choice_index(choice_seed, valid_lanes.len())];
                                 *s_lane_id.get_mut(i) = chosen;
                                 *s_lane_d.get_mut(i) = 0.0;
                                 *s_cur_e.get_mut(i) = best_e;
@@ -203,4 +205,12 @@ pub(super) unsafe fn prepare_lane_entry<R: Rng + ?Sized>(
 
         LaneEntryAction::Ready
     }
+}
+
+#[inline(always)]
+fn lane_entry_choice_seed(agent_idx: usize, from_node: u32, to_node: u32, edge_id: usize) -> u64 {
+    (agent_idx as u64)
+        ^ ((from_node as u64) << 17)
+        ^ ((to_node as u64) << 33)
+        ^ ((edge_id as u64) << 1)
 }

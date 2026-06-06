@@ -143,6 +143,7 @@ impl BuildingAllocator {
             }
         }
         if removed_any {
+            self.bump_building_ref_revision();
             self.rebuild_entrance_cache(graph, lanes);
         }
     }
@@ -556,6 +557,7 @@ impl BuildingAllocator {
         };
 
         self.buildings.swap_remove(building_idx);
+        self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;

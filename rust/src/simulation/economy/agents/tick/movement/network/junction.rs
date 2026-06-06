@@ -16,7 +16,6 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
-use rand::Rng;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
@@ -38,7 +37,7 @@ pub(super) enum LaneEndAction {
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn handle_lane_end<R: Rng + ?Sized>(
+pub(super) unsafe fn handle_lane_end(
     i: usize,
     lane_id: usize,
     speed: f32,
@@ -50,7 +49,6 @@ pub(super) unsafe fn handle_lane_end<R: Rng + ?Sized>(
     pathfind_count: &AtomicU32,
     lane_buckets: &[Vec<(f32, usize)>],
     lane_attach_claimed: &[AtomicBool],
-    rng: &mut R,
     slices: &MovementSlices,
 ) -> LaneEndAction {
     unsafe {
@@ -126,7 +124,7 @@ pub(super) unsafe fn handle_lane_end<R: Rng + ?Sized>(
                 claim_connector_entry(
                     &mut connector_candidates,
                     any_routing_valid,
-                    rng,
+                    connector_choice_seed(i, lane_id, best_e, *s_cur_n.get(i), *s_path_idx.get(i)),
                     lane_buckets,
                     lane_attach_claimed,
                 )
@@ -242,7 +240,13 @@ pub(super) unsafe fn handle_lane_end<R: Rng + ?Sized>(
                             claim_connector_entry(
                                 &mut connector_candidates,
                                 any_routing_valid,
-                                rng,
+                                connector_choice_seed(
+                                    i,
+                                    lane_id,
+                                    detach_lane_id,
+                                    *s_cur_n.get(i),
+                                    *s_path_idx.get(i),
+                                ),
                                 lane_buckets,
                                 lane_attach_claimed,
                             )
@@ -372,6 +376,21 @@ pub(super) unsafe fn handle_lane_end<R: Rng + ?Sized>(
             LaneEndAction::Break
         }
     }
+}
+
+#[inline(always)]
+fn connector_choice_seed(
+    agent_idx: usize,
+    from_lane_id: usize,
+    target_id: usize,
+    node_id: u32,
+    path_idx: usize,
+) -> u64 {
+    (agent_idx as u64)
+        ^ ((from_lane_id as u64) << 11)
+        ^ ((target_id as u64) << 23)
+        ^ ((node_id as u64) << 37)
+        ^ ((path_idx as u64) << 3)
 }
 
 unsafe fn apply_connector_entry_speed(

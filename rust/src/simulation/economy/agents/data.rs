@@ -161,12 +161,18 @@ pub struct AgentSystem {
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
     pub edge_agent_cnt: Vec<u32>,
+    /// Dedup flag for edges touched by live traffic in the latest congestion pass.
+    pub edge_is_dirty: Vec<bool>,
+    /// Compact list of edge IDs touched by live traffic in the latest congestion pass.
+    pub dirty_edges: Vec<usize>,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
     pub lane_vehicle_cnt: Vec<u32>,
     /// Monotonic source for transient render IDs assigned to newly spawned agents.
     next_render_id: u64,
+    /// Last allocator building-reference revision that was scrubbed against this agent store.
+    pub(crate) last_building_ref_scrub_revision: u64,
 }
 
 impl Deref for AgentSystem {
@@ -196,9 +202,12 @@ impl AgentSystem {
             lane_attach_claimed: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
+            edge_is_dirty: Vec::new(),
+            dirty_edges: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
             next_render_id: 0,
+            last_building_ref_scrub_revision: u64::MAX,
         }
     }
 

@@ -190,6 +190,8 @@ pub struct BuildingAllocator {
     pub dirty_zones: [bool; 3],
     /// True when the derived entrance cache must be rebuilt before use.
     pub(crate) entrances_dirty: bool,
+    /// Revision bumped whenever building indices may have become stale for external systems.
+    pub(crate) building_ref_revision: u64,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
     /// Derived building entrance/access cache keyed by building index.
@@ -374,6 +376,7 @@ impl BuildingAllocator {
             dirty_index: true,
             dirty_zones: [false; 3],
             entrances_dirty: false,
+            building_ref_revision: 0,
             registry: AssetRegistry::new(),
             entrances: Vec::new(),
         }
@@ -441,6 +444,7 @@ impl BuildingAllocator {
         if self.buildings.len() != old_len {
             self.dirty = true;
             self.dirty_index = true;
+            self.bump_building_ref_revision();
         }
         self.entrances.clear();
         self.entrances_dirty = true;
@@ -455,6 +459,7 @@ impl BuildingAllocator {
 
     /// Removes all buildings and resets the dirty flag.
     pub fn clear(&mut self) {
+        let had_buildings = !self.buildings.is_empty();
         self.buildings.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
@@ -469,6 +474,18 @@ impl BuildingAllocator {
         self.dirty_index = false;
         self.entrances.clear();
         self.entrances_dirty = false;
+        if had_buildings {
+            self.bump_building_ref_revision();
+        }
+    }
+
+    /// Returns the current building-reference revision observed by dependent systems.
+    pub(crate) fn building_ref_revision(&self) -> u64 {
+        self.building_ref_revision
+    }
+
+    fn bump_building_ref_revision(&mut self) {
+        self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
     }
 
     /// Returns the occupant capacity for a building, from its registered manifest.

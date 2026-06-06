@@ -296,6 +296,7 @@ impl BuildingAllocator {
         let parcel_id = placement.parcel_id;
         let building_idx = self.place_building_instance(placement);
         zoning.occupy_parcel(parcel_id, building_idx);
+        self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;

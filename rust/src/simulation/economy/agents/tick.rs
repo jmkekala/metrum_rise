@@ -37,8 +37,11 @@ impl AgentSystem {
             return;
         }
 
-        let bldg_count = allocator.buildings.len();
-        self.scrub_invalid_building_refs(bldg_count, n);
+        let building_ref_revision = allocator.building_ref_revision();
+        if self.last_building_ref_scrub_revision != building_ref_revision {
+            self.scrub_invalid_building_refs(allocator.buildings.len(), n);
+            self.last_building_ref_scrub_revision = building_ref_revision;
+        }
 
         let (lane_count, live_lane_agent_count) =
             self.prepare_lane_buckets_for_tick(transit_network, n);
