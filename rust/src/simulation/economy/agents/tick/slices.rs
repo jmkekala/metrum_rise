@@ -5,6 +5,7 @@
 // mutable field accesses below index into disjoint SoA slots, so the raw
 // pointers do not alias for a given field during one parallel pass. The wrapper
 // is never stored beyond the lifetime of the tick scope.
+/// Raw pointer view over one mutable SoA column during a parallel tick pass.
 pub(super) struct RawSlice<T> {
     ptr: *mut T,
     len: usize,
@@ -14,6 +15,7 @@ unsafe impl<T: Send> Send for RawSlice<T> {}
 unsafe impl<T: Send> Sync for RawSlice<T> {}
 
 impl<T> RawSlice<T> {
+    /// Creates a raw view over a vector that is borrowed by the surrounding tick scope.
     pub(super) fn new(v: &mut Vec<T>) -> Self {
         Self {
             ptr: v.as_mut_ptr(),
@@ -22,12 +24,14 @@ impl<T> RawSlice<T> {
     }
 
     #[inline(always)]
+    /// Returns an immutable reference to one index after caller-proven bounds and alias checks.
     pub(super) unsafe fn get(&self, i: usize) -> &T {
         debug_assert!(i < self.len);
         unsafe { &*self.ptr.add(i) }
     }
 
     #[inline(always)]
+    /// Returns a mutable reference to one index that must be unique to the current worker.
     pub(super) unsafe fn get_mut(&self, i: usize) -> &mut T {
         debug_assert!(i < self.len);
         unsafe { &mut *self.ptr.add(i) }
