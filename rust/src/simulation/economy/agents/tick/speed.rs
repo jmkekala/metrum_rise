@@ -1,0 +1,164 @@
+//! IDM speed update phase for live vehicle traffic.
+
+use super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::lane_nav::planned_next_connector;
+use super::runtime::dispatch_agents;
+use super::slices::RawSlice;
+use super::traffic::{
+    LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_MIN_SPEED_GAIN_MS, braking_speed_for_distance,
+    connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear,
+    lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
+    planned_lane_change_target,
+};
+use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS};
+use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
+
+impl AgentSystem {
+    /// Updates car speeds with IDM, turn braking, lane-change gating, and overtake timers.
+    pub(super) fn update_idm_speeds(
+        &mut self,
+        delta: f32,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        n: usize,
+    ) {
+        self.new_speed.resize(n, 0.0_f32);
+        {
+            let s_transit_idm = RawSlice::new(&mut self.agents.transit);
+            let s_tmode_idm = RawSlice::new(&mut self.agents.transit_mode);
+            let s_lane_idm = RawSlice::new(&mut self.agents.current_lane_id);
+            let s_lane_d_idm = RawSlice::new(&mut self.agents.lane_distance);
+            let s_cur_e_idm = RawSlice::new(&mut self.agents.current_edge);
+            let s_cur_n_idm = RawSlice::new(&mut self.agents.current_node);
+            let s_path_idm = RawSlice::new(&mut self.agents.current_path);
+            let s_path_idx_idm = RawSlice::new(&mut self.agents.current_path_index);
+            let s_access_flags_idm = RawSlice::new(&mut self.agents.access_flags);
+            let s_plan_detach_n_idm = RawSlice::new(&mut self.agents.planned_detach_node);
+            let s_plan_detach_lane_idm = RawSlice::new(&mut self.agents.planned_detach_lane_id);
+            let s_plan_detach_lane_d_idm = RawSlice::new(&mut self.agents.planned_detach_lane_d);
+            let s_lane_change_from_idm = RawSlice::new(&mut self.agents.lane_change_from_lane_id);
+            let s_overtake_blocked_idm = RawSlice::new(&mut self.agents.overtake_blocked_time_s);
+            let s_overtake_cooldown_idm = RawSlice::new(&mut self.agents.overtake_cooldown_s);
+            let s_speed_idm = RawSlice::new(&mut self.agents.speed);
+            let new_spd_raw = RawSlice::new(&mut self.new_speed);
+            let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
+
+            dispatch_agents(n, |i| unsafe {
+                let cur_spd = *s_speed_idm.get(i);
+                let transit = *s_transit_idm.get(i);
+                let tmode = *s_tmode_idm.get(i);
+                let cooldown = (*s_overtake_cooldown_idm.get(i) - delta).max(0.0);
+                *s_overtake_cooldown_idm.get_mut(i) = cooldown;
+
+                if !live_lane_bucket_transit(transit) || tmode != MODE_CAR {
+                    *s_overtake_blocked_idm.get_mut(i) = 0.0;
+                    *new_spd_raw.get_mut(i) = cur_spd;
+                    return;
+                }
+
+                let lid = *s_lane_idm.get(i);
+                let my_d = *s_lane_d_idm.get(i);
+                let eid = *s_cur_e_idm.get(i);
+
+                let v_max = if transit == TRANSIT_INTERSECTION {
+                    transit_network
+                        .lane_system
+                        .lanes
+                        .get(lid)
+                        .map(connector_turn_speed)
+                        .unwrap_or(CAR_JUNCTION_SPEED_MS)
+                } else if eid != usize::MAX && eid < graph.edge_count() {
+                    graph.edge(eid).speed_limit
+                } else {
+                    DEFAULT_URBAN_ROAD_SPEED_MS
+                };
+
+                let gap = if lid < buckets.len() {
+                    idm_gap_bucket(&buckets[lid], my_d)
+                } else {
+                    f32::MAX
+                };
+                let mut target_speed = idm_new_speed(cur_spd, v_max, gap, delta);
+
+                if transit == TRANSIT_NETWORK {
+                    if let Some(lane) = transit_network.lane_system.lanes.get(lid) {
+                        if lane.edge_id != usize::MAX {
+                            let planned_detach_lane_id = *s_plan_detach_lane_idm.get(i) as usize;
+                            if let Some(connector_id) = planned_next_connector(
+                                lid,
+                                *s_cur_n_idm.get(i),
+                                s_path_idm.get(i),
+                                *s_path_idx_idm.get(i),
+                                *s_access_flags_idm.get(i),
+                                *s_plan_detach_n_idm.get(i),
+                                planned_detach_lane_id,
+                                transit_network,
+                                graph,
+                            ) {
+                                let turn_target = transit_network
+                                    .lane_system
+                                    .lanes
+                                    .get(connector_id)
+                                    .map(|connector| {
+                                        if lane_entry_slot_clear(connector_id, buckets) {
+                                            connector_turn_speed(connector)
+                                        } else {
+                                            0.0
+                                        }
+                                    })
+                                    .unwrap_or(CAR_JUNCTION_SPEED_MS);
+                                let dist_to_end = (lane.length - my_d).max(0.0);
+                                target_speed = target_speed
+                                    .min(braking_speed_for_distance(turn_target, dist_to_end));
+                            }
+                        }
+                    }
+
+                    if *s_lane_change_from_idm.get(i) == u32::MAX
+                        && (*s_access_flags_idm.get(i) & ACCESS_PLAN_VALID) != 0
+                    {
+                        let planned_detach_lane_id = *s_plan_detach_lane_idm.get(i) as usize;
+                        let planned_detach_lane_d = *s_plan_detach_lane_d_idm.get(i);
+                        if let Some(target_lane_id) = planned_lane_change_target(
+                            lid,
+                            planned_detach_lane_id,
+                            my_d,
+                            planned_detach_lane_d,
+                            transit_network,
+                        ) {
+                            let target_gap_clear = buckets
+                                .get(target_lane_id)
+                                .map(|bucket| lane_change_gap_clear(bucket, my_d, cur_spd))
+                                .unwrap_or(false);
+                            if !target_gap_clear {
+                                let stop_before_lane_change =
+                                    (planned_detach_lane_d - my_d - LANE_CHANGE_MIN_LENGTH_M)
+                                        .max(0.0);
+                                target_speed = target_speed
+                                    .min(braking_speed_for_distance(0.0, stop_before_lane_change));
+                            }
+                        }
+                    }
+                }
+
+                let traffic_blocked = transit == TRANSIT_NETWORK
+                    && *s_lane_change_from_idm.get(i) == u32::MAX
+                    && cooldown <= 0.0
+                    && gap < overtake_follow_gap(cur_spd)
+                    && cur_spd + OVERTAKE_MIN_SPEED_GAIN_MS < v_max;
+                if traffic_blocked {
+                    *s_overtake_blocked_idm.get_mut(i) += delta;
+                } else {
+                    *s_overtake_blocked_idm.get_mut(i) = 0.0;
+                }
+
+                *new_spd_raw.get_mut(i) = limit_speed_change(cur_spd, target_speed, delta);
+            });
+        }
+        for i in 0..n {
+            self.agents.speed[i] = self.new_speed[i];
+        }
+    }
+}

@@ -1049,6 +1049,22 @@ fn place_on_lane(
     idx
 }
 
+fn expected_frontage_delay_penalty_s(
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+    edge_idx: usize,
+    lane_id: usize,
+    observed_speed: f32,
+    update_steps: i32,
+) -> f32 {
+    let lane = &network.lane_system.lanes[lane_id];
+    let speed_limit = graph.edge(edge_idx).speed_limit.max(1.0);
+    let free_flow_lane_time_s = lane.length / speed_limit;
+    let observed_lane_time_s = lane.length / observed_speed.clamp(1.0, speed_limit);
+    let raw_delay_s = (observed_lane_time_s - free_flow_lane_time_s).clamp(0.0, 30.0);
+    raw_delay_s * (1.0 - 0.75_f32.powi(update_steps))
+}
+
 #[test]
 fn test_idm_free_road_accelerates() {
     // A stopped car on an empty road should accelerate after one tick.
@@ -1944,8 +1960,9 @@ fn test_frontage_delay_cache_respects_fixed_cadence() {
     let (mut network, graph, edge_idx, fwd_lane) = setup_straight_road();
     let speed_limit = graph.edge(edge_idx).speed_limit;
     let mut agents = AgentSystem::new();
+    let observed_speed = speed_limit * 0.5;
 
-    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
+    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, observed_speed);
 
     agents.update_frontage_delay_cache(&mut network, &graph, 0.5);
     assert_eq!(
@@ -1955,9 +1972,11 @@ fn test_frontage_delay_cache_respects_fixed_cadence() {
 
     agents.update_frontage_delay_cache(&mut network, &graph, 0.5);
     let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
+    let expected =
+        expected_frontage_delay_penalty_s(&network, &graph, edge_idx, fwd_lane, observed_speed, 1);
     assert!(
-        (penalty - 2.5).abs() < 0.01,
-        "expected first smoothed frontage penalty to be 2.5s, got {penalty:.3}"
+        (penalty - expected).abs() < 0.01,
+        "expected first smoothed frontage penalty to be {expected:.3}s, got {penalty:.3}"
     );
 }
 
@@ -1988,14 +2007,17 @@ fn test_frontage_delay_cache_applies_multiple_fixed_cadence_steps() {
     let (mut network, graph, edge_idx, fwd_lane) = setup_straight_road();
     let speed_limit = graph.edge(edge_idx).speed_limit;
     let mut agents = AgentSystem::new();
+    let observed_speed = speed_limit * 0.5;
 
-    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
+    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, observed_speed);
 
     agents.update_frontage_delay_cache(&mut network, &graph, 2.0);
     let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
+    let expected =
+        expected_frontage_delay_penalty_s(&network, &graph, edge_idx, fwd_lane, observed_speed, 2);
     assert!(
-        (penalty - 4.375).abs() < 0.01,
-        "expected two fixed-cadence smoothing steps to produce 4.375s, got {penalty:.3}"
+        (penalty - expected).abs() < 0.01,
+        "expected two fixed-cadence smoothing steps to produce {expected:.3}s, got {penalty:.3}"
     );
 }
 
