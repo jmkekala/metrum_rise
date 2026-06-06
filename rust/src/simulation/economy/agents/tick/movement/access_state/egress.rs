@@ -1,8 +1,6 @@
 //! Local access-egress movement from a building door to the planned network lane.
 
-use super::super::super::super::{
-    ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
-};
+use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
 use super::super::super::access::{
     advance_along_local_access_path, local_access_path, local_access_side_label,
     local_access_target_segment, planned_attach_is_legal,
@@ -11,6 +9,7 @@ use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::MovementSlices;
 use super::super::super::traffic::lane_attach_slot_clear;
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
+use super::reset_invalid_access_plan;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -36,17 +35,10 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 ) {
     unsafe {
         let s_cur_b = &slices.cur_b;
-        let s_tgt_b = &slices.tgt_b;
-        let s_path = &slices.path;
-        let s_path_idx = &slices.path_idx;
         let s_plan_attach_n = &slices.planned_attach_n;
-        let s_plan_detach_n = &slices.planned_detach_n;
         let s_plan_attach_lane = &slices.planned_attach_lane;
-        let s_plan_detach_lane = &slices.planned_detach_lane;
         let s_plan_attach_lane_d = &slices.planned_attach_lane_d;
-        let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
-        let s_next_replan_time = &slices.next_replan_time;
         let s_cur_n = &slices.cur_n;
         let s_cur_e = &slices.cur_e;
         let s_lane_id = &slices.lane_id;
@@ -59,39 +51,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 
         let b_id = *s_cur_b.get(i);
         if b_id == usize::MAX || b_id >= allocator.buildings.len() {
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            *s_access_flags.get_mut(i) = 0;
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
+            let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
+            reset_invalid_access_plan(i, usize::MAX, pos, 0.0, slices);
             return;
         }
         let b = &allocator.buildings[b_id];
         if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            *s_access_flags.get_mut(i) = 0;
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-            *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
+            let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
+            reset_invalid_access_plan(i, b_id, pos, sim_time + BUILDING_REPLAN_DELAY_S, slices);
             return;
         }
         let plan_valid =
@@ -102,26 +69,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 .get(b_id)
                 .map(|entrance| entrance.door_pos)
                 .unwrap_or(Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i)));
-            *s_pos_x.get_mut(i) = origin_door.x;
-            *s_pos_y.get_mut(i) = origin_door.y;
-            *s_cur_b.get_mut(i) = b_id;
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            s_path.get_mut(i).clear();
-            *s_path_idx.get_mut(i) = 0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_access_flags.get_mut(i) = 0;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-            *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
+            reset_invalid_access_plan(
+                i,
+                b_id,
+                origin_door,
+                sim_time + BUILDING_REPLAN_DELAY_S,
+                slices,
+            );
             return;
         }
         let entrance = &allocator.entrances[b_id];
@@ -271,26 +225,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 );
             }
             let origin_door = entrance.door_pos;
-            *s_pos_x.get_mut(i) = origin_door.x;
-            *s_pos_y.get_mut(i) = origin_door.y;
-            *s_cur_b.get_mut(i) = b_id;
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            s_path.get_mut(i).clear();
-            *s_path_idx.get_mut(i) = 0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_access_flags.get_mut(i) = 0;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-            *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
+            reset_invalid_access_plan(
+                i,
+                b_id,
+                origin_door,
+                sim_time + BUILDING_REPLAN_DELAY_S,
+                slices,
+            );
         }
     }
 }

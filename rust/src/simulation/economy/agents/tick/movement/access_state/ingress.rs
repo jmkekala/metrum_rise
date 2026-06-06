@@ -1,8 +1,6 @@
 //! Local access-ingress movement from the planned network lane to a building door.
 
-use super::super::super::super::{
-    ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
-};
+use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
 use super::super::super::access::{
     advance_along_local_access_path, local_access_path, local_access_point,
     local_access_side_label, local_access_target_segment, planned_detach_is_legal,
@@ -10,6 +8,7 @@ use super::super::super::access::{
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
 use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
+use super::{arrive_in_building, reset_invalid_access_plan};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -33,33 +32,20 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     slices: &MovementSlices,
 ) {
     unsafe {
-        let s_home = &slices.home;
-        let s_work = &slices.work;
         let s_pos_x = &slices.pos_x;
         let s_pos_y = &slices.pos_y;
         let s_activity = &slices.activity;
         let s_transit = &slices.transit;
-        let s_happiness = &slices.happiness;
-        let s_jstart = &slices.jstart;
-        let s_cur_b = &slices.cur_b;
         let s_tgt_b = &slices.tgt_b;
         let s_cur_n = &slices.cur_n;
-        let s_plan_attach_n = &slices.planned_attach_n;
         let s_plan_detach_n = &slices.planned_detach_n;
-        let s_plan_attach_lane = &slices.planned_attach_lane;
         let s_plan_detach_lane = &slices.planned_detach_lane;
-        let s_plan_attach_lane_d = &slices.planned_attach_lane_d;
         let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
         let s_cur_e = &slices.cur_e;
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
-        let s_lane_change_from_lane = &slices.lane_change_from_lane;
-        let s_lane_change_start_d = &slices.lane_change_start_d;
-        let s_lane_change_length = &slices.lane_change_length;
-        let s_overtake_blocked_time = &slices.overtake_blocked_time;
-        let s_overtake_cooldown = &slices.overtake_cooldown;
         let s_tmode = &slices.tmode;
         let s_path = &slices.path;
         let s_path_idx = &slices.path_idx;
@@ -67,20 +53,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 
         let b_id = *s_tgt_b.get(i);
         if b_id == usize::MAX || b_id >= allocator.buildings.len() {
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            *s_access_flags.get_mut(i) = 0;
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
+            let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
+            reset_invalid_access_plan(i, usize::MAX, pos, 0.0, slices);
             return;
         }
         let plan_valid =
@@ -91,37 +65,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 .get(b_id)
                 .map(|entrance| entrance.door_pos)
                 .unwrap_or(Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i)));
-            *s_pos_x.get_mut(i) = ingress_target.x;
-            *s_pos_y.get_mut(i) = ingress_target.y;
-            *s_cur_b.get_mut(i) = b_id;
-            *s_tgt_b.get_mut(i) = usize::MAX;
-            *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-            let home = *s_home.get(i);
-            let work = *s_work.get(i);
-            if b_id == home {
-                *s_activity.get_mut(i) = 0;
-            } else if b_id == work {
-                *s_activity.get_mut(i) = 1;
-            } else {
-                *s_activity.get_mut(i) = 2;
-            }
-            *s_plan_attach_n.get_mut(i) = u32::MAX;
-            *s_plan_detach_n.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane.get_mut(i) = u32::MAX;
-            *s_plan_detach_lane.get_mut(i) = u32::MAX;
-            *s_plan_attach_lane_d.get_mut(i) = 0.0;
-            *s_plan_detach_lane_d.get_mut(i) = 0.0;
-            *s_access_flags.get_mut(i) = 0;
-            *s_next_replan_time.get_mut(i) = 0.0;
-            *s_cur_n.get_mut(i) = u32::MAX;
-            *s_cur_e.get_mut(i) = usize::MAX;
-            *s_lane_id.get_mut(i) = usize::MAX;
-            *s_lane_d.get_mut(i) = 0.0;
-            *s_speed.get_mut(i) = 0.0;
-            s_path.get_mut(i).clear();
-            *s_path_idx.get_mut(i) = 0;
-            let commute_time = sim_time - *s_jstart.get(i);
-            *s_happiness.get_mut(i) = (*s_happiness.get(i) - commute_time / 60.0).clamp(0.0, 100.0);
+            arrive_in_building(i, b_id, ingress_target, sim_time, slices);
             return;
         }
         let entrance = &allocator.entrances[b_id];
@@ -202,44 +146,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         *s_access_flags.get(i),
                     );
                 }
-                *s_pos_x.get_mut(i) = ingress_target.x;
-                *s_pos_y.get_mut(i) = ingress_target.y;
-                *s_cur_b.get_mut(i) = b_id;
-                *s_tgt_b.get_mut(i) = usize::MAX;
-                *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-                let home = *s_home.get(i);
-                let work = *s_work.get(i);
-                if b_id == home {
-                    *s_activity.get_mut(i) = 0;
-                } else if b_id == work {
-                    *s_activity.get_mut(i) = 1;
-                } else {
-                    *s_activity.get_mut(i) = 2;
-                }
-                *s_plan_attach_n.get_mut(i) = u32::MAX;
-                *s_plan_detach_n.get_mut(i) = u32::MAX;
-                *s_plan_attach_lane.get_mut(i) = u32::MAX;
-                *s_plan_detach_lane.get_mut(i) = u32::MAX;
-                *s_plan_attach_lane_d.get_mut(i) = 0.0;
-                *s_plan_detach_lane_d.get_mut(i) = 0.0;
-                *s_access_flags.get_mut(i) = 0;
-                *s_next_replan_time.get_mut(i) = 0.0;
-                *s_cur_n.get_mut(i) = u32::MAX;
-                *s_cur_e.get_mut(i) = usize::MAX;
-                *s_lane_id.get_mut(i) = usize::MAX;
-                *s_lane_d.get_mut(i) = 0.0;
-                *s_lane_change_from_lane.get_mut(i) = u32::MAX;
-                *s_lane_change_start_d.get_mut(i) = 0.0;
-                *s_lane_change_length.get_mut(i) = 0.0;
-                *s_overtake_blocked_time.get_mut(i) = 0.0;
-                *s_overtake_cooldown.get_mut(i) = 0.0;
-                *s_speed.get_mut(i) = 0.0;
-                s_path.get_mut(i).clear();
-                *s_path_idx.get_mut(i) = 0;
-
-                let commute_time = sim_time - *s_jstart.get(i);
-                *s_happiness.get_mut(i) =
-                    (*s_happiness.get(i) - commute_time / 60.0).clamp(0.0, 100.0);
+                arrive_in_building(i, b_id, ingress_target, sim_time, slices);
             }
         } else if let Some(ingress_origin) = local_access_point(
             *s_tmode.get(i),

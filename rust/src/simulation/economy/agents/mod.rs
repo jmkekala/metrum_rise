@@ -1,7 +1,10 @@
 //! Agent simulation: data layout, activity states, and lifecycle management.
 
+mod building_refs;
+mod daily;
 pub mod data;
-pub mod decisions;
+mod lifecycle;
+mod remap;
 #[cfg(test)]
 mod test_departure_side;
 #[cfg(test)]
