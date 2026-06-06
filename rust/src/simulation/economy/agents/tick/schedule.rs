@@ -10,6 +10,47 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 use std::sync::atomic::AtomicU32;
 
+/// Mutable view over one agent's cached schedule-derived fields.
+pub(super) struct ScheduleCacheMut<'a> {
+    /// Cached one-way commute estimate in authored minutes.
+    pub(super) cached_commute_minutes: &'a mut u16,
+    /// Earliest simulation time when the commute estimate may be refreshed.
+    pub(super) next_commute_refresh_time: &'a mut f32,
+    /// Operational day for the next cached departure.
+    pub(super) next_departure_day: &'a mut u32,
+    /// Minute-of-day for the next cached departure.
+    pub(super) next_departure_minute: &'a mut u16,
+    /// Building where the cached departure starts.
+    pub(super) next_departure_origin_building: &'a mut usize,
+    /// Building where the cached departure ends.
+    pub(super) next_departure_target_building: &'a mut usize,
+    /// Activity to apply when the cached departure starts.
+    pub(super) next_departure_activity: &'a mut u8,
+    /// Work building whose work-profile lookup is cached.
+    pub(super) cached_schedule_work_building: &'a mut usize,
+    /// Index into runtime work profiles, or `u16::MAX` when no profile exists.
+    pub(super) cached_work_profile_index: &'a mut u16,
+}
+
+impl ScheduleCacheMut<'_> {
+    fn clear_departure_if_cached(&mut self) {
+        if *self.next_departure_day != u32::MAX
+            || *self.next_departure_origin_building != usize::MAX
+            || *self.next_departure_target_building != usize::MAX
+        {
+            self.clear_departure();
+        }
+    }
+
+    fn clear_departure(&mut self) {
+        *self.next_departure_day = u32::MAX;
+        *self.next_departure_minute = 0;
+        *self.next_departure_origin_building = usize::MAX;
+        *self.next_departure_target_building = usize::MAX;
+        *self.next_departure_activity = 0;
+    }
+}
+
 /// Returns a scheduled work/home trip target when the current simulation minute reaches a window.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn maybe_schedule_work_trip(
@@ -18,15 +59,7 @@ pub(super) fn maybe_schedule_work_trip(
     work_building: usize,
     has_car: bool,
     schedule_seed: u32,
-    cached_commute_minutes: &mut u16,
-    next_commute_refresh_time: &mut f32,
-    next_departure_day: &mut u32,
-    next_departure_minute: &mut u16,
-    next_departure_origin_building: &mut usize,
-    next_departure_target_building: &mut usize,
-    next_departure_activity: &mut u8,
-    cached_schedule_work_building: &mut usize,
-    cached_work_profile_index: &mut u16,
+    cache: &mut ScheduleCacheMut<'_>,
     sim_time: f32,
     day_index: u32,
     minute_of_day: u16,
@@ -38,58 +71,44 @@ pub(super) fn maybe_schedule_work_trip(
     economy_catalog: &RuntimeEconomyCatalog,
 ) -> Option<(usize, u8)> {
     if home_building == usize::MAX || work_building == usize::MAX {
-        clear_departure_cache_if_cached(
-            next_departure_day,
-            next_departure_minute,
-            next_departure_origin_building,
-            next_departure_target_building,
-            next_departure_activity,
-        );
+        cache.clear_departure_if_cached();
         return None;
     }
     if current_building != home_building && current_building != work_building {
-        clear_departure_cache_if_cached(
-            next_departure_day,
-            next_departure_minute,
-            next_departure_origin_building,
-            next_departure_target_building,
-            next_departure_activity,
-        );
+        cache.clear_departure_if_cached();
         return None;
     }
 
-    if *next_departure_target_building != usize::MAX
-        && *next_departure_origin_building == current_building
+    if *cache.next_departure_target_building != usize::MAX
+        && *cache.next_departure_origin_building == current_building
         && cached_departure_matches_assignment(
             current_building,
             home_building,
             work_building,
-            *next_departure_target_building,
-            *next_departure_activity,
+            *cache.next_departure_target_building,
+            *cache.next_departure_activity,
         )
     {
-        if day_index < *next_departure_day
-            || (day_index == *next_departure_day && minute_of_day < *next_departure_minute)
+        if day_index < *cache.next_departure_day
+            || (day_index == *cache.next_departure_day
+                && minute_of_day < *cache.next_departure_minute)
         {
             return None;
         }
-        if day_index == *next_departure_day {
-            return Some((*next_departure_target_building, *next_departure_activity));
+        if day_index == *cache.next_departure_day {
+            return Some((
+                *cache.next_departure_target_building,
+                *cache.next_departure_activity,
+            ));
         }
     }
 
-    clear_departure_cache(
-        next_departure_day,
-        next_departure_minute,
-        next_departure_origin_building,
-        next_departure_target_building,
-        next_departure_activity,
-    );
+    cache.clear_departure();
 
     let work_profile_index = cached_work_profile_index_for_building(
         work_building,
-        cached_schedule_work_building,
-        cached_work_profile_index,
+        cache.cached_schedule_work_building,
+        cache.cached_work_profile_index,
         allocator,
         operational_clock,
         economy_catalog,
@@ -101,7 +120,7 @@ pub(super) fn maybe_schedule_work_trip(
         return None;
     }
 
-    if (*cached_commute_minutes == 0 || sim_time >= *next_commute_refresh_time)
+    if (*cache.cached_commute_minutes == 0 || sim_time >= *cache.next_commute_refresh_time)
         && let Some(estimate) = estimate_building_origin_trip_minutes(
             home_building,
             work_building,
@@ -112,11 +131,11 @@ pub(super) fn maybe_schedule_work_trip(
             pathfind_count,
         )
     {
-        *cached_commute_minutes = estimate;
-        *next_commute_refresh_time =
+        *cache.cached_commute_minutes = estimate;
+        *cache.next_commute_refresh_time =
             sim_time + f32::from(operational_clock.travel_estimate_refresh_minutes);
     }
-    let commute_minutes = (*cached_commute_minutes).max(1);
+    let commute_minutes = (*cache.cached_commute_minutes).max(1);
     let shift_index = (schedule_seed % work_profile.arrival_windows.len() as u32) as usize;
     let arrival_window = &work_profile.arrival_windows[shift_index];
     let arrival_minute = stable_minute_in_window(work_profile, arrival_window, schedule_seed);
@@ -151,52 +170,17 @@ pub(super) fn maybe_schedule_work_trip(
         scheduled_minute,
         window_end_minute,
     );
-    *next_departure_day = departure_day;
-    *next_departure_minute = scheduled_minute;
-    *next_departure_origin_building = current_building;
-    *next_departure_target_building = target_building;
-    *next_departure_activity = activity;
+    *cache.next_departure_day = departure_day;
+    *cache.next_departure_minute = scheduled_minute;
+    *cache.next_departure_origin_building = current_building;
+    *cache.next_departure_target_building = target_building;
+    *cache.next_departure_activity = activity;
 
     if departure_day == day_index && minute_of_day >= scheduled_minute {
         return Some((target_building, activity));
     }
 
     None
-}
-
-fn clear_departure_cache_if_cached(
-    next_departure_day: &mut u32,
-    next_departure_minute: &mut u16,
-    next_departure_origin_building: &mut usize,
-    next_departure_target_building: &mut usize,
-    next_departure_activity: &mut u8,
-) {
-    if *next_departure_day != u32::MAX
-        || *next_departure_origin_building != usize::MAX
-        || *next_departure_target_building != usize::MAX
-    {
-        clear_departure_cache(
-            next_departure_day,
-            next_departure_minute,
-            next_departure_origin_building,
-            next_departure_target_building,
-            next_departure_activity,
-        );
-    }
-}
-
-fn clear_departure_cache(
-    next_departure_day: &mut u32,
-    next_departure_minute: &mut u16,
-    next_departure_origin_building: &mut usize,
-    next_departure_target_building: &mut usize,
-    next_departure_activity: &mut u8,
-) {
-    *next_departure_day = u32::MAX;
-    *next_departure_minute = 0;
-    *next_departure_origin_building = usize::MAX;
-    *next_departure_target_building = usize::MAX;
-    *next_departure_activity = 0;
 }
 
 fn cached_departure_matches_assignment(

@@ -1,9 +1,10 @@
 //! Agent references to building allocator indices.
 
-use super::TRANSIT_ACCESS_INGRESS;
 use super::data::AgentSystem;
+use super::{MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING};
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::zoning::ZoneType;
+use godot::prelude::Vector2;
 use rand::Rng;
 
 impl AgentSystem {
@@ -18,6 +19,164 @@ impl AgentSystem {
         self.agents.next_departure_activity[agent_idx] = 0;
         self.agents.cached_schedule_work_building[agent_idx] = usize::MAX;
         self.agents.cached_work_profile_index[agent_idx] = u16::MAX;
+    }
+
+    /// Assigns an agent to a household without touching movement state.
+    pub(crate) fn assign_household_id(&mut self, agent_idx: usize, household_id: usize) {
+        if agent_idx < self.agents.len() {
+            self.agents.household_id[agent_idx] = household_id;
+        }
+    }
+
+    /// Converts a border household carrier into an ordinary resident inside its home building.
+    pub(crate) fn materialize_household_carrier(
+        &mut self,
+        agent_idx: usize,
+        household_id: usize,
+        door_pos: Option<Vector2>,
+    ) {
+        if agent_idx >= self.agents.len() {
+            return;
+        }
+        self.agents.household_id[agent_idx] = household_id;
+        self.agents.pending_household_size[agent_idx] = 0;
+        self.agents.target_building[agent_idx] = usize::MAX;
+        self.agents.planned_target_building[agent_idx] = usize::MAX;
+        self.clear_route_and_lane_state(agent_idx);
+        self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.transit_mode[agent_idx] = MODE_WALK;
+        self.agents.activity[agent_idx] = 0;
+        self.agents.planned_activity[agent_idx] = 0;
+        self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+        if let Some(door) = door_pos {
+            self.agents.pos_x[agent_idx] = door.x;
+            self.agents.pos_y[agent_idx] = door.y;
+        }
+        self.clear_schedule_building_cache(agent_idx);
+        self.invalidate_lane_bucket_snapshot();
+    }
+
+    /// Updates a household member after their household relocates to a new home.
+    pub(crate) fn relocate_household_member_home(
+        &mut self,
+        agent_idx: usize,
+        old_home: usize,
+        new_home: usize,
+        old_home_live: bool,
+    ) {
+        if agent_idx >= self.agents.len() {
+            return;
+        }
+
+        if self.agents.home_building[agent_idx] != new_home {
+            self.agents.home_building[agent_idx] = new_home;
+            self.clear_schedule_building_cache(agent_idx);
+        }
+
+        if old_home_live && self.agents.current_building[agent_idx] == old_home {
+            self.agents.current_building[agent_idx] = new_home;
+            self.agents.target_building[agent_idx] = usize::MAX;
+            self.agents.planned_target_building[agent_idx] = usize::MAX;
+            self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+            self.agents.activity[agent_idx] = 0;
+            self.clear_route_and_lane_state(agent_idx);
+            self.invalidate_lane_bucket_snapshot();
+        } else {
+            let mut needs_replan = false;
+            if old_home_live && self.agents.target_building[agent_idx] == old_home {
+                self.agents.target_building[agent_idx] = new_home;
+                needs_replan = true;
+            }
+            if old_home_live && self.agents.planned_target_building[agent_idx] == old_home {
+                self.agents.planned_target_building[agent_idx] = new_home;
+                needs_replan = true;
+            }
+            if !old_home_live
+                && self.agents.current_building[agent_idx] == usize::MAX
+                && self.agents.target_building[agent_idx] == usize::MAX
+            {
+                self.agents.target_building[agent_idx] = new_home;
+                self.agents.planned_target_building[agent_idx] = new_home;
+                self.agents.activity[agent_idx] = 0;
+                needs_replan = true;
+            }
+            if needs_replan {
+                self.clear_access_plan_and_path(agent_idx);
+                self.agents.next_replan_time[agent_idx] = 0.0;
+                self.clear_schedule_building_cache(agent_idx);
+            }
+        }
+    }
+
+    /// Updates a household member after their household loses its home.
+    pub(crate) fn evict_household_member_home(&mut self, agent_idx: usize, old_home: usize) {
+        if agent_idx >= self.agents.len() {
+            return;
+        }
+
+        if self.agents.home_building[agent_idx] != usize::MAX {
+            self.agents.home_building[agent_idx] = usize::MAX;
+            self.clear_schedule_building_cache(agent_idx);
+        }
+
+        if self.agents.current_building[agent_idx] == old_home {
+            self.agents.current_building[agent_idx] = usize::MAX;
+            self.agents.target_building[agent_idx] = usize::MAX;
+            self.agents.planned_target_building[agent_idx] = usize::MAX;
+            self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
+            self.clear_route_and_lane_state(agent_idx);
+            self.invalidate_lane_bucket_snapshot();
+        } else {
+            let mut needs_replan = false;
+            if self.agents.target_building[agent_idx] == old_home {
+                self.agents.target_building[agent_idx] = usize::MAX;
+                needs_replan = true;
+            }
+            if self.agents.planned_target_building[agent_idx] == old_home {
+                self.agents.planned_target_building[agent_idx] = usize::MAX;
+                needs_replan = true;
+            }
+            if needs_replan {
+                self.clear_access_plan_and_path(agent_idx);
+                self.agents.next_replan_time[agent_idx] = 0.0;
+                self.clear_schedule_building_cache(agent_idx);
+            }
+        }
+    }
+
+    /// Assigns or clears an agent's workplace and invalidates derived work-trip caches.
+    pub(crate) fn assign_work_building(
+        &mut self,
+        agent_idx: usize,
+        work_building: usize,
+        job_lock_days: u8,
+    ) {
+        if agent_idx >= self.agents.len() {
+            return;
+        }
+
+        let old_work = self.agents.work_building[agent_idx];
+        if old_work != work_building {
+            self.agents.work_building[agent_idx] = work_building;
+            self.clear_schedule_building_cache(agent_idx);
+            if old_work != usize::MAX {
+                let mut needs_replan = false;
+                if self.agents.target_building[agent_idx] == old_work {
+                    self.agents.target_building[agent_idx] = usize::MAX;
+                    needs_replan = true;
+                }
+                if self.agents.planned_target_building[agent_idx] == old_work {
+                    self.agents.planned_target_building[agent_idx] = usize::MAX;
+                    needs_replan = true;
+                }
+                if needs_replan {
+                    self.clear_access_plan_and_path(agent_idx);
+                    self.agents.next_replan_time[agent_idx] = 0.0;
+                }
+            }
+        }
+        self.agents.job_lock_days[agent_idx] = job_lock_days;
+        self.agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 
     /// Forcefully removes all agents from a building that has been deleted.
@@ -105,6 +264,32 @@ impl AgentSystem {
         }
         allocator.rebuild_zone_index();
     }
+
+    fn clear_route_and_lane_state(&mut self, agent_idx: usize) {
+        self.clear_access_plan_and_path(agent_idx);
+        self.agents.current_node[agent_idx] = u32::MAX;
+        self.agents.current_edge[agent_idx] = usize::MAX;
+        self.agents.current_lane_id[agent_idx] = usize::MAX;
+        self.agents.lane_distance[agent_idx] = 0.0;
+        self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
+        self.agents.lane_change_start_d[agent_idx] = 0.0;
+        self.agents.lane_change_length_m[agent_idx] = 0.0;
+        self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
+        self.agents.overtake_cooldown_s[agent_idx] = 0.0;
+        self.agents.speed[agent_idx] = 0.0;
+    }
+
+    fn clear_access_plan_and_path(&mut self, agent_idx: usize) {
+        self.agents.planned_attach_node[agent_idx] = u32::MAX;
+        self.agents.planned_detach_node[agent_idx] = u32::MAX;
+        self.agents.planned_attach_lane_id[agent_idx] = u32::MAX;
+        self.agents.planned_detach_lane_id[agent_idx] = u32::MAX;
+        self.agents.planned_attach_lane_d[agent_idx] = 0.0;
+        self.agents.planned_detach_lane_d[agent_idx] = 0.0;
+        self.agents.access_flags[agent_idx] = 0;
+        self.agents.current_path[agent_idx].clear();
+        self.agents.current_path_index[agent_idx] = 0;
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +334,62 @@ mod tests {
             usize::MAX
         );
         assert_eq!(sys.agents.cached_work_profile_index[agent_idx], u16::MAX);
+    }
+
+    #[test]
+    fn assigning_work_clears_schedule_cache_and_stale_work_trip() {
+        let mut sys = AgentSystem::new();
+        let agent_idx = sys.spawn_housed_agent(1, 0.0, 0.0);
+        sys.agents.work_building[agent_idx] = 2;
+        sys.agents.target_building[agent_idx] = 2;
+        sys.agents.planned_target_building[agent_idx] = 2;
+        sys.agents.access_flags[agent_idx] = crate::simulation::economy::agents::ACCESS_PLAN_VALID;
+        sys.agents.current_path[agent_idx] = vec![10, 20];
+        sys.agents.next_departure_day[agent_idx] = 1;
+        sys.agents.next_departure_origin_building[agent_idx] = 1;
+        sys.agents.next_departure_target_building[agent_idx] = 2;
+        sys.agents.cached_schedule_work_building[agent_idx] = 2;
+
+        sys.assign_work_building(agent_idx, 3, 7);
+
+        assert_eq!(sys.agents.work_building[agent_idx], 3);
+        assert_eq!(sys.agents.job_lock_days[agent_idx], 7);
+        assert_eq!(sys.agents.target_building[agent_idx], usize::MAX);
+        assert_eq!(sys.agents.planned_target_building[agent_idx], usize::MAX);
+        assert_eq!(sys.agents.access_flags[agent_idx], 0);
+        assert!(sys.agents.current_path[agent_idx].is_empty());
+        assert_eq!(sys.agents.next_departure_day[agent_idx], u32::MAX);
+        assert_eq!(
+            sys.agents.cached_schedule_work_building[agent_idx],
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn relocating_home_clears_schedule_cache_and_stale_home_trip() {
+        let mut sys = AgentSystem::new();
+        let agent_idx = sys.spawn_housed_agent(1, 0.0, 0.0);
+        sys.agents.target_building[agent_idx] = 1;
+        sys.agents.planned_target_building[agent_idx] = 1;
+        sys.agents.access_flags[agent_idx] = crate::simulation::economy::agents::ACCESS_PLAN_VALID;
+        sys.agents.current_path[agent_idx] = vec![10, 20];
+        sys.agents.next_departure_day[agent_idx] = 1;
+        sys.agents.next_departure_origin_building[agent_idx] = 1;
+        sys.agents.next_departure_target_building[agent_idx] = 2;
+        sys.agents.cached_schedule_work_building[agent_idx] = 2;
+
+        sys.relocate_household_member_home(agent_idx, 1, 4, true);
+
+        assert_eq!(sys.agents.home_building[agent_idx], 4);
+        assert_eq!(sys.agents.current_building[agent_idx], 4);
+        assert_eq!(sys.agents.target_building[agent_idx], usize::MAX);
+        assert_eq!(sys.agents.planned_target_building[agent_idx], usize::MAX);
+        assert_eq!(sys.agents.access_flags[agent_idx], 0);
+        assert!(sys.agents.current_path[agent_idx].is_empty());
+        assert_eq!(sys.agents.next_departure_day[agent_idx], u32::MAX);
+        assert_eq!(
+            sys.agents.cached_schedule_work_building[agent_idx],
+            usize::MAX
+        );
     }
 }

@@ -455,7 +455,7 @@ struct AuthoredGrowthProfile {
     hysteresis_margin: f32,
 }
 
-static BUILTIN_CONFIG: OnceLock<Result<DemandConfig, String>> = OnceLock::new();
+static BUILTIN_CONFIG: OnceLock<Result<Arc<DemandConfig>, String>> = OnceLock::new();
 
 /// Demand-owned daily growth state derived from the settled economy snapshot.
 pub struct DemandSystem {
@@ -1926,18 +1926,18 @@ fn level_change_is_compatible(
 
 fn load_builtin_demand_config() -> Result<Arc<DemandConfig>, String> {
     match BUILTIN_CONFIG.get_or_init(load_config_from_disk) {
-        Ok(config) => Ok(Arc::new(config.clone())),
+        Ok(config) => Ok(Arc::clone(config)),
         Err(err) => Err(err.clone()),
     }
 }
 
-fn load_config_from_disk() -> Result<DemandConfig, String> {
+fn load_config_from_disk() -> Result<Arc<DemandConfig>, String> {
     let path = repo_relative_path(GROWTH_PROFILES_FILE);
     let content = std::fs::read_to_string(&path)
         .map_err(|err| format!("could not read '{}': {err}", path.display()))?;
     let authored: AuthoredGrowthProfilesFile = toml::from_str(&content)
         .map_err(|err| format!("could not parse '{}': {err}", path.display()))?;
-    compile_config(authored)
+    compile_config(authored).map(Arc::new)
 }
 
 fn repo_relative_path(relative: &str) -> PathBuf {

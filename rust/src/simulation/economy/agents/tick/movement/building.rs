@@ -3,7 +3,7 @@
 use super::super::super::TRANSIT_ACCESS_EGRESS;
 use super::super::access::local_access_side_label;
 use super::super::planning::plan_building_origin_trip;
-use super::super::schedule::maybe_schedule_work_trip;
+use super::super::schedule::{ScheduleCacheMut, maybe_schedule_work_trip};
 use super::super::slices::MovementSlices;
 use super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -70,21 +70,24 @@ pub(super) unsafe fn handle_in_building(
             && curr_bldg != usize::MAX
             && curr_bldg < allocator.buildings.len()
         {
+            let mut schedule_cache = ScheduleCacheMut {
+                cached_commute_minutes: s_cached_commute_minutes.get_mut(i),
+                next_commute_refresh_time: s_next_commute_refresh_time.get_mut(i),
+                next_departure_day: slices.next_departure_day.get_mut(i),
+                next_departure_minute: slices.next_departure_minute.get_mut(i),
+                next_departure_origin_building: slices.next_departure_origin.get_mut(i),
+                next_departure_target_building: slices.next_departure_target.get_mut(i),
+                next_departure_activity: slices.next_departure_activity.get_mut(i),
+                cached_schedule_work_building: slices.cached_schedule_work_building.get_mut(i),
+                cached_work_profile_index: slices.cached_work_profile_index.get_mut(i),
+            };
             if let Some((target_building, activity)) = maybe_schedule_work_trip(
                 curr_bldg,
                 *s_home.get(i),
                 *s_work.get(i),
                 *s_has_car.get(i),
                 *s_schedule_seed.get(i),
-                s_cached_commute_minutes.get_mut(i),
-                s_next_commute_refresh_time.get_mut(i),
-                slices.next_departure_day.get_mut(i),
-                slices.next_departure_minute.get_mut(i),
-                slices.next_departure_origin.get_mut(i),
-                slices.next_departure_target.get_mut(i),
-                slices.next_departure_activity.get_mut(i),
-                slices.cached_schedule_work_building.get_mut(i),
-                slices.cached_work_profile_index.get_mut(i),
+                &mut schedule_cache,
                 sim_time,
                 day_index,
                 minute_of_day,

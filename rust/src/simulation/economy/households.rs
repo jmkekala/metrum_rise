@@ -9,9 +9,7 @@ use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
 };
-use crate::simulation::economy::agents::{
-    AgentSystem, MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
-};
+use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning, load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -478,39 +476,14 @@ impl HouseholdSystem {
                 .get(home)
                 .map(|entrance| entrance.door_pos);
 
-            agents.household_id[i] = household_id;
-            agents.pending_household_size[i] = 0;
-            agents.target_building[i] = usize::MAX;
-            agents.planned_target_building[i] = usize::MAX;
-            agents.current_node[i] = u32::MAX;
-            agents.planned_attach_node[i] = u32::MAX;
-            agents.planned_detach_node[i] = u32::MAX;
-            agents.planned_attach_lane_id[i] = u32::MAX;
-            agents.planned_detach_lane_id[i] = u32::MAX;
-            agents.planned_attach_lane_d[i] = 0.0;
-            agents.planned_detach_lane_d[i] = 0.0;
-            agents.access_flags[i] = 0;
-            agents.next_replan_time[i] = 0.0;
-            agents.current_edge[i] = usize::MAX;
-            agents.current_lane_id[i] = usize::MAX;
-            agents.lane_distance[i] = 0.0;
-            agents.speed[i] = 0.0;
-            agents.transit_mode[i] = MODE_WALK;
-            agents.activity[i] = 0;
-            agents.planned_activity[i] = 0;
-            agents.current_path[i].clear();
-            agents.current_path_index[i] = 0;
-            if let Some(door) = home_door {
-                agents.pos_x[i] = door.x;
-                agents.pos_y[i] = door.y;
-            }
+            agents.materialize_household_carrier(i, household_id, home_door);
 
             for _ in 1..pending_size {
                 let (x, y) = home_door
                     .map(|door| (door.x, door.y))
                     .unwrap_or((agents.pos_x[i], agents.pos_y[i]));
                 let resident_idx = agents.spawn_housed_agent(home, x, y);
-                agents.household_id[resident_idx] = household_id;
+                agents.assign_household_id(resident_idx, household_id);
             }
 
             debug_log!(
@@ -538,7 +511,7 @@ impl HouseholdSystem {
                 {
                     continue;
                 }
-                agents.household_id[i] = usize::MAX;
+                agents.assign_household_id(i, usize::MAX);
                 continue;
             }
             let needs_new = hid == usize::MAX
@@ -577,7 +550,7 @@ impl HouseholdSystem {
                     ),
                     unemployment_days_elapsed: 0,
                 });
-                agents.household_id[i] = self.households.len() - 1;
+                agents.assign_household_id(i, self.households.len() - 1);
             }
         }
     }
@@ -1079,27 +1052,12 @@ impl HouseholdSystem {
             if agents.household_id[agent_idx] != household_id {
                 continue;
             }
-            agents.home_building[agent_idx] = new_home;
-            if old_home < allocator.buildings.len() {
-                if agents.current_building[agent_idx] == old_home {
-                    agents.current_building[agent_idx] = new_home;
-                    agents.target_building[agent_idx] = usize::MAX;
-                    agents.planned_target_building[agent_idx] = usize::MAX;
-                    agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
-                }
-                if agents.target_building[agent_idx] == old_home {
-                    agents.target_building[agent_idx] = new_home;
-                }
-                if agents.planned_target_building[agent_idx] == old_home {
-                    agents.planned_target_building[agent_idx] = new_home;
-                }
-            } else if agents.current_building[agent_idx] == usize::MAX
-                && agents.target_building[agent_idx] == usize::MAX
-            {
-                agents.target_building[agent_idx] = new_home;
-                agents.planned_target_building[agent_idx] = new_home;
-                agents.activity[agent_idx] = 0;
-            }
+            agents.relocate_household_member_home(
+                agent_idx,
+                old_home,
+                new_home,
+                old_home < allocator.buildings.len(),
+            );
         }
     }
 
@@ -1127,20 +1085,7 @@ impl HouseholdSystem {
             if agents.household_id[agent_idx] != household_id {
                 continue;
             }
-            agents.home_building[agent_idx] = usize::MAX;
-            if agents.current_building[agent_idx] == old_home {
-                agents.current_building[agent_idx] = usize::MAX;
-                agents.target_building[agent_idx] = usize::MAX;
-                agents.planned_target_building[agent_idx] = usize::MAX;
-                agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
-            } else {
-                if agents.target_building[agent_idx] == old_home {
-                    agents.target_building[agent_idx] = usize::MAX;
-                }
-                if agents.planned_target_building[agent_idx] == old_home {
-                    agents.planned_target_building[agent_idx] = usize::MAX;
-                }
-            }
+            agents.evict_household_member_home(agent_idx, old_home);
         }
     }
 
@@ -1390,9 +1335,7 @@ impl HouseholdSystem {
                 if work < reserved_workers.len() {
                     reserved_workers[work] = reserved_workers[work].saturating_sub(1);
                 }
-                agents.work_building[i] = usize::MAX;
-                agents.job_lock_days[i] = 0;
-                agents.consecutive_unpaid_days[i] = 0;
+                agents.assign_work_building(i, usize::MAX, 0);
             }
         }
 
@@ -1504,8 +1447,7 @@ impl HouseholdSystem {
                         reserved_workers[old_job] = reserved_workers[old_job].saturating_sub(1);
                     }
                     reserved_workers[best_job] = reserved_workers[best_job].saturating_add(1);
-                    agents.work_building[i] = best_job;
-                    agents.job_lock_days[i] = JOB_LOCK_DAYS;
+                    agents.assign_work_building(i, best_job, JOB_LOCK_DAYS);
                     debug_log!(
                         "economy",
                         "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
@@ -1573,8 +1515,7 @@ impl HouseholdSystem {
 
                 if agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS {
                     // Fire self from work.
-                    agents.work_building[i] = usize::MAX;
-                    agents.consecutive_unpaid_days[i] = 0;
+                    agents.assign_work_building(i, usize::MAX, 0);
                     debug_log!(
                         "economy",
                         "agent_idx={} fired self from insolvent building={} due to consecutive unpaid days",
@@ -1940,7 +1881,7 @@ mod tests {
     use crate::assets::asset::{
         Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
     };
-    use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
+    use crate::simulation::economy::agents::{TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING};
     use godot::prelude::Vector2;
 
     fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
