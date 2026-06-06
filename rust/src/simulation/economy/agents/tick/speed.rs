@@ -10,7 +10,7 @@ use super::traffic::{
     lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
     planned_lane_change_target,
 };
-use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS};
+use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B};
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -23,7 +23,13 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         n: usize,
+        live_lane_agent_count: usize,
     ) {
+        if live_lane_agent_count == 0 {
+            self.reset_inactive_traffic_timers(delta, n);
+            return;
+        }
+
         self.new_speed.resize(n, 0.0_f32);
         {
             let s_transit_idm = RawSlice::new(&mut self.agents.transit);
@@ -84,7 +90,10 @@ impl AgentSystem {
 
                 if transit == TRANSIT_NETWORK {
                     if let Some(lane) = transit_network.lane_system.lanes.get(lid) {
-                        if lane.edge_id != usize::MAX {
+                        let dist_to_end = (lane.length - my_d).max(0.0);
+                        if lane.edge_id != usize::MAX
+                            && dist_to_end <= junction_brake_lookahead_m(cur_spd.max(v_max))
+                        {
                             let planned_detach_lane_id = *s_plan_detach_lane_idm.get(i) as usize;
                             if let Some(connector_id) = planned_next_connector(
                                 lid,
@@ -109,7 +118,6 @@ impl AgentSystem {
                                         }
                                     })
                                     .unwrap_or(CAR_JUNCTION_SPEED_MS);
-                                let dist_to_end = (lane.length - my_d).max(0.0);
                                 target_speed = target_speed
                                     .min(braking_speed_for_distance(turn_target, dist_to_end));
                             }
@@ -161,4 +169,26 @@ impl AgentSystem {
             self.agents.speed[i] = self.new_speed[i];
         }
     }
+
+    fn reset_inactive_traffic_timers(&mut self, delta: f32, n: usize) {
+        let s_overtake_blocked = RawSlice::new(&mut self.agents.overtake_blocked_time_s);
+        let s_overtake_cooldown = RawSlice::new(&mut self.agents.overtake_cooldown_s);
+
+        dispatch_agents(n, |i| unsafe {
+            if *s_overtake_blocked.get(i) != 0.0 {
+                *s_overtake_blocked.get_mut(i) = 0.0;
+            }
+            let cooldown = *s_overtake_cooldown.get(i);
+            if cooldown > 0.0 {
+                *s_overtake_cooldown.get_mut(i) = (cooldown - delta).max(0.0);
+            }
+        });
+    }
+}
+
+#[inline(always)]
+fn junction_brake_lookahead_m(speed: f32) -> f32 {
+    const JUNCTION_LOOKAHEAD_MARGIN_M: f32 = 20.0;
+    let speed = speed.max(0.0);
+    speed * speed / (2.0 * IDM_B) + JUNCTION_LOOKAHEAD_MARGIN_M
 }

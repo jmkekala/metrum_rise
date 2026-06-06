@@ -40,8 +40,9 @@ impl AgentSystem {
         let bldg_count = allocator.buildings.len();
         self.scrub_invalid_building_refs(bldg_count, n);
 
-        let lane_count = self.prepare_lane_buckets_for_tick(transit_network, n);
-        self.update_idm_speeds(delta, transit_network, graph, n);
+        let (lane_count, live_lane_agent_count) =
+            self.prepare_lane_buckets_for_tick(transit_network, n);
+        self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         self.dispatch_movement_pass(
             allocator,

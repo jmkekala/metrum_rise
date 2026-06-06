@@ -17,7 +17,7 @@ impl AgentSystem {
         &mut self,
         transit_network: &TransitNetwork,
         n: usize,
-    ) -> usize {
+    ) -> (usize, usize) {
         let lane_count = transit_network.lane_system.lanes.len();
         if self.lane_buckets.len() < lane_count {
             self.lane_buckets.resize_with(lane_count, Vec::new);
@@ -25,8 +25,10 @@ impl AgentSystem {
         }
         self.clear_dirty_lane_buckets();
 
+        let mut live_lane_agent_count = 0;
         for i in 0..n {
             if live_lane_bucket_transit(self.agents.transit[i]) {
+                live_lane_agent_count += 1;
                 let lid = self.agents.current_lane_id[i];
                 if lid != usize::MAX && lid < lane_count {
                     self.push_dirty_lane_agent(lid, self.agents.lane_distance[i], i);
@@ -54,7 +56,7 @@ impl AgentSystem {
             claimed.store(false, Ordering::Relaxed);
         }
 
-        lane_count
+        (lane_count, live_lane_agent_count)
     }
 
     /// Rebuilds lane buckets after movement, fixes overlaps, then writes edge congestion.

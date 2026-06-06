@@ -1,7 +1,9 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
 use metrum_rise::assets::AssetManifest;
-use metrum_rise::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
+use metrum_rise::assets::asset::{
+    Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
+};
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
 use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::economy::agents::data::Agent;
@@ -11,13 +13,13 @@ use metrum_rise::simulation::economy::agents::{
 };
 use metrum_rise::simulation::economy::households::HouseholdSystem;
 use metrum_rise::simulation::economy::logistics::ShipmentSystem;
-use metrum_rise::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use metrum_rise::simulation::network::TransitNetwork;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
 use metrum_rise::simulation::network::lanes::{Lane, LaneType};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
+use metrum_rise::simulation::zoning::{ZoneType, ZoningSystem};
 use std::time::Duration;
 
 struct SharedSetup {
@@ -123,13 +125,28 @@ fn register_test_asset(
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            zone_type: zone,
-            density: "low".to_owned(),
+            flat_size_m2: None,
+            placement_mode: PlacementMode::Explicit,
+            zone_type: Some(zone),
+            density: Some("low".to_owned()),
             lot_width_cells: 1,
             lot_depth_cells: 1,
+            min_zone_width_cells: None,
+            min_zone_depth_cells: None,
             level: 1,
-            residents_capacity: Some(6),
-            worker_capacity: None,
+            household_capacity: if zone == ZoneClass::Residential {
+                Some(6)
+            } else {
+                None
+            },
+            worker_capacity: if matches!(
+                zone,
+                ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office
+            ) {
+                Some(4)
+            } else {
+                None
+            },
             service_class: None,
             economy_profile: None,
             preview_scale: Some(1.0),
@@ -282,9 +299,7 @@ fn build_access_shared() -> AccessSharedSetup {
     graph.rebuild_adjacency_list();
 
     let map_cfg = WorldConfig::default();
-    let mut zoning = ZoningSystem::new(&map_cfg);
-    zoning.set_zone_rect(-50.0, -50.0, 550.0, 50.0, ZoneType::Commercial);
-    zoning.update_distance_to_road(&graph);
+    let zoning = ZoningSystem::new(&map_cfg);
 
     let mut allocator = BuildingAllocator::new();
     let asset_id = register_test_asset(
@@ -300,11 +315,14 @@ fn build_access_shared() -> AccessSharedSetup {
             center_y: -10.0,
             width_cells: 1,
             depth_cells: 1,
+            zone_profile_runtime_id: 0,
+            parcel_id: 0,
             zone_type: ZoneType::Commercial,
             facing_dir: Vector2::new(0.0, -1.0),
             frontage_t: 0.5,
             side_offset: 5.0,
-            abandoned_timer: 0,
+            is_deserted: false,
+            budget_distress: false,
             edge_idx,
             side: 1,
             cell_x: 0,
@@ -314,11 +332,16 @@ fn build_access_shared() -> AccessSharedSetup {
             asset_id,
             level: 1,
             broken: false,
-            stock: 0.0,
+            economy_profile_runtime_id: 0,
+            economy_broken: false,
+            resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: false,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
         });
 
     let building = &allocator.buildings[0];
@@ -367,14 +390,19 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
     Agent {
         home_building: 0,
         household_id: usize::MAX,
+        pending_household_size: 0,
         work_building: usize::MAX,
         pos_x: shared.door_pos.x,
         pos_y: shared.door_pos.y,
+        render_id: 0,
         activity: 0,
         transit: TRANSIT_ACCESS_EGRESS,
         happiness: 50.0,
         money: 100.0,
         journey_start_time: 0.0,
+        schedule_seed: 0,
+        cached_commute_minutes: 0,
+        next_commute_refresh_time: 0.0,
         current_building: 0,
         target_building: usize::MAX,
         planned_target_building: usize::MAX,
@@ -390,12 +418,19 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
         lane_distance: 0.0,
+        lane_change_from_lane_id: u32::MAX,
+        lane_change_start_d: 0.0,
+        lane_change_length_m: 0.0,
+        overtake_blocked_time_s: 0.0,
+        overtake_cooldown_s: 0.0,
         speed: 0.0,
         transit_mode: MODE_CAR,
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
         has_car: true,
+        job_lock_days: 0,
+        consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
         pedestrian_type: 0,
         walk_phase: 0.0,
@@ -406,14 +441,19 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
     Agent {
         home_building: 0,
         household_id: usize::MAX,
+        pending_household_size: 0,
         work_building: usize::MAX,
         pos_x: shared.lane_point.x,
         pos_y: shared.lane_point.y,
+        render_id: 0,
         activity: 1,
         transit: TRANSIT_ACCESS_INGRESS,
         happiness: 50.0,
         money: 100.0,
         journey_start_time: 0.0,
+        schedule_seed: 0,
+        cached_commute_minutes: 0,
+        next_commute_refresh_time: 0.0,
         current_building: usize::MAX,
         target_building: 0,
         planned_target_building: usize::MAX,
@@ -429,12 +469,19 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
         lane_distance: 0.0,
+        lane_change_from_lane_id: u32::MAX,
+        lane_change_start_d: 0.0,
+        lane_change_length_m: 0.0,
+        overtake_blocked_time_s: 0.0,
+        overtake_cooldown_s: 0.0,
         speed: 0.0,
         transit_mode: MODE_CAR,
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
         has_car: true,
+        job_lock_days: 0,
+        consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
         pedestrian_type: 0,
         walk_phase: 0.0,
@@ -482,14 +529,19 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
     Agent {
         home_building: usize::MAX,
         household_id: usize::MAX,
+        pending_household_size: 0,
         work_building: usize::MAX,
         pos_x: 0.0,
         pos_y: 0.0,
+        render_id: 0,
         activity: 0,
         transit: TRANSIT_IN_BUILDING,
         happiness: 50.0,
         money: 100.0,
         journey_start_time: 0.0,
+        schedule_seed: 0,
+        cached_commute_minutes: 0,
+        next_commute_refresh_time: 0.0,
         current_building: usize::MAX,
         target_building: usize::MAX,
         planned_target_building: usize::MAX,
@@ -505,12 +557,19 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         current_edge: usize::MAX,
         current_lane_id: usize::MAX,
         lane_distance: 0.0,
+        lane_change_from_lane_id: u32::MAX,
+        lane_change_start_d: 0.0,
+        lane_change_length_m: 0.0,
+        overtake_blocked_time_s: 0.0,
+        overtake_cooldown_s: 0.0,
         speed: 0.0,
         transit_mode: MODE_CAR,
         planned_activity: 0,
         current_path: Vec::new(),
         current_path_index: 0,
         has_car: true,
+        job_lock_days: 0,
+        consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
         pedestrian_type: 0,
         walk_phase: 0.0,
@@ -525,14 +584,19 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
     Agent {
         home_building: usize::MAX,
         household_id: usize::MAX,
+        pending_household_size: 0,
         work_building: usize::MAX,
         pos_x: 0.0,
         pos_y: 0.0,
+        render_id: 0,
         activity: 0,
         transit: TRANSIT_NETWORK,
         happiness: 50.0,
         money: 100.0,
         journey_start_time: 0.0,
+        schedule_seed: 0,
+        cached_commute_minutes: 0,
+        next_commute_refresh_time: 0.0,
         current_building: usize::MAX,
         target_building: usize::MAX, // no arrival check → no CCH calls
         planned_target_building: usize::MAX,
@@ -548,12 +612,19 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         current_edge: shared.edge_ab,
         current_lane_id: usize::MAX,
         lane_distance: progression,
+        lane_change_from_lane_id: u32::MAX,
+        lane_change_start_d: 0.0,
+        lane_change_length_m: 0.0,
+        overtake_blocked_time_s: 0.0,
+        overtake_cooldown_s: 0.0,
         speed: 20.0,
         transit_mode: MODE_CAR,
         planned_activity: 0,
         current_path: route,
         current_path_index: 1, // [0] = origin node, [1] = live target
         has_car: true,
+        job_lock_days: 0,
+        consecutive_unpaid_days: 0,
         vehicle_type: VEHICLE_SEDAN,
         pedestrian_type: 0,
         walk_phase: 0.0,
@@ -600,6 +671,8 @@ fn bench_agent_tick(c: &mut Criterion) {
                         black_box(&mut transit),
                         black_box(&mut graph),
                         black_box(0.016),
+                        black_box(0_u32),
+                        black_box(0_u16),
                     );
                 });
             },
@@ -631,6 +704,8 @@ fn bench_agent_tick(c: &mut Criterion) {
                         black_box(&mut transit),
                         black_box(&mut graph),
                         black_box(0.016),
+                        black_box(0_u32),
+                        black_box(0_u16),
                     );
                 });
             },
@@ -660,6 +735,8 @@ fn bench_agent_tick(c: &mut Criterion) {
                             black_box(&mut state.transit),
                             black_box(&mut state.graph),
                             black_box(0.016),
+                            black_box(0_u32),
+                            black_box(0_u16),
                         );
                     },
                     BatchSize::LargeInput,
@@ -681,6 +758,8 @@ fn bench_agent_tick(c: &mut Criterion) {
                             black_box(&mut state.transit),
                             black_box(&mut state.graph),
                             black_box(0.016),
+                            black_box(0_u32),
+                            black_box(0_u16),
                         );
                     },
                     BatchSize::LargeInput,

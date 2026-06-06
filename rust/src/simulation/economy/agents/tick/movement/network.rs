@@ -38,7 +38,7 @@ pub(super) unsafe fn handle_network_movement(
     lane_attach_claimed: &Vec<AtomicBool>,
     slices: &MovementSlices,
 ) {
-    let mut rng = rand::thread_rng();
+    let mut rng: Option<rand::rngs::ThreadRng> = None;
 
     unsafe {
         let s_lane_id = &slices.lane_id;
@@ -63,19 +63,22 @@ pub(super) unsafe fn handle_network_movement(
 
         while remaining_dist > 0.0 || allow_zero_speed_network_bootstrap {
             allow_zero_speed_network_bootstrap = false;
-            match prepare_lane_entry(
-                i,
-                sim_time,
-                allocator,
-                transit_network,
-                graph,
-                pathfind_count,
-                &mut rng,
-                slices,
-            ) {
-                LaneEntryAction::Ready => {}
-                LaneEntryAction::Continue => continue,
-                LaneEntryAction::Break => break,
+            if *s_lane_id.get(i) == usize::MAX {
+                let rng = rng.get_or_insert_with(rand::thread_rng);
+                match prepare_lane_entry(
+                    i,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    rng,
+                    slices,
+                ) {
+                    LaneEntryAction::Ready => {}
+                    LaneEntryAction::Continue => continue,
+                    LaneEntryAction::Break => break,
+                }
             }
 
             let mut lane_id = *s_lane_id.get(i);
@@ -105,6 +108,7 @@ pub(super) unsafe fn handle_network_movement(
                 }
             } else {
                 remaining_dist -= dist_to_end;
+                let rng = rng.get_or_insert_with(rand::thread_rng);
                 match handle_lane_end(
                     i,
                     lane_id,
@@ -117,7 +121,7 @@ pub(super) unsafe fn handle_network_movement(
                     pathfind_count,
                     lane_buckets,
                     lane_attach_claimed,
-                    &mut rng,
+                    rng,
                     slices,
                 ) {
                     LaneEndAction::KeepMoving => {}

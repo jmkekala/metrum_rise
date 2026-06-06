@@ -780,13 +780,17 @@ fn load_project(dir_path: &Path) -> Result<EconomyProject, String> {
     })
 }
 
-static BUILTIN_RUNTIME_TUNING: OnceLock<Result<RuntimeEconomyTuning, String>> = OnceLock::new();
-static BUILTIN_RUNTIME_CATALOG: OnceLock<Result<RuntimeEconomyCatalog, String>> = OnceLock::new();
+static BUILTIN_RUNTIME_TUNING: OnceLock<Result<Arc<RuntimeEconomyTuning>, String>> =
+    OnceLock::new();
+static BUILTIN_RUNTIME_CATALOG: OnceLock<Result<Arc<RuntimeEconomyCatalog>, String>> =
+    OnceLock::new();
 
 /// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_tuning() -> Result<Arc<RuntimeEconomyTuning>, String> {
-    match BUILTIN_RUNTIME_TUNING.get_or_init(load_runtime_economy_tuning_from_disk) {
-        Ok(config) => Ok(Arc::new(config.clone())),
+    match BUILTIN_RUNTIME_TUNING
+        .get_or_init(|| load_runtime_economy_tuning_from_disk().map(Arc::new))
+    {
+        Ok(config) => Ok(Arc::clone(config)),
         Err(err) => Err(err.clone()),
     }
 }
@@ -803,8 +807,10 @@ fn load_runtime_economy_tuning_from_disk() -> Result<RuntimeEconomyTuning, Strin
 
 /// Loads the shipped compiled runtime economy catalog from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_catalog() -> Result<Arc<RuntimeEconomyCatalog>, String> {
-    match BUILTIN_RUNTIME_CATALOG.get_or_init(load_runtime_economy_catalog_from_disk) {
-        Ok(catalog) => Ok(Arc::new(catalog.clone())),
+    match BUILTIN_RUNTIME_CATALOG
+        .get_or_init(|| load_runtime_economy_catalog_from_disk().map(Arc::new))
+    {
+        Ok(catalog) => Ok(Arc::clone(catalog)),
         Err(err) => Err(err.clone()),
     }
 }
