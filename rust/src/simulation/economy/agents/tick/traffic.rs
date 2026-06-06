@@ -8,6 +8,7 @@ use crate::config::{
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::lanes::{Lane, LaneType};
 use godot::prelude::Vector3;
+use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const LANE_CHANGE_DURATION_S: f32 = 3.5;
@@ -32,6 +33,19 @@ pub(super) const OVERTAKE_RETURN_TARGET_GAP_M: f32 = 20.0;
 pub(super) const OVERTAKE_EDGE_BUFFER_M: f32 = 12.0;
 /// Minimum distance from a planned detach point before starting an overtake.
 pub(super) const OVERTAKE_DETACH_BUFFER_M: f32 = 25.0;
+
+/// Outcome of trying to reserve a connector lane entry for this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConnectorEntry {
+    /// A connector lane was clear and successfully claimed.
+    Enter(usize),
+    /// At least one connector exists, but every entry slot is occupied.
+    Occupied,
+    /// A connector was clear, but another agent claimed every clear candidate first.
+    ClaimedThisTick,
+    /// No connector lane exists for the requested topology.
+    MissingConnection,
+}
 
 /// Returns the bumper-to-bumper gap to the nearest vehicle ahead in a sorted lane bucket.
 pub(super) fn idm_gap_bucket(bucket: &[(f32, usize)], my_dist: f32) -> f32 {
@@ -91,6 +105,38 @@ pub(super) fn claim_lane_entry(lane_id: usize, lane_attach_claimed: &[AtomicBool
         .get(lane_id)
         .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
         .unwrap_or(false)
+}
+
+/// Filters connector candidates to clear entries and claims one without allocating.
+pub(super) fn claim_connector_entry<R: Rng + ?Sized>(
+    candidate_connectors: &mut Vec<usize>,
+    any_routing_valid: bool,
+    rng: &mut R,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_attach_claimed: &[AtomicBool],
+) -> ConnectorEntry {
+    if candidate_connectors.is_empty() {
+        return if any_routing_valid {
+            ConnectorEntry::Occupied
+        } else {
+            ConnectorEntry::MissingConnection
+        };
+    }
+
+    candidate_connectors.retain(|&lane_id| lane_entry_slot_clear(lane_id, lane_buckets));
+    if candidate_connectors.is_empty() {
+        return ConnectorEntry::Occupied;
+    }
+
+    let start = rng.gen_range(0..candidate_connectors.len());
+    for offset in 0..candidate_connectors.len() {
+        let candidate = candidate_connectors[(start + offset) % candidate_connectors.len()];
+        if claim_lane_entry(candidate, lane_attach_claimed) {
+            return ConnectorEntry::Enter(candidate);
+        }
+    }
+
+    ConnectorEntry::ClaimedThisTick
 }
 
 /// Returns the speed-scaled longitudinal lane-change length.
@@ -347,14 +393,16 @@ pub(super) fn planned_lane_change_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        connector_turn_speed, cruise_lane_return_target, junction_car_speed, junction_entry_speed,
-        lane_change_gap_clear, lane_change_length_for_speed, lane_change_target_toward,
-        limit_speed_change, overtaking_lane_target,
+        ConnectorEntry, claim_connector_entry, connector_turn_speed, cruise_lane_return_target,
+        junction_car_speed, junction_entry_speed, lane_change_gap_clear,
+        lane_change_length_for_speed, lane_change_target_toward, limit_speed_change,
+        overtaking_lane_target,
     };
     use crate::config::{CAR_JUNCTION_SPEED_MS, IDM_B};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::lanes::{Lane, LaneType};
     use godot::prelude::Vector3;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn test_junction_car_speed_caps_fast_turns() {
@@ -391,6 +439,52 @@ mod tests {
     fn test_limit_speed_change_uses_comfortable_braking() {
         let next = limit_speed_change(14.0, 0.0, 0.1);
         assert!((next - (14.0 - IDM_B * 0.1)).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn test_claim_connector_entry_reports_entry_blockers() {
+        let mut rng = rand::thread_rng();
+
+        let lane_buckets = vec![Vec::new()];
+        let lane_claims = [AtomicBool::new(false)];
+        let mut candidates = vec![0];
+        assert_eq!(
+            claim_connector_entry(&mut candidates, true, &mut rng, &lane_buckets, &lane_claims),
+            ConnectorEntry::Enter(0)
+        );
+        assert!(lane_claims[0].load(Ordering::Acquire));
+
+        let mut candidates = vec![0];
+        assert_eq!(
+            claim_connector_entry(&mut candidates, true, &mut rng, &lane_buckets, &lane_claims),
+            ConnectorEntry::ClaimedThisTick
+        );
+
+        let occupied_buckets = vec![vec![(0.0, 1)]];
+        let lane_claims = [AtomicBool::new(false)];
+        let mut candidates = vec![0];
+        assert_eq!(
+            claim_connector_entry(
+                &mut candidates,
+                true,
+                &mut rng,
+                &occupied_buckets,
+                &lane_claims,
+            ),
+            ConnectorEntry::Occupied
+        );
+
+        let mut candidates = Vec::new();
+        assert_eq!(
+            claim_connector_entry(
+                &mut candidates,
+                false,
+                &mut rng,
+                &lane_buckets,
+                &lane_claims,
+            ),
+            ConnectorEntry::MissingConnection
+        );
     }
 
     #[test]
