@@ -1,6 +1,7 @@
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -149,7 +150,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         width: 7.0,
         fwd_lanes: 1,
         bkw_lanes: 1,
-        speed_limit: 50.0,
+        speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 40.0,
         physical_length: 40.0,
         current_congestion: 0.1,
