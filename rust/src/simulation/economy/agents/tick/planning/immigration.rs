@@ -82,20 +82,20 @@ pub(in crate::simulation::economy::agents::tick) fn plan_immigration_trip(
             transit_network,
             graph,
         )?;
+        let mut network_path = None;
         let network_path_time_s = if border_node == planned_detach_node {
             0.0
         } else {
             pathfind_count.fetch_add(1, Ordering::Relaxed);
-            transit_network
-                .cch_graph
-                .find_path(
-                    border_node,
-                    planned_detach_node,
-                    usize::MAX,
-                    graph,
-                    TransitFlags::CAR,
-                )
-                .map(|(travel_seconds, _, _)| travel_seconds)?
+            let (travel_seconds, _, path) = transit_network.cch_graph.find_path(
+                border_node,
+                planned_detach_node,
+                usize::MAX,
+                graph,
+                TransitFlags::CAR,
+            )?;
+            network_path = Some(path);
+            travel_seconds
         };
         let candidate = PlannedTripCandidate {
             total_cost_s: network_path_time_s + destination_frontage_time_s + ingress_local_time_s,
@@ -108,6 +108,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_immigration_trip(
             planned_detach_lane_id,
             planned_attach_lane_d: 0.0,
             planned_detach_lane_d,
+            network_path,
         };
         if best_candidate
             .as_ref()
@@ -116,10 +117,15 @@ pub(in crate::simulation::economy::agents::tick) fn plan_immigration_trip(
             best_candidate = Some(candidate);
         }
     }
-    let chosen = best_candidate?;
+    let mut chosen = best_candidate?;
     let (current_path, mut access_flags) =
         if chosen.planned_attach_node == chosen.planned_detach_node {
             (Vec::new(), ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH)
+        } else if let Some(path) = chosen.network_path.take() {
+            if path.len() < 2 {
+                return None;
+            }
+            (path, ACCESS_PLAN_VALID)
         } else {
             pathfind_count.fetch_add(1, Ordering::Relaxed);
             let path = transit_network

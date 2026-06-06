@@ -78,6 +78,13 @@ pub(super) unsafe fn handle_in_building(
                 *s_schedule_seed.get(i),
                 s_cached_commute_minutes.get_mut(i),
                 s_next_commute_refresh_time.get_mut(i),
+                slices.next_departure_day.get_mut(i),
+                slices.next_departure_minute.get_mut(i),
+                slices.next_departure_origin.get_mut(i),
+                slices.next_departure_target.get_mut(i),
+                slices.next_departure_activity.get_mut(i),
+                slices.cached_schedule_work_building.get_mut(i),
+                slices.cached_work_profile_index.get_mut(i),
                 sim_time,
                 day_index,
                 minute_of_day,
@@ -138,6 +145,11 @@ pub(super) unsafe fn handle_in_building(
             *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
             *s_plan_b.get_mut(i) = usize::MAX;
             *s_plan_act.get_mut(i) = 0;
+            *slices.next_departure_day.get_mut(i) = u32::MAX;
+            *slices.next_departure_minute.get_mut(i) = 0;
+            *slices.next_departure_origin.get_mut(i) = usize::MAX;
+            *slices.next_departure_target.get_mut(i) = usize::MAX;
+            *slices.next_departure_activity.get_mut(i) = 0;
             if crate::debug::is_traffic_enabled() {
                 let target_entrance = allocator.entrances.get(plan.target_building);
                 let attach_side = local_access_side_label(

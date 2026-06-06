@@ -203,6 +203,13 @@ impl SimCore {
                 schedule_seed: i as u32,
                 cached_commute_minutes: 0,
                 next_commute_refresh_time: 0.0,
+                next_departure_day: u32::MAX,
+                next_departure_minute: 0,
+                next_departure_origin_building: usize::MAX,
+                next_departure_target_building: usize::MAX,
+                next_departure_activity: 0,
+                cached_schedule_work_building: usize::MAX,
+                cached_work_profile_index: u16::MAX,
                 job_lock_days: 0,
                 consecutive_unpaid_days: 0,
             });

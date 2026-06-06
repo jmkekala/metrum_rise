@@ -58,7 +58,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_building_origin_trip(
             None
         };
 
-    let chosen = match (best_walk, best_car) {
+    let mut chosen = match (best_walk, best_car) {
         (None, None) => return None,
         (Some(walk), None) => walk,
         (None, Some(car)) => car,
@@ -73,7 +73,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_building_origin_trip(
 
     let target_zone = allocator.buildings[target_building].zone_type;
     let (current_path, access_flags) = build_exact_path_for_candidate(
-        &chosen,
+        &mut chosen,
         target_building,
         target_zone,
         transit_network,

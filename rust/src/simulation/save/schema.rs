@@ -235,6 +235,13 @@ CREATE TABLE agents(
     schedule_seed INTEGER NOT NULL,
     cached_commute_minutes INTEGER NOT NULL,
     next_commute_refresh_time REAL NOT NULL,
+    next_departure_day INTEGER NOT NULL,
+    next_departure_minute INTEGER NOT NULL,
+    next_departure_origin_building INTEGER NOT NULL,
+    next_departure_target_building INTEGER NOT NULL,
+    next_departure_activity INTEGER NOT NULL,
+    cached_schedule_work_building INTEGER NOT NULL,
+    cached_work_profile_index INTEGER NOT NULL,
     has_car INTEGER NOT NULL,
     vehicle_type INTEGER NOT NULL,
     current_path_index INTEGER NOT NULL

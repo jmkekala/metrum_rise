@@ -30,6 +30,7 @@ pub(super) struct PlannedTripCandidate {
     pub(super) planned_detach_lane_id: usize,
     pub(super) planned_attach_lane_d: f32,
     pub(super) planned_detach_lane_d: f32,
+    pub(super) network_path: Option<Vec<u32>>,
 }
 
 pub(super) fn transit_flags_for_mode(mode: u8) -> u8 {
@@ -166,6 +167,7 @@ fn evaluate_planned_trip_candidate(
         && planned_attach_lane_id == planned_detach_lane_id
         && planned_attach_lane_d <= planned_detach_lane_d + 1e-6;
 
+    let mut network_path = None;
     let total_cost_s = if same_lane_direct_frontage {
         let direct_frontage_time_s = direct_frontage_segment_time_s(
             mode,
@@ -198,16 +200,15 @@ fn evaluate_planned_trip_candidate(
             0.0
         } else {
             pathfind_count.fetch_add(1, Ordering::Relaxed);
-            transit_network
-                .cch_graph
-                .find_path(
-                    planned_attach_node,
-                    planned_detach_node,
-                    usize::MAX,
-                    graph,
-                    transit_flags_for_mode(mode),
-                )
-                .map(|(travel_seconds, _, _)| travel_seconds)?
+            let (travel_seconds, _, path) = transit_network.cch_graph.find_path(
+                planned_attach_node,
+                planned_detach_node,
+                usize::MAX,
+                graph,
+                transit_flags_for_mode(mode),
+            )?;
+            network_path = Some(path);
+            travel_seconds
         };
 
         egress_local_time_s
@@ -231,11 +232,12 @@ fn evaluate_planned_trip_candidate(
         planned_detach_lane_id,
         planned_attach_lane_d,
         planned_detach_lane_d,
+        network_path,
     })
 }
 
 pub(super) fn build_exact_path_for_candidate(
-    candidate: &PlannedTripCandidate,
+    candidate: &mut PlannedTripCandidate,
     target_building: usize,
     target_zone: ZoneType,
     transit_network: &TransitNetwork,
@@ -275,6 +277,13 @@ pub(super) fn build_exact_path_for_candidate(
                 }
             }
         }
+    }
+
+    if let Some(path) = candidate.network_path.take() {
+        if path.len() < 2 {
+            return None;
+        }
+        return Some((path, access_flags));
     }
 
     pathfind_count.fetch_add(1, Ordering::Relaxed);
