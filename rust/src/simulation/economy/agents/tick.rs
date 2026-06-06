@@ -41,6 +41,7 @@ impl AgentSystem {
         if self.last_building_ref_scrub_revision != building_ref_revision {
             self.scrub_invalid_building_refs(allocator.buildings.len(), n);
             self.last_building_ref_scrub_revision = building_ref_revision;
+            self.invalidate_lane_bucket_snapshot();
         }
 
         let (lane_count, live_lane_agent_count) =

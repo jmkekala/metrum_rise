@@ -1141,6 +1141,26 @@ fn test_edge_congestion_written_after_tick() {
     );
 }
 
+#[test]
+fn test_edge_congestion_clears_when_traffic_leaves_edge() {
+    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let speed_limit = graph.edge(edge_idx).speed_limit;
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    let agent_idx = place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
+
+    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    assert!(graph.edge(edge_idx).current_congestion > 0.0);
+
+    agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+    agents.current_lane_id[agent_idx] = usize::MAX;
+    agents.current_edge[agent_idx] = usize::MAX;
+    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+
+    assert_eq!(graph.edge(edge_idx).current_congestion, 0.0);
+}
+
 use crate::simulation::LANE_CONFIGS;
 
 // ── Shared network builders ───────────────────────────────────────────────────

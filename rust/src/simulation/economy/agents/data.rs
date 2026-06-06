@@ -140,9 +140,11 @@ pub struct AgentSystem {
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: AtomicU32,
-    /// Scratch buffer: per-lane agent lists for IDM gap lookup and overlap correction.
+    /// Retained per-lane traffic occupancy snapshot for IDM gap lookup and lane entry checks.
     /// Indexed by lane ID; each entry is `(lane_distance, agent_idx)` sorted ascending by dist.
-    /// Sized to `LaneSystem::lanes.len()`; grows but never shrinks.
+    ///
+    /// Contains physical current-lane occupancy plus source-lane ghost occupancy for active
+    /// lane changes. Overlap correction is run before source-lane ghosts are inserted.
     pub lane_buckets: Vec<Vec<(f32, usize)>>,
     /// Dedup flag array — `lane_is_dirty[lid] == true` if lane `lid` has been pushed to this
     /// tick. Sized alongside `lane_buckets`. Cleared via `dirty_lanes` rather than a full scan.
@@ -150,6 +152,16 @@ pub struct AgentSystem {
     /// Compact list of lane IDs that were touched this tick (no duplicates).
     /// Used to clear only the dirty buckets at the start of the next tick.
     pub dirty_lanes: Vec<usize>,
+    /// Live lane-agent count represented by the retained occupancy snapshot.
+    pub lane_bucket_live_agent_count: usize,
+    /// Lane count represented by the retained occupancy snapshot.
+    pub lane_bucket_snapshot_lane_count: usize,
+    /// Agent count represented by the retained occupancy snapshot.
+    pub lane_bucket_snapshot_agent_count: usize,
+    /// True once `lane_buckets` matches the current authoritative lane state.
+    pub lane_bucket_snapshot_valid: bool,
+    /// Scratch list of agents whose active lane change also occupies their source lane.
+    pub lane_change_ghost_agents: Vec<usize>,
     /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
     /// the parallel IDM pass.
     pub new_speed: Vec<f32>,
@@ -165,6 +177,8 @@ pub struct AgentSystem {
     pub edge_is_dirty: Vec<bool>,
     /// Compact list of edge IDs touched by live traffic in the latest congestion pass.
     pub dirty_edges: Vec<usize>,
+    /// Scratch list of previously dirty edges used to reset congestion when traffic leaves.
+    pub stale_dirty_edges: Vec<usize>,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
@@ -198,12 +212,18 @@ impl AgentSystem {
             lane_buckets: Vec::new(),
             lane_is_dirty: Vec::new(),
             dirty_lanes: Vec::new(),
+            lane_bucket_live_agent_count: 0,
+            lane_bucket_snapshot_lane_count: 0,
+            lane_bucket_snapshot_agent_count: 0,
+            lane_bucket_snapshot_valid: false,
+            lane_change_ghost_agents: Vec::new(),
             new_speed: Vec::new(),
             lane_attach_claimed: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             edge_is_dirty: Vec::new(),
             dirty_edges: Vec::new(),
+            stale_dirty_edges: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
             next_render_id: 0,
@@ -216,6 +236,11 @@ impl AgentSystem {
         let render_id = self.next_render_id;
         self.next_render_id = self.next_render_id.saturating_add(1);
         render_id
+    }
+
+    /// Invalidates the retained lane occupancy snapshot after external lane-state mutation.
+    pub(crate) fn invalidate_lane_bucket_snapshot(&mut self) {
+        self.lane_bucket_snapshot_valid = false;
     }
 
     /// Spawns one agent already housed inside a building.
@@ -273,6 +298,7 @@ impl AgentSystem {
         };
 
         self.agents.push(agent);
+        self.invalidate_lane_bucket_snapshot();
         self.agents.len() - 1
     }
 
@@ -340,6 +366,7 @@ impl AgentSystem {
         };
 
         self.agents.push(agent);
+        self.invalidate_lane_bucket_snapshot();
         self.agents.len() - 1
     }
 
@@ -394,6 +421,7 @@ impl AgentSystem {
         self.sim_time = 0.0;
         self.pathfind_count.store(0, Ordering::Relaxed);
         self.next_render_id = 0;
+        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
@@ -409,6 +437,7 @@ impl AgentSystem {
                 }
             }
         }
+        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Permanently removes an agent from the simulation using O(1) swap-remove.
@@ -427,6 +456,7 @@ impl AgentSystem {
         }
 
         self.agents.swap_remove(index);
+        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Remaps household indices after a `swap_remove` in `HouseholdSystem`. O(A).
@@ -495,6 +525,7 @@ impl AgentSystem {
                 }
             }
         }
+        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Finds a residential building with available vacancy.
@@ -614,6 +645,7 @@ impl AgentSystem {
                 // immediately when a nearby road was modified.
             }
         }
+        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Re-calculates building occupancy and vacancy index from scratch.
