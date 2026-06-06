@@ -1,9 +1,11 @@
 //! Main simulation loop for agents: transit state machine and movement.
 
 mod access;
+mod frontage;
 mod lane_nav;
 mod planning;
 mod runtime;
+mod schedule;
 mod slices;
 mod traffic;
 
@@ -15,8 +17,8 @@ use super::{
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
-    OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
+    OperationalClockRuntimeTuning, RuntimeEconomyCatalog, load_runtime_economy_catalog,
+    load_runtime_economy_tuning,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -36,11 +38,9 @@ use lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, lane_origin_node,
     lane_terminal_node, planned_next_connector,
 };
-use planning::{
-    estimate_building_origin_trip_minutes, plan_building_origin_trip, plan_immigration_trip,
-    plan_network_replan,
-};
+use planning::{plan_building_origin_trip, plan_immigration_trip, plan_network_replan};
 use runtime::{PAR_THRESHOLD, dispatch_agents};
+use schedule::maybe_schedule_work_trip;
 use slices::{MovementSlices, RawSlice};
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,6 @@ use crate::config::{
     AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_JUNCTION_SPEED_MS, CAR_LENGTH,
     DEFAULT_URBAN_ROAD_SPEED_MS, IDM_S_MIN,
 };
-use crate::simulation::network::lanes::LaneType;
 use traffic::{
     ConnectorEntry, LANE_CHANGE_FINISH_EPS_M, LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_COOLDOWN_S,
     OVERTAKE_DETACH_BUFFER_M, OVERTAKE_EDGE_BUFFER_M, OVERTAKE_MIN_GAP_GAIN_M,
@@ -64,7 +63,6 @@ use traffic::{
     planned_detach_distance_on_current_edge, planned_lane_change_target,
 };
 
-const FRONTAGE_DELAY_UPDATE_S: f32 = 1.0;
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
 
@@ -79,115 +77,6 @@ thread_local! {
 
 fn transit_mode_label(mode: u8) -> &'static str {
     if mode == MODE_CAR { "car" } else { "foot" }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn maybe_schedule_work_trip(
-    current_building: usize,
-    home_building: usize,
-    work_building: usize,
-    has_car: bool,
-    schedule_seed: u32,
-    cached_commute_minutes: &mut u16,
-    next_commute_refresh_time: &mut f32,
-    sim_time: f32,
-    day_index: u32,
-    minute_of_day: u16,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    pathfind_count: &AtomicU32,
-    operational_clock: &OperationalClockRuntimeTuning,
-    economy_catalog: &RuntimeEconomyCatalog,
-) -> Option<(usize, u8)> {
-    if home_building == usize::MAX || work_building == usize::MAX {
-        return None;
-    }
-    let work_building_ref = allocator.buildings.get(work_building)?;
-    let work_profile = economy_catalog
-        .profile_by_runtime_id(work_building_ref.economy_profile_runtime_id)
-        .and_then(|profile| profile.work_schedule_profile.as_deref())
-        .and_then(|profile_id| {
-            operational_clock
-                .work_profiles
-                .iter()
-                .find(|profile| profile.id == profile_id)
-        })
-        .or_else(|| {
-            let current_zone = work_building_ref.zone_type;
-            operational_clock.work_profile_for_zone_type(match current_zone {
-                crate::simulation::zoning::ZoneType::Commercial => "commercial",
-                crate::simulation::zoning::ZoneType::Industrial => "industrial",
-                crate::simulation::zoning::ZoneType::Residential
-                | crate::simulation::zoning::ZoneType::Office
-                | crate::simulation::zoning::ZoneType::Mixed
-                | crate::simulation::zoning::ZoneType::None => return None,
-            })
-        })?;
-
-    if (*cached_commute_minutes == 0 || sim_time >= *next_commute_refresh_time)
-        && let Some(estimate) = estimate_building_origin_trip_minutes(
-            home_building,
-            work_building,
-            has_car,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-        )
-    {
-        *cached_commute_minutes = estimate;
-        *next_commute_refresh_time =
-            sim_time + f32::from(operational_clock.travel_estimate_refresh_minutes);
-    }
-    let commute_minutes = (*cached_commute_minutes).max(1);
-    let shift_index = (schedule_seed % work_profile.arrival_windows.len() as u32) as usize;
-    let arrival_window = &work_profile.arrival_windows[shift_index];
-    let arrival_minute = stable_minute_in_window(work_profile, arrival_window, schedule_seed);
-    let arrival_departure_minute = arrival_minute
-        .saturating_sub(commute_minutes.saturating_add(work_profile.reliability_buffer_minutes));
-    let departure_window = &work_profile.departure_windows[shift_index];
-    let departure_minute = stable_minute_in_window(
-        work_profile,
-        departure_window,
-        schedule_seed.rotate_left(11),
-    );
-
-    if current_building == home_building
-        && minute_reached_schedule(
-            minute_of_day,
-            arrival_departure_minute,
-            arrival_window.end_minute,
-        )
-    {
-        return Some((work_building, 1));
-    }
-    if current_building == work_building
-        && minute_reached_schedule(minute_of_day, departure_minute, departure_window.end_minute)
-    {
-        return Some((home_building, 0));
-    }
-
-    let _ = day_index;
-    None
-}
-
-fn stable_minute_in_window(
-    profile: &WorkTimingProfile,
-    window: &crate::simulation::economy::definitions::MinuteWindow,
-    schedule_seed: u32,
-) -> u16 {
-    let span = window.end_minute.saturating_sub(window.start_minute).max(1);
-    let mixed_seed = schedule_seed ^ profile.id.len() as u32;
-    window.start_minute + (mixed_seed % u32::from(span)) as u16
-}
-
-fn minute_reached_schedule(
-    minute_of_day: u16,
-    scheduled_minute: u16,
-    window_end_minute: u16,
-) -> bool {
-    minute_of_day >= scheduled_minute && minute_of_day < window_end_minute
 }
 
 impl AgentSystem {
@@ -606,74 +495,6 @@ impl AgentSystem {
         }
 
         self.update_frontage_delay_cache(transit_network, graph, delta);
-    }
-
-    /// Updates the low-frequency per-lane frontage delay cache from aggregated live lane speeds.
-    ///
-    /// Runs at fixed cadence rather than every tick so planner-visible congestion stays stable
-    /// and cheap to maintain.
-    pub fn update_frontage_delay_cache(
-        &mut self,
-        transit_network: &mut TransitNetwork,
-        graph: &RegionGraph,
-        delta: f32,
-    ) {
-        transit_network.frontage_delay_elapsed_s += delta;
-        if transit_network.frontage_delay_elapsed_s < FRONTAGE_DELAY_UPDATE_S {
-            return;
-        }
-        let update_steps =
-            (transit_network.frontage_delay_elapsed_s / FRONTAGE_DELAY_UPDATE_S).floor() as i32;
-        transit_network.frontage_delay_elapsed_s -= update_steps as f32 * FRONTAGE_DELAY_UPDATE_S;
-
-        let lane_count = transit_network.lane_system.lanes.len();
-        self.lane_speed_sum.clear();
-        self.lane_speed_sum.resize(lane_count, 0.0);
-        self.lane_vehicle_cnt.clear();
-        self.lane_vehicle_cnt.resize(lane_count, 0);
-
-        for i in 0..self.agents.len() {
-            if self.agents.transit_mode[i] != MODE_CAR {
-                continue;
-            }
-            let lid = self.agents.current_lane_id[i];
-            if lid == usize::MAX || lid >= lane_count {
-                continue;
-            }
-            self.lane_speed_sum[lid] += self.agents.speed[i];
-            self.lane_vehicle_cnt[lid] += 1;
-        }
-
-        let smoothing_retain = 0.75_f32.powi(update_steps);
-        let smoothing_gain = 1.0 - smoothing_retain;
-        for (lane_id, lane) in transit_network.lane_system.lanes.iter_mut().enumerate() {
-            if lane.lane_type != LaneType::Vehicle {
-                lane.frontage_delay_penalty_s = 0.0;
-                continue;
-            }
-            if lane.edge_id == usize::MAX || lane.edge_id >= graph.edge_count() {
-                lane.frontage_delay_penalty_s = 0.0;
-                continue;
-            }
-
-            let edge = graph.edge(lane.edge_id);
-            if edge.speed_limit <= 1e-6 || lane.length <= 1e-6 {
-                lane.frontage_delay_penalty_s = 0.0;
-                continue;
-            }
-            let raw_lane_delay_penalty_s = if self.lane_vehicle_cnt[lane_id] == 0 {
-                0.0
-            } else {
-                let lane_mean_speed =
-                    self.lane_speed_sum[lane_id] / self.lane_vehicle_cnt[lane_id] as f32;
-                let observed_speed = lane_mean_speed.clamp(1.0, edge.speed_limit);
-                let free_flow_lane_time = lane.length / edge.speed_limit;
-                let observed_lane_time = lane.length / observed_speed;
-                (observed_lane_time - free_flow_lane_time).clamp(0.0, 30.0)
-            };
-            lane.frontage_delay_penalty_s = smoothing_retain * lane.frontage_delay_penalty_s
-                + smoothing_gain * raw_lane_delay_penalty_s;
-        }
     }
 
     /// Core agent movement logic (FSM and physics).
