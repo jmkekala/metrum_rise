@@ -46,6 +46,7 @@ impl BuildingAllocator {
                 .push(self.derive_building_entrance(building, graph, lanes));
         }
         self.entrances_dirty = false;
+        self.bump_entrance_ref_revision();
     }
 
     fn derive_building_entrance(

@@ -192,6 +192,8 @@ pub struct BuildingAllocator {
     pub(crate) entrances_dirty: bool,
     /// Revision bumped whenever building indices may have become stale for external systems.
     pub(crate) building_ref_revision: u64,
+    /// Revision bumped whenever derived building entrance/access data changes.
+    pub(crate) entrance_ref_revision: u64,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
     /// Derived building entrance/access cache keyed by building index.
@@ -377,6 +379,7 @@ impl BuildingAllocator {
             dirty_zones: [false; 3],
             entrances_dirty: false,
             building_ref_revision: 0,
+            entrance_ref_revision: 0,
             registry: AssetRegistry::new(),
             entrances: Vec::new(),
         }
@@ -448,6 +451,7 @@ impl BuildingAllocator {
         }
         self.entrances.clear();
         self.entrances_dirty = true;
+        self.bump_entrance_ref_revision();
         let mut new_occ = HashMap::new();
         for (old_idx, occ) in self.edge_occupancy.drain() {
             if let Some(&new_id) = mapping.get(&old_idx) {
@@ -460,6 +464,7 @@ impl BuildingAllocator {
     /// Removes all buildings and resets the dirty flag.
     pub fn clear(&mut self) {
         let had_buildings = !self.buildings.is_empty();
+        let had_entrances = !self.entrances.is_empty();
         self.buildings.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
@@ -477,6 +482,9 @@ impl BuildingAllocator {
         if had_buildings {
             self.bump_building_ref_revision();
         }
+        if had_entrances {
+            self.bump_entrance_ref_revision();
+        }
     }
 
     /// Returns the current building-reference revision observed by dependent systems.
@@ -484,8 +492,18 @@ impl BuildingAllocator {
         self.building_ref_revision
     }
 
+    /// Returns the current derived entrance-reference revision observed by dependent systems.
+    pub(crate) fn entrance_ref_revision(&self) -> u64 {
+        self.entrance_ref_revision
+    }
+
     fn bump_building_ref_revision(&mut self) {
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
+    }
+
+    /// Advances the derived entrance-reference revision.
+    pub(crate) fn bump_entrance_ref_revision(&mut self) {
+        self.entrance_ref_revision = self.entrance_ref_revision.wrapping_add(1);
     }
 
     /// Returns the occupant capacity for a building, from its registered manifest.

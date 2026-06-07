@@ -1,5 +1,6 @@
 //! Household record storage and building-reference maintenance.
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
 
 /// Explicit household runtime record anchored to a residential building.
@@ -52,6 +53,10 @@ pub struct HouseholdSystem {
     pub(super) household_member_next_scratch: Vec<usize>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
+    pub(super) workplace_route_cache: HashMap<(usize, usize, bool), Option<u16>>,
+    pub(super) workplace_route_cache_building_revision: u64,
+    pub(super) workplace_route_cache_entrance_revision: u64,
+    pub(super) workplace_route_cache_cch_generation: u32,
 }
 
 impl HouseholdSystem {
@@ -65,6 +70,10 @@ impl HouseholdSystem {
             household_member_next_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
+            workplace_route_cache: HashMap::new(),
+            workplace_route_cache_building_revision: u64::MAX,
+            workplace_route_cache_entrance_revision: u64::MAX,
+            workplace_route_cache_cch_generation: u32::MAX,
         }
     }
 
@@ -77,6 +86,10 @@ impl HouseholdSystem {
         self.household_member_next_scratch.clear();
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
+        self.workplace_route_cache.clear();
+        self.workplace_route_cache_building_revision = u64::MAX;
+        self.workplace_route_cache_entrance_revision = u64::MAX;
+        self.workplace_route_cache_cch_generation = u32::MAX;
     }
 
     /// Remaps building references after a building swap-remove.
@@ -131,6 +144,10 @@ impl Clone for HouseholdSystem {
             household_member_next_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
+            workplace_route_cache: HashMap::new(),
+            workplace_route_cache_building_revision: u64::MAX,
+            workplace_route_cache_entrance_revision: u64::MAX,
+            workplace_route_cache_cch_generation: u32::MAX,
         }
     }
 }

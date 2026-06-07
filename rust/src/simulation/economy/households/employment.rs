@@ -1,5 +1,6 @@
 //! Workplace assignment, worker counts, and daily wage payment.
 
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU32;
 #[cfg(test)]
@@ -37,11 +38,64 @@ const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
     building_idx: usize::MAX,
     score: 0.0,
 };
+const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
+    building_idx: usize::MAX,
+    commute_penalty: 1.0,
+    average_daily_wage: 0.0,
+    effective_capacity: 0,
+    open_slots: 0,
+};
+const EMPTY_WORKPLACE_ROUTE_ENTRY: WorkplaceRouteCacheEntry =
+    ((usize::MAX, usize::MAX, false), None);
+
+type WorkplaceRouteCacheKey = (usize, usize, bool);
+type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, Option<u16>);
 
 #[derive(Clone, Copy)]
 struct JobChoice {
     building_idx: usize,
     score: f32,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct HomeJobOptionsKey {
+    home_idx: usize,
+    has_car: bool,
+}
+
+#[derive(Clone, Copy)]
+struct HomeJobOption {
+    building_idx: usize,
+    commute_penalty: f32,
+    average_daily_wage: f32,
+    effective_capacity: u32,
+    open_slots: u32,
+}
+
+struct HomeJobOptions {
+    option_count: u8,
+    options: [HomeJobOption; JOB_SEARCH_CANDIDATES],
+}
+
+struct HomeJobOptionsBuild {
+    key: HomeJobOptionsKey,
+    options: HomeJobOptions,
+    route_entry_count: u8,
+    route_entries: [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+}
+
+struct JobSupplyEntry {
+    building_idx: usize,
+    open_slots: u32,
+    average_daily_wage: f32,
+    effective_capacity: u32,
+    center_x: f32,
+    center_y: f32,
+}
+
+struct JobSupplySnapshot {
+    entries: Vec<JobSupplyEntry>,
+    by_chunk: BTreeMap<(i32, i32), Vec<usize>>,
 }
 
 struct WagePaymentPlan {
@@ -108,34 +162,37 @@ impl HouseholdSystem {
             }
         }
 
-        let job_index = JobCandidateIndex::build(allocator, &catalog);
+        self.refresh_workplace_route_cache(allocator, transit_network);
+        let job_supply = JobSupplySnapshot::build(allocator, &catalog);
+        let home_option_keys =
+            collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
+        let (home_job_options, new_route_entries) = build_home_job_options(
+            &home_option_keys,
+            &job_supply,
+            allocator,
+            transit_network,
+            graph,
+            &self.workplace_route_cache,
+            &agents.pathfind_count,
+        );
+        for (key, result) in new_route_entries {
+            self.workplace_route_cache.insert(key, result);
+        }
+
         let mut plans: Vec<_> = (0..agents.len())
             .into_par_iter()
-            .map_init(
-                || {
-                    (
-                        Vec::with_capacity(JOB_SEARCH_CANDIDATES),
-                        WorkplaceReachabilityCache::new(allocator),
-                    )
-                },
-                |(candidates, reachability_cache), i| {
-                    plan_agent_workplace(
-                        i,
-                        agents,
-                        allocator,
-                        transit_network,
-                        graph,
-                        &catalog,
-                        &tuning,
-                        target_days,
-                        &self.households,
-                        &job_index,
-                        candidates,
-                        reachability_cache,
-                    )
-                },
-            )
-            .filter_map(|plan| plan)
+            .filter_map(|i| {
+                plan_agent_workplace(
+                    i,
+                    agents,
+                    allocator.buildings.len(),
+                    &catalog,
+                    &tuning,
+                    target_days,
+                    &self.households,
+                    &home_job_options,
+                )
+            })
             .collect();
         plans.sort_unstable_by_key(|plan| plan.agent_idx);
         for plan in plans {
@@ -201,6 +258,25 @@ impl HouseholdSystem {
         }
         self.sync_agent_money_from_households(agents);
     }
+
+    fn refresh_workplace_route_cache(
+        &mut self,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+    ) {
+        let building_revision = allocator.building_ref_revision();
+        let entrance_revision = allocator.entrance_ref_revision();
+        let cch_generation = transit_network.cch_graph.build_generation;
+        if self.workplace_route_cache_building_revision != building_revision
+            || self.workplace_route_cache_entrance_revision != entrance_revision
+            || self.workplace_route_cache_cch_generation != cch_generation
+        {
+            self.workplace_route_cache.clear();
+            self.workplace_route_cache_building_revision = building_revision;
+            self.workplace_route_cache_entrance_revision = entrance_revision;
+            self.workplace_route_cache_cch_generation = cch_generation;
+        }
+    }
 }
 
 struct JobAssignmentPlan {
@@ -215,23 +291,19 @@ struct JobAssignmentPlan {
 fn plan_agent_workplace(
     i: usize,
     agents: &AgentSystem,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
+    building_count: usize,
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
     target_days: f32,
     households: &[Household],
-    job_index: &JobCandidateIndex,
-    candidates: &mut Vec<usize>,
-    reachability_cache: &mut WorkplaceReachabilityCache,
+    home_job_options: &BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
 ) -> Option<JobAssignmentPlan> {
     if agents.transit[i] != TRANSIT_IN_BUILDING {
         return None;
     }
 
     let home_idx = agents.home_building[i];
-    if home_idx == usize::MAX || home_idx >= allocator.buildings.len() {
+    if home_idx == usize::MAX || home_idx >= building_count {
         return None;
     }
 
@@ -241,19 +313,19 @@ fn plan_agent_workplace(
     }
 
     let household = &households[hid];
-    let home = &allocator.buildings[home_idx];
-    job_index.fill_nearby_candidates(
-        home.center_x,
-        home.center_y,
-        JOB_SEARCH_MAX_RING,
-        JOB_SEARCH_CANDIDATES,
-        allocator,
-        candidates,
-    );
     let old_job = agents.work_building[i];
-    if old_job != usize::MAX && !candidates.contains(&old_job) {
-        candidates.push(old_job);
+    let can_switch = old_job == usize::MAX
+        || old_job >= building_count
+        || agents.job_lock_days[i] == 0
+        || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
+    if !can_switch {
+        return None;
     }
+
+    let options = home_job_options.get(&HomeJobOptionsKey {
+        home_idx,
+        has_car: agents.has_car[i],
+    })?;
 
     let income_pressure = household_income_pressure(catalog, tuning, household);
     let stock_pressure =
@@ -262,61 +334,15 @@ fn plan_agent_workplace(
     let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
     let mut choice_count = 0usize;
     let mut current_job_score = None;
-    for &candidate in candidates.iter() {
-        if candidate >= allocator.buildings.len() {
-            continue;
-        }
-        let building = &allocator.buildings[candidate];
-        if building.is_deserted || building.broken || building.economy_broken {
-            continue;
-        }
-        let Some(economy_profile) =
-            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-        else {
-            continue;
-        };
-        if !building_offers_work(building, economy_profile) {
-            continue;
-        }
-        let Some(commute_seconds) = reachability_cache.commute_seconds(
-            allocator,
-            home_idx,
-            candidate,
-            agents.has_car[i],
-            transit_network,
-            graph,
-            &agents.pathfind_count,
-        ) else {
-            continue;
-        };
-
-        let average_daily_wage = economy_profile.average_daily_wage();
-        let worker_capacity = allocator.worker_capacity(candidate);
-        let budget_capacity = if average_daily_wage > 0.1 {
-            (building.operating_budget / average_daily_wage).floor() as u32
-        } else {
-            worker_capacity
-        };
-        let effective_capacity = worker_capacity.min(budget_capacity);
-
-        if effective_capacity == 0 && old_job != candidate {
-            continue;
-        }
-
-        let already_assigned = old_job == candidate;
-        let reserved = building.worker_count;
-        let open_slots = if already_assigned {
-            worker_capacity.saturating_sub(reserved.saturating_sub(1))
-        } else {
-            effective_capacity.saturating_sub(reserved)
-        };
-        if open_slots == 0 {
-            continue;
-        }
-
-        let commute_penalty = normalized_commute_penalty_seconds(commute_seconds);
+    for option in options
+        .options
+        .iter()
+        .take(usize::from(options.option_count))
+        .copied()
+    {
+        let candidate = option.building_idx;
         let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
-            - W_COMMUTE * commute_penalty;
+            - W_COMMUTE * option.commute_penalty;
         if candidate == old_job {
             current_job_score = Some(score);
         } else if score >= GO_TO_WORK_THRESHOLD {
@@ -331,10 +357,7 @@ fn plan_agent_workplace(
         }
     }
 
-    let can_switch = old_job == usize::MAX
-        || agents.job_lock_days[i] == 0
-        || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
-    if choice_count == 0 || !can_switch {
+    if choice_count == 0 {
         return None;
     }
     if current_job_score.is_some_and(|score| score >= choices[0].score) {
@@ -391,6 +414,7 @@ fn apply_workplace_plan(
     }
 
     let can_switch = plan.old_job == usize::MAX
+        || plan.old_job >= allocator.buildings.len()
         || agents.job_lock_days[plan.agent_idx] == 0
         || agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS;
     if !can_switch {
@@ -421,7 +445,10 @@ fn apply_workplace_plan(
         }
 
         let average_daily_wage = economy_profile.average_daily_wage();
-        let worker_capacity = allocator.worker_capacity(job);
+        let worker_capacity = economy_profile.worker_capacity;
+        if worker_capacity == 0 {
+            continue;
+        }
         let budget_capacity = if average_daily_wage > 0.1 {
             (building.operating_budget / average_daily_wage).floor() as u32
         } else {
@@ -484,11 +511,7 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
     )
 }
 
-struct JobCandidateIndex {
-    by_chunk: BTreeMap<(i32, i32), Vec<usize>>,
-}
-
-impl JobCandidateIndex {
+impl JobSupplySnapshot {
     fn build(allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog) -> Self {
         let mut entries: Vec<_> = allocator
             .buildings
@@ -499,7 +522,6 @@ impl JobCandidateIndex {
                     || building.economy_broken
                     || building.is_deserted
                     || building.edge_idx == usize::MAX
-                    || allocator.worker_capacity(idx) == 0
                 {
                     return None;
                 }
@@ -507,21 +529,58 @@ impl JobCandidateIndex {
                 if !building_offers_work(building, profile) {
                     return None;
                 }
+                let average_daily_wage = profile.average_daily_wage();
+                let worker_capacity = profile.worker_capacity;
+                if worker_capacity == 0 {
+                    return None;
+                }
+                let budget_capacity = if average_daily_wage > 0.1 {
+                    (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
+                } else {
+                    worker_capacity
+                };
+                let effective_capacity = worker_capacity.min(budget_capacity);
+                let open_slots = effective_capacity.saturating_sub(building.worker_count);
+                if open_slots == 0 {
+                    return None;
+                }
                 let chunk = RegionGraph::get_chunk_coords(Vector3::new(
                     building.center_x,
                     0.0,
                     building.center_y,
                 ));
-                Some((chunk, idx))
+                Some((
+                    chunk,
+                    idx,
+                    JobSupplyEntry {
+                        building_idx: idx,
+                        open_slots,
+                        average_daily_wage,
+                        effective_capacity,
+                        center_x: building.center_x,
+                        center_y: building.center_y,
+                    },
+                ))
             })
             .collect();
-        entries.sort_unstable();
+        entries.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+        });
 
         let mut by_chunk = BTreeMap::new();
-        for (chunk, idx) in entries {
-            by_chunk.entry(chunk).or_insert_with(Vec::new).push(idx);
+        let mut supply_entries = Vec::with_capacity(entries.len());
+        for (chunk, _, entry) in entries {
+            let entry_idx = supply_entries.len();
+            supply_entries.push(entry);
+            by_chunk
+                .entry(chunk)
+                .or_insert_with(Vec::new)
+                .push(entry_idx);
         }
-        Self { by_chunk }
+        Self {
+            entries: supply_entries,
+            by_chunk,
+        }
     }
 
     fn fill_nearby_candidates(
@@ -530,7 +589,6 @@ impl JobCandidateIndex {
         origin_y: f32,
         max_chunk_radius: i32,
         candidate_limit: usize,
-        allocator: &BuildingAllocator,
         candidates: &mut Vec<usize>,
     ) {
         candidates.clear();
@@ -555,77 +613,272 @@ impl JobCandidateIndex {
         }
 
         candidates.sort_unstable_by(|&a, &b| {
-            let da = squared_building_distance(origin_x, origin_y, &allocator.buildings[a]);
-            let db = squared_building_distance(origin_x, origin_y, &allocator.buildings[b]);
-            da.total_cmp(&db).then_with(|| a.cmp(&b))
+            let left = &self.entries[a];
+            let right = &self.entries[b];
+            let da = squared_entry_distance(origin_x, origin_y, left);
+            let db = squared_entry_distance(origin_x, origin_y, right);
+            da.total_cmp(&db)
+                .then_with(|| right.average_daily_wage.total_cmp(&left.average_daily_wage))
+                .then_with(|| right.effective_capacity.cmp(&left.effective_capacity))
+                .then_with(|| right.open_slots.cmp(&left.open_slots))
+                .then_with(|| left.building_idx.cmp(&right.building_idx))
         });
         candidates.truncate(candidate_limit);
     }
 }
 
-fn squared_building_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
-    let dx = building.center_x - origin_x;
-    let dy = building.center_y - origin_y;
-    dx * dx + dy * dy
+fn collect_home_job_option_keys(
+    agents: &AgentSystem,
+    building_count: usize,
+    household_count: usize,
+) -> Vec<HomeJobOptionsKey> {
+    let mut keys: Vec<_> = (0..agents.len())
+        .into_par_iter()
+        .filter_map(|i| {
+            if agents.transit[i] != TRANSIT_IN_BUILDING {
+                return None;
+            }
+            let home_idx = agents.home_building[i];
+            if home_idx >= building_count || agents.household_id[i] >= household_count {
+                return None;
+            }
+            let old_job = agents.work_building[i];
+            let can_switch = old_job == usize::MAX
+                || old_job >= building_count
+                || agents.job_lock_days[i] == 0
+                || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
+            if !can_switch {
+                return None;
+            }
+            Some(HomeJobOptionsKey {
+                home_idx,
+                has_car: agents.has_car[i],
+            })
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct WorkplaceReachabilityKey {
+#[allow(clippy::too_many_arguments)]
+fn build_home_job_options(
+    keys: &[HomeJobOptionsKey],
+    job_supply: &JobSupplySnapshot,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
+) -> (
+    BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
+    Vec<WorkplaceRouteCacheEntry>,
+) {
+    let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
+    let mut builds: Vec<_> = keys
+        .par_iter()
+        .map_init(
+            || Vec::with_capacity(JOB_SEARCH_CANDIDATES),
+            |candidates, &key| {
+                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_SEARCH_CANDIDATES];
+                let mut route_entry_count = 0usize;
+                let options = build_home_job_options_for_key(
+                    key,
+                    job_supply,
+                    allocator,
+                    transit_network,
+                    graph,
+                    route_cache,
+                    pathfind_count,
+                    exact_entrance_cache_available,
+                    candidates,
+                    &mut route_entries,
+                    &mut route_entry_count,
+                );
+                HomeJobOptionsBuild {
+                    key,
+                    options,
+                    route_entry_count: route_entry_count as u8,
+                    route_entries,
+                }
+            },
+        )
+        .collect();
+    builds.sort_unstable_by_key(|build| build.key);
+
+    let mut home_options = BTreeMap::new();
+    let mut route_entries = Vec::new();
+    for build in builds {
+        if build.options.option_count > 0 {
+            home_options.insert(build.key, build.options);
+        }
+        route_entries.extend(
+            build
+                .route_entries
+                .iter()
+                .take(usize::from(build.route_entry_count))
+                .copied(),
+        );
+    }
+    (home_options, route_entries)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_home_job_options_for_key(
+    key: HomeJobOptionsKey,
+    job_supply: &JobSupplySnapshot,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
+    exact_entrance_cache_available: bool,
+    candidates: &mut Vec<usize>,
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entry_count: &mut usize,
+) -> HomeJobOptions {
+    let Some(home) = allocator.buildings.get(key.home_idx) else {
+        return empty_home_job_options();
+    };
+    if home.broken || home.economy_broken || home.is_deserted {
+        return empty_home_job_options();
+    }
+    job_supply.fill_nearby_candidates(
+        home.center_x,
+        home.center_y,
+        JOB_SEARCH_MAX_RING,
+        JOB_SEARCH_CANDIDATES,
+        candidates,
+    );
+
+    let mut options = empty_home_job_options();
+    let mut option_count = 0usize;
+    for &entry_idx in candidates.iter() {
+        let Some(entry) = job_supply.entries.get(entry_idx) else {
+            continue;
+        };
+        let Some(commute_seconds) = cached_commute_seconds(
+            key.home_idx,
+            entry.building_idx,
+            key.has_car,
+            allocator,
+            transit_network,
+            graph,
+            route_cache,
+            pathfind_count,
+            exact_entrance_cache_available,
+            new_route_entries,
+            new_route_entry_count,
+        ) else {
+            continue;
+        };
+        insert_home_job_option(
+            &mut options.options,
+            &mut option_count,
+            HomeJobOption {
+                building_idx: entry.building_idx,
+                commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
+                average_daily_wage: entry.average_daily_wage,
+                effective_capacity: entry.effective_capacity,
+                open_slots: entry.open_slots,
+            },
+        );
+    }
+    options.option_count = option_count as u8;
+    options
+}
+
+fn empty_home_job_options() -> HomeJobOptions {
+    HomeJobOptions {
+        option_count: 0,
+        options: [EMPTY_HOME_JOB_OPTION; JOB_SEARCH_CANDIDATES],
+    }
+}
+
+fn insert_home_job_option(
+    options: &mut [HomeJobOption; JOB_SEARCH_CANDIDATES],
+    option_count: &mut usize,
+    option: HomeJobOption,
+) {
+    let len = (*option_count).min(JOB_SEARCH_CANDIDATES);
+    let mut insert_at = 0;
+    while insert_at < len && home_job_option_precedes(options[insert_at], option) {
+        insert_at += 1;
+    }
+    if len == JOB_SEARCH_CANDIDATES && insert_at == len {
+        return;
+    }
+
+    let new_len = if len < JOB_SEARCH_CANDIDATES {
+        *option_count = len + 1;
+        len + 1
+    } else {
+        len
+    };
+    for idx in (insert_at + 1..new_len).rev() {
+        options[idx] = options[idx - 1];
+    }
+    options[insert_at] = option;
+}
+
+fn home_job_option_precedes(left: HomeJobOption, right: HomeJobOption) -> bool {
+    home_job_option_order(left, right) != CmpOrdering::Greater
+}
+
+fn home_job_option_order(left: HomeJobOption, right: HomeJobOption) -> CmpOrdering {
+    left.commute_penalty
+        .total_cmp(&right.commute_penalty)
+        .then_with(|| right.average_daily_wage.total_cmp(&left.average_daily_wage))
+        .then_with(|| right.effective_capacity.cmp(&left.effective_capacity))
+        .then_with(|| right.open_slots.cmp(&left.open_slots))
+        .then_with(|| left.building_idx.cmp(&right.building_idx))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cached_commute_seconds(
     home_idx: usize,
     work_idx: usize,
     has_car: bool,
-}
-
-struct WorkplaceReachabilityCache {
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
-    cache: HashMap<WorkplaceReachabilityKey, Option<u16>>,
-}
-
-impl WorkplaceReachabilityCache {
-    fn new(allocator: &BuildingAllocator) -> Self {
-        Self {
-            exact_entrance_cache_available: allocator.entrances.len() == allocator.buildings.len(),
-            cache: HashMap::new(),
-        }
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entry_count: &mut usize,
+) -> Option<u16> {
+    if home_idx == work_idx {
+        return Some(1);
     }
-
-    fn commute_seconds(
-        &mut self,
-        allocator: &BuildingAllocator,
-        home_idx: usize,
-        work_idx: usize,
-        has_car: bool,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        pathfind_count: &AtomicU32,
-    ) -> Option<u16> {
-        if home_idx == work_idx {
-            return Some(1);
-        }
-        let key = WorkplaceReachabilityKey {
+    let key = (home_idx, work_idx, has_car);
+    if let Some(result) = route_cache.get(&key) {
+        return *result;
+    }
+    let result = if exact_entrance_cache_available {
+        estimate_building_origin_trip_minutes(
             home_idx,
             work_idx,
             has_car,
-        };
-        if let Some(result) = self.cache.get(&key) {
-            return *result;
-        }
-        let result = if self.exact_entrance_cache_available {
-            estimate_building_origin_trip_minutes(
-                home_idx,
-                work_idx,
-                has_car,
-                allocator,
-                transit_network,
-                graph,
-                pathfind_count,
-            )
-        } else {
-            fallback_attached_commute_seconds(allocator, home_idx, work_idx, has_car)
-        };
-        self.cache.insert(key, result);
-        result
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        )
+    } else {
+        fallback_attached_commute_seconds(allocator, home_idx, work_idx, has_car)
+    };
+    if *new_route_entry_count < JOB_SEARCH_CANDIDATES {
+        new_route_entries[*new_route_entry_count] = (key, result);
+        *new_route_entry_count += 1;
     }
+    result
+}
+
+fn squared_entry_distance(origin_x: f32, origin_y: f32, entry: &JobSupplyEntry) -> f32 {
+    let dx = entry.center_x - origin_x;
+    let dy = entry.center_y - origin_y;
+    dx * dx + dy * dy
 }
 
 fn fallback_attached_commute_seconds(
