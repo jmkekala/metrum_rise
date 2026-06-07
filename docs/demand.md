@@ -1578,8 +1578,9 @@ output_capacity_already_placed =
         whose bound economy profile outputs the same resource
 
 total_consumer_demand =
-    housed_resident_count * consumption_rate_per_resident
-    summed over all demand-sink profiles reachable from the candidate's output resources
+    for each output resource in the candidate's bound economy profile:
+        resident demand for that resource
+        + existing commercial input need for that resource
 
 output_absorption_gate_passes =
     output_capacity_already_placed < total_consumer_demand
@@ -1587,17 +1588,20 @@ output_absorption_gate_passes =
 If the candidate asset has no resolvable economy profile binding, the gate fails safe and rejects
 the spawn candidate. Existing buildings with unresolved runtime profiles contribute no placed
 capacity.
-    OR total_consumer_demand == 0   # no demand-sink in catalog → gate not applicable
 ```
 
 Where:
 
-- `total_consumer_demand` is computed from the settled snapshot's `housed_resident_count` and the
-  per-resident consumption rates declared in the compiled economy catalog for connected
-  demand-sink profiles
+- resident demand is computed from the settled snapshot's `housed_resident_count` and the
+  per-resident consumption rates declared in the compiled economy catalog for connected demand-sink
+  profiles
+- commercial input need is computed from live non-deserted commercial input ports for the same
+  resource, so industrial producers are gated by downstream store demand rather than household
+  demand directly
 - `output_capacity_already_placed` sums `base_rate_units_per_day` over all live buildings with
   matching output resources; broken or economy-broken buildings are excluded
-- if the candidate profile has no declared outputs the gate passes (e.g. pure service buildings)
+- if the candidate profile has no declared outputs, or none of its output resources have resident
+  demand or commercial input need, the gate fails safe
 - if the economy profile binding cannot be resolved the gate fails safe (spawn is rejected)
 
 Interpretation:
@@ -1625,7 +1629,6 @@ effective_consumer_demand =
 
 output_absorption_gate_passes =
     output_capacity_already_placed < effective_consumer_demand
-    OR effective_consumer_demand == 0
 ```
 
 The `satisfaction_ratio` for each resource is authored in `RuntimeEconomyTuning` (see

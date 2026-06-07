@@ -177,9 +177,10 @@ impl DemandSystem {
 
     // Net growth/decline pressure for display, in −1.0..+1.0.
     //
-    // Uses the low-density profile thresholds as reference:
-    // - Positive: raw channel is above the spawn threshold (city wants to grow this use)
-    // - Negative: raw channel is below the despawn threshold (city wants to shrink this use)
+    // Uses the low-density profile thresholds as reference, with the same hysteresis margin state
+    // used by action planning:
+    // - Positive: channel is above the active spawn threshold (city wants to grow this use)
+    // - Negative: channel is below the active despawn threshold (city wants to shrink this use)
     // - Zero: channel is in the dead zone between thresholds (no pressure either way)
     pub(super) fn net_pressure_for(&self, use_kind: DemandUse) -> f32 {
         let channel = self.pressure_for_use(use_kind);
@@ -191,8 +192,16 @@ impl DemandSystem {
         let Some(profile) = self.config.profile_for_zone_density(zone_type, "low") else {
             return 0.0;
         };
-        let spawn_t = profile.spawn_threshold;
-        let despawn_t = profile.despawn_threshold;
+        let spawn_t = if self.spawn_hysteresis_active.get(use_kind) {
+            (profile.spawn_threshold - profile.hysteresis_margin).max(0.0)
+        } else {
+            profile.spawn_threshold
+        };
+        let despawn_t = if self.despawn_hysteresis_active.get(use_kind) {
+            (profile.despawn_threshold + profile.hysteresis_margin).min(1.0)
+        } else {
+            profile.despawn_threshold
+        };
         if channel > spawn_t {
             (channel - spawn_t) / (1.0 - spawn_t).max(EPSILON)
         } else if channel < despawn_t {

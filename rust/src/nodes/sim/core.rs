@@ -1165,6 +1165,8 @@ impl SimCore {
             &mut self.logistics,
             &self.region_graph,
             &self.transit_network.lane_system,
+            self.demand.runtime_catalog(),
+            self.demand.runtime_tuning(),
         );
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);

@@ -246,54 +246,50 @@ pub(super) fn resource_is_commercial_input(
 #[derive(Clone, Debug)]
 pub(super) struct OutputAbsorptionContext {
     placed_output_units_by_resource: Vec<f32>,
-    demand_sink_rate_by_resource: Vec<f32>,
+    demand_units_by_resource: Vec<f32>,
 }
 
 impl OutputAbsorptionContext {
-    pub(super) fn from_runtime(
-        allocator: &BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
-    ) -> Self {
-        let mut context = Self {
-            placed_output_units_by_resource: vec![0.0; catalog.resource_count() + 1],
-            demand_sink_rate_by_resource: vec![0.0; catalog.resource_count() + 1],
-        };
+    pub(super) fn empty(resource_count: usize) -> Self {
+        Self {
+            placed_output_units_by_resource: vec![0.0; resource_count + 1],
+            demand_units_by_resource: vec![0.0; resource_count + 1],
+        }
+    }
 
-        for profile in catalog.all_profiles() {
-            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
-                continue;
-            }
-            for input in &profile.inputs {
-                context.add_demand_rate(
-                    input.resource_runtime_id,
-                    profile.consumption_rate_per_resident.max(0.0),
-                );
-            }
+    pub(super) fn from_resource_amounts(
+        resource_count: usize,
+        placed_output_capacity_by_resource: &[(ResourceRuntimeId, f32)],
+        resident_demand_rates_by_resource: &[(ResourceRuntimeId, f32)],
+        housed_resident_count: u32,
+        commercial_input_need_by_resource: &[(ResourceRuntimeId, f32)],
+    ) -> Self {
+        let mut context = Self::empty(resource_count);
+
+        for &(resource_runtime_id, capacity) in placed_output_capacity_by_resource {
+            context.add_placed_capacity(resource_runtime_id, capacity.max(0.0));
         }
 
-        for building in &allocator.buildings {
-            if building.broken || building.economy_broken || building.is_deserted {
-                continue;
-            }
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                continue;
-            };
-            for output in &profile.outputs {
-                context
-                    .add_placed_capacity(output.resource_runtime_id, output.units_per_day.max(0.0));
-            }
+        for &(resource_runtime_id, rate_per_resident) in resident_demand_rates_by_resource {
+            context.add_demand_units(
+                resource_runtime_id,
+                rate_per_resident.max(0.0) * housed_resident_count as f32,
+            );
+        }
+
+        for &(resource_runtime_id, need_units) in commercial_input_need_by_resource {
+            context.add_demand_units(resource_runtime_id, need_units.max(0.0));
         }
 
         context
     }
 
-    fn add_demand_rate(&mut self, resource_runtime_id: ResourceRuntimeId, rate: f32) {
+    fn add_demand_units(&mut self, resource_runtime_id: ResourceRuntimeId, units: f32) {
         if let Some(slot) = self
-            .demand_sink_rate_by_resource
+            .demand_units_by_resource
             .get_mut(resource_runtime_id as usize)
         {
-            *slot += rate;
+            *slot += units;
         }
     }
 
@@ -313,16 +309,11 @@ impl OutputAbsorptionContext {
             .unwrap_or(0.0)
     }
 
-    fn consumer_demand(
-        &self,
-        resource_runtime_id: ResourceRuntimeId,
-        housed_residents: u32,
-    ) -> f32 {
-        self.demand_sink_rate_by_resource
+    fn consumer_demand(&self, resource_runtime_id: ResourceRuntimeId) -> f32 {
+        self.demand_units_by_resource
             .get(resource_runtime_id as usize)
             .copied()
             .unwrap_or(0.0)
-            * housed_residents as f32
     }
 }
 
@@ -331,7 +322,6 @@ pub(super) fn nonresidential_passes_absorption_gate(
     catalog: &RuntimeEconomyCatalog,
     absorption: &OutputAbsorptionContext,
     asset_id: &str,
-    housed_resident_count: u32,
 ) -> bool {
     let Some(profile_id) = allocator.registry.economy_profile(asset_id) else {
         return false;
@@ -340,7 +330,7 @@ pub(super) fn nonresidential_passes_absorption_gate(
         return false;
     };
     if candidate_profile.outputs.is_empty() {
-        return true;
+        return false;
     }
 
     let mut placed_capacity = 0.0_f32;
@@ -349,8 +339,7 @@ pub(super) fn nonresidential_passes_absorption_gate(
         if output.units_per_day <= EPSILON {
             continue;
         }
-        let resource_demand =
-            absorption.consumer_demand(output.resource_runtime_id, housed_resident_count);
+        let resource_demand = absorption.consumer_demand(output.resource_runtime_id);
         if resource_demand <= EPSILON {
             continue;
         }
@@ -358,8 +347,5 @@ pub(super) fn nonresidential_passes_absorption_gate(
         placed_capacity += absorption.placed_capacity(output.resource_runtime_id);
     }
 
-    if consumer_demand <= EPSILON {
-        return true;
-    }
-    placed_capacity < consumer_demand
+    consumer_demand > EPSILON && placed_capacity < consumer_demand
 }

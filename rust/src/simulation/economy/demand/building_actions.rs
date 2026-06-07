@@ -9,9 +9,7 @@ use super::credits::{
 };
 use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
-use super::spawn_need::{
-    OutputAbsorptionContext, nonresidential_passes_absorption_gate, spawn_need_buildings_for_use,
-};
+use super::spawn_need::{nonresidential_passes_absorption_gate, spawn_need_buildings_for_use};
 use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
 use super::viability::{
@@ -98,7 +96,7 @@ impl DemandSystem {
     ) {
         let mut spawn_candidates_by_use =
             allocator.collect_demand_spawn_candidates_by_use(zoning, graph);
-        let absorption_context = OutputAbsorptionContext::from_runtime(allocator, catalog);
+        let absorption_context = &snapshot.output_absorption;
         for use_kind in [
             DemandUse::Residential,
             DemandUse::Commercial,
@@ -210,9 +208,8 @@ impl DemandSystem {
                     if !nonresidential_passes_absorption_gate(
                         allocator,
                         catalog,
-                        &absorption_context,
+                        absorption_context,
                         &candidate.action.asset_id,
-                        snapshot.housed_resident_count,
                     ) {
                         spawn_rejected_absorption += 1;
                         continue;

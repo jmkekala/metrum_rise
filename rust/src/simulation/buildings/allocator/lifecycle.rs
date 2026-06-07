@@ -6,7 +6,7 @@ use crate::simulation::buildings::allocator::{
     zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
     demand_building_action_key,
@@ -255,6 +255,8 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
     ) {
         let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
             .buildings
@@ -288,7 +290,9 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
-                if let Some(updated_key) = self.apply_level_change_action(building_idx, action) {
+                if let Some(updated_key) =
+                    self.apply_level_change_action(building_idx, action, catalog)
+                {
                     action_lookup.remove(&action.building);
                     action_lookup.insert(updated_key, building_idx);
                     mutated_any = true;
@@ -299,7 +303,9 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
-                if let Some(updated_key) = self.apply_level_change_action(building_idx, action) {
+                if let Some(updated_key) =
+                    self.apply_level_change_action(building_idx, action, catalog)
+                {
                     action_lookup.remove(&action.building);
                     action_lookup.insert(updated_key, building_idx);
                     mutated_any = true;
@@ -307,7 +313,7 @@ impl BuildingAllocator {
             }
 
             for action in &use_plan.spawns {
-                if self.execute_demand_spawn_action(action, zoning, graph) {
+                if self.execute_demand_spawn_action(action, zoning, graph, catalog, tuning) {
                     mutated_any = true;
                 }
             }
@@ -443,6 +449,7 @@ impl BuildingAllocator {
         &mut self,
         building_idx: usize,
         action: &DemandLevelChangeAction,
+        catalog: &RuntimeEconomyCatalog,
     ) -> Option<DemandBuildingActionKey> {
         let building = self.buildings.get(building_idx)?;
         if building.broken || building.pending_redevelopment {
@@ -483,18 +490,8 @@ impl BuildingAllocator {
         building.level = target_building.level;
         building.economy_profile_runtime_id = economy_binding.runtime_id;
         building.economy_broken = economy_binding.economy_broken;
-        let profile = load_runtime_economy_catalog()
-            .ok()
-            .and_then(|catalog| {
-                catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .cloned()
-            })
-            .map(Box::new);
-        let resource_count = load_runtime_economy_catalog()
-            .map(|catalog| catalog.resource_count())
-            .unwrap_or(0);
-        building.retain_inventory_for_profile(profile.as_deref(), resource_count);
+        let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+        building.retain_inventory_for_profile(profile, catalog.resource_count());
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
         self.dirty = true;

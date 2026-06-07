@@ -286,9 +286,9 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         existing_unemployed_member_count: 0,
         open_job_slots: 0,
         average_open_job_wage_per_day: 0.0,
+        output_absorption: OutputAbsorptionContext::empty(0),
         commercial_owa_dependency: 0.0,
         commercial_owa_input_value: 0.0,
-        housed_resident_count: 10,
     }
 }
 
@@ -603,14 +603,60 @@ fn nonresidential_absorption_gate_fails_safe_without_candidate_profile() {
         None,
     );
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let absorption = OutputAbsorptionContext::from_runtime(&allocator, catalog.as_ref());
+    let absorption = OutputAbsorptionContext::empty(catalog.resource_count());
 
     assert!(!nonresidential_passes_absorption_gate(
         &allocator,
         catalog.as_ref(),
         &absorption,
         &unbound_commercial,
-        100
+    ));
+}
+
+#[test]
+fn nonresidential_absorption_gate_fails_safe_without_matching_demand() {
+    let mut allocator = BuildingAllocator::new();
+    let commercial = register_test_asset(
+        &mut allocator,
+        "commercial_without_consumers",
+        ZoneType::Commercial,
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let absorption = OutputAbsorptionContext::empty(catalog.resource_count());
+
+    assert!(!nonresidential_passes_absorption_gate(
+        &allocator,
+        catalog.as_ref(),
+        &absorption,
+        &commercial,
+    ));
+}
+
+#[test]
+fn industrial_absorption_gate_uses_commercial_input_demand() {
+    let mut allocator = BuildingAllocator::new();
+    let industrial = register_test_asset(
+        &mut allocator,
+        "industrial_with_downstream_need",
+        ZoneType::Industrial,
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let staple_food = catalog
+        .resource_runtime_id_for_id("staple_food")
+        .expect("staple_food resource");
+    let absorption = OutputAbsorptionContext::from_resource_amounts(
+        catalog.resource_count(),
+        &[],
+        &[],
+        0,
+        &[(staple_food, 160.0)],
+    );
+
+    assert!(nonresidential_passes_absorption_gate(
+        &allocator,
+        catalog.as_ref(),
+        &absorption,
+        &industrial,
     ));
 }
 
@@ -1239,6 +1285,23 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
         0.12,
     );
     assert!(outside_hysteresis_margin.upgrades.is_empty());
+}
+
+#[test]
+fn net_pressure_display_uses_active_hysteresis_margin() {
+    let mut demand = DemandSystem::new();
+    demand.commercial = 0.05;
+    assert_eq!(demand.net_commercial_pressure(), 0.0);
+
+    demand.spawn_hysteresis_active.commercial = true;
+    assert!(demand.net_commercial_pressure() > 0.0);
+
+    demand.spawn_hysteresis_active.commercial = false;
+    demand.commercial = 0.03;
+    assert_eq!(demand.net_commercial_pressure(), 0.0);
+
+    demand.despawn_hysteresis_active.commercial = true;
+    assert!(demand.net_commercial_pressure() < 0.0);
 }
 
 #[test]

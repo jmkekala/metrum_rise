@@ -14,7 +14,8 @@ use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use super::{UseTuningBool, UseTuningF32};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
+    RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
+    load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
@@ -24,6 +25,8 @@ use std::sync::Arc;
 /// Demand-owned daily growth state derived from the settled economy snapshot.
 pub struct DemandSystem {
     pub(super) config: Arc<DemandConfig>,
+    pub(super) runtime_catalog: Arc<RuntimeEconomyCatalog>,
+    pub(super) runtime_tuning: Arc<RuntimeEconomyTuning>,
     pub(crate) residential: f32,
     pub(crate) commercial: f32,
     pub(crate) industrial: f32,
@@ -52,8 +55,14 @@ impl DemandSystem {
     pub fn new() -> Self {
         let config = load_builtin_demand_config()
             .unwrap_or_else(|err| panic!("could not load built-in demand tuning: {err}"));
+        let runtime_catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let runtime_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         Self {
             config,
+            runtime_catalog,
+            runtime_tuning,
             residential: 0.0,
             commercial: 0.0,
             industrial: 0.0,
@@ -78,6 +87,16 @@ impl DemandSystem {
         }
     }
 
+    /// Returns the cached compiled economy catalog used by demand planning and execution.
+    pub(crate) fn runtime_catalog(&self) -> &RuntimeEconomyCatalog {
+        self.runtime_catalog.as_ref()
+    }
+
+    /// Returns the cached economy runtime tuning used by demand planning and execution.
+    pub(crate) fn runtime_tuning(&self) -> &RuntimeEconomyTuning {
+        self.runtime_tuning.as_ref()
+    }
+
     /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
     pub(crate) fn run_hourly_pass(
         &mut self,
@@ -88,10 +107,8 @@ impl DemandSystem {
         treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let economy_tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let catalog = Arc::clone(&self.runtime_catalog);
+        let economy_tuning = Arc::clone(&self.runtime_tuning);
         let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
             allocator,
             households,
@@ -249,10 +266,8 @@ impl DemandSystem {
         treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let economy_tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let catalog = Arc::clone(&self.runtime_catalog);
+        let economy_tuning = Arc::clone(&self.runtime_tuning);
         let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
             allocator,
             households,

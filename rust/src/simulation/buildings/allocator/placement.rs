@@ -1,20 +1,18 @@
 //! Demand-driven building placement candidate discovery and frontage-slot resolution.
 
-use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
     resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
 };
-use crate::simulation::economy::definitions::{
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
-};
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 
 impl BuildingAllocator {
@@ -23,55 +21,72 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> DemandSpawnCandidatesByUse {
-        let mut candidates = DemandSpawnCandidateSortBuckets::default();
-        for parcel in zoning.parcels() {
-            let edge_idx = parcel.edge_idx();
-            if edge_idx >= graph.edge_count() {
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if edge.deleted
-                || edge.no_building_spawn
-                || edge.physical_length < 0.1
-                || edge.physical_geometry.len() < 2
-                || !parcel.is_available()
-            {
-                continue;
-            }
+        let asset_candidates_by_profile = self.collect_spawn_asset_candidates_by_profile(zoning);
+        let candidates = zoning
+            .parcels()
+            .par_iter()
+            .fold(
+                DemandSpawnCandidateSortBuckets::default,
+                |mut candidates, parcel| {
+                    let edge_idx = parcel.edge_idx();
+                    if edge_idx >= graph.edge_count() {
+                        return candidates;
+                    }
+                    let edge = graph.edge(edge_idx);
+                    if edge.deleted
+                        || edge.no_building_spawn
+                        || edge.physical_length < 0.1
+                        || edge.physical_geometry.len() < 2
+                        || !parcel.is_available()
+                    {
+                        return candidates;
+                    }
 
-            let profile_runtime_id = parcel.zone_profile_runtime_id();
-            let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id) else {
-                continue;
-            };
-            let zone_type = profile.zone_type;
-            let Some(zone_class) = zone_type_to_zone_class(zone_type) else {
-                continue;
-            };
+                    let profile_runtime_id = parcel.zone_profile_runtime_id();
+                    let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id)
+                    else {
+                        return candidates;
+                    };
+                    let zone_type = profile.zone_type;
 
-            let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
-                zone_class,
-                profile.density.as_str(),
-                profile_runtime_id,
-                parcel,
-                zoning,
-                graph,
-            ) else {
-                continue;
-            };
+                    let Some(profile_candidates) =
+                        asset_candidates_by_profile.get(&profile_runtime_id)
+                    else {
+                        return candidates;
+                    };
 
-            let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
-            candidates.push_zone_type(
-                zone_type,
-                sort_key,
-                DemandSpawnCandidate {
-                    action: DemandSpawnAction {
-                        parcel_id: parcel.id().raw(),
-                        asset_id: resolved.asset_id,
-                    },
-                    density: profile.density.as_str().to_owned(),
+                    let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
+                        profile_candidates,
+                        profile_runtime_id,
+                        parcel,
+                        zoning,
+                        graph,
+                    ) else {
+                        return candidates;
+                    };
+
+                    let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
+                    candidates.push_zone_type(
+                        zone_type,
+                        sort_key,
+                        DemandSpawnCandidate {
+                            action: DemandSpawnAction {
+                                parcel_id: parcel.id().raw(),
+                                asset_id: resolved.asset_id,
+                            },
+                            density: profile.density.as_str().to_owned(),
+                        },
+                    );
+                    candidates
+                },
+            )
+            .reduce(
+                DemandSpawnCandidateSortBuckets::default,
+                |mut left, right| {
+                    left.extend(right);
+                    left
                 },
             );
-        }
 
         let candidates = candidates.finish();
         debug_log!(
@@ -84,103 +99,110 @@ impl BuildingAllocator {
         candidates
     }
 
+    fn collect_spawn_asset_candidates_by_profile(
+        &self,
+        zoning: &ZoningSystem,
+    ) -> BTreeMap<u16, SpawnProfileAssetCandidates> {
+        let mut by_profile = BTreeMap::new();
+        for profile in zoning.profiles.profiles() {
+            let Some(zone_class) = zone_type_to_zone_class(profile.zone_type) else {
+                continue;
+            };
+            let mut candidates = Vec::new();
+            for qualified_id in self
+                .registry
+                .buildings_for_zone_density(zone_class, profile.density.as_str())
+            {
+                let Some(entry) = self.registry.get(qualified_id) else {
+                    continue;
+                };
+                let Some(building) = entry.manifest.building.as_ref() else {
+                    continue;
+                };
+                if !building.is_zoned_private() || building.level != 1 {
+                    continue;
+                }
+                let Some(params) = self.asset_placement_params(qualified_id) else {
+                    continue;
+                };
+                if !zoning.profiles.asset_is_legal(
+                    profile.runtime_id,
+                    params.zone_type,
+                    &params.density,
+                    &params.tags,
+                ) {
+                    continue;
+                }
+                let family_key = entry
+                    .manifest
+                    .asset_set
+                    .clone()
+                    .unwrap_or_else(|| qualified_id.clone());
+                candidates.push(SpawnAssetCandidate {
+                    family_key,
+                    qualified_id: qualified_id.clone(),
+                    params,
+                });
+            }
+            candidates.sort_by(|left, right| {
+                left.family_key
+                    .cmp(&right.family_key)
+                    .then(left.qualified_id.cmp(&right.qualified_id))
+            });
+            by_profile.insert(
+                profile.runtime_id,
+                SpawnProfileAssetCandidates { candidates },
+            );
+        }
+        by_profile
+    }
+
     fn select_deterministic_fresh_spawn_asset(
         &self,
-        zone_class: ZoneClass,
-        density: &str,
+        profile_candidates: &SpawnProfileAssetCandidates,
         profile_runtime_id: u16,
         parcel: &ZoningParcel,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
-        let zone_density_assets = self
-            .registry
-            .buildings_for_zone_density(zone_class, density);
-        if zone_density_assets.is_empty() {
-            debug_log!(
-                "spawn",
-                "select_spawn_asset: registry has 0 assets for zone={:?} density={}",
-                zone_class,
-                density,
-            );
+        if profile_candidates.candidates.is_empty() {
             return None;
         }
-        let mut families: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for qualified_id in zone_density_assets {
-            let Some(entry) = self.registry.get(qualified_id) else {
-                continue;
-            };
-            let Some(building) = entry.manifest.building.as_ref() else {
-                continue;
-            };
-            if !building.is_zoned_private() || building.level != 1 {
-                continue;
-            }
-            let Some(asset_zone_class) = building.zone_type else {
-                continue;
-            };
-            let Some(asset_density) = building.density_key() else {
-                continue;
-            };
-            if !zoning.profiles.asset_is_legal(
-                profile_runtime_id,
-                zone_class_to_zone_type(asset_zone_class),
-                asset_density,
-                &entry.manifest.tags,
+
+        let mut best = None;
+        for candidate in &profile_candidates.candidates {
+            if let Some(resolved) = self.resolve_slot(
+                &candidate.qualified_id,
+                &candidate.params,
+                parcel,
+                zoning,
+                graph,
             ) {
-                continue;
-            }
-            let family_key = entry
-                .manifest
-                .asset_set
-                .clone()
-                .unwrap_or_else(|| qualified_id.clone());
-            families
-                .entry(family_key)
-                .or_default()
-                .push(qualified_id.clone());
-        }
-
-        let mut ordered_families: Vec<(u64, String, Vec<String>)> = families
-            .into_iter()
-            .map(|(family_key, mut candidate_ids)| {
-                candidate_ids.sort();
-                (
-                    stable_strip_family_hash(profile_runtime_id, parcel.id().raw(), &family_key),
-                    family_key,
-                    candidate_ids,
-                )
-            })
-            .collect();
-        ordered_families.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-        for (_, _, candidate_ids) in ordered_families {
-            let mut resolved_variants: Vec<(u64, String, ResolvedPlacement)> = Vec::new();
-            for qualified_id in candidate_ids {
-                let Some(params) = self.asset_placement_params(&qualified_id) else {
-                    continue;
-                };
-                if let Some(resolved) =
-                    self.resolve_slot(&qualified_id, &params, parcel, zoning, graph)
+                let selection_key = (
+                    stable_strip_family_hash(
+                        profile_runtime_id,
+                        parcel.id().raw(),
+                        &candidate.family_key,
+                    ),
+                    candidate.family_key.as_str(),
+                    stable_site_variant_hash(
+                        profile_runtime_id,
+                        parcel.id().raw(),
+                        &candidate.qualified_id,
+                    ),
+                    candidate.qualified_id.as_str(),
+                );
+                if best
+                    .as_ref()
+                    .map(|(best_key, _)| selection_key < *best_key)
+                    .unwrap_or(true)
                 {
-                    resolved_variants.push((
-                        stable_site_variant_hash(
-                            profile_runtime_id,
-                            parcel.id().raw(),
-                            &qualified_id,
-                        ),
-                        qualified_id,
-                        resolved,
-                    ));
+                    best = Some((selection_key, resolved));
                 }
             }
-            resolved_variants.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-            if let Some((_, _, resolved)) = resolved_variants.into_iter().next() {
-                return Some(resolved);
-            }
         }
 
-        None
+        best.map(|(_, resolved)| resolved)
     }
 
     fn asset_placement_params(&self, asset_id: &str) -> Option<AssetPlacementParams> {
@@ -273,9 +295,11 @@ impl BuildingAllocator {
         &mut self,
         placement: ResolvedPlacement,
         zoning: &mut ZoningSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
     ) -> usize {
         let parcel_id = placement.parcel_id;
-        let building_idx = self.place_building_instance(placement);
+        let building_idx = self.place_building_instance(placement, catalog, tuning);
         zoning.occupy_parcel(parcel_id, building_idx);
         self.bump_building_ref_revision();
         self.dirty = true;
@@ -304,6 +328,8 @@ impl BuildingAllocator {
         action: &DemandSpawnAction,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
     ) -> bool {
         let Some(params) = self.asset_placement_params(&action.asset_id) else {
             return false;
@@ -315,17 +341,18 @@ impl BuildingAllocator {
         else {
             return false;
         };
-        self.commit_resolved_slot(resolved, zoning);
+        self.commit_resolved_slot(resolved, zoning, catalog, tuning);
         true
     }
 
-    fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
+    fn place_building_instance(
+        &mut self,
+        placement: ResolvedPlacement,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> usize {
         let economy_binding =
             resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let resource_count = catalog.resource_count();
 
         // Seed starting inventory for output ports when the profile specifies it.
@@ -502,6 +529,16 @@ struct AssetPlacementParams {
     initial_level: u8,
 }
 
+struct SpawnAssetCandidate {
+    family_key: String,
+    qualified_id: String,
+    params: AssetPlacementParams,
+}
+
+struct SpawnProfileAssetCandidates {
+    candidates: Vec<SpawnAssetCandidate>,
+}
+
 struct ResolvedPlacement {
     asset_id: String,
     zone_profile_runtime_id: u16,
@@ -564,6 +601,12 @@ impl DemandSpawnCandidateSortBuckets {
             ZoneType::Industrial => self.industrial.push((sort_key, candidate)),
             _ => {}
         }
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.residential.extend(other.residential);
+        self.commercial.extend(other.commercial);
+        self.industrial.extend(other.industrial);
     }
 
     fn finish(mut self) -> DemandSpawnCandidatesByUse {

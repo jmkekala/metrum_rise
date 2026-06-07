@@ -229,6 +229,8 @@ fn execute_startup_demand_building_pass(
             logistics,
             graph,
             &network.lane_system,
+            demand.runtime_catalog(),
+            demand.runtime_tuning(),
         );
         if allocator.buildings.len() > building_count_before {
             break;
@@ -321,6 +323,8 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &mut logistics,
         &graph,
         &network.lane_system,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
     );
 
     allocator.execute_demand_household_admission(2, &mut agents, &network, &graph); // Occupy buildings to protect from instant removal
@@ -1725,6 +1729,8 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &mut logistics,
         &graph,
         &network.lane_system,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
     );
 
     assert!(
@@ -1739,7 +1745,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
 #[test]
 fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() {
     use crate::simulation::economy::demand::{
-        DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+        DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSystem,
     };
     use godot::prelude::Vector3;
 
@@ -1932,6 +1938,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         target_asset_id: residential_level_2.clone(),
     });
 
+    let demand = DemandSystem::new();
     allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
@@ -1940,6 +1947,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut logistics,
         &graph,
         &network.lane_system,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
     );
 
     assert_eq!(allocator.buildings.len(), 2);
