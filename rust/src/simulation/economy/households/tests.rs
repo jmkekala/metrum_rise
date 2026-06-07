@@ -1001,6 +1001,129 @@ fn workplace_claim_falls_back_to_next_ranked_job_when_best_fills() {
 }
 
 #[test]
+fn deserted_employer_is_ejected_before_wages() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let daily_wage = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile")
+        .average_daily_wage();
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "deserted_wage_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "deserted_wage_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[1].operating_budget = daily_wage;
+    allocator.buildings[1].worker_count = 1;
+    allocator.buildings[1].is_deserted = true;
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+
+    households.pay_daily_wages(&mut agents, &mut allocator);
+
+    assert_eq!(agents.work_building[agent], usize::MAX);
+    assert_eq!(allocator.buildings[1].worker_count, 0);
+    assert_eq!(households.households[0].budget, 0.0);
+    assert_eq!(allocator.buildings[1].operating_budget, daily_wage);
+}
+
+#[test]
+fn full_current_workplace_is_scored_before_switching() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let grocery = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile");
+    let worker_capacity = grocery.worker_capacity;
+    let daily_wage = grocery.average_daily_wage();
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+    households.households[0].budget = 0.0;
+    households.households[0].stock = 0.0;
+    households.households[0].stock_days = 0.0;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "stay_job_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "stay_job_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        200.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[1].worker_count = worker_capacity;
+    allocator.buildings[1].operating_budget = daily_wage * worker_capacity as f32;
+    allocator.buildings[2].operating_budget = daily_wage;
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.has_car[agent] = true;
+    agents.assign_work_building(agent, 1, 0);
+    agents.job_lock_days[agent] = 0;
+
+    let network = TransitNetwork::new();
+    let graph = RegionGraph::new();
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+
+    assert_eq!(agents.work_building[agent], 1);
+    assert_eq!(allocator.buildings[1].worker_count, worker_capacity);
+    assert_eq!(allocator.buildings[2].worker_count, 0);
+}
+
+#[test]
 fn immigrant_household_assigns_nearby_work_during_founding() {
     let mut households = HouseholdSystem::new();
     let catalog = load_runtime_economy_catalog().expect("catalog");

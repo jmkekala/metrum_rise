@@ -70,7 +70,7 @@ impl HouseholdSystem {
             else {
                 continue;
             };
-            if !is_staffed_utility_provider(allocator, idx, building, profile) {
+            if !is_staffed_utility_provider(building, profile) {
                 continue;
             }
             utility_provider_indices.push(idx);
@@ -256,17 +256,12 @@ fn forced_owa_liquidation(
     }
 }
 
-fn is_staffed_utility_provider(
-    allocator: &BuildingAllocator,
-    idx: usize,
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-) -> bool {
+fn is_staffed_utility_provider(building: &Building, profile: &EconomyProfileRuntime) -> bool {
     matches!(
         profile.kind,
         EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
     ) && building.worker_count > 0
-        && allocator.worker_capacity(idx) > 0
+        && profile.worker_capacity > 0
 }
 
 fn building_participates_in_budget_distress(

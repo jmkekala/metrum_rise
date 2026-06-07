@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
+use super::route_cache::FreightRouteCache;
+
 /// A physical freight endpoint inside the city or at an outside-world border terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShipmentEndpoint {
@@ -148,12 +150,20 @@ pub struct FreightRequestFailure {
 }
 
 /// Runtime collection of active freight jobs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ShipmentSystem {
     /// All queued or in-transit shipment jobs plus fulfilled/failed jobs awaiting cleanup.
     pub shipments: Vec<Shipment>,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
+    /// Freight ETA cache reused while topology revisions remain unchanged.
+    pub(super) freight_route_cache: FreightRouteCache,
+    /// Building-reference revision captured when the freight cache was last validated.
+    pub(super) freight_route_cache_building_revision: u64,
+    /// Entrance-reference revision captured when the freight cache was last validated.
+    pub(super) freight_route_cache_entrance_revision: u64,
+    /// CCH graph generation captured when the freight cache was last validated.
+    pub(super) freight_route_cache_cch_generation: u32,
 }
 
 impl ShipmentSystem {
@@ -162,6 +172,10 @@ impl ShipmentSystem {
         Self {
             shipments: Vec::new(),
             request_failures: BTreeMap::new(),
+            freight_route_cache: FreightRouteCache::default(),
+            freight_route_cache_building_revision: u64::MAX,
+            freight_route_cache_entrance_revision: u64::MAX,
+            freight_route_cache_cch_generation: u32::MAX,
         }
     }
 
@@ -169,6 +183,10 @@ impl ShipmentSystem {
     pub fn clear(&mut self) {
         self.shipments.clear();
         self.request_failures.clear();
+        self.freight_route_cache.clear();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+        self.freight_route_cache_cch_generation = u32::MAX;
     }
 
     /// Remaps building references after a building swap-remove.
@@ -186,6 +204,10 @@ impl ShipmentSystem {
             remapped_failures.insert(key, failure);
         }
         self.request_failures = remapped_failures;
+        self.freight_route_cache.clear();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+        self.freight_route_cache_cch_generation = u32::MAX;
     }
 
     /// Cancels any shipment touching the removed building before swap-remove happens.
@@ -215,6 +237,10 @@ impl ShipmentSystem {
 
         self.request_failures
             .retain(|key, _| key.destination_building_id != removed_building);
+        self.freight_route_cache.clear();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+        self.freight_route_cache_cch_generation = u32::MAX;
     }
 
     pub(super) fn request_key(
@@ -252,5 +278,11 @@ impl ShipmentSystem {
         failure.failures = failure.failures.saturating_add(1);
         failure.terminal = failure.failures >= terminal_failure_attempts;
         failure.terminal
+    }
+}
+
+impl Default for ShipmentSystem {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -7,9 +7,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
 use super::data::{Household, HouseholdSystem};
-use super::metrics::{
-    economy_profile_for_building, household_demand_profile, household_supply_unit_price,
-};
+use super::metrics::{household_demand_profile, household_supply_unit_price};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
@@ -50,6 +48,7 @@ const EMPTY_WORKPLACE_ROUTE_ENTRY: WorkplaceRouteCacheEntry =
 
 type WorkplaceRouteCacheKey = (usize, usize, bool);
 type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, Option<u16>);
+type CurrentJobOptionKey = (HomeJobOptionsKey, usize);
 
 #[derive(Clone, Copy)]
 struct JobChoice {
@@ -80,6 +79,13 @@ struct HomeJobOptions {
 struct HomeJobOptionsBuild {
     key: HomeJobOptionsKey,
     options: HomeJobOptions,
+    route_entry_count: u8,
+    route_entries: [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+}
+
+struct CurrentJobOptionBuild {
+    key: CurrentJobOptionKey,
+    option: Option<HomeJobOption>,
     route_entry_count: u8,
     route_entries: [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
 }
@@ -145,33 +151,20 @@ impl HouseholdSystem {
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
-        let mut ejected_agents: Vec<_> = (0..agents.len())
-            .into_par_iter()
-            .filter(|&i| {
-                let work = agents.work_building[i];
-                work < allocator.buildings.len() && allocator.buildings[work].is_deserted
-            })
-            .collect();
-        ejected_agents.sort_unstable();
-        for i in ejected_agents {
-            let work = agents.work_building[i];
-            if work < allocator.buildings.len() && allocator.buildings[work].is_deserted {
-                allocator.buildings[work].worker_count =
-                    allocator.buildings[work].worker_count.saturating_sub(1);
-                agents.assign_work_building(i, usize::MAX, 0);
-            }
-        }
+        eject_inactive_work_assignments(agents, allocator, &catalog);
 
         self.refresh_workplace_route_cache(allocator, transit_network);
         let job_supply = JobSupplySnapshot::build(allocator, &catalog);
-        let home_option_keys =
+        let (home_option_keys, current_job_keys) =
             collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
-        let (home_job_options, new_route_entries) = build_home_job_options(
+        let (home_job_options, current_job_options, new_route_entries) = build_home_job_options(
             &home_option_keys,
+            &current_job_keys,
             &job_supply,
             allocator,
             transit_network,
             graph,
+            &catalog,
             &self.workplace_route_cache,
             &agents.pathfind_count,
         );
@@ -191,6 +184,7 @@ impl HouseholdSystem {
                     target_days,
                     &self.households,
                     &home_job_options,
+                    &current_job_options,
                 )
             })
             .collect();
@@ -204,6 +198,7 @@ impl HouseholdSystem {
     pub fn pay_daily_wages(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        eject_inactive_work_assignments(agents, allocator, &catalog);
         let mut plans: Vec<_> = (0..agents.len())
             .into_par_iter()
             .filter_map(|i| {
@@ -212,7 +207,7 @@ impl HouseholdSystem {
                 if work >= allocator.buildings.len() || household_id >= self.households.len() {
                     return None;
                 }
-                let profile = economy_profile_for_building(&catalog, &allocator.buildings[work])?;
+                let profile = active_work_profile(&catalog, &allocator.buildings[work])?;
                 let wage = profile.average_daily_wage();
                 if wage <= 0.0 {
                     return None;
@@ -297,6 +292,7 @@ fn plan_agent_workplace(
     target_days: f32,
     households: &[Household],
     home_job_options: &BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
+    current_job_options: &BTreeMap<CurrentJobOptionKey, HomeJobOption>,
 ) -> Option<JobAssignmentPlan> {
     if agents.transit[i] != TRANSIT_IN_BUILDING {
         return None;
@@ -322,10 +318,11 @@ fn plan_agent_workplace(
         return None;
     }
 
-    let options = home_job_options.get(&HomeJobOptionsKey {
+    let home_key = HomeJobOptionsKey {
         home_idx,
         has_car: agents.has_car[i],
-    })?;
+    };
+    let options = home_job_options.get(&home_key)?;
 
     let income_pressure = household_income_pressure(catalog, tuning, household);
     let stock_pressure =
@@ -333,7 +330,16 @@ fn plan_agent_workplace(
 
     let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
     let mut choice_count = 0usize;
-    let mut current_job_score = None;
+    let mut current_job_score = if old_job < building_count
+        && agents.consecutive_unpaid_days[i] < JOB_UNPAID_ABANDON_DAYS
+    {
+        current_job_options.get(&(home_key, old_job)).map(|option| {
+            W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
+                - W_COMMUTE * option.commute_penalty
+        })
+    } else {
+        None
+    };
     for option in options
         .options
         .iter()
@@ -479,6 +485,52 @@ fn apply_workplace_plan(
         );
         return;
     }
+}
+
+fn eject_inactive_work_assignments(
+    agents: &mut AgentSystem,
+    allocator: &mut BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+) {
+    let mut ejected_agents: Vec<_> = (0..agents.len())
+        .into_par_iter()
+        .filter(|&i| {
+            let work = agents.work_building[i];
+            if work >= allocator.buildings.len() {
+                return false;
+            }
+            active_work_profile(catalog, &allocator.buildings[work]).is_none()
+        })
+        .collect();
+    ejected_agents.sort_unstable();
+    for i in ejected_agents {
+        let work = agents.work_building[i];
+        if work < allocator.buildings.len()
+            && active_work_profile(catalog, &allocator.buildings[work]).is_none()
+        {
+            allocator.buildings[work].worker_count =
+                allocator.buildings[work].worker_count.saturating_sub(1);
+            agents.assign_work_building(i, usize::MAX, 0);
+        }
+    }
+}
+
+fn active_work_profile<'a>(
+    catalog: &'a RuntimeEconomyCatalog,
+    building: &Building,
+) -> Option<&'a EconomyProfileRuntime> {
+    if building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.edge_idx == usize::MAX
+    {
+        return None;
+    }
+    let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
+    if profile.worker_capacity == 0 || !building_offers_work(building, profile) {
+        return None;
+    }
+    Some(profile)
 }
 
 fn household_income_pressure(
@@ -631,8 +683,8 @@ fn collect_home_job_option_keys(
     agents: &AgentSystem,
     building_count: usize,
     household_count: usize,
-) -> Vec<HomeJobOptionsKey> {
-    let mut keys: Vec<_> = (0..agents.len())
+) -> (Vec<HomeJobOptionsKey>, Vec<CurrentJobOptionKey>) {
+    let requests: Vec<_> = (0..agents.len())
         .into_par_iter()
         .filter_map(|i| {
             if agents.transit[i] != TRANSIT_IN_BUILDING {
@@ -650,28 +702,40 @@ fn collect_home_job_option_keys(
             if !can_switch {
                 return None;
             }
-            Some(HomeJobOptionsKey {
+            let key = HomeJobOptionsKey {
                 home_idx,
                 has_car: agents.has_car[i],
-            })
+            };
+            let current_job_key = (old_job < building_count).then_some((key, old_job));
+            Some((key, current_job_key))
         })
         .collect();
+    let mut keys: Vec<_> = requests.iter().map(|(key, _)| *key).collect();
     keys.sort_unstable();
     keys.dedup();
-    keys
+    let mut current_job_keys: Vec<_> = requests
+        .into_iter()
+        .filter_map(|(_, current_job_key)| current_job_key)
+        .collect();
+    current_job_keys.sort_unstable();
+    current_job_keys.dedup();
+    (keys, current_job_keys)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_home_job_options(
     keys: &[HomeJobOptionsKey],
+    current_job_keys: &[CurrentJobOptionKey],
     job_supply: &JobSupplySnapshot,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
+    catalog: &RuntimeEconomyCatalog,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
     pathfind_count: &AtomicU32,
 ) -> (
     BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
+    BTreeMap<CurrentJobOptionKey, HomeJobOption>,
     Vec<WorkplaceRouteCacheEntry>,
 ) {
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
@@ -720,7 +784,49 @@ fn build_home_job_options(
                 .copied(),
         );
     }
-    (home_options, route_entries)
+
+    let mut current_builds: Vec<_> = current_job_keys
+        .par_iter()
+        .map(|&key| {
+            let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_SEARCH_CANDIDATES];
+            let mut route_entry_count = 0usize;
+            let option = build_current_job_option_for_key(
+                key,
+                allocator,
+                transit_network,
+                graph,
+                catalog,
+                route_cache,
+                pathfind_count,
+                exact_entrance_cache_available,
+                &mut route_entries,
+                &mut route_entry_count,
+            );
+            CurrentJobOptionBuild {
+                key,
+                option,
+                route_entry_count: route_entry_count as u8,
+                route_entries,
+            }
+        })
+        .collect();
+    current_builds.sort_unstable_by_key(|build| build.key);
+
+    let mut current_job_options = BTreeMap::new();
+    for build in current_builds {
+        if let Some(option) = build.option {
+            current_job_options.insert(build.key, option);
+        }
+        route_entries.extend(
+            build
+                .route_entries
+                .iter()
+                .take(usize::from(build.route_entry_count))
+                .copied(),
+        );
+    }
+
+    (home_options, current_job_options, route_entries)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -793,6 +899,51 @@ fn empty_home_job_options() -> HomeJobOptions {
         option_count: 0,
         options: [EMPTY_HOME_JOB_OPTION; JOB_SEARCH_CANDIDATES],
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_current_job_option_for_key(
+    key: CurrentJobOptionKey,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    catalog: &RuntimeEconomyCatalog,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
+    exact_entrance_cache_available: bool,
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entry_count: &mut usize,
+) -> Option<HomeJobOption> {
+    let (home_key, work_idx) = key;
+    let work = allocator.buildings.get(work_idx)?;
+    let profile = active_work_profile(catalog, work)?;
+    let commute_seconds = cached_commute_seconds(
+        home_key.home_idx,
+        work_idx,
+        home_key.has_car,
+        allocator,
+        transit_network,
+        graph,
+        route_cache,
+        pathfind_count,
+        exact_entrance_cache_available,
+        new_route_entries,
+        new_route_entry_count,
+    )?;
+    let average_daily_wage = profile.average_daily_wage();
+    let budget_capacity = if average_daily_wage > 0.1 {
+        (work.operating_budget.max(0.0) / average_daily_wage).floor() as u32
+    } else {
+        profile.worker_capacity
+    };
+    let effective_capacity = profile.worker_capacity.min(budget_capacity);
+    Some(HomeJobOption {
+        building_idx: work_idx,
+        commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
+        average_daily_wage,
+        effective_capacity,
+        open_slots: effective_capacity.saturating_sub(work.worker_count),
+    })
 }
 
 fn insert_home_job_option(

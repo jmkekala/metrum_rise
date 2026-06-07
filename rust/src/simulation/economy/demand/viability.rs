@@ -197,7 +197,7 @@ pub(super) fn nonresidential_upgrade_viable(
     else {
         return false;
     };
-    let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
+    let staffing_ratio = building_staffing_ratio(catalog, building);
     if staffing_ratio + EPSILON
         < economy_tuning
             .viability
@@ -235,7 +235,7 @@ pub(super) fn nonresidential_downgrade_viable(
     if building.is_deserted {
         return false;
     }
-    let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
+    let staffing_ratio = building_staffing_ratio(catalog, building);
     let buffer_days = building_operating_buffer_days(catalog, economy_tuning, building);
     let max_buffer_days = level_tuning_value(
         &economy_tuning

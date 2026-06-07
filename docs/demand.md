@@ -464,8 +464,9 @@ Baseline ownership rule:
 - `immigrant_starter_savings_per_household` comes from economy-owned household starter tuning
 - `unemployment_daily_benefit_per_member` comes from economy-owned unemployment tuning
 - `existing_unemployed_member_count`, `open_job_slots`, and `average_open_job_wage_per_day` come
-  from the settled household and non-residential building job state; open jobs count only
-  commercial or industrial slots with a positive authored wage and current operating budget
+  from the settled household and job-offering building state; open jobs count commercial,
+  industrial, and utility/service profile slots with a positive authored wage and current operating
+  budget
 - `commercial_input_need_value`, `local_industrial_input_capacity_value`,
   `industrial_missing_input_value`, and `industrial_input_capacity_deficit` are derived by the
   demand snapshot from compiled economy-profile ports. Active commercial inputs define the target;

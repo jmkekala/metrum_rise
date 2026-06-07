@@ -11,7 +11,6 @@ use rayon::prelude::*;
 use super::data::ShipmentSystem;
 use super::local_supplier::SUPPLIER_SEARCH_CANDIDATES;
 use super::resource::{freight_profile_for_building, required_unit_price};
-use super::route_cache::FreightRouteCache;
 use super::routing::connected_border_nodes;
 use super::supplier_index::SupplierCandidateIndex;
 
@@ -31,7 +30,7 @@ impl ShipmentSystem {
         let mut reservations = self.build_reservation_views(resource_count);
         let border_nodes = connected_border_nodes(graph);
         let supplier_index = SupplierCandidateIndex::build(allocator, &catalog);
-        let mut route_cache = FreightRouteCache::default();
+        let mut route_cache = std::mem::take(&mut self.freight_route_cache);
         let mut eligible_destinations: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -184,5 +183,6 @@ impl ShipmentSystem {
                     tuning.operational_clock.shipment_retry_cooldown_hours;
             }
         }
+        self.freight_route_cache = route_cache;
     }
 }

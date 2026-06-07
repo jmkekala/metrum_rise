@@ -1,15 +1,21 @@
 //! Household housing resolution, relocation, and eviction.
 
+use std::collections::BTreeMap;
+
 use super::HouseholdSystem;
 use super::metrics::{household_is_housed, household_reserve_days, level_tuning_value};
 use super::replenishment::clear_replenishment_request;
 use crate::debug_log;
-use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, baseline_private_zone_slot,
+};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
+use godot::prelude::Vector3;
 
 const NO_MEMBER: usize = usize::MAX;
 
@@ -32,17 +38,22 @@ struct VacancyCandidate {
     building_idx: usize,
     level: u8,
     remaining_slots: u32,
+    chunk: (i32, i32),
 }
 
 struct VacancyPlanner {
     candidates: Vec<VacancyCandidate>,
+    levels_desc: Vec<u8>,
+    by_level: BTreeMap<u8, Vec<usize>>,
+    by_level_chunk: BTreeMap<u8, BTreeMap<(i32, i32), Vec<usize>>>,
+    level_chunk_bounds: BTreeMap<u8, ((i32, i32), (i32, i32))>,
 }
 
 impl VacancyPlanner {
     fn new(allocator: &BuildingAllocator) -> Self {
         let mut candidates = Vec::new();
         let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
-            return Self { candidates };
+            return Self::from_candidates(candidates);
         };
         for &building_idx in &allocator.vacancy_index[residential_slot] {
             if building_idx >= allocator.buildings.len() {
@@ -66,6 +77,7 @@ impl VacancyPlanner {
                 building_idx,
                 level: building.level,
                 remaining_slots,
+                chunk: building_chunk(building),
             });
         }
         candidates.sort_unstable_by(|left, right| {
@@ -74,7 +86,23 @@ impl VacancyPlanner {
                 .cmp(&left.level)
                 .then_with(|| left.building_idx.cmp(&right.building_idx))
         });
-        Self { candidates }
+        Self::from_candidates(candidates)
+    }
+
+    fn from_candidates(candidates: Vec<VacancyCandidate>) -> Self {
+        let mut planner = Self {
+            candidates,
+            levels_desc: Vec::new(),
+            by_level: BTreeMap::new(),
+            by_level_chunk: BTreeMap::new(),
+            level_chunk_bounds: BTreeMap::new(),
+        };
+        for candidate_pos in 0..planner.candidates.len() {
+            planner.index_candidate(candidate_pos);
+        }
+        planner.levels_desc.sort_unstable_by(|a, b| b.cmp(a));
+        planner.levels_desc.dedup();
+        planner
     }
 
     fn claim_affordable_home(
@@ -92,87 +120,174 @@ impl VacancyPlanner {
                 .map(|building| (building.center_x, building.center_y))
         });
 
-        let mut best: Option<(usize, u8, f32, usize)> = None;
-        for (candidate_pos, candidate) in self.candidates.iter().enumerate() {
-            if best.is_some_and(|(_, best_level, _, _)| candidate.level < best_level) {
+        let levels = self.levels_desc.clone();
+        for level in levels {
+            if minimum_level_exclusive.is_some_and(|minimum_level| level <= minimum_level) {
                 break;
             }
-            if minimum_level_exclusive.is_some_and(|level| candidate.level <= level) {
-                break;
-            }
-            if candidate.remaining_slots == 0 || Some(candidate.building_idx) == current_home {
-                continue;
-            }
-            let building = &allocator.buildings[candidate.building_idx];
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.pending_redevelopment
-            {
-                continue;
-            }
-
-            let move_in_threshold = level_tuning_value(
-                &config.residential_move_in_min_reserve_days_by_level,
-                candidate.level,
-            );
+            let move_in_threshold =
+                level_tuning_value(&config.residential_move_in_min_reserve_days_by_level, level);
             if reserve_days + f32::EPSILON < move_in_threshold {
                 continue;
             }
-
-            let distance = current_center.map_or(0.0, |(origin_x, origin_y)| {
-                let dx = building.center_x - origin_x;
-                let dy = building.center_y - origin_y;
-                dx * dx + dy * dy
-            });
-            let challenger = (
-                candidate_pos,
-                candidate.level,
-                distance,
-                candidate.building_idx,
-            );
-            if best.is_none_or(|current| {
-                challenger.1 > current.1
-                    || (challenger.1 == current.1
-                        && (challenger.2.total_cmp(&current.2).is_lt()
-                            || (challenger.2.total_cmp(&current.2).is_eq()
-                                && challenger.3 < current.3)))
-            }) {
-                best = Some(challenger);
+            let candidate_pos = if let Some((origin_x, origin_y)) = current_center {
+                self.nearest_candidate_in_level(level, origin_x, origin_y, allocator, current_home)
+            } else {
+                self.first_candidate_in_level(level, allocator, current_home)
+            };
+            if let Some(candidate_pos) = candidate_pos {
+                self.candidates[candidate_pos].remaining_slots = self.candidates[candidate_pos]
+                    .remaining_slots
+                    .saturating_sub(1);
+                return Some(self.candidates[candidate_pos].building_idx);
             }
         }
-
-        let (candidate_pos, _, _, building_idx) = best?;
-        self.candidates[candidate_pos].remaining_slots = self.candidates[candidate_pos]
-            .remaining_slots
-            .saturating_sub(1);
-        Some(building_idx)
+        None
     }
 
     fn release_home(&mut self, allocator: &BuildingAllocator, building_idx: usize) {
         let Some(candidate) = vacancy_candidate_for_building(allocator, building_idx) else {
             return;
         };
-        if let Some(existing) = self
+        if let Some(existing_pos) = self
             .candidates
-            .iter_mut()
-            .find(|existing| existing.building_idx == building_idx)
+            .iter()
+            .position(|existing| existing.building_idx == building_idx)
         {
-            existing.level = candidate.level;
-            existing.remaining_slots = candidate.remaining_slots;
+            let needs_reindex = self.candidates[existing_pos].level != candidate.level
+                || self.candidates[existing_pos].chunk != candidate.chunk;
+            self.candidates[existing_pos] = candidate;
+            if needs_reindex {
+                self.rebuild_indices();
+            }
             return;
         }
         self.candidates.push(candidate);
-        self.sort_candidates();
+        self.index_candidate(self.candidates.len() - 1);
     }
 
-    fn sort_candidates(&mut self) {
-        self.candidates.sort_unstable_by(|left, right| {
-            right
-                .level
-                .cmp(&left.level)
-                .then_with(|| left.building_idx.cmp(&right.building_idx))
-        });
+    fn rebuild_indices(&mut self) {
+        self.levels_desc.clear();
+        self.by_level.clear();
+        self.by_level_chunk.clear();
+        self.level_chunk_bounds.clear();
+        for candidate_pos in 0..self.candidates.len() {
+            self.index_candidate(candidate_pos);
+        }
+    }
+
+    fn index_candidate(&mut self, candidate_pos: usize) {
+        let candidate = &self.candidates[candidate_pos];
+        insert_level_desc(&mut self.levels_desc, candidate.level);
+        insert_candidate_pos_by_building(
+            self.by_level.entry(candidate.level).or_default(),
+            &self.candidates,
+            candidate_pos,
+        );
+        insert_candidate_pos_by_building(
+            self.by_level_chunk
+                .entry(candidate.level)
+                .or_default()
+                .entry(candidate.chunk)
+                .or_default(),
+            &self.candidates,
+            candidate_pos,
+        );
+        update_level_chunk_bounds(
+            &mut self.level_chunk_bounds,
+            candidate.level,
+            candidate.chunk,
+        );
+    }
+
+    fn first_candidate_in_level(
+        &self,
+        level: u8,
+        allocator: &BuildingAllocator,
+        current_home: Option<usize>,
+    ) -> Option<usize> {
+        self.by_level
+            .get(&level)?
+            .iter()
+            .copied()
+            .find(|&pos| self.candidate_is_available(pos, allocator, current_home))
+    }
+
+    fn nearest_candidate_in_level(
+        &self,
+        level: u8,
+        origin_x: f32,
+        origin_y: f32,
+        allocator: &BuildingAllocator,
+        current_home: Option<usize>,
+    ) -> Option<usize> {
+        let by_chunk = self.by_level_chunk.get(&level)?;
+        let origin_chunk = RegionGraph::get_chunk_coords(Vector3::new(origin_x, 0.0, origin_y));
+        let max_ring =
+            max_chunk_ring_for_level(self.level_chunk_bounds.get(&level).copied()?, origin_chunk);
+        let mut best: Option<(usize, f32, usize)> = None;
+        for ring in 0..=max_ring {
+            for dx in -ring..=ring {
+                for dz in -ring..=ring {
+                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
+                        continue;
+                    }
+                    let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
+                    let Some(candidate_positions) = by_chunk.get(&chunk_key) else {
+                        continue;
+                    };
+                    for &candidate_pos in candidate_positions {
+                        if !self.candidate_is_available(candidate_pos, allocator, current_home) {
+                            continue;
+                        }
+                        let building_idx = self.candidates[candidate_pos].building_idx;
+                        let building = &allocator.buildings[building_idx];
+                        let distance = squared_distance_to_building(origin_x, origin_y, building);
+                        let challenger = (candidate_pos, distance, building_idx);
+                        if best.is_none_or(|current| {
+                            challenger.1.total_cmp(&current.1).is_lt()
+                                || (challenger.1.total_cmp(&current.1).is_eq()
+                                    && challenger.2 < current.2)
+                        }) {
+                            best = Some(challenger);
+                        }
+                    }
+                }
+            }
+            if let Some((_, best_distance, _)) = best {
+                if ring == max_ring
+                    || best_distance
+                        <= min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1)
+                {
+                    break;
+                }
+            }
+        }
+        best.map(|(candidate_pos, _, _)| candidate_pos)
+    }
+
+    fn candidate_is_available(
+        &self,
+        candidate_pos: usize,
+        allocator: &BuildingAllocator,
+        current_home: Option<usize>,
+    ) -> bool {
+        let Some(candidate) = self.candidates.get(candidate_pos) else {
+            return false;
+        };
+        if candidate.remaining_slots == 0 || Some(candidate.building_idx) == current_home {
+            return false;
+        }
+        allocator
+            .buildings
+            .get(candidate.building_idx)
+            .is_some_and(|building| {
+                !building.broken
+                    && !building.economy_broken
+                    && !building.is_deserted
+                    && !building.pending_redevelopment
+                    && matches!(building.zone_type, ZoneType::Residential)
+            })
     }
 }
 
@@ -199,7 +314,107 @@ fn vacancy_candidate_for_building(
         building_idx,
         level: building.level,
         remaining_slots,
+        chunk: building_chunk(building),
     })
+}
+
+fn insert_level_desc(levels: &mut Vec<u8>, level: u8) {
+    match levels.binary_search_by(|existing| existing.cmp(&level).reverse()) {
+        Ok(_) => {}
+        Err(pos) => levels.insert(pos, level),
+    }
+}
+
+fn insert_candidate_pos_by_building(
+    positions: &mut Vec<usize>,
+    candidates: &[VacancyCandidate],
+    candidate_pos: usize,
+) {
+    let building_idx = candidates[candidate_pos].building_idx;
+    let insert_pos = positions
+        .binary_search_by(|&existing_pos| candidates[existing_pos].building_idx.cmp(&building_idx))
+        .unwrap_or_else(|pos| pos);
+    positions.insert(insert_pos, candidate_pos);
+}
+
+fn update_level_chunk_bounds(
+    bounds_by_level: &mut BTreeMap<u8, ((i32, i32), (i32, i32))>,
+    level: u8,
+    chunk: (i32, i32),
+) {
+    bounds_by_level
+        .entry(level)
+        .and_modify(|(min_chunk, max_chunk)| {
+            min_chunk.0 = min_chunk.0.min(chunk.0);
+            min_chunk.1 = min_chunk.1.min(chunk.1);
+            max_chunk.0 = max_chunk.0.max(chunk.0);
+            max_chunk.1 = max_chunk.1.max(chunk.1);
+        })
+        .or_insert((chunk, chunk));
+}
+
+fn max_chunk_ring_for_level(bounds: ((i32, i32), (i32, i32)), origin_chunk: (i32, i32)) -> i32 {
+    let (min_chunk, max_chunk) = bounds;
+    [
+        (origin_chunk.0 - min_chunk.0).abs(),
+        (origin_chunk.1 - min_chunk.1).abs(),
+        (origin_chunk.0 - max_chunk.0).abs(),
+        (origin_chunk.1 - max_chunk.1).abs(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+}
+
+fn min_possible_ring_distance_sq(
+    origin_x: f32,
+    origin_y: f32,
+    origin_chunk: (i32, i32),
+    ring: i32,
+) -> f32 {
+    let mut best = f32::INFINITY;
+    for dx in -ring..=ring {
+        for dz in -ring..=ring {
+            if ring > 0 && dx.abs() != ring && dz.abs() != ring {
+                continue;
+            }
+            let chunk = (origin_chunk.0 + dx, origin_chunk.1 + dz);
+            best = best.min(squared_distance_to_chunk(origin_x, origin_y, chunk));
+        }
+    }
+    best
+}
+
+fn squared_distance_to_chunk(origin_x: f32, origin_y: f32, chunk: (i32, i32)) -> f32 {
+    let min_x = chunk.0 as f32 * RegionGraph::CHUNK_SIZE;
+    let max_x = min_x + RegionGraph::CHUNK_SIZE;
+    let min_y = chunk.1 as f32 * RegionGraph::CHUNK_SIZE;
+    let max_y = min_y + RegionGraph::CHUNK_SIZE;
+    let dx = if origin_x < min_x {
+        min_x - origin_x
+    } else if origin_x > max_x {
+        origin_x - max_x
+    } else {
+        0.0
+    };
+    let dy = if origin_y < min_y {
+        min_y - origin_y
+    } else if origin_y > max_y {
+        origin_y - max_y
+    } else {
+        0.0
+    };
+    dx * dx + dy * dy
+}
+
+fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
+    let dx = building.center_x - origin_x;
+    let dy = building.center_y - origin_y;
+    dx * dx + dy * dy
+}
+
+fn building_chunk(building: &Building) -> (i32, i32) {
+    RegionGraph::get_chunk_coords(Vector3::new(building.center_x, 0.0, building.center_y))
 }
 
 /// Explicit household runtime record anchored to a residential building.

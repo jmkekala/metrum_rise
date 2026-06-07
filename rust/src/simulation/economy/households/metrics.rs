@@ -139,12 +139,11 @@ pub(crate) fn building_operating_buffer_days(
     }
 }
 
-pub(crate) fn building_staffing_ratio(
-    allocator: &BuildingAllocator,
-    building_idx: usize,
-    building: &Building,
-) -> f32 {
-    let worker_capacity = allocator.worker_capacity(building_idx);
+pub(crate) fn building_staffing_ratio(catalog: &RuntimeEconomyCatalog, building: &Building) -> f32 {
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
+    };
+    let worker_capacity = profile.worker_capacity;
     if worker_capacity == 0 {
         0.0
     } else {

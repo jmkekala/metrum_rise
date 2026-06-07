@@ -13,7 +13,6 @@ use rayon::prelude::*;
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::quantization::quantize_export_amount;
 use super::resource::{freight_profile_for_building, required_unit_price};
-use super::route_cache::FreightRouteCache;
 use super::routing::connected_border_nodes;
 use super::timing::{adjusted_travel_seconds, eta_hours_from_travel_seconds};
 
@@ -43,7 +42,7 @@ impl ShipmentSystem {
         }
         let export_multiplier = tuning.owa_export_price_multiplier;
         let mut reservations = self.build_reservation_views(resource_count);
-        let mut route_cache = FreightRouteCache::default();
+        let mut route_cache = std::mem::take(&mut self.freight_route_cache);
         let mut eligible_sources: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -187,5 +186,6 @@ impl ShipmentSystem {
                 break;
             }
         }
+        self.freight_route_cache = route_cache;
     }
 }

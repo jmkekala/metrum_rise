@@ -1,4 +1,4 @@
-//! Per-pass freight route ETA cache.
+//! Revision-scoped freight route ETA cache.
 
 use std::collections::BTreeMap;
 
@@ -6,14 +6,19 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
-/// Caches expensive freight ETA lookups during one logistics planning pass.
-#[derive(Default)]
+/// Caches expensive freight ETA lookups while topology revisions remain unchanged.
+#[derive(Clone, Debug, Default)]
 pub(super) struct FreightRouteCache {
     building_to_building: BTreeMap<(usize, usize), Option<f32>>,
     border_to_building: BTreeMap<(u32, usize), Option<f32>>,
 }
 
 impl FreightRouteCache {
+    pub(super) fn clear(&mut self) {
+        self.building_to_building.clear();
+        self.border_to_building.clear();
+    }
+
     pub(super) fn between_buildings(
         &mut self,
         source_idx: usize,

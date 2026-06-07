@@ -16,6 +16,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
     ) {
+        self.refresh_freight_route_cache(allocator, transit_network);
         self.progress_shipments(allocator);
         self.decrement_building_cooldowns(allocator);
         self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
@@ -29,5 +30,24 @@ impl ShipmentSystem {
                 building.shipment_cooldown_hours -= 1;
             }
         });
+    }
+
+    fn refresh_freight_route_cache(
+        &mut self,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+    ) {
+        let building_revision = allocator.building_ref_revision();
+        let entrance_revision = allocator.entrance_ref_revision();
+        let cch_generation = transit_network.cch_graph.build_generation;
+        if self.freight_route_cache_building_revision != building_revision
+            || self.freight_route_cache_entrance_revision != entrance_revision
+            || self.freight_route_cache_cch_generation != cch_generation
+        {
+            self.freight_route_cache.clear();
+            self.freight_route_cache_building_revision = building_revision;
+            self.freight_route_cache_entrance_revision = entrance_revision;
+            self.freight_route_cache_cch_generation = cch_generation;
+        }
     }
 }

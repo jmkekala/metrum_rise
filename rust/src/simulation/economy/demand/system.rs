@@ -9,7 +9,9 @@ use super::credits::{
 use super::diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
-use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
+use super::snapshot::{
+    DailyDemandSnapshot, ResidentialOccupantScratch, ResidentialOccupantSnapshot,
+};
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use super::{UseTuningBool, UseTuningF32};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -48,6 +50,7 @@ pub struct DemandSystem {
     pub(super) last_admission_diagnostics: HouseholdAdmissionDiagnostics,
     pub(super) last_removal_diagnostics: HouseholdRemovalDiagnostics,
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
+    pub(super) residential_occupant_scratch: ResidentialOccupantScratch,
 }
 
 impl DemandSystem {
@@ -84,6 +87,7 @@ impl DemandSystem {
             last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
+            residential_occupant_scratch: ResidentialOccupantScratch::default(),
         }
     }
 
@@ -123,6 +127,7 @@ impl DemandSystem {
             households,
             catalog.as_ref(),
             economy_tuning.as_ref(),
+            &mut self.residential_occupant_scratch,
         );
 
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);

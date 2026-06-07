@@ -10,7 +10,8 @@ use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
+    RuntimeEconomyTuning,
 };
 #[cfg(test)]
 use crate::simulation::economy::definitions::{
@@ -29,6 +30,15 @@ pub(super) struct ResidentialOccupantSnapshot {
     pub(super) min_reserve_days_by_building: Vec<f32>,
 }
 
+#[derive(Default)]
+/// Reusable atomics for the parallel residential occupant reduction.
+pub(super) struct ResidentialOccupantScratch {
+    /// Per-building live household counts during one snapshot reduction.
+    household_count_by_building: Vec<AtomicU32>,
+    /// Per-building minimum reserve-days value encoded as `f32::to_bits()`.
+    min_reserve_days_by_building: Vec<AtomicU32>,
+}
+
 impl ResidentialOccupantSnapshot {
     #[cfg(test)]
     pub(super) fn from_runtime(
@@ -39,7 +49,14 @@ impl ResidentialOccupantSnapshot {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        Self::from_runtime_with_catalog(allocator, households, catalog.as_ref(), tuning.as_ref())
+        let mut scratch = ResidentialOccupantScratch::default();
+        Self::from_runtime_with_catalog(
+            allocator,
+            households,
+            catalog.as_ref(),
+            tuning.as_ref(),
+            &mut scratch,
+        )
     }
 
     pub(super) fn from_runtime_with_catalog(
@@ -47,13 +64,11 @@ impl ResidentialOccupantSnapshot {
         households: &HouseholdSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        scratch: &mut ResidentialOccupantScratch,
     ) -> Self {
-        let household_count_by_building: Vec<_> = (0..allocator.buildings.len())
-            .map(|_| AtomicU32::new(0))
-            .collect();
-        let min_reserve_days_by_building: Vec<_> = (0..allocator.buildings.len())
-            .map(|_| AtomicU32::new(f32::INFINITY.to_bits()))
-            .collect();
+        scratch.reset(allocator.buildings.len());
+        let household_count_by_building = &scratch.household_count_by_building;
+        let min_reserve_days_by_building = &scratch.min_reserve_days_by_building;
 
         households.households.par_iter().for_each(|household| {
             if household.member_count == 0 {
@@ -76,14 +91,25 @@ impl ResidentialOccupantSnapshot {
 
         Self {
             household_count_by_building: household_count_by_building
-                .into_iter()
+                .iter()
                 .map(|count| count.load(Ordering::Relaxed))
                 .collect(),
             min_reserve_days_by_building: min_reserve_days_by_building
-                .into_iter()
+                .iter()
                 .map(|reserve| f32::from_bits(reserve.load(Ordering::Relaxed)))
                 .collect(),
         }
+    }
+}
+
+impl ResidentialOccupantScratch {
+    fn reset(&mut self, building_count: usize) {
+        resize_atomic_u32_scratch(&mut self.household_count_by_building, building_count, 0);
+        resize_atomic_u32_scratch(
+            &mut self.min_reserve_days_by_building,
+            building_count,
+            f32::INFINITY.to_bits(),
+        );
     }
 }
 
@@ -109,6 +135,18 @@ fn atomic_min_f32(target: &AtomicU32, value: f32) {
             Ok(_) => return,
             Err(next_bits) => current_bits = next_bits,
         }
+    }
+}
+
+fn resize_atomic_u32_scratch(scratch: &mut Vec<AtomicU32>, len: usize, reset_value: u32) {
+    if scratch.len() > len {
+        scratch.truncate(len);
+    }
+    while scratch.len() < len {
+        scratch.push(AtomicU32::new(reset_value));
+    }
+    for slot in scratch {
+        slot.store(reset_value, Ordering::Relaxed);
     }
 }
 
@@ -547,15 +585,12 @@ impl BuildingSnapshotAccumulator {
 
         let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
 
-        if matches!(
-            building.zone_type,
-            ZoneType::Commercial | ZoneType::Industrial
-        ) {
-            let worker_capacity = allocator.worker_capacity(idx);
+        if let Some(profile) =
+            active_profile.filter(|profile| profile_offers_work(building, profile))
+        {
+            let worker_capacity = profile.worker_capacity;
             if worker_capacity > 0 {
-                let average_daily_wage = active_profile
-                    .map(|profile| profile.average_daily_wage())
-                    .unwrap_or(0.0);
+                let average_daily_wage = profile.average_daily_wage();
                 let filled_workers = building.worker_count.min(worker_capacity);
                 self.filled_job_count = self.filled_job_count.saturating_add(filled_workers);
                 if average_daily_wage > 0.1 {
@@ -671,6 +706,16 @@ impl BuildingSnapshotAccumulator {
             other.local_industrial_output_capacity_by_resource,
         );
     }
+}
+
+fn profile_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> bool {
+    matches!(
+        building.zone_type,
+        ZoneType::Commercial | ZoneType::Industrial
+    ) || matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
+    )
 }
 
 fn collect_building_snapshot_accumulator(
