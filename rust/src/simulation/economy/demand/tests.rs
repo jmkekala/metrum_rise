@@ -98,7 +98,11 @@ fn register_family_asset_with_economy_profile(
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            flat_size_m2: None,
+            flat_size_m2: if matches!(zone_type, ZoneType::Residential | ZoneType::Mixed) {
+                Some(80.0)
+            } else {
+                None
+            },
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone_class),
             density: Some("low".to_owned()),

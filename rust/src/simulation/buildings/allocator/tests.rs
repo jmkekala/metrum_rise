@@ -130,7 +130,11 @@ fn register_test_asset_with_family_level(
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            flat_size_m2: None,
+            flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
+                Some(80.0)
+            } else {
+                None
+            },
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone),
             density: Some("low".to_owned()),
@@ -1133,7 +1137,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            flat_size_m2: None,
+            flat_size_m2: Some(80.0),
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(ZoneClass::Residential),
             density: Some("low".to_owned()),

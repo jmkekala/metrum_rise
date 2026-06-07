@@ -2047,10 +2047,12 @@ Current status:
   field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
 - three profiles landed in `economy/profiles.toml`: `power_plant_basic` (power, 4 workers, three-shift),
   `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
-- `resolve_building_utilities` rewritten as a three-phase pass: (1) scan for active providers and
-  determine service availability, (2) charge consumers at local rates (6.5/day total) when all three
-  services are locally present, or OWA rates (8.0/12.0/day) otherwise, (3) distribute local revenue
-  evenly to active utility providers
+- `resolve_building_utilities` rewritten as a three-phase pass: (1) scan for active staffed
+  providers and determine service availability, (2) charge consumers at local rates (6.5/day total)
+  when all three services are locally present, or OWA rates (8.0/12.0/day) otherwise, (3)
+  distribute local revenue evenly to active utility providers
+- active utility providers must be non-broken, non-deserted, connected to the network, and staffed
+  by at least one worker
 - `ensure_building_startup_float` extended to seed `STARTUP_OPERATING_FLOAT` for utility buildings
   (ZoneType::None with UtilityProducer or UtilityProcessor profile) so they can pay wages on spawn
 - city assets for these profiles must be added via the asset editor; no invisible buildings exist
@@ -2374,7 +2376,7 @@ At the start of `assign_agent_workplaces`, before the job-scoring loop, do a sin
 ```
 for each agent i:
     if work_building[i] != MAX and allocator.buildings[work_building[i]].is_deserted:
-        reserved_workers[work_building[i]] -= 1
+        worker_count[work_building[i]] -= 1
         work_building[i] = MAX
         job_lock_days[i] = 0
         consecutive_unpaid_days[i] = 0
@@ -2385,8 +2387,7 @@ immediately. Do not rely on the unpaid-wage path to clear these workers — that
 additional days and leaves workers attached to a building that no longer runs throughput, producing
 a misleading `worker_count` reading on the dead building.
 
-`assign_agent_workplaces` currently does not filter on `is_deserted` in its candidate scoring
-loop. This must be added: skip any candidate building where `is_deserted == true`, regardless of
+`assign_agent_workplaces` skips any candidate building where `is_deserted == true`, regardless of
 whether the agent is already assigned there.
 
 ### Replacement Targets

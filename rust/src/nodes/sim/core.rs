@@ -1067,6 +1067,9 @@ impl SimCore {
         self.households.daily_settlement_tick(
             &mut self.agents,
             &mut self.allocator,
+            &self.logistics,
+            &self.transit_network,
+            &self.region_graph,
             &mut self.treasury.balance,
         );
         // City treasury: settle daily road upkeep on the fiscal cadence.

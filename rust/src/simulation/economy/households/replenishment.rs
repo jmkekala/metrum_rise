@@ -1,5 +1,7 @@
 //! Household stock consumption, store reservations, pickup, and replenishment state.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
@@ -12,6 +14,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::zoning::ZoneType;
+use rayon::prelude::*;
 
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
@@ -58,10 +61,10 @@ impl HouseholdSystem {
     pub(super) fn consume_household_stock(&mut self, agents: &mut AgentSystem) {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        for hid in 0..self.households.len() {
-            let household = &mut self.households[hid];
+        let any_zero_stock = AtomicBool::new(false);
+        self.households.par_iter_mut().for_each(|household| {
             if household.member_count == 0 {
-                continue;
+                return;
             }
             let hourly_consumption = household.member_count as f32 * household.consumption_rate
                 / OPERATIONAL_HOURS_PER_DAY;
@@ -79,7 +82,7 @@ impl HouseholdSystem {
                 household.replenishment_state,
                 REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
             ) {
-                continue;
+                return;
             } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
                 if household.cooldown_hours > 0 {
                     household.cooldown_hours -= 1;
@@ -93,10 +96,15 @@ impl HouseholdSystem {
             }
 
             if household.stock_days == 0.0 {
-                for i in 0..agents.len() {
-                    if agents.household_id[i] == hid {
-                        agents.happiness[i] = (agents.happiness[i] - 4.0).clamp(0.0, 100.0);
-                    }
+                any_zero_stock.store(true, Ordering::Relaxed);
+            }
+        });
+
+        if any_zero_stock.load(Ordering::Relaxed) {
+            for i in 0..agents.len() {
+                let hid = agents.household_id[i];
+                if hid < self.households.len() && self.households[hid].stock_days == 0.0 {
+                    agents.happiness[i] = (agents.happiness[i] - 4.0).clamp(0.0, 100.0);
                 }
             }
         }
@@ -128,12 +136,14 @@ impl HouseholdSystem {
         let stock_critical_purchase_available = allocator.buildings.iter().any(|store| {
             !store.broken
                 && !store.economy_broken
+                && !store.is_deserted
                 && matches!(store.zone_type, ZoneType::Commercial)
                 && store.inventory_units(household_supply_resource) > 0.0
                 && economy_profile_for_building(&catalog, store)
                     .is_some_and(|profile| profile.output_port(household_supply_resource).is_some())
         });
         let mut diagnostics = ReplenishmentDiagnostics::default();
+        let mut candidates = Vec::with_capacity(GROCERY_SEARCH_CANDIDATES);
 
         for hid in 0..self.households.len() {
             let household = &self.households[hid];
@@ -157,12 +167,13 @@ impl HouseholdSystem {
             }
 
             let home = &allocator.buildings[household.home_building_id];
-            let candidates = allocator.find_nearby_buildings_by_zones(
+            allocator.fill_nearby_buildings_by_zones(
                 home.center_x,
                 home.center_y,
                 &[ZoneType::Commercial],
                 GROCERY_SEARCH_MAX_RING,
                 GROCERY_SEARCH_CANDIDATES,
+                &mut candidates,
             );
             diagnostics.attempts += 1;
             diagnostics.candidate_count += candidates.len() as u32;
@@ -175,7 +186,7 @@ impl HouseholdSystem {
             let mut desired_amount = (target_stock - household.stock).max(0.0);
             let mut found_sale = None;
 
-            for candidate in candidates {
+            for &candidate in &candidates {
                 let store = &allocator.buildings[candidate];
                 // A store can sell from existing inventory even when utility
                 // service is temporarily unavailable — only broken or
@@ -183,8 +194,9 @@ impl HouseholdSystem {
                 if store.inventory_units(household_supply_resource) <= 0.0
                     || store.broken
                     || store.economy_broken
+                    || store.is_deserted
                 {
-                    if store.broken || store.economy_broken {
+                    if store.broken || store.economy_broken || store.is_deserted {
                         diagnostics.rejected_invalid_store += 1;
                     } else {
                         diagnostics.rejected_empty += 1;
@@ -285,7 +297,9 @@ impl HouseholdSystem {
                 if household.pickup_eta_hours > 0 {
                     household.pickup_eta_hours -= 1;
                 }
-                household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
+                if household.pickup_eta_hours == 0 {
+                    household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
+                }
             }
             REPLENISHMENT_PICKUP_PENDING => {
                 let store_idx = household.reserved_store_building_id;
@@ -303,6 +317,18 @@ impl HouseholdSystem {
                 }
 
                 let store = &mut allocator.buildings[store_idx];
+                if store.broken || store.economy_broken || store.is_deserted {
+                    let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+                        panic!("could not load built-in economy runtime tuning: {err}")
+                    });
+                    household.budget += household.reserved_total_cost;
+                    clear_replenishment_request(household);
+                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                    household.cooldown_hours = tuning
+                        .operational_clock
+                        .household_replenishment_retry_cooldown_hours;
+                    return;
+                }
                 store.revenue += household.reserved_total_cost;
                 store.operating_budget += household.reserved_total_cost;
                 household.stock += household.reserved_amount;

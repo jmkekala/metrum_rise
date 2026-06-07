@@ -77,13 +77,30 @@ impl HouseholdSystem {
         );
 
         let removed_count = selected_households.len() as u32;
+        let mut selected_flags = vec![false; self.households.len()];
+        for &household_id in &selected_households {
+            selected_flags[household_id] = true;
+        }
+
+        let mut agent_indices = Vec::new();
+        for agent_idx in 0..agents.len() {
+            let household_id = agents.household_id[agent_idx];
+            if household_id < selected_flags.len() && selected_flags[household_id] {
+                agent_indices.push(agent_idx);
+            }
+        }
+        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
+        for agent_idx in agent_indices {
+            agents.kill_agent(agent_idx, allocator);
+        }
+
         for household_id in selected_households {
-            self.remove_household_at_index(household_id, agents, allocator);
+            self.remove_household_record_at_index(household_id, agents, allocator);
         }
         removed_count
     }
 
-    pub(super) fn remove_household_at_index(
+    fn remove_household_record_at_index(
         &mut self,
         household_id: usize,
         agents: &mut AgentSystem,
@@ -108,14 +125,6 @@ impl HouseholdSystem {
             }
         }
 
-        let mut agent_indices = Vec::new();
-        for agent_idx in 0..agents.len() {
-            if agents.household_id[agent_idx] == household_id {
-                agent_indices.push(agent_idx);
-            }
-        }
-        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
-
         debug_log!(
             "economy",
             "removing household_id={} members={} home_building={}",
@@ -123,10 +132,6 @@ impl HouseholdSystem {
             self.households[household_id].member_count,
             self.households[household_id].home_building_id
         );
-
-        for agent_idx in agent_indices {
-            agents.kill_agent(agent_idx, allocator);
-        }
 
         // Release the household's residential slot if they had a home.
         let home_idx = self.households[household_id].home_building_id;

@@ -415,11 +415,10 @@ impl BuildingAllocator {
                 // Derive household size from the building's authored flat size.
                 // Baseline: 40m2 per person, minimum 1, maximum 5.
                 let flat_size = self.flat_size_m2(building_idx);
-                let derived_size = if flat_size > 1.0 {
-                    ((flat_size / 40.0).ceil() as u16).clamp(1, 5)
-                } else {
-                    2 // Legacy absolute fallback
-                };
+                if flat_size <= 1.0 {
+                    continue;
+                }
+                let derived_size = ((flat_size / 40.0).ceil() as u16).clamp(1, 5);
 
                 fallback_size = derived_size;
                 break 'fallback;

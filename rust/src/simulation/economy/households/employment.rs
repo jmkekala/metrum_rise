@@ -8,16 +8,18 @@ use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::definitions::{
-    RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
-    load_runtime_economy_tuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 
 const W_INCOME: f32 = 0.35;
 const W_STOCK: f32 = 0.35;
 const W_JOB: f32 = 0.20;
 const W_COMMUTE: f32 = 0.10;
-const GO_TO_WORK_THRESHOLD: f32 = 0.10;
+const GO_TO_WORK_THRESHOLD: f32 = 0.45;
 const JOB_LOCK_DAYS: u8 = 7;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
 const JOB_SEARCH_MAX_RING: i32 = 8;
@@ -47,6 +49,8 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -54,9 +58,6 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
-
-        let mut reserved_workers: Vec<u32> =
-            allocator.buildings.iter().map(|b| b.worker_count).collect();
 
         // Ejection pre-pass: immediately detach workers from newly-bankrupt buildings so they
         // enter the open job market this same day rather than waiting for unpaid-wage accumulation.
@@ -66,13 +67,13 @@ impl HouseholdSystem {
                 continue;
             }
             if allocator.buildings[work].is_deserted {
-                if work < reserved_workers.len() {
-                    reserved_workers[work] = reserved_workers[work].saturating_sub(1);
-                }
+                allocator.buildings[work].worker_count =
+                    allocator.buildings[work].worker_count.saturating_sub(1);
                 agents.assign_work_building(i, usize::MAX, 0);
             }
         }
 
+        let mut candidates = Vec::with_capacity(JOB_SEARCH_CANDIDATES);
         for i in 0..agents.len() {
             if agents.transit[i] != TRANSIT_IN_BUILDING {
                 continue;
@@ -90,12 +91,20 @@ impl HouseholdSystem {
 
             let household = &self.households[hid];
             let home = &allocator.buildings[home_idx];
-            let mut candidates = allocator.find_nearby_buildings_by_zones(
+            allocator.fill_nearby_buildings(
                 home.center_x,
                 home.center_y,
-                &[ZoneType::Industrial, ZoneType::Commercial],
                 JOB_SEARCH_MAX_RING,
                 JOB_SEARCH_CANDIDATES,
+                &mut candidates,
+                |_, building| {
+                    if building.is_deserted || building.broken || building.economy_broken {
+                        return false;
+                    }
+                    catalog
+                        .profile_by_runtime_id(building.economy_profile_runtime_id)
+                        .is_some_and(|profile| building_offers_work(building, profile))
+                },
             );
             if agents.work_building[i] != usize::MAX
                 && !candidates.contains(&agents.work_building[i])
@@ -110,7 +119,7 @@ impl HouseholdSystem {
 
             let mut best_job = usize::MAX;
             let mut best_score = 0.0;
-            for candidate in candidates {
+            for &candidate in &candidates {
                 if candidate >= allocator.buildings.len() {
                     continue;
                 }
@@ -118,19 +127,21 @@ impl HouseholdSystem {
                 if building.is_deserted || building.broken || building.economy_broken {
                     continue;
                 }
-                if !matches!(
-                    building.zone_type,
-                    ZoneType::Industrial | ZoneType::Commercial
-                ) {
+                let Some(economy_profile) =
+                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                else {
+                    continue;
+                };
+                if !building_offers_work(building, economy_profile) {
+                    continue;
+                }
+                if !workplace_is_reachable(allocator, home_idx, candidate, transit_network, graph) {
                     continue;
                 }
 
                 // Budget-based hiring constraint: Only allow hiring if the building can afford
                 // to pay at least the current staff plus this potential new worker for one day.
-                let average_daily_wage = catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map(|p| p.average_daily_wage())
-                    .unwrap_or(0.0);
+                let average_daily_wage = economy_profile.average_daily_wage();
 
                 let worker_capacity = allocator.worker_capacity(candidate);
 
@@ -148,7 +159,7 @@ impl HouseholdSystem {
                 }
 
                 let already_assigned = agents.work_building[i] == candidate;
-                let reserved = reserved_workers[candidate];
+                let reserved = allocator.buildings[candidate].worker_count;
                 let open_slots = if already_assigned {
                     // If already working here, we don't need a "new" budget slot,
                     // but we still respect the physical capacity.
@@ -177,10 +188,12 @@ impl HouseholdSystem {
                     || agents.job_lock_days[i] == 0
                     || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
                 if old_job != best_job && can_switch {
-                    if old_job != usize::MAX && old_job < reserved_workers.len() {
-                        reserved_workers[old_job] = reserved_workers[old_job].saturating_sub(1);
+                    if old_job != usize::MAX && old_job < allocator.buildings.len() {
+                        allocator.buildings[old_job].worker_count =
+                            allocator.buildings[old_job].worker_count.saturating_sub(1);
                     }
-                    reserved_workers[best_job] = reserved_workers[best_job].saturating_add(1);
+                    allocator.buildings[best_job].worker_count =
+                        allocator.buildings[best_job].worker_count.saturating_add(1);
                     agents.assign_work_building(i, best_job, JOB_LOCK_DAYS);
                     debug_log!(
                         "economy",
@@ -194,11 +207,6 @@ impl HouseholdSystem {
                     );
                 }
             }
-        }
-
-        // Commit reserved counts back to buildings so production and demand metrics are accurate.
-        for (idx, count) in reserved_workers.into_iter().enumerate() {
-            allocator.buildings[idx].worker_count = count;
         }
     }
 
@@ -267,4 +275,33 @@ fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
     let dx = home.center_x - work.center_x;
     let dy = home.center_y - work.center_y;
     ((dx * dx + dy * dy).sqrt() / 2000.0).clamp(0.0, 1.0)
+}
+
+fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> bool {
+    matches!(
+        building.zone_type,
+        ZoneType::Commercial | ZoneType::Industrial
+    ) || matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
+    )
+}
+
+fn workplace_is_reachable(
+    allocator: &BuildingAllocator,
+    home_idx: usize,
+    work_idx: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> bool {
+    if home_idx == work_idx {
+        return true;
+    }
+    if allocator.entrances.len() == allocator.buildings.len() {
+        return allocator
+            .freight_car_eta_between_buildings(home_idx, work_idx, transit_network, graph)
+            .is_some();
+    }
+    allocator.buildings[home_idx].edge_idx != usize::MAX
+        && allocator.buildings[work_idx].edge_idx != usize::MAX
 }

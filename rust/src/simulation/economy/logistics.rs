@@ -716,6 +716,21 @@ impl ShipmentSystem {
         }
     }
 
+    /// Returns the current local-source outbound reservation slots indexed by building/resource.
+    pub(crate) fn reserved_outbound_view(&self, resource_count: usize) -> Vec<f32> {
+        let (reserved_outbound, _, _, _) = self.build_reservation_views(resource_count);
+        reserved_outbound
+    }
+
+    /// Computes the flattened reservation slot for a building/resource pair.
+    pub(crate) fn reservation_slot_for_building(
+        building_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+        resource_count: usize,
+    ) -> Option<usize> {
+        reservation_slot(building_idx, resource_runtime_id, resource_count)
+    }
+
     fn build_reservation_views(
         &self,
         resource_count: usize,

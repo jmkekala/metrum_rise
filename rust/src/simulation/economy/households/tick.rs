@@ -27,7 +27,7 @@ impl HouseholdSystem {
         logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
         self.consume_household_stock(agents);
         self.run_household_replenishment(allocator, absolute_hour);
-        self.assign_agent_workplaces(agents, allocator);
+        self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
     }
 
@@ -39,6 +39,9 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        logistics: &ShipmentSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
         treasury_balance: &mut f64,
     ) {
         self.materialize_arrived_household_carriers(agents, allocator);
@@ -57,11 +60,11 @@ impl HouseholdSystem {
         // Step 2: pay wages (budget does not go negative from this step).
         self.pay_daily_wages(agents, allocator);
         // Step 3: pay unemployment benefit to eligible households from the city treasury.
-        self.pay_unemployment_benefits(agents, treasury_balance);
+        self.pay_unemployment_benefits(agents, allocator, treasury_balance);
         // Steps 4 + 5: charge utility, then liquidate if still negative.
-        self.settle_daily_utilities(allocator);
+        self.settle_daily_utilities(allocator, logistics);
         self.resolve_household_housing(agents, allocator);
-        self.assign_agent_workplaces(agents, allocator);
+        self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
     }
 }

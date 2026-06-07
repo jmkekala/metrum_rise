@@ -533,12 +533,14 @@ impl BuildingSnapshotAccumulator {
             self.occupied_household_slots = self.occupied_household_slots.saturating_add(occupied);
             let free_slots = household_capacity.saturating_sub(occupied);
             if free_slots > 0 {
-                let candidate_size =
-                    candidate_household_size_from_flat_size(allocator.flat_size_m2(idx));
-                self.candidate_household_size_sum += candidate_size as f32 * free_slots as f32;
-                self.candidate_household_slot_count = self
-                    .candidate_household_slot_count
-                    .saturating_add(free_slots);
+                if let Some(candidate_size) =
+                    candidate_household_size_from_flat_size(allocator.flat_size_m2(idx))
+                {
+                    self.candidate_household_size_sum += candidate_size as f32 * free_slots as f32;
+                    self.candidate_household_slot_count = self
+                        .candidate_household_slot_count
+                        .saturating_add(free_slots);
+                }
             }
         }
 
@@ -833,11 +835,11 @@ fn collect_household_snapshot_accumulator(
     merged
 }
 
-fn candidate_household_size_from_flat_size(flat_size_m2: f32) -> u16 {
+fn candidate_household_size_from_flat_size(flat_size_m2: f32) -> Option<u16> {
     if flat_size_m2 > 1.0 {
-        ((flat_size_m2 / 40.0).ceil() as u16).clamp(1, 5)
+        Some(((flat_size_m2 / 40.0).ceil() as u16).clamp(1, 5))
     } else {
-        2
+        None
     }
 }
 
@@ -860,10 +862,12 @@ fn construction_candidate_household_size_from_registry(allocator: &BuildingAlloc
         {
             continue;
         }
-        candidate_size_sum +=
+        if let Some(candidate_size) =
             candidate_household_size_from_flat_size(allocator.registry.flat_size_m2(asset_id))
-                as f32;
-        candidate_count = candidate_count.saturating_add(1);
+        {
+            candidate_size_sum += candidate_size as f32;
+            candidate_count = candidate_count.saturating_add(1);
+        }
     }
     if candidate_count == 0 {
         0.0

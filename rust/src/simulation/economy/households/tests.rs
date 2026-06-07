@@ -11,8 +11,14 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::metrics::household_supply_unit_price;
+use crate::simulation::economy::logistics::{
+    CARRIER_TRUCK, SHIPMENT_DEST_OWA, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_LOCAL, Shipment,
+    ShipmentSystem,
+};
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 
 fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -109,7 +115,11 @@ fn register_test_asset(
                 forward: [0.0, 0.0, 1.0],
             }],
             building: Some(BuildingData {
-                flat_size_m2: None,
+                flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
+                    Some(80.0)
+                } else {
+                    None
+                },
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone),
                 density: Some("low".to_owned()),
@@ -126,6 +136,57 @@ fn register_test_asset(
                     ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
                     _ => None,
                 },
+                preview_scale: Some(1.0),
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+            pivot_offset: None,
+        },
+        String::new(),
+    );
+    format!("{pack_id}:{asset_id}")
+}
+
+fn register_test_utility_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    profile_id: &str,
+) -> String {
+    allocator.registry.register(
+        pack_id,
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test Utility".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![LodEntry {
+                file: "lod0.glb".to_owned(),
+                distance_min_m: 0.0,
+                distance_max_m: None,
+            }],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+            }],
+            building: Some(BuildingData {
+                flat_size_m2: None,
+                placement_mode: PlacementMode::Explicit,
+                zone_type: None,
+                density: None,
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity: None,
+                worker_capacity: Some(4),
+                service_class: None,
+                economy_profile: Some(profile_id.to_owned()),
                 preview_scale: Some(1.0),
             }),
             prop: None,
@@ -275,6 +336,145 @@ fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
 }
 
 #[test]
+fn deserted_store_cannot_sell_household_supplies() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "deserted_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "deserted_store",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.buildings[1].is_deserted = true;
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(
+        households.households[0].reserved_store_building_id,
+        usize::MAX
+    );
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        50.0
+    );
+}
+
+#[test]
+fn replenishment_respects_pickup_eta_above_one_hour() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_RESERVED,
+        cooldown_hours: 0,
+        reserved_store_building_id: 1,
+        reserved_amount: 5.0,
+        reserved_total_cost: 10.0,
+        pickup_eta_hours: 3,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "eta_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "eta_store", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+    assert_eq!(households.households[0].pickup_eta_hours, 2);
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+    assert_eq!(households.households[0].pickup_eta_hours, 1);
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_PICKUP_PENDING
+    );
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_FULFILLED
+    );
+    assert_eq!(households.households[0].stock, 5.0);
+}
+
+#[test]
 fn low_stock_household_can_buy_affordable_partial_restock() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let unit_price = catalog
@@ -351,6 +551,190 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
 }
 
 #[test]
+fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "benefit_res",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.work_building[agent] = usize::MAX;
+
+    let mut treasury = 0.0;
+    households.pay_unemployment_benefits(&agents, &allocator, &mut treasury);
+    assert_eq!(households.households[0].unemployment_days_elapsed, 1);
+
+    households.households[0].unemployment_days_elapsed = 0;
+    allocator.buildings[0].broken = true;
+    treasury = 1_000.0;
+    households.pay_unemployment_benefits(&agents, &allocator, &mut treasury);
+    assert_eq!(households.households[0].unemployment_days_elapsed, 0);
+}
+
+#[test]
+fn ensure_agent_households_does_not_materialize_missing_household_ids() {
+    let mut households = HouseholdSystem::new();
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = usize::MAX;
+
+    households.ensure_agent_households(&mut agents);
+
+    assert!(households.households.is_empty());
+    assert_eq!(agents.household_id[agent], usize::MAX);
+}
+
+#[test]
+fn forced_liquidation_sells_only_unreserved_inventory() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "liquidation_store",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.buildings[0].operating_budget = -10.0;
+
+    let mut logistics = ShipmentSystem::new();
+    logistics.shipments.push(Shipment {
+        resource_runtime_id: household_supplies,
+        amount: 20.0,
+        source_kind: SHIPMENT_SOURCE_LOCAL,
+        source_building_id: 0,
+        source_border_node: u32::MAX,
+        destination_building_id: SHIPMENT_DEST_OWA,
+        carrier_class: CARRIER_TRUCK,
+        status: SHIPMENT_IN_TRANSIT,
+        total_cost: 0.0,
+        eta_hours: 1,
+    });
+
+    let mut households = HouseholdSystem::new();
+    households.settle_daily_utilities(&mut allocator, &logistics);
+
+    assert_eq!(
+        allocator.buildings[0].inventory_units(household_supplies),
+        20.0
+    );
+}
+
+#[test]
+fn nearby_building_search_sorts_before_truncating_candidates() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "nearby_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "nearby_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        10.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        -10.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    let chunk = RegionGraph::get_chunk_coords(Vector3::new(0.0, 0.0, 0.0));
+    allocator.building_chunks.insert(chunk, vec![2, 1, 0]);
+
+    let candidates =
+        allocator.find_nearby_buildings_by_zones(0.0, 0.0, &[ZoneType::Commercial], 0, 1);
+
+    assert_eq!(candidates, vec![1]);
+}
+
+#[test]
+fn utility_provider_must_have_workers_before_receiving_service_revenue() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "utility_consumer",
+        ZoneClass::Commercial,
+    );
+    let power_asset =
+        register_test_utility_asset(&mut allocator, "test", "power", "power_plant_basic");
+    let water_asset =
+        register_test_utility_asset(&mut allocator, "test", "water", "water_plant_basic");
+    let sewage_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "sewage",
+        "wastewater_treatment_basic",
+    );
+
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    for (asset_id, profile_id, x) in [
+        (&power_asset, "power_plant_basic", 20.0),
+        (&water_asset, "water_plant_basic", 40.0),
+        (&sewage_asset, "wastewater_treatment_basic", 60.0),
+    ] {
+        let mut building = make_building(x, ZoneType::None, asset_id, 0.0);
+        building.economy_profile_runtime_id = catalog
+            .profile_for_id(profile_id)
+            .expect("utility profile")
+            .runtime_id;
+        allocator.buildings.push(building);
+    }
+
+    let logistics = ShipmentSystem::new();
+    let mut households = HouseholdSystem::new();
+    households.settle_daily_utilities(&mut allocator, &logistics);
+    assert_eq!(allocator.buildings[1].revenue, 0.0);
+    assert_eq!(allocator.buildings[2].revenue, 0.0);
+    assert_eq!(allocator.buildings[3].revenue, 0.0);
+
+    allocator.buildings[0].operating_budget = 500.0;
+    for idx in 1..=3 {
+        allocator.buildings[idx].worker_count = 1;
+    }
+    households.settle_daily_utilities(&mut allocator, &logistics);
+    assert!(allocator.buildings[1].revenue > 0.0);
+    assert!(allocator.buildings[2].revenue > 0.0);
+    assert!(allocator.buildings[3].revenue > 0.0);
+}
+
+#[test]
 fn immigrant_household_assigns_nearby_work_during_founding() {
     let mut households = HouseholdSystem::new();
     let catalog = load_runtime_economy_catalog().expect("catalog");
@@ -392,7 +776,9 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
     }
 
     households.consume_household_stock(&mut agents);
-    households.assign_agent_workplaces(&mut agents, &mut allocator);
+    let network = TransitNetwork::new();
+    let graph = RegionGraph::new();
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[a0], 1);
     assert_eq!(agents.planned_activity[a0], 0);

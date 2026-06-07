@@ -311,6 +311,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - **Demand formula changes**: `ResidentialGrowth` no longer gates on `job_availability` (people can settle before jobs exist). `IndustrialGrowth` now uses the local industrial input-capacity deficit for active commercial inputs instead of `goods_shortage` or OWA import telemetry. `NonResidentialSpawnLimit` changed from `resident_presence` to `1.0` to break the commercial/industrial bootstrap deadlock.
 - **Unemployment benefit and household starter tuning live**: `pay_unemployment_benefits` implemented in `households.rs`; unemployment, household starting budget/stock, household utility cost, and OWA utility costs are authored in `economy/profiles.toml` and validated by the runtime loader.
 - **Building bankruptcy live**: two-day `budget_distress` check implemented in `households.rs`, `budget_distress: bool` persisted in SQLite schema.
+- **Household economy cleanup**: deserted buildings are excluded from household supplier flows, forced OWA liquidation sells only unreserved inventory, utility providers must be staffed before providing local service revenue, and unemployment timers advance even when the treasury is empty.
 
 ## Reference
 

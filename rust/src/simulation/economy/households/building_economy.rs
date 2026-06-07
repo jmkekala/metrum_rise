@@ -8,9 +8,10 @@ use super::metrics::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
-    load_runtime_economy_tuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::zoning::ZoneType;
 
 const UTILITY_SERVICE_POWER: &str = "power";
@@ -40,7 +41,11 @@ impl HouseholdSystem {
     ///
     /// Phase 1 (find utility providers) and Phase 3 (distribute local revenue to providers)
     /// are retained from the old hourly system. Phase 2 is now a flat daily deduction.
-    pub(super) fn settle_daily_utilities(&mut self, allocator: &mut BuildingAllocator) {
+    pub(super) fn settle_daily_utilities(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        logistics: &ShipmentSystem,
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -64,11 +69,7 @@ impl HouseholdSystem {
             else {
                 continue;
             };
-            if !matches!(
-                profile.kind,
-                EconomyProfileRuntimeKind::UtilityProducer
-                    | EconomyProfileRuntimeKind::UtilityProcessor
-            ) {
+            if !is_staffed_utility_provider(allocator, idx, building, profile) {
                 continue;
             }
             utility_provider_indices.push(idx);
@@ -127,19 +128,25 @@ impl HouseholdSystem {
             }
         }
 
+        let resource_count = catalog.resource_count();
+        let reserved_outbound = logistics.reserved_outbound_view(resource_count);
+
         // Step 4: distress resolution — forced OWA liquidation for buildings that went negative.
-        for building in &mut allocator.buildings {
-            if building.is_deserted || building.broken || building.economy_broken {
+        for idx in 0..allocator.buildings.len() {
+            let participates = {
+                let building = &allocator.buildings[idx];
+                if building.is_deserted || building.broken || building.economy_broken {
+                    false
+                } else {
+                    building_participates_in_budget_distress(&catalog, building)
+                }
+            };
+            if !participates {
                 continue;
             }
-            if !matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            ) {
-                continue;
-            }
+            let building = &mut allocator.buildings[idx];
             if building.operating_budget < 0.0 {
-                forced_owa_liquidation(building, &catalog);
+                forced_owa_liquidation(idx, building, &catalog, &reserved_outbound, resource_count);
                 building.budget_distress = true;
                 debug_log!(
                     "economy",
@@ -206,7 +213,13 @@ impl HouseholdSystem {
     }
 }
 
-fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatalog) {
+fn forced_owa_liquidation(
+    building_idx: usize,
+    building: &mut Building,
+    catalog: &RuntimeEconomyCatalog,
+    reserved_outbound: &[f32],
+    resource_count: usize,
+) {
     let tuning = load_runtime_economy_tuning()
         .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
     let export_multiplier = tuning.owa_export_price_multiplier;
@@ -214,7 +227,15 @@ fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatal
         return;
     };
     for output_port in &profile.outputs {
-        let available = building.inventory_units(output_port.resource_runtime_id);
+        let reserved = ShipmentSystem::reservation_slot_for_building(
+            building_idx,
+            output_port.resource_runtime_id,
+            resource_count,
+        )
+        .and_then(|slot| reserved_outbound.get(slot).copied())
+        .unwrap_or(0.0);
+        let available =
+            (building.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
         if available <= 0.0 {
             continue;
         }
@@ -233,8 +254,42 @@ fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatal
         let revenue = available * unit_price;
         building.operating_budget += revenue;
         building.revenue += revenue;
-        building.set_inventory_units(output_port.resource_runtime_id, 0.0);
+        building.remove_inventory_units(output_port.resource_runtime_id, available);
     }
+}
+
+fn is_staffed_utility_provider(
+    allocator: &BuildingAllocator,
+    idx: usize,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
+    ) && building.worker_count > 0
+        && allocator.worker_capacity(idx) > 0
+}
+
+fn building_participates_in_budget_distress(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+) -> bool {
+    if matches!(
+        building.zone_type,
+        ZoneType::Commercial | ZoneType::Industrial
+    ) {
+        return true;
+    }
+    catalog
+        .profile_by_runtime_id(building.economy_profile_runtime_id)
+        .is_some_and(|profile| {
+            matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::UtilityProducer
+                    | EconomyProfileRuntimeKind::UtilityProcessor
+            )
+        })
 }
 
 fn local_utility_total_cost(catalog: &RuntimeEconomyCatalog) -> f32 {

@@ -570,10 +570,55 @@ impl BuildingAllocator {
         candidate_limit: usize,
     ) -> Vec<usize> {
         let mut candidates = Vec::with_capacity(candidate_limit);
+        self.fill_nearby_buildings_by_zones(
+            origin_x,
+            origin_y,
+            zones,
+            max_chunk_radius,
+            candidate_limit,
+            &mut candidates,
+        );
+        candidates
+    }
+
+    /// Fills a reusable nearby candidate buffer for the requested zones.
+    pub fn fill_nearby_buildings_by_zones(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        zones: &[ZoneType],
+        max_chunk_radius: i32,
+        candidate_limit: usize,
+        candidates: &mut Vec<usize>,
+    ) {
+        self.fill_nearby_buildings(
+            origin_x,
+            origin_y,
+            max_chunk_radius,
+            candidate_limit,
+            candidates,
+            |_, building| zones.contains(&building.zone_type),
+        );
+    }
+
+    /// Fills a reusable nearby candidate buffer using a caller-provided eligibility predicate.
+    pub fn fill_nearby_buildings(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        max_chunk_radius: i32,
+        candidate_limit: usize,
+        candidates: &mut Vec<usize>,
+        mut eligible: impl FnMut(usize, &Building) -> bool,
+    ) {
+        candidates.clear();
+        if candidate_limit == 0 {
+            return;
+        }
         let origin_chunk =
             RegionGraph::get_chunk_coords(godot::prelude::Vector3::new(origin_x, 0.0, origin_y));
 
-        'rings: for ring in 0..=max_chunk_radius {
+        for ring in 0..=max_chunk_radius {
             for dx in -ring..=ring {
                 for dz in -ring..=ring {
                     if ring > 0 && dx.abs() != ring && dz.abs() != ring {
@@ -587,11 +632,8 @@ impl BuildingAllocator {
                         if idx >= self.buildings.len() {
                             continue;
                         }
-                        if zones.contains(&self.buildings[idx].zone_type) {
+                        if eligible(idx, &self.buildings[idx]) {
                             candidates.push(idx);
-                            if candidates.len() >= candidate_limit {
-                                break 'rings;
-                            }
                         }
                     }
                 }
@@ -601,10 +643,9 @@ impl BuildingAllocator {
         candidates.sort_unstable_by(|&a, &b| {
             let da = squared_distance(origin_x, origin_y, &self.buildings[a]);
             let db = squared_distance(origin_x, origin_y, &self.buildings[b]);
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            da.total_cmp(&db).then_with(|| a.cmp(&b))
         });
         candidates.truncate(candidate_limit);
-        candidates
     }
 }
 

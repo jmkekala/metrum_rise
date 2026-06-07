@@ -2,22 +2,18 @@
 
 use super::HouseholdSystem;
 use crate::debug_log;
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::zoning::ZoneType;
 
 impl HouseholdSystem {
     pub(crate) fn pay_unemployment_benefits(
         &mut self,
         agents: &AgentSystem,
+        allocator: &BuildingAllocator,
         treasury_balance: &mut f64,
     ) {
-        if *treasury_balance <= 0.0 {
-            debug_log!(
-                "economy",
-                "unemployment_benefits: treasury_empty — disbursement skipped"
-            );
-            return;
-        }
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let benefit_per_member = tuning.unemployment_daily_benefit_per_member;
@@ -40,7 +36,9 @@ impl HouseholdSystem {
         let mut households_exhausted = 0u32;
 
         for (hid, household) in self.households.iter_mut().enumerate() {
-            if household.member_count == 0 || household.home_building_id == usize::MAX {
+            if household.member_count == 0
+                || !valid_benefit_home(allocator, household.home_building_id)
+            {
                 continue;
             }
             let unemployed = unemployed_per_household[hid];
@@ -82,4 +80,16 @@ impl HouseholdSystem {
             *treasury_balance,
         );
     }
+}
+
+fn valid_benefit_home(allocator: &BuildingAllocator, home_building_id: usize) -> bool {
+    allocator
+        .buildings
+        .get(home_building_id)
+        .is_some_and(|building| {
+            building.zone_type == ZoneType::Residential
+                && !building.broken
+                && !building.economy_broken
+                && !building.is_deserted
+        })
 }

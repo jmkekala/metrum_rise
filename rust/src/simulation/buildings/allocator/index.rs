@@ -19,11 +19,13 @@ impl BuildingAllocator {
         self.building_chunks.clear();
 
         for (idx, b) in self.buildings.iter().enumerate() {
-            if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
-                self.zone_index[zi].push(idx);
+            if b.edge_idx != usize::MAX {
                 let chunk =
                     RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
                 self.building_chunks.entry(chunk).or_default().push(idx);
+            }
+            if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
+                self.zone_index[zi].push(idx);
 
                 let resident_cap = self.household_capacity(idx);
                 if resident_cap > 0 && b.occupancy < resident_cap {
