@@ -1130,6 +1130,128 @@ fn commercial_upgrade_requires_business_viability_not_only_pressure() {
 }
 
 #[test]
+fn building_action_hysteresis_keeps_existing_action_inside_margin() {
+    let mut allocator = BuildingAllocator::new();
+    let level_one = register_family_asset(
+        &mut allocator,
+        "com_hysteresis_level_1",
+        ZoneType::Commercial,
+        Some("com_hysteresis_family"),
+        1,
+    );
+    let _level_two = register_family_asset(
+        &mut allocator,
+        "com_hysteresis_level_2",
+        ZoneType::Commercial,
+        Some("com_hysteresis_family"),
+        2,
+    );
+    let mut shop = building(ZoneType::Commercial, 50.0, 0, 15, level_one);
+    shop.operating_budget = 6_000.0;
+    allocator.buildings.push(shop);
+
+    let households = HouseholdSystem::new();
+    let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+
+    let demand = DemandSystem::new();
+    let below_raw_threshold = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.16,
+    );
+    assert!(below_raw_threshold.upgrades.is_empty());
+
+    let mut demand = DemandSystem::new();
+    demand.upgrade_hysteresis_active.commercial = true;
+    let inside_hysteresis_margin = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.16,
+    );
+    assert_eq!(inside_hysteresis_margin.upgrades.len(), 1);
+
+    let outside_hysteresis_margin = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.12,
+    );
+    assert!(outside_hysteresis_margin.upgrades.is_empty());
+}
+
+#[test]
+fn deserted_buildings_are_despawn_first_and_never_downgrade() {
+    let mut allocator = BuildingAllocator::new();
+    let level_one = register_family_asset(
+        &mut allocator,
+        "com_deserted_level_1",
+        ZoneType::Commercial,
+        Some("com_deserted_family"),
+        1,
+    );
+    let level_two = register_family_asset(
+        &mut allocator,
+        "com_deserted_level_2",
+        ZoneType::Commercial,
+        Some("com_deserted_family"),
+        2,
+    );
+
+    let mut healthy_empty = building(ZoneType::Commercial, 0.0, 0, 0, level_one);
+    healthy_empty.cell_x = 0;
+    let mut deserted_empty = building(ZoneType::Commercial, 0.0, 0, 0, level_two.clone());
+    deserted_empty.level = 2;
+    deserted_empty.cell_x = 1;
+    deserted_empty.is_deserted = true;
+    allocator.buildings.push(healthy_empty);
+    allocator.buildings.push(deserted_empty);
+
+    let households = HouseholdSystem::new();
+    let demand = DemandSystem::new();
+    let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+    let candidates = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.0,
+    );
+    assert_eq!(candidates.despawns.len(), 2);
+    assert_eq!(
+        candidates.despawns[0].action.asset_id.as_str(),
+        level_two.as_str()
+    );
+    assert!(candidates.downgrades.is_empty());
+
+    allocator.buildings.clear();
+    let mut staffed_deserted = building(ZoneType::Commercial, 0.0, 0, 1, level_two);
+    staffed_deserted.level = 2;
+    staffed_deserted.is_deserted = true;
+    allocator.buildings.push(staffed_deserted);
+    let candidates = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.0,
+    );
+    assert!(candidates.despawns.is_empty());
+    assert!(candidates.downgrades.is_empty());
+}
+
+#[test]
 fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let mut allocator = BuildingAllocator::new();
     let level_one = register_family_asset(

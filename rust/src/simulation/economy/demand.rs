@@ -19,7 +19,7 @@ pub(crate) use actions::{
     DemandSpawnCandidate,
 };
 pub use system::DemandSystem;
-pub(crate) use types::UseTuningF32;
+pub(crate) use types::{UseTuningBool, UseTuningF32};
 
 #[cfg(test)]
 use crate::simulation::economy::definitions::{

@@ -345,6 +345,7 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
                 despawn_threshold: profile.despawn_threshold,
                 upgrade_threshold: profile.upgrade_threshold,
                 downgrade_threshold: profile.downgrade_threshold,
+                hysteresis_margin: profile.hysteresis_margin,
             },
         );
     }

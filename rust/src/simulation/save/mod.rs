@@ -72,6 +72,34 @@ pub(crate) struct LoadedSimulation {
     pub treasury: CityTreasury,
 }
 
+struct DemandStateRow {
+    residential: f32,
+    commercial: f32,
+    industrial: f32,
+    households_to_admit_today: i64,
+    households_to_remove_today: i64,
+    admission_action_credit: f32,
+    removal_action_credit: f32,
+    persistent_exit_action_credit: f32,
+    spawn_action_credit: [f32; 3],
+    upgrade_action_credit: [f32; 3],
+    downgrade_action_credit: [f32; 3],
+    despawn_action_credit: [f32; 3],
+    spawn_hysteresis_active: [bool; 3],
+    upgrade_hysteresis_active: [bool; 3],
+    downgrade_hysteresis_active: [bool; 3],
+    despawn_hysteresis_active: [bool; 3],
+    recent_household_failure_pressure: f32,
+}
+
+fn demand_bool_triplet(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<[bool; 3]> {
+    Ok([
+        row.get::<_, i64>(start)? != 0,
+        row.get::<_, i64>(start + 1)? != 0,
+        row.get::<_, i64>(start + 2)? != 0,
+    ])
+}
+
 #[derive(Debug)]
 pub(crate) struct SaveLoadError(String);
 pub(crate) type SaveLoadResult<T> = Result<T, SaveLoadError>;
@@ -208,69 +236,49 @@ pub(crate) fn load_from_sqlite(
 
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
-    let demand_row: (
-        f32,
-        f32,
-        f32,
-        i64,
-        i64,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-        f32,
-    ) = conn.query_row(
-        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, recent_household_failure_pressure FROM demand_state LIMIT 1",
+    let demand_row = conn.query_row(
+        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure FROM demand_state LIMIT 1",
         [],
-        |r| Ok((
-            r.get(0)?,
-            r.get(1)?,
-            r.get(2)?,
-            r.get(3)?,
-            r.get(4)?,
-            r.get(5)?,
-            r.get(6)?,
-            r.get(7)?,
-            r.get(8)?,
-            r.get(9)?,
-            r.get(10)?,
-            r.get(11)?,
-            r.get(12)?,
-            r.get(13)?,
-            r.get(14)?,
-            r.get(15)?,
-            r.get(16)?,
-            r.get(17)?,
-            r.get(18)?,
-            r.get(19)?,
-            r.get(20)?,
-        )),
+        |r| {
+            Ok(DemandStateRow {
+                residential: r.get(0)?,
+                commercial: r.get(1)?,
+                industrial: r.get(2)?,
+                households_to_admit_today: r.get(3)?,
+                households_to_remove_today: r.get(4)?,
+                admission_action_credit: r.get(5)?,
+                removal_action_credit: r.get(6)?,
+                persistent_exit_action_credit: r.get(7)?,
+                spawn_action_credit: [r.get(8)?, r.get(9)?, r.get(10)?],
+                upgrade_action_credit: [r.get(11)?, r.get(12)?, r.get(13)?],
+                downgrade_action_credit: [r.get(14)?, r.get(15)?, r.get(16)?],
+                despawn_action_credit: [r.get(17)?, r.get(18)?, r.get(19)?],
+                spawn_hysteresis_active: demand_bool_triplet(r, 20)?,
+                upgrade_hysteresis_active: demand_bool_triplet(r, 23)?,
+                downgrade_hysteresis_active: demand_bool_triplet(r, 26)?,
+                despawn_hysteresis_active: demand_bool_triplet(r, 29)?,
+                recent_household_failure_pressure: r.get(32)?,
+            })
+        },
     )?;
     let demand = DemandSystem::with_persisted_state(
-        demand_row.0,
-        demand_row.1,
-        demand_row.2,
-        i64_to_u32(demand_row.3)?,
-        i64_to_u32(demand_row.4)?,
-        demand_row.5,
-        demand_row.6,
-        demand_row.7,
-        [demand_row.8, demand_row.9, demand_row.10],
-        [demand_row.11, demand_row.12, demand_row.13],
-        [demand_row.14, demand_row.15, demand_row.16],
-        [demand_row.17, demand_row.18, demand_row.19],
-        demand_row.20,
+        demand_row.residential,
+        demand_row.commercial,
+        demand_row.industrial,
+        i64_to_u32(demand_row.households_to_admit_today)?,
+        i64_to_u32(demand_row.households_to_remove_today)?,
+        demand_row.admission_action_credit,
+        demand_row.removal_action_credit,
+        demand_row.persistent_exit_action_credit,
+        demand_row.spawn_action_credit,
+        demand_row.upgrade_action_credit,
+        demand_row.downgrade_action_credit,
+        demand_row.despawn_action_credit,
+        demand_row.spawn_hysteresis_active,
+        demand_row.upgrade_hysteresis_active,
+        demand_row.downgrade_hysteresis_active,
+        demand_row.despawn_hysteresis_active,
+        demand_row.recent_household_failure_pressure,
     );
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;

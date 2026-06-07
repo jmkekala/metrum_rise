@@ -11,7 +11,7 @@ use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::spawn_need::{nonresidential_passes_absorption_gate, spawn_need_buildings_for_use};
 use super::system::DemandSystem;
-use super::types::DemandUse;
+use super::types::{DemandUse, EPSILON};
 use super::viability::{
     building_is_viable_for_downgrade, building_is_viable_for_upgrade, level_change_is_compatible,
 };
@@ -30,8 +30,9 @@ pub(super) struct WeightedLevelChangeCandidate {
 
 #[derive(Clone, Debug)]
 pub(super) struct WeightedDespawnCandidate {
-    action: DemandBuildingActionKey,
-    normalized_action_pressure: f32,
+    pub(super) action: DemandBuildingActionKey,
+    pub(super) normalized_action_pressure: f32,
+    pub(super) deserted: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,6 +62,7 @@ impl DemandSystem {
         ] {
             let zone_type = use_kind.zone_type();
             let growth_pressure = self.pressure_for_use(use_kind);
+            let spawn_hysteresis_active = self.spawn_hysteresis_active.get(use_kind);
             let spawn_candidates =
                 allocator.collect_demand_spawn_candidates(zone_type, zoning, graph);
             let existing_candidates = self.collect_existing_building_candidates(
@@ -84,7 +86,12 @@ impl DemandSystem {
                         .config
                         .profile_for_zone_density(zone_type, &candidate.density)
                     {
-                        normalized_positive_pressure(growth_pressure, profile.spawn_threshold)
+                        normalized_positive_profile_pressure(
+                            growth_pressure,
+                            profile.spawn_threshold,
+                            profile.hysteresis_margin,
+                            spawn_hysteresis_active,
+                        )
                     } else {
                         spawn_profile_missing += 1;
                         0.0
@@ -96,6 +103,10 @@ impl DemandSystem {
             } else {
                 normalized_spawn_pressure / spawn_candidate_count as f32
             };
+            self.spawn_hysteresis_active.set(
+                use_kind,
+                spawn_candidate_count > 0 && normalized_spawn_pressure > EPSILON,
+            );
             let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
                 panic!("could not load built-in runtime economy catalog: {err}")
             });
@@ -176,6 +187,10 @@ impl DemandSystem {
                 .iter()
                 .map(|candidate| candidate.normalized_action_pressure)
                 .sum::<f32>();
+            self.upgrade_hysteresis_active.set(
+                use_kind,
+                upgrade_candidate_count > 0 && normalized_upgrade_pressure > EPSILON,
+            );
             let upgrade_budget_units = normalized_upgrade_pressure
                 * self
                     .config
@@ -203,6 +218,10 @@ impl DemandSystem {
                 .iter()
                 .map(|candidate| candidate.normalized_action_pressure)
                 .sum::<f32>();
+            self.downgrade_hysteresis_active.set(
+                use_kind,
+                downgrade_candidate_count > 0 && normalized_downgrade_pressure > EPSILON,
+            );
             let downgrade_budget_units = normalized_downgrade_pressure
                 * self
                     .config
@@ -230,6 +249,10 @@ impl DemandSystem {
                 .iter()
                 .map(|candidate| candidate.normalized_action_pressure)
                 .sum::<f32>();
+            self.despawn_hysteresis_active.set(
+                use_kind,
+                despawn_candidate_count > 0 && normalized_despawn_pressure > EPSILON,
+            );
             let despawn_budget_units = normalized_despawn_pressure
                 * self
                     .config
@@ -339,17 +362,44 @@ impl DemandSystem {
                 continue;
             };
 
-            let despawn_pressure =
-                normalized_negative_pressure(growth_pressure, profile.despawn_threshold);
-            let downgrade_pressure =
-                normalized_negative_pressure(growth_pressure, profile.downgrade_threshold);
-            let upgrade_pressure =
-                normalized_positive_pressure(growth_pressure, profile.upgrade_threshold);
+            let Some(use_kind) = demand_use_for_zone_type(zone_type) else {
+                continue;
+            };
+            let despawn_pressure = normalized_negative_profile_pressure(
+                growth_pressure,
+                profile.despawn_threshold,
+                profile.hysteresis_margin,
+                self.despawn_hysteresis_active.get(use_kind),
+            );
+            let downgrade_pressure = normalized_negative_profile_pressure(
+                growth_pressure,
+                profile.downgrade_threshold,
+                profile.hysteresis_margin,
+                self.downgrade_hysteresis_active.get(use_kind),
+            );
+            let upgrade_pressure = normalized_positive_profile_pressure(
+                growth_pressure,
+                profile.upgrade_threshold,
+                profile.hysteresis_margin,
+                self.upgrade_hysteresis_active.get(use_kind),
+            );
+
+            if building.is_deserted {
+                if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
+                    candidates.despawns.push(WeightedDespawnCandidate {
+                        action: demand_building_action_key(building),
+                        normalized_action_pressure: despawn_pressure,
+                        deserted: true,
+                    });
+                }
+                continue;
+            }
 
             if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
                 candidates.despawns.push(WeightedDespawnCandidate {
                     action: demand_building_action_key(building),
                     normalized_action_pressure: despawn_pressure,
+                    deserted: false,
                 });
                 continue;
             }
@@ -399,6 +449,9 @@ impl DemandSystem {
         }
 
         candidates
+            .despawns
+            .sort_by(|left, right| left.deserted.cmp(&right.deserted).reverse());
+        candidates
     }
 }
 
@@ -415,4 +468,41 @@ pub(super) fn attachment_sort_key(
         building.level,
         building.asset_id.as_str(),
     )
+}
+
+fn normalized_positive_profile_pressure(
+    pressure: f32,
+    threshold: f32,
+    hysteresis_margin: f32,
+    hysteresis_active: bool,
+) -> f32 {
+    let threshold = if hysteresis_active {
+        (threshold - hysteresis_margin).max(0.0)
+    } else {
+        threshold
+    };
+    normalized_positive_pressure(pressure, threshold)
+}
+
+fn normalized_negative_profile_pressure(
+    pressure: f32,
+    threshold: f32,
+    hysteresis_margin: f32,
+    hysteresis_active: bool,
+) -> f32 {
+    let threshold = if hysteresis_active {
+        (threshold + hysteresis_margin).min(1.0)
+    } else {
+        threshold
+    };
+    normalized_negative_pressure(pressure, threshold)
+}
+
+fn demand_use_for_zone_type(zone_type: ZoneType) -> Option<DemandUse> {
+    match zone_type {
+        ZoneType::Residential => Some(DemandUse::Residential),
+        ZoneType::Commercial => Some(DemandUse::Commercial),
+        ZoneType::Industrial => Some(DemandUse::Industrial),
+        _ => None,
+    }
 }

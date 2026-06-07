@@ -1,6 +1,5 @@
 //! Demand system state and pass orchestration.
 
-use super::UseTuningF32;
 use super::actions::DemandBuildingActionPlan;
 use super::config::{DemandConfig, load_builtin_demand_config};
 use super::credits::{
@@ -12,6 +11,7 @@ use super::diagnostics::{
 };
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
+use super::{UseTuningBool, UseTuningF32};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -34,6 +34,10 @@ pub struct DemandSystem {
     pub(crate) upgrade_action_credit: UseTuningF32,
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
+    pub(crate) spawn_hysteresis_active: UseTuningBool,
+    pub(crate) upgrade_hysteresis_active: UseTuningBool,
+    pub(crate) downgrade_hysteresis_active: UseTuningBool,
+    pub(crate) despawn_hysteresis_active: UseTuningBool,
     pub(crate) recent_household_failure_pressure: f32,
     pub(crate) building_actions: DemandBuildingActionPlan,
     pub(super) last_admission_diagnostics: HouseholdAdmissionDiagnostics,
@@ -60,6 +64,10 @@ impl DemandSystem {
             upgrade_action_credit: UseTuningF32::default(),
             downgrade_action_credit: UseTuningF32::default(),
             despawn_action_credit: UseTuningF32::default(),
+            spawn_hysteresis_active: UseTuningBool::default(),
+            upgrade_hysteresis_active: UseTuningBool::default(),
+            downgrade_hysteresis_active: UseTuningBool::default(),
+            despawn_hysteresis_active: UseTuningBool::default(),
             recent_household_failure_pressure: 0.0,
             building_actions: DemandBuildingActionPlan::default(),
             last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
@@ -138,6 +146,10 @@ impl DemandSystem {
         upgrade_action_credit: [f32; 3],
         downgrade_action_credit: [f32; 3],
         despawn_action_credit: [f32; 3],
+        spawn_hysteresis_active: [bool; 3],
+        upgrade_hysteresis_active: [bool; 3],
+        downgrade_hysteresis_active: [bool; 3],
+        despawn_hysteresis_active: [bool; 3],
         recent_household_failure_pressure: f32,
     ) -> Self {
         let mut system = Self::new();
@@ -168,6 +180,26 @@ impl DemandSystem {
             residential: despawn_action_credit[0],
             commercial: despawn_action_credit[1],
             industrial: despawn_action_credit[2],
+        };
+        system.spawn_hysteresis_active = UseTuningBool {
+            residential: spawn_hysteresis_active[0],
+            commercial: spawn_hysteresis_active[1],
+            industrial: spawn_hysteresis_active[2],
+        };
+        system.upgrade_hysteresis_active = UseTuningBool {
+            residential: upgrade_hysteresis_active[0],
+            commercial: upgrade_hysteresis_active[1],
+            industrial: upgrade_hysteresis_active[2],
+        };
+        system.downgrade_hysteresis_active = UseTuningBool {
+            residential: downgrade_hysteresis_active[0],
+            commercial: downgrade_hysteresis_active[1],
+            industrial: downgrade_hysteresis_active[2],
+        };
+        system.despawn_hysteresis_active = UseTuningBool {
+            residential: despawn_hysteresis_active[0],
+            commercial: despawn_hysteresis_active[1],
+            industrial: despawn_hysteresis_active[2],
         };
         system.recent_household_failure_pressure = clamp01(recent_household_failure_pressure);
         system

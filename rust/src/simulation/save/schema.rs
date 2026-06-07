@@ -73,6 +73,18 @@ CREATE TABLE demand_state(
     despawn_action_credit_residential REAL NOT NULL,
     despawn_action_credit_commercial REAL NOT NULL,
     despawn_action_credit_industrial REAL NOT NULL,
+    spawn_hysteresis_active_residential INTEGER NOT NULL,
+    spawn_hysteresis_active_commercial INTEGER NOT NULL,
+    spawn_hysteresis_active_industrial INTEGER NOT NULL,
+    upgrade_hysteresis_active_residential INTEGER NOT NULL,
+    upgrade_hysteresis_active_commercial INTEGER NOT NULL,
+    upgrade_hysteresis_active_industrial INTEGER NOT NULL,
+    downgrade_hysteresis_active_residential INTEGER NOT NULL,
+    downgrade_hysteresis_active_commercial INTEGER NOT NULL,
+    downgrade_hysteresis_active_industrial INTEGER NOT NULL,
+    despawn_hysteresis_active_residential INTEGER NOT NULL,
+    despawn_hysteresis_active_commercial INTEGER NOT NULL,
+    despawn_hysteresis_active_industrial INTEGER NOT NULL,
     recent_household_failure_pressure REAL NOT NULL
 );
 CREATE TABLE pollution_state(

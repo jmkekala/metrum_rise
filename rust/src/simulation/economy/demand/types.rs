@@ -48,6 +48,36 @@ pub(super) struct GrowthProfileRuntime {
     pub(super) despawn_threshold: f32,
     pub(super) upgrade_threshold: f32,
     pub(super) downgrade_threshold: f32,
+    pub(super) hysteresis_margin: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct UseTuningBool {
+    pub(crate) residential: bool,
+    pub(crate) commercial: bool,
+    pub(crate) industrial: bool,
+}
+
+impl UseTuningBool {
+    pub(super) fn get(&self, use_kind: DemandUse) -> bool {
+        match use_kind {
+            DemandUse::Residential => self.residential,
+            DemandUse::Commercial => self.commercial,
+            DemandUse::Industrial => self.industrial,
+        }
+    }
+
+    pub(super) fn set(&mut self, use_kind: DemandUse, value: bool) {
+        match use_kind {
+            DemandUse::Residential => self.residential = value,
+            DemandUse::Commercial => self.commercial = value,
+            DemandUse::Industrial => self.industrial = value,
+        }
+    }
+
+    pub(crate) fn as_array(self) -> [bool; 3] {
+        [self.residential, self.commercial, self.industrial]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -26,6 +26,9 @@ pub(super) fn building_is_viable_for_upgrade(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
+    if building.is_deserted {
+        return false;
+    }
     match building.zone_type {
         ZoneType::Residential => residential_upgrade_viable(
             allocator,
@@ -56,6 +59,9 @@ pub(super) fn building_is_viable_for_downgrade(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
+    if building.is_deserted {
+        return false;
+    }
     match building.zone_type {
         ZoneType::Residential => residential_downgrade_viable(
             allocator,
@@ -219,6 +225,9 @@ pub(super) fn nonresidential_downgrade_viable(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
+    if building.is_deserted {
+        return false;
+    }
     let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
     let buffer_days = building_operating_buffer_days(&catalog, economy_tuning, building);
     let max_buffer_days = level_tuning_value(
@@ -227,12 +236,11 @@ pub(super) fn nonresidential_downgrade_viable(
             .nonresidential_max_buffer_days_for_downgrade,
         building.level,
     );
-    building.is_deserted
-        || staffing_ratio
-            <= economy_tuning
-                .viability
-                .nonresidential_max_staffing_ratio_for_downgrade
-                + EPSILON
+    staffing_ratio
+        <= economy_tuning
+            .viability
+            .nonresidential_max_staffing_ratio_for_downgrade
+            + EPSILON
         || buffer_days <= max_buffer_days + EPSILON
         || matches!(building.zone_type, ZoneType::Commercial)
             && building_total_output_inventory(&catalog, building) <= EPSILON
@@ -270,6 +278,9 @@ pub(super) fn industrial_downgrade_viable(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
+    if building.is_deserted {
+        return false;
+    }
     nonresidential_downgrade_viable(allocator, economy_tuning, building_idx)
         || industrial_input_coverage_factor(&catalog, building)
             <= economy_tuning

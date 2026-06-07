@@ -72,8 +72,12 @@ pub(super) fn save_world(
     let upgrade_action_credit = demand.upgrade_action_credit.as_array();
     let downgrade_action_credit = demand.downgrade_action_credit.as_array();
     let despawn_action_credit = demand.despawn_action_credit.as_array();
+    let spawn_hysteresis_active = demand.spawn_hysteresis_active.as_array();
+    let upgrade_hysteresis_active = demand.upgrade_hysteresis_active.as_array();
+    let downgrade_hysteresis_active = demand.downgrade_hysteresis_active.as_array();
+    let despawn_hysteresis_active = demand.despawn_hysteresis_active.as_array();
     tx.execute(
-        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, recent_household_failure_pressure) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
         params![
             demand.residential,
             demand.commercial,
@@ -95,6 +99,18 @@ pub(super) fn save_world(
             despawn_action_credit[0],
             despawn_action_credit[1],
             despawn_action_credit[2],
+            bool_to_db(spawn_hysteresis_active[0]),
+            bool_to_db(spawn_hysteresis_active[1]),
+            bool_to_db(spawn_hysteresis_active[2]),
+            bool_to_db(upgrade_hysteresis_active[0]),
+            bool_to_db(upgrade_hysteresis_active[1]),
+            bool_to_db(upgrade_hysteresis_active[2]),
+            bool_to_db(downgrade_hysteresis_active[0]),
+            bool_to_db(downgrade_hysteresis_active[1]),
+            bool_to_db(downgrade_hysteresis_active[2]),
+            bool_to_db(despawn_hysteresis_active[0]),
+            bool_to_db(despawn_hysteresis_active[1]),
+            bool_to_db(despawn_hysteresis_active[2]),
             demand.recent_household_failure_pressure,
         ],
     )?;
@@ -500,6 +516,10 @@ pub(super) fn repaint_building_occupancy(
         }
     }
     Ok(())
+}
+
+fn bool_to_db(value: bool) -> i64 {
+    if value { 1 } else { 0 }
 }
 
 pub(super) trait GridSystemLoader: Sized {
