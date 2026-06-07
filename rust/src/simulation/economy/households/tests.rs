@@ -1051,6 +1051,65 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
     assert_eq!(agents.planned_target_building[a0], usize::MAX);
 }
 
+#[test]
+fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 0, 30.0, 30.0);
+    household.stock = 100.0;
+    household.stock_days = 100.0;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "fused_tick_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "fused_tick_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.work_building[agent] = 1;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+
+    let mut logistics = ShipmentSystem::new();
+    let network = TransitNetwork::new();
+    let graph = RegionGraph::new();
+    households.operational_hour_tick(
+        &mut agents,
+        &mut allocator,
+        &mut logistics,
+        &network,
+        &graph,
+        0,
+        0,
+    );
+
+    assert_eq!(households.households[0].member_count, 1);
+    assert_eq!(allocator.buildings[1].worker_count, 1);
+}
+
 fn make_household(
     home_building_id: usize,
     member_count: u16,

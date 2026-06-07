@@ -21,13 +21,11 @@ impl HouseholdSystem {
         minute_of_day: u16,
     ) {
         self.materialize_arrived_household_carriers(agents, allocator);
-        self.ensure_agent_households(agents);
-        self.rebuild_household_membership(agents);
-        self.recount_worker_assignments(agents, allocator);
+        self.debug_validate_agent_household_refs(agents);
+        self.rebuild_household_and_worker_counts(agents, allocator);
         self.run_building_economy(allocator);
         logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
-        self.consume_household_stock(agents);
-        self.run_household_replenishment(allocator, absolute_hour);
+        self.run_household_operational_hour(agents, allocator, absolute_hour);
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
     }
@@ -46,9 +44,8 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
     ) {
         self.materialize_arrived_household_carriers(agents, allocator);
-        self.ensure_agent_households(agents);
-        self.rebuild_household_membership(agents);
-        self.recount_worker_assignments(agents, allocator);
+        self.debug_validate_agent_household_refs(agents);
+        self.rebuild_household_and_worker_counts(agents, allocator);
         // Advance per-agent job-lock countdown once per day.
         agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
             *lock_days = lock_days.saturating_sub(1);

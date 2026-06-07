@@ -71,6 +71,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See
   [`zoning.md`](zoning.md).
 - Transitioned the residential simulation to a **household-centric occupancy model**, replacing legacy per-resident capacity with family slots (`household_capacity`).
+- Household operational ticks now use a fused parallel agent reduction for household membership and worker counts, skip hot-path repair of stale household references in favor of debug validation, and progress household stock / utility drain / pickup ETA / replenishment classification in one household pass before deterministic reservation apply.
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.
 - Updated the Inspector UI to display both Household occupancy and total Agent counts.

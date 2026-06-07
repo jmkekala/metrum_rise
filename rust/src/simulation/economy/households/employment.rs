@@ -1,7 +1,9 @@
 //! Workplace assignment, worker counts, and daily wage payment.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
@@ -50,6 +52,7 @@ struct WagePaymentPlan {
 }
 
 impl HouseholdSystem {
+    #[cfg(test)]
     pub(super) fn recount_worker_assignments(
         &mut self,
         agents: &AgentSystem,
