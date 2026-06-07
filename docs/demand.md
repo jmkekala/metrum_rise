@@ -1573,9 +1573,9 @@ Deterministic rule:
 
 ```text
 output_capacity_already_placed =
-    sum of base_rate_units_per_day for all existing non-broken buildings
-    whose bound economy profile has any output overlapping
-    the candidate profile's outputs
+    for each output resource in the candidate's bound economy profile:
+        sum only that resource's base_rate_units_per_day from existing non-broken buildings
+        whose bound economy profile outputs the same resource
 
 total_consumer_demand =
     housed_resident_count * consumption_rate_per_resident
@@ -1583,6 +1583,10 @@ total_consumer_demand =
 
 output_absorption_gate_passes =
     output_capacity_already_placed < total_consumer_demand
+
+If the candidate asset has no resolvable economy profile binding, the gate fails safe and rejects
+the spawn candidate. Existing buildings with unresolved runtime profiles contribute no placed
+capacity.
     OR total_consumer_demand == 0   # no demand-sink in catalog → gate not applicable
 ```
 
@@ -1802,11 +1806,11 @@ runs. Inventory it holds is permanently stranded.
 
 ```text
 output_capacity_already_placed =
-    sum of base_rate_units_per_day for all existing buildings where:
+    sum matching output-resource base_rate_units_per_day for all existing buildings where:
         NOT broken
         AND NOT economy_broken
         AND NOT is_deserted                 // ← added exclusion
-        AND outputs overlap candidate outputs
+        AND output resource overlaps one candidate output resource
 ```
 
 A deserted building is removed from `placed_capacity`. This directly unblocks the spawn of a

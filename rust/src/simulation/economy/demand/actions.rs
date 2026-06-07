@@ -2,6 +2,7 @@
 
 use super::types::DemandUse;
 use crate::simulation::buildings::allocator::Building;
+use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DemandBuildingActionKey {
@@ -58,7 +59,40 @@ pub(crate) struct DemandSpawnCandidate {
     pub(crate) density: String,
 }
 
-pub(super) fn demand_building_action_key(building: &Building) -> DemandBuildingActionKey {
+/// Spawn candidates grouped by the three demand-owned private zone families.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DemandSpawnCandidatesByUse {
+    /// Legal residential build sites in allocator build-site order.
+    pub(crate) residential: Vec<DemandSpawnCandidate>,
+    /// Legal commercial build sites in allocator build-site order.
+    pub(crate) commercial: Vec<DemandSpawnCandidate>,
+    /// Legal industrial build sites in allocator build-site order.
+    pub(crate) industrial: Vec<DemandSpawnCandidate>,
+}
+
+impl DemandSpawnCandidatesByUse {
+    /// Appends one candidate to the matching private-zone bucket.
+    pub(crate) fn push_zone_type(&mut self, zone_type: ZoneType, candidate: DemandSpawnCandidate) {
+        match zone_type {
+            ZoneType::Residential => self.residential.push(candidate),
+            ZoneType::Commercial => self.commercial.push(candidate),
+            ZoneType::Industrial => self.industrial.push(candidate),
+            _ => {}
+        }
+    }
+
+    /// Removes and returns candidates for one private zone family.
+    pub(crate) fn take_zone_type(&mut self, zone_type: ZoneType) -> Vec<DemandSpawnCandidate> {
+        match zone_type {
+            ZoneType::Residential => std::mem::take(&mut self.residential),
+            ZoneType::Commercial => std::mem::take(&mut self.commercial),
+            ZoneType::Industrial => std::mem::take(&mut self.industrial),
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn demand_building_action_key(building: &Building) -> DemandBuildingActionKey {
     DemandBuildingActionKey {
         parcel_id: building.parcel_id,
         edge_idx: building.edge_idx,

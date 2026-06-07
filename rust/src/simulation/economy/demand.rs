@@ -16,7 +16,7 @@ mod viability;
 
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandSpawnCandidate,
+    DemandSpawnCandidate, DemandSpawnCandidatesByUse, demand_building_action_key,
 };
 pub use system::DemandSystem;
 pub(crate) use types::{UseTuningBool, UseTuningF32};

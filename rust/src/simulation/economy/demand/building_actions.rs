@@ -9,7 +9,9 @@ use super::credits::{
 };
 use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
-use super::spawn_need::{nonresidential_passes_absorption_gate, spawn_need_buildings_for_use};
+use super::spawn_need::{
+    OutputAbsorptionContext, nonresidential_passes_absorption_gate, spawn_need_buildings_for_use,
+};
 use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
 use super::viability::{
@@ -17,15 +19,17 @@ use super::viability::{
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::definitions::{RuntimeEconomyTuning, load_runtime_economy_catalog};
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
+use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub(super) struct WeightedLevelChangeCandidate {
     action: DemandLevelChangeAction,
     normalized_action_pressure: f32,
+    building_idx: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +37,7 @@ pub(super) struct WeightedDespawnCandidate {
     pub(super) action: DemandBuildingActionKey,
     pub(super) normalized_action_pressure: f32,
     pub(super) deserted: bool,
+    building_idx: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,6 +45,41 @@ pub(super) struct ExistingBuildingCandidates {
     pub(super) despawns: Vec<WeightedDespawnCandidate>,
     pub(super) downgrades: Vec<WeightedLevelChangeCandidate>,
     pub(super) upgrades: Vec<WeightedLevelChangeCandidate>,
+}
+
+enum CollectedExistingBuildingCandidate {
+    Despawn(WeightedDespawnCandidate),
+    Downgrade(WeightedLevelChangeCandidate),
+    Upgrade(WeightedLevelChangeCandidate),
+}
+
+impl ExistingBuildingCandidates {
+    fn push(&mut self, candidate: CollectedExistingBuildingCandidate) {
+        match candidate {
+            CollectedExistingBuildingCandidate::Despawn(candidate) => {
+                self.despawns.push(candidate);
+            }
+            CollectedExistingBuildingCandidate::Downgrade(candidate) => {
+                self.downgrades.push(candidate);
+            }
+            CollectedExistingBuildingCandidate::Upgrade(candidate) => {
+                self.upgrades.push(candidate);
+            }
+        }
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.despawns.extend(other.despawns);
+        self.downgrades.extend(other.downgrades);
+        self.upgrades.extend(other.upgrades);
+    }
+
+    fn sort_by_attachment_order(&mut self) {
+        self.downgrades
+            .sort_unstable_by(compare_level_change_candidates);
+        self.upgrades
+            .sort_unstable_by(compare_level_change_candidates);
+    }
 }
 
 impl DemandSystem {
@@ -50,11 +90,15 @@ impl DemandSystem {
         graph: &RegionGraph,
         zoning: &ZoningSystem,
         snapshot: &DailyDemandSnapshot,
+        catalog: &RuntimeEconomyCatalog,
         economy_tuning: &RuntimeEconomyTuning,
         residential_occupants: &ResidentialOccupantSnapshot,
         cadence_fraction: f32,
         log_label: &str,
     ) {
+        let mut spawn_candidates_by_use =
+            allocator.collect_demand_spawn_candidates_by_use(zoning, graph);
+        let absorption_context = OutputAbsorptionContext::from_runtime(allocator, catalog);
         for use_kind in [
             DemandUse::Residential,
             DemandUse::Commercial,
@@ -63,11 +107,11 @@ impl DemandSystem {
             let zone_type = use_kind.zone_type();
             let growth_pressure = self.pressure_for_use(use_kind);
             let spawn_hysteresis_active = self.spawn_hysteresis_active.get(use_kind);
-            let spawn_candidates =
-                allocator.collect_demand_spawn_candidates(zone_type, zoning, graph);
+            let spawn_candidates = spawn_candidates_by_use.take_zone_type(zone_type);
             let existing_candidates = self.collect_existing_building_candidates(
                 allocator,
                 households,
+                catalog,
                 economy_tuning,
                 &residential_occupants,
                 zone_type,
@@ -107,13 +151,10 @@ impl DemandSystem {
                 use_kind,
                 spawn_candidate_count > 0 && normalized_spawn_pressure > EPSILON,
             );
-            let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
-                panic!("could not load built-in runtime economy catalog: {err}")
-            });
             let raw_spawn_need_buildings = spawn_need_buildings_for_use(
                 use_kind,
                 allocator,
-                &catalog,
+                catalog,
                 snapshot,
                 &spawn_candidates,
             );
@@ -168,7 +209,8 @@ impl DemandSystem {
                     }
                     if !nonresidential_passes_absorption_gate(
                         allocator,
-                        &catalog,
+                        catalog,
+                        &absorption_context,
                         &candidate.action.asset_id,
                         snapshot.housed_resident_count,
                     ) {
@@ -323,134 +365,154 @@ impl DemandSystem {
         &self,
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
+        catalog: &RuntimeEconomyCatalog,
         economy_tuning: &RuntimeEconomyTuning,
         residential_occupants: &ResidentialOccupantSnapshot,
         zone_type: ZoneType,
         growth_pressure: f32,
     ) -> ExistingBuildingCandidates {
-        let mut building_indices: Vec<usize> = allocator
+        let mut candidates = allocator
             .buildings
-            .iter()
+            .par_iter()
             .enumerate()
-            .filter_map(|(idx, building)| (building.zone_type == zone_type).then_some(idx))
-            .collect();
-        building_indices.sort_unstable_by(|&a, &b| {
-            let left = &allocator.buildings[a];
-            let right = &allocator.buildings[b];
-            attachment_sort_key(left)
-                .cmp(&attachment_sort_key(right))
-                .then(left.parcel_id.cmp(&right.parcel_id))
-                .then(a.cmp(&b))
-        });
-
-        let mut candidates = ExistingBuildingCandidates::default();
-        for building_idx in building_indices {
-            let building = &allocator.buildings[building_idx];
-            if building.broken || building.economy_broken || building.pending_redevelopment {
-                continue;
-            }
-            let Some(entry) = allocator.registry.get(&building.asset_id) else {
-                continue;
-            };
-            let Some(asset_building) = entry.manifest.building.as_ref() else {
-                continue;
-            };
-            if !asset_building.is_zoned_private() {
-                continue;
-            }
-            let Some(density) = asset_building.density_key() else {
-                continue;
-            };
-            let Some(profile) = self.config.profile_for_zone_density(zone_type, density) else {
-                continue;
-            };
-
-            let Some(use_kind) = demand_use_for_zone_type(zone_type) else {
-                continue;
-            };
-            let despawn_pressure = normalized_negative_profile_pressure(
-                growth_pressure,
-                profile.despawn_threshold,
-                profile.hysteresis_margin,
-                self.despawn_hysteresis_active.get(use_kind),
-            );
-            let downgrade_pressure = normalized_negative_profile_pressure(
-                growth_pressure,
-                profile.downgrade_threshold,
-                profile.hysteresis_margin,
-                self.downgrade_hysteresis_active.get(use_kind),
-            );
-            let upgrade_pressure = normalized_positive_profile_pressure(
-                growth_pressure,
-                profile.upgrade_threshold,
-                profile.hysteresis_margin,
-                self.upgrade_hysteresis_active.get(use_kind),
-            );
-
-            if building.is_deserted {
-                if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
-                    candidates.despawns.push(WeightedDespawnCandidate {
-                        action: demand_building_action_key(building),
-                        normalized_action_pressure: despawn_pressure,
-                        deserted: true,
-                    });
+            .filter_map(|(building_idx, building)| {
+                if building.zone_type != zone_type {
+                    return None;
                 }
-                continue;
-            }
+                if building.broken || building.economy_broken || building.pending_redevelopment {
+                    return None;
+                }
+                let Some(entry) = allocator.registry.get(&building.asset_id) else {
+                    return None;
+                };
+                let Some(asset_building) = entry.manifest.building.as_ref() else {
+                    return None;
+                };
+                if !asset_building.is_zoned_private() {
+                    return None;
+                }
+                let Some(density) = asset_building.density_key() else {
+                    return None;
+                };
+                let Some(profile) = self.config.profile_for_zone_density(zone_type, density) else {
+                    return None;
+                };
 
-            if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
-                candidates.despawns.push(WeightedDespawnCandidate {
-                    action: demand_building_action_key(building),
-                    normalized_action_pressure: despawn_pressure,
-                    deserted: false,
-                });
-                continue;
-            }
+                let Some(use_kind) = demand_use_for_zone_type(zone_type) else {
+                    return None;
+                };
+                let despawn_pressure = normalized_negative_profile_pressure(
+                    growth_pressure,
+                    profile.despawn_threshold,
+                    profile.hysteresis_margin,
+                    self.despawn_hysteresis_active.get(use_kind),
+                );
+                let downgrade_pressure = normalized_negative_profile_pressure(
+                    growth_pressure,
+                    profile.downgrade_threshold,
+                    profile.hysteresis_margin,
+                    self.downgrade_hysteresis_active.get(use_kind),
+                );
+                let upgrade_pressure = normalized_positive_profile_pressure(
+                    growth_pressure,
+                    profile.upgrade_threshold,
+                    profile.hysteresis_margin,
+                    self.upgrade_hysteresis_active.get(use_kind),
+                );
 
-            if downgrade_pressure > 0.0
-                && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
-                && level_change_is_compatible(allocator, building_idx, target_asset_id)
-                && building_is_viable_for_downgrade(
-                    allocator,
-                    households,
-                    economy_tuning,
-                    residential_occupants,
-                    building_idx,
-                    target_asset_id,
-                )
-            {
-                candidates.downgrades.push(WeightedLevelChangeCandidate {
-                    action: DemandLevelChangeAction {
-                        building: demand_building_action_key(building),
-                        target_asset_id: target_asset_id.to_owned(),
-                    },
-                    normalized_action_pressure: downgrade_pressure,
-                });
-                continue;
-            }
+                if building.is_deserted {
+                    if building.occupancy == 0
+                        && building.worker_count == 0
+                        && despawn_pressure > 0.0
+                    {
+                        return Some(CollectedExistingBuildingCandidate::Despawn(
+                            WeightedDespawnCandidate {
+                                action: demand_building_action_key(building),
+                                normalized_action_pressure: despawn_pressure,
+                                deserted: true,
+                                building_idx,
+                            },
+                        ));
+                    }
+                    return None;
+                }
 
-            if upgrade_pressure > 0.0
-                && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
-                && level_change_is_compatible(allocator, building_idx, target_asset_id)
-                && building_is_viable_for_upgrade(
-                    allocator,
-                    households,
-                    economy_tuning,
-                    residential_occupants,
-                    building_idx,
-                    target_asset_id,
-                )
-            {
-                candidates.upgrades.push(WeightedLevelChangeCandidate {
-                    action: DemandLevelChangeAction {
-                        building: demand_building_action_key(building),
-                        target_asset_id: target_asset_id.to_owned(),
-                    },
-                    normalized_action_pressure: upgrade_pressure,
-                });
-            }
-        }
+                if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
+                    return Some(CollectedExistingBuildingCandidate::Despawn(
+                        WeightedDespawnCandidate {
+                            action: demand_building_action_key(building),
+                            normalized_action_pressure: despawn_pressure,
+                            deserted: false,
+                            building_idx,
+                        },
+                    ));
+                }
 
+                if downgrade_pressure > 0.0
+                    && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
+                    && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                    && building_is_viable_for_downgrade(
+                        allocator,
+                        households,
+                        catalog,
+                        economy_tuning,
+                        residential_occupants,
+                        building_idx,
+                        target_asset_id,
+                    )
+                {
+                    return Some(CollectedExistingBuildingCandidate::Downgrade(
+                        WeightedLevelChangeCandidate {
+                            action: DemandLevelChangeAction {
+                                building: demand_building_action_key(building),
+                                target_asset_id: target_asset_id.to_owned(),
+                            },
+                            normalized_action_pressure: downgrade_pressure,
+                            building_idx,
+                        },
+                    ));
+                }
+
+                if upgrade_pressure > 0.0
+                    && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
+                    && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                    && building_is_viable_for_upgrade(
+                        allocator,
+                        households,
+                        catalog,
+                        economy_tuning,
+                        residential_occupants,
+                        building_idx,
+                        target_asset_id,
+                    )
+                {
+                    return Some(CollectedExistingBuildingCandidate::Upgrade(
+                        WeightedLevelChangeCandidate {
+                            action: DemandLevelChangeAction {
+                                building: demand_building_action_key(building),
+                                target_asset_id: target_asset_id.to_owned(),
+                            },
+                            normalized_action_pressure: upgrade_pressure,
+                            building_idx,
+                        },
+                    ));
+                }
+
+                None
+            })
+            .fold(
+                ExistingBuildingCandidates::default,
+                |mut candidates, candidate| {
+                    candidates.push(candidate);
+                    candidates
+                },
+            )
+            .reduce(ExistingBuildingCandidates::default, |mut left, right| {
+                left.extend(right);
+                left
+            });
+
+        candidates.sort_by_attachment_order();
         candidates.despawns.sort_unstable_by(|left, right| {
             right
                 .deserted
@@ -460,23 +522,10 @@ impl DemandSystem {
                         .cmp(&action_attachment_sort_key(&right.action))
                 })
                 .then(left.action.parcel_id.cmp(&right.action.parcel_id))
+                .then(left.building_idx.cmp(&right.building_idx))
         });
         candidates
     }
-}
-
-pub(super) fn attachment_sort_key(
-    building: &crate::simulation::buildings::allocator::Building,
-) -> (usize, u8, usize, u16, u16, u8, &str) {
-    (
-        building.edge_idx,
-        if building.side > 0 { 0 } else { 1 },
-        building.cell_x,
-        building.width_cells,
-        building.depth_cells,
-        building.level,
-        building.asset_id.as_str(),
-    )
 }
 
 fn action_attachment_sort_key(
@@ -491,6 +540,21 @@ fn action_attachment_sort_key(
         action.level,
         action.asset_id.as_str(),
     )
+}
+
+fn compare_level_change_candidates(
+    left: &WeightedLevelChangeCandidate,
+    right: &WeightedLevelChangeCandidate,
+) -> std::cmp::Ordering {
+    action_attachment_sort_key(&left.action.building)
+        .cmp(&action_attachment_sort_key(&right.action.building))
+        .then(
+            left.action
+                .building
+                .parcel_id
+                .cmp(&right.action.building.parcel_id),
+        )
+        .then(left.building_idx.cmp(&right.building_idx))
 }
 
 fn normalized_positive_profile_pressure(

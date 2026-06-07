@@ -13,7 +13,9 @@ use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use super::{UseTuningBool, UseTuningF32};
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoningSystem;
@@ -86,17 +88,25 @@ impl DemandSystem {
         treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let snapshot = DailyDemandSnapshot::from_runtime(
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let economy_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
             allocator,
             households,
             graph,
             &self.config,
+            catalog.as_ref(),
+            economy_tuning.as_ref(),
             treasury_balance,
         );
-        let economy_tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let residential_occupants =
-            ResidentialOccupantSnapshot::from_runtime(allocator, households);
+        let residential_occupants = ResidentialOccupantSnapshot::from_runtime_with_catalog(
+            allocator,
+            households,
+            catalog.as_ref(),
+            economy_tuning.as_ref(),
+        );
 
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         let admission_threshold = self.config.household_action.admission_threshold;
@@ -126,6 +136,7 @@ impl DemandSystem {
             graph,
             zoning,
             &snapshot,
+            catalog.as_ref(),
             economy_tuning.as_ref(),
             &residential_occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
@@ -238,11 +249,17 @@ impl DemandSystem {
         treasury_balance: f64,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let snapshot = DailyDemandSnapshot::from_runtime(
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let economy_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
             allocator,
             households,
             graph,
             &self.config,
+            catalog.as_ref(),
+            economy_tuning.as_ref(),
             treasury_balance,
         );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);

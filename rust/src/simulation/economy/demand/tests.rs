@@ -1,6 +1,7 @@
 //! Demand tests.
 
 use super::credits::advance_spawn_need_credit;
+use super::spawn_need::{OutputAbsorptionContext, nonresidential_passes_absorption_gate};
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
@@ -48,6 +49,29 @@ fn register_family_asset(
     asset_set: Option<&str>,
     level: u8,
 ) -> String {
+    let economy_profile = match zone_type {
+        ZoneType::Commercial => Some("grocery_basic"),
+        ZoneType::Industrial => Some("food_processor_basic"),
+        _ => None,
+    };
+    register_family_asset_with_economy_profile(
+        allocator,
+        asset_id,
+        zone_type,
+        asset_set,
+        level,
+        economy_profile,
+    )
+}
+
+fn register_family_asset_with_economy_profile(
+    allocator: &mut BuildingAllocator,
+    asset_id: &str,
+    zone_type: ZoneType,
+    asset_set: Option<&str>,
+    level: u8,
+    economy_profile: Option<&str>,
+) -> String {
     let (zone_class, household_capacity, worker_capacity) = match zone_type {
         ZoneType::Residential => (ZoneClass::Residential, Some(6), None),
         ZoneType::Commercial => (ZoneClass::Commercial, None, Some(4)),
@@ -86,11 +110,7 @@ fn register_family_asset(
             household_capacity,
             worker_capacity,
             service_class: None,
-            economy_profile: match zone_type {
-                ZoneType::Commercial => Some("grocery_basic".to_owned()),
-                ZoneType::Industrial => Some("food_processor_basic".to_owned()),
-                _ => None,
-            },
+            economy_profile: economy_profile.map(str::to_owned),
             preview_scale: Some(1.0),
         }),
         prop: None,
@@ -569,6 +589,29 @@ fn industrial_spawn_need_rounds_missing_input_capacity_to_missing_buildings() {
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         0.0
     );
+}
+
+#[test]
+fn nonresidential_absorption_gate_fails_safe_without_candidate_profile() {
+    let mut allocator = BuildingAllocator::new();
+    let unbound_commercial = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "commercial_without_profile",
+        ZoneType::Commercial,
+        None,
+        1,
+        None,
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let absorption = OutputAbsorptionContext::from_runtime(&allocator, catalog.as_ref());
+
+    assert!(!nonresidential_passes_absorption_gate(
+        &allocator,
+        catalog.as_ref(),
+        &absorption,
+        &unbound_commercial,
+        100
+    ));
 }
 
 #[test]
@@ -1056,10 +1099,12 @@ fn residential_upgrade_requires_current_household_affordability_for_target_level
 
     let demand = DemandSystem::new();
     let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let low_affordability = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Residential,
@@ -1072,6 +1117,7 @@ fn residential_upgrade_requires_current_household_affordability_for_target_level
     let high_affordability = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Residential,
@@ -1104,11 +1150,13 @@ fn commercial_upgrade_requires_business_viability_not_only_pressure() {
     let households = HouseholdSystem::new();
     let demand = DemandSystem::new();
     let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
 
     let weak_viability = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1121,6 +1169,7 @@ fn commercial_upgrade_requires_business_viability_not_only_pressure() {
     let strong_viability = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1152,12 +1201,14 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
 
     let households = HouseholdSystem::new();
     let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
 
     let demand = DemandSystem::new();
     let below_raw_threshold = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1170,6 +1221,7 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
     let inside_hysteresis_margin = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1180,6 +1232,7 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
     let outside_hysteresis_margin = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1218,10 +1271,12 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
     let households = HouseholdSystem::new();
     let demand = DemandSystem::new();
     let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1242,6 +1297,7 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1273,10 +1329,12 @@ fn existing_building_candidates_follow_attachment_order_before_parcel_id() {
     let households = HouseholdSystem::new();
     let demand = DemandSystem::new();
     let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Commercial,
@@ -1326,6 +1384,7 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let starter_headroom = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Industrial,
@@ -1342,6 +1401,7 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let same_profile = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Industrial,
@@ -1355,6 +1415,7 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let jammed_output = demand.collect_existing_building_candidates(
         &allocator,
         &households,
+        catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
         ZoneType::Industrial,

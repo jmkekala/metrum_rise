@@ -9,6 +9,7 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+    demand_building_action_key,
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -424,21 +425,6 @@ impl BuildingAllocator {
         // Note: vacancy count for residential is now household-based.
         // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
         Some((fallback_idx, fallback_size))
-    }
-}
-
-fn demand_building_action_key(
-    building: &crate::simulation::buildings::allocator::Building,
-) -> DemandBuildingActionKey {
-    DemandBuildingActionKey {
-        parcel_id: building.parcel_id,
-        edge_idx: building.edge_idx,
-        side: building.side,
-        cell_x: building.cell_x,
-        width_cells: building.width_cells,
-        depth_cells: building.depth_cells,
-        level: building.level,
-        asset_id: building.asset_id.clone(),
     }
 }
 

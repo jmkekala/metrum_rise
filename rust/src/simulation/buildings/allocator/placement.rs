@@ -9,34 +9,24 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
+use crate::simulation::economy::demand::{
+    DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
 
 impl BuildingAllocator {
-    pub(crate) fn collect_demand_spawn_candidates(
+    pub(crate) fn collect_demand_spawn_candidates_by_use(
         &self,
-        zone_type: ZoneType,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-    ) -> Vec<DemandSpawnCandidate> {
-        let Some(zone_class) = zone_type_to_zone_class(zone_type) else {
-            return Vec::new();
-        };
-        let mut candidates = Vec::new();
-        let mut dbg_edges_no_spawn = 0_u32;
-        let mut dbg_edges_active = 0_u32;
-        let mut dbg_parcels_free = 0_u32;
-        let mut dbg_parcels_wrong_zone = 0_u32;
-        let mut dbg_parcels_occupied = 0_u32;
-        let mut dbg_parcels_no_asset = 0_u32;
-
+    ) -> DemandSpawnCandidatesByUse {
+        let mut candidates = DemandSpawnCandidateSortBuckets::default();
         for parcel in zoning.parcels() {
             let edge_idx = parcel.edge_idx();
             if edge_idx >= graph.edge_count() {
-                dbg_edges_no_spawn += 1;
                 continue;
             }
             let edge = graph.edge(edge_idx);
@@ -44,27 +34,19 @@ impl BuildingAllocator {
                 || edge.no_building_spawn
                 || edge.physical_length < 0.1
                 || edge.physical_geometry.len() < 2
+                || !parcel.is_available()
             {
-                if !edge.deleted && edge.no_building_spawn {
-                    dbg_edges_no_spawn += 1;
-                }
                 continue;
             }
-            dbg_edges_active += 1;
 
-            if !parcel.is_available() {
-                dbg_parcels_occupied += 1;
-                continue;
-            }
             let profile_runtime_id = parcel.zone_profile_runtime_id();
             let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id) else {
-                dbg_parcels_free += 1;
                 continue;
             };
-            if profile.zone_type != zone_type {
-                dbg_parcels_wrong_zone += 1;
+            let zone_type = profile.zone_type;
+            let Some(zone_class) = zone_type_to_zone_class(zone_type) else {
                 continue;
-            }
+            };
 
             let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
                 zone_class,
@@ -74,12 +56,12 @@ impl BuildingAllocator {
                 zoning,
                 graph,
             ) else {
-                dbg_parcels_no_asset += 1;
                 continue;
             };
 
             let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
-            candidates.push((
+            candidates.push_zone_type(
+                zone_type,
                 sort_key,
                 DemandSpawnCandidate {
                     action: DemandSpawnAction {
@@ -88,27 +70,16 @@ impl BuildingAllocator {
                     },
                     density: profile.density.as_str().to_owned(),
                 },
-            ));
+            );
         }
 
-        sort_demand_spawn_candidates(&mut candidates);
-        let candidates: Vec<_> = candidates
-            .into_iter()
-            .map(|(_, candidate)| candidate)
-            .collect();
-
+        let candidates = candidates.finish();
         debug_log!(
             "spawn",
-            "collect_candidates zone={:?}: active_edges={} no_spawn_flag={} \
-             parcels_free={} parcels_wrong_zone={} parcels_occupied={} parcels_no_asset={} candidates={}",
-            zone_type,
-            dbg_edges_active,
-            dbg_edges_no_spawn,
-            dbg_parcels_free,
-            dbg_parcels_wrong_zone,
-            dbg_parcels_occupied,
-            dbg_parcels_no_asset,
-            candidates.len(),
+            "collect_candidates_by_use: residential={} commercial={} industrial={}",
+            candidates.residential.len(),
+            candidates.commercial.len(),
+            candidates.industrial.len(),
         );
         candidates
     }
@@ -570,6 +541,47 @@ impl DemandSpawnCandidateSortKey {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,
         }
+    }
+}
+
+#[derive(Default)]
+struct DemandSpawnCandidateSortBuckets {
+    residential: Vec<(DemandSpawnCandidateSortKey, DemandSpawnCandidate)>,
+    commercial: Vec<(DemandSpawnCandidateSortKey, DemandSpawnCandidate)>,
+    industrial: Vec<(DemandSpawnCandidateSortKey, DemandSpawnCandidate)>,
+}
+
+impl DemandSpawnCandidateSortBuckets {
+    fn push_zone_type(
+        &mut self,
+        zone_type: ZoneType,
+        sort_key: DemandSpawnCandidateSortKey,
+        candidate: DemandSpawnCandidate,
+    ) {
+        match zone_type {
+            ZoneType::Residential => self.residential.push((sort_key, candidate)),
+            ZoneType::Commercial => self.commercial.push((sort_key, candidate)),
+            ZoneType::Industrial => self.industrial.push((sort_key, candidate)),
+            _ => {}
+        }
+    }
+
+    fn finish(mut self) -> DemandSpawnCandidatesByUse {
+        sort_demand_spawn_candidates(&mut self.residential);
+        sort_demand_spawn_candidates(&mut self.commercial);
+        sort_demand_spawn_candidates(&mut self.industrial);
+
+        let mut candidates = DemandSpawnCandidatesByUse::default();
+        for (_, candidate) in self.residential {
+            candidates.push_zone_type(ZoneType::Residential, candidate);
+        }
+        for (_, candidate) in self.commercial {
+            candidates.push_zone_type(ZoneType::Commercial, candidate);
+        }
+        for (_, candidate) in self.industrial {
+            candidates.push_zone_type(ZoneType::Industrial, candidate);
+        }
+        candidates
     }
 }
 

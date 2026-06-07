@@ -243,66 +243,122 @@ pub(super) fn resource_is_commercial_input(
     })
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct OutputAbsorptionContext {
+    placed_output_units_by_resource: Vec<f32>,
+    demand_sink_rate_by_resource: Vec<f32>,
+}
+
+impl OutputAbsorptionContext {
+    pub(super) fn from_runtime(
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Self {
+        let mut context = Self {
+            placed_output_units_by_resource: vec![0.0; catalog.resource_count() + 1],
+            demand_sink_rate_by_resource: vec![0.0; catalog.resource_count() + 1],
+        };
+
+        for profile in catalog.all_profiles() {
+            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+                continue;
+            }
+            for input in &profile.inputs {
+                context.add_demand_rate(
+                    input.resource_runtime_id,
+                    profile.consumption_rate_per_resident.max(0.0),
+                );
+            }
+        }
+
+        for building in &allocator.buildings {
+            if building.broken || building.economy_broken || building.is_deserted {
+                continue;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            for output in &profile.outputs {
+                context
+                    .add_placed_capacity(output.resource_runtime_id, output.units_per_day.max(0.0));
+            }
+        }
+
+        context
+    }
+
+    fn add_demand_rate(&mut self, resource_runtime_id: ResourceRuntimeId, rate: f32) {
+        if let Some(slot) = self
+            .demand_sink_rate_by_resource
+            .get_mut(resource_runtime_id as usize)
+        {
+            *slot += rate;
+        }
+    }
+
+    fn add_placed_capacity(&mut self, resource_runtime_id: ResourceRuntimeId, capacity: f32) {
+        if let Some(slot) = self
+            .placed_output_units_by_resource
+            .get_mut(resource_runtime_id as usize)
+        {
+            *slot += capacity;
+        }
+    }
+
+    fn placed_capacity(&self, resource_runtime_id: ResourceRuntimeId) -> f32 {
+        self.placed_output_units_by_resource
+            .get(resource_runtime_id as usize)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    fn consumer_demand(
+        &self,
+        resource_runtime_id: ResourceRuntimeId,
+        housed_residents: u32,
+    ) -> f32 {
+        self.demand_sink_rate_by_resource
+            .get(resource_runtime_id as usize)
+            .copied()
+            .unwrap_or(0.0)
+            * housed_residents as f32
+    }
+}
+
 pub(super) fn nonresidential_passes_absorption_gate(
     allocator: &BuildingAllocator,
-    catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: &OutputAbsorptionContext,
     asset_id: &str,
     housed_resident_count: u32,
 ) -> bool {
-    use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
-    // Resolve the candidate profile from the asset registry.
     let Some(profile_id) = allocator.registry.economy_profile(asset_id) else {
-        // No economy profile binding → no capacity limit, pass.
-        return true;
+        return false;
     };
     let Some(candidate_profile) = catalog.profile_for_id(profile_id) else {
-        return true;
+        return false;
     };
-    // Buildings with no declared outputs are not capacity-limited.
     if candidate_profile.outputs.is_empty() {
         return true;
     }
-    let candidate_output_resource_ids: Vec<_> = candidate_profile
-        .outputs
-        .iter()
-        .map(|p| p.resource_runtime_id)
-        .collect();
 
-    // Sum output capacity (units/day) already placed for matching resource types.
-    // Deserted buildings are excluded: they produce nothing and must not block a replacement spawn.
-    let placed_capacity: f32 = allocator
-        .buildings
-        .iter()
-        .filter(|b| !b.broken && !b.economy_broken && !b.is_deserted)
-        .filter_map(|b| {
-            let p = catalog.profile_by_runtime_id(b.economy_profile_runtime_id)?;
-            let overlaps = p
-                .outputs
-                .iter()
-                .any(|port| candidate_output_resource_ids.contains(&port.resource_runtime_id));
-            if overlaps {
-                Some(p.outputs.iter().map(|port| port.units_per_day).sum::<f32>())
-            } else {
-                None
-            }
-        })
-        .sum();
+    let mut placed_capacity = 0.0_f32;
+    let mut consumer_demand = 0.0_f32;
+    for output in &candidate_profile.outputs {
+        if output.units_per_day <= EPSILON {
+            continue;
+        }
+        let resource_demand =
+            absorption.consumer_demand(output.resource_runtime_id, housed_resident_count);
+        if resource_demand <= EPSILON {
+            continue;
+        }
+        consumer_demand += resource_demand;
+        placed_capacity += absorption.placed_capacity(output.resource_runtime_id);
+    }
 
-    // Derive consumer demand from housed residents and demand-sink consumption rates.
-    let consumer_demand: f32 = catalog
-        .all_profiles()
-        .iter()
-        .filter(|p| p.kind == EconomyProfileRuntimeKind::DemandSink)
-        .filter(|p| {
-            p.inputs
-                .iter()
-                .any(|port| candidate_output_resource_ids.contains(&port.resource_runtime_id))
-        })
-        .map(|p| p.consumption_rate_per_resident * housed_resident_count as f32)
-        .sum();
-
-    // If no demand-sink found for this resource, gate is not applicable → pass.
-    if consumer_demand == 0.0 {
+    if consumer_demand <= EPSILON {
         return true;
     }
     placed_capacity < consumer_demand
