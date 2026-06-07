@@ -3,6 +3,7 @@
 mod building_refs;
 mod daily;
 pub mod data;
+mod determinism;
 mod lifecycle;
 mod remap;
 #[cfg(test)]

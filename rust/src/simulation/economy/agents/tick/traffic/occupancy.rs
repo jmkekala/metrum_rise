@@ -1,8 +1,8 @@
 //! Lane occupancy, gap, and entry-claim helpers.
 
 use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Outcome of trying to reserve a connector lane entry for this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,13 +84,11 @@ pub(in crate::simulation::economy::agents::tick) fn lane_change_gap_clear(
 /// Atomically claims a lane entry slot for this tick.
 #[inline(always)]
 pub(in crate::simulation::economy::agents::tick) fn claim_lane_entry(
+    agent_idx: usize,
     lane_id: usize,
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
 ) -> bool {
-    lane_attach_claimed
-        .get(lane_id)
-        .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
-        .unwrap_or(false)
+    lane_claims.claim_lane(agent_idx, lane_id)
 }
 
 /// Returns a stable pseudo-random index for deterministic candidate ordering.
@@ -110,11 +108,12 @@ pub(in crate::simulation::economy::agents::tick) fn deterministic_choice_index(
 
 /// Filters connector candidates to clear entries and claims one without allocating.
 pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
+    agent_idx: usize,
     candidate_connectors: &mut Vec<usize>,
     any_routing_valid: bool,
     choice_seed: u64,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
     if candidate_connectors.is_empty() {
         return if any_routing_valid {
@@ -132,7 +131,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     let start = deterministic_choice_index(choice_seed, candidate_connectors.len());
     for offset in 0..candidate_connectors.len() {
         let candidate = candidate_connectors[(start + offset) % candidate_connectors.len()];
-        if claim_lane_entry(candidate, lane_attach_claimed) {
+        if claim_lane_entry(agent_idx, candidate, lane_claims) {
             return ConnectorEntry::Enter(candidate);
         }
     }

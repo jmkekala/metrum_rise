@@ -1,5 +1,6 @@
 //! Parallel dispatch phase for the movement state machine.
 
+use super::claims::LaneClaimContext;
 use super::runtime::dispatch_agents;
 use super::slices::{MovementSlices, RawSlice};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -22,6 +23,8 @@ impl AgentSystem {
         minute_of_day: u16,
         n: usize,
     ) {
+        self.prepare_claim_serial_agents(allocator, transit_network, graph, delta, n);
+
         let slices = MovementSlices {
             home: RawSlice::new(&mut self.agents.home_building),
             work: RawSlice::new(&mut self.agents.work_building),
@@ -73,7 +76,8 @@ impl AgentSystem {
         };
 
         let lane_buckets = &self.lane_buckets;
-        let lane_attach_claimed = &self.lane_attach_claimed;
+        let lane_claims =
+            LaneClaimContext::new(&self.lane_attach_claimed, &self.claim_serial_agents);
         let sim_time = self.sim_time;
         let economy_tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
@@ -81,6 +85,9 @@ impl AgentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
         dispatch_agents(n, |i| unsafe {
+            if self.claim_serial_agents[i] {
+                return;
+            }
             Self::process_agent_movement(
                 i,
                 delta,
@@ -92,11 +99,35 @@ impl AgentSystem {
                 graph,
                 &self.pathfind_count,
                 lane_buckets,
-                lane_attach_claimed,
+                &lane_claims,
                 &economy_tuning.operational_clock,
                 &economy_catalog,
                 &slices,
             );
         });
+
+        for i in 0..n {
+            if !self.claim_serial_agents[i] {
+                continue;
+            }
+            unsafe {
+                Self::process_agent_movement(
+                    i,
+                    delta,
+                    sim_time,
+                    day_index,
+                    minute_of_day,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &self.pathfind_count,
+                    lane_buckets,
+                    &lane_claims,
+                    &economy_tuning.operational_clock,
+                    &economy_catalog,
+                    &slices,
+                );
+            }
+        }
     }
 }

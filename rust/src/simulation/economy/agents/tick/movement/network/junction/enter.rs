@@ -1,6 +1,7 @@
 //! Connector entry, wait, and claim handling.
 
 use super::super::super::super::super::{MODE_CAR, TRANSIT_INTERSECTION};
+use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane,
 };
@@ -12,7 +13,6 @@ use super::LaneEndAction;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
 use std::cell::RefCell;
-use std::sync::atomic::AtomicBool;
 
 thread_local! {
     static VALID_CONNS: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(8));
@@ -31,7 +31,7 @@ pub(super) unsafe fn enter_next_edge_connector(
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEndAction {
     unsafe {
@@ -40,12 +40,13 @@ pub(super) unsafe fn enter_next_edge_connector(
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
         let connector_entry = claim_connector_to_edge(
+            i,
             lane_id,
             to_edge,
             connector_choice_seed(i, lane_id, to_edge, node_id, *s_path_idx.get(i)),
             transit_network,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
         );
 
         match connector_entry {
@@ -147,7 +148,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
     remaining_dist: &mut f32,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> Option<LaneEndAction> {
     unsafe {
@@ -155,12 +156,13 @@ pub(super) unsafe fn enter_detach_lane_connector(
         let s_lane_d = &slices.lane_d;
         let s_speed = &slices.speed;
         let connector_entry = claim_connector_to_lane(
+            i,
             lane_id,
             detach_lane_id,
             connector_choice_seed(i, lane_id, detach_lane_id, node_id, *s_path_idx.get(i)),
             transit_network,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
         );
 
         match connector_entry {
@@ -249,12 +251,13 @@ pub(super) unsafe fn enter_detach_lane_connector(
 }
 
 fn claim_connector_to_edge(
+    agent_idx: usize,
     lane_id: usize,
     edge_id: usize,
     seed: u64,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
     VALID_CONNS.with(|v| {
         let mut connector_candidates = v.borrow_mut();
@@ -265,22 +268,24 @@ fn claim_connector_to_edge(
             &mut connector_candidates,
         );
         claim_connector_entry(
+            agent_idx,
             &mut connector_candidates,
             any_routing_valid,
             seed,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
         )
     })
 }
 
 fn claim_connector_to_lane(
+    agent_idx: usize,
     lane_id: usize,
     target_lane_id: usize,
     seed: u64,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
     VALID_CONNS.with(|v| {
         let mut connector_candidates = v.borrow_mut();
@@ -291,11 +296,12 @@ fn claim_connector_to_lane(
             &mut connector_candidates,
         );
         claim_connector_entry(
+            agent_idx,
             &mut connector_candidates,
             any_routing_valid,
             seed,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
         )
     })
 }

@@ -1,11 +1,11 @@
 //! Agent references to building allocator indices.
 
 use super::data::AgentSystem;
+use super::determinism::stable_index;
 use super::{MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING};
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
-use rand::Rng;
 
 impl AgentSystem {
     /// Clears schedule-derived building cache fields for one agent.
@@ -229,9 +229,8 @@ impl AgentSystem {
     }
 
     /// Finds a residential building with available vacancy.
-    /// Uses the allocator's `vacancy_index` for O(1) random selection.
+    /// Uses the allocator's `vacancy_index` for O(1) deterministic selection.
     pub fn find_available_home(&mut self, allocator: &mut BuildingAllocator) -> Option<usize> {
-        let mut rng = rand::thread_rng();
         let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
             return None;
         };
@@ -241,7 +240,10 @@ impl AgentSystem {
             return None;
         }
 
-        let pick = rng.gen_range(0..total_vacant);
+        let seed = (self.sim_time.to_bits() as u64)
+            ^ ((self.agents.len() as u64) << 32)
+            ^ (total_vacant as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let pick = stable_index(seed, total_vacant);
         let list = &allocator.vacancy_index[residential_slot];
         let building_idx = list.get(pick).copied().unwrap_or(usize::MAX);
         if building_idx != usize::MAX {

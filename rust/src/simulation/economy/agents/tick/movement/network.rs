@@ -8,6 +8,7 @@ mod pose;
 mod replan;
 
 use super::super::super::{MODE_CAR, TRANSIT_INTERSECTION};
+use super::super::claims::LaneClaimContext;
 use super::super::slices::MovementSlices;
 use super::super::traffic::{connector_turn_speed, junction_car_speed};
 use crate::config::CAR_JUNCTION_SPEED_MS;
@@ -20,7 +21,7 @@ use lane_change::prepare_lane_change_and_overtake;
 use lane_entry::{LaneEntryAction, prepare_lane_entry};
 use pose::update_network_pose;
 use replan::prepare_network_replan;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicU32;
 
 /// Handles network, immigration, and active junction connector movement.
 ///
@@ -35,7 +36,7 @@ pub(super) unsafe fn handle_network_movement(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
     lane_buckets: &Vec<Vec<(f32, usize)>>,
-    lane_attach_claimed: &Vec<AtomicBool>,
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {
     unsafe {
@@ -92,14 +93,7 @@ pub(super) unsafe fn handle_network_movement(
                 *s_lane_d.get_mut(i) += remaining_dist;
                 remaining_dist = 0.0;
 
-                if try_network_detach(
-                    i,
-                    lane_id,
-                    allocator,
-                    transit_network,
-                    lane_attach_claimed,
-                    slices,
-                ) {
+                if try_network_detach(i, lane_id, allocator, transit_network, lane_claims, slices) {
                     break;
                 }
             } else {
@@ -115,7 +109,7 @@ pub(super) unsafe fn handle_network_movement(
                     graph,
                     pathfind_count,
                     lane_buckets,
-                    lane_attach_claimed,
+                    lane_claims,
                     slices,
                 ) {
                     LaneEndAction::KeepMoving => {}

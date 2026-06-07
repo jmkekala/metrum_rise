@@ -5,6 +5,7 @@ mod exit;
 mod zero_hop;
 
 use super::super::super::super::ACCESS_PLAN_VALID;
+use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
 use super::super::NETWORK_REPLAN_DELAY_S;
@@ -12,7 +13,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicU32;
 
 /// Control flow requested after a lane-end transition.
 pub(super) enum LaneEndAction {
@@ -39,7 +40,7 @@ pub(super) unsafe fn handle_lane_end(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEndAction {
     unsafe {
@@ -115,7 +116,7 @@ pub(super) unsafe fn handle_lane_end(
                 remaining_dist,
                 transit_network,
                 lane_buckets,
-                lane_attach_claimed,
+                lane_claims,
                 slices,
             );
         }
@@ -131,7 +132,7 @@ pub(super) unsafe fn handle_lane_end(
             transit_network,
             graph,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
             slices,
         ) {
             return action;

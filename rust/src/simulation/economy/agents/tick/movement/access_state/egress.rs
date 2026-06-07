@@ -5,9 +5,10 @@ use super::super::super::access::{
     advance_along_local_access_path, local_access_path, local_access_side_label,
     local_access_target_segment, planned_attach_is_legal,
 };
+use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::MovementSlices;
-use super::super::super::traffic::lane_attach_slot_clear;
+use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::reset_invalid_access_plan;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
@@ -16,7 +17,6 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
 use godot::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Handles local access movement from a building door to the planned network attachment lane.
 ///
@@ -30,7 +30,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     lane_buckets: &Vec<Vec<(f32, usize)>>,
-    lane_attach_claimed: &Vec<AtomicBool>,
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {
     unsafe {
@@ -153,10 +153,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         .get(attach_lane_id)
                         .map(|bucket| lane_attach_slot_clear(bucket, attach_lane_d))
                         .unwrap_or(false)
-                        && lane_attach_claimed
-                            .get(attach_lane_id)
-                            .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
-                            .unwrap_or(false)
+                        && claim_lane_entry(i, attach_lane_id, lane_claims)
                 } else {
                     true
                 };

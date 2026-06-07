@@ -8,6 +8,7 @@ use super::super::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING,
     TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
+use super::claims::LaneClaimContext;
 use super::slices::MovementSlices;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::data::AgentSystem;
@@ -19,7 +20,7 @@ use crate::simulation::network::graph::RegionGraph;
 use access_state::{handle_access_egress, handle_access_ingress};
 use building::handle_in_building;
 use network::handle_network_movement;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicU32;
 
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
@@ -32,7 +33,7 @@ impl AgentSystem {
     /// Core agent movement logic (FSM and physics).
     /// Safety: Caller must ensure disjoint access to agent SoA via `MovementSlices`.
     #[inline(always)]
-    pub(crate) unsafe fn process_agent_movement(
+    pub(super) unsafe fn process_agent_movement(
         i: usize,
         delta: f32,
         sim_time: f32,
@@ -43,7 +44,7 @@ impl AgentSystem {
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
         lane_buckets: &Vec<Vec<(f32, usize)>>,
-        lane_attach_claimed: &Vec<AtomicBool>,
+        lane_claims: &LaneClaimContext<'_>,
         operational_clock: &OperationalClockRuntimeTuning,
         economy_catalog: &RuntimeEconomyCatalog,
         slices: &MovementSlices,
@@ -102,7 +103,7 @@ impl AgentSystem {
                         transit_network,
                         graph,
                         lane_buckets,
-                        lane_attach_claimed,
+                        lane_claims,
                         slices,
                     );
                 }
@@ -117,7 +118,7 @@ impl AgentSystem {
                         graph,
                         pathfind_count,
                         lane_buckets,
-                        lane_attach_claimed,
+                        lane_claims,
                         slices,
                     );
                 }

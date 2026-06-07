@@ -1,13 +1,13 @@
 //! Zero-hop access connector handling at the destination junction neck.
 
 use super::super::super::super::super::ACCESS_PLAN_VALID;
+use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::lane_origin_node;
 use super::super::super::super::slices::MovementSlices;
 use super::LaneEndAction;
 use super::enter::enter_detach_lane_connector;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use std::sync::atomic::AtomicBool;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn try_zero_hop_access_connector(
@@ -21,7 +21,7 @@ pub(super) unsafe fn try_zero_hop_access_connector(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     lane_buckets: &[Vec<(f32, usize)>],
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> Option<LaneEndAction> {
     unsafe {
@@ -53,7 +53,7 @@ pub(super) unsafe fn try_zero_hop_access_connector(
             remaining_dist,
             transit_network,
             lane_buckets,
-            lane_attach_claimed,
+            lane_claims,
             slices,
         )
     }

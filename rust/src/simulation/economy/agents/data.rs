@@ -172,6 +172,9 @@ pub struct AgentSystem {
     /// Prevents multiple cars from claiming the same exact frontage handoff on the same lane
     /// in a single tick when households or workplaces release or receive several agents at once.
     pub lane_attach_claimed: Vec<AtomicBool>,
+    /// Scratch mask: agents marked `true` may touch lane-entry claims this tick and are run in
+    /// stable index order after the non-claiming parallel movement pass.
+    pub claim_serial_agents: Vec<bool>,
     /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
@@ -223,6 +226,7 @@ impl AgentSystem {
             lane_change_ghost_agents: Vec::new(),
             new_speed: Vec::new(),
             lane_attach_claimed: Vec::new(),
+            claim_serial_agents: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             edge_is_dirty: Vec::new(),

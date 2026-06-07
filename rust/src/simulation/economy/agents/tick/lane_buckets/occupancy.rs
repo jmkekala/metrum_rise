@@ -6,6 +6,7 @@ use super::super::traffic::LANE_CHANGE_FINISH_EPS_M;
 use crate::simulation::economy::agents::TRANSIT_NETWORK;
 use crate::simulation::economy::agents::data::AgentSystem;
 use rayon::prelude::*;
+use std::cmp::Ordering as CmpOrdering;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 impl AgentSystem {
@@ -107,16 +108,32 @@ impl AgentSystem {
         if self.dirty_lanes.len() >= PAR_THRESHOLD {
             self.dirty_lanes.par_iter().for_each(|&lid| {
                 let bucket = unsafe { buckets_raw.get_mut(lid) };
-                bucket.sort_unstable_by(|a, b| {
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                bucket.sort_unstable_by(lane_bucket_order);
             });
         } else {
             for &lid in &self.dirty_lanes {
-                self.lane_buckets[lid].sort_unstable_by(|a, b| {
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                self.lane_buckets[lid].sort_unstable_by(lane_bucket_order);
             }
         }
+    }
+}
+
+fn lane_bucket_order(a: &(f32, usize), b: &(f32, usize)) -> CmpOrdering {
+    a.0.partial_cmp(&b.0)
+        .unwrap_or(CmpOrdering::Equal)
+        .then_with(|| a.1.cmp(&b.1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lane_bucket_order;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn lane_bucket_order_uses_agent_index_tiebreak() {
+        let mut bucket = vec![(12.0, 3), (12.0, 1), (8.0, 2)];
+        bucket.sort_unstable_by(lane_bucket_order);
+        assert_eq!(bucket, vec![(8.0, 2), (12.0, 1), (12.0, 3)]);
+        assert_eq!(lane_bucket_order(&(4.0, 7), &(4.0, 7)), Ordering::Equal);
     }
 }

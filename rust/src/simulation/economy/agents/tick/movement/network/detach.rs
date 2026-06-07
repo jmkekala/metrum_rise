@@ -2,11 +2,12 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};
 use super::super::super::access::{local_access_point, local_access_side_label};
+use super::super::super::claims::LaneClaimContext;
 use super::super::super::slices::MovementSlices;
+use super::super::super::traffic::claim_lane_entry;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Attempts to detach from the current network lane into the target building's access path.
 ///
@@ -18,7 +19,7 @@ pub(super) unsafe fn try_network_detach(
     lane_id: usize,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
-    lane_attach_claimed: &[AtomicBool],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> bool {
     unsafe {
@@ -51,10 +52,7 @@ pub(super) unsafe fn try_network_detach(
 
         let detach_d = *s_plan_detach_lane_d.get(i);
         let detach_allowed = if *s_tmode.get(i) == MODE_CAR {
-            lane_attach_claimed
-                .get(planned_detach_lane_id)
-                .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
-                .unwrap_or(false)
+            claim_lane_entry(i, planned_detach_lane_id, lane_claims)
         } else {
             true
         };

@@ -1,6 +1,7 @@
 //! Main simulation loop for agents: transit state machine and movement.
 
 mod access;
+mod claims;
 mod frontage;
 mod lane_buckets;
 mod lane_nav;

@@ -1,19 +1,20 @@
 //! Agent spawning, removal, and whole-store lifecycle helpers.
 
 use super::data::{Agent, AgentSystem};
+use super::determinism::{stable_index, stable_unit_f32};
 use super::{MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING};
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use rand::Rng;
 use std::sync::atomic::Ordering;
 
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
     pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
-        let mut rng = rand::thread_rng();
-        let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
+        let spawn_index = self.agents.len() as u32;
+        let schedule_seed = stable_schedule_seed(home, spawn_index);
         let render_id = self.allocate_render_id();
+        let visual_seed = agent_visual_seed(home, spawn_index);
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -63,9 +64,9 @@ impl AgentSystem {
             current_path: Vec::new(),
             current_path_index: 0,
             has_car: true,
-            vehicle_type: rng.gen_range(0..4) as u8,
-            pedestrian_type: rng.gen_range(0..4) as u8,
-            walk_phase: rng.gen_range(0.0..1.0),
+            vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
+            pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
+            walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
             job_lock_days: 0,
             consecutive_unpaid_days: 0,
         };
@@ -86,9 +87,10 @@ impl AgentSystem {
         init_x: f32,
         init_y: f32,
     ) -> usize {
-        let mut rng = rand::thread_rng();
-        let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
+        let spawn_index = self.agents.len() as u32;
+        let schedule_seed = stable_schedule_seed(home, spawn_index);
         let render_id = self.allocate_render_id();
+        let visual_seed = agent_visual_seed(home, spawn_index);
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -138,9 +140,9 @@ impl AgentSystem {
             current_path: Vec::new(),
             current_path_index: 0,
             has_car: true,
-            vehicle_type: rng.gen_range(0..4) as u8,
-            pedestrian_type: rng.gen_range(0..4) as u8,
-            walk_phase: rng.gen_range(0.0..1.0),
+            vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
+            pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
+            walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
             job_lock_days: 0,
             consecutive_unpaid_days: 0,
         };
@@ -179,16 +181,17 @@ impl AgentSystem {
         graph: &RegionGraph,
         allocator: &BuildingAllocator,
     ) {
-        let mut rng = rand::thread_rng();
         let node_count = graph.node_count();
         let bldg_count = allocator.buildings.len();
         if node_count == 0 || bldg_count == 0 {
             return;
         }
 
-        for _ in 0..count {
-            let home_idx = rng.gen_range(0..bldg_count);
-            let start_node = rng.gen_range(0..graph.node_count()) as u32;
+        let base_spawn_index = self.agents.len() as u64;
+        for offset in 0..count {
+            let seed = base_spawn_index.wrapping_add(offset as u64);
+            let home_idx = stable_index(seed ^ 0xD06C_A11E_C70C_A7ED, bldg_count);
+            let start_node = stable_index(seed ^ 0x90DE_5EED_5A11_F00D, node_count) as u32;
             let start_pos = graph.node(start_node).pos;
 
             self.spawn_housed_agent(home_idx, start_pos.x, start_pos.z);
@@ -228,4 +231,10 @@ fn stable_schedule_seed(home_building: usize, spawn_index: u32) -> u32 {
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(u64::from(spawn_index).wrapping_mul(0xBF58_476D_1CE4_E5B9));
     ((mixed >> 32) as u32) ^ (mixed as u32)
+}
+
+fn agent_visual_seed(home_building: usize, spawn_index: u32) -> u64 {
+    (home_building as u64)
+        .wrapping_mul(0x94D0_49BB_1331_11EB)
+        .wrapping_add(u64::from(spawn_index).wrapping_mul(0x9E37_79B9_7F4A_7C15))
 }
