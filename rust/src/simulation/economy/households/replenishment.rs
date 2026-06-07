@@ -264,6 +264,18 @@ impl HouseholdSystem {
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
         let trigger_days = profile.reorder_threshold_days;
+        let restock_candidate_exists = self.households.par_iter().any(|household| {
+            household.member_count > 0
+                && household.stock_days < trigger_days
+                && household.home_building_id < allocator.buildings.len()
+                && !matches!(
+                    household.replenishment_state,
+                    REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                )
+        });
+        if !restock_candidate_exists {
+            return;
+        }
         let urgent_restock_candidate_exists = self.households.par_iter().any(|household| {
             household.member_count > 0
                 && household.stock_days == 0.0

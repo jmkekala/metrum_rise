@@ -48,6 +48,10 @@ pub struct HouseholdSystem {
     pub households: Vec<Household>,
     pub(super) member_count_scratch: Vec<AtomicU32>,
     pub(super) worker_count_scratch: Vec<AtomicU32>,
+    pub(super) household_member_heads_scratch: Vec<usize>,
+    pub(super) household_member_next_scratch: Vec<usize>,
+    pub(super) removal_selected_flags_scratch: Vec<bool>,
+    pub(super) removal_agent_indices_scratch: Vec<usize>,
 }
 
 impl HouseholdSystem {
@@ -57,6 +61,10 @@ impl HouseholdSystem {
             households: Vec::new(),
             member_count_scratch: Vec::new(),
             worker_count_scratch: Vec::new(),
+            household_member_heads_scratch: Vec::new(),
+            household_member_next_scratch: Vec::new(),
+            removal_selected_flags_scratch: Vec::new(),
+            removal_agent_indices_scratch: Vec::new(),
         }
     }
 
@@ -65,6 +73,10 @@ impl HouseholdSystem {
         self.households.clear();
         self.member_count_scratch.clear();
         self.worker_count_scratch.clear();
+        self.household_member_heads_scratch.clear();
+        self.household_member_next_scratch.clear();
+        self.removal_selected_flags_scratch.clear();
+        self.removal_agent_indices_scratch.clear();
     }
 
     /// Remaps building references after a building swap-remove.
@@ -115,6 +127,10 @@ impl Clone for HouseholdSystem {
             households: self.households.clone(),
             member_count_scratch: Vec::new(),
             worker_count_scratch: Vec::new(),
+            household_member_heads_scratch: Vec::new(),
+            household_member_next_scratch: Vec::new(),
+            removal_selected_flags_scratch: Vec::new(),
+            removal_agent_indices_scratch: Vec::new(),
         }
     }
 }

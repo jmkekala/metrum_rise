@@ -31,6 +31,23 @@ const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
 const JOB_SEARCH_MAX_RING: i32 = 8;
 const JOB_SEARCH_CANDIDATES: usize = 24;
 const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
+const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
+    building_idx: usize::MAX,
+    score: 0.0,
+};
+
+#[derive(Clone, Copy)]
+struct JobChoice {
+    building_idx: usize,
+    score: f32,
+}
+
+struct WagePaymentPlan {
+    agent_idx: usize,
+    work_building: usize,
+    household_id: usize,
+    wage: f32,
+}
 
 impl HouseholdSystem {
     pub(super) fn recount_worker_assignments(
@@ -127,39 +144,54 @@ impl HouseholdSystem {
     pub fn pay_daily_wages(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        for i in 0..agents.len() {
-            let work = agents.work_building[i];
-            let hid = agents.household_id[i];
-            if work == usize::MAX || hid == usize::MAX {
-                continue;
-            }
-            if work >= allocator.buildings.len() || hid >= self.households.len() {
-                continue;
-            }
-            let Some(profile) = economy_profile_for_building(&catalog, &allocator.buildings[work])
-            else {
-                continue;
-            };
-            let wage = profile.average_daily_wage();
-            if wage <= 0.0 {
-                continue;
-            }
-            if allocator.buildings[work].operating_budget >= wage {
-                allocator.buildings[work].operating_budget -= wage;
-                self.households[hid].budget += wage;
-                agents.consecutive_unpaid_days[i] = 0;
-            } else {
-                agents.consecutive_unpaid_days[i] =
-                    agents.consecutive_unpaid_days[i].saturating_add(1);
+        let mut plans: Vec<_> = (0..agents.len())
+            .into_par_iter()
+            .filter_map(|i| {
+                let work = agents.work_building[i];
+                let household_id = agents.household_id[i];
+                if work >= allocator.buildings.len() || household_id >= self.households.len() {
+                    return None;
+                }
+                let profile = economy_profile_for_building(&catalog, &allocator.buildings[work])?;
+                let wage = profile.average_daily_wage();
+                if wage <= 0.0 {
+                    return None;
+                }
+                Some(WagePaymentPlan {
+                    agent_idx: i,
+                    work_building: work,
+                    household_id,
+                    wage,
+                })
+            })
+            .collect();
+        plans.sort_unstable_by_key(|plan| plan.agent_idx);
 
-                if agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS {
+        for plan in plans {
+            if plan.agent_idx >= agents.len()
+                || agents.work_building[plan.agent_idx] != plan.work_building
+                || agents.household_id[plan.agent_idx] != plan.household_id
+                || plan.work_building >= allocator.buildings.len()
+                || plan.household_id >= self.households.len()
+            {
+                continue;
+            }
+            if allocator.buildings[plan.work_building].operating_budget >= plan.wage {
+                allocator.buildings[plan.work_building].operating_budget -= plan.wage;
+                self.households[plan.household_id].budget += plan.wage;
+                agents.consecutive_unpaid_days[plan.agent_idx] = 0;
+            } else {
+                agents.consecutive_unpaid_days[plan.agent_idx] =
+                    agents.consecutive_unpaid_days[plan.agent_idx].saturating_add(1);
+
+                if agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS {
                     // Fire self from work.
-                    agents.assign_work_building(i, usize::MAX, 0);
+                    agents.assign_work_building(plan.agent_idx, usize::MAX, 0);
                     debug_log!(
                         "economy",
                         "agent_idx={} fired self from insolvent building={} due to consecutive unpaid days",
-                        i,
-                        work
+                        plan.agent_idx,
+                        plan.work_building
                     );
                 }
             }
@@ -171,8 +203,8 @@ impl HouseholdSystem {
 struct JobAssignmentPlan {
     agent_idx: usize,
     old_job: usize,
-    best_job: usize,
-    best_score: f32,
+    choice_count: u8,
+    choices: [JobChoice; JOB_SEARCH_CANDIDATES],
     income_pressure: f32,
     stock_pressure: f32,
 }
@@ -224,8 +256,9 @@ fn plan_agent_workplace(
     let stock_pressure =
         (1.0 - (household.stock_days / target_days.max(0.1)).clamp(0.0, 1.0)).clamp(0.0, 1.0);
 
-    let mut best_job = usize::MAX;
-    let mut best_score = 0.0;
+    let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
+    let mut choice_count = 0usize;
+    let mut current_job_score = None;
     for &candidate in candidates.iter() {
         if candidate >= allocator.buildings.len() {
             continue;
@@ -281,31 +314,64 @@ fn plan_agent_workplace(
         let commute_penalty = normalized_commute_penalty_seconds(commute_seconds);
         let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
             - W_COMMUTE * commute_penalty;
-        if score > best_score {
-            best_score = score;
-            best_job = candidate;
+        if candidate == old_job {
+            current_job_score = Some(score);
+        } else if score >= GO_TO_WORK_THRESHOLD {
+            insert_job_choice(
+                &mut choices,
+                &mut choice_count,
+                JobChoice {
+                    building_idx: candidate,
+                    score,
+                },
+            );
         }
     }
 
     let can_switch = old_job == usize::MAX
         || agents.job_lock_days[i] == 0
         || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
-    if best_job == usize::MAX
-        || best_score < GO_TO_WORK_THRESHOLD
-        || best_job == old_job
-        || !can_switch
-    {
+    if choice_count == 0 || !can_switch {
+        return None;
+    }
+    if current_job_score.is_some_and(|score| score >= choices[0].score) {
         return None;
     }
 
     Some(JobAssignmentPlan {
         agent_idx: i,
         old_job,
-        best_job,
-        best_score,
+        choice_count: choice_count as u8,
+        choices,
         income_pressure,
         stock_pressure,
     })
+}
+
+fn insert_job_choice(
+    choices: &mut [JobChoice; JOB_SEARCH_CANDIDATES],
+    choice_count: &mut usize,
+    choice: JobChoice,
+) {
+    let len = (*choice_count).min(JOB_SEARCH_CANDIDATES);
+    let mut insert_at = 0;
+    while insert_at < len && choices[insert_at].score >= choice.score {
+        insert_at += 1;
+    }
+    if len == JOB_SEARCH_CANDIDATES && insert_at == len {
+        return;
+    }
+
+    let new_len = if len < JOB_SEARCH_CANDIDATES {
+        *choice_count = len + 1;
+        len + 1
+    } else {
+        len
+    };
+    for idx in (insert_at + 1..new_len).rev() {
+        choices[idx] = choices[idx - 1];
+    }
+    choices[insert_at] = choice;
 }
 
 fn apply_workplace_plan(
@@ -315,7 +381,6 @@ fn apply_workplace_plan(
     catalog: &RuntimeEconomyCatalog,
 ) {
     if plan.agent_idx >= agents.len()
-        || plan.best_job >= allocator.buildings.len()
         || agents.transit[plan.agent_idx] != TRANSIT_IN_BUILDING
         || agents.work_building[plan.agent_idx] != plan.old_job
     {
@@ -329,49 +394,61 @@ fn apply_workplace_plan(
         return;
     }
 
-    let building = &allocator.buildings[plan.best_job];
-    if building.is_deserted || building.broken || building.economy_broken {
-        return;
-    }
-    let Some(economy_profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-    else {
-        return;
-    };
-    if !building_offers_work(building, economy_profile) {
-        return;
-    }
+    for choice in plan
+        .choices
+        .iter()
+        .take(usize::from(plan.choice_count))
+        .copied()
+    {
+        let job = choice.building_idx;
+        if job >= allocator.buildings.len() {
+            continue;
+        }
+        let building = &allocator.buildings[job];
+        if building.is_deserted || building.broken || building.economy_broken {
+            continue;
+        }
+        let Some(economy_profile) =
+            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+        else {
+            continue;
+        };
+        if !building_offers_work(building, economy_profile) {
+            continue;
+        }
 
-    let average_daily_wage = economy_profile.average_daily_wage();
-    let worker_capacity = allocator.worker_capacity(plan.best_job);
-    let budget_capacity = if average_daily_wage > 0.1 {
-        (building.operating_budget / average_daily_wage).floor() as u32
-    } else {
-        worker_capacity
-    };
-    let effective_capacity = worker_capacity.min(budget_capacity);
-    if effective_capacity.saturating_sub(building.worker_count) == 0 {
+        let average_daily_wage = economy_profile.average_daily_wage();
+        let worker_capacity = allocator.worker_capacity(job);
+        let budget_capacity = if average_daily_wage > 0.1 {
+            (building.operating_budget / average_daily_wage).floor() as u32
+        } else {
+            worker_capacity
+        };
+        let effective_capacity = worker_capacity.min(budget_capacity);
+        if effective_capacity.saturating_sub(building.worker_count) == 0 {
+            continue;
+        }
+
+        if plan.old_job < allocator.buildings.len() {
+            allocator.buildings[plan.old_job].worker_count = allocator.buildings[plan.old_job]
+                .worker_count
+                .saturating_sub(1);
+        }
+        allocator.buildings[job].worker_count =
+            allocator.buildings[job].worker_count.saturating_add(1);
+        agents.assign_work_building(plan.agent_idx, job, JOB_LOCK_DAYS);
+        debug_log!(
+            "economy",
+            "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
+            plan.agent_idx,
+            job,
+            allocator.buildings[job].zone_type,
+            choice.score,
+            plan.income_pressure,
+            plan.stock_pressure
+        );
         return;
     }
-
-    if plan.old_job < allocator.buildings.len() {
-        allocator.buildings[plan.old_job].worker_count = allocator.buildings[plan.old_job]
-            .worker_count
-            .saturating_sub(1);
-    }
-    allocator.buildings[plan.best_job].worker_count = allocator.buildings[plan.best_job]
-        .worker_count
-        .saturating_add(1);
-    agents.assign_work_building(plan.agent_idx, plan.best_job, JOB_LOCK_DAYS);
-    debug_log!(
-        "economy",
-        "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
-        plan.agent_idx,
-        plan.best_job,
-        allocator.buildings[plan.best_job].zone_type,
-        plan.best_score,
-        plan.income_pressure,
-        plan.stock_pressure
-    );
 }
 
 fn household_income_pressure(

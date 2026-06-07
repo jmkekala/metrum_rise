@@ -78,12 +78,15 @@ impl HouseholdSystem {
         );
 
         let removed_count = selected_households.len() as u32;
-        let mut selected_flags = vec![false; self.households.len()];
+        let mut selected_flags = std::mem::take(&mut self.removal_selected_flags_scratch);
+        selected_flags.clear();
+        selected_flags.resize(self.households.len(), false);
         for &household_id in &selected_households {
             selected_flags[household_id] = true;
         }
 
-        let mut agent_indices = Vec::new();
+        let mut agent_indices = std::mem::take(&mut self.removal_agent_indices_scratch);
+        agent_indices.clear();
         for agent_idx in 0..agents.len() {
             let household_id = agents.household_id[agent_idx];
             if household_id < selected_flags.len() && selected_flags[household_id] {
@@ -91,7 +94,7 @@ impl HouseholdSystem {
             }
         }
         agent_indices.sort_unstable_by(|a, b| b.cmp(a));
-        for agent_idx in agent_indices {
+        for agent_idx in agent_indices.iter().copied() {
             agents.kill_agent(agent_idx, allocator);
         }
 
@@ -103,6 +106,8 @@ impl HouseholdSystem {
                 household_supply_resource,
             );
         }
+        self.removal_selected_flags_scratch = selected_flags;
+        self.removal_agent_indices_scratch = agent_indices;
         removed_count
     }
 

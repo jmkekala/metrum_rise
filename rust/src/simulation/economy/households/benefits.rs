@@ -1,11 +1,14 @@
 //! Unemployment benefit payment and treasury interaction.
 
+use std::sync::atomic::Ordering;
+
 use super::HouseholdSystem;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::zoning::ZoneType;
+use rayon::prelude::*;
 
 impl HouseholdSystem {
     pub(crate) fn pay_unemployment_benefits(
@@ -19,16 +22,19 @@ impl HouseholdSystem {
         let benefit_per_member = tuning.unemployment_daily_benefit_per_member;
         let max_days = tuning.unemployment_max_days;
 
-        // Count unemployed members per household in one agent pass.
-        let mut unemployed_per_household = vec![0u16; self.households.len()];
-        for i in 0..agents.len() {
-            let hid = agents.household_id[i];
-            if hid == usize::MAX || hid >= self.households.len() {
-                continue;
-            }
-            if agents.work_building[i] == usize::MAX {
-                unemployed_per_household[hid] = unemployed_per_household[hid].saturating_add(1);
-            }
+        let household_count = self.households.len();
+        self.reset_member_count_scratch();
+        {
+            let unemployed_per_household = &self.member_count_scratch;
+            agents
+                .household_id
+                .par_iter()
+                .zip(agents.work_building.par_iter())
+                .for_each(|(&hid, &work)| {
+                    if hid < household_count && work == usize::MAX {
+                        unemployed_per_household[hid].fetch_add(1, Ordering::Relaxed);
+                    }
+                });
         }
 
         let mut total_disbursed = 0.0f32;
@@ -41,7 +47,9 @@ impl HouseholdSystem {
             {
                 continue;
             }
-            let unemployed = unemployed_per_household[hid];
+            let unemployed = self.member_count_scratch[hid]
+                .load(Ordering::Relaxed)
+                .min(u32::from(u16::MAX)) as u16;
             if unemployed == 0 {
                 household.unemployment_days_elapsed = 0;
                 continue;

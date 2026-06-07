@@ -82,6 +82,7 @@ impl VacancyPlanner {
         reserve_days: f32,
         allocator: &BuildingAllocator,
         current_home: Option<usize>,
+        minimum_level_exclusive: Option<u8>,
         config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
     ) -> Option<usize> {
         let current_center = current_home.and_then(|building_idx| {
@@ -94,6 +95,9 @@ impl VacancyPlanner {
         let mut best: Option<(usize, u8, f32, usize)> = None;
         for (candidate_pos, candidate) in self.candidates.iter().enumerate() {
             if best.is_some_and(|(_, best_level, _, _)| candidate.level < best_level) {
+                break;
+            }
+            if minimum_level_exclusive.is_some_and(|level| candidate.level <= level) {
                 break;
             }
             if candidate.remaining_slots == 0 || Some(candidate.building_idx) == current_home {
@@ -144,6 +148,58 @@ impl VacancyPlanner {
             .saturating_sub(1);
         Some(building_idx)
     }
+
+    fn release_home(&mut self, allocator: &BuildingAllocator, building_idx: usize) {
+        let Some(candidate) = vacancy_candidate_for_building(allocator, building_idx) else {
+            return;
+        };
+        if let Some(existing) = self
+            .candidates
+            .iter_mut()
+            .find(|existing| existing.building_idx == building_idx)
+        {
+            existing.level = candidate.level;
+            existing.remaining_slots = candidate.remaining_slots;
+            return;
+        }
+        self.candidates.push(candidate);
+        self.sort_candidates();
+    }
+
+    fn sort_candidates(&mut self) {
+        self.candidates.sort_unstable_by(|left, right| {
+            right
+                .level
+                .cmp(&left.level)
+                .then_with(|| left.building_idx.cmp(&right.building_idx))
+        });
+    }
+}
+
+fn vacancy_candidate_for_building(
+    allocator: &BuildingAllocator,
+    building_idx: usize,
+) -> Option<VacancyCandidate> {
+    let building = allocator.buildings.get(building_idx)?;
+    if building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.pending_redevelopment
+        || !matches!(building.zone_type, ZoneType::Residential)
+    {
+        return None;
+    }
+    let remaining_slots = allocator
+        .household_capacity(building_idx)
+        .saturating_sub(building.occupancy);
+    if remaining_slots == 0 {
+        return None;
+    }
+    Some(VacancyCandidate {
+        building_idx,
+        level: building.level,
+        remaining_slots,
+    })
 }
 
 /// Explicit household runtime record anchored to a residential building.
@@ -158,8 +214,14 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let (household_member_heads, household_member_next) =
-            build_household_member_index(agents, self.households.len());
+        let member_heads_scratch = std::mem::take(&mut self.household_member_heads_scratch);
+        let member_next_scratch = std::mem::take(&mut self.household_member_next_scratch);
+        let (household_member_heads, household_member_next) = build_household_member_index(
+            agents,
+            self.households.len(),
+            member_heads_scratch,
+            member_next_scratch,
+        );
         let mut vacancy_planner = VacancyPlanner::new(allocator);
 
         let mut diagnostics = HousingResolutionDiagnostics::default();
@@ -182,6 +244,7 @@ impl HouseholdSystem {
                     reserve_days,
                     allocator,
                     None,
+                    None,
                     &config.households,
                 ) {
                     self.relocate_household(
@@ -190,6 +253,7 @@ impl HouseholdSystem {
                         target_home,
                         agents,
                         allocator,
+                        &mut vacancy_planner,
                         &household_member_heads,
                         &household_member_next,
                     );
@@ -220,15 +284,16 @@ impl HouseholdSystem {
                     reserve_days,
                     allocator,
                     Some(current_home),
+                    Some(current_level),
                     &config.households,
-                ) && allocator.buildings[target_home].level > current_level
-                {
+                ) {
                     self.relocate_household(
                         household_id,
                         current_home,
                         target_home,
                         agents,
                         allocator,
+                        &mut vacancy_planner,
                         &household_member_heads,
                         &household_member_next,
                     );
@@ -253,6 +318,7 @@ impl HouseholdSystem {
                 reserve_days,
                 allocator,
                 Some(current_home),
+                None,
                 &config.households,
             ) {
                 self.relocate_household(
@@ -261,6 +327,7 @@ impl HouseholdSystem {
                     target_home,
                     agents,
                     allocator,
+                    &mut vacancy_planner,
                     &household_member_heads,
                     &household_member_next,
                 );
@@ -272,6 +339,7 @@ impl HouseholdSystem {
                     current_home,
                     agents,
                     allocator,
+                    &mut vacancy_planner,
                     &household_member_heads,
                     &household_member_next,
                 );
@@ -296,6 +364,9 @@ impl HouseholdSystem {
             diagnostics.evicted,
             diagnostics.still_unhoused,
         );
+
+        self.household_member_heads_scratch = household_member_heads;
+        self.household_member_next_scratch = household_member_next;
     }
 
     fn relocate_household(
@@ -305,6 +376,7 @@ impl HouseholdSystem {
         new_home: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        vacancy_planner: &mut VacancyPlanner,
         household_member_heads: &[usize],
         household_member_next: &[usize],
     ) {
@@ -313,6 +385,7 @@ impl HouseholdSystem {
         }
         if old_home < allocator.buildings.len() {
             allocator.release_vacancy(old_home);
+            vacancy_planner.release_home(allocator, old_home);
         }
         allocator.claim_vacancy(new_home);
 
@@ -344,6 +417,7 @@ impl HouseholdSystem {
         old_home: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        vacancy_planner: &mut VacancyPlanner,
         household_member_heads: &[usize],
         household_member_next: &[usize],
     ) {
@@ -352,6 +426,7 @@ impl HouseholdSystem {
         }
         if old_home < allocator.buildings.len() {
             allocator.release_vacancy(old_home);
+            vacancy_planner.release_home(allocator, old_home);
         }
 
         let household = &mut self.households[household_id];
@@ -377,9 +452,13 @@ impl HouseholdSystem {
 fn build_household_member_index(
     agents: &AgentSystem,
     household_count: usize,
+    mut household_member_heads: Vec<usize>,
+    mut household_member_next: Vec<usize>,
 ) -> (Vec<usize>, Vec<usize>) {
-    let mut household_member_heads = vec![NO_MEMBER; household_count];
-    let mut household_member_next = vec![NO_MEMBER; agents.len()];
+    household_member_heads.clear();
+    household_member_heads.resize(household_count, NO_MEMBER);
+    household_member_next.clear();
+    household_member_next.resize(agents.len(), NO_MEMBER);
     for agent_idx in (0..agents.len()).rev() {
         let household_id = agents.household_id[agent_idx];
         if household_id >= household_count {
