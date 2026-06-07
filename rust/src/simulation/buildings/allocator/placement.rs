@@ -78,14 +78,24 @@ impl BuildingAllocator {
                 continue;
             };
 
-            candidates.push(DemandSpawnCandidate {
-                action: DemandSpawnAction {
-                    parcel_id: parcel.id().raw(),
-                    asset_id: resolved.asset_id,
+            let sort_key = DemandSpawnCandidateSortKey::from_resolved(&resolved);
+            candidates.push((
+                sort_key,
+                DemandSpawnCandidate {
+                    action: DemandSpawnAction {
+                        parcel_id: parcel.id().raw(),
+                        asset_id: resolved.asset_id,
+                    },
+                    density: profile.density.as_str().to_owned(),
                 },
-                density: profile.density.as_str().to_owned(),
-            });
+            ));
         }
+
+        sort_demand_spawn_candidates(&mut candidates);
+        let candidates: Vec<_> = candidates
+            .into_iter()
+            .map(|(_, candidate)| candidate)
+            .collect();
 
         debug_log!(
             "spawn",
@@ -536,4 +546,116 @@ struct ResolvedPlacement {
     facing_dir: Vector2,
     frontage_t: f32,
     edge_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DemandSpawnCandidateSortKey {
+    edge_idx: usize,
+    side_order: u8,
+    cell_x: usize,
+    width_cells: usize,
+    depth_cells: usize,
+    zone_profile_runtime_id: u16,
+    parcel_id: u64,
+}
+
+impl DemandSpawnCandidateSortKey {
+    fn from_resolved(placement: &ResolvedPlacement) -> Self {
+        Self {
+            edge_idx: placement.edge_idx,
+            side_order: spawn_side_order(placement.side),
+            cell_x: placement.cell_x,
+            width_cells: placement.width_cells,
+            depth_cells: placement.depth_cells,
+            zone_profile_runtime_id: placement.zone_profile_runtime_id,
+            parcel_id: placement.parcel_id,
+        }
+    }
+}
+
+fn sort_demand_spawn_candidates(
+    candidates: &mut [(DemandSpawnCandidateSortKey, DemandSpawnCandidate)],
+) {
+    candidates.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+}
+
+fn spawn_side_order(side: i8) -> u8 {
+    if side > 0 { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spawn_candidate(parcel_id: u64) -> DemandSpawnCandidate {
+        DemandSpawnCandidate {
+            action: DemandSpawnAction {
+                parcel_id,
+                asset_id: "test:asset".to_owned(),
+            },
+            density: "low".to_owned(),
+        }
+    }
+
+    #[test]
+    fn demand_spawn_candidates_sort_by_build_site_order() {
+        let mut candidates = vec![
+            (
+                DemandSpawnCandidateSortKey {
+                    edge_idx: 3,
+                    side_order: 0,
+                    cell_x: 0,
+                    width_cells: 2,
+                    depth_cells: 2,
+                    zone_profile_runtime_id: 1,
+                    parcel_id: 10,
+                },
+                spawn_candidate(10),
+            ),
+            (
+                DemandSpawnCandidateSortKey {
+                    edge_idx: 2,
+                    side_order: 1,
+                    cell_x: 0,
+                    width_cells: 2,
+                    depth_cells: 2,
+                    zone_profile_runtime_id: 1,
+                    parcel_id: 20,
+                },
+                spawn_candidate(20),
+            ),
+            (
+                DemandSpawnCandidateSortKey {
+                    edge_idx: 2,
+                    side_order: 0,
+                    cell_x: 1,
+                    width_cells: 2,
+                    depth_cells: 2,
+                    zone_profile_runtime_id: 1,
+                    parcel_id: 30,
+                },
+                spawn_candidate(30),
+            ),
+            (
+                DemandSpawnCandidateSortKey {
+                    edge_idx: 2,
+                    side_order: 0,
+                    cell_x: 0,
+                    width_cells: 2,
+                    depth_cells: 2,
+                    zone_profile_runtime_id: 1,
+                    parcel_id: 40,
+                },
+                spawn_candidate(40),
+            ),
+        ];
+
+        sort_demand_spawn_candidates(&mut candidates);
+        let parcel_ids: Vec<_> = candidates
+            .iter()
+            .map(|(_, candidate)| candidate.action.parcel_id)
+            .collect();
+
+        assert_eq!(parcel_ids, vec![40, 30, 20, 10]);
+    }
 }

@@ -873,7 +873,12 @@ or max_actionable_households == 0:
 
 action_credit += normalized_action_pressure * max_households_per_day * cadence_fraction
 
-households_to_act = floor(action_credit)
+households_to_act =
+    min(
+        floor(action_credit),
+        max_households_per_day,
+        max_actionable_households
+    )
 action_credit -= households_to_act
 ```
 

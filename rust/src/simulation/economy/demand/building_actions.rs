@@ -334,10 +334,13 @@ impl DemandSystem {
             .enumerate()
             .filter_map(|(idx, building)| (building.zone_type == zone_type).then_some(idx))
             .collect();
-        building_indices.sort_by(|&a, &b| {
+        building_indices.sort_unstable_by(|&a, &b| {
             let left = &allocator.buildings[a];
             let right = &allocator.buildings[b];
-            attachment_sort_key(left).cmp(&attachment_sort_key(right))
+            attachment_sort_key(left)
+                .cmp(&attachment_sort_key(right))
+                .then(left.parcel_id.cmp(&right.parcel_id))
+                .then(a.cmp(&b))
         });
 
         let mut candidates = ExistingBuildingCandidates::default();
@@ -448,18 +451,24 @@ impl DemandSystem {
             }
         }
 
-        candidates
-            .despawns
-            .sort_by(|left, right| left.deserted.cmp(&right.deserted).reverse());
+        candidates.despawns.sort_unstable_by(|left, right| {
+            right
+                .deserted
+                .cmp(&left.deserted)
+                .then_with(|| {
+                    action_attachment_sort_key(&left.action)
+                        .cmp(&action_attachment_sort_key(&right.action))
+                })
+                .then(left.action.parcel_id.cmp(&right.action.parcel_id))
+        });
         candidates
     }
 }
 
 pub(super) fn attachment_sort_key(
     building: &crate::simulation::buildings::allocator::Building,
-) -> (u64, usize, u8, usize, u16, u16, u8, &str) {
+) -> (usize, u8, usize, u16, u16, u8, &str) {
     (
-        building.parcel_id,
         building.edge_idx,
         if building.side > 0 { 0 } else { 1 },
         building.cell_x,
@@ -467,6 +476,20 @@ pub(super) fn attachment_sort_key(
         building.depth_cells,
         building.level,
         building.asset_id.as_str(),
+    )
+}
+
+fn action_attachment_sort_key(
+    action: &DemandBuildingActionKey,
+) -> (usize, u8, usize, u16, u16, u8, &str) {
+    (
+        action.edge_idx,
+        if action.side > 0 { 0 } else { 1 },
+        action.cell_x,
+        action.width_cells,
+        action.depth_cells,
+        action.level,
+        action.asset_id.as_str(),
     )
 }
 

@@ -1252,6 +1252,43 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
 }
 
 #[test]
+fn existing_building_candidates_follow_attachment_order_before_parcel_id() {
+    let mut allocator = BuildingAllocator::new();
+    let asset_id =
+        register_test_asset(&mut allocator, "com_attachment_order", ZoneType::Commercial);
+
+    let mut low_parcel_late_edge = building(ZoneType::Commercial, 0.0, 0, 0, asset_id.clone());
+    low_parcel_late_edge.parcel_id = 1;
+    low_parcel_late_edge.edge_idx = 8;
+    low_parcel_late_edge.cell_x = 0;
+
+    let mut high_parcel_early_edge = building(ZoneType::Commercial, 0.0, 0, 0, asset_id);
+    high_parcel_early_edge.parcel_id = 99;
+    high_parcel_early_edge.edge_idx = 2;
+    high_parcel_early_edge.cell_x = 0;
+
+    allocator.buildings.push(low_parcel_late_edge);
+    allocator.buildings.push(high_parcel_early_edge);
+
+    let households = HouseholdSystem::new();
+    let demand = DemandSystem::new();
+    let economy_tuning = load_runtime_economy_tuning().expect("runtime economy tuning must load");
+    let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+    let candidates = demand.collect_existing_building_candidates(
+        &allocator,
+        &households,
+        economy_tuning.as_ref(),
+        &residential_occupants,
+        ZoneType::Commercial,
+        0.0,
+    );
+
+    assert_eq!(candidates.despawns.len(), 2);
+    assert_eq!(candidates.despawns[0].action.edge_idx, 2);
+    assert_eq!(candidates.despawns[0].action.parcel_id, 99);
+}
+
+#[test]
 fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let mut allocator = BuildingAllocator::new();
     let level_one = register_family_asset(
