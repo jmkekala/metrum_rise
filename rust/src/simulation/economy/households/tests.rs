@@ -1,0 +1,740 @@
+//! Household module tests.
+
+use super::*;
+use crate::assets::AssetManifest;
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::agents::{
+    AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+};
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
+use crate::simulation::economy::households::metrics::household_supply_unit_price;
+use crate::simulation::zoning::ZoneType;
+use godot::prelude::Vector2;
+
+fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    match zone_type {
+        ZoneType::Commercial => {
+            catalog
+                .profile_for_id("grocery_basic")
+                .expect("grocery starter profile")
+                .runtime_id
+        }
+        ZoneType::Industrial => {
+            catalog
+                .profile_for_id("food_processor_basic")
+                .expect("food processor starter profile")
+                .runtime_id
+        }
+        _ => 0,
+    }
+}
+
+fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32) -> Building {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let runtime_id = test_economy_runtime_id(zone_type);
+    let mut resource_inventory = vec![0.0; catalog.resource_count()];
+    if stock > 0.0
+        && let Some(profile) = catalog.profile_by_runtime_id(runtime_id)
+        && let Some(output_port) = profile.outputs.first()
+    {
+        resource_inventory[output_port.resource_runtime_id as usize - 1] = stock;
+    }
+    Building {
+        center_x,
+        center_y: 0.0,
+        width_cells: 2,
+        depth_cells: 2,
+        zone_profile_runtime_id: 0,
+        parcel_id: 0,
+        zone_type,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.5,
+        side_offset: 1.0,
+        is_deserted: false,
+        budget_distress: false,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: asset_id.to_owned(),
+        level: 1,
+        broken: false,
+        economy_profile_runtime_id: runtime_id,
+        economy_broken: false,
+        resource_inventory,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    }
+}
+
+fn register_test_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+) -> String {
+    let (household_capacity, worker_capacity) = match zone {
+        ZoneClass::Residential => (Some(6), None),
+        ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+        ZoneClass::Mixed => (Some(4), Some(2)),
+    };
+    allocator.registry.register(
+        pack_id,
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![LodEntry {
+                file: "lod0.glb".to_owned(),
+                distance_min_m: 0.0,
+                distance_max_m: None,
+            }],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+            }],
+            building: Some(BuildingData {
+                flat_size_m2: None,
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(zone),
+                density: Some("low".to_owned()),
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity,
+                worker_capacity,
+                service_class: None,
+                economy_profile: match zone {
+                    ZoneClass::Commercial => Some("grocery_basic".to_owned()),
+                    ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
+                    _ => None,
+                },
+                preview_scale: Some(1.0),
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+            pivot_offset: None,
+        },
+        String::new(),
+    );
+    format!("{pack_id}:{asset_id}")
+}
+
+#[test]
+fn household_replenishment_flows_through_reserved_and_pickup_states() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "replenish_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "replenish_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        40.0
+    );
+    assert_eq!(households.households[0].budget, 50.0);
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_PICKUP_PENDING
+    );
+
+    households.run_household_replenishment(&mut allocator, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_FULFILLED
+    );
+    assert_eq!(households.households[0].stock, 10.0);
+    assert_eq!(allocator.buildings[1].revenue, 250.0);
+}
+
+#[test]
+fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_STABLE,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 5,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "urgent_replenish_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "urgent_replenish_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+}
+
+#[test]
+fn low_stock_household_can_buy_affordable_partial_restock() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let unit_price = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile")
+        .unit_price_currency;
+    let partial_units = 5.0;
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: partial_units * unit_price,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "partial_restock_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "partial_restock_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+    assert!((households.households[0].reserved_amount - partial_units).abs() < f32::EPSILON);
+    assert_eq!(households.households[0].budget, 0.0);
+
+    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut allocator, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_FULFILLED
+    );
+    assert!((households.households[0].stock - partial_units).abs() < f32::EPSILON);
+    assert!((households.households[0].stock_days - 2.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn immigrant_household_assigns_nearby_work_during_founding() {
+    let mut households = HouseholdSystem::new();
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let tuning = load_runtime_economy_tuning().expect("tuning");
+    let hid = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
+    households.households[hid].budget = 0.0;
+    households.households[hid].stock = 1.0;
+    households.households[hid].stock_days = 0.5;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "res_house", ZoneClass::Residential);
+    let industrial_asset =
+        register_test_asset(&mut allocator, "test", "ind_shop", ZoneClass::Industrial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Industrial,
+        &industrial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for a in [a0, a1] {
+        agents.household_id[a] = hid;
+        agents.transit[a] = TRANSIT_IN_BUILDING;
+        agents.current_building[a] = 0;
+        agents.target_building[a] = usize::MAX;
+        agents.current_node[a] = 0;
+        agents.has_car[a] = true;
+    }
+
+    households.consume_household_stock(&mut agents);
+    households.assign_agent_workplaces(&mut agents, &mut allocator);
+
+    assert_eq!(agents.work_building[a0], 1);
+    assert_eq!(agents.planned_activity[a0], 0);
+    assert_eq!(agents.planned_target_building[a0], usize::MAX);
+}
+
+fn make_household(
+    home_building_id: usize,
+    member_count: u16,
+    reserve_days: f32,
+    stock_days: f32,
+) -> Household {
+    let catalog = load_runtime_economy_catalog()
+        .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+    let tuning = load_runtime_economy_tuning()
+        .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+    let consumption_rate = 1.0;
+    let daily_supply_cost =
+        member_count.max(1) as f32 * consumption_rate * household_supply_unit_price(&catalog);
+    let daily_utility_cost =
+        member_count.max(1) as f32 * tuning.households.utility_cost_per_member_per_day;
+    let daily_essential_cost = daily_supply_cost + daily_utility_cost;
+    Household {
+        home_building_id,
+        budget: reserve_days * daily_essential_cost,
+        stock: stock_days * member_count.max(1) as f32 * consumption_rate,
+        member_count,
+        consumption_rate,
+        stock_days,
+        replenishment_state: REPLENISHMENT_STABLE,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    }
+}
+
+#[test]
+fn demand_household_removal_prioritizes_unhoused_households() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.5, 1.0));
+    households
+        .households
+        .push(make_household(usize::MAX, 1, 5.0, 5.0));
+    households.households.push(make_household(1, 1, 2.0, 2.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removal_res_a",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let housed_a = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let housed_b = agents.spawn_housed_agent(1, 0.0, 0.0);
+    agents.household_id[housed_a] = 0;
+    agents.household_id[unhoused] = 1;
+    agents.home_building[unhoused] = usize::MAX;
+    agents.target_building[unhoused] = usize::MAX;
+    agents.household_id[housed_b] = 2;
+    agents.recalculate_occupancy(&mut allocator);
+
+    households.execute_demand_household_removal(1, &mut agents, &mut allocator);
+
+    assert_eq!(households.households.len(), 2);
+    assert_eq!(agents.len(), 2);
+    assert!(
+        agents
+            .household_id
+            .iter()
+            .all(|&household_id| household_id < households.households.len())
+    );
+    assert!(agents.home_building.iter().all(|&home| home != usize::MAX));
+}
+
+#[test]
+fn demand_household_removal_uses_weaker_housed_households_after_unhoused_pool() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.5, 0.5));
+    households.households.push(make_household(1, 1, 5.0, 5.0));
+    households
+        .households
+        .push(make_household(usize::MAX, 1, 4.0, 4.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removal_res_b",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let weak_housed = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let strong_housed = agents.spawn_housed_agent(1, 0.0, 0.0);
+    let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[weak_housed] = 0;
+    agents.household_id[strong_housed] = 1;
+    agents.household_id[unhoused] = 2;
+    agents.home_building[unhoused] = usize::MAX;
+    agents.target_building[unhoused] = usize::MAX;
+    agents.recalculate_occupancy(&mut allocator);
+
+    households.execute_demand_household_removal(2, &mut agents, &mut allocator);
+
+    assert_eq!(households.households.len(), 1);
+    assert_eq!(agents.len(), 1);
+    assert_eq!(households.households[0].home_building_id, 1);
+    assert_eq!(agents.household_id[0], 0);
+    assert_eq!(agents.home_building[0], 1);
+    assert_eq!(allocator.buildings[0].occupancy, 0);
+    assert_eq!(allocator.buildings[1].occupancy, 1);
+}
+
+#[test]
+fn unhoused_household_rehouses_into_affordable_vacant_home() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(usize::MAX, 2, 12.0, 3.0);
+    household.unhoused_days_elapsed = 4;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "rehouse_res",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for a in [a0, a1] {
+        agents.household_id[a] = 0;
+        agents.home_building[a] = usize::MAX;
+        agents.current_building[a] = usize::MAX;
+        agents.target_building[a] = usize::MAX;
+        agents.planned_target_building[a] = usize::MAX;
+        agents.transit[a] = TRANSIT_ACCESS_INGRESS;
+    }
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, 0);
+    assert_eq!(households.households[0].unhoused_days_elapsed, 0);
+    assert_eq!(allocator.buildings[0].occupancy, 1);
+    assert_eq!(households.households.len(), 1);
+    assert_eq!(agents.home_building[a1], 0);
+    assert_eq!(agents.target_building[a0], 0);
+    assert_eq!(agents.target_building[a1], 0);
+}
+
+#[test]
+fn unrehouseable_unhoused_household_accumulates_unhoused_days() {
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(make_household(usize::MAX, 2, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    assert_eq!(households.households[0].unhoused_days_elapsed, 1);
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    assert_eq!(households.households[0].unhoused_days_elapsed, 2);
+}
+
+#[test]
+fn failed_stay_rule_evicts_household_when_no_affordable_home_exists() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 2, 0.5, 1.0);
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "evict_res", ZoneClass::Residential);
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 2;
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for a in [a0, a1] {
+        agents.household_id[a] = 0;
+        agents.home_building[a] = 0;
+        agents.current_building[a] = 0;
+        agents.target_building[a] = usize::MAX;
+        agents.planned_target_building[a] = usize::MAX;
+        agents.transit[a] = TRANSIT_IN_BUILDING;
+    }
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households.len(), 1);
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(households.households[0].stay_failure_days, 0);
+    assert_eq!(allocator.buildings[0].occupancy, 0);
+    assert_eq!(agents.home_building[a0], usize::MAX);
+    assert_eq!(agents.home_building[a1], usize::MAX);
+    assert_eq!(agents.current_building[a0], usize::MAX);
+    assert_eq!(agents.current_building[a1], usize::MAX);
+    assert_eq!(agents.transit[a0], TRANSIT_ACCESS_INGRESS);
+    assert_eq!(agents.transit[a1], TRANSIT_ACCESS_INGRESS);
+}
+
+#[test]
+fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 2, 0.5, 1.0);
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "tracked_unhoused_res",
+        ZoneClass::Residential,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 2;
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for a in [a0, a1] {
+        agents.household_id[a] = 0;
+        agents.home_building[a] = 0;
+        agents.current_building[a] = 0;
+        agents.target_building[a] = usize::MAX;
+        agents.planned_target_building[a] = usize::MAX;
+        agents.transit[a] = TRANSIT_IN_BUILDING;
+    }
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    households.ensure_agent_households(&mut agents);
+    households.rebuild_household_membership(&agents);
+
+    assert_eq!(households.households.len(), 1);
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(households.households[0].member_count, 2);
+    assert_eq!(agents.household_id[a0], 0);
+    assert_eq!(agents.household_id[a1], 0);
+
+    households.execute_demand_household_removal(1, &mut agents, &mut allocator);
+
+    assert_eq!(households.households.len(), 0);
+    assert_eq!(agents.len(), 0);
+}
+
+#[test]
+fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 2, 0.0, 1.0);
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "zero_reserve_relocate_res",
+        ZoneClass::Residential,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for a in [a0, a1] {
+        agents.household_id[a] = 0;
+        agents.home_building[a] = 0;
+        agents.current_building[a] = 0;
+        agents.target_building[a] = usize::MAX;
+        agents.planned_target_building[a] = usize::MAX;
+        agents.transit[a] = TRANSIT_IN_BUILDING;
+    }
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(allocator.buildings[0].occupancy, 0);
+    assert_eq!(allocator.buildings[1].occupancy, 0);
+    assert_eq!(agents.home_building[a0], usize::MAX);
+    assert_eq!(agents.home_building[a1], usize::MAX);
+}
