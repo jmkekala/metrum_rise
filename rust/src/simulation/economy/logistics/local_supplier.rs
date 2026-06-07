@@ -11,11 +11,11 @@ use crate::simulation::zoning::ZoneType;
 use super::data::{
     CARRIER_TRUCK, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_LOCAL, Shipment, ShipmentSystem,
 };
-use super::reservations::reservation_slot;
+use super::reservations::ReservationViews;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
-const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
+pub(super) const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
 
 impl ShipmentSystem {
     #[allow(clippy::too_many_arguments)]
@@ -29,8 +29,8 @@ impl ShipmentSystem {
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-        reserved_outbound: &[f32],
-        resource_count: usize,
+        reservations: &mut ReservationViews,
+        candidates: &mut Vec<usize>,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
@@ -39,15 +39,52 @@ impl ShipmentSystem {
             return false;
         }
         let destination = &allocator.buildings[dest_idx];
-        let candidates = allocator.find_nearby_buildings_by_zones(
+        let destination_budget = destination.operating_budget;
+        allocator.fill_nearby_buildings(
             destination.center_x,
             destination.center_y,
-            &[ZoneType::Industrial, ZoneType::Commercial],
             SUPPLIER_SEARCH_MAX_RING,
             SUPPLIER_SEARCH_CANDIDATES,
+            candidates,
+            |candidate_idx, supplier| {
+                if candidate_idx == dest_idx
+                    || supplier.broken
+                    || supplier.economy_broken
+                    || supplier.is_deserted
+                    || !matches!(
+                        supplier.zone_type,
+                        ZoneType::Industrial | ZoneType::Commercial
+                    )
+                {
+                    return false;
+                }
+                let Some(supplier_profile) =
+                    catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
+                else {
+                    return false;
+                };
+                let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
+                    return false;
+                };
+                let reserved =
+                    reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
+                let available =
+                    (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
+                if available <= 0.0 {
+                    return false;
+                }
+
+                let effective_unit_price = adjusted_unit_price(
+                    supplier_profile.unit_price_currency,
+                    freight_profile,
+                    minute_of_day,
+                );
+                let max_affordable = destination_budget / effective_unit_price;
+                available.min(desired_amount).min(max_affordable) > 0.0
+            },
         );
 
-        for candidate_idx in candidates {
+        for &candidate_idx in candidates.iter() {
             if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
                 continue;
             }
@@ -63,12 +100,8 @@ impl ShipmentSystem {
             let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
                 continue;
             };
-            let Some(resource_slot) =
-                reservation_slot(candidate_idx, resource_runtime_id, resource_count)
-            else {
-                continue;
-            };
-            let reserved = reserved_outbound.get(resource_slot).copied().unwrap_or(0.0);
+            let reserved =
+                reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
             let available =
                 (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
             if available <= 0.0 {
@@ -117,6 +150,12 @@ impl ShipmentSystem {
                     minute_of_day,
                 )),
             });
+            reservations.record_local_shipment(
+                candidate_idx,
+                dest_idx,
+                resource_runtime_id,
+                amount,
+            );
             return true;
         }
 

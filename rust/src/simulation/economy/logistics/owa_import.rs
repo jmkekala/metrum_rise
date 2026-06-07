@@ -1,7 +1,5 @@
 //! `OWA` border fallback import shipment creation.
 
-use std::collections::HashMap;
-
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{FreightTimingProfile, ResourceRuntimeId};
 use crate::simulation::network::TransitNetwork;
@@ -11,6 +9,7 @@ use super::data::{
     BORDER_ACTIVE_JOBS_PER_NODE, CARRIER_TRUCK, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_OWA, Shipment,
     ShipmentSystem,
 };
+use super::reservations::ReservationViews;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
 impl ShipmentSystem {
@@ -27,7 +26,7 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         border_nodes: &[u32],
-        border_job_counts: &HashMap<u32, usize>,
+        reservations: &mut ReservationViews,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
     ) -> bool {
@@ -54,9 +53,7 @@ impl ShipmentSystem {
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
         for &border_node in border_nodes {
-            if border_job_counts.get(&border_node).copied().unwrap_or(0)
-                >= BORDER_ACTIVE_JOBS_PER_NODE
-            {
+            if reservations.border_job_count(border_node) >= BORDER_ACTIVE_JOBS_PER_NODE {
                 continue;
             }
             let Some(travel_seconds) = allocator.freight_car_eta_from_border_node(
@@ -94,6 +91,7 @@ impl ShipmentSystem {
                 minute_of_day,
             )),
         });
+        reservations.record_owa_import(dest_idx, best_border, resource_runtime_id, amount);
         true
     }
 }

@@ -11,6 +11,7 @@ use super::data::{
 
 /// Flattened reservation state derived from active shipments.
 pub(super) struct ReservationViews {
+    resource_count: usize,
     /// Local-source reserved inventory indexed by building/resource slot.
     pub(super) reserved_outbound: Vec<f32>,
     /// Destination-side expected inventory indexed by building/resource slot.
@@ -19,6 +20,113 @@ pub(super) struct ReservationViews {
     pub(super) has_open_inbound: Vec<bool>,
     /// Active `OWA` import job counts indexed by border node id.
     pub(super) border_job_counts: HashMap<u32, usize>,
+}
+
+impl ReservationViews {
+    pub(super) fn reserved_outbound_amount(
+        &self,
+        building_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> f32 {
+        self.slot(building_idx, resource_runtime_id)
+            .and_then(|slot| self.reserved_outbound.get(slot).copied())
+            .unwrap_or(0.0)
+    }
+
+    pub(super) fn reserved_inbound_amount(
+        &self,
+        building_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> f32 {
+        self.slot(building_idx, resource_runtime_id)
+            .and_then(|slot| self.reserved_inbound.get(slot).copied())
+            .unwrap_or(0.0)
+    }
+
+    pub(super) fn has_open_inbound(
+        &self,
+        building_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> bool {
+        self.slot(building_idx, resource_runtime_id)
+            .and_then(|slot| self.has_open_inbound.get(slot).copied())
+            .unwrap_or(false)
+    }
+
+    pub(super) fn border_job_count(&self, border_node: u32) -> usize {
+        self.border_job_counts
+            .get(&border_node)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn record_local_shipment(
+        &mut self,
+        source_idx: usize,
+        destination_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        if let Some(slot) = self.ensure_slot(source_idx, resource_runtime_id) {
+            self.reserved_outbound[slot] += amount;
+        }
+        if let Some(slot) = self.ensure_slot(destination_idx, resource_runtime_id) {
+            self.reserved_inbound[slot] += amount;
+            self.has_open_inbound[slot] = true;
+        }
+    }
+
+    pub(super) fn record_owa_import(
+        &mut self,
+        destination_idx: usize,
+        border_node: u32,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        if let Some(slot) = self.ensure_slot(destination_idx, resource_runtime_id) {
+            self.reserved_inbound[slot] += amount;
+            self.has_open_inbound[slot] = true;
+        }
+        self.record_border_job(border_node);
+    }
+
+    pub(super) fn record_owa_export(
+        &mut self,
+        source_idx: usize,
+        border_node: u32,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        if let Some(slot) = self.ensure_slot(source_idx, resource_runtime_id) {
+            self.reserved_outbound[slot] += amount;
+        }
+        self.record_border_job(border_node);
+    }
+
+    fn record_border_job(&mut self, border_node: u32) {
+        if border_node != u32::MAX {
+            *self.border_job_counts.entry(border_node).or_insert(0) += 1;
+        }
+    }
+
+    fn slot(&self, building_idx: usize, resource_runtime_id: ResourceRuntimeId) -> Option<usize> {
+        reservation_slot(building_idx, resource_runtime_id, self.resource_count)
+    }
+
+    fn ensure_slot(
+        &mut self,
+        building_idx: usize,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> Option<usize> {
+        let slot = self.slot(building_idx, resource_runtime_id)?;
+        if slot >= self.reserved_outbound.len() {
+            let new_len = slot.saturating_add(1);
+            self.reserved_outbound.resize(new_len, 0.0);
+            self.reserved_inbound.resize(new_len, 0.0);
+            self.has_open_inbound.resize(new_len, false);
+        }
+        Some(slot)
+    }
 }
 
 impl ShipmentSystem {
@@ -61,11 +169,13 @@ impl ShipmentSystem {
             if shipment.status != SHIPMENT_IN_TRANSIT {
                 continue;
             }
-            if let Some(slot) = reservation_slot(
-                shipment.destination_building_id,
-                shipment.resource_runtime_id,
-                resource_count,
-            ) && slot < reserved_inbound.len()
+            if shipment.destination_building_id != SHIPMENT_DEST_OWA
+                && let Some(slot) = reservation_slot(
+                    shipment.destination_building_id,
+                    shipment.resource_runtime_id,
+                    resource_count,
+                )
+                && slot < reserved_inbound.len()
             {
                 reserved_inbound[slot] += shipment.amount;
                 has_open_inbound[slot] = true;
@@ -80,14 +190,19 @@ impl ShipmentSystem {
             {
                 reserved_outbound[slot] += shipment.amount;
             }
-            if shipment.source_kind == SHIPMENT_SOURCE_OWA {
-                *border_job_counts
-                    .entry(shipment.source_border_node)
-                    .or_insert(0) += 1;
+            if shipment.source_kind == SHIPMENT_SOURCE_OWA
+                || shipment.destination_building_id == SHIPMENT_DEST_OWA
+            {
+                if shipment.source_border_node != u32::MAX {
+                    *border_job_counts
+                        .entry(shipment.source_border_node)
+                        .or_insert(0) += 1;
+                }
             }
         }
 
         ReservationViews {
+            resource_count,
             reserved_outbound,
             reserved_inbound,
             has_open_inbound,

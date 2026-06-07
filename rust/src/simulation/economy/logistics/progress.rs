@@ -37,6 +37,9 @@ impl ShipmentSystem {
             if shipment.destination_building_id == SHIPMENT_DEST_OWA {
                 let src_idx = shipment.source_building_id;
                 if src_idx < allocator.buildings.len()
+                    && !allocator.buildings[src_idx].broken
+                    && !allocator.buildings[src_idx].economy_broken
+                    && !allocator.buildings[src_idx].is_deserted
                     && allocator.buildings[src_idx].inventory_units(shipment.resource_runtime_id)
                         >= shipment.amount
                 {
@@ -74,6 +77,10 @@ impl ShipmentSystem {
                     if src_idx >= allocator.buildings.len()
                         || allocator.buildings[src_idx].broken
                         || allocator.buildings[src_idx].economy_broken
+                        || allocator.buildings[src_idx].is_deserted
+                        || allocator.buildings[dest_idx].broken
+                        || allocator.buildings[dest_idx].economy_broken
+                        || allocator.buildings[dest_idx].is_deserted
                         || allocator.buildings[src_idx]
                             .inventory_units(shipment.resource_runtime_id)
                             < shipment.amount
@@ -100,11 +107,15 @@ impl ShipmentSystem {
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 SHIPMENT_SOURCE_OWA => {
-                    if !building_accepts_input_resource(
-                        &catalog,
-                        &allocator.buildings[dest_idx],
-                        shipment.resource_runtime_id,
-                    ) {
+                    if allocator.buildings[dest_idx].broken
+                        || allocator.buildings[dest_idx].economy_broken
+                        || allocator.buildings[dest_idx].is_deserted
+                        || !building_accepts_input_resource(
+                            &catalog,
+                            &allocator.buildings[dest_idx],
+                            shipment.resource_runtime_id,
+                        )
+                    {
                         allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;

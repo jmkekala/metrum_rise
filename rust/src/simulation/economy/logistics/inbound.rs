@@ -6,9 +6,10 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use rayon::prelude::*;
 
 use super::data::ShipmentSystem;
-use super::reservations::reservation_slot;
+use super::local_supplier::SUPPLIER_SEARCH_CANDIDATES;
 use super::resource::{freight_profile_for_building, required_unit_price};
 use super::routing::connected_border_nodes;
 
@@ -25,15 +26,37 @@ impl ShipmentSystem {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let resource_count = catalog.resource_count();
-        let reservations = self.build_reservation_views(resource_count);
+        let mut reservations = self.build_reservation_views(resource_count);
         let border_nodes = connected_border_nodes(graph);
+        let mut eligible_destinations: Vec<usize> = allocator
+            .buildings
+            .par_iter()
+            .enumerate()
+            .filter_map(|(idx, building)| {
+                if building.broken
+                    || building.economy_broken
+                    || building.is_deserted
+                    || building.edge_idx == usize::MAX
+                    || building.shipment_cooldown_hours > 0
+                {
+                    return None;
+                }
+                catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .filter(|profile| !profile.inputs.is_empty())
+                    .map(|_| idx)
+            })
+            .collect();
+        eligible_destinations.sort_unstable();
+        let mut supplier_candidates = Vec::with_capacity(SUPPLIER_SEARCH_CANDIDATES);
 
-        for dest_idx in 0..allocator.buildings.len() {
+        for dest_idx in eligible_destinations {
             let Some(building) = allocator.buildings.get(dest_idx) else {
                 continue;
             };
             if building.broken
                 || building.economy_broken
+                || building.is_deserted
                 || building.edge_idx == usize::MAX
                 || building.shipment_cooldown_hours > 0
             {
@@ -54,17 +77,7 @@ impl ShipmentSystem {
 
             let mut failed_any_request = false;
             for input_port in &profile.inputs {
-                let Some(resource_slot) =
-                    reservation_slot(dest_idx, input_port.resource_runtime_id, resource_count)
-                else {
-                    continue;
-                };
-                if reservations
-                    .has_open_inbound
-                    .get(resource_slot)
-                    .copied()
-                    .unwrap_or(false)
-                {
+                if reservations.has_open_inbound(dest_idx, input_port.resource_runtime_id) {
                     continue;
                 }
 
@@ -77,10 +90,7 @@ impl ShipmentSystem {
                 let effective_input_stock = allocator.buildings[dest_idx]
                     .inventory_units(input_port.resource_runtime_id)
                     + reservations
-                        .reserved_inbound
-                        .get(resource_slot)
-                        .copied()
-                        .unwrap_or(0.0);
+                        .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id);
                 if reorder_units > 0.0 && effective_input_stock >= reorder_units {
                     continue;
                 }
@@ -106,8 +116,8 @@ impl ShipmentSystem {
                     allocator,
                     transit_network,
                     graph,
-                    &reservations.reserved_outbound,
-                    resource_count,
+                    &mut reservations,
+                    &mut supplier_candidates,
                     freight_profile,
                     minute_of_day,
                     &catalog,
@@ -129,7 +139,7 @@ impl ShipmentSystem {
                     transit_network,
                     graph,
                     &border_nodes,
-                    &reservations.border_job_counts,
+                    &mut reservations,
                     freight_profile,
                     minute_of_day,
                 ) {
