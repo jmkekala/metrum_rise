@@ -1,0 +1,148 @@
+//! Input restock request planning for profile-driven buildings.
+
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
+
+use super::data::ShipmentSystem;
+use super::reservations::reservation_slot;
+use super::resource::{freight_profile_for_building, required_unit_price};
+use super::routing::connected_border_nodes;
+
+impl ShipmentSystem {
+    pub(super) fn create_profile_input_shipments(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        minute_of_day: u16,
+    ) {
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let resource_count = catalog.resource_count();
+        let reservations = self.build_reservation_views(resource_count);
+        let border_nodes = connected_border_nodes(graph);
+
+        for dest_idx in 0..allocator.buildings.len() {
+            let Some(building) = allocator.buildings.get(dest_idx) else {
+                continue;
+            };
+            if building.broken
+                || building.economy_broken
+                || building.edge_idx == usize::MAX
+                || building.shipment_cooldown_hours > 0
+            {
+                continue;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            if profile.inputs.is_empty() {
+                continue;
+            }
+            let Some(freight_profile) =
+                freight_profile_for_building(&catalog, &tuning, &allocator.buildings[dest_idx])
+            else {
+                continue;
+            };
+
+            let mut failed_any_request = false;
+            for input_port in &profile.inputs {
+                let Some(resource_slot) =
+                    reservation_slot(dest_idx, input_port.resource_runtime_id, resource_count)
+                else {
+                    continue;
+                };
+                if reservations
+                    .has_open_inbound
+                    .get(resource_slot)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
+                let target_units = profile.inventory_target_units_for(input_port);
+                if target_units <= 0.0 {
+                    continue;
+                }
+                let reorder_units = profile.inventory_reorder_units_for(input_port);
+                let critical_units = profile.inventory_critical_units_for(input_port);
+                let effective_input_stock = allocator.buildings[dest_idx]
+                    .inventory_units(input_port.resource_runtime_id)
+                    + reservations
+                        .reserved_inbound
+                        .get(resource_slot)
+                        .copied()
+                        .unwrap_or(0.0);
+                if reorder_units > 0.0 && effective_input_stock >= reorder_units {
+                    continue;
+                }
+                if reorder_units <= 0.0 && effective_input_stock >= target_units {
+                    continue;
+                }
+
+                let allow_emergency = effective_input_stock <= critical_units;
+                let desired_amount = (target_units - effective_input_stock).max(0.0);
+                if desired_amount <= 0.0 {
+                    continue;
+                }
+                if desired_amount < profile.min_shipment_units && !allow_emergency {
+                    continue;
+                }
+
+                if self.try_local_supplier_for_resource(
+                    dest_idx,
+                    desired_amount,
+                    allow_emergency,
+                    profile.min_shipment_units,
+                    input_port.resource_runtime_id,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &reservations.reserved_outbound,
+                    resource_count,
+                    freight_profile,
+                    minute_of_day,
+                    &catalog,
+                ) {
+                    continue;
+                }
+
+                let import_unit_price =
+                    required_unit_price(&catalog, input_port.resource_runtime_id, &profile.id)
+                        * tuning.owa_import_price_multiplier;
+                if self.try_owa_fallback_for_resource(
+                    dest_idx,
+                    desired_amount,
+                    allow_emergency,
+                    profile.min_shipment_units,
+                    import_unit_price,
+                    input_port.resource_runtime_id,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &border_nodes,
+                    &reservations.border_job_counts,
+                    freight_profile,
+                    minute_of_day,
+                ) {
+                    continue;
+                }
+
+                failed_any_request = true;
+            }
+
+            if failed_any_request {
+                allocator.buildings[dest_idx].shipment_cooldown_hours =
+                    tuning.operational_clock.shipment_retry_cooldown_hours;
+            }
+        }
+    }
+}
