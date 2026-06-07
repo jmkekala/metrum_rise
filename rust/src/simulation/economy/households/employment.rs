@@ -1,11 +1,15 @@
 //! Workplace assignment, worker counts, and daily wage payment.
 
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU32;
+
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
     economy_profile_for_building, household_demand_profile, household_supply_unit_price,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -24,6 +28,7 @@ const JOB_LOCK_DAYS: u8 = 7;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
 const JOB_SEARCH_MAX_RING: i32 = 8;
 const JOB_SEARCH_CANDIDATES: usize = 24;
+const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
 
 impl HouseholdSystem {
     pub(super) fn recount_worker_assignments(
@@ -74,6 +79,7 @@ impl HouseholdSystem {
         }
 
         let mut candidates = Vec::with_capacity(JOB_SEARCH_CANDIDATES);
+        let mut reachability_cache = WorkplaceReachabilityCache::new(allocator);
         for i in 0..agents.len() {
             if agents.transit[i] != TRANSIT_IN_BUILDING {
                 continue;
@@ -135,9 +141,17 @@ impl HouseholdSystem {
                 if !building_offers_work(building, economy_profile) {
                     continue;
                 }
-                if !workplace_is_reachable(allocator, home_idx, candidate, transit_network, graph) {
+                let Some(commute_seconds) = reachability_cache.commute_seconds(
+                    allocator,
+                    home_idx,
+                    candidate,
+                    agents.has_car[i],
+                    transit_network,
+                    graph,
+                    &agents.pathfind_count,
+                ) else {
                     continue;
-                }
+                };
 
                 // Budget-based hiring constraint: Only allow hiring if the building can afford
                 // to pay at least the current staff plus this potential new worker for one day.
@@ -171,7 +185,7 @@ impl HouseholdSystem {
                     continue;
                 }
 
-                let commute_penalty = normalized_commute_penalty(home, building);
+                let commute_penalty = normalized_commute_penalty_seconds(commute_seconds);
                 let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
                     - W_COMMUTE * commute_penalty;
                 if score > best_score {
@@ -271,10 +285,8 @@ fn household_income_pressure(
     (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
-fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
-    let dx = home.center_x - work.center_x;
-    let dy = home.center_y - work.center_y;
-    ((dx * dx + dy * dy).sqrt() / 2000.0).clamp(0.0, 1.0)
+fn normalized_commute_penalty_seconds(commute_seconds: u16) -> f32 {
+    (commute_seconds as f32 / COMMUTE_PENALTY_MAX_SECONDS).clamp(0.0, 1.0)
 }
 
 fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> bool {
@@ -287,21 +299,82 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
     )
 }
 
-fn workplace_is_reachable(
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct WorkplaceReachabilityKey {
+    home_idx: usize,
+    work_idx: usize,
+    has_car: bool,
+}
+
+struct WorkplaceReachabilityCache {
+    exact_entrance_cache_available: bool,
+    cache: HashMap<WorkplaceReachabilityKey, Option<u16>>,
+}
+
+impl WorkplaceReachabilityCache {
+    fn new(allocator: &BuildingAllocator) -> Self {
+        Self {
+            exact_entrance_cache_available: allocator.entrances.len() == allocator.buildings.len(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn commute_seconds(
+        &mut self,
+        allocator: &BuildingAllocator,
+        home_idx: usize,
+        work_idx: usize,
+        has_car: bool,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        pathfind_count: &AtomicU32,
+    ) -> Option<u16> {
+        if home_idx == work_idx {
+            return Some(1);
+        }
+        let key = WorkplaceReachabilityKey {
+            home_idx,
+            work_idx,
+            has_car,
+        };
+        if let Some(result) = self.cache.get(&key) {
+            return *result;
+        }
+        let result = if self.exact_entrance_cache_available {
+            estimate_building_origin_trip_minutes(
+                home_idx,
+                work_idx,
+                has_car,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+            )
+        } else {
+            fallback_attached_commute_seconds(allocator, home_idx, work_idx, has_car)
+        };
+        self.cache.insert(key, result);
+        result
+    }
+}
+
+fn fallback_attached_commute_seconds(
     allocator: &BuildingAllocator,
     home_idx: usize,
     work_idx: usize,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-) -> bool {
-    if home_idx == work_idx {
-        return true;
+    has_car: bool,
+) -> Option<u16> {
+    let home = allocator.buildings.get(home_idx)?;
+    let work = allocator.buildings.get(work_idx)?;
+    if home.edge_idx == usize::MAX || work.edge_idx == usize::MAX {
+        return None;
     }
-    if allocator.entrances.len() == allocator.buildings.len() {
-        return allocator
-            .freight_car_eta_between_buildings(home_idx, work_idx, transit_network, graph)
-            .is_some();
-    }
-    allocator.buildings[home_idx].edge_idx != usize::MAX
-        && allocator.buildings[work_idx].edge_idx != usize::MAX
+    let dx = home.center_x - work.center_x;
+    let dy = home.center_y - work.center_y;
+    let speed_mps = if has_car { 13.0 } else { 1.4 };
+    Some(
+        ((dx * dx + dy * dy).sqrt() / speed_mps)
+            .ceil()
+            .clamp(1.0, u16::MAX as f32) as u16,
+    )
 }

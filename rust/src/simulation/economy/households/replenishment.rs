@@ -124,24 +124,43 @@ impl HouseholdSystem {
                 .operational_clock
                 .household_replenishment_check_interval_hours,
         );
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        let retry_cooldown_hours = tuning
+            .operational_clock
+            .household_replenishment_retry_cooldown_hours;
 
         for hid in 0..self.households.len() {
-            self.progress_household_replenishment(hid, allocator);
+            self.progress_household_replenishment(
+                hid,
+                allocator,
+                household_supply_resource,
+                retry_cooldown_hours,
+            );
         }
 
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
         let trigger_days = profile.reorder_threshold_days;
-        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
-        let stock_critical_purchase_available = allocator.buildings.iter().any(|store| {
-            !store.broken
-                && !store.economy_broken
-                && !store.is_deserted
-                && matches!(store.zone_type, ZoneType::Commercial)
-                && store.inventory_units(household_supply_resource) > 0.0
-                && economy_profile_for_building(&catalog, store)
-                    .is_some_and(|profile| profile.output_port(household_supply_resource).is_some())
+        let urgent_restock_candidate_exists = self.households.iter().any(|household| {
+            household.member_count > 0
+                && household.stock_days == 0.0
+                && household.home_building_id < allocator.buildings.len()
+                && !matches!(
+                    household.replenishment_state,
+                    REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                )
         });
+        let stock_critical_purchase_available = urgent_restock_candidate_exists
+            && allocator.buildings.iter().any(|store| {
+                !store.broken
+                    && !store.economy_broken
+                    && !store.is_deserted
+                    && matches!(store.zone_type, ZoneType::Commercial)
+                    && store.inventory_units(household_supply_resource) > 0.0
+                    && economy_profile_for_building(&catalog, store).is_some_and(|profile| {
+                        profile.output_port(household_supply_resource).is_some()
+                    })
+            });
         let mut diagnostics = ReplenishmentDiagnostics::default();
         let mut candidates = Vec::with_capacity(GROCERY_SEARCH_CANDIDATES);
 
@@ -189,8 +208,8 @@ impl HouseholdSystem {
             for &candidate in &candidates {
                 let store = &allocator.buildings[candidate];
                 // A store can sell from existing inventory even when utility
-                // service is temporarily unavailable — only broken or
-                // economy_broken stores are excluded.
+                // service is temporarily unavailable. Broken, economy-broken,
+                // and deserted stores are excluded.
                 if store.inventory_units(household_supply_resource) <= 0.0
                     || store.broken
                     || store.economy_broken
@@ -288,7 +307,13 @@ impl HouseholdSystem {
         }
     }
 
-    fn progress_household_replenishment(&mut self, hid: usize, allocator: &mut BuildingAllocator) {
+    fn progress_household_replenishment(
+        &mut self,
+        hid: usize,
+        allocator: &mut BuildingAllocator,
+        household_supply_resource: u16,
+        retry_cooldown_hours: u16,
+    ) {
         let Some(household) = self.households.get_mut(hid) else {
             return;
         };
@@ -304,29 +329,14 @@ impl HouseholdSystem {
             REPLENISHMENT_PICKUP_PENDING => {
                 let store_idx = household.reserved_store_building_id;
                 if store_idx == usize::MAX || store_idx >= allocator.buildings.len() {
-                    let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
-                        panic!("could not load built-in economy runtime tuning: {err}")
-                    });
-                    household.budget += household.reserved_total_cost;
-                    clear_replenishment_request(household);
-                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    household.cooldown_hours = tuning
-                        .operational_clock
-                        .household_replenishment_retry_cooldown_hours;
+                    cancel_replenishment_pickup(household, retry_cooldown_hours);
                     return;
                 }
 
                 let store = &mut allocator.buildings[store_idx];
                 if store.broken || store.economy_broken || store.is_deserted {
-                    let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
-                        panic!("could not load built-in economy runtime tuning: {err}")
-                    });
-                    household.budget += household.reserved_total_cost;
-                    clear_replenishment_request(household);
-                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    household.cooldown_hours = tuning
-                        .operational_clock
-                        .household_replenishment_retry_cooldown_hours;
+                    store.add_inventory_units(household_supply_resource, household.reserved_amount);
+                    cancel_replenishment_pickup(household, retry_cooldown_hours);
                     return;
                 }
                 store.revenue += household.reserved_total_cost;
@@ -356,6 +366,13 @@ pub(super) fn clear_replenishment_request(household: &mut Household) {
     household.reserved_amount = 0.0;
     household.reserved_total_cost = 0.0;
     household.pickup_eta_hours = 0;
+}
+
+fn cancel_replenishment_pickup(household: &mut Household, retry_cooldown_hours: u16) {
+    household.budget += household.reserved_total_cost;
+    clear_replenishment_request(household);
+    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+    household.cooldown_hours = retry_cooldown_hours;
 }
 
 pub(super) fn stable_replenishment_offset_hours(

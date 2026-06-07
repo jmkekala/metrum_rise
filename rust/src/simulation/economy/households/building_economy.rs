@@ -13,6 +13,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::zoning::ZoneType;
+use rayon::prelude::*;
 
 const UTILITY_SERVICE_POWER: &str = "power";
 const UTILITY_SERVICE_WATER: &str = "water";
@@ -163,29 +164,21 @@ impl HouseholdSystem {
     pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        for idx in 0..allocator.buildings.len() {
-            let zone = allocator.buildings[idx].zone_type;
-            if allocator.buildings[idx].broken
-                || allocator.buildings[idx].economy_broken
-                || allocator.buildings[idx].is_deserted
-            {
-                continue;
+        allocator.buildings.par_iter_mut().for_each(|building| {
+            let zone = building.zone_type;
+            if building.broken || building.economy_broken || building.is_deserted {
+                return;
             }
-            let Some(profile) = economy_profile_for_building(&catalog, &allocator.buildings[idx])
-            else {
-                continue;
+            let Some(profile) = economy_profile_for_building(&catalog, building) else {
+                return;
             };
-            let worker_capacity = allocator.worker_capacity(idx).max(1);
-            let staffing_factor = (allocator.buildings[idx].worker_count as f32
-                / worker_capacity as f32)
-                .clamp(0.0, 1.0);
-            let input_factor =
-                industrial_input_coverage_factor(&catalog, &allocator.buildings[idx]);
-            let output_headroom_factor =
-                industrial_output_headroom_factor(&catalog, &allocator.buildings[idx]);
+            let worker_capacity = profile.worker_capacity.max(1);
+            let staffing_factor =
+                (building.worker_count as f32 / worker_capacity as f32).clamp(0.0, 1.0);
+            let input_factor = industrial_input_coverage_factor(&catalog, building);
+            let output_headroom_factor = industrial_output_headroom_factor(&catalog, building);
             let throughput_factor = staffing_factor * input_factor * output_headroom_factor;
 
-            let building = &mut allocator.buildings[idx];
             for input_port in &profile.inputs {
                 let hourly_input_units =
                     input_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
@@ -209,7 +202,7 @@ impl HouseholdSystem {
                     );
                 }
             }
-        }
+        });
     }
 }
 

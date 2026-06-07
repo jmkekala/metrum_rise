@@ -2211,7 +2211,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
 | `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Pantry days granted to arriving households |
 | `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |
-| `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum budget for materialized legacy households |
+| `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum carried budget for materialized arriving households |
 | `runtime_tuning.households.utility_cost_per_member_per_day` | 3.0 | Daily utility cost per resident |
 | `runtime_tuning.households.residential_move_in_min_reserve_days_by_level` | [0.5, 6.0, 12.0] | Reserve days required to move into residential levels |
 | `runtime_tuning.households.residential_stay_min_reserve_days_by_level` | [0.5, 3.0, 6.0] | Reserve days required to stay housed by residential level |

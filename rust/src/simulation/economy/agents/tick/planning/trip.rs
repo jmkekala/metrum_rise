@@ -97,7 +97,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_building_origin_trip(
 }
 
 /// Estimates a building-origin trip duration in whole simulation minutes.
-pub(in crate::simulation::economy::agents::tick) fn estimate_building_origin_trip_minutes(
+pub(crate) fn estimate_building_origin_trip_minutes(
     current_building: usize,
     target_building: usize,
     has_car: bool,

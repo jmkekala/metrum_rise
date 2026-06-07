@@ -16,7 +16,9 @@ use crate::simulation::economy::logistics::{
     ShipmentSystem,
 };
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::{Vector2, Vector3};
 
@@ -81,6 +83,31 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
+    }
+}
+
+fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
+    Edge {
+        start_node,
+        end_node,
+        primary_type: TransitType::Foot,
+        allowed_types: TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 2.0,
+        fwd_lanes: 0,
+        bkw_lanes: 0,
+        speed_limit: 5.0,
+        base_cost: 10.0,
+        physical_length: 100.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     }
 }
 
@@ -475,6 +502,70 @@ fn replenishment_respects_pickup_eta_above_one_hour() {
 }
 
 #[test]
+fn canceled_pickup_restores_reserved_store_inventory() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 0.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_PICKUP_PENDING,
+        cooldown_hours: 0,
+        reserved_store_building_id: 1,
+        reserved_amount: 5.0,
+        reserved_total_cost: 10.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "cancel_res", ZoneClass::Residential);
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "cancel_store",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[1].is_deserted = true;
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+
+    households.run_household_replenishment(&mut allocator, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(households.households[0].budget, 10.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        5.0
+    );
+}
+
+#[test]
 fn low_stock_household_can_buy_affordable_partial_restock() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let unit_price = catalog
@@ -732,6 +823,66 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
     assert!(allocator.buildings[1].revenue > 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
     assert!(allocator.buildings[3].revenue > 0.0);
+}
+
+#[test]
+fn no_car_agent_can_take_walk_reachable_job() {
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(make_foot_only_edge(n0, n1));
+    graph.rebuild_adjacency_list();
+
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+    households.households[0].budget = 0.0;
+    households.households[0].stock = 0.0;
+    households.households[0].stock_days = 0.0;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "walk_job_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "walk_job_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.has_car[agent] = false;
+
+    households.recount_worker_assignments(&agents, &mut allocator);
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+
+    assert_eq!(agents.work_building[agent], 1);
+    assert_eq!(allocator.buildings[1].worker_count, 1);
 }
 
 #[test]
