@@ -4,6 +4,38 @@ use super::runtime::RuntimeEconomyTuning;
 use super::serde_helpers::{default_duration_days, default_one, deserialize_u32_from_number};
 use serde::{Deserialize, Serialize};
 
+pub(super) const PROFILE_KIND_PRODUCER: &str = "producer";
+pub(super) const PROFILE_KIND_STORE: &str = "store";
+pub(super) const PROFILE_KIND_DEMAND_SINK: &str = "demand_sink";
+pub(super) const PROFILE_KIND_UTILITY_PRODUCER: &str = "utility_producer";
+pub(super) const PROFILE_KIND_UTILITY_PROCESSOR: &str = "utility_processor";
+pub(super) const NODE_REF_KIND_PROFILE: &str = "profile";
+pub(super) const NODE_REF_KIND_CONTROLLER: &str = "controller";
+pub(super) const CONTROLLER_KIND_HOUSEHOLD_RESTOCK_COST: &str = "household_restock_cost";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AuthoredProfileKind {
+    Producer,
+    Store,
+    DemandSink,
+    UtilityProducer,
+    UtilityProcessor,
+    Unsupported,
+}
+
+impl AuthoredProfileKind {
+    pub(super) fn from_str(kind: &str) -> Self {
+        match kind {
+            PROFILE_KIND_PRODUCER => Self::Producer,
+            PROFILE_KIND_STORE => Self::Store,
+            PROFILE_KIND_DEMAND_SINK => Self::DemandSink,
+            PROFILE_KIND_UTILITY_PRODUCER => Self::UtilityProducer,
+            PROFILE_KIND_UTILITY_PROCESSOR => Self::UtilityProcessor,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct EconomyProject {
     #[serde(default)]
@@ -55,6 +87,12 @@ pub(super) struct EconomyProfile {
     pub(super) inputs: Vec<ResourcePort>,
     #[serde(default)]
     pub(super) outputs: Vec<ResourcePort>,
+}
+
+impl EconomyProfile {
+    pub(super) fn authored_kind(&self) -> AuthoredProfileKind {
+        AuthoredProfileKind::from_str(self.kind.as_str())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

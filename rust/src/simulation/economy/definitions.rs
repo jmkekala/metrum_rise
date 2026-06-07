@@ -12,6 +12,7 @@ mod runtime;
 mod runtime_compile;
 mod runtime_loader;
 mod sandbox;
+mod scenario_graph;
 mod schema;
 mod serde_helpers;
 #[cfg(test)]

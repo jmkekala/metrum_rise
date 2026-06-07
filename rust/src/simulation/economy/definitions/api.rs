@@ -30,7 +30,7 @@ pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String
     let project: EconomyProject = serde_json::from_str(project_json)
         .map_err(|err| format!("economy project JSON parse error: {err}"))?;
     let validation = validate_project(&project);
-    if validation.iter().any(|msg| msg.severity == "error") {
+    if validation.iter().any(|msg| msg.is_error()) {
         let payload = serde_json::json!({
             "ok": false,
             "error": "validation failed; export aborted",
@@ -87,7 +87,7 @@ pub fn run_sandbox_json(project_json: &str, scenario_id: &str) -> Result<String,
     let project: EconomyProject = serde_json::from_str(project_json)
         .map_err(|err| format!("economy project JSON parse error: {err}"))?;
     let validation = validate_project(&project);
-    if validation.iter().any(|msg| msg.severity == "error") {
+    if validation.iter().any(|msg| msg.is_error()) {
         let payload = serde_json::json!({
             "ok": false,
             "error": "validation failed; sandbox aborted",

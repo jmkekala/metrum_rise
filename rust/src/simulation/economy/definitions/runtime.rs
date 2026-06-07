@@ -284,6 +284,7 @@ pub(crate) struct RuntimeEconomyCatalog {
     pub(super) profiles: Vec<EconomyProfileRuntime>,
     pub(super) by_id: BTreeMap<String, u16>,
     pub(super) resource_by_id: BTreeMap<String, ResourceRuntimeId>,
+    pub(super) resource_id_by_runtime_id: Vec<String>,
     pub(super) price_by_resource: BTreeMap<ResourceRuntimeId, f32>,
 }
 
@@ -316,12 +317,11 @@ impl RuntimeEconomyCatalog {
 
     /// Returns the authored resource id string for a given compact runtime id, or `None`.
     ///
-    /// Linear scan over the resource map — only call on user-triggered events, not hot paths.
     pub(crate) fn resource_id_for_runtime_id(&self, runtime_id: u16) -> Option<&str> {
-        self.resource_by_id
-            .iter()
-            .find(|&(_, id)| *id == runtime_id)
-            .map(|(name, _)| name.as_str())
+        runtime_id
+            .checked_sub(1)
+            .and_then(|idx| self.resource_id_by_runtime_id.get(idx as usize))
+            .map(String::as_str)
     }
 
     /// Returns the default runtime unit price for one resource when `OWA` imports it.

@@ -1,6 +1,7 @@
 //! Export cache index generation for authored economy projects.
 
-use super::schema::{EconomyProject, ResourcePort};
+use super::scenario_graph::port_exists;
+use super::schema::EconomyProject;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -56,8 +57,4 @@ pub(super) fn build_index(project: &EconomyProject) -> CompiledEconomyIndex {
             .collect(),
         compatibility,
     }
-}
-
-fn port_exists(ports: &[ResourcePort], resource: &str) -> bool {
-    ports.iter().any(|port| port.resource == resource)
 }

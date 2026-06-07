@@ -4,7 +4,7 @@ use super::runtime::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning, RuntimeResourcePort,
 };
-use super::schema::EconomyProfile;
+use super::schema::{AuthoredProfileKind, EconomyProfile};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn compile_runtime_catalog(
@@ -40,6 +40,7 @@ pub(super) fn compile_runtime_catalog(
         catalog
             .resource_by_id
             .insert(resource_id.clone(), runtime_id);
+        catalog.resource_id_by_runtime_id.push(resource_id);
     }
 
     for (idx, profile) in authored_profiles.iter().enumerate() {
@@ -159,13 +160,13 @@ fn compile_runtime_profile(
     profile: &EconomyProfile,
     resource_by_id: &BTreeMap<String, ResourceRuntimeId>,
 ) -> Result<EconomyProfileRuntime, String> {
-    let kind = match profile.kind.as_str() {
-        "producer" => EconomyProfileRuntimeKind::Producer,
-        "store" => EconomyProfileRuntimeKind::Store,
-        "demand_sink" => EconomyProfileRuntimeKind::DemandSink,
-        "utility_producer" => EconomyProfileRuntimeKind::UtilityProducer,
-        "utility_processor" => EconomyProfileRuntimeKind::UtilityProcessor,
-        _ => EconomyProfileRuntimeKind::Unsupported,
+    let kind = match profile.authored_kind() {
+        AuthoredProfileKind::Producer => EconomyProfileRuntimeKind::Producer,
+        AuthoredProfileKind::Store => EconomyProfileRuntimeKind::Store,
+        AuthoredProfileKind::DemandSink => EconomyProfileRuntimeKind::DemandSink,
+        AuthoredProfileKind::UtilityProducer => EconomyProfileRuntimeKind::UtilityProducer,
+        AuthoredProfileKind::UtilityProcessor => EconomyProfileRuntimeKind::UtilityProcessor,
+        AuthoredProfileKind::Unsupported => EconomyProfileRuntimeKind::Unsupported,
     };
 
     let compiled_inputs = profile
