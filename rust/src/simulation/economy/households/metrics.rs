@@ -102,6 +102,7 @@ pub(super) fn household_is_housed(household: &Household, allocator: &BuildingAll
     household.home_building_id < allocator.buildings.len()
         && !allocator.buildings[household.home_building_id].broken
         && !allocator.buildings[household.home_building_id].economy_broken
+        && !allocator.buildings[household.home_building_id].is_deserted
 }
 
 pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {

@@ -147,7 +147,14 @@ impl HouseholdSystem {
             }
             let building = &mut allocator.buildings[idx];
             if building.operating_budget < 0.0 {
-                forced_owa_liquidation(idx, building, &catalog, &reserved_outbound, resource_count);
+                forced_owa_liquidation(
+                    idx,
+                    building,
+                    &catalog,
+                    &reserved_outbound,
+                    resource_count,
+                    tuning.owa_export_price_multiplier,
+                );
                 building.budget_distress = true;
                 debug_log!(
                     "economy",
@@ -212,10 +219,8 @@ fn forced_owa_liquidation(
     catalog: &RuntimeEconomyCatalog,
     reserved_outbound: &[f32],
     resource_count: usize,
+    export_multiplier: f32,
 ) {
-    let tuning = load_runtime_economy_tuning()
-        .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-    let export_multiplier = tuning.owa_export_price_multiplier;
     let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) else {
         return;
     };

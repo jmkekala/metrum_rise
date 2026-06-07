@@ -6,6 +6,7 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use rayon::prelude::*;
 
 impl HouseholdSystem {
     /// Runs one operational-hour household pass for membership, production, logistics, and labor.
@@ -49,11 +50,9 @@ impl HouseholdSystem {
         self.rebuild_household_membership(agents);
         self.recount_worker_assignments(agents, allocator);
         // Advance per-agent job-lock countdown once per day.
-        for i in 0..agents.len() {
-            if agents.job_lock_days[i] > 0 {
-                agents.job_lock_days[i] -= 1;
-            }
-        }
+        agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
+            *lock_days = lock_days.saturating_sub(1);
+        });
         // Step 1: bankruptcy check — mark buildings that were in distress yesterday and are
         // still negative. Must run before wages so workers are ejected on the same day.
         self.run_bankruptcy_check(allocator);

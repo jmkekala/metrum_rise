@@ -164,10 +164,18 @@ impl ShipmentSystem {
                     continue;
                 }
 
-                self.record_request_failure(
+                let became_terminal = self.record_request_failure(
                     request_key,
                     tuning.logistics.terminal_failure_attempts,
                 );
+                if became_terminal {
+                    crate::debug_log!(
+                        "economy",
+                        "freight request terminal: destination={} resource={}",
+                        request_key.destination_building_id,
+                        request_key.resource_runtime_id
+                    );
+                }
                 failed_any_request = true;
             }
 

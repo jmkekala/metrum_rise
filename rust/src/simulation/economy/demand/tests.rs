@@ -1118,6 +1118,32 @@ fn snapshot_computes_owa_dependency_from_input_accumulators() {
 }
 
 #[test]
+fn deserted_residential_buildings_do_not_count_as_capacity_or_housed_households() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    let mut home = building(ZoneType::Residential, 0.0, 1, 0, residential_asset);
+    home.is_deserted = true;
+    allocator.buildings.push(home);
+
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(housed_household(0, 2, 100.0, 3.0));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
+    let occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+
+    assert_eq!(snapshot.vacant_household_slots, 0);
+    assert_eq!(snapshot.housed_household_count, 0);
+    assert_eq!(snapshot.unhoused_household_count, 1);
+    assert_eq!(occupants.household_count_by_building[0], 0);
+}
+
+#[test]
 fn residential_upgrade_requires_current_household_affordability_for_target_level() {
     let mut allocator = BuildingAllocator::new();
     let level_one = register_family_asset(

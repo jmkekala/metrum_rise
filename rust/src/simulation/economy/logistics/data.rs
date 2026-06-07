@@ -77,8 +77,6 @@ pub enum ShipmentStatus {
     Failed,
     /// Queued too long and was canceled.
     Expired,
-    /// Repeated unresolved request failure has become terminal.
-    FailedTerminal,
 }
 
 impl ShipmentStatus {
@@ -89,7 +87,6 @@ impl ShipmentStatus {
             ShipmentStatus::Fulfilled => 2,
             ShipmentStatus::Failed => 3,
             ShipmentStatus::Expired => 4,
-            ShipmentStatus::FailedTerminal => 5,
         }
     }
 
@@ -100,7 +97,6 @@ impl ShipmentStatus {
             2 => Some(ShipmentStatus::Fulfilled),
             3 => Some(ShipmentStatus::Failed),
             4 => Some(ShipmentStatus::Expired),
-            5 => Some(ShipmentStatus::FailedTerminal),
             _ => None,
         }
     }
@@ -154,9 +150,9 @@ pub struct FreightRequestFailure {
 /// Runtime collection of active freight jobs.
 #[derive(Clone, Debug, Default)]
 pub struct ShipmentSystem {
-    /// All queued or in-transit shipment jobs plus transient terminal states.
+    /// All queued or in-transit shipment jobs plus fulfilled/failed jobs awaiting cleanup.
     pub shipments: Vec<Shipment>,
-    /// Consecutive request failures keyed by destination building and resource.
+    /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
 }
 

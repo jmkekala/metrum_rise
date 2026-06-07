@@ -63,6 +63,7 @@ impl ResidentialOccupantSnapshot {
             if home_building_id >= allocator.buildings.len()
                 || allocator.buildings[home_building_id].broken
                 || allocator.buildings[home_building_id].economy_broken
+                || allocator.buildings[home_building_id].is_deserted
             {
                 return;
             }
@@ -509,7 +510,7 @@ impl BuildingSnapshotAccumulator {
         idx: usize,
         building: &Building,
     ) {
-        if building.broken || building.economy_broken {
+        if building.broken || building.economy_broken || building.is_deserted {
             return;
         }
 
@@ -544,18 +545,12 @@ impl BuildingSnapshotAccumulator {
             }
         }
 
-        let active_profile = if building.is_deserted {
-            None
-        } else {
-            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-        };
+        let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
 
-        if !building.is_deserted
-            && matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            )
-        {
+        if matches!(
+            building.zone_type,
+            ZoneType::Commercial | ZoneType::Industrial
+        ) {
             let worker_capacity = allocator.worker_capacity(idx);
             if worker_capacity > 0 {
                 let average_daily_wage = active_profile
@@ -584,7 +579,7 @@ impl BuildingSnapshotAccumulator {
             }
         }
 
-        if !building.is_deserted && matches!(building.zone_type, ZoneType::Commercial) {
+        if matches!(building.zone_type, ZoneType::Commercial) {
             self.total_commercial_owa_input += building.daily_owa_input_value;
             self.total_commercial_local_input += building.daily_local_input_value;
             if let Some(profile) = active_profile {
@@ -624,7 +619,7 @@ impl BuildingSnapshotAccumulator {
             }
         }
 
-        if !building.is_deserted && matches!(building.zone_type, ZoneType::Industrial) {
+        if matches!(building.zone_type, ZoneType::Industrial) {
             if let Some(profile) = active_profile {
                 for output_port in &profile.outputs {
                     if resource_is_commercial_input(catalog, output_port.resource_runtime_id) {
@@ -748,7 +743,8 @@ impl HouseholdSnapshotAccumulator {
         }
         let is_housed = household.home_building_id < allocator.buildings.len()
             && !allocator.buildings[household.home_building_id].broken
-            && !allocator.buildings[household.home_building_id].economy_broken;
+            && !allocator.buildings[household.home_building_id].economy_broken
+            && !allocator.buildings[household.home_building_id].is_deserted;
         if is_housed {
             self.housed_household_count = self.housed_household_count.saturating_add(1);
             self.housed_resident_count = self

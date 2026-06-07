@@ -1,5 +1,7 @@
 //! Household record storage and building-reference maintenance.
 
+use std::sync::atomic::AtomicU32;
+
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
 pub struct Household {
@@ -41,10 +43,11 @@ pub struct Household {
 }
 
 /// Collection of explicit household records for the live simulation.
-#[derive(Clone, Debug, Default)]
 pub struct HouseholdSystem {
     /// All known households. Agents reference these by index.
     pub households: Vec<Household>,
+    pub(super) member_count_scratch: Vec<AtomicU32>,
+    pub(super) worker_count_scratch: Vec<AtomicU32>,
 }
 
 impl HouseholdSystem {
@@ -52,12 +55,16 @@ impl HouseholdSystem {
     pub fn new() -> Self {
         Self {
             households: Vec::new(),
+            member_count_scratch: Vec::new(),
+            worker_count_scratch: Vec::new(),
         }
     }
 
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
+        self.member_count_scratch.clear();
+        self.worker_count_scratch.clear();
     }
 
     /// Remaps building references after a building swap-remove.
@@ -87,5 +94,53 @@ impl HouseholdSystem {
                 household.replenishment_state = 0; // REPLENISHMENT_STABLE
             }
         }
+    }
+
+    /// Returns zeroed per-household counters for deterministic parallel membership rebuilds.
+    pub(super) fn reset_member_count_scratch(&mut self) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.member_count_scratch, self.households.len());
+        &self.member_count_scratch
+    }
+
+    /// Returns zeroed per-building counters for deterministic parallel worker recounts.
+    pub(super) fn reset_worker_count_scratch(&mut self, building_count: usize) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.worker_count_scratch, building_count);
+        &self.worker_count_scratch
+    }
+}
+
+impl Clone for HouseholdSystem {
+    fn clone(&self) -> Self {
+        Self {
+            households: self.households.clone(),
+            member_count_scratch: Vec::new(),
+            worker_count_scratch: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for HouseholdSystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HouseholdSystem")
+            .field("households", &self.households)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for HouseholdSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn resize_atomic_scratch(scratch: &mut Vec<AtomicU32>, len: usize) {
+    if scratch.len() > len {
+        scratch.truncate(len);
+    }
+    while scratch.len() < len {
+        scratch.push(AtomicU32::new(0));
+    }
+    for slot in scratch {
+        slot.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }

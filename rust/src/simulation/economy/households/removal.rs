@@ -29,6 +29,7 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
         for (household_id, household) in self.households.iter().enumerate() {
             if household.member_count == 0 {
                 continue;
@@ -95,7 +96,12 @@ impl HouseholdSystem {
         }
 
         for household_id in selected_households {
-            self.remove_household_record_at_index(household_id, agents, allocator);
+            self.remove_household_record_at_index(
+                household_id,
+                agents,
+                allocator,
+                household_supply_resource,
+            );
         }
         removed_count
     }
@@ -105,6 +111,7 @@ impl HouseholdSystem {
         household_id: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        household_supply_resource: u16,
     ) {
         if household_id >= self.households.len() {
             return;
@@ -117,11 +124,8 @@ impl HouseholdSystem {
         ) {
             let store_idx = household.reserved_store_building_id;
             if store_idx < allocator.buildings.len() {
-                if let Ok(catalog) = load_runtime_economy_catalog() {
-                    let resource_runtime_id = household_supply_resource_runtime_id(&catalog);
-                    allocator.buildings[store_idx]
-                        .add_inventory_units(resource_runtime_id, household.reserved_amount);
-                }
+                allocator.buildings[store_idx]
+                    .add_inventory_units(household_supply_resource, household.reserved_amount);
             }
         }
 

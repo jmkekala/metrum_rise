@@ -28,6 +28,124 @@ struct HousingResolutionDiagnostics {
     still_unhoused: u32,
 }
 
+struct VacancyCandidate {
+    building_idx: usize,
+    level: u8,
+    remaining_slots: u32,
+}
+
+struct VacancyPlanner {
+    candidates: Vec<VacancyCandidate>,
+}
+
+impl VacancyPlanner {
+    fn new(allocator: &BuildingAllocator) -> Self {
+        let mut candidates = Vec::new();
+        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
+            return Self { candidates };
+        };
+        for &building_idx in &allocator.vacancy_index[residential_slot] {
+            if building_idx >= allocator.buildings.len() {
+                continue;
+            }
+            let building = &allocator.buildings[building_idx];
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.pending_redevelopment
+            {
+                continue;
+            }
+            let remaining_slots = allocator
+                .household_capacity(building_idx)
+                .saturating_sub(building.occupancy);
+            if remaining_slots == 0 {
+                continue;
+            }
+            candidates.push(VacancyCandidate {
+                building_idx,
+                level: building.level,
+                remaining_slots,
+            });
+        }
+        candidates.sort_unstable_by(|left, right| {
+            right
+                .level
+                .cmp(&left.level)
+                .then_with(|| left.building_idx.cmp(&right.building_idx))
+        });
+        Self { candidates }
+    }
+
+    fn claim_affordable_home(
+        &mut self,
+        reserve_days: f32,
+        allocator: &BuildingAllocator,
+        current_home: Option<usize>,
+        config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
+    ) -> Option<usize> {
+        let current_center = current_home.and_then(|building_idx| {
+            allocator
+                .buildings
+                .get(building_idx)
+                .map(|building| (building.center_x, building.center_y))
+        });
+
+        let mut best: Option<(usize, u8, f32, usize)> = None;
+        for (candidate_pos, candidate) in self.candidates.iter().enumerate() {
+            if best.is_some_and(|(_, best_level, _, _)| candidate.level < best_level) {
+                break;
+            }
+            if candidate.remaining_slots == 0 || Some(candidate.building_idx) == current_home {
+                continue;
+            }
+            let building = &allocator.buildings[candidate.building_idx];
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.pending_redevelopment
+            {
+                continue;
+            }
+
+            let move_in_threshold = level_tuning_value(
+                &config.residential_move_in_min_reserve_days_by_level,
+                candidate.level,
+            );
+            if reserve_days + f32::EPSILON < move_in_threshold {
+                continue;
+            }
+
+            let distance = current_center.map_or(0.0, |(origin_x, origin_y)| {
+                let dx = building.center_x - origin_x;
+                let dy = building.center_y - origin_y;
+                dx * dx + dy * dy
+            });
+            let challenger = (
+                candidate_pos,
+                candidate.level,
+                distance,
+                candidate.building_idx,
+            );
+            if best.is_none_or(|current| {
+                challenger.1 > current.1
+                    || (challenger.1 == current.1
+                        && (challenger.2.total_cmp(&current.2).is_lt()
+                            || (challenger.2.total_cmp(&current.2).is_eq()
+                                && challenger.3 < current.3)))
+            }) {
+                best = Some(challenger);
+            }
+        }
+
+        let (candidate_pos, _, _, building_idx) = best?;
+        self.candidates[candidate_pos].remaining_slots = self.candidates[candidate_pos]
+            .remaining_slots
+            .saturating_sub(1);
+        Some(building_idx)
+    }
+}
+
 /// Explicit household runtime record anchored to a residential building.
 
 impl HouseholdSystem {
@@ -42,6 +160,7 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let (household_member_heads, household_member_next) =
             build_household_member_index(agents, self.households.len());
+        let mut vacancy_planner = VacancyPlanner::new(allocator);
 
         let mut diagnostics = HousingResolutionDiagnostics::default();
         for household_id in 0..self.households.len() {
@@ -59,8 +178,7 @@ impl HouseholdSystem {
                 diagnostics.unhoused_start_households =
                     diagnostics.unhoused_start_households.saturating_add(1);
                 self.households[household_id].stay_failure_days = 0;
-                if let Some(target_home) = self.find_affordable_home_for_household(
-                    household_id,
+                if let Some(target_home) = vacancy_planner.claim_affordable_home(
                     reserve_days,
                     allocator,
                     None,
@@ -98,8 +216,7 @@ impl HouseholdSystem {
             if reserve_days >= stay_threshold {
                 diagnostics.stay_passed = diagnostics.stay_passed.saturating_add(1);
                 self.households[household_id].stay_failure_days = 0;
-                if let Some(target_home) = self.find_affordable_home_for_household(
-                    household_id,
+                if let Some(target_home) = vacancy_planner.claim_affordable_home(
                     reserve_days,
                     allocator,
                     Some(current_home),
@@ -132,8 +249,7 @@ impl HouseholdSystem {
                 continue;
             }
 
-            if let Some(target_home) = self.find_affordable_home_for_household(
-                household_id,
+            if let Some(target_home) = vacancy_planner.claim_affordable_home(
                 reserve_days,
                 allocator,
                 Some(current_home),
@@ -180,72 +296,6 @@ impl HouseholdSystem {
             diagnostics.evicted,
             diagnostics.still_unhoused,
         );
-    }
-
-    fn find_affordable_home_for_household(
-        &self,
-        household_id: usize,
-        reserve_days: f32,
-        allocator: &BuildingAllocator,
-        current_home: Option<usize>,
-        config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
-    ) -> Option<usize> {
-        let _household = &self.households[household_id];
-        let current_center = current_home.and_then(|building_idx| {
-            allocator
-                .buildings
-                .get(building_idx)
-                .map(|building| (building.center_x, building.center_y))
-        });
-
-        let mut candidates = Vec::new();
-        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
-            return None;
-        };
-        for &building_idx in &allocator.vacancy_index[residential_slot] {
-            if Some(building_idx) == current_home || building_idx >= allocator.buildings.len() {
-                continue;
-            }
-            let building = &allocator.buildings[building_idx];
-            if building.broken || building.economy_broken || building.pending_redevelopment {
-                continue;
-            }
-
-            let free_slots = allocator
-                .household_capacity(building_idx)
-                .saturating_sub(building.occupancy);
-            if free_slots == 0 {
-                continue;
-            }
-
-            let move_in_threshold = level_tuning_value(
-                &config.residential_move_in_min_reserve_days_by_level,
-                building.level,
-            );
-            if reserve_days + f32::EPSILON < move_in_threshold {
-                continue;
-            }
-
-            let distance = current_center.map_or(0.0, |(origin_x, origin_y)| {
-                let dx = building.center_x - origin_x;
-                let dy = building.center_y - origin_y;
-                dx * dx + dy * dy
-            });
-            candidates.push((building_idx, building.level, distance));
-        }
-
-        candidates.sort_by(|left, right| {
-            right
-                .1
-                .cmp(&left.1)
-                .then_with(|| {
-                    left.2
-                        .partial_cmp(&right.2)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        candidates.first().map(|candidate| candidate.0)
     }
 
     fn relocate_household(
