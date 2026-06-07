@@ -1,0 +1,418 @@
+//! Private building growth, level-change, and despawn planning.
+
+use super::actions::{
+    DemandBuildingActionKey, DemandLevelChangeAction, demand_building_action_key,
+};
+use super::credits::{
+    advance_building_action_credit, advance_spawn_need_credit, normalized_negative_pressure,
+    normalized_positive_pressure,
+};
+use super::diagnostics::BuildingActionDiagnostics;
+use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
+use super::spawn_need::{nonresidential_passes_absorption_gate, spawn_need_buildings_for_use};
+use super::system::DemandSystem;
+use super::types::DemandUse;
+use super::viability::{
+    building_is_viable_for_downgrade, building_is_viable_for_upgrade, level_change_is_compatible,
+};
+use crate::debug_log;
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::definitions::{RuntimeEconomyTuning, load_runtime_economy_catalog};
+use crate::simulation::economy::households::HouseholdSystem;
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
+
+#[derive(Clone, Debug)]
+pub(super) struct WeightedLevelChangeCandidate {
+    action: DemandLevelChangeAction,
+    normalized_action_pressure: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct WeightedDespawnCandidate {
+    action: DemandBuildingActionKey,
+    normalized_action_pressure: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ExistingBuildingCandidates {
+    pub(super) despawns: Vec<WeightedDespawnCandidate>,
+    pub(super) downgrades: Vec<WeightedLevelChangeCandidate>,
+    pub(super) upgrades: Vec<WeightedLevelChangeCandidate>,
+}
+
+impl DemandSystem {
+    pub(super) fn plan_private_building_actions(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        snapshot: &DailyDemandSnapshot,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        cadence_fraction: f32,
+        log_label: &str,
+    ) {
+        for use_kind in [
+            DemandUse::Residential,
+            DemandUse::Commercial,
+            DemandUse::Industrial,
+        ] {
+            let zone_type = use_kind.zone_type();
+            let growth_pressure = self.pressure_for_use(use_kind);
+            let spawn_candidates =
+                allocator.collect_demand_spawn_candidates(zone_type, zoning, graph);
+            let existing_candidates = self.collect_existing_building_candidates(
+                allocator,
+                households,
+                economy_tuning,
+                &residential_occupants,
+                zone_type,
+                growth_pressure,
+            );
+            let spawn_candidate_count = spawn_candidates.len();
+            let upgrade_candidate_count = existing_candidates.upgrades.len();
+            let downgrade_candidate_count = existing_candidates.downgrades.len();
+            let despawn_candidate_count = existing_candidates.despawns.len();
+
+            let mut spawn_profile_missing = 0_usize;
+            let normalized_spawn_pressure = spawn_candidates
+                .iter()
+                .map(|candidate| {
+                    if let Some(profile) = self
+                        .config
+                        .profile_for_zone_density(zone_type, &candidate.density)
+                    {
+                        normalized_positive_pressure(growth_pressure, profile.spawn_threshold)
+                    } else {
+                        spawn_profile_missing += 1;
+                        0.0
+                    }
+                })
+                .sum::<f32>();
+            let normalized_spawn_pressure = if spawn_candidate_count == 0 {
+                0.0
+            } else {
+                normalized_spawn_pressure / spawn_candidate_count as f32
+            };
+            let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+                panic!("could not load built-in runtime economy catalog: {err}")
+            });
+            let raw_spawn_need_buildings = spawn_need_buildings_for_use(
+                use_kind,
+                allocator,
+                &catalog,
+                snapshot,
+                &spawn_candidates,
+            );
+            let spawn_need_buildings = raw_spawn_need_buildings * normalized_spawn_pressure;
+            let spawn_credit_before = self.spawn_action_credit.get(use_kind);
+            let spawns_today = advance_spawn_need_credit(
+                self.spawn_action_credit.get_mut(use_kind),
+                spawn_need_buildings,
+                spawn_candidate_count,
+            );
+            let spawn_credit_after = self.spawn_action_credit.get(use_kind);
+            debug_log!(
+                "spawn",
+                "{} zone={:?}: pressure={:.3} \
+                 candidates={} profile_missing={} norm_pressure={:.3} raw_need={:.3} \
+                 spawn_need={:.3} credit={:.3}->{:.3} spawns_today={}",
+                log_label,
+                zone_type,
+                growth_pressure,
+                spawn_candidate_count,
+                spawn_profile_missing,
+                normalized_spawn_pressure,
+                raw_spawn_need_buildings,
+                spawn_need_buildings,
+                spawn_credit_before,
+                spawn_credit_after,
+                spawns_today,
+            );
+            let spawn_rejected_labour = 0_usize;
+            let mut spawn_rejected_absorption = 0_usize;
+            let mut spawn_skipped_budget = 0_usize;
+            let selected_spawns: Vec<_> = if zone_type == ZoneType::Residential {
+                spawn_skipped_budget = spawn_candidate_count.saturating_sub(spawns_today);
+                spawn_candidates
+                    .into_iter()
+                    .take(spawns_today)
+                    .map(|candidate| candidate.action)
+                    .collect()
+            } else if spawns_today == 0 {
+                spawn_skipped_budget = spawn_candidate_count;
+                Vec::new()
+            } else {
+                // Non-residential: output absorption is the final hard gate. Staffing is an
+                // operational outcome after spawn: the new open jobs feed household admission and
+                // residential construction pressure on the next snapshot.
+                let mut passed = 0;
+                let mut selected = Vec::new();
+                for candidate in spawn_candidates {
+                    if passed >= spawns_today {
+                        spawn_skipped_budget += 1;
+                        continue;
+                    }
+                    if !nonresidential_passes_absorption_gate(
+                        allocator,
+                        &catalog,
+                        &candidate.action.asset_id,
+                        snapshot.housed_resident_count,
+                    ) {
+                        spawn_rejected_absorption += 1;
+                        continue;
+                    }
+                    passed += 1;
+                    selected.push(candidate.action);
+                }
+                selected
+            };
+            let spawn_selected = selected_spawns.len();
+
+            let normalized_upgrade_pressure = existing_candidates
+                .upgrades
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let upgrade_budget_units = normalized_upgrade_pressure
+                * self
+                    .config
+                    .action_budget
+                    .upgrade_batch_fraction_by_use
+                    .get(use_kind);
+            let upgrade_credit_before = self.upgrade_action_credit.get(use_kind);
+            let upgrades_today = advance_building_action_credit(
+                self.upgrade_action_credit.get_mut(use_kind),
+                upgrade_budget_units,
+                upgrade_candidate_count,
+                cadence_fraction,
+            );
+            let upgrade_credit_after = self.upgrade_action_credit.get(use_kind);
+            let selected_upgrades: Vec<_> = existing_candidates
+                .upgrades
+                .iter()
+                .take(upgrades_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+            let upgrade_selected = selected_upgrades.len();
+
+            let normalized_downgrade_pressure = existing_candidates
+                .downgrades
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let downgrade_budget_units = normalized_downgrade_pressure
+                * self
+                    .config
+                    .action_budget
+                    .downgrade_batch_fraction_by_use
+                    .get(use_kind);
+            let downgrade_credit_before = self.downgrade_action_credit.get(use_kind);
+            let downgrades_today = advance_building_action_credit(
+                self.downgrade_action_credit.get_mut(use_kind),
+                downgrade_budget_units,
+                downgrade_candidate_count,
+                cadence_fraction,
+            );
+            let downgrade_credit_after = self.downgrade_action_credit.get(use_kind);
+            let selected_downgrades: Vec<_> = existing_candidates
+                .downgrades
+                .iter()
+                .take(downgrades_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+            let downgrade_selected = selected_downgrades.len();
+
+            let normalized_despawn_pressure = existing_candidates
+                .despawns
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let despawn_budget_units = normalized_despawn_pressure
+                * self
+                    .config
+                    .action_budget
+                    .despawn_batch_fraction_by_use
+                    .get(use_kind);
+            let despawn_credit_before = self.despawn_action_credit.get(use_kind);
+            let despawns_today = advance_building_action_credit(
+                self.despawn_action_credit.get_mut(use_kind),
+                despawn_budget_units,
+                despawn_candidate_count,
+                cadence_fraction,
+            );
+            let despawn_credit_after = self.despawn_action_credit.get(use_kind);
+            let selected_despawns: Vec<_> = existing_candidates
+                .despawns
+                .iter()
+                .take(despawns_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+            let despawn_selected = selected_despawns.len();
+
+            *self.last_building_action_diagnostics.use_mut(use_kind) = BuildingActionDiagnostics {
+                pressure: growth_pressure,
+                spawn_candidates: spawn_candidate_count,
+                spawn_profile_missing,
+                spawn_normalized_pressure: normalized_spawn_pressure,
+                spawn_need_buildings,
+                spawn_credit_before,
+                spawn_credit_after,
+                spawn_planned: spawns_today,
+                spawn_selected,
+                spawn_rejected_labour,
+                spawn_rejected_absorption,
+                spawn_skipped_budget,
+                upgrade_candidates: upgrade_candidate_count,
+                upgrade_normalized_pressure: normalized_upgrade_pressure,
+                upgrade_budget_units,
+                upgrade_credit_before,
+                upgrade_credit_after,
+                upgrade_planned: upgrades_today,
+                upgrade_selected,
+                downgrade_candidates: downgrade_candidate_count,
+                downgrade_normalized_pressure: normalized_downgrade_pressure,
+                downgrade_budget_units,
+                downgrade_credit_before,
+                downgrade_credit_after,
+                downgrade_planned: downgrades_today,
+                downgrade_selected,
+                despawn_candidates: despawn_candidate_count,
+                despawn_normalized_pressure: normalized_despawn_pressure,
+                despawn_budget_units,
+                despawn_credit_before,
+                despawn_credit_after,
+                despawn_planned: despawns_today,
+                despawn_selected,
+            };
+
+            let plan = self.building_actions.use_plan_mut(use_kind);
+            plan.spawns.extend(selected_spawns);
+            plan.upgrades.extend(selected_upgrades);
+            plan.downgrades.extend(selected_downgrades);
+            plan.despawns.extend(selected_despawns);
+        }
+    }
+
+    pub(super) fn collect_existing_building_candidates(
+        &self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        zone_type: ZoneType,
+        growth_pressure: f32,
+    ) -> ExistingBuildingCandidates {
+        let mut building_indices: Vec<usize> = allocator
+            .buildings
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, building)| (building.zone_type == zone_type).then_some(idx))
+            .collect();
+        building_indices.sort_by(|&a, &b| {
+            let left = &allocator.buildings[a];
+            let right = &allocator.buildings[b];
+            attachment_sort_key(left).cmp(&attachment_sort_key(right))
+        });
+
+        let mut candidates = ExistingBuildingCandidates::default();
+        for building_idx in building_indices {
+            let building = &allocator.buildings[building_idx];
+            if building.broken || building.economy_broken || building.pending_redevelopment {
+                continue;
+            }
+            let Some(entry) = allocator.registry.get(&building.asset_id) else {
+                continue;
+            };
+            let Some(asset_building) = entry.manifest.building.as_ref() else {
+                continue;
+            };
+            if !asset_building.is_zoned_private() {
+                continue;
+            }
+            let Some(density) = asset_building.density_key() else {
+                continue;
+            };
+            let Some(profile) = self.config.profile_for_zone_density(zone_type, density) else {
+                continue;
+            };
+
+            let despawn_pressure =
+                normalized_negative_pressure(growth_pressure, profile.despawn_threshold);
+            let downgrade_pressure =
+                normalized_negative_pressure(growth_pressure, profile.downgrade_threshold);
+            let upgrade_pressure =
+                normalized_positive_pressure(growth_pressure, profile.upgrade_threshold);
+
+            if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
+                candidates.despawns.push(WeightedDespawnCandidate {
+                    action: demand_building_action_key(building),
+                    normalized_action_pressure: despawn_pressure,
+                });
+                continue;
+            }
+
+            if downgrade_pressure > 0.0
+                && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
+                && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                && building_is_viable_for_downgrade(
+                    allocator,
+                    households,
+                    economy_tuning,
+                    residential_occupants,
+                    building_idx,
+                    target_asset_id,
+                )
+            {
+                candidates.downgrades.push(WeightedLevelChangeCandidate {
+                    action: DemandLevelChangeAction {
+                        building: demand_building_action_key(building),
+                        target_asset_id: target_asset_id.to_owned(),
+                    },
+                    normalized_action_pressure: downgrade_pressure,
+                });
+                continue;
+            }
+
+            if upgrade_pressure > 0.0
+                && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
+                && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                && building_is_viable_for_upgrade(
+                    allocator,
+                    households,
+                    economy_tuning,
+                    residential_occupants,
+                    building_idx,
+                    target_asset_id,
+                )
+            {
+                candidates.upgrades.push(WeightedLevelChangeCandidate {
+                    action: DemandLevelChangeAction {
+                        building: demand_building_action_key(building),
+                        target_asset_id: target_asset_id.to_owned(),
+                    },
+                    normalized_action_pressure: upgrade_pressure,
+                });
+            }
+        }
+
+        candidates
+    }
+}
+
+pub(super) fn attachment_sort_key(
+    building: &crate::simulation::buildings::allocator::Building,
+) -> (u64, usize, u8, usize, u16, u16, u8, &str) {
+    (
+        building.parcel_id,
+        building.edge_idx,
+        if building.side > 0 { 0 } else { 1 },
+        building.cell_x,
+        building.width_cells,
+        building.depth_cells,
+        building.level,
+        building.asset_id.as_str(),
+    )
+}

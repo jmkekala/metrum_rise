@@ -4,8 +4,11 @@ use super::runtime::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning, RuntimeResourcePort,
 };
-use super::schema::{AuthoredProfileKind, EconomyProfile};
+use super::schema::{AuthoredProfileKind, EconomyProfile, PROFILE_KIND_DEMAND_SINK};
 use std::collections::{BTreeMap, BTreeSet};
+
+const REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
+const REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
 
 pub(super) fn compile_runtime_catalog(
     authored_profiles: &[EconomyProfile],
@@ -111,46 +114,55 @@ fn validate_required_runtime_catalog(catalog: &RuntimeEconomyCatalog) -> Result<
     }
 
     let household_profile = catalog
-        .profile_for_id("basic_household_demand")
+        .profile_for_id(REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID)
         .ok_or_else(|| {
-            "runtime economy catalog requires profile 'basic_household_demand'".to_owned()
+            format!(
+                "runtime economy catalog requires profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}'"
+            )
         })?;
     if household_profile.kind != EconomyProfileRuntimeKind::DemandSink {
-        return Err("profile 'basic_household_demand' must have kind = \"demand_sink\"".to_owned());
+        return Err(format!(
+            "profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}' must have kind = \"{PROFILE_KIND_DEMAND_SINK}\""
+        ));
     }
     if household_profile.consumption_rate_per_resident <= 0.0 {
-        return Err(
-            "profile 'basic_household_demand'.consumption_rate_per_resident must be > 0".to_owned(),
-        );
+        return Err(format!(
+            "profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}'.consumption_rate_per_resident must be > 0"
+        ));
     }
     if household_profile.stock_target_days <= 0.0 {
-        return Err("profile 'basic_household_demand'.stock_target_days must be > 0".to_owned());
+        return Err(format!(
+            "profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}'.stock_target_days must be > 0"
+        ));
     }
     if household_profile.reorder_threshold_days <= 0.0 {
-        return Err(
-            "profile 'basic_household_demand'.reorder_threshold_days must be > 0".to_owned(),
-        );
+        return Err(format!(
+            "profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}'.reorder_threshold_days must be > 0"
+        ));
     }
     let household_supplies = catalog
-        .resource_runtime_id_for_id("household_supplies")
+        .resource_runtime_id_for_id(REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID)
         .ok_or_else(|| {
-            "runtime economy catalog requires resource 'household_supplies'".to_owned()
+            format!("runtime economy catalog requires resource '{REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID}'")
         })?;
     if !household_profile
         .inputs
         .iter()
         .any(|port| port.resource_runtime_id == household_supplies)
     {
-        return Err(
-            "profile 'basic_household_demand' must consume resource 'household_supplies'"
-                .to_owned(),
-        );
+        return Err(format!(
+            "profile '{REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID}' must consume resource '{REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID}'"
+        ));
     }
     let Some(unit_price) = catalog.unit_price_for_resource(household_supplies) else {
-        return Err("resource 'household_supplies' must have a positive unit price".to_owned());
+        return Err(format!(
+            "resource '{REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID}' must have a positive unit price"
+        ));
     };
     if unit_price <= 0.0 {
-        return Err("resource 'household_supplies' must have a positive unit price".to_owned());
+        return Err(format!(
+            "resource '{REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID}' must have a positive unit price"
+        ));
     }
     Ok(())
 }
