@@ -6,7 +6,9 @@ use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, Placement
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, resolve_building_economy_profile_binding,
 };
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
@@ -237,7 +239,7 @@ fn local_supplier_creates_and_delivers_shipment() {
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
     assert_eq!(shipments.shipments.len(), 1);
-    assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_LOCAL);
+    assert_eq!(shipments.shipments[0].source, ShipmentEndpoint::Building(0));
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -291,8 +293,10 @@ fn owa_border_fallback_creates_import_shipment() {
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
     assert_eq!(shipments.shipments.len(), 1);
-    assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
-    assert_eq!(shipments.shipments[0].source_border_node, border_node);
+    assert_eq!(
+        shipments.shipments[0].source,
+        ShipmentEndpoint::OwaBorder(border_node)
+    );
 
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
     assert!(shipments.shipments.is_empty());
@@ -331,15 +335,24 @@ fn owa_border_fallback_scales_import_to_affordable_amount() {
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
     assert_eq!(shipments.shipments.len(), 1);
-    assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
+    assert!(matches!(
+        shipments.shipments[0].source,
+        ShipmentEndpoint::OwaBorder(_)
+    ));
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let grocery = catalog
         .profile_for_id("grocery_basic")
         .expect("grocery starter profile");
+    let truck_load_units = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .logistics
+        .truck_load_units;
     assert!(shipments.shipments[0].amount >= grocery.min_shipment_units);
+    assert_eq!(shipments.shipments[0].amount % truck_load_units, 0.0);
     let grocery_input = grocery.inputs.first().expect("grocery input port");
     assert!(shipments.shipments[0].amount < grocery.inventory_target_units_for(grocery_input));
-    assert!(allocator.buildings[0].operating_budget <= 0.001);
+    assert!(allocator.buildings[0].operating_budget >= 0.0);
+    assert!(allocator.buildings[0].operating_budget < 1_500.0);
 }
 
 #[test]
@@ -434,8 +447,7 @@ fn local_supplier_reservations_prevent_same_pass_overpromise() {
         .shipments
         .iter()
         .filter(|shipment| {
-            shipment.source_kind == SHIPMENT_SOURCE_LOCAL
-                && shipment.source_building_id == 0
+            shipment.source == ShipmentEndpoint::Building(0)
                 && shipment.resource_runtime_id == staple_food
         })
         .map(|shipment| shipment.amount)
@@ -446,8 +458,7 @@ fn local_supplier_reservations_prevent_same_pass_overpromise() {
             .shipments
             .iter()
             .filter(|shipment| {
-                shipment.source_kind == SHIPMENT_SOURCE_LOCAL
-                    && shipment.source_building_id == 0
+                shipment.source == ShipmentEndpoint::Building(0)
                     && shipment.resource_runtime_id == staple_food
             })
             .count(),
@@ -487,14 +498,13 @@ fn deserted_destination_rejects_inbound_delivery() {
     shipments.shipments.push(Shipment {
         resource_runtime_id: staple_food,
         amount: 40.0,
-        source_kind: SHIPMENT_SOURCE_OWA,
-        source_building_id: usize::MAX,
-        source_border_node: 0,
-        destination_building_id: 0,
-        carrier_class: CARRIER_TRUCK,
-        status: SHIPMENT_IN_TRANSIT,
+        source: ShipmentEndpoint::OwaBorder(0),
+        destination: ShipmentEndpoint::Building(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
         total_cost: 600.0,
         eta_hours: 1,
+        queued_hours: 0,
     });
 
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
@@ -550,14 +560,13 @@ fn deserted_local_source_releases_reserved_delivery() {
     shipments.shipments.push(Shipment {
         resource_runtime_id: staple_food,
         amount: 40.0,
-        source_kind: SHIPMENT_SOURCE_LOCAL,
-        source_building_id: 0,
-        source_border_node: u32::MAX,
-        destination_building_id: 1,
-        carrier_class: CARRIER_TRUCK,
-        status: SHIPMENT_IN_TRANSIT,
+        source: ShipmentEndpoint::Building(0),
+        destination: ShipmentEndpoint::Building(1),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
         total_cost: 600.0,
         eta_hours: 1,
+        queued_hours: 0,
     });
 
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
@@ -566,6 +575,108 @@ fn deserted_local_source_releases_reserved_delivery() {
     assert_eq!(allocator.buildings[0].inventory_units(staple_food), 300.0);
     assert_eq!(allocator.buildings[1].inventory_units(staple_food), 0.0);
     assert!((allocator.buildings[1].operating_budget - 700.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn queued_owa_import_expires_and_refunds_destination() {
+    let (graph, network, _industrial_edge, commercial_edge, border_node) =
+        simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "queued_expiry_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        0.0,
+        100.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let staple_food = catalog
+        .resource_runtime_id_for_id("staple_food")
+        .expect("staple food resource");
+    let mut shipments = ShipmentSystem::new();
+    shipments.shipments.push(Shipment {
+        resource_runtime_id: staple_food,
+        amount: 40.0,
+        source: ShipmentEndpoint::OwaBorder(border_node),
+        destination: ShipmentEndpoint::Building(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::Queued,
+        total_cost: 240.0,
+        eta_hours: 1,
+        queued_hours: tuning.logistics.queued_shipment_expiry_hours - 1,
+    });
+
+    shipments.progress_shipments(&mut allocator);
+
+    assert_eq!(shipments.shipments[0].status, ShipmentStatus::Expired);
+    assert!((allocator.buildings[0].operating_budget - 340.0).abs() < f32::EPSILON);
+    assert_eq!(
+        allocator.buildings[0].shipment_cooldown_hours,
+        tuning.operational_clock.shipment_retry_cooldown_hours
+    );
+}
+
+#[test]
+fn unresolved_input_request_escalates_to_terminal_failure() {
+    let (graph, network, _industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "terminal_failure_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        0.0,
+        0.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let staple_food = catalog
+        .resource_runtime_id_for_id("staple_food")
+        .expect("staple food resource");
+    let mut shipments = ShipmentSystem::new();
+    let ticks = usize::from(tuning.logistics.terminal_failure_attempts)
+        * (usize::from(
+            tuning
+                .operational_clock
+                .shipment_retry_cooldown_hours
+                .max(1),
+        ) + 1);
+    for _ in 0..ticks {
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
+    }
+
+    let failure = shipments
+        .request_failures
+        .get(&FreightRequestKey {
+            destination_building_id: 0,
+            resource_runtime_id: staple_food,
+        })
+        .expect("request failure");
+    assert!(failure.terminal);
+    assert_eq!(failure.failures, tuning.logistics.terminal_failure_attempts);
+    assert!(shipments.shipments.is_empty());
 }
 
 #[test]
@@ -596,16 +707,25 @@ fn owa_imports_respect_border_cap_within_pass() {
     let mut shipments = ShipmentSystem::new();
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
+    let border_imports: Vec<_> = shipments
+        .shipments
+        .iter()
+        .filter(|shipment| shipment.source == ShipmentEndpoint::OwaBorder(border_node))
+        .collect();
+    assert_eq!(border_imports.len(), 5);
     assert_eq!(
-        shipments
-            .shipments
+        border_imports
             .iter()
-            .filter(|shipment| {
-                shipment.source_kind == SHIPMENT_SOURCE_OWA
-                    && shipment.source_border_node == border_node
-            })
+            .filter(|shipment| shipment.status == ShipmentStatus::InTransit)
             .count(),
         4
+    );
+    assert_eq!(
+        border_imports
+            .iter()
+            .filter(|shipment| shipment.status == ShipmentStatus::Queued)
+            .count(),
+        1
     );
 }
 
@@ -637,16 +757,25 @@ fn owa_exports_respect_border_cap_within_pass() {
     let mut shipments = ShipmentSystem::new();
     shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
+    let border_exports: Vec<_> = shipments
+        .shipments
+        .iter()
+        .filter(|shipment| shipment.destination == ShipmentEndpoint::OwaBorder(border_node))
+        .collect();
+    assert_eq!(border_exports.len(), 5);
     assert_eq!(
-        shipments
-            .shipments
+        border_exports
             .iter()
-            .filter(|shipment| {
-                shipment.destination_building_id == SHIPMENT_DEST_OWA
-                    && shipment.source_border_node == border_node
-            })
+            .filter(|shipment| shipment.status == ShipmentStatus::InTransit)
             .count(),
         4
+    );
+    assert_eq!(
+        border_exports
+            .iter()
+            .filter(|shipment| shipment.status == ShipmentStatus::Queued)
+            .count(),
+        1
     );
 }
 
@@ -685,7 +814,7 @@ fn owa_export_eta_uses_freight_timing_window() {
     let export = shipments
         .shipments
         .iter()
-        .find(|shipment| shipment.destination_building_id == SHIPMENT_DEST_OWA)
+        .find(|shipment| matches!(shipment.destination, ShipmentEndpoint::OwaBorder(_)))
         .expect("OWA export shipment");
     assert!(export.eta_hours >= 2);
 }

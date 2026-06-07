@@ -11,7 +11,8 @@ use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
 use crate::simulation::economy::logistics::{
-    CARRIER_TRUCK, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_OWA, Shipment, ShipmentSystem,
+    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
+    ShipmentStatus, ShipmentSystem,
 };
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -24,7 +25,6 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
-use rusqlite::Connection;
 use std::fs;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -264,15 +264,24 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     logistics.shipments.push(Shipment {
         resource_runtime_id: household_supplies,
         amount: 80.0,
-        source_kind: SHIPMENT_SOURCE_OWA,
-        source_building_id: usize::MAX,
-        source_border_node: 0,
-        destination_building_id: 0,
-        carrier_class: CARRIER_TRUCK,
-        status: SHIPMENT_IN_TRANSIT,
+        source: ShipmentEndpoint::OwaBorder(0),
+        destination: ShipmentEndpoint::Building(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
         total_cost: 640.0,
         eta_hours: 1,
+        queued_hours: 0,
     });
+    logistics.request_failures.insert(
+        FreightRequestKey {
+            destination_building_id: 0,
+            resource_runtime_id: household_supplies,
+        },
+        FreightRequestFailure {
+            failures: 2,
+            terminal: true,
+        },
+    );
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
     let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
@@ -485,102 +494,18 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         42.0
     );
     assert_eq!(loaded.logistics.shipments.len(), 1);
-    assert_eq!(loaded.logistics.shipments[0].destination_building_id, 0);
-}
-
-#[test]
-fn load_graph_migrates_missing_vehicle_frontage_access_column_to_bothsides() {
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    conn.execute_batch(
-        r#"
-        CREATE TABLE network_nodes(
-            node_id INTEGER PRIMARY KEY,
-            x REAL NOT NULL,
-            y REAL NOT NULL,
-            z REAL NOT NULL,
-            node_type INTEGER NOT NULL
-        );
-        CREATE TABLE network_edges(
-            edge_id INTEGER PRIMARY KEY,
-            start_node INTEGER NOT NULL,
-            end_node INTEGER NOT NULL,
-            primary_type INTEGER NOT NULL,
-            allowed_types INTEGER NOT NULL,
-            class INTEGER NOT NULL,
-            width REAL NOT NULL,
-            fwd_lanes INTEGER NOT NULL,
-            bkw_lanes INTEGER NOT NULL,
-            speed_limit REAL NOT NULL,
-            base_cost REAL NOT NULL,
-            physical_length REAL NOT NULL,
-            current_congestion REAL NOT NULL,
-            start_clip REAL NOT NULL,
-            end_clip REAL NOT NULL
-        );
-        CREATE TABLE network_edge_geometry(
-            edge_id INTEGER NOT NULL,
-            point_index INTEGER NOT NULL,
-            x REAL NOT NULL,
-            y REAL NOT NULL,
-            z REAL NOT NULL,
-            physical INTEGER NOT NULL,
-            PRIMARY KEY(edge_id, physical, point_index)
-        );
-        CREATE TABLE lane_connections(
-            node_id INTEGER NOT NULL,
-            from_edge INTEGER NOT NULL,
-            from_lane INTEGER NOT NULL,
-            to_edge INTEGER NOT NULL,
-            to_lane INTEGER NOT NULL
-        );
-        "#,
-    )
-    .expect("legacy schema");
-
-    conn.execute(
-        "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (0, 0.0, 0.0, 0.0, 1)",
-        [],
-    )
-    .expect("node 0");
-    conn.execute(
-        "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (1, 10.0, 0.0, 0.0, 1)",
-        [],
-    )
-    .expect("node 1");
-    conn.execute(
-        "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip)
-         VALUES (0, 0, 1, 1, 3, 0, 7.0, 1, 1, 50.0, 10.0, 10.0, 0.0, 0.0, 0.0)",
-        [],
-    )
-    .expect("edge");
-    conn.execute(
-        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 0, 0.0, 0.0, 0.0, 0)",
-        [],
-    )
-    .expect("geom 0");
-    conn.execute(
-        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 1, 10.0, 0.0, 0.0, 0)",
-        [],
-    )
-    .expect("geom 1");
-    conn.execute(
-        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 0, 0.0, 0.0, 0.0, 1)",
-        [],
-    )
-    .expect("phys geom 0");
-    conn.execute(
-        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 1, 10.0, 0.0, 0.0, 1)",
-        [],
-    )
-    .expect("phys geom 1");
-
-    let graph =
-        network::load_graph(&conn, LAST_KMH_ROAD_SPEED_SAVE_VERSION).expect("migrated graph");
-    assert_eq!(graph.edge_count(), 1);
     assert_eq!(
-        graph.edge(0).vehicle_frontage_access,
-        VehicleFrontageAccess::BothSides
+        loaded.logistics.shipments[0].destination,
+        ShipmentEndpoint::Building(0)
     );
-    assert!(!graph.edge(0).no_building_spawn);
-    assert!((graph.edge(0).speed_limit - 50.0 / 3.6).abs() < f32::EPSILON);
+    assert_eq!(
+        loaded.logistics.request_failures.get(&FreightRequestKey {
+            destination_building_id: 0,
+            resource_runtime_id: household_supplies,
+        }),
+        Some(&FreightRequestFailure {
+            failures: 2,
+            terminal: true,
+        })
+    );
 }

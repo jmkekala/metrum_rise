@@ -5,7 +5,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
 
-use super::data::{SHIPMENT_IN_TRANSIT, ShipmentSystem};
+use super::data::ShipmentSystem;
 
 impl ShipmentSystem {
     /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
@@ -20,8 +20,7 @@ impl ShipmentSystem {
         self.decrement_building_cooldowns(allocator);
         self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
         self.create_profile_output_exports(allocator, transit_network, graph, minute_of_day);
-        self.shipments
-            .retain(|shipment| shipment.status == SHIPMENT_IN_TRANSIT);
+        self.shipments.retain(|shipment| shipment.status.is_open());
     }
 
     pub(super) fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {

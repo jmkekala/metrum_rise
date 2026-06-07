@@ -6,12 +6,12 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::zoning::ZoneType;
 
-use super::data::{
-    CARRIER_TRUCK, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_LOCAL, Shipment, ShipmentSystem,
-};
+use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
+use super::quantization::quantize_requested_amount;
 use super::reservations::ReservationViews;
+use super::route_cache::FreightRouteCache;
+use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
@@ -31,30 +31,31 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         reservations: &mut ReservationViews,
         candidates: &mut Vec<usize>,
+        supplier_index: &SupplierCandidateIndex,
+        route_cache: &mut FreightRouteCache,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
+        truck_load_units: f32,
     ) -> bool {
         if dest_idx >= allocator.entrances.len() {
             return false;
         }
         let destination = &allocator.buildings[dest_idx];
         let destination_budget = destination.operating_budget;
-        allocator.fill_nearby_buildings(
+        supplier_index.fill_nearby_candidates(
+            resource_runtime_id,
             destination.center_x,
             destination.center_y,
             SUPPLIER_SEARCH_MAX_RING,
             SUPPLIER_SEARCH_CANDIDATES,
+            allocator,
             candidates,
             |candidate_idx, supplier| {
                 if candidate_idx == dest_idx
                     || supplier.broken
                     || supplier.economy_broken
                     || supplier.is_deserted
-                    || !matches!(
-                        supplier.zone_type,
-                        ZoneType::Industrial | ZoneType::Commercial
-                    )
                 {
                     return false;
                 }
@@ -80,7 +81,15 @@ impl ShipmentSystem {
                     minute_of_day,
                 );
                 let max_affordable = destination_budget / effective_unit_price;
-                available.min(desired_amount).min(max_affordable) > 0.0
+                quantize_requested_amount(
+                    desired_amount,
+                    available,
+                    max_affordable,
+                    min_shipment_units,
+                    allow_emergency,
+                    truck_load_units,
+                )
+                .is_some()
             },
         );
 
@@ -115,18 +124,22 @@ impl ShipmentSystem {
             );
             let max_affordable =
                 allocator.buildings[dest_idx].operating_budget / effective_unit_price;
-            let amount = available.min(desired_amount).min(max_affordable);
-            if amount < min_shipment_units && !allow_emergency {
+            let Some(amount) = quantize_requested_amount(
+                desired_amount,
+                available,
+                max_affordable,
+                min_shipment_units,
+                allow_emergency,
+                truck_load_units,
+            ) else {
                 continue;
-            }
-            if amount <= 0.0 {
-                continue;
-            }
+            };
             let total_cost = amount * effective_unit_price;
 
-            let Some(travel_seconds) = allocator.freight_car_eta_between_buildings(
+            let Some(travel_seconds) = route_cache.between_buildings(
                 candidate_idx,
                 dest_idx,
+                allocator,
                 transit_network,
                 graph,
             ) else {
@@ -137,18 +150,17 @@ impl ShipmentSystem {
             self.shipments.push(Shipment {
                 resource_runtime_id,
                 amount,
-                source_kind: SHIPMENT_SOURCE_LOCAL,
-                source_building_id: candidate_idx,
-                source_border_node: u32::MAX,
-                destination_building_id: dest_idx,
-                carrier_class: CARRIER_TRUCK,
-                status: SHIPMENT_IN_TRANSIT,
+                source: ShipmentEndpoint::Building(candidate_idx),
+                destination: ShipmentEndpoint::Building(dest_idx),
+                carrier_class: CarrierClass::Truck,
+                status: ShipmentStatus::InTransit,
                 total_cost,
                 eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
                     travel_seconds,
                     freight_profile,
                     minute_of_day,
                 )),
+                queued_hours: 0,
             });
             reservations.record_local_shipment(
                 candidate_idx,

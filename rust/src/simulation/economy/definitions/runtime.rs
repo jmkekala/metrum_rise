@@ -13,6 +13,8 @@ pub(crate) struct RuntimeEconomyTuning {
     pub households: HouseholdRuntimeTuning,
     /// Building viability thresholds used by demand-owned level changes.
     pub viability: BuildingViabilityRuntimeTuning,
+    /// Freight batching, border terminal, and failure escalation limits.
+    pub logistics: LogisticsRuntimeTuning,
     /// Daily OWA utility charge for one commercial building when local utilities are incomplete.
     pub commercial_owa_utility_cost_per_day: f32,
     /// Daily OWA utility charge for one industrial building when local utilities are incomplete.
@@ -67,6 +69,25 @@ pub(crate) struct OperationalClockRuntimeTuning {
     pub work_profile_by_zone_type: BTreeMap<String, String>,
     /// Broad zone-type to freight profile mapping for the live baseline runtime.
     pub freight_profile_by_zone_type: BTreeMap<String, String>,
+}
+
+/// Runtime controls for batched freight and border-terminal behavior.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub(crate) struct LogisticsRuntimeTuning {
+    /// Resource units represented by one baseline truckload quantum.
+    pub truck_load_units: f32,
+    /// Maximum active dispatched OWA freight jobs allowed at one border node.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub border_active_jobs_per_node: u16,
+    /// Maximum queued OWA freight jobs allowed at one border node.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub border_queued_jobs_per_node: u16,
+    /// Operational hours a queued border shipment may wait before expiring.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub queued_shipment_expiry_hours: u16,
+    /// Failed request attempts before a building/resource request becomes terminal.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub terminal_failure_attempts: u16,
 }
 
 /// One authored minute range from operational midnight.

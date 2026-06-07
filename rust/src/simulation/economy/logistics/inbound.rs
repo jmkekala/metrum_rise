@@ -11,7 +11,9 @@ use rayon::prelude::*;
 use super::data::ShipmentSystem;
 use super::local_supplier::SUPPLIER_SEARCH_CANDIDATES;
 use super::resource::{freight_profile_for_building, required_unit_price};
+use super::route_cache::FreightRouteCache;
 use super::routing::connected_border_nodes;
+use super::supplier_index::SupplierCandidateIndex;
 
 impl ShipmentSystem {
     pub(super) fn create_profile_input_shipments(
@@ -28,6 +30,8 @@ impl ShipmentSystem {
         let resource_count = catalog.resource_count();
         let mut reservations = self.build_reservation_views(resource_count);
         let border_nodes = connected_border_nodes(graph);
+        let supplier_index = SupplierCandidateIndex::build(allocator, &catalog);
+        let mut route_cache = FreightRouteCache::default();
         let mut eligible_destinations: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -77,7 +81,9 @@ impl ShipmentSystem {
 
             let mut failed_any_request = false;
             for input_port in &profile.inputs {
+                let request_key = Self::request_key(dest_idx, input_port.resource_runtime_id);
                 if reservations.has_open_inbound(dest_idx, input_port.resource_runtime_id) {
+                    self.clear_request_failure(request_key);
                     continue;
                 }
 
@@ -92,9 +98,14 @@ impl ShipmentSystem {
                     + reservations
                         .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id);
                 if reorder_units > 0.0 && effective_input_stock >= reorder_units {
+                    self.clear_request_failure(request_key);
                     continue;
                 }
                 if reorder_units <= 0.0 && effective_input_stock >= target_units {
+                    self.clear_request_failure(request_key);
+                    continue;
+                }
+                if self.request_is_terminal(request_key) {
                     continue;
                 }
 
@@ -118,10 +129,14 @@ impl ShipmentSystem {
                     graph,
                     &mut reservations,
                     &mut supplier_candidates,
+                    &supplier_index,
+                    &mut route_cache,
                     freight_profile,
                     minute_of_day,
                     &catalog,
+                    tuning.logistics.truck_load_units,
                 ) {
+                    self.clear_request_failure(request_key);
                     continue;
                 }
 
@@ -140,12 +155,19 @@ impl ShipmentSystem {
                     graph,
                     &border_nodes,
                     &mut reservations,
+                    &mut route_cache,
                     freight_profile,
                     minute_of_day,
+                    &tuning.logistics,
                 ) {
+                    self.clear_request_failure(request_key);
                     continue;
                 }
 
+                self.record_request_failure(
+                    request_key,
+                    tuning.logistics.terminal_failure_attempts,
+                );
                 failed_any_request = true;
             }
 

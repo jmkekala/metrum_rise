@@ -12,8 +12,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::households::metrics::household_supply_unit_price;
 use crate::simulation::economy::logistics::{
-    CARRIER_TRUCK, SHIPMENT_DEST_OWA, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_LOCAL, Shipment,
-    ShipmentSystem,
+    CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -715,14 +714,13 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
     logistics.shipments.push(Shipment {
         resource_runtime_id: household_supplies,
         amount: 20.0,
-        source_kind: SHIPMENT_SOURCE_LOCAL,
-        source_building_id: 0,
-        source_border_node: u32::MAX,
-        destination_building_id: SHIPMENT_DEST_OWA,
-        carrier_class: CARRIER_TRUCK,
-        status: SHIPMENT_IN_TRANSIT,
+        source: ShipmentEndpoint::Building(0),
+        destination: ShipmentEndpoint::OwaBorder(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
         total_cost: 0.0,
         eta_hours: 1,
+        queued_hours: 0,
     });
 
     let mut households = HouseholdSystem::new();

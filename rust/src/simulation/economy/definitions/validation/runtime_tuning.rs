@@ -62,6 +62,24 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         f32::INFINITY,
         "runtime_tuning.industrial_owa_utility_cost_per_day",
     )?;
+    validate_range(
+        tuning.logistics.truck_load_units,
+        f32::EPSILON,
+        f32::INFINITY,
+        "runtime_tuning.logistics.truck_load_units",
+    )?;
+    if tuning.logistics.border_active_jobs_per_node == 0 {
+        return Err("runtime_tuning.logistics.border_active_jobs_per_node must be > 0".to_owned());
+    }
+    if tuning.logistics.border_queued_jobs_per_node == 0 {
+        return Err("runtime_tuning.logistics.border_queued_jobs_per_node must be > 0".to_owned());
+    }
+    if tuning.logistics.queued_shipment_expiry_hours == 0 {
+        return Err("runtime_tuning.logistics.queued_shipment_expiry_hours must be > 0".to_owned());
+    }
+    if tuning.logistics.terminal_failure_attempts == 0 {
+        return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
+    }
     validate_work_profiles(&tuning.operational_clock)?;
     validate_freight_profiles(&tuning.operational_clock)?;
     validate_range(

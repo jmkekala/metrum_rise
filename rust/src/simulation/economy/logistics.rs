@@ -11,9 +11,12 @@ mod inbound;
 mod local_supplier;
 mod owa_import;
 mod progress;
+mod quantization;
 mod reservations;
 mod resource;
+mod route_cache;
 mod routing;
+mod supplier_index;
 mod tick;
 mod timing;
 
@@ -21,6 +24,6 @@ mod timing;
 mod tests;
 
 pub use self::data::{
-    CARRIER_TRUCK, SHIPMENT_DEST_OWA, SHIPMENT_FAILED, SHIPMENT_FULFILLED, SHIPMENT_IN_TRANSIT,
-    SHIPMENT_SOURCE_LOCAL, SHIPMENT_SOURCE_OWA, Shipment, ShipmentSystem,
+    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
+    ShipmentStatus, ShipmentSystem,
 };

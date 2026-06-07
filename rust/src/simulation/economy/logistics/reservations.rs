@@ -4,10 +4,7 @@ use std::collections::HashMap;
 
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
-use super::data::{
-    SHIPMENT_DEST_OWA, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_LOCAL, SHIPMENT_SOURCE_OWA,
-    ShipmentSystem,
-};
+use super::data::{ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 
 /// Flattened reservation state derived from active shipments.
 pub(super) struct ReservationViews {
@@ -18,8 +15,10 @@ pub(super) struct ReservationViews {
     pub(super) reserved_inbound: Vec<f32>,
     /// Whether an inbound shipment is already open for a building/resource slot.
     pub(super) has_open_inbound: Vec<bool>,
-    /// Active `OWA` import job counts indexed by border node id.
-    pub(super) border_job_counts: HashMap<u32, usize>,
+    /// Active dispatched `OWA` job counts indexed by border node id.
+    pub(super) border_active_job_counts: HashMap<u32, usize>,
+    /// Queued `OWA` job counts indexed by border node id.
+    pub(super) border_queued_job_counts: HashMap<u32, usize>,
 }
 
 impl ReservationViews {
@@ -53,8 +52,15 @@ impl ReservationViews {
             .unwrap_or(false)
     }
 
-    pub(super) fn border_job_count(&self, border_node: u32) -> usize {
-        self.border_job_counts
+    pub(super) fn border_active_job_count(&self, border_node: u32) -> usize {
+        self.border_active_job_counts
+            .get(&border_node)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn border_queued_job_count(&self, border_node: u32) -> usize {
+        self.border_queued_job_counts
             .get(&border_node)
             .copied()
             .unwrap_or(0)
@@ -82,12 +88,13 @@ impl ReservationViews {
         border_node: u32,
         resource_runtime_id: ResourceRuntimeId,
         amount: f32,
+        status: ShipmentStatus,
     ) {
         if let Some(slot) = self.ensure_slot(destination_idx, resource_runtime_id) {
             self.reserved_inbound[slot] += amount;
             self.has_open_inbound[slot] = true;
         }
-        self.record_border_job(border_node);
+        self.record_border_job(border_node, status);
     }
 
     pub(super) fn record_owa_export(
@@ -96,16 +103,29 @@ impl ReservationViews {
         border_node: u32,
         resource_runtime_id: ResourceRuntimeId,
         amount: f32,
+        status: ShipmentStatus,
     ) {
         if let Some(slot) = self.ensure_slot(source_idx, resource_runtime_id) {
             self.reserved_outbound[slot] += amount;
         }
-        self.record_border_job(border_node);
+        self.record_border_job(border_node, status);
     }
 
-    fn record_border_job(&mut self, border_node: u32) {
-        if border_node != u32::MAX {
-            *self.border_job_counts.entry(border_node).or_insert(0) += 1;
+    fn record_border_job(&mut self, border_node: u32, status: ShipmentStatus) {
+        match status {
+            ShipmentStatus::Queued => {
+                *self
+                    .border_queued_job_counts
+                    .entry(border_node)
+                    .or_insert(0) += 1;
+            }
+            ShipmentStatus::InTransit => {
+                *self
+                    .border_active_job_counts
+                    .entry(border_node)
+                    .or_insert(0) += 1;
+            }
+            _ => {}
         }
     }
 
@@ -148,12 +168,11 @@ impl ShipmentSystem {
     pub(super) fn build_reservation_views(&self, resource_count: usize) -> ReservationViews {
         let mut max_building = 0usize;
         for shipment in &self.shipments {
-            // Skip the OWA export sentinel; it is not a real building index.
-            if shipment.destination_building_id != SHIPMENT_DEST_OWA {
-                max_building = max_building.max(shipment.destination_building_id);
+            if let ShipmentEndpoint::Building(building_id) = shipment.destination {
+                max_building = max_building.max(building_id);
             }
-            if shipment.source_kind == SHIPMENT_SOURCE_LOCAL {
-                max_building = max_building.max(shipment.source_building_id);
+            if let ShipmentEndpoint::Building(building_id) = shipment.source {
+                max_building = max_building.max(building_id);
             }
         }
 
@@ -163,15 +182,16 @@ impl ShipmentSystem {
         let mut reserved_outbound = vec![0.0; slot_count];
         let mut reserved_inbound = vec![0.0; slot_count];
         let mut has_open_inbound = vec![false; slot_count];
-        let mut border_job_counts = HashMap::new();
+        let mut border_active_job_counts = HashMap::new();
+        let mut border_queued_job_counts = HashMap::new();
 
         for shipment in &self.shipments {
-            if shipment.status != SHIPMENT_IN_TRANSIT {
+            if !shipment.status.is_open() {
                 continue;
             }
-            if shipment.destination_building_id != SHIPMENT_DEST_OWA
+            if let ShipmentEndpoint::Building(destination_building_id) = shipment.destination
                 && let Some(slot) = reservation_slot(
-                    shipment.destination_building_id,
+                    destination_building_id,
                     shipment.resource_runtime_id,
                     resource_count,
                 )
@@ -180,9 +200,9 @@ impl ShipmentSystem {
                 reserved_inbound[slot] += shipment.amount;
                 has_open_inbound[slot] = true;
             }
-            if shipment.source_kind == SHIPMENT_SOURCE_LOCAL
+            if let ShipmentEndpoint::Building(source_building_id) = shipment.source
                 && let Some(slot) = reservation_slot(
-                    shipment.source_building_id,
+                    source_building_id,
                     shipment.resource_runtime_id,
                     resource_count,
                 )
@@ -190,13 +210,19 @@ impl ShipmentSystem {
             {
                 reserved_outbound[slot] += shipment.amount;
             }
-            if shipment.source_kind == SHIPMENT_SOURCE_OWA
-                || shipment.destination_building_id == SHIPMENT_DEST_OWA
+            if let Some(border_node) = shipment
+                .source
+                .border_node()
+                .or_else(|| shipment.destination.border_node())
             {
-                if shipment.source_border_node != u32::MAX {
-                    *border_job_counts
-                        .entry(shipment.source_border_node)
-                        .or_insert(0) += 1;
+                match shipment.status {
+                    ShipmentStatus::Queued => {
+                        *border_queued_job_counts.entry(border_node).or_insert(0) += 1;
+                    }
+                    ShipmentStatus::InTransit => {
+                        *border_active_job_counts.entry(border_node).or_insert(0) += 1;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -206,7 +232,8 @@ impl ShipmentSystem {
             reserved_outbound,
             reserved_inbound,
             has_open_inbound,
-            border_job_counts,
+            border_active_job_counts,
+            border_queued_job_counts,
         }
     }
 }

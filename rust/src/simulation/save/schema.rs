@@ -4,9 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 34;
-/// Last save version that persisted road `speed_limit` values as km/h-authored literals.
-pub const LAST_KMH_ROAD_SPEED_SAVE_VERSION: i64 = 33;
+pub const SAVE_VERSION: i64 = 35;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -206,14 +204,24 @@ CREATE TABLE shipments(
     shipment_id INTEGER PRIMARY KEY,
     resource_runtime_id INTEGER NOT NULL,
     amount REAL NOT NULL,
-    source_kind INTEGER NOT NULL,
+    source_endpoint_kind INTEGER NOT NULL,
     source_building_id INTEGER NOT NULL,
     source_border_node INTEGER NOT NULL,
+    destination_endpoint_kind INTEGER NOT NULL,
     destination_building_id INTEGER NOT NULL,
+    destination_border_node INTEGER NOT NULL,
     carrier_class INTEGER NOT NULL,
     status INTEGER NOT NULL,
     total_cost REAL NOT NULL,
-    eta_hours INTEGER NOT NULL
+    eta_hours INTEGER NOT NULL,
+    queued_hours INTEGER NOT NULL
+);
+CREATE TABLE freight_request_failures(
+    destination_building_id INTEGER NOT NULL,
+    resource_runtime_id INTEGER NOT NULL,
+    failures INTEGER NOT NULL,
+    terminal INTEGER NOT NULL,
+    PRIMARY KEY(destination_building_id, resource_runtime_id)
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,

@@ -10,11 +10,10 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
-use super::data::{
-    BORDER_ACTIVE_JOBS_PER_NODE, CARRIER_TRUCK, SHIPMENT_DEST_OWA, SHIPMENT_IN_TRANSIT,
-    SHIPMENT_SOURCE_LOCAL, Shipment, ShipmentSystem,
-};
+use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
+use super::quantization::quantize_export_amount;
 use super::resource::{freight_profile_for_building, required_unit_price};
+use super::route_cache::FreightRouteCache;
 use super::routing::connected_border_nodes;
 use super::timing::{adjusted_travel_seconds, eta_hours_from_travel_seconds};
 
@@ -44,6 +43,7 @@ impl ShipmentSystem {
         }
         let export_multiplier = tuning.owa_export_price_multiplier;
         let mut reservations = self.build_reservation_views(resource_count);
+        let mut route_cache = FreightRouteCache::default();
         let mut eligible_sources: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -102,63 +102,72 @@ impl ShipmentSystem {
                 if unreserved <= buffer {
                     continue;
                 }
-                let export_amount = unreserved - buffer;
-
-                // Only export in meaningful batches.
-                if export_amount < profile.min_shipment_units {
+                let Some(export_amount) = quantize_export_amount(
+                    unreserved - buffer,
+                    profile.min_shipment_units,
+                    tuning.logistics.truck_load_units,
+                ) else {
                     continue;
-                }
+                };
 
                 let local_price =
                     required_unit_price(&catalog, output_port.resource_runtime_id, &profile.id);
                 let export_unit_price = local_price * export_multiplier;
                 let total_revenue = export_amount * export_unit_price;
 
-                // Find the nearest border node with capacity.
-                let mut best_border = u32::MAX;
-                let mut best_eta = f32::MAX;
+                let active_cap = usize::from(tuning.logistics.border_active_jobs_per_node);
+                let queued_cap = usize::from(tuning.logistics.border_queued_jobs_per_node);
+                let mut best_active: Option<(u32, f32)> = None;
+                let mut best_queued: Option<(u32, f32)> = None;
                 for &border_node in &border_nodes {
-                    if reservations.border_job_count(border_node) >= BORDER_ACTIVE_JOBS_PER_NODE {
-                        continue;
-                    }
                     // Reuse the import ETA helper: travel time border↔building is symmetric.
-                    let Some(travel_seconds) = allocator.freight_car_eta_from_border_node(
+                    let Some(travel_seconds) = route_cache.from_border(
                         border_node,
                         src_idx,
+                        allocator,
                         transit_network,
                         graph,
                     ) else {
                         continue;
                     };
-                    if travel_seconds < best_eta {
-                        best_eta = travel_seconds;
-                        best_border = border_node;
+                    if reservations.border_active_job_count(border_node) < active_cap {
+                        if best_active.is_none_or(|(_, best_eta)| travel_seconds < best_eta) {
+                            best_active = Some((border_node, travel_seconds));
+                        }
+                    } else if reservations.border_queued_job_count(border_node) < queued_cap
+                        && best_queued.is_none_or(|(_, best_eta)| travel_seconds < best_eta)
+                    {
+                        best_queued = Some((border_node, travel_seconds));
                     }
                 }
-                if best_border == u32::MAX {
-                    continue;
-                }
+                let (best_border, best_eta, status) =
+                    if let Some((border_node, travel_seconds)) = best_active {
+                        (border_node, travel_seconds, ShipmentStatus::InTransit)
+                    } else if let Some((border_node, travel_seconds)) = best_queued {
+                        (border_node, travel_seconds, ShipmentStatus::Queued)
+                    } else {
+                        continue;
+                    };
                 let adjusted_eta =
                     adjusted_travel_seconds(best_eta, freight_profile, minute_of_day);
 
                 self.shipments.push(Shipment {
                     resource_runtime_id: output_port.resource_runtime_id,
                     amount: export_amount,
-                    source_kind: SHIPMENT_SOURCE_LOCAL,
-                    source_building_id: src_idx,
-                    // Repurposed as destination border node for OWA exports.
-                    source_border_node: best_border,
-                    destination_building_id: SHIPMENT_DEST_OWA,
-                    carrier_class: CARRIER_TRUCK,
-                    status: SHIPMENT_IN_TRANSIT,
+                    source: ShipmentEndpoint::Building(src_idx),
+                    destination: ShipmentEndpoint::OwaBorder(best_border),
+                    carrier_class: CarrierClass::Truck,
+                    status,
                     total_cost: total_revenue,
                     eta_hours: eta_hours_from_travel_seconds(adjusted_eta),
+                    queued_hours: 0,
                 });
                 reservations.record_owa_export(
                     src_idx,
                     best_border,
                     output_port.resource_runtime_id,
                     export_amount,
+                    status,
                 );
 
                 allocator.buildings[src_idx].shipment_cooldown_hours =

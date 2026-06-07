@@ -1,6 +1,6 @@
 //! Road graph and lane connection serialization.
 
-use crate::config::{HIGH_SPEED_ROAD_THRESHOLD_MS, KMH_TO_MPS};
+use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::pathing::cost::CostCalculator;
@@ -137,16 +137,7 @@ pub(super) fn save_network(
     Ok(())
 }
 
-pub(super) fn load_graph(conn: &Connection, save_version: i64) -> SaveLoadResult<RegionGraph> {
-    // Forward-compatible migration: add no_building_spawn if the column is absent in older saves.
-    let _ = conn.execute(
-        "ALTER TABLE network_edges ADD COLUMN no_building_spawn INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE network_edges ADD COLUMN vehicle_frontage_access INTEGER NOT NULL DEFAULT 1",
-        [],
-    );
+pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
     {
         let mut stmt =
@@ -198,7 +189,7 @@ pub(super) fn load_graph(conn: &Connection, save_version: i64) -> SaveLoadResult
                     graph.edge_count()
                 )));
             }
-            let speed_limit = normalize_loaded_speed_limit(row.get(9)?, save_version);
+            let speed_limit = row.get(9)?;
             let no_building_spawn =
                 row.get::<_, i64>(15)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
             graph.add_edge(Edge {
@@ -249,17 +240,6 @@ pub(super) fn load_graph(conn: &Connection, save_version: i64) -> SaveLoadResult
     Ok(graph)
 }
 
-fn normalize_loaded_speed_limit(speed_limit: f32, save_version: i64) -> f32 {
-    if save_version <= LAST_KMH_ROAD_SPEED_SAVE_VERSION
-        && speed_limit.is_finite()
-        && (30.0..=130.0).contains(&speed_limit)
-    {
-        speed_limit * KMH_TO_MPS
-    } else {
-        speed_limit
-    }
-}
-
 pub(super) fn rebuild_loaded_graph_runtime(
     graph: &mut RegionGraph,
     transit_network: &mut TransitNetwork,
@@ -294,30 +274,4 @@ pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> Save
         )));
     }
     Ok(c)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_loaded_speed_limit;
-    use crate::config::{DEFAULT_URBAN_ROAD_SPEED_MS, KMH_TO_MPS};
-    use crate::simulation::save::schema::{LAST_KMH_ROAD_SPEED_SAVE_VERSION, SAVE_VERSION};
-
-    #[test]
-    fn speed_limit_migration_only_applies_to_legacy_kmh_saves() {
-        assert!(
-            (normalize_loaded_speed_limit(50.0, LAST_KMH_ROAD_SPEED_SAVE_VERSION)
-                - DEFAULT_URBAN_ROAD_SPEED_MS)
-                .abs()
-                < f32::EPSILON
-        );
-        assert_eq!(normalize_loaded_speed_limit(50.0, SAVE_VERSION), 50.0);
-        assert_eq!(
-            normalize_loaded_speed_limit(20.0, LAST_KMH_ROAD_SPEED_SAVE_VERSION),
-            20.0
-        );
-        assert_eq!(
-            normalize_loaded_speed_limit(100.0, LAST_KMH_ROAD_SPEED_SAVE_VERSION),
-            100.0 * KMH_TO_MPS
-        );
-    }
 }

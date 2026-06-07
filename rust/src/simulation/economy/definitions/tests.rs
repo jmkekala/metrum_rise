@@ -75,6 +75,13 @@ startup_treasury_balance = 100000.0
 unemployment_daily_benefit_per_member = 30.0
 unemployment_max_days = 30
 
+[runtime_tuning.logistics]
+truck_load_units = 40.0
+border_active_jobs_per_node = 4
+border_queued_jobs_per_node = 4
+queued_shipment_expiry_hours = 12
+terminal_failure_attempts = 3
+
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0
 travel_estimate_refresh_minutes = 360

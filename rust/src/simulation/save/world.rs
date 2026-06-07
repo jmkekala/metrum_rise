@@ -6,7 +6,10 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem};
-use crate::simulation::economy::logistics::{Shipment, ShipmentSystem};
+use crate::simulation::economy::logistics::{
+    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
+    ShipmentStatus, ShipmentSystem,
+};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -24,6 +27,81 @@ use super::{
     optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob,
     unpack_flux_blob, usize_to_i64,
 };
+
+const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
+const SHIPMENT_ENDPOINT_OWA_BORDER: i64 = 1;
+
+fn shipment_endpoint_to_db(
+    endpoint: ShipmentEndpoint,
+    maps: &SnapshotMaps,
+) -> SaveLoadResult<(i64, i64, i64)> {
+    match endpoint {
+        ShipmentEndpoint::Building(building_id) => {
+            let saved_building = optional_building_to_db(building_id, maps)?;
+            if saved_building == NONE_REF {
+                return Err(SaveLoadError::custom("missing shipment building endpoint"));
+            }
+            Ok((SHIPMENT_ENDPOINT_BUILDING, saved_building, NONE_REF))
+        }
+        ShipmentEndpoint::OwaBorder(border_node) => {
+            let saved_node = maps
+                .node_old_to_new
+                .get(&border_node)
+                .copied()
+                .ok_or_else(|| SaveLoadError::custom("missing shipment border-node mapping"))?;
+            Ok((
+                SHIPMENT_ENDPOINT_OWA_BORDER,
+                NONE_REF,
+                usize_to_i64(saved_node as usize)?,
+            ))
+        }
+    }
+}
+
+fn shipment_endpoint_from_db(
+    endpoint_kind: i64,
+    building_id: i64,
+    border_node: i64,
+) -> SaveLoadResult<ShipmentEndpoint> {
+    match endpoint_kind {
+        SHIPMENT_ENDPOINT_BUILDING => {
+            if border_node != NONE_REF {
+                return Err(SaveLoadError::custom(
+                    "building shipment endpoint has border node",
+                ));
+            }
+            let building_id = db_to_optional_usize(building_id)?;
+            if building_id == usize::MAX {
+                return Err(SaveLoadError::custom(
+                    "building shipment endpoint missing building id",
+                ));
+            }
+            Ok(ShipmentEndpoint::Building(building_id))
+        }
+        SHIPMENT_ENDPOINT_OWA_BORDER => {
+            if building_id != NONE_REF {
+                return Err(SaveLoadError::custom(
+                    "border shipment endpoint has building id",
+                ));
+            }
+            if border_node == NONE_REF {
+                return Err(SaveLoadError::custom(
+                    "border shipment endpoint missing node id",
+                ));
+            }
+            Ok(ShipmentEndpoint::OwaBorder(i64_to_u32(border_node)?))
+        }
+        _ => Err(SaveLoadError::custom("invalid shipment endpoint kind")),
+    }
+}
+
+fn shipment_status_from_db(code: i64) -> SaveLoadResult<ShipmentStatus> {
+    ShipmentStatus::from_code(code).ok_or_else(|| SaveLoadError::custom("invalid shipment status"))
+}
+
+fn carrier_class_from_db(code: i64) -> SaveLoadResult<CarrierClass> {
+    CarrierClass::from_code(code).ok_or_else(|| SaveLoadError::custom("invalid carrier class"))
+}
 
 pub(super) fn save_world(
     tx: &Transaction,
@@ -227,29 +305,36 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
     for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
+        let (source_kind, source_building_id, source_border_node) =
+            shipment_endpoint_to_db(shipment.source, maps)?;
+        let (destination_kind, destination_building_id, destination_border_node) =
+            shipment_endpoint_to_db(shipment.destination, maps)?;
         shipment_stmt.execute(params![
             usize_to_i64(shipment_id)?,
             i64::from(shipment.resource_runtime_id),
             shipment.amount,
-            i64::from(shipment.source_kind),
-            optional_building_to_db(shipment.source_building_id, maps)?,
-            if shipment.source_border_node == u32::MAX {
-                NONE_REF
-            } else {
-                let saved_node = maps
-                    .node_old_to_new
-                    .get(&shipment.source_border_node)
-                    .copied()
-                    .ok_or_else(|| SaveLoadError::custom("missing shipment border-node mapping"))?;
-                usize_to_i64(saved_node as usize)?
-            },
-            optional_building_to_db(shipment.destination_building_id, maps)?,
-            i64::from(shipment.carrier_class),
-            i64::from(shipment.status),
+            source_kind,
+            source_building_id,
+            source_border_node,
+            destination_kind,
+            destination_building_id,
+            destination_border_node,
+            shipment.carrier_class.code(),
+            shipment.status.code(),
             shipment.total_cost,
             i64::from(shipment.eta_hours),
+            i64::from(shipment.queued_hours),
+        ])?;
+    }
+    let mut request_failure_stmt = tx.prepare("INSERT INTO freight_request_failures(destination_building_id, resource_runtime_id, failures, terminal) VALUES (?1, ?2, ?3, ?4)")?;
+    for (key, failure) in &logistics.request_failures {
+        request_failure_stmt.execute(params![
+            optional_building_to_db(key.destination_building_id, maps)?,
+            i64::from(key.resource_runtime_id),
+            i64::from(failure.failures),
+            if failure.terminal { 1_i64 } else { 0_i64 },
         ])?;
     }
 
@@ -474,30 +559,45 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let shipment_id = i64_to_usize(row.get(0)?)?;
         if shipment_id != logistics.shipments.len() {
             return Err(SaveLoadError::custom("non-contiguous shipment ids"));
         }
-        let raw_border: i64 = row.get(5)?;
         logistics.shipments.push(Shipment {
             resource_runtime_id: i64_to_u16(row.get(1)?)?,
             amount: row.get(2)?,
-            source_kind: i64_to_u8(row.get(3)?)?,
-            source_building_id: db_to_optional_usize(row.get(4)?)?,
-            source_border_node: if raw_border == NONE_REF {
-                u32::MAX
-            } else {
-                i64_to_u32(raw_border)?
-            },
-            destination_building_id: db_to_optional_usize(row.get(6)?)?,
-            carrier_class: i64_to_u8(row.get(7)?)?,
-            status: i64_to_u8(row.get(8)?)?,
-            total_cost: row.get(9)?,
-            eta_hours: i64_to_u16(row.get(10)?)?,
+            source: shipment_endpoint_from_db(row.get(3)?, row.get(4)?, row.get(5)?)?,
+            destination: shipment_endpoint_from_db(row.get(6)?, row.get(7)?, row.get(8)?)?,
+            carrier_class: carrier_class_from_db(row.get(9)?)?,
+            status: shipment_status_from_db(row.get(10)?)?,
+            total_cost: row.get(11)?,
+            eta_hours: i64_to_u16(row.get(12)?)?,
+            queued_hours: i64_to_u16(row.get(13)?)?,
         });
+    }
+    let mut failure_stmt = conn.prepare("SELECT destination_building_id, resource_runtime_id, failures, terminal FROM freight_request_failures ORDER BY destination_building_id, resource_runtime_id")?;
+    let mut failure_rows = failure_stmt.query([])?;
+    while let Some(row) = failure_rows.next()? {
+        let destination_building_id = db_to_optional_usize(row.get(0)?)?;
+        if destination_building_id == usize::MAX {
+            return Err(SaveLoadError::custom(
+                "freight request failure missing building id",
+            ));
+        }
+        let key = FreightRequestKey {
+            destination_building_id,
+            resource_runtime_id: i64_to_u16(row.get(1)?)?,
+        };
+        logistics.request_failures.insert(
+            key,
+            FreightRequestFailure {
+                failures: i64_to_u16(row.get(2)?)?,
+                terminal: row.get::<_, i64>(3)? != 0,
+            },
+        );
     }
     Ok(logistics)
 }
