@@ -2,8 +2,8 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, baseline_private_zone_slot, resolve_building_economy_profile_binding,
-    zone_class_to_zone_type,
+    BuildingAllocator, baseline_private_zone_slot,
+    resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
@@ -466,7 +466,6 @@ impl BuildingAllocator {
         if target_building.lot_width_cells != building.width_cells
             || target_building.lot_depth_cells != building.depth_cells
             || self.registry.household_capacity(&action.target_asset_id) < building.occupancy
-            || self.worker_capacity_for_asset(&action.target_asset_id) < building.worker_count
         {
             return None;
         }
@@ -475,13 +474,22 @@ impl BuildingAllocator {
         if target_zone_type != building.zone_type {
             return None;
         }
-        let economy_binding =
-            resolve_building_economy_profile_binding(&self.registry, &action.target_asset_id);
+        let economy_binding = resolve_building_economy_profile_binding_with_catalog(
+            &self.registry,
+            catalog,
+            &action.target_asset_id,
+        );
         if matches!(
             target_zone_type,
             ZoneType::Commercial | ZoneType::Industrial
         ) && (economy_binding.economy_broken || economy_binding.runtime_id == 0)
         {
+            return None;
+        }
+        let target_worker_capacity = self
+            .worker_capacity_for_asset_with_catalog(&action.target_asset_id, catalog)
+            .unwrap_or(0);
+        if target_worker_capacity < building.worker_count {
             return None;
         }
         let building = &mut self.buildings[building_idx];

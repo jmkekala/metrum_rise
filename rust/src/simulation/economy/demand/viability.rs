@@ -5,7 +5,7 @@ use super::snapshot::ResidentialOccupantSnapshot;
 use super::types::EPSILON;
 use crate::assets::asset::ZoneClass;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, resolve_building_economy_profile_binding,
+    BuildingAllocator, resolve_building_economy_profile_binding_with_catalog,
 };
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::households::{
@@ -306,6 +306,7 @@ pub(super) fn industrial_downgrade_viable(
 
 pub(super) fn level_change_is_compatible(
     allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
     building_idx: usize,
     target_asset_id: &str,
 ) -> bool {
@@ -330,12 +331,20 @@ pub(super) fn level_change_is_compatible(
         target_building.zone_type,
         Some(ZoneClass::Commercial | ZoneClass::Industrial)
     ) {
-        let binding =
-            resolve_building_economy_profile_binding(&allocator.registry, target_asset_id);
+        let binding = resolve_building_economy_profile_binding_with_catalog(
+            &allocator.registry,
+            catalog,
+            target_asset_id,
+        );
         if binding.economy_broken || binding.runtime_id == 0 {
             return false;
         }
     }
+    let Some(target_worker_capacity) =
+        allocator.worker_capacity_for_asset_with_catalog(target_asset_id, catalog)
+    else {
+        return false;
+    };
     allocator.registry.household_capacity(target_asset_id) >= building.occupancy
-        && allocator.worker_capacity_for_asset(target_asset_id) >= building.worker_count
+        && target_worker_capacity >= building.worker_count
 }

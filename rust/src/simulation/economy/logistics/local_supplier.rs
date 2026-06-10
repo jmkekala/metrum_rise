@@ -16,6 +16,7 @@ use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from
 
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
 pub(super) const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
+const SUPPLIER_ROUTE_SCAN_CANDIDATES: usize = SUPPLIER_SEARCH_CANDIDATES * 4;
 
 impl ShipmentSystem {
     #[allow(clippy::too_many_arguments)]
@@ -48,7 +49,7 @@ impl ShipmentSystem {
             destination.center_x,
             destination.center_y,
             SUPPLIER_SEARCH_MAX_RING,
-            SUPPLIER_SEARCH_CANDIDATES,
+            SUPPLIER_ROUTE_SCAN_CANDIDATES,
             allocator,
             candidates,
             |candidate_idx, supplier| {

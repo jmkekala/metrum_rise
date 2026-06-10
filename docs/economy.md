@@ -1130,7 +1130,9 @@ Rules:
 - `OWA` utility fallback should remain a paid fallback and should usually be more expensive than healthy local utility provision
 - these utility fallback purchases are not trucked freight and do not use the normal shipment-delivery model
 - `sewage` must clear through the utility layer rather than remaining inside the building forever
-- if a building lacks required utility service, or if generated `sewage` cannot clear, its normal operation should be blocked or degraded
+- in the current `v0.1` bankruptcy model, missing local utility service falls back to paid `OWA`
+  service rather than adding a throughput gate; later capacity/outage models may block or degrade
+  operation explicitly
 - this baseline utility layer is a connected-service on/off model rather than a trucked-goods model in `v0.1`
 - if no local utility producer or processor exists yet, the player may place a city-owned utility building or rely on `OWA` fallback until local provision exists
 - city-owned utility buildings do not auto-spawn; only private companies may spawn new utility operators through simulation rules
@@ -1417,7 +1419,7 @@ Production should derive from a bounded formula based on:
 
 - filled worker count
 - input availability
-- required utility service availability through the `Utility Service Layer`, including `power`, `water`, and `sewage` clearance where relevant
+- utility service costs and provider revenue settled by the `Utility Service Layer`
 - controller modifiers
 
 Recommended `v0.1` formula:
@@ -1426,7 +1428,6 @@ Recommended `v0.1` formula:
 throughput = base_rate
            * staffing_factor
            * input_factor
-           * utility_factor
            * controller_factor
 ```
 
@@ -1435,7 +1436,8 @@ Where:
 - `base_rate` is the authored full-capacity output rate for the building or recipe
 - `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
 - `input_factor` is the limiting required-input coverage for the current production step, clamped to `0.0..1.0`
-- `utility_factor = 1.0` when the `Utility Service Layer` has resolved that required utility service is satisfied and generated `sewage` can clear for that building; otherwise `0.0` in the `v0.1` baseline
+- utility costs are paid through the utility/bankruptcy sequence; there is no `utility_factor` term
+  in the current `v0.1` throughput multiplier
 - `controller_factor` is a bounded multiplier from allowed controller effects
 
 This keeps the first pass linear and readable. Hard minimum-staff step functions are not part of the baseline formula; if they are ever added later, they should be explicit profile-side rules rather than hidden default behavior.
@@ -2489,19 +2491,22 @@ Households that find themselves broke and starving are currently "trapped" in th
 - **Result**: Because stability never falls below 0.70, the calculated **removal pressure** remains artificially low. The simulation "protects" the pioneer wave so hard that they are unable to leave even when their economic situation is hopeless.
 - **Calibration Target**: De-couple the bootstrap floor from removal calculations so that "despair-driven emigration" can function independently of "attraction-driven immigration."
 
-### 6. ECON-01: Commercial/Industrial Budget Deadlock — No Recovery Path
+### 6. ~~ECON-01: Commercial/Industrial Budget Deadlock — No Recovery Path~~ — Fixed
 
 **Observed**: In a 594-day run, the grocery (idx=22) entered a permanent freeze on Day 64 at `budget=-2.0`, `utility_service_available=false`. Eight farms entered the same state with `budget=0.0`. All remained frozen for 530+ days with inventory sitting unused.
 
 **Mechanism**:
 1. In the older implementation, an hourly utility charge derived from Rust constants fired in `resolve_building_utilities`.
 2. If `operating_budget < hourly_cost` → `utility_service_available = false`.
-3. `utility_service_available = false` sets `utility_factor = 0.0` in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
+3. In the older implementation, `utility_service_available = false` set `utility_factor = 0.0`
+   in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
 4. No revenue → budget never recovers → permanent freeze with no exit.
 
 **Result**: A single budget dip below the utility threshold permanently locks the building out of the economy. 12 buildings deadlocked in the 594-day run. The grocery had 108 units of staple_food stuck in inventory the entire time.
 
-**Fix direction**: Add a recovery path. Options: (a) allow operating debt up to a configurable threshold before cutting utility, (b) treat a `budget < 0` building as "utility suspended" but still allow it to earn revenue from stock it already holds, (c) make the utility cut gradual (reduce throughput proportionally rather than zeroing it). The right fix preserves pressure for well-capitalized buildings without creating an inescapable trap.
+**Resolution**: The live `v0.1` model removed the `utility_factor` throughput gate. Utility costs
+settle through the daily utility/bankruptcy sequence, and the explicit deserted-building lifecycle
+removes permanently inactive buildings from all economy flows.
 
 ### 7. ECON-02: Absorption Gate Uses Nominal Capacity, Ignores Operational State
 
@@ -2516,7 +2521,8 @@ The grocery profile outputs 200 `household_supplies`/day. The `basic_household_d
 
 The gate does not check `utility_service_available`. A frozen, non-functional grocery still counts at full 200/day nominal capacity. The self-correction mechanism the economy needs (spawn a second grocery when the first fails) is blocked by the very building that failed.
 
-**Fix direction**: Exclude buildings where `!utility_service_available` from `placed_capacity` in the absorption gate, or compare against actual effective throughput (`nominal × staffing_factor × utility_factor`) rather than nominal output.
+**Resolution**: The live demand absorption path uses current output absorption context and excludes
+inactive building states instead of applying the legacy `utility_factor` throughput gate.
 
 ### 8. ECON-03: One-Time Bankruptcy Reset Fires Repeatedly
 

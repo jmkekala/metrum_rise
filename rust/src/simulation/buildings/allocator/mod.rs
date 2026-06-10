@@ -19,7 +19,7 @@ mod tests;
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, ResourceRuntimeId, load_runtime_economy_catalog,
+    EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
@@ -300,6 +300,18 @@ pub(crate) fn resolve_building_economy_profile_binding(
             };
         }
     };
+    resolve_building_economy_profile_binding_with_catalog(registry, catalog.as_ref(), asset_id)
+}
+
+/// Resolves an asset's economy profile using a caller-owned runtime catalog.
+pub(crate) fn resolve_building_economy_profile_binding_with_catalog(
+    registry: &AssetRegistry,
+    catalog: &RuntimeEconomyCatalog,
+    asset_id: &str,
+) -> EconomyProfileBinding {
+    let Some(profile_id) = registry.economy_profile(asset_id) else {
+        return EconomyProfileBinding::default();
+    };
     let Some(profile) = catalog.profile_for_id(profile_id) else {
         debug_log!(
             "economy",
@@ -549,23 +561,29 @@ impl BuildingAllocator {
         self.registry.flat_size_m2(&b.asset_id)
     }
 
-    /// Returns the worker capacity for a given asset, preferring the economy profile over the
-    /// asset manifest. Falls back to the manifest value if no profile is linked or the profile
-    /// has no capacity set.
+    /// Returns the worker capacity authored on the asset manifest.
     pub fn worker_capacity_for_asset(&self, asset_id: &str) -> u32 {
-        if let Some(profile_id) = self.registry.economy_profile(asset_id) {
-            if let Ok(catalog) = load_runtime_economy_catalog() {
-                if let Some(p) = catalog.profile_for_id(profile_id) {
-                    if p.worker_capacity > 0 {
-                        return p.worker_capacity;
-                    }
-                }
-            }
-        }
         self.registry.worker_capacity(asset_id)
     }
 
-    /// Returns the worker capacity declared for a placed building.
+    /// Returns the economy-profile worker capacity for an asset, failing safe on unresolved profiles.
+    pub(crate) fn worker_capacity_for_asset_with_catalog(
+        &self,
+        asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Option<u32> {
+        if let Some(profile_id) = self.registry.economy_profile(asset_id) {
+            if let Some(profile) = catalog.profile_for_id(profile_id)
+                && profile.runtime_supported
+            {
+                return Some(profile.worker_capacity);
+            }
+            return None;
+        }
+        Some(self.registry.worker_capacity(asset_id))
+    }
+
+    /// Returns the manifest worker capacity for a placed building when no runtime catalog is available.
     ///
     /// Unresolved assets, broken buildings, and deserted buildings count as zero.
     pub fn worker_capacity(&self, building_idx: usize) -> u32 {
@@ -576,6 +594,22 @@ impl BuildingAllocator {
             return 0;
         }
         self.worker_capacity_for_asset(&b.asset_id)
+    }
+
+    /// Returns the live economy worker capacity for a placed building.
+    pub(crate) fn worker_capacity_with_catalog(
+        &self,
+        building_idx: usize,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> u32 {
+        let Some(b) = self.buildings.get(building_idx) else {
+            return 0;
+        };
+        if b.broken || b.economy_broken || b.is_deserted {
+            return 0;
+        }
+        self.worker_capacity_for_asset_with_catalog(&b.asset_id, catalog)
+            .unwrap_or(0)
     }
 
     /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.

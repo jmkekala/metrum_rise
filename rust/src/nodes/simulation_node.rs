@@ -4197,7 +4197,13 @@ impl SimulationNode {
             .map(|p| p.id.clone())
             .unwrap_or_default();
 
-        let worker_capacity = core.allocator.worker_capacity(best_idx);
+        let worker_capacity = catalog
+            .as_ref()
+            .map(|catalog| {
+                core.allocator
+                    .worker_capacity_with_catalog(best_idx, catalog.as_ref())
+            })
+            .unwrap_or_else(|| core.allocator.worker_capacity(best_idx));
 
         // Inventory: only non-zero resource slots.
         let mut inv_arr = VarArray::new();

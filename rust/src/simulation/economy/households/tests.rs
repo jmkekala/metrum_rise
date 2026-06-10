@@ -110,6 +110,51 @@ fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
     }
 }
 
+fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x: f32) -> Edge {
+    let length = (end_x - start_x).abs();
+    Edge {
+        start_node,
+        end_node,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 7.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 50.0,
+        base_cost: length.max(1.0),
+        physical_length: length.max(1.0),
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![
+            Vector3::new(start_x, 0.0, 0.0),
+            Vector3::new(end_x, 0.0, 0.0),
+        ],
+        physical_geometry: vec![
+            Vector3::new(start_x, 0.0, 0.0),
+            Vector3::new(end_x, 0.0, 0.0),
+        ],
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+    }
+}
+
+fn simple_work_graph() -> (RegionGraph, TransitNetwork) {
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(300.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(make_road_edge(n0, n1, -100.0, 300.0));
+    graph.rebuild_adjacency_list();
+
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    (graph, network)
+}
+
 fn register_test_asset(
     allocator: &mut BuildingAllocator,
     pack_id: &str,
@@ -979,6 +1024,8 @@ fn workplace_claim_falls_back_to_next_ranked_job_when_best_fills() {
     allocator.buildings[1].operating_budget = daily_wage;
     allocator.buildings[2].operating_budget = daily_wage;
     allocator.rebuild_zone_index();
+    let (graph, network) = simple_work_graph();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
 
     let mut agents = AgentSystem::new();
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
@@ -990,14 +1037,61 @@ fn workplace_claim_falls_back_to_next_ranked_job_when_best_fills() {
         agents.has_car[agent] = true;
     }
 
-    let network = TransitNetwork::new();
-    let graph = RegionGraph::new();
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[a0], 1);
     assert_eq!(agents.work_building[a1], 2);
     assert_eq!(allocator.buildings[1].worker_count, 1);
     assert_eq!(allocator.buildings[2].worker_count, 1);
+}
+
+#[test]
+fn missing_entrance_cache_does_not_use_straight_line_work_fallback() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+    households.households[0].budget = 0.0;
+    households.households[0].stock = 0.0;
+    households.households[0].stock_days = 0.0;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "missing_cache_job_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "missing_cache_job_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.has_car[agent] = true;
+
+    let (graph, network) = simple_work_graph();
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+
+    assert_eq!(agents.work_building[agent], usize::MAX);
+    assert_eq!(allocator.buildings[1].worker_count, 0);
 }
 
 #[test]
@@ -1056,6 +1150,55 @@ fn deserted_employer_is_ejected_before_wages() {
 }
 
 #[test]
+fn insolvent_self_fire_decrements_worker_count() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "insolvent_wage_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "insolvent_wage_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[1].operating_budget = 0.0;
+    allocator.buildings[1].worker_count = 1;
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+    agents.consecutive_unpaid_days[agent] = 1;
+
+    households.pay_daily_wages(&mut agents, &mut allocator);
+
+    assert_eq!(agents.work_building[agent], usize::MAX);
+    assert_eq!(allocator.buildings[1].worker_count, 0);
+    assert_eq!(households.households[0].budget, 0.0);
+    assert_eq!(allocator.buildings[1].operating_budget, 0.0);
+}
+
+#[test]
 fn full_current_workplace_is_scored_before_switching() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let grocery = catalog
@@ -1104,6 +1247,8 @@ fn full_current_workplace_is_scored_before_switching() {
     allocator.buildings[1].worker_count = worker_capacity;
     allocator.buildings[1].operating_budget = daily_wage * worker_capacity as f32;
     allocator.buildings[2].operating_budget = daily_wage;
+    let (graph, network) = simple_work_graph();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
@@ -1114,8 +1259,6 @@ fn full_current_workplace_is_scored_before_switching() {
     agents.assign_work_building(agent, 1, 0);
     agents.job_lock_days[agent] = 0;
 
-    let network = TransitNetwork::new();
-    let graph = RegionGraph::new();
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[agent], 1);
@@ -1151,6 +1294,8 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
         0.0,
     ));
     allocator.rebuild_zone_index();
+    let (graph, network) = simple_work_graph();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
 
     let mut agents = AgentSystem::new();
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
@@ -1165,8 +1310,6 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
     }
 
     households.consume_household_stock(&mut agents);
-    let network = TransitNetwork::new();
-    let graph = RegionGraph::new();
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[a0], 1);

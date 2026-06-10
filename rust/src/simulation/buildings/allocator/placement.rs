@@ -3,7 +3,8 @@
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
-    resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
+    resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
+    zone_type_to_zone_class,
 };
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
@@ -20,8 +21,10 @@ impl BuildingAllocator {
         &self,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
     ) -> DemandSpawnCandidatesByUse {
-        let asset_candidates_by_profile = self.collect_spawn_asset_candidates_by_profile(zoning);
+        let asset_candidates_by_profile =
+            self.collect_spawn_asset_candidates_by_profile(zoning, catalog);
         let candidates = zoning
             .parcels()
             .par_iter()
@@ -102,6 +105,7 @@ impl BuildingAllocator {
     fn collect_spawn_asset_candidates_by_profile(
         &self,
         zoning: &ZoningSystem,
+        catalog: &RuntimeEconomyCatalog,
     ) -> BTreeMap<u16, SpawnProfileAssetCandidates> {
         let mut by_profile = BTreeMap::new();
         for profile in zoning.profiles.profiles() {
@@ -122,7 +126,7 @@ impl BuildingAllocator {
                 if !building.is_zoned_private() || building.level != 1 {
                     continue;
                 }
-                let Some(params) = self.asset_placement_params(qualified_id) else {
+                let Some(params) = self.asset_placement_params(qualified_id, catalog) else {
                     continue;
                 };
                 if !zoning.profiles.asset_is_legal(
@@ -205,14 +209,22 @@ impl BuildingAllocator {
         best.map(|(_, resolved)| resolved)
     }
 
-    fn asset_placement_params(&self, asset_id: &str) -> Option<AssetPlacementParams> {
+    fn asset_placement_params(
+        &self,
+        asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Option<AssetPlacementParams> {
         let entry = self.registry.get(asset_id)?;
         let building = entry.manifest.building.as_ref()?;
         if !building.is_zoned_private() {
             return None;
         }
         let zone_type = zone_class_to_zone_type(building.zone_type?);
-        let economy_binding = resolve_building_economy_profile_binding(&self.registry, asset_id);
+        let economy_binding = resolve_building_economy_profile_binding_with_catalog(
+            &self.registry,
+            catalog,
+            asset_id,
+        );
         if matches!(zone_type, ZoneType::Commercial | ZoneType::Industrial)
             && (economy_binding.economy_broken || economy_binding.runtime_id == 0)
         {
@@ -331,7 +343,7 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> bool {
-        let Some(params) = self.asset_placement_params(&action.asset_id) else {
+        let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
             return false;
         };
         let Some(parcel) = zoning.parcel_by_raw_id(action.parcel_id) else {
@@ -351,8 +363,11 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> usize {
-        let economy_binding =
-            resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
+        let economy_binding = resolve_building_economy_profile_binding_with_catalog(
+            &self.registry,
+            catalog,
+            &placement.asset_id,
+        );
         let resource_count = catalog.resource_count();
 
         // Seed starting inventory for output ports when the profile specifies it.
@@ -384,7 +399,6 @@ impl BuildingAllocator {
                 if economy_binding.economy_broken {
                     0.0
                 } else {
-                    let worker_cap = self.worker_capacity_for_asset(&placement.asset_id);
                     let profile = catalog
                         .profile_by_runtime_id(economy_binding.runtime_id)
                         .unwrap_or_else(|| {
@@ -394,7 +408,8 @@ impl BuildingAllocator {
                             )
                         });
                     let daily_wage = profile.average_daily_wage();
-                    let wage_runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
+                    let wage_runway =
+                        profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
 
                     // Add expected cost of the first full OWA input import so the building can
                     // absorb it without going into distress on its opening day.

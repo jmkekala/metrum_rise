@@ -462,7 +462,10 @@ fn commercial_spawn_uses_open_jobs_as_pull_not_full_workforce_prerequisite() {
     let graph = graph_with_connected_border();
     let zoning = commercial_zoning_run(&graph);
     let mut demand = DemandSystem::new();
-    let required_workers = allocator.worker_capacity_for_asset(&commercial_asset);
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let required_workers = allocator
+        .worker_capacity_for_asset_with_catalog(&commercial_asset, catalog.as_ref())
+        .expect("commercial economy profile must resolve");
 
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
 

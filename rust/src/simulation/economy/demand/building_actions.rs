@@ -95,7 +95,7 @@ impl DemandSystem {
         log_label: &str,
     ) {
         let mut spawn_candidates_by_use =
-            allocator.collect_demand_spawn_candidates_by_use(zoning, graph);
+            allocator.collect_demand_spawn_candidates_by_use(zoning, graph, catalog);
         let absorption_context = &snapshot.output_absorption;
         for use_kind in [
             DemandUse::Residential,
@@ -447,7 +447,7 @@ impl DemandSystem {
 
                 if downgrade_pressure > 0.0
                     && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
-                    && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                    && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_downgrade(
                         allocator,
                         households,
@@ -472,7 +472,7 @@ impl DemandSystem {
 
                 if upgrade_pressure > 0.0
                     && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
-                    && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                    && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_upgrade(
                         allocator,
                         households,

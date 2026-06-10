@@ -707,7 +707,10 @@ impl SimCore {
     }
 
     fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+
         let mut diagnostics = DailyCityFlowDiagnostics::default();
+        let catalog = load_runtime_economy_catalog().ok();
 
         for (building_idx, building) in self.allocator.buildings.iter().enumerate() {
             if matches!(building.zone_type, ZoneType::Residential) {
@@ -722,7 +725,13 @@ impl SimCore {
                     );
             }
 
-            let worker_capacity = self.allocator.worker_capacity(building_idx);
+            let worker_capacity = catalog
+                .as_ref()
+                .map(|catalog| {
+                    self.allocator
+                        .worker_capacity_with_catalog(building_idx, catalog.as_ref())
+                })
+                .unwrap_or_else(|| self.allocator.worker_capacity(building_idx));
             match building.zone_type {
                 ZoneType::Commercial => {
                     diagnostics.commercial_job_capacity = diagnostics
@@ -775,9 +784,18 @@ impl SimCore {
             diagnostics.resident_agents = diagnostics.resident_agents.saturating_add(1);
 
             let work_building = self.agents.work_building[agent_idx];
-            if work_building >= self.allocator.buildings.len()
-                || self.allocator.worker_capacity(work_building) == 0
-            {
+            if work_building >= self.allocator.buildings.len() {
+                diagnostics.unemployed_agents = diagnostics.unemployed_agents.saturating_add(1);
+                continue;
+            }
+            let worker_capacity = catalog
+                .as_ref()
+                .map(|catalog| {
+                    self.allocator
+                        .worker_capacity_with_catalog(work_building, catalog.as_ref())
+                })
+                .unwrap_or_else(|| self.allocator.worker_capacity(work_building));
+            if worker_capacity == 0 {
                 diagnostics.unemployed_agents = diagnostics.unemployed_agents.saturating_add(1);
                 continue;
             }
@@ -882,7 +900,9 @@ impl SimCore {
                 ZoneType::Industrial => "IND",
                 _ => "OTHER",
             };
-            let worker_cap = self.allocator.worker_capacity(idx);
+            let worker_cap = self
+                .allocator
+                .worker_capacity_with_catalog(idx, catalog.as_ref());
             let _resident_cap = self.allocator.household_capacity(idx);
             let profile_id = catalog
                 .profile_by_runtime_id(b.economy_profile_runtime_id)

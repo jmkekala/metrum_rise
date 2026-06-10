@@ -31,6 +31,7 @@ const JOB_LOCK_DAYS: u8 = 7;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
 const JOB_SEARCH_MAX_RING: i32 = 8;
 const JOB_SEARCH_CANDIDATES: usize = 24;
+const JOB_ROUTE_SCAN_CANDIDATES: usize = JOB_SEARCH_CANDIDATES * 4;
 const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
 const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
     building_idx: usize::MAX,
@@ -80,14 +81,14 @@ struct HomeJobOptionsBuild {
     key: HomeJobOptionsKey,
     options: HomeJobOptions,
     route_entry_count: u8,
-    route_entries: [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    route_entries: [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
 }
 
 struct CurrentJobOptionBuild {
     key: CurrentJobOptionKey,
     option: Option<HomeJobOption>,
     route_entry_count: u8,
-    route_entries: [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    route_entries: [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
 }
 
 struct JobSupplyEntry {
@@ -240,7 +241,10 @@ impl HouseholdSystem {
                     agents.consecutive_unpaid_days[plan.agent_idx].saturating_add(1);
 
                 if agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS {
-                    // Fire self from work.
+                    allocator.buildings[plan.work_building].worker_count = allocator.buildings
+                        [plan.work_building]
+                        .worker_count
+                        .saturating_sub(1);
                     agents.assign_work_building(plan.agent_idx, usize::MAX, 0);
                     debug_log!(
                         "economy",
@@ -742,9 +746,9 @@ fn build_home_job_options(
     let mut builds: Vec<_> = keys
         .par_iter()
         .map_init(
-            || Vec::with_capacity(JOB_SEARCH_CANDIDATES),
+            || Vec::with_capacity(JOB_ROUTE_SCAN_CANDIDATES),
             |candidates, &key| {
-                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_SEARCH_CANDIDATES];
+                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
                 let mut route_entry_count = 0usize;
                 let options = build_home_job_options_for_key(
                     key,
@@ -788,7 +792,7 @@ fn build_home_job_options(
     let mut current_builds: Vec<_> = current_job_keys
         .par_iter()
         .map(|&key| {
-            let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_SEARCH_CANDIDATES];
+            let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
             let mut route_entry_count = 0usize;
             let option = build_current_job_option_for_key(
                 key,
@@ -840,7 +844,7 @@ fn build_home_job_options_for_key(
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     candidates: &mut Vec<usize>,
-    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> HomeJobOptions {
     let Some(home) = allocator.buildings.get(key.home_idx) else {
@@ -853,7 +857,7 @@ fn build_home_job_options_for_key(
         home.center_x,
         home.center_y,
         JOB_SEARCH_MAX_RING,
-        JOB_SEARCH_CANDIDATES,
+        JOB_ROUTE_SCAN_CANDIDATES,
         candidates,
     );
 
@@ -911,7 +915,7 @@ fn build_current_job_option_for_key(
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
-    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> Option<HomeJobOption> {
     let (home_key, work_idx) = key;
@@ -996,7 +1000,7 @@ fn cached_commute_seconds(
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
-    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_SEARCH_CANDIDATES],
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> Option<u16> {
     if home_idx == work_idx {
@@ -1006,20 +1010,19 @@ fn cached_commute_seconds(
     if let Some(result) = route_cache.get(&key) {
         return *result;
     }
-    let result = if exact_entrance_cache_available {
-        estimate_building_origin_trip_minutes(
-            home_idx,
-            work_idx,
-            has_car,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-        )
-    } else {
-        fallback_attached_commute_seconds(allocator, home_idx, work_idx, has_car)
-    };
-    if *new_route_entry_count < JOB_SEARCH_CANDIDATES {
+    if !exact_entrance_cache_available {
+        return None;
+    }
+    let result = estimate_building_origin_trip_minutes(
+        home_idx,
+        work_idx,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    );
+    if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
         new_route_entries[*new_route_entry_count] = (key, result);
         *new_route_entry_count += 1;
     }
@@ -1030,25 +1033,4 @@ fn squared_entry_distance(origin_x: f32, origin_y: f32, entry: &JobSupplyEntry) 
     let dx = entry.center_x - origin_x;
     let dy = entry.center_y - origin_y;
     dx * dx + dy * dy
-}
-
-fn fallback_attached_commute_seconds(
-    allocator: &BuildingAllocator,
-    home_idx: usize,
-    work_idx: usize,
-    has_car: bool,
-) -> Option<u16> {
-    let home = allocator.buildings.get(home_idx)?;
-    let work = allocator.buildings.get(work_idx)?;
-    if home.edge_idx == usize::MAX || work.edge_idx == usize::MAX {
-        return None;
-    }
-    let dx = home.center_x - work.center_x;
-    let dy = home.center_y - work.center_y;
-    let speed_mps = if has_car { 13.0 } else { 1.4 };
-    Some(
-        ((dx * dx + dy * dy).sqrt() / speed_mps)
-            .ceil()
-            .clamp(1.0, u16::MAX as f32) as u16,
-    )
 }
