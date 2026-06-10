@@ -16,7 +16,7 @@ use crate::simulation::economy::accessibility::{
     max_speed_for_modes,
 };
 use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
-use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
+use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -166,11 +166,15 @@ impl HouseholdSystem {
         let building_count = allocator.buildings.len();
         self.reset_worker_count_scratch(building_count);
         let worker_count_scratch = &self.worker_count_scratch;
-        agents.work_building.par_iter().for_each(|&work| {
-            if work < building_count {
-                worker_count_scratch[work].fetch_add(1, Ordering::Relaxed);
-            }
-        });
+        agents
+            .work_building
+            .par_iter()
+            .zip(agents.age_group.par_iter())
+            .for_each(|(&work, &age_group)| {
+                if age_group_can_work(age_group) && work < building_count {
+                    worker_count_scratch[work].fetch_add(1, Ordering::Relaxed);
+                }
+            });
         allocator
             .buildings
             .par_iter_mut()
@@ -264,6 +268,9 @@ impl HouseholdSystem {
             .filter_map(|i| {
                 let work = agents.work_building[i];
                 let household_id = agents.household_id[i];
+                if !age_group_can_work(agents.age_group[i]) {
+                    return None;
+                }
                 if work >= allocator.buildings.len() || household_id >= self.households.len() {
                     return None;
                 }
@@ -358,6 +365,9 @@ fn plan_agent_workplace(
     current_job_options: &BTreeMap<CurrentJobOptionKey, HomeJobOption>,
 ) -> Option<JobAssignmentPlan> {
     if agents.transit[i] != TRANSIT_IN_BUILDING {
+        return None;
+    }
+    if !age_group_can_work(agents.age_group[i]) {
         return None;
     }
 
@@ -477,6 +487,7 @@ fn apply_workplace_plan(
 ) {
     if plan.agent_idx >= agents.len()
         || agents.transit[plan.agent_idx] != TRANSIT_IN_BUILDING
+        || !age_group_can_work(agents.age_group[plan.agent_idx])
         || agents.work_building[plan.agent_idx] != plan.old_job
     {
         return;
@@ -562,6 +573,9 @@ fn eject_inactive_work_assignments(
             if work >= allocator.buildings.len() {
                 return false;
             }
+            if !age_group_can_work(agents.age_group[i]) {
+                return true;
+            }
             active_work_profile(catalog, &allocator.buildings[work]).is_none()
         })
         .collect();
@@ -569,7 +583,8 @@ fn eject_inactive_work_assignments(
     for i in ejected_agents {
         let work = agents.work_building[i];
         if work < allocator.buildings.len()
-            && active_work_profile(catalog, &allocator.buildings[work]).is_none()
+            && (!age_group_can_work(agents.age_group[i])
+                || active_work_profile(catalog, &allocator.buildings[work]).is_none())
         {
             allocator.buildings[work].worker_count =
                 allocator.buildings[work].worker_count.saturating_sub(1);
@@ -732,6 +747,9 @@ fn collect_home_job_option_keys(
         .into_par_iter()
         .filter_map(|i| {
             if agents.transit[i] != TRANSIT_IN_BUILDING {
+                return None;
+            }
+            if !age_group_can_work(agents.age_group[i]) {
                 return None;
             }
             let home_idx = agents.home_building[i];

@@ -24,6 +24,12 @@ pub struct Household {
     pub stock: f32,
     /// Cached linked population count. Rebuilt from resident agents every economy pass.
     pub member_count: u16,
+    /// Cached number of child residents. Rebuilt from resident agents every economy pass.
+    pub child_count: u16,
+    /// Cached number of adult residents. Rebuilt from resident agents every economy pass.
+    pub adult_count: u16,
+    /// Cached number of elder residents. Rebuilt from resident agents every economy pass.
+    pub elder_count: u16,
     /// Baseline daily consumption in `household_supplies / day / resident`.
     pub consumption_rate: f32,
     /// Cached derived stock horizon in days at the current consumption rate.
@@ -54,7 +60,7 @@ pub struct Household {
     pub unhoused_days_elapsed: u32,
     /// Stable authored cadence offset used for periodic replenishment checks.
     pub replenishment_offset_hours: u16,
-    /// Days elapsed with at least one unemployed member. Resets to 0 when all members are
+    /// Days elapsed with at least one unemployed adult. Resets to 0 when all adult members are
     /// employed. Incremented each daily tick while the household is benefit-eligible. Once
     /// this reaches `unemployment_max_days`, the household becomes emigration-eligible and
     /// benefit payments stop.
@@ -66,6 +72,9 @@ pub struct HouseholdSystem {
     /// All known households. Agents reference these by index.
     pub households: Vec<Household>,
     pub(super) member_count_scratch: Vec<AtomicU32>,
+    pub(super) child_count_scratch: Vec<AtomicU32>,
+    pub(super) adult_count_scratch: Vec<AtomicU32>,
+    pub(super) elder_count_scratch: Vec<AtomicU32>,
     pub(super) worker_count_scratch: Vec<AtomicU32>,
     pub(super) household_member_heads_scratch: Vec<usize>,
     pub(super) household_member_next_scratch: Vec<usize>,
@@ -84,6 +93,9 @@ impl HouseholdSystem {
         Self {
             households: Vec::new(),
             member_count_scratch: Vec::new(),
+            child_count_scratch: Vec::new(),
+            adult_count_scratch: Vec::new(),
+            elder_count_scratch: Vec::new(),
             worker_count_scratch: Vec::new(),
             household_member_heads_scratch: Vec::new(),
             household_member_next_scratch: Vec::new(),
@@ -101,6 +113,9 @@ impl HouseholdSystem {
     pub fn clear(&mut self) {
         self.households.clear();
         self.member_count_scratch.clear();
+        self.child_count_scratch.clear();
+        self.adult_count_scratch.clear();
+        self.elder_count_scratch.clear();
         self.worker_count_scratch.clear();
         self.household_member_heads_scratch.clear();
         self.household_member_next_scratch.clear();
@@ -187,6 +202,24 @@ impl HouseholdSystem {
         &self.member_count_scratch
     }
 
+    /// Returns zeroed per-household child counters for deterministic parallel reductions.
+    pub(super) fn reset_child_count_scratch(&mut self) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.child_count_scratch, self.households.len());
+        &self.child_count_scratch
+    }
+
+    /// Returns zeroed per-household adult counters for deterministic parallel reductions.
+    pub(super) fn reset_adult_count_scratch(&mut self) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.adult_count_scratch, self.households.len());
+        &self.adult_count_scratch
+    }
+
+    /// Returns zeroed per-household elder counters for deterministic parallel reductions.
+    pub(super) fn reset_elder_count_scratch(&mut self) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.elder_count_scratch, self.households.len());
+        &self.elder_count_scratch
+    }
+
     /// Returns zeroed per-building counters for deterministic parallel worker recounts.
     pub(super) fn reset_worker_count_scratch(&mut self, building_count: usize) -> &[AtomicU32] {
         resize_atomic_scratch(&mut self.worker_count_scratch, building_count);
@@ -215,6 +248,9 @@ impl Clone for HouseholdSystem {
         Self {
             households: self.households.clone(),
             member_count_scratch: Vec::new(),
+            child_count_scratch: Vec::new(),
+            adult_count_scratch: Vec::new(),
+            elder_count_scratch: Vec::new(),
             worker_count_scratch: Vec::new(),
             household_member_heads_scratch: Vec::new(),
             household_member_next_scratch: Vec::new(),

@@ -42,6 +42,7 @@ impl<T> RawSlice<T> {
 pub(crate) struct MovementSlices {
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
+    pub(super) age_group: RawSlice<u8>,
     pub(super) pos_x: RawSlice<f32>,
     pub(super) pos_y: RawSlice<f32>,
     pub(super) activity: RawSlice<u8>,

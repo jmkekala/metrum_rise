@@ -18,7 +18,8 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
-    AgentSystem, MODE_CAR, TRANSIT_IN_BUILDING, transit_is_visible,
+    AGE_ADULT, AGE_CHILD, AGE_ELDER, AgentSystem, MODE_CAR, TRANSIT_IN_BUILDING,
+    age_group_can_work, transit_is_visible,
 };
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -423,6 +424,9 @@ struct DailyCityFlowDiagnostics {
     total_household_slots: u32,
     vacant_household_slots: u32,
     resident_agents: u32,
+    child_agents: u32,
+    adult_agents: u32,
+    elder_agents: u32,
     pending_household_carriers: u32,
     employed_agents: u32,
     unemployed_agents: u32,
@@ -782,6 +786,22 @@ impl SimCore {
                 continue;
             }
             diagnostics.resident_agents = diagnostics.resident_agents.saturating_add(1);
+            match self.agents.age_group[agent_idx] {
+                AGE_CHILD => {
+                    diagnostics.child_agents = diagnostics.child_agents.saturating_add(1);
+                }
+                AGE_ADULT => {
+                    diagnostics.adult_agents = diagnostics.adult_agents.saturating_add(1);
+                }
+                AGE_ELDER => {
+                    diagnostics.elder_agents = diagnostics.elder_agents.saturating_add(1);
+                }
+                _ => {}
+            }
+
+            if !age_group_can_work(self.agents.age_group[agent_idx]) {
+                continue;
+            }
 
             let work_building = self.agents.work_building[agent_idx];
             if work_building >= self.allocator.buildings.len() {
@@ -847,9 +867,9 @@ impl SimCore {
             "city flow diagnostics: day={} net_households={:+} admitted_since_daily={} \
              removed_today={} households={} housed={} unhoused={} zero_budget={} \
              stock_empty={} stock_low={} resident_agents={} pending_carriers={} \
-             employed={} unemployed={} jobs={}/{} open_jobs={} commercial_jobs={}/{} \
-             commercial_open={} industrial_jobs={}/{} industrial_open={} homes={}/{} \
-             vacant_homes={} treasury={:.0}",
+             children={} adults={} elders={} employed={} unemployed={} jobs={}/{} open_jobs={} \
+             commercial_jobs={}/{} commercial_open={} industrial_jobs={}/{} industrial_open={} \
+             homes={}/{} vacant_homes={} treasury={:.0}",
             day_index,
             net_households,
             self.debug_household_admissions_since_daily,
@@ -862,6 +882,9 @@ impl SimCore {
             diagnostics.stock_low_households,
             diagnostics.resident_agents,
             diagnostics.pending_household_carriers,
+            diagnostics.child_agents,
+            diagnostics.adult_agents,
+            diagnostics.elder_agents,
             diagnostics.employed_agents,
             diagnostics.unemployed_agents,
             filled_jobs,
@@ -1013,12 +1036,15 @@ impl SimCore {
                 String::new()
             };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} agents={} budget={:<5.1} stock={:<4.2}days state={}{}",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{}",
                 day_index,
                 idx,
                 h.home_building_id,
                 home_asset,
                 h.member_count,
+                h.child_count,
+                h.adult_count,
+                h.elder_count,
                 h.budget,
                 h.stock_days,
                 state_str,

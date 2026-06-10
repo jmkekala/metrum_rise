@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use super::HouseholdSystem;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::{AgentSystem, age_group_can_work};
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -30,8 +30,10 @@ impl HouseholdSystem {
                 .household_id
                 .par_iter()
                 .zip(agents.work_building.par_iter())
-                .for_each(|(&hid, &work)| {
-                    if hid < household_count && work == usize::MAX {
+                .zip(agents.age_group.par_iter())
+                .for_each(|((&hid, &work), &age_group)| {
+                    if hid < household_count && age_group_can_work(age_group) && work == usize::MAX
+                    {
                         unemployed_per_household[hid].fetch_add(1, Ordering::Relaxed);
                     }
                 });

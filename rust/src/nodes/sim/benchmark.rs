@@ -101,7 +101,7 @@ impl SimCore {
     pub(crate) fn spawn_benchmark_agents(&mut self) {
         use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
         use crate::simulation::economy::agents::data::Agent;
-        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+        use crate::simulation::economy::agents::{AGE_ADULT, MODE_CAR, TRANSIT_NETWORK};
         use crate::simulation::network::types::TransitFlags;
 
         let t_spawn = Instant::now();
@@ -161,6 +161,7 @@ impl SimCore {
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
                 household_id: usize::MAX,
+                age_group: AGE_ADULT,
                 pending_household_size: 0,
                 work_building: usize::MAX,
                 pos_x: node_pos.x,

@@ -6,6 +6,7 @@ use super::diagnostics::{HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnost
 use super::snapshot::DailyDemandSnapshot;
 use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
+use crate::simulation::economy::households::expected_adult_members_for_household_size;
 use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Copy, Debug)]
@@ -256,7 +257,8 @@ pub(super) fn compute_move_in_acceptance_for(
     }
 
     let candidate_household_size = snapshot.candidate_household_size.max(1.0);
-    let candidate_effective_workers = candidate_household_size;
+    let candidate_effective_workers =
+        expected_adult_members_for_household_size(candidate_household_size).max(EPSILON);
     let expected_employed_members = candidate_effective_workers.min(snapshot.open_job_slots as f32);
     let expected_unemployed_members =
         (candidate_effective_workers - expected_employed_members).max(0.0);

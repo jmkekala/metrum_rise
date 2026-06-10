@@ -7,6 +7,7 @@ use super::super::schedule::{ScheduleCacheMut, maybe_schedule_work_trip};
 use super::super::slices::MovementSlices;
 use super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::age_group_can_work;
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
 };
@@ -39,6 +40,7 @@ pub(super) unsafe fn handle_in_building(
         let s_activity = &slices.activity;
         let s_work = &slices.work;
         let s_home = &slices.home;
+        let s_age_group = &slices.age_group;
         let s_cur_b = &slices.cur_b;
         let s_tgt_b = &slices.tgt_b;
         let s_plan_b = &slices.planned_tgt_b;
@@ -69,6 +71,7 @@ pub(super) unsafe fn handle_in_building(
         if *s_plan_b.get(i) == usize::MAX
             && curr_bldg != usize::MAX
             && curr_bldg < allocator.buildings.len()
+            && age_group_can_work(*s_age_group.get(i))
         {
             let mut schedule_cache = ScheduleCacheMut {
                 cached_commute_minutes: s_cached_commute_minutes.get_mut(i),

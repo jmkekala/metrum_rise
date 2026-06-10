@@ -17,6 +17,8 @@ pub struct Agent {
     pub home_building: usize,
     /// Index into `HouseholdSystem::households` for the agent's shared household record.
     pub household_id: usize,
+    /// Resident lifecycle class. One of the `AGE_*` constants in `agents::mod`.
+    pub age_group: u8,
     /// Pending resident count carried by a border-origin household arrival car; `0` for normal
     /// agents.
     pub pending_household_size: u16,

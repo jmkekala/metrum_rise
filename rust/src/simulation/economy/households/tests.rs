@@ -5,7 +5,7 @@ use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{
-    AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+    AGE_CHILD, AGE_ELDER, AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -392,6 +392,9 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -451,12 +454,109 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
 }
 
 #[test]
+fn child_at_home_does_not_carry_household_shopping_trip() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        child_count: 1,
+        adult_count: 1,
+        elder_count: 0,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "child_shop_res", "child_shop_com", 50.0, 20.0);
+    let child = 0;
+    agents.age_group[child] = AGE_CHILD;
+    let adult = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[adult] = 0;
+    agents.current_building[adult] = 1;
+    agents.transit[adult] = TRANSIT_IN_BUILDING;
+    agents.activity[adult] = 2;
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_WAITING_FOR_SHOPPER
+    );
+    assert_eq!(households.households[0].shopping_agent_id, usize::MAX);
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        50.0
+    );
+}
+
+#[test]
+fn elder_can_carry_household_shopping_trip() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 1,
+        child_count: 0,
+        adult_count: 0,
+        elder_count: 1,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "elder_shop_res", "elder_shop_com", 50.0, 20.0);
+    agents.age_group[0] = AGE_ELDER;
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(households.households[0].shopping_agent_id, 0);
+}
+
+#[test]
 fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
     let household = Household {
         home_building_id: 0,
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_STABLE,
@@ -497,6 +597,9 @@ fn household_can_restock_from_far_store() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_STABLE,
@@ -534,6 +637,9 @@ fn replenishment_search_cursor_reaches_next_store_window() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -606,6 +712,9 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -678,6 +787,9 @@ fn unreachable_store_does_not_reserve_household_supplies() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -747,6 +859,9 @@ fn deserted_store_cannot_sell_household_supplies() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -797,6 +912,9 @@ fn repeated_replenishment_failures_become_terminal_shortage() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -836,6 +954,9 @@ fn household_waits_without_reservation_when_no_member_is_home() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -889,6 +1010,9 @@ fn canceled_shopping_to_store_restores_reserved_store_inventory() {
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
@@ -939,6 +1063,9 @@ fn shopping_timeout_restores_pre_pickup_reservation() {
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
@@ -987,6 +1114,9 @@ fn invalidating_home_restores_pre_pickup_store_reservation() {
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
@@ -1042,6 +1172,9 @@ fn terminal_replenishment_shortage_retries_on_normal_cadence() {
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_FAILED_TERMINAL,
@@ -1084,6 +1217,9 @@ fn store_losing_household_supply_profile_before_pickup_restores_reservation() {
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
@@ -1144,6 +1280,9 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
         budget: partial_units * unit_price,
         stock: 0.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
@@ -1433,6 +1572,62 @@ fn no_car_agent_can_take_walk_reachable_job() {
 
     assert_eq!(agents.work_building[agent], 1);
     assert_eq!(allocator.buildings[1].worker_count, 1);
+}
+
+#[test]
+fn children_and_elders_do_not_take_jobs() {
+    let (graph, network) = simple_work_graph();
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 2, 0.0, 0.0));
+    households.households[0].child_count = 1;
+    households.households[0].adult_count = 0;
+    households.households[0].elder_count = 1;
+    households.households[0].budget = 0.0;
+    households.households[0].stock = 0.0;
+    households.households[0].stock_days = 0.0;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "age_job_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "age_job_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let child = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[child] = 0;
+    agents.age_group[child] = AGE_CHILD;
+    agents.transit[child] = TRANSIT_IN_BUILDING;
+    agents.current_building[child] = 0;
+    let elder = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[elder] = 0;
+    agents.age_group[elder] = AGE_ELDER;
+    agents.transit[elder] = TRANSIT_IN_BUILDING;
+    agents.current_building[elder] = 0;
+
+    households.recount_worker_assignments(&agents, &mut allocator);
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+
+    assert_eq!(agents.work_building[child], usize::MAX);
+    assert_eq!(agents.work_building[elder], usize::MAX);
+    assert_eq!(allocator.buildings[1].worker_count, 0);
 }
 
 #[test]
@@ -1899,6 +2094,9 @@ fn make_household(
         budget: reserve_days * daily_essential_cost,
         stock: stock_days * member_count.max(1) as f32 * consumption_rate,
         member_count,
+        child_count: 0,
+        adult_count: member_count,
+        elder_count: 0,
         consumption_rate,
         stock_days,
         replenishment_state: REPLENISHMENT_STABLE,
@@ -1916,6 +2114,47 @@ fn make_household(
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
     }
+}
+
+#[test]
+fn child_only_household_cannot_keep_housing() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 1, 12.0, 3.0);
+    household.child_count = 1;
+    household.adult_count = 0;
+    household.elder_count = 0;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "child_only_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let child = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[child] = 0;
+    agents.age_group[child] = AGE_CHILD;
+    agents.transit[child] = TRANSIT_IN_BUILDING;
+    agents.current_building[child] = 0;
+    agents.recalculate_occupancy(&mut allocator);
+    assert_eq!(allocator.buildings[0].occupancy, 1);
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(households.households[0].unhoused_days_elapsed, 1);
+    assert_eq!(agents.home_building[child], usize::MAX);
+    assert_eq!(allocator.buildings[0].occupancy, 0);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use super::data::AgentSystem;
 use super::determinism::stable_index;
-use super::{MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING};
+use super::{MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, age_group_can_work};
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
@@ -33,12 +33,14 @@ impl AgentSystem {
         &mut self,
         agent_idx: usize,
         household_id: usize,
+        age_group: u8,
         door_pos: Option<Vector2>,
     ) {
         if agent_idx >= self.agents.len() {
             return;
         }
         self.agents.household_id[agent_idx] = household_id;
+        self.agents.age_group[agent_idx] = age_group;
         self.agents.pending_household_size[agent_idx] = 0;
         self.agents.target_building[agent_idx] = usize::MAX;
         self.agents.planned_target_building[agent_idx] = usize::MAX;
@@ -148,11 +150,15 @@ impl AgentSystem {
     pub(crate) fn assign_work_building(
         &mut self,
         agent_idx: usize,
-        work_building: usize,
-        job_lock_days: u8,
+        mut work_building: usize,
+        mut job_lock_days: u8,
     ) {
         if agent_idx >= self.agents.len() {
             return;
+        }
+        if work_building != usize::MAX && !age_group_can_work(self.agents.age_group[agent_idx]) {
+            work_building = usize::MAX;
+            job_lock_days = 0;
         }
 
         let old_work = self.agents.work_building[agent_idx];

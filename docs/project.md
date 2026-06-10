@@ -79,6 +79,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   later coarse retries, active shopping legs have explicit timeouts, and repeated failures surface as
   unresolved shortages instead of silent retry loops. See [`economy.md`](economy.md) and
   [`entrance_and_exit.md`](entrance_and_exit.md).
+- Resident age groups are live for the baseline economy: adults can work and shop, elders can shop
+  only, children consume household resources but do not work or shop, immigrant households cap at
+  two adults and two elders, and children only appear with adult households. Demand admission now
+  estimates move-in jobs and benefits from expected adult workers rather than total residents. See
+  [`economy.md`](economy.md) and
+  [`demand.md`](demand.md).
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.
 - Updated the Inspector UI to display both Household occupancy and total Agent counts.

@@ -105,7 +105,7 @@ fn remap_usize(value: &mut usize, mapping: &HashMap<usize, usize>) {
 #[cfg(test)]
 mod tests {
     use super::super::data::{Agent, AgentSystem};
-    use super::super::{MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_NETWORK};
+    use super::super::{AGE_ADULT, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_NETWORK};
     use super::*;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::graph::data::Edge;
@@ -209,6 +209,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 0.0,
@@ -265,6 +266,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 150.0,
@@ -336,6 +338,7 @@ mod tests {
         sys.agents.push(Agent {
             home_building: usize::MAX,
             household_id: usize::MAX,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: 0.0,

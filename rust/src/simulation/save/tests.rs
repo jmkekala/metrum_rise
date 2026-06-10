@@ -6,7 +6,9 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
+use crate::simulation::economy::agents::{
+    ACCESS_PLAN_VALID, AGE_ADULT, MODE_CAR, MODE_WALK, TRANSIT_NETWORK,
+};
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{
@@ -245,6 +247,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         budget: 178.0,
         stock: 3.0,
         member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 1.5,
         replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
@@ -298,6 +303,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         agents::LoadedAgentRecord {
             home_building: 0,
             household_id: 0,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             current_building: usize::MAX,
@@ -345,6 +351,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         agents::LoadedAgentRecord {
             home_building: 0,
             household_id: 0,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             current_building: usize::MAX,
@@ -496,7 +503,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.households.households[0].stay_failure_days, 1);
     assert_eq!(loaded.households.households[0].unhoused_days_elapsed, 0);
+    assert_eq!(loaded.households.households[0].child_count, 0);
+    assert_eq!(loaded.households.households[0].adult_count, 2);
+    assert_eq!(loaded.households.households[0].elder_count, 0);
     assert_eq!(loaded.agents.len(), 2);
+    assert_eq!(loaded.agents.age_group[0], AGE_ADULT);
+    assert_eq!(loaded.agents.age_group[1], AGE_ADULT);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.planned_attach_node[0], 0);
     assert_eq!(loaded.agents.planned_detach_node[0], 1);

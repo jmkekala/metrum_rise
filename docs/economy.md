@@ -1369,6 +1369,27 @@ Shift changeovers may still create local peaks, but they are smaller and more fr
 
 Remote work may later exist for some high-skill office roles, but it is not part of `v0.1`. If added later, it should be modeled as a separate `work_mode` or job capability rather than as the default behavior for all labor.
 
+### Household age groups
+
+Resident agents carry one fixed baseline age group in `v0.1`:
+
+- `child`: consumes household resources, but does not work and cannot carry household shopping
+- `adult`: may work and may carry household shopping
+- `elder`: may carry household shopping, but does not work
+
+Age composition is deterministic when an immigrant household is created. A household may contain at
+most two adults and at most two elders. There is no child cap, but every household with children
+must have at least one adult. The first member of a multi-member household is an adult, and
+remaining members use the baseline deterministic mix within those caps. A single-member household is
+always independent: adult or elder, never child-only. There is no aging or lifecycle transition yet.
+The current mix is code-defined starter behavior; if it becomes authored tuning later, this section
+owns that contract.
+
+Household records cache child/adult/elder counts from the parallel membership reduction. Hot economy
+passes use those counts instead of scanning household members. A valid housed household must have at
+least one adult or elder; child-only households cannot claim or keep a residential slot and should
+enter the normal unhoused/removal path rather than being silently repaired.
+
 ### Agents supply labor
 
 Agents decide whether to travel to work based on decision-utility scoring rather than a pure RNG cycle.
@@ -1408,6 +1429,8 @@ Recommended seed weights for the first implementation:
 
 Selection rule for `v0.1`:
 
+- only adult agents are work-eligible; children and elders must be ignored by job assignment,
+  workplace retention, wage payment, and work-trip scheduling
 - evaluate the score for reachable valid job options only
 - choose the highest-scoring reachable job
 - if the best score is at least `go_to_work_threshold`, the agent departs for work
@@ -1612,9 +1635,9 @@ Rules:
   still apply
 - before reserving store stock or spending household budget, the household must find an eligible
   shopper currently at home
-- an eligible starter shopper belongs to the household, is `TRANSIT_IN_BUILDING`, is currently in
-  `home_building_id`, has home activity, has no existing planned target, and is not already carrying
-  another household task
+- an eligible starter shopper belongs to the household, is an adult or elder, is
+  `TRANSIT_IN_BUILDING`, is currently in `home_building_id`, has home activity, has no existing
+  planned target, and is not already carrying another household task
 - if no eligible shopper is at home because all members are travelling, at work, or otherwise away,
   the household enters `waiting_for_shopper`; it does not reserve inventory, spend budget, or enter
   cooldown
@@ -2171,7 +2194,12 @@ Goal: finish with one coherent economy model instead of a mix of prototype and a
 are in `economy/profiles.toml` under `runtime_tuning`. The pioneer demand floor has been fully
 removed from `demand.rs` — the benefit is the replacement and is active.
 
-The unemployment benefit is a **household-level cash disbursement** paid to every unemployed member of an eligible household each operational day. It replaced the `pioneer_demand` floor as the mechanism that keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption demand, and generates real spawn pressure on commercial and industrial buildings.
+The unemployment benefit is a **household-level cash disbursement** paid for every unemployed adult
+member of an eligible household each operational day. Children and elders are not work-eligible and
+do not claim unemployment benefit. It replaced the `pioneer_demand` floor as the mechanism that
+keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the
+benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption
+demand, and generates real spawn pressure on commercial and industrial buildings.
 
 ### Ownership
 
@@ -2184,7 +2212,9 @@ move-in acceptance formula that reads the benefit amount and treasury balance as
 
 - The benefit is a household-level daily transfer, not a per-agent micro-payment.
 - Money is drawn from the **existing `CityTreasury`** (`SimCore::treasury`). It is not printed from nothing.
-- The benefit is self-terminating: once an agent is employed, disbursement stops for that household member. Once all household members are employed, the household exits the benefit entirely.
+- The benefit is self-terminating: once an adult agent is employed, disbursement stops for that
+  household member. Once all adult household members are employed, the household exits the benefit
+  entirely.
 - The benefit must generate real purchasing activity. A household that receives the benefit must actually attempt replenishment at a grocery store if its stock is below the trigger threshold. The benefit amount must be large enough that this attempt succeeds at prevailing prices.
 - The benefit must not create infinite runway. A household that cannot find work within the configured `unemployment_max_days` should emigrate rather than subsisting on benefit payments indefinitely.
 
@@ -2208,18 +2238,20 @@ The treasury balance may go negative (existing behavior). Disbursement should be
 A household is eligible for unemployment benefit on a given day if **all** of the following hold:
 - `household.member_count > 0`
 - `household.home_building_id` is a valid, non-broken residential building
-- At least one member of the household has `work_building == usize::MAX` (is unemployed)
+- At least one adult member of the household has `work_building == usize::MAX` (is unemployed)
 - `household.unemployment_days_elapsed < unemployment_max_days`
 
-`unemployment_days_elapsed` increments each day any household member remains unemployed, and resets to zero once all members are employed.
+`unemployment_days_elapsed` increments each day any adult household member remains unemployed, and
+resets to zero once all adult members are employed. Child/elder-only households have no unemployed
+adult workers and do not receive this benefit.
 
 ### Disbursement Rule
 
 Once per operational day, after `pay_daily_wages` and before `resolve_household_housing`, iterated across all households:
 
 ```
-unemployed_members = count of agents in household where work_building == usize::MAX
-benefit_today = unemployed_members × unemployment_daily_benefit_per_member
+unemployed_adults = count of adult agents in household where work_building == usize::MAX
+benefit_today = unemployed_adults × unemployment_daily_benefit_per_member
 
 if treasury.balance >= benefit_today:
     household.budget += benefit_today
@@ -2273,7 +2305,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | Parameter | Value | Role |
 |---|---|---|
 | `startup_treasury_balance` | 100,000 | Total treasury at map start |
-| `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed member per day |
+| `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed adult per day |
 | `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
 | `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Pantry days granted to arriving households |
 | `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |

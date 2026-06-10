@@ -2,6 +2,7 @@
 
 use super::Household;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
@@ -99,10 +100,26 @@ pub(crate) fn household_reserve_days(
 }
 
 pub(super) fn household_is_housed(household: &Household, allocator: &BuildingAllocator) -> bool {
-    household.home_building_id < allocator.buildings.len()
+    household_has_independent_member(household)
+        && household.home_building_id < allocator.buildings.len()
         && !allocator.buildings[household.home_building_id].broken
         && !allocator.buildings[household.home_building_id].economy_broken
         && !allocator.buildings[household.home_building_id].is_deserted
+}
+
+pub(super) fn household_has_independent_member(household: &Household) -> bool {
+    household.adult_count > 0 || household.elder_count > 0
+}
+
+/// Returns the deterministic expected adult worker count for a candidate immigrant household size.
+pub(crate) fn expected_adult_members_for_household_size(household_size: f32) -> f32 {
+    if household_size <= 1.0 {
+        0.8
+    } else {
+        (1.0 + (household_size - 1.0).clamp(0.0, 1.0) * 0.55)
+            .min(MAX_ADULTS_PER_HOUSEHOLD as f32)
+            .min(household_size)
+    }
 }
 
 pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {

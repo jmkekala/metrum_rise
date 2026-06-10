@@ -5,7 +5,9 @@ use super::metrics::household_demand_profile;
 use super::replenishment::{REPLENISHMENT_STABLE, stable_replenishment_offset_hours};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
+use crate::simulation::economy::agents::{
+    AgentSystem, TRANSIT_IN_BUILDING, household_age_composition, household_member_age_group,
+};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
@@ -25,11 +27,16 @@ impl HouseholdSystem {
         let starting_stock_days = target_days.min(tuning.households.immigrant_starting_stock_days);
 
         let member_count = member_count.max(1);
+        let age_composition =
+            household_age_composition(home_building_id, self.households.len(), member_count);
         self.households.push(Household {
             home_building_id,
             budget: tuning.households.immigrant_starting_budget_per_member * member_count as f32,
             stock: member_count as f32 * consumption_rate * starting_stock_days,
             member_count,
+            child_count: age_composition.child_count,
+            adult_count: age_composition.adult_count,
+            elder_count: age_composition.elder_count,
             consumption_rate,
             stock_days: starting_stock_days,
             replenishment_state: REPLENISHMENT_STABLE,
@@ -95,13 +102,16 @@ impl HouseholdSystem {
                 .get(home)
                 .map(|entrance| entrance.door_pos);
 
-            agents.materialize_household_carrier(i, household_id, home_door);
+            let carrier_age_group = household_member_age_group(home, household_id, 0, pending_size);
+            agents.materialize_household_carrier(i, household_id, carrier_age_group, home_door);
 
-            for _ in 1..pending_size {
+            for member_index in 1..pending_size {
                 let (x, y) = home_door
                     .map(|door| (door.x, door.y))
                     .unwrap_or((agents.pos_x[i], agents.pos_y[i]));
-                let resident_idx = agents.spawn_housed_agent(home, x, y);
+                let age_group =
+                    household_member_age_group(home, household_id, member_index, pending_size);
+                let resident_idx = agents.spawn_housed_agent_with_age_group(home, x, y, age_group);
                 agents.assign_household_id(resident_idx, household_id);
             }
 

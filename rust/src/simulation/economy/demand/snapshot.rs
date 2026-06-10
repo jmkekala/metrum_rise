@@ -17,7 +17,9 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::households::{Household, HouseholdSystem, household_reserve_days};
+use crate::simulation::economy::households::{
+    Household, HouseholdSystem, expected_adult_members_for_household_size, household_reserve_days,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
@@ -71,7 +73,9 @@ impl ResidentialOccupantSnapshot {
         let min_reserve_days_by_building = &scratch.min_reserve_days_by_building;
 
         households.households.par_iter().for_each(|household| {
-            if household.member_count == 0 {
+            if household.member_count == 0
+                || household.adult_count.saturating_add(household.elder_count) == 0
+            {
                 return;
             }
             let home_building_id = household.home_building_id;
@@ -318,6 +322,7 @@ impl DailyDemandSnapshot {
         let household_accumulator =
             collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
         let housed_resident_count = household_accumulator.housed_resident_count;
+        let housed_adult_count = household_accumulator.housed_adult_count;
         let housed_household_count = household_accumulator.housed_household_count;
         let unhoused_household_count = household_accumulator.unhoused_household_count;
         let zero_budget_household_count = household_accumulator.zero_budget_household_count;
@@ -420,9 +425,9 @@ impl DailyDemandSnapshot {
         } else {
             clamp01(zero_budget_household_count as f32 / total_household_count as f32)
         };
-        let existing_unemployed_member_count =
-            housed_resident_count.saturating_sub(filled_job_count);
-        let candidate_effective_workers = candidate_household_size.max(1.0);
+        let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
+        let candidate_effective_workers =
+            expected_adult_members_for_household_size(candidate_household_size).max(EPSILON);
         let open_job_household_pull = open_job_slots as f32 / candidate_effective_workers;
         let bootstrap_household_pull = if total_household_count == 0 { 1.0 } else { 0.0 };
         let incoming_household_need = open_job_household_pull.max(bootstrap_household_pull);
@@ -763,6 +768,7 @@ fn merge_resource_amounts(
 #[derive(Default)]
 struct HouseholdSnapshotAccumulator {
     housed_resident_count: u32,
+    housed_adult_count: u32,
     housed_household_count: u32,
     unhoused_household_count: u32,
     zero_budget_household_count: u32,
@@ -786,7 +792,8 @@ impl HouseholdSnapshotAccumulator {
         if household.budget <= EPSILON {
             self.zero_budget_household_count = self.zero_budget_household_count.saturating_add(1);
         }
-        let is_housed = household.home_building_id < allocator.buildings.len()
+        let is_housed = household.adult_count.saturating_add(household.elder_count) > 0
+            && household.home_building_id < allocator.buildings.len()
             && !allocator.buildings[household.home_building_id].broken
             && !allocator.buildings[household.home_building_id].economy_broken
             && !allocator.buildings[household.home_building_id].is_deserted;
@@ -795,6 +802,9 @@ impl HouseholdSnapshotAccumulator {
             self.housed_resident_count = self
                 .housed_resident_count
                 .saturating_add(household.member_count as u32);
+            self.housed_adult_count = self
+                .housed_adult_count
+                .saturating_add(household.adult_count as u32);
             self.household_affordability_sum += clamp01(
                 household_reserve_days(catalog, tuning, household)
                     / config
@@ -831,6 +841,9 @@ impl HouseholdSnapshotAccumulator {
         self.housed_resident_count = self
             .housed_resident_count
             .saturating_add(other.housed_resident_count);
+        self.housed_adult_count = self
+            .housed_adult_count
+            .saturating_add(other.housed_adult_count);
         self.housed_household_count = self
             .housed_household_count
             .saturating_add(other.housed_household_count);

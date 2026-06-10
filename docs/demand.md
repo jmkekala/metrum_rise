@@ -459,14 +459,17 @@ Baseline ownership rule:
 - `city_treasury_balance` is read from the city treasury owned by the fiscal ledger
 - `candidate_household_size` is the vacancy-weighted expected household size for currently open
   residential slots, using the same authored flat-size rule as the allocator
+- `candidate_effective_workers` is the expected adult-worker count for that candidate household
+  size, using the same deterministic baseline age mix as household admission
 - `candidate_daily_essential_cost` combines household demand-sink resource prices and
   per-member utility cost for that candidate size
 - `immigrant_starter_savings_per_household` comes from economy-owned household starter tuning
 - `unemployment_daily_benefit_per_member` comes from economy-owned unemployment tuning
 - `existing_unemployed_member_count`, `open_job_slots`, and `average_open_job_wage_per_day` come
-  from the settled household and job-offering building state; open jobs count commercial,
-  industrial, and utility/service profile slots with a positive authored wage and current operating
-  budget
+  from the settled household and job-offering building state. Existing unemployed members count
+  adult household members only; children and elders are not work-eligible. Open jobs count
+  commercial, industrial, and utility/service profile slots with a positive authored wage and
+  current operating budget
 - `commercial_input_need_value`, `local_industrial_input_capacity_value`,
   `industrial_missing_input_value`, and `industrial_input_capacity_deficit` are derived by the
   demand snapshot from compiled economy-profile ports. Active commercial inputs define the target;
@@ -600,7 +603,11 @@ household_purchase_power =
         1.0,
     )
 
-candidate_effective_workers = candidate_household_size
+expected_adult_workers_for_candidate_household(size) =
+    if size <= 1.0 then 0.8
+    else min(1.0 + clamp(size - 1.0, 0.0, 1.0) * 0.55, 2.0, size)
+candidate_effective_workers =
+    expected_adult_workers_for_candidate_household(candidate_household_size)
 expected_employed_members =
     min(candidate_effective_workers, open_job_slots)
 expected_unemployed_members =
@@ -1287,8 +1294,9 @@ admission_pressure =
 would enter the city, then asks whether starter savings plus expected wage
 income and benefit-backed unemployment support provide at least the authored search runway. Jobs
 count only paid, budget-backed commercial or industrial open slots. Benefit support is reliable
-only to the extent that the current treasury can cover existing unemployed residents plus the
-candidate household for `move_in_benefit_treasury_coverage_days`.
+only to the extent that the current treasury can cover existing unemployed adult residents plus the
+candidate household's expected unemployed adult workers for
+`move_in_benefit_treasury_coverage_days`.
 
 **`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
 High when incoming household pull exists and the city is welcoming:
@@ -1414,9 +1422,9 @@ If a household is admitted:
 The `economy` debug log emits a compact household-admission diagnostic line for each hourly pass.
 It reports the raw admission pressure, base incoming-household pressure, vacancy telemetry,
 incoming household need, open-job household pull, household affordability telemetry, candidate
-move-in acceptance, search-runway days, candidate household size, budget-backed open jobs, expected
-employed and unemployed members, expected wage income, benefit reliability and claims, starter
-savings, daily essential cost, daily deficit, construction-side move-in acceptance, construction
+move-in acceptance, search-runway days, candidate household size, expected adult-worker count,
+budget-backed open jobs, expected employed and unemployed adult workers, expected wage income,
+benefit reliability and claims, starter savings, daily essential cost, daily deficit, construction-side move-in acceptance, construction
 runway, residential construction viability, individual household-failure damping factors, the
 recent-failure memory and factor, threshold, normalized action pressure, carried admission credit,
 planned households, and actually launched arrival carriers.
@@ -1427,8 +1435,8 @@ settlement, removal execution, and the midnight demand pass. It reports:
 - `net_households`, `admitted_since_daily`, and `removed_today` for the household flow since the
   previous daily diagnostic
 - housed, unhoused, zero-budget, stock-empty, and low-stock household counts
-- resident agents, pending household carriers, employed residents, unemployed residents, and open
-  commercial or industrial job capacity
+- resident agents, child/adult/elder resident counts, pending household carriers, employed adult
+  residents, unemployed adult residents, and open commercial or industrial job capacity
 - occupied/vacant household slots and treasury balance
 
 This line is diagnostic only. It must not become a new demand input or hidden repair path. Its

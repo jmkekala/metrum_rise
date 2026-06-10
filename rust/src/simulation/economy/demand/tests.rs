@@ -188,6 +188,9 @@ fn housed_household(
         budget,
         stock: stock_days * member_count as f32,
         member_count,
+        child_count: 0,
+        adult_count: member_count,
+        elder_count: 0,
         consumption_rate: 1.0,
         stock_days,
         replenishment_state: REPLENISHMENT_STABLE,
@@ -761,8 +764,9 @@ fn residential_construction_bootstraps_from_construction_move_in_viability() {
         "healthy construction-side move-in viability should allow residential spawns"
     );
     assert!(
-        demand.last_admission_diagnostics.move_in_acceptance > 0.9,
-        "incoming household pull should remain visible even before a vacant home exists"
+        demand.last_admission_diagnostics.move_in_acceptance > 0.25,
+        "age-aware incoming household pull should remain visible before a vacant home exists, got={:.3}",
+        demand.last_admission_diagnostics.move_in_acceptance
     );
     assert_eq!(
         demand.last_admission_diagnostics.max_actionable_households,
@@ -773,7 +777,11 @@ fn residential_construction_bootstraps_from_construction_move_in_viability() {
         demand
             .last_admission_diagnostics
             .construction_move_in_acceptance
-            > 0.9
+            > 0.25,
+        "construction-side move-in viability should use the same age-aware pull, got={:.3}",
+        demand
+            .last_admission_diagnostics
+            .construction_move_in_acceptance
     );
 }
 
@@ -1053,10 +1061,12 @@ fn move_in_acceptance_accounts_for_benefit_treasury_coverage() {
     let mut covered_snapshot = vacant_admission_snapshot();
     covered_snapshot.existing_unemployed_member_count = 100;
     covered_snapshot.city_treasury_balance = 100_000.0;
+    covered_snapshot.candidate_daily_essential_cost = 48.0;
 
     let mut depleted_snapshot = vacant_admission_snapshot();
     depleted_snapshot.existing_unemployed_member_count = 100;
     depleted_snapshot.city_treasury_balance = 0.0;
+    depleted_snapshot.candidate_daily_essential_cost = 48.0;
 
     let mut covered_demand = DemandSystem::new();
     let covered_inputs = covered_demand.update_pressure_channels_from_snapshot(&covered_snapshot);
@@ -1089,7 +1099,10 @@ fn open_jobs_make_move_in_viable_without_benefits() {
     let mut demand = DemandSystem::new();
     let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
 
-    assert_eq!(inputs.admission_diagnostics.expected_employed_members, 2.0);
+    assert!(
+        (inputs.admission_diagnostics.expected_employed_members - 1.55).abs() < 0.001,
+        "expected employed adult workers should respect the household adult cap"
+    );
     assert_eq!(inputs.admission_diagnostics.daily_deficit, 0.0);
     assert!(
         inputs.admission_pressure > 0.9,

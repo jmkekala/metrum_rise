@@ -4232,6 +4232,9 @@ impl SimulationNode {
         dict.set("center_z", b.center_y as f64);
 
         let mut total_agents = 0i32;
+        let mut child_agents = 0i32;
+        let mut adult_agents = 0i32;
+        let mut elder_agents = 0i32;
         let mut household_count = 0i32;
         let mut household_budget_total = 0.0f32;
         let mut household_stock_total = 0.0f32;
@@ -4245,6 +4248,9 @@ impl SimulationNode {
                 if h.home_building_id == best_idx {
                     household_count += 1;
                     total_agents += h.member_count as i32;
+                    child_agents += h.child_count as i32;
+                    adult_agents += h.adult_count as i32;
+                    elder_agents += h.elder_count as i32;
                     household_budget_total += h.budget;
                     household_stock_total += h.stock;
                     household_stock_days_total += h.stock_days;
@@ -4265,6 +4271,9 @@ impl SimulationNode {
             }
         }
         dict.set("agent_count", total_agents);
+        dict.set("child_count", child_agents);
+        dict.set("adult_count", adult_agents);
+        dict.set("elder_count", elder_agents);
         if b.zone_type == ZoneType::Residential {
             let household_divisor = household_count.max(1) as f32;
             let replenishment_state = if household_count == 0 {

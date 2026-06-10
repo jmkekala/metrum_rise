@@ -6,13 +6,16 @@ use super::data::HouseholdSystem;
 use super::metrics::stock_days;
 use super::replenishment::clear_replenishment_request;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::{
+    AGE_ADULT, AGE_CHILD, AGE_ELDER, AgentSystem, age_group_can_work,
+};
 use rayon::prelude::*;
 
 impl HouseholdSystem {
-    pub(super) fn debug_validate_agent_household_refs(&self, agents: &AgentSystem) {
+    pub(super) fn debug_validate_agent_household_refs(&self, _agents: &AgentSystem) {
         #[cfg(debug_assertions)]
         {
+            let agents = _agents;
             let household_count = self.households.len();
             let households = &self.households;
             let pending_household_size = &agents.agents.pending_household_size;
@@ -80,28 +83,58 @@ impl HouseholdSystem {
         let household_count = self.households.len();
         let building_count = allocator.buildings.len();
         self.reset_member_count_scratch();
+        self.reset_child_count_scratch();
+        self.reset_adult_count_scratch();
+        self.reset_elder_count_scratch();
         self.reset_worker_count_scratch(building_count);
 
         let member_count_scratch = &self.member_count_scratch;
+        let child_count_scratch = &self.child_count_scratch;
+        let adult_count_scratch = &self.adult_count_scratch;
+        let elder_count_scratch = &self.elder_count_scratch;
         let worker_count_scratch = &self.worker_count_scratch;
         agents
             .household_id
             .par_iter()
             .zip(agents.work_building.par_iter())
-            .for_each(|(&household_id, &work_building)| {
+            .zip(agents.age_group.par_iter())
+            .for_each(|((&household_id, &work_building), &age_group)| {
                 if household_id < household_count {
                     member_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                    match age_group {
+                        AGE_CHILD => {
+                            child_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                        }
+                        AGE_ADULT => {
+                            adult_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                        }
+                        AGE_ELDER => {
+                            elder_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
                 }
-                if work_building < building_count {
+                if age_group_can_work(age_group) && work_building < building_count {
                     worker_count_scratch[work_building].fetch_add(1, Ordering::Relaxed);
                 }
             });
 
         self.households
             .par_iter_mut()
-            .zip(member_count_scratch.par_iter())
-            .for_each(|(household, count)| {
-                household.member_count = count.load(Ordering::Relaxed).min(u16::MAX as u32) as u16;
+            .enumerate()
+            .for_each(|(idx, household)| {
+                household.member_count = member_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.child_count = child_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.adult_count = adult_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.elder_count = elder_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
                 household.stock_days = stock_days(
                     household.stock,
                     household.member_count,
@@ -125,18 +158,51 @@ impl HouseholdSystem {
     pub(super) fn rebuild_household_membership(&mut self, agents: &AgentSystem) {
         let household_count = self.households.len();
         self.reset_member_count_scratch();
+        self.reset_child_count_scratch();
+        self.reset_adult_count_scratch();
+        self.reset_elder_count_scratch();
         let member_count_scratch = &self.member_count_scratch;
-        agents.household_id.par_iter().for_each(|&hid| {
-            if hid < household_count {
-                member_count_scratch[hid].fetch_add(1, Ordering::Relaxed);
-            }
-        });
+        let child_count_scratch = &self.child_count_scratch;
+        let adult_count_scratch = &self.adult_count_scratch;
+        let elder_count_scratch = &self.elder_count_scratch;
+        agents
+            .household_id
+            .par_iter()
+            .zip(agents.age_group.par_iter())
+            .for_each(|(&hid, &age_group)| {
+                if hid < household_count {
+                    member_count_scratch[hid].fetch_add(1, Ordering::Relaxed);
+                    match age_group {
+                        AGE_CHILD => {
+                            child_count_scratch[hid].fetch_add(1, Ordering::Relaxed);
+                        }
+                        AGE_ADULT => {
+                            adult_count_scratch[hid].fetch_add(1, Ordering::Relaxed);
+                        }
+                        AGE_ELDER => {
+                            elder_count_scratch[hid].fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
+                }
+            });
 
         self.households
             .par_iter_mut()
-            .zip(member_count_scratch.par_iter())
-            .for_each(|(household, count)| {
-                household.member_count = count.load(Ordering::Relaxed).min(u16::MAX as u32) as u16;
+            .enumerate()
+            .for_each(|(idx, household)| {
+                household.member_count = member_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.child_count = child_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.adult_count = adult_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
+                household.elder_count = elder_count_scratch[idx]
+                    .load(Ordering::Relaxed)
+                    .min(u16::MAX as u32) as u16;
                 household.stock_days = stock_days(
                     household.stock,
                     household.member_count,

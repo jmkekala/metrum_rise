@@ -197,7 +197,9 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 
 	if zone == "residential":
 		_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
-		_add_row(stats_body, "Residents", str(info.get("agent_count", 0)))
+		_add_row(stats_body, "Children", str(info.get("child_count", 0)))
+		_add_row(stats_body, "Adults", str(info.get("adult_count", 0)))
+		_add_row(stats_body, "Elders", str(info.get("elder_count", 0)))
 		_add_section(stats_body, "Household Economy")
 		_add_row(
 			stats_body,

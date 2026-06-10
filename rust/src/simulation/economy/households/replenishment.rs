@@ -16,7 +16,7 @@ use crate::simulation::economy::accessibility::{
 };
 use crate::simulation::economy::agents::tick::building_origin_trip_is_feasible;
 use crate::simulation::economy::agents::{
-    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
+    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_shop,
 };
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
@@ -877,6 +877,7 @@ impl HouseholdSystem {
             if household_id >= households.len()
                 || agents.transit[agent_idx] != TRANSIT_IN_BUILDING
                 || agents.activity[agent_idx] != ACTIVITY_HOME
+                || !age_group_can_shop(agents.age_group[agent_idx])
                 || agents.planned_target_building[agent_idx] != usize::MAX
                 || agents.target_building[agent_idx] != usize::MAX
             {
@@ -1367,6 +1368,7 @@ fn eligible_shopper_for_household(
         && agents.current_building[agent_idx] == household.home_building_id
         && agents.transit[agent_idx] == TRANSIT_IN_BUILDING
         && agents.activity[agent_idx] == ACTIVITY_HOME
+        && age_group_can_shop(agents.age_group[agent_idx])
         && agents.target_building[agent_idx] == usize::MAX
         && agents.planned_target_building[agent_idx] == usize::MAX
 }

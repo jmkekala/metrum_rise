@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 
 use super::HouseholdSystem;
-use super::metrics::{household_is_housed, household_reserve_days, level_tuning_value};
+use super::metrics::{
+    household_has_independent_member, household_is_housed, household_reserve_days,
+    level_tuning_value,
+};
 use super::replenishment::clear_replenishment_request;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
@@ -446,6 +449,29 @@ impl HouseholdSystem {
                 continue;
             }
             diagnostics.checked_households = diagnostics.checked_households.saturating_add(1);
+
+            if !household_has_independent_member(household) {
+                let current_home = household.home_building_id;
+                diagnostics.unhoused_start_households =
+                    diagnostics.unhoused_start_households.saturating_add(1);
+                if current_home < allocator.buildings.len() {
+                    self.evict_household(
+                        household_id,
+                        current_home,
+                        agents,
+                        allocator,
+                        &mut vacancy_planner,
+                        &household_member_heads,
+                        &household_member_next,
+                    );
+                    diagnostics.evicted = diagnostics.evicted.saturating_add(1);
+                }
+                self.households[household_id].unhoused_days_elapsed = self.households[household_id]
+                    .unhoused_days_elapsed
+                    .saturating_add(1);
+                diagnostics.still_unhoused = diagnostics.still_unhoused.saturating_add(1);
+                continue;
+            }
 
             let reserve_days = household_reserve_days(&catalog, &config, household);
             let current_home = household.home_building_id;

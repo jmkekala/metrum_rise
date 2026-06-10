@@ -2,7 +2,9 @@
 
 use super::data::{Agent, AgentSystem};
 use super::determinism::{stable_index, stable_unit_f32};
-use super::{MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING};
+use super::{
+    AGE_ADULT, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, age_group_can_work,
+};
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
@@ -11,6 +13,17 @@ use std::sync::atomic::Ordering;
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
     pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
+        self.spawn_housed_agent_with_age_group(home, init_x, init_y, AGE_ADULT)
+    }
+
+    /// Spawns one housed resident with an explicit lifecycle class.
+    pub(crate) fn spawn_housed_agent_with_age_group(
+        &mut self,
+        home: usize,
+        init_x: f32,
+        init_y: f32,
+        age_group: u8,
+    ) -> usize {
         let spawn_index = self.agents.len() as u32;
         let schedule_seed = stable_schedule_seed(home, spawn_index);
         let render_id = self.allocate_render_id();
@@ -18,6 +31,7 @@ impl AgentSystem {
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
+            age_group,
             pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: init_x,
@@ -94,6 +108,7 @@ impl AgentSystem {
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
+            age_group: AGE_ADULT,
             pending_household_size: 0,
             work_building: usize::MAX,
             pos_x: init_x,
@@ -216,7 +231,10 @@ impl AgentSystem {
         // Vacancy for residential is now household-based and managed by the HouseholdSystem.
         // Worker count for non-residential remains agent-based.
         let work = self.agents.work_building[index];
-        if work != usize::MAX && work < allocator.buildings.len() {
+        if age_group_can_work(self.agents.age_group[index])
+            && work != usize::MAX
+            && work < allocator.buildings.len()
+        {
             allocator.buildings[work].worker_count =
                 allocator.buildings[work].worker_count.saturating_sub(1);
         }

@@ -28,6 +28,7 @@ impl AgentSystem {
         let slices = MovementSlices {
             home: RawSlice::new(&mut self.agents.home_building),
             work: RawSlice::new(&mut self.agents.work_building),
+            age_group: RawSlice::new(&mut self.agents.age_group),
             pos_x: RawSlice::new(&mut self.agents.pos_x),
             pos_y: RawSlice::new(&mut self.agents.pos_y),
             activity: RawSlice::new(&mut self.agents.activity),

@@ -282,7 +282,7 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
             usize_to_i64(hid)?,
@@ -290,6 +290,9 @@ pub(super) fn save_world(
             household.budget,
             household.stock,
             i64::from(household.member_count),
+            i64::from(household.child_count),
+            i64::from(household.adult_count),
+            i64::from(household.elder_count),
             household.consumption_rate,
             household.stock_days,
             i64::from(household.replenishment_state),
@@ -536,34 +539,50 @@ pub(super) fn load_buildings(
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
         if hid != households.households.len() {
             return Err(SaveLoadError::custom("non-contiguous household ids"));
         }
+        let member_count = i64_to_u32(row.get(4)?)? as u16;
+        let child_count = i64_to_u32(row.get(5)?)? as u16;
+        let adult_count = i64_to_u32(row.get(6)?)? as u16;
+        let elder_count = i64_to_u32(row.get(7)?)? as u16;
+        if u32::from(child_count)
+            .saturating_add(u32::from(adult_count))
+            .saturating_add(u32::from(elder_count))
+            != u32::from(member_count)
+        {
+            return Err(SaveLoadError::custom(
+                "household age counters do not match member count",
+            ));
+        }
         households.households.push(Household {
             home_building_id: db_to_optional_usize(row.get(1)?)?,
             budget: row.get(2)?,
             stock: row.get(3)?,
-            member_count: i64_to_u32(row.get(4)?)? as u16,
-            consumption_rate: row.get(5)?,
-            stock_days: row.get(6)?,
-            replenishment_state: i64_to_u8(row.get(7)?)?,
-            cooldown_hours: i64_to_u16(row.get(8)?)?,
-            replenishment_failure_count: i64_to_u16(row.get(9)?)?,
-            reserved_store_building_id: db_to_optional_usize(row.get(10)?)?,
-            reserved_amount: row.get(11)?,
-            reserved_total_cost: row.get(12)?,
-            shopping_agent_id: db_to_optional_usize(row.get(13)?)?,
-            shopping_agent_schedule_seed: i64_to_u32(row.get(14)?)?,
-            shopping_timeout_hours_remaining: i64_to_u16(row.get(15)?)?,
-            replenishment_search_cursor: i64_to_u32(row.get(16)?)?,
-            stay_failure_days: i64_to_u32(row.get(17)?)?,
-            unhoused_days_elapsed: i64_to_u32(row.get(18)?)?,
-            replenishment_offset_hours: i64_to_u16(row.get(19)?)?,
-            unemployment_days_elapsed: i64_to_u32(row.get(20)?)?,
+            member_count,
+            child_count,
+            adult_count,
+            elder_count,
+            consumption_rate: row.get(8)?,
+            stock_days: row.get(9)?,
+            replenishment_state: i64_to_u8(row.get(10)?)?,
+            cooldown_hours: i64_to_u16(row.get(11)?)?,
+            replenishment_failure_count: i64_to_u16(row.get(12)?)?,
+            reserved_store_building_id: db_to_optional_usize(row.get(13)?)?,
+            reserved_amount: row.get(14)?,
+            reserved_total_cost: row.get(15)?,
+            shopping_agent_id: db_to_optional_usize(row.get(16)?)?,
+            shopping_agent_schedule_seed: i64_to_u32(row.get(17)?)?,
+            shopping_timeout_hours_remaining: i64_to_u16(row.get(18)?)?,
+            replenishment_search_cursor: i64_to_u32(row.get(19)?)?,
+            stay_failure_days: i64_to_u32(row.get(20)?)?,
+            unhoused_days_elapsed: i64_to_u32(row.get(21)?)?,
+            replenishment_offset_hours: i64_to_u16(row.get(22)?)?,
+            unemployment_days_elapsed: i64_to_u32(row.get(23)?)?,
         });
     }
     Ok(households)
