@@ -43,6 +43,7 @@ impl ShipmentSystem {
                 if building.broken
                     || building.economy_broken
                     || building.is_deserted
+                    || building.is_under_construction()
                     || building.edge_idx == usize::MAX
                     || building.shipment_cooldown_hours > 0
                 {
@@ -63,6 +64,7 @@ impl ShipmentSystem {
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
+                || building.is_under_construction()
                 || building.edge_idx == usize::MAX
                 || building.shipment_cooldown_hours > 0
             {

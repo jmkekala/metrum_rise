@@ -758,6 +758,29 @@ Interpretation:
   profiles define daily input need, live industrial profiles define local output capacity for those
   input resources, and the missing value ratio becomes the pressure. OWA dependency remains
   throughput telemetry, not the source of spawn volume.
+
+### Construction Pipeline
+
+Demand starts fresh private construction; economy owns the construction lifecycle once a site is
+created. Under-construction buildings are not live housing, job, production, shopping, utility, or
+inventory capacity. They do, however, count as committed pipeline capacity for spawn-volume and
+absorption decisions so pressure does not repeatedly start duplicate construction while already
+claimed sites are still being built.
+
+Rules:
+
+- spawn candidates consume legal parcel/build-site capacity immediately when a construction site is
+  created
+- residential spawn need subtracts under-construction household slots from the missing-slot target,
+  but admission and move-in execution may use only completed vacant homes
+- commercial and industrial spawn need may subtract under-construction compatible output capacity
+  from committed capacity, but live shortage, jobs, revenue, and logistics remain unavailable until
+  completion
+- non-residential absorption gates treat under-construction output as committed capacity to avoid
+  oversupply from repeated hourly construction actions
+- upgrades, downgrades, and despawns stay instant in the first implementation; a later
+  redevelopment model must specify how existing households, workers, inventory, and budgets survive
+  occupied-building construction
 - `NonResidentialSpawnLimit = 1.0` so commercial and industrial buildings can bootstrap without
   waiting for a large population
 - baseline `v0.1` intentionally does not define `OfficeGrowth` or `MixedGrowth`; office and mixed
@@ -1671,59 +1694,43 @@ lifecycle event.
 
 ### Desertion Trigger
 
-Desertion is evaluated once per daily tick for every non-broken, non-economy-broken
-Commercial or Industrial building.
+Desertion is evaluated once per daily settlement for every non-broken, non-economy-broken
+commercial, industrial, or utility building that participates in budget distress. Residential
+buildings are handled by household relocation and removal instead.
 
 Deterministic rule:
 
 ```text
-insolvent =
-    operating_budget < profile.average_daily_wage()   // cannot pay even one worker for one day
-    OR (worker_count == 0 AND operating_budget < 13.0)
-    // "OR" covers the no-worker case where average_daily_wage may be 0
+Step 1, before today's wages and utility costs:
+    if budget_distress == true AND operating_budget < 0:
+        is_deserted = true
 
-deserted_conditions_hold =
-    startup_reset_used == true          // one-time bootstrap rescue already consumed
-    AND revenue == 0.0                  // no income this period
-    AND insolvent                       // cannot sustain any workers at current budget
-
-economy_dead_days update (daily, before is_deserted check):
-    if is_deserted:
-        no change                       // already terminal; counter frozen
-    else if deserted_conditions_hold:
-        economy_dead_days += 1
+Step 4, after today's utility cost and forced OWA liquidation:
+    if operating_budget < 0:
+        budget_distress = true
     else:
-        economy_dead_days = 0           // any condition failing resets the streak
-
-is_deserted becomes true when:
-    economy_dead_days >= DESERTED_THRESHOLD_DAYS   // constant: 14
+        budget_distress = false
 ```
 
 Where:
 
-- `startup_reset_used` is set by `ensure_building_startup_float` in `economy/households.rs` after
-  the one-time budget rescue fires; it is never reset
-- `profile.average_daily_wage()` is the wage declared in the bound economy profile; buildings
-  with no workers (utility nodes, warehouses) return 0.0 from this call, which is why the
-  fallback `worker_count == 0 AND operating_budget < 13.0` branch covers those cases
-- `revenue` is the building's lifetime gross-revenue field; it stays at `0.0` only for
-  buildings that have never completed a transaction since spawn or last restart
-- `DESERTED_THRESHOLD_DAYS = 14` — two weeks of unbroken economic death required before the
-  state transitions; any revenue receipt resets the streak to zero
-- `economy_dead_days` reuses the existing dead-code field `abandoned_timer: u32`, renamed;
-  it is persisted in the save schema so the streak survives reloads
+- `budget_distress` is a persisted one-day memory bit set when the previous daily settlement ended
+  negative after forced OWA liquidation tried to sell unreserved output inventory
+- a building gets one full distress day before desertion: the first negative day sets
+  `budget_distress`, and only the next daily Step 1 can set `is_deserted`
+- if liquidation or later revenue brings `operating_budget` back to zero or positive before the
+  next Step 1, the building survives and Step 4 clears `budget_distress`
+- under-construction, broken, economy-broken, and already-deserted buildings are skipped by this
+  sequence
 
 Interpretation:
 
-- a building with 5/5 workers and `operating_budget = 0.0` satisfies `insolvent` even though
-  `worker_count != 0`; workers present at a building that cannot pay them do not rescue it
-  from the desertion streak
-- a newly placed building that cannot attract workers exhausts its startup float, gets one
-  rescue from `ensure_building_startup_float`, exhausts it again, and then accumulates the
-  14-day streak before becoming deserted — total time from spawn to deserted is roughly
-  `2 × startup_runway_days + 14` (≈ 28 days at default tuning)
-- any revenue receipt (even a single unit sold) resets `economy_dead_days` to zero; the
-  building must be continuously insolvent and earningless for the full threshold period
+- a newly placed building receives startup operating budget once at spawn/construction creation;
+  there is no daily refill or repeated rescue mechanism
+- negative budget is not instantly fatal; forced OWA liquidation can rescue a building by selling
+  unreserved inventory before the next bankruptcy check
+- two consecutive daily observations are required: the building must end one day negative and still
+  be negative at the start of the next daily settlement
 - `is_deserted` is a one-way latch; no in-simulation recovery path exists once set
 
 ### Insolvent Employer Filter (Job Search)
@@ -1797,8 +1804,8 @@ resolve_building_utilities skips building if:
     broken OR economy_broken OR is_deserted
 ```
 
-No utility charge is applied. `utility_service_available` is set to `false` for deserted
-buildings and is never flipped back.
+No utility charge is applied, and deserted utility providers do not receive distributed local
+utility revenue.
 
 **Freight and OWA export:**
 
@@ -1904,17 +1911,18 @@ A deserted building:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `economy_dead_days: u32` | u32 | 0 | Renamed from dead-code `abandoned_timer`. Consecutive-day streak counter. Frozen once `is_deserted`. |
-| `is_deserted: bool` | bool | false | One-way latch. Set when `economy_dead_days >= DESERTED_THRESHOLD_DAYS`. |
+| `is_deserted: bool` | bool | false | One-way latch. Set when the two-day `budget_distress` bankruptcy check fails. |
+| `budget_distress: bool` | bool | false | Persisted one-day memory that the previous daily settlement ended with negative operating budget after forced liquidation. |
 
-Both fields are persisted. Add to `save/world.rs` INSERT and SELECT with forward-compatible
-`ALTER TABLE buildings ADD COLUMN ... DEFAULT 0` migrations so older saves load cleanly.
+Both fields are persisted in the current save schema. Old save compatibility is not required during
+the cleanup phase, so schema changes should be direct version bumps rather than compatibility
+shims.
 
 All construction sites that build a `Building` literal must initialise both fields:
-`economy_dead_days: 0, is_deserted: false`.
+`is_deserted: false, budget_distress: false`.
 
-Affected sites: `allocator/placement.rs`, `economy/demand.rs`, `economy/households.rs`,
-`economy/logistics.rs`, `network/topology.rs`, `grid/pollution.rs`, `save/world.rs`.
+Current durable construction path: `allocator/placement.rs`. Tests and internal helpers that build
+`Building` literals must initialise the same fields explicitly.
 
 ## Code Removal And Replacement Targets
 

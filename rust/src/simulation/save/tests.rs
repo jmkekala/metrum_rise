@@ -216,6 +216,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         worker_count: 0,
         asset_id: residential_asset,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,

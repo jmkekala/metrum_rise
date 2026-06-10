@@ -343,6 +343,34 @@ Buildings own the money used for production and operations.
 
 This gives the simulation a readable money loop without requiring every essential purchase to be modeled as an individual per-agent checkout event.
 
+### Private building construction
+
+Fresh demand-owned private building spawns enter the world as construction sites before becoming
+operational buildings. The building record exists immediately so the parcel is claimed and the
+renderer can show a site, but it is not live economy capacity until construction completes.
+
+Rules:
+
+- construction duration is authored in `economy/profiles.toml` under
+  `runtime_tuning.construction`
+- shipped starter durations are short and zone-aware: residential levels use `[6, 12, 18]` hours,
+  commercial levels use `[8, 16, 24]`, and industrial levels use `[12, 24, 36]`
+- an under-construction building has zero household capacity, zero worker capacity, no open jobs,
+  no production, no shopping supply, no utility/service output, and no demand-live inventory flow
+- under-construction output and housing capacity may be counted by demand as committed pipeline
+  capacity when deciding whether to start more construction
+- completion is checked on the coarse operational-hour cadence; when remaining construction hours
+  reaches zero, the building becomes operational and can enter normal household, labor, logistics,
+  and demand snapshots
+- the first implementation applies construction only to fresh private spawns; upgrades,
+  downgrades, and despawns stay instant until a later occupied-building redevelopment model can
+  preserve residents, workers, inventory, and budgets safely
+- construction visuals are MultiMesh-based: a generic site/foundation layer and a scaled final
+  asset layer are driven by the building's deterministic construction progress
+
+This keeps growth visible and bounded without adding per-building Godot nodes or per-agent
+construction behavior.
+
 ### City treasury
 
 The city owns one explicit treasury ledger.
@@ -2282,7 +2310,9 @@ else if treasury.balance > 0.0:
 
 ### Authored Tuning Parameters
 
-`unemployment_daily_benefit_per_member`, `unemployment_max_days`, `startup_treasury_balance`, household starter values, household utility cost, and OWA utility costs all live in the `runtime_tuning` block of `economy/profiles.toml`.
+`unemployment_daily_benefit_per_member`, `unemployment_max_days`, `startup_treasury_balance`,
+household starter values, household utility cost, private construction durations, and OWA utility
+costs all live in the `runtime_tuning` block of `economy/profiles.toml`.
 
 | Parameter | Location | Role |
 |---|---|---|
@@ -2290,6 +2320,7 @@ else if treasury.balance > 0.0:
 | `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning | Currency paid per unemployed household member per day |
 | `unemployment_max_days` | `economy/profiles.toml` runtime_tuning | Days before an unemployed household becomes emigration-eligible |
 | `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter stock, reserve rules, and utility cost |
+| `runtime_tuning.construction.*` | `economy/profiles.toml` runtime_tuning | Private construction durations for fresh demand-owned spawns |
 | `commercial_owa_utility_cost_per_day` / `industrial_owa_utility_cost_per_day` | `economy/profiles.toml` runtime_tuning | OWA utility cost when local utility service is incomplete |
 
 ### Spawn Signal: Replacing the Pioneer Floor
@@ -2321,6 +2352,9 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.households.utility_cost_per_member_per_day` | 3.0 | Daily utility cost per resident |
 | `runtime_tuning.households.residential_move_in_min_reserve_days_by_level` | [0.5, 6.0, 12.0] | Reserve days required to move into residential levels |
 | `runtime_tuning.households.residential_stay_min_reserve_days_by_level` | [0.5, 3.0, 6.0] | Reserve days required to stay housed by residential level |
+| `runtime_tuning.construction.residential_hours_by_level` | [6, 12, 18] | Fresh residential construction hours by target level |
+| `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
+| `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
 | `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
 | `industrial_owa_utility_cost_per_day` | 12.0 | OWA utility charge per industrial building |
 
@@ -2636,7 +2670,10 @@ inactive building states instead of applying the legacy `utility_factor` through
 
 **Mechanism**: `ensure_building_startup_float` fires every daily tick for any Commercial/Industrial building where `operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD && revenue == 0.0 && worker_count == 0`. There was no guard preventing repeat fires.
 
-**Fix**: Added `startup_reset_used: bool` field to `Building`. The reset now fires at most once per building lifetime (`FIXED` — `households.rs`, `allocator/mod.rs`, all construction sites, and the save/load schema). After the one-time rescue, a building that still cannot attract workers or earn revenue stays bankrupt permanently, which is the correct signal for the demand system to consider removal.
+**Fix**: Removed the startup refill path. Startup operating budget is now assigned once when the
+building is created, and the two-day `budget_distress` bankruptcy rule handles buildings that spend
+that float without becoming viable. A building that cannot attract workers or earn revenue now
+enters `is_deserted`, which is the correct signal for the demand system to consider removal.
 
 ### 9. ECON-04: Commercial/Industrial Spawn Volume Scales with Road/Zone Area
 

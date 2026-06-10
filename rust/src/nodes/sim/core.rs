@@ -756,7 +756,17 @@ impl SimCore {
                 continue;
             }
             diagnostics.active_households = diagnostics.active_households.saturating_add(1);
-            if household.home_building_id < self.allocator.buildings.len() {
+            let live_home = self
+                .allocator
+                .buildings
+                .get(household.home_building_id)
+                .is_some_and(|building| {
+                    !building.broken
+                        && !building.economy_broken
+                        && !building.is_deserted
+                        && building.is_operational()
+                });
+            if live_home {
                 diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
             } else {
                 diagnostics.unhoused_households = diagnostics.unhoused_households.saturating_add(1);
@@ -1114,6 +1124,7 @@ impl SimCore {
             .saturating_sub(1)
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
+        self.allocator.advance_construction_hour();
         self.households.operational_hour_tick(
             &mut self.agents,
             &mut self.allocator,

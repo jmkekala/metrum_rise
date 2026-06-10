@@ -116,5 +116,6 @@ fn valid_benefit_home(allocator: &BuildingAllocator, home_building_id: usize) ->
                 && !building.broken
                 && !building.economy_broken
                 && !building.is_deserted
+                && !building.is_under_construction()
         })
 }

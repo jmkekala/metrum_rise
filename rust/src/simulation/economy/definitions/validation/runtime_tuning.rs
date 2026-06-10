@@ -95,6 +95,18 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     if tuning.logistics.terminal_failure_attempts == 0 {
         return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
     }
+    validate_nonempty_u16_level_array(
+        &tuning.construction.residential_hours_by_level,
+        "runtime_tuning.construction.residential_hours_by_level",
+    )?;
+    validate_nonempty_u16_level_array(
+        &tuning.construction.commercial_hours_by_level,
+        "runtime_tuning.construction.commercial_hours_by_level",
+    )?;
+    validate_nonempty_u16_level_array(
+        &tuning.construction.industrial_hours_by_level,
+        "runtime_tuning.construction.industrial_hours_by_level",
+    )?;
     validate_work_profiles(&tuning.operational_clock)?;
     validate_freight_profiles(&tuning.operational_clock)?;
     validate_range(
@@ -402,6 +414,18 @@ fn validate_nonempty_level_array(
     }
     for (idx, value) in values.iter().copied().enumerate() {
         validate_range(value, min_value, max_value, &format!("{label}[{idx}]"))?;
+    }
+    Ok(())
+}
+
+fn validate_nonempty_u16_level_array(values: &[u16], label: &str) -> Result<(), String> {
+    if values.is_empty() {
+        return Err(format!("{label} must contain at least one level value"));
+    }
+    for (idx, value) in values.iter().copied().enumerate() {
+        if value == 0 {
+            return Err(format!("{label}[{idx}] must be > 0"));
+        }
     }
     Ok(())
 }

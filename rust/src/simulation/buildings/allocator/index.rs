@@ -24,6 +24,9 @@ impl BuildingAllocator {
                     RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
                 self.building_chunks.entry(chunk).or_default().push(idx);
             }
+            if b.is_under_construction() {
+                continue;
+            }
             if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(idx);
 
@@ -44,6 +47,9 @@ impl BuildingAllocator {
             return;
         }
         let cap = self.household_capacity(building_idx);
+        if cap == 0 {
+            return;
+        }
         let b = &mut self.buildings[building_idx];
         b.occupancy += 1;
 
@@ -71,6 +77,9 @@ impl BuildingAllocator {
         let cap = self.household_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy = b.occupancy.saturating_sub(1);
+        if cap == 0 {
+            return;
+        }
 
         // If it was full and now has space, add it back to vacancy index
         if b.occupancy + 1 == cap {

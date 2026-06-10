@@ -441,6 +441,9 @@ impl BuildingAllocator {
             _ => 0.0,
         };
 
+        let construction_duration_hours =
+            construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
+
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,
@@ -460,6 +463,8 @@ impl BuildingAllocator {
             worker_count: 0,
             asset_id: placement.asset_id,
             level: placement.initial_level,
+            construction_total_hours: construction_duration_hours,
+            construction_remaining_hours: construction_duration_hours,
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
@@ -476,6 +481,21 @@ impl BuildingAllocator {
         });
         self.buildings.len() - 1
     }
+}
+
+fn construction_duration_hours(
+    zone_type: ZoneType,
+    level: u8,
+    tuning: &RuntimeEconomyTuning,
+) -> u16 {
+    let levels = match zone_type {
+        ZoneType::Residential => &tuning.construction.residential_hours_by_level,
+        ZoneType::Commercial => &tuning.construction.commercial_hours_by_level,
+        ZoneType::Industrial => &tuning.construction.industrial_hours_by_level,
+        ZoneType::None | ZoneType::Office | ZoneType::Mixed => return 0,
+    };
+    let idx = usize::from(level.saturating_sub(1)).min(levels.len().saturating_sub(1));
+    levels.get(idx).copied().unwrap_or(0)
 }
 
 fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {

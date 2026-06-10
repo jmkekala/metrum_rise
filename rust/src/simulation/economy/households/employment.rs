@@ -514,7 +514,11 @@ fn apply_workplace_plan(
             continue;
         }
         let building = &allocator.buildings[job];
-        if building.is_deserted || building.broken || building.economy_broken {
+        if building.is_deserted
+            || building.broken
+            || building.economy_broken
+            || building.is_under_construction()
+        {
             continue;
         }
         let Some(economy_profile) =
@@ -602,6 +606,7 @@ fn active_work_profile<'a>(
     if building.broken
         || building.economy_broken
         || building.is_deserted
+        || building.is_under_construction()
         || building.edge_idx == usize::MAX
     {
         return None;
@@ -659,6 +664,7 @@ impl JobSupplySnapshot {
                 if building.broken
                     || building.economy_broken
                     || building.is_deserted
+                    || building.is_under_construction()
                     || building.edge_idx == usize::MAX
                 {
                     return None;
@@ -921,7 +927,7 @@ fn build_home_job_options_for_key(
     let Some(home) = allocator.buildings.get(key.home_idx) else {
         return empty_home_job_options();
     };
-    if home.broken || home.economy_broken || home.is_deserted {
+    if home.broken || home.economy_broken || home.is_deserted || home.is_under_construction() {
         return empty_home_job_options();
     }
 

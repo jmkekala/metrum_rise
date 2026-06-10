@@ -33,6 +33,7 @@ impl SupplierCandidateIndex {
                 if building.broken
                     || building.economy_broken
                     || building.is_deserted
+                    || building.is_under_construction()
                     || building.edge_idx == usize::MAX
                     || !matches!(
                         building.zone_type,

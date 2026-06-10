@@ -116,6 +116,8 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         worker_count: 0,
         asset_id: "test:placeholder".to_owned(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,

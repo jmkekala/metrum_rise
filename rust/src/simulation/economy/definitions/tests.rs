@@ -82,6 +82,11 @@ border_queued_jobs_per_node = 4
 queued_shipment_expiry_hours = 12
 terminal_failure_attempts = 3
 
+[runtime_tuning.construction]
+residential_hours_by_level = [6, 12, 18]
+commercial_hours_by_level = [8, 16, 24]
+industrial_hours_by_level = [12, 24, 36]
+
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0
 travel_estimate_refresh_minutes = 360

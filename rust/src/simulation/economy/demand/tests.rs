@@ -163,6 +163,8 @@ fn building(
         worker_count,
         asset_id,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: runtime_id,
         economy_broken: false,
@@ -269,6 +271,7 @@ fn commercial_zoning_run(graph: &RegionGraph) -> ZoningSystem {
 fn vacant_admission_snapshot() -> DailyDemandSnapshot {
     DailyDemandSnapshot {
         vacant_household_slots: 10,
+        under_construction_household_slots: 0,
         total_household_count: 4,
         housed_household_count: 4,
         unhoused_household_count: 0,
@@ -283,10 +286,12 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         household_stock_stability: 1.0,
         commercial_capacity_deficit: 0.0,
         unmet_commercial_consumer_demand: 0.0,
+        committed_unmet_commercial_consumer_demand: 0.0,
         industrial_input_capacity_deficit: 0.0,
         commercial_input_need_value: 0.0,
         local_industrial_input_capacity_value: 0.0,
         industrial_missing_input_value: 0.0,
+        committed_industrial_missing_input_value: 0.0,
         external_connection_available: 1.0,
         connected_border_count: 1,
         city_treasury_balance: 100_000.0,
@@ -557,13 +562,13 @@ fn commercial_spawn_need_rounds_unmet_output_to_missing_buildings() {
     }];
     let mut snapshot = vacant_admission_snapshot();
 
-    snapshot.unmet_commercial_consumer_demand = 1.0;
+    snapshot.committed_unmet_commercial_consumer_demand = 1.0;
     assert_eq!(
         commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         1.0
     );
 
-    snapshot.unmet_commercial_consumer_demand = 201.0;
+    snapshot.committed_unmet_commercial_consumer_demand = 201.0;
     assert_eq!(
         commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         2.0
@@ -586,12 +591,14 @@ fn industrial_spawn_need_rounds_missing_input_capacity_to_missing_buildings() {
 
     snapshot.commercial_input_need_value = 2_400.0;
     snapshot.industrial_missing_input_value = 2_400.0;
+    snapshot.committed_industrial_missing_input_value = 2_400.0;
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         1.0
     );
 
     snapshot.industrial_missing_input_value = 2_401.0;
+    snapshot.committed_industrial_missing_input_value = 2_401.0;
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         2.0
@@ -599,6 +606,7 @@ fn industrial_spawn_need_rounds_missing_input_capacity_to_missing_buildings() {
 
     snapshot.commercial_owa_input_value = 13_860.0;
     snapshot.industrial_missing_input_value = 0.0;
+    snapshot.committed_industrial_missing_input_value = 0.0;
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         0.0
@@ -702,6 +710,124 @@ fn residential_spawn_need_uses_incoming_pull_not_only_vacancy_reserve() {
         residential_spawn_need_buildings(&allocator, &snapshot, &candidates),
         1.0,
         "incoming household pull should request capacity even when one reserve home is vacant"
+    );
+}
+
+#[test]
+fn residential_spawn_need_counts_under_construction_slots_as_committed_capacity() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    let candidates = [DemandSpawnCandidate {
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: residential_asset,
+        },
+        density: "low".to_owned(),
+    }];
+    let mut snapshot = vacant_admission_snapshot();
+    snapshot.total_household_count = 8;
+    snapshot.vacant_household_slots = 0;
+    snapshot.incoming_household_need = 1.4;
+
+    assert_eq!(
+        residential_spawn_need_buildings(&allocator, &snapshot, &candidates),
+        1.0
+    );
+
+    snapshot.under_construction_household_slots = 6;
+    assert_eq!(
+        residential_spawn_need_buildings(&allocator, &snapshot, &candidates),
+        0.0,
+        "pending residential construction should reserve enough committed slots to prevent duplicate spawns"
+    );
+}
+
+#[test]
+fn pending_commercial_construction_is_committed_but_not_live_capacity() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+    let mut pending_store = building(ZoneType::Commercial, 0.0, 0, 0, commercial_asset.clone());
+    pending_store.construction_total_hours = 6;
+    pending_store.construction_remaining_hours = 6;
+    allocator.buildings.push(pending_store);
+
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(housed_household(0, 5, 1_000.0, 3.0));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
+
+    assert!(snapshot.unmet_commercial_consumer_demand > 0.0);
+    assert_eq!(snapshot.committed_unmet_commercial_consumer_demand, 0.0);
+    assert!(snapshot.commercial_capacity_deficit > 0.0);
+
+    let candidates = [DemandSpawnCandidate {
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: commercial_asset,
+        },
+        density: "low".to_owned(),
+    }];
+    assert_eq!(
+        commercial_spawn_need_buildings(&allocator, catalog.as_ref(), &snapshot, &candidates),
+        0.0,
+        "pending commercial output should block duplicate spawns without hiding live shortage"
+    );
+}
+
+#[test]
+fn pending_industrial_construction_is_committed_but_not_live_capacity() {
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
+    let industrial_asset = register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
+    allocator
+        .buildings
+        .push(building(ZoneType::Commercial, 0.0, 0, 1, commercial_asset));
+    let mut pending_industrial =
+        building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset.clone());
+    pending_industrial.construction_total_hours = 6;
+    pending_industrial.construction_remaining_hours = 6;
+    allocator.buildings.push(pending_industrial);
+
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
+
+    assert_eq!(snapshot.commercial_input_need_value, 2_400.0);
+    assert_eq!(snapshot.local_industrial_input_capacity_value, 0.0);
+    assert_eq!(snapshot.industrial_missing_input_value, 2_400.0);
+    assert_eq!(snapshot.committed_industrial_missing_input_value, 0.0);
+    assert_eq!(snapshot.industrial_input_capacity_deficit, 1.0);
+
+    let candidates = [DemandSpawnCandidate {
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: industrial_asset,
+        },
+        density: "low".to_owned(),
+    }];
+    assert_eq!(
+        industrial_spawn_need_buildings(&allocator, catalog.as_ref(), &snapshot, &candidates),
+        0.0,
+        "pending industrial output should block duplicate spawns without hiding live shortage"
     );
 }
 

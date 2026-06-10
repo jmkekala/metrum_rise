@@ -194,6 +194,15 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 
 	var zone: String = info.get("zone_type", "")
 	_add_row(stats_body, "Type", "%s   Level %d" % [_zone_label(zone), int(info.get("level", 0))])
+	if info.get("under_construction", false):
+		_add_row(
+			stats_body,
+			"Construction",
+			"%d h left / %.0f%%" % [
+				int(info.get("construction_remaining_hours", 0)),
+				float(info.get("construction_progress", 0.0)) * 100.0,
+			]
+		)
 
 	if zone == "residential":
 		_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
@@ -252,6 +261,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 		flags.append("Economy broken")
 	if info.get("pending_redevelopment", false):
 		flags.append("Rezone (%d d grace)" % info.get("rezone_grace_days", 0))
+	if info.get("under_construction", false):
+		flags.append("Under construction")
 	if flags.size() > 0:
 		_add_section(stats_body, "Alerts")
 		for flag in flags:

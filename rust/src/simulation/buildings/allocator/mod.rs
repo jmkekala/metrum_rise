@@ -99,6 +99,12 @@ pub struct Building {
     pub asset_id: String,
     /// Current growth tier.
     pub level: u8,
+    /// Authored duration of the current construction task in operational hours.
+    ///
+    /// `0` means this building was placed complete or has already finished construction.
+    pub construction_total_hours: u16,
+    /// Remaining operational hours before this building becomes live economy capacity.
+    pub construction_remaining_hours: u16,
     /// If true, the asset was missing from the registry during load.
     pub broken: bool,
     /// Compact runtime economy-profile id resolved from the asset's authored profile reference.
@@ -210,6 +216,27 @@ pub(crate) struct EconomyProfileBinding {
 }
 
 impl Building {
+    /// Returns true while the building exists only as a construction site.
+    pub(crate) fn is_under_construction(&self) -> bool {
+        self.construction_remaining_hours > 0
+    }
+
+    /// Returns true when the building can participate in household, labor, and economy flows.
+    pub(crate) fn is_operational(&self) -> bool {
+        !self.is_under_construction()
+    }
+
+    /// Returns deterministic `0.0..=1.0` construction progress for rendering and diagnostics.
+    pub(crate) fn construction_progress(&self) -> f32 {
+        if self.construction_total_hours == 0 {
+            return 1.0;
+        }
+        let remaining = self
+            .construction_remaining_hours
+            .min(self.construction_total_hours);
+        1.0 - remaining as f32 / self.construction_total_hours as f32
+    }
+
     /// Returns the current inventory amount for one runtime resource.
     pub(crate) fn inventory_units(&self, resource_runtime_id: ResourceRuntimeId) -> f32 {
         if resource_runtime_id == 0 {
@@ -445,6 +472,40 @@ impl BuildingAllocator {
         ) as u32
     }
 
+    /// Advances private construction sites by one operational hour.
+    pub(crate) fn advance_construction_hour(&mut self) {
+        let mut completed_any = false;
+        let mut completed_zone_dirty = [false; BASELINE_PRIVATE_ZONES.len()];
+        for building in &mut self.buildings {
+            if building.construction_remaining_hours == 0 {
+                continue;
+            }
+            building.construction_remaining_hours -= 1;
+            if building.construction_remaining_hours == 0 {
+                completed_any = true;
+                building.construction_total_hours = 0;
+                if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+                    completed_zone_dirty[zone_idx] = true;
+                }
+                debug_log!(
+                    "economy",
+                    "building construction complete: asset={} zone={:?} level={}",
+                    building.asset_id,
+                    building.zone_type,
+                    building.level
+                );
+            }
+        }
+        if completed_any {
+            self.dirty = true;
+            self.dirty_index = true;
+            for (zone_idx, dirty) in completed_zone_dirty.into_iter().enumerate() {
+                self.dirty_zones[zone_idx] |= dirty;
+            }
+            self.rebuild_zone_index();
+        }
+    }
+
     /// Remaps all building edge indices after a road network compaction.
     pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
         let old_len = self.buildings.len();
@@ -523,7 +584,7 @@ impl BuildingAllocator {
     /// Unresolved assets or undeclared capacities count as zero.
     pub fn building_capacity(&self, building_idx: usize) -> u32 {
         let b = &self.buildings[building_idx];
-        if b.broken || b.economy_broken {
+        if b.broken || b.economy_broken || b.is_under_construction() {
             return 0;
         }
         self.registry.capacity(&b.asset_id)
@@ -536,7 +597,7 @@ impl BuildingAllocator {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken || b.economy_broken {
+        if b.broken || b.economy_broken || b.is_under_construction() {
             return 0;
         }
         self.registry.household_capacity(&b.asset_id)
@@ -590,7 +651,7 @@ impl BuildingAllocator {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken || b.economy_broken || b.is_deserted {
+        if b.broken || b.economy_broken || b.is_deserted || b.is_under_construction() {
             return 0;
         }
         self.worker_capacity_for_asset(&b.asset_id)
@@ -605,7 +666,7 @@ impl BuildingAllocator {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken || b.economy_broken || b.is_deserted {
+        if b.broken || b.economy_broken || b.is_deserted || b.is_under_construction() {
             return 0;
         }
         self.worker_capacity_for_asset_with_catalog(&b.asset_id, catalog)

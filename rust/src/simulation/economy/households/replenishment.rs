@@ -148,6 +148,7 @@ impl StoreSupplyIndex {
                 if store.broken
                     || store.economy_broken
                     || store.is_deserted
+                    || store.is_under_construction()
                     || store.edge_idx == usize::MAX
                     || !matches!(store.zone_type, ZoneType::Commercial)
                     || store.inventory_units(household_supply_resource) <= 0.0
@@ -1278,8 +1279,13 @@ fn apply_replenishment_plan(
             || store.broken
             || store.economy_broken
             || store.is_deserted
+            || store.is_under_construction()
         {
-            if store.broken || store.economy_broken || store.is_deserted {
+            if store.broken
+                || store.economy_broken
+                || store.is_deserted
+                || store.is_under_construction()
+            {
                 diagnostics.rejected_invalid_store += 1;
             } else {
                 diagnostics.rejected_empty += 1;
@@ -1462,6 +1468,7 @@ fn valid_store_for_pickup(
         !store.broken
             && !store.economy_broken
             && !store.is_deserted
+            && !store.is_under_construction()
             && matches!(store.zone_type, ZoneType::Commercial)
             && economy_profile_for_building(catalog, store)
                 .is_some_and(|profile| profile.output_port(household_supply_resource).is_some())

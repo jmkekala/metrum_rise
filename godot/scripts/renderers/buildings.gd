@@ -5,7 +5,9 @@
 ##   get_registered_asset_ids() -> PackedStringArray
 ##   get_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
 ##   get_deserted_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
+##   get_construction_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
 ##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
+##   get_construction_site_transforms(zone_id: int) -> PackedFloat32Array
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
 ## passes each enabled pack's native path to Rust for manifest scanning. Packs not
@@ -24,8 +26,12 @@ const CFG_PATH := "user://active_packs.cfg"
 var multimeshes: Dictionary = {}
 ## deserted_multimeshes[asset_id] = MultiMeshInstance3D — gray material override for deserted state
 var deserted_multimeshes: Dictionary = {}
+## construction_multimeshes[asset_id] = MultiMeshInstance3D — reveal-scaled final assets
+var construction_multimeshes: Dictionary = {}
 ## foundation_multimeshes[zone_id] = MultiMeshInstance3D
 var foundation_multimeshes: Dictionary = {}
+## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
+var construction_site_multimeshes: Dictionary = {}
 
 var show_foundations := false
 
@@ -58,6 +64,7 @@ func _ready() -> void:
 	# Build foundation multimeshes for each zone type.
 	for zone_id in ZONE_IDS:
 		_setup_foundation(zone_id)
+		_setup_construction_site(zone_id)
 
 	# Build one MultiMeshInstance3D for each registered building asset.
 	_rebuild_multimeshes()
@@ -68,8 +75,11 @@ func update_all_buildings() -> void:
 		_update_buildings_for_asset(aid)
 	for aid in deserted_multimeshes.keys():
 		_update_deserted_multimesh(aid)
+	for aid in construction_multimeshes.keys():
+		_update_construction_multimesh(aid)
 	for zone_id in ZONE_IDS:
 		_update_foundation(zone_id)
+		_update_construction_site(zone_id)
 
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
@@ -101,6 +111,7 @@ func _setup_multimesh_for_asset(asset_id: String) -> void:
 	# Deserted variant: same mesh geometry, warm gray material override.
 	if not is_broken:
 		_setup_deserted_multimesh_for_asset(asset_id, mesh)
+		_setup_construction_multimesh_for_asset(asset_id, mesh)
 
 func _setup_deserted_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
 	var mmi := MultiMeshInstance3D.new()
@@ -120,6 +131,22 @@ func _setup_deserted_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	add_child(mmi)
 	deserted_multimeshes[asset_id] = mmi
+
+func _setup_construction_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = 0
+	mm.mesh = mesh if mesh else _create_fallback_mesh()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.88, 0.70, 0.42, 1.0)
+	mat.roughness = 0.85
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mmi.material_override = mat
+	mmi.multimesh = mm
+	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+	add_child(mmi)
+	construction_multimeshes[asset_id] = mmi
 
 func _load_mesh_for_asset(asset_id: String) -> Mesh:
 	# Ask Rust for the native path to the LOD0 file for this asset.
@@ -241,6 +268,28 @@ func _setup_foundation(zone_id: int) -> void:
 	add_child(mmi)
 	foundation_multimeshes[zone_id] = mmi
 
+func _setup_construction_site(zone_id: int) -> void:
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = 0
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(1.0, 0.1, 1.0)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.roughness = 0.9
+	match zone_id:
+		1: mat.albedo_color = Color(0.74, 0.56, 0.30, 0.65)
+		2: mat.albedo_color = Color(0.70, 0.58, 0.34, 0.65)
+		3: mat.albedo_color = Color(0.66, 0.57, 0.34, 0.65)
+		_: mat.albedo_color = Color(0.55, 0.49, 0.40, 0.55)
+	mesh.material = mat
+	mm.mesh = mesh
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+	construction_site_multimeshes[zone_id] = mmi
+
 func _process(_delta: float) -> void:
 	if Engine.get_frames_drawn() % 30 == 0:
 		_rebuild_multimeshes()
@@ -249,8 +298,11 @@ func _process(_delta: float) -> void:
 			_update_buildings_for_asset(aid)
 		for aid in deserted_multimeshes.keys():
 			_update_deserted_multimesh(aid)
+		for aid in construction_multimeshes.keys():
+			_update_construction_multimesh(aid)
 		for zone_id in ZONE_IDS:
 			_update_foundation(zone_id)
+			_update_construction_site(zone_id)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -279,11 +331,31 @@ func _update_deserted_multimesh(asset_id: String) -> void:
 	if count > 0:
 		mmi.multimesh.buffer = buffer
 
+func _update_construction_multimesh(asset_id: String) -> void:
+	if not construction_multimeshes.has(asset_id):
+		return
+	var buffer: PackedFloat32Array = simulation_node.get_construction_building_transforms_for_asset(asset_id)
+	var mmi: MultiMeshInstance3D = construction_multimeshes[asset_id]
+	var count := buffer.size() / 12
+	mmi.multimesh.instance_count = count
+	if count > 0:
+		mmi.multimesh.buffer = buffer
+
 func _update_foundation(zone_id: int) -> void:
 	if not foundation_multimeshes.has(zone_id):
 		return
 	var buffer: PackedFloat32Array = simulation_node.get_building_plot_transforms(zone_id)
 	var mmi: MultiMeshInstance3D = foundation_multimeshes[zone_id]
+	var count := buffer.size() / 12
+	mmi.multimesh.instance_count = count
+	if count > 0:
+		mmi.multimesh.buffer = buffer
+
+func _update_construction_site(zone_id: int) -> void:
+	if not construction_site_multimeshes.has(zone_id):
+		return
+	var buffer: PackedFloat32Array = simulation_node.get_construction_site_transforms(zone_id)
+	var mmi: MultiMeshInstance3D = construction_site_multimeshes[zone_id]
 	var count := buffer.size() / 12
 	mmi.multimesh.instance_count = count
 	if count > 0:

@@ -71,8 +71,9 @@ pub(super) fn residential_spawn_need_buildings(
             .max(1.0)
     };
     let desired_vacant_slots = incoming_slots + reserve_slots;
-    let missing_household_slots =
-        (desired_vacant_slots - snapshot.vacant_household_slots as f32).max(0.0);
+    let committed_slots =
+        snapshot.vacant_household_slots + snapshot.under_construction_household_slots;
+    let missing_household_slots = (desired_vacant_slots - committed_slots as f32).max(0.0);
     if missing_household_slots <= EPSILON {
         return 0.0;
     }
@@ -91,7 +92,7 @@ pub(super) fn commercial_spawn_need_buildings(
     snapshot: &DailyDemandSnapshot,
     candidates: &[DemandSpawnCandidate],
 ) -> f32 {
-    if snapshot.unmet_commercial_consumer_demand <= EPSILON {
+    if snapshot.committed_unmet_commercial_consumer_demand <= EPSILON {
         return 0.0;
     }
     let average_output_units =
@@ -99,7 +100,7 @@ pub(super) fn commercial_spawn_need_buildings(
     if average_output_units <= EPSILON {
         0.0
     } else {
-        (snapshot.unmet_commercial_consumer_demand / average_output_units).ceil()
+        (snapshot.committed_unmet_commercial_consumer_demand / average_output_units).ceil()
     }
 }
 
@@ -109,7 +110,7 @@ pub(super) fn industrial_spawn_need_buildings(
     snapshot: &DailyDemandSnapshot,
     candidates: &[DemandSpawnCandidate],
 ) -> f32 {
-    if snapshot.industrial_missing_input_value <= EPSILON {
+    if snapshot.committed_industrial_missing_input_value <= EPSILON {
         return 0.0;
     }
     let average_output_value =
@@ -117,7 +118,7 @@ pub(super) fn industrial_spawn_need_buildings(
     if average_output_value <= EPSILON {
         0.0
     } else {
-        (snapshot.industrial_missing_input_value / average_output_value).ceil()
+        (snapshot.committed_industrial_missing_input_value / average_output_value).ceil()
     }
 }
 

@@ -15,6 +15,8 @@ pub(crate) struct RuntimeEconomyTuning {
     pub viability: BuildingViabilityRuntimeTuning,
     /// Freight batching, border terminal, and failure escalation limits.
     pub logistics: LogisticsRuntimeTuning,
+    /// Private building construction durations for fresh demand-owned spawns.
+    pub construction: ConstructionRuntimeTuning,
     /// Daily OWA utility charge for one commercial building when local utilities are incomplete.
     pub commercial_owa_utility_cost_per_day: f32,
     /// Daily OWA utility charge for one industrial building when local utilities are incomplete.
@@ -91,6 +93,17 @@ pub(crate) struct LogisticsRuntimeTuning {
     /// Failed request attempts before a building/resource request becomes terminal.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub terminal_failure_attempts: u16,
+}
+
+/// Runtime controls for fresh private building construction.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub(crate) struct ConstructionRuntimeTuning {
+    /// Fresh residential construction hours by target level, indexed from level 1.
+    pub residential_hours_by_level: Vec<u16>,
+    /// Fresh commercial construction hours by target level, indexed from level 1.
+    pub commercial_hours_by_level: Vec<u16>,
+    /// Fresh industrial construction hours by target level, indexed from level 1.
+    pub industrial_hours_by_level: Vec<u16>,
 }
 
 /// One authored minute range from operational midnight.

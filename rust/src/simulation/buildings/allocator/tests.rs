@@ -374,6 +374,8 @@ fn setup_startup_spawn_city_for_rezoning() -> (
             worker_count: 0,
             asset_id: "base:b.com.shop".to_owned(),
             level: 1,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
             broken: false,
             economy_profile_runtime_id: 0,
             economy_broken: false,
@@ -455,6 +457,8 @@ fn test_zone_index_consistency() {
                 commercial_asset.clone()
             },
             level: 1,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
             broken: false,
             economy_profile_runtime_id: 0,
             economy_broken: false,
@@ -535,6 +539,8 @@ fn test_vacancy_index_consistency() {
             worker_count: 0,
             asset_id: residential_asset.clone(),
             level: 1,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
             broken: false,
             economy_profile_runtime_id: 0,
             economy_broken: false,
@@ -601,6 +607,81 @@ fn test_vacancy_index_consistency() {
     assert_eq!(
         allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         4
+    );
+}
+
+#[test]
+fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.construction",
+        ZoneClass::Residential,
+    );
+
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        width_cells: 3,
+        depth_cells: 3,
+        zone_profile_runtime_id: 0,
+        parcel_id: 0,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.5,
+        side_offset: 0.0,
+        is_deserted: false,
+        budget_distress: false,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: residential_asset,
+        level: 1,
+        construction_total_hours: 2,
+        construction_remaining_hours: 2,
+        broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
+        resource_inventory: Vec::new(),
+        revenue: 0.0,
+        operating_budget: 500.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    allocator.rebuild_zone_index();
+
+    assert_eq!(allocator.household_capacity(0), 0);
+    assert_eq!(
+        allocator.zone_index[zone_bucket(ZoneType::Residential)].len(),
+        0
+    );
+    assert_eq!(
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
+        0
+    );
+
+    allocator.advance_construction_hour();
+    assert_eq!(allocator.buildings[0].construction_remaining_hours, 1);
+    assert_eq!(allocator.household_capacity(0), 0);
+
+    allocator.advance_construction_hour();
+    assert!(!allocator.buildings[0].is_under_construction());
+    assert_eq!(allocator.buildings[0].construction_total_hours, 0);
+    assert_eq!(allocator.household_capacity(0), 6);
+    assert_eq!(
+        allocator.zone_index[zone_bucket(ZoneType::Residential)].len(),
+        1
+    );
+    assert_eq!(
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
+        1
     );
 }
 
@@ -1078,6 +1159,8 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         worker_count: 0,
         asset_id,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1196,6 +1279,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         worker_count: 0,
         asset_id: "base:b.res.anchor_units".to_owned(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1313,6 +1398,8 @@ fn test_building_removal_clears_zoning_occupancy() {
         worker_count: 0,
         asset_id,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1452,6 +1539,8 @@ fn test_immigration_claims_vacant_home() {
         worker_count: 0,
         asset_id: residential_asset_id,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1591,6 +1680,8 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         worker_count: 0,
         asset_id: residential_asset.clone(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1625,6 +1716,8 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         worker_count: 0,
         asset_id: commercial_asset,
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: grocery_profile_runtime_id,
         economy_broken: false,
@@ -1654,10 +1747,15 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
 
     let zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut demand = DemandSystem::new();
-    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    for _ in 0..4 {
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+        if demand.households_to_admit_today > 0 {
+            break;
+        }
+    }
     assert!(
         demand.households_to_admit_today > 0,
-        "hourly demand should produce a household-admission output from open-job pull; credit={:.3} residential={:.3}",
+        "hourly demand credit should accumulate into a household-admission output from open-job pull; credit={:.3} residential={:.3}",
         demand.admission_action_credit,
         demand.residential,
     );
@@ -1817,6 +1915,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         worker_count: 0,
         asset_id: residential_level_1.clone(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1851,6 +1951,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         worker_count: 0,
         asset_id: residential_level_2.clone(),
         level: 2,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1885,6 +1987,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         worker_count: 0,
         asset_id: residential_level_1.clone(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,

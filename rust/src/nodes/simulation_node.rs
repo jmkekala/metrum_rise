@@ -4135,11 +4135,28 @@ impl SimulationNode {
             .get_deserted_building_transforms_for_asset_internal(&asset_id.to_string())
     }
 
+    /// Returns the packed 12-float transforms for under-construction buildings with the asset ID.
+    #[func]
+    pub fn get_construction_building_transforms_for_asset(
+        &self,
+        asset_id: GString,
+    ) -> PackedFloat32Array {
+        self.lock_core()
+            .get_construction_building_transforms_for_asset_internal(&asset_id.to_string())
+    }
+
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
         self.lock_core()
             .get_building_plot_transforms_internal(zone_type_int)
+    }
+
+    /// Returns the packed construction-site slab transforms for a specific zone type.
+    #[func]
+    pub fn get_construction_site_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
+        self.lock_core()
+            .get_construction_site_transforms_internal(zone_type_int)
     }
 
     /// Returns a Dictionary of live stats for the building whose centre is closest to
@@ -4227,6 +4244,12 @@ impl SimulationNode {
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
         dict.set("zone_type", GString::from(zone_type_str));
         dict.set("level", b.level as i32);
+        dict.set("under_construction", b.is_under_construction());
+        dict.set(
+            "construction_remaining_hours",
+            b.construction_remaining_hours as i32,
+        );
+        dict.set("construction_progress", b.construction_progress() as f64);
         dict.set("occupancy", b.occupancy as i32);
         dict.set("center_x", b.center_x as f64);
         dict.set("center_z", b.center_y as f64);

@@ -125,6 +125,8 @@ fn make_building(
         worker_count: 0,
         asset_id: asset_id.to_owned(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: economy_binding.runtime_id,
         economy_broken: economy_binding.economy_broken,
@@ -537,6 +539,55 @@ fn deserted_destination_rejects_inbound_delivery() {
         100.0,
     ));
     allocator.buildings[0].is_deserted = true;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let staple_food = catalog
+        .resource_runtime_id_for_id("staple_food")
+        .expect("staple food resource");
+    let mut shipments = ShipmentSystem::new();
+    shipments.shipments.push(Shipment {
+        resource_runtime_id: staple_food,
+        amount: 40.0,
+        source: ShipmentEndpoint::OwaBorder(0),
+        destination: ShipmentEndpoint::Building(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
+        total_cost: 600.0,
+        eta_hours: 1,
+        queued_hours: 0,
+    });
+
+    shipments.hourly_tick(&mut allocator, &network, &graph, 480);
+
+    assert!(shipments.shipments.is_empty());
+    assert_eq!(allocator.buildings[0].inventory_units(staple_food), 0.0);
+    assert!((allocator.buildings[0].operating_budget - 700.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn under_construction_destination_rejects_inbound_delivery() {
+    let (graph, network, _industrial_edge, commercial_edge, _border_node) =
+        simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "construction_delivery_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        0.0,
+        100.0,
+    ));
+    allocator.buildings[0].construction_total_hours = 3;
+    allocator.buildings[0].construction_remaining_hours = 2;
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 

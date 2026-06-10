@@ -66,6 +66,7 @@ impl VacancyPlanner {
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
+                || building.is_under_construction()
                 || building.pending_redevelopment
             {
                 continue;
@@ -288,6 +289,7 @@ impl VacancyPlanner {
                 !building.broken
                     && !building.economy_broken
                     && !building.is_deserted
+                    && !building.is_under_construction()
                     && !building.pending_redevelopment
                     && matches!(building.zone_type, ZoneType::Residential)
             })
@@ -302,6 +304,7 @@ fn vacancy_candidate_for_building(
     if building.broken
         || building.economy_broken
         || building.is_deserted
+        || building.is_under_construction()
         || building.pending_redevelopment
         || !matches!(building.zone_type, ZoneType::Residential)
     {

@@ -155,7 +155,11 @@ fn update_best_local_supplier_choice(
         return;
     }
     let supplier = &allocator.buildings[candidate_idx];
-    if supplier.broken || supplier.economy_broken || supplier.is_deserted {
+    if supplier.broken
+        || supplier.economy_broken
+        || supplier.is_deserted
+        || supplier.is_under_construction()
+    {
         return;
     }
     let Some(supplier_profile) = catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)

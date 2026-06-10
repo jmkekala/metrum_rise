@@ -105,6 +105,7 @@ pub(super) fn household_is_housed(household: &Household, allocator: &BuildingAll
         && !allocator.buildings[household.home_building_id].broken
         && !allocator.buildings[household.home_building_id].economy_broken
         && !allocator.buildings[household.home_building_id].is_deserted
+        && allocator.buildings[household.home_building_id].is_operational()
 }
 
 pub(super) fn household_has_independent_member(household: &Household) -> bool {

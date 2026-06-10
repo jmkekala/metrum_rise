@@ -18,7 +18,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`buildings.md`](buildings.md) | Reserved for a future building type catalog. See `economy.md` and `demand.md` for current building specs. |
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
 | [`roads.md`](roads.md) | Live road surface / roadbed runtime contract. |
-| [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads, pads, and future foundations. |
+| [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads and terrain pads; building construction lifecycle is owned by `economy.md` / `demand.md`. |
 | [`terrain.md`](terrain.md) | Terrain source ingest, chunked terrain runtime, and large-world terrain ownership. |
 | [`ui.md`](ui.md) | UI paradigm, surface ownership, style conventions, and migration plan. |
 

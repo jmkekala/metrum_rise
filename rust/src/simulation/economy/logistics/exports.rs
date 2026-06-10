@@ -53,6 +53,7 @@ impl ShipmentSystem {
                     || building.edge_idx == usize::MAX
                     || building.shipment_cooldown_hours > 0
                     || building.is_deserted
+                    || building.is_under_construction()
                     || !matches!(building.zone_type, ZoneType::Industrial)
                 {
                     return None;
@@ -72,6 +73,7 @@ impl ShipmentSystem {
                 || building.edge_idx == usize::MAX
                 || building.shipment_cooldown_hours > 0
                 || building.is_deserted
+                || building.is_under_construction()
                 || !matches!(building.zone_type, ZoneType::Industrial)
             {
                 continue;

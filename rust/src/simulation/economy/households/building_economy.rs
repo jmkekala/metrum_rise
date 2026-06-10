@@ -22,7 +22,11 @@ const UTILITY_SERVICE_SEWAGE: &str = "sewage";
 impl HouseholdSystem {
     pub(super) fn run_bankruptcy_check(&mut self, allocator: &mut BuildingAllocator) {
         for building in &mut allocator.buildings {
-            if building.broken || building.economy_broken || building.is_deserted {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+            {
                 continue;
             }
             if building.budget_distress && building.operating_budget < 0.0 {
@@ -62,6 +66,7 @@ impl HouseholdSystem {
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
+                || building.is_under_construction()
                 || building.edge_idx == usize::MAX
             {
                 continue;
@@ -93,6 +98,7 @@ impl HouseholdSystem {
             if building.is_deserted
                 || building.broken
                 || building.economy_broken
+                || building.is_under_construction()
                 || building.edge_idx == usize::MAX
             {
                 continue;
@@ -136,7 +142,11 @@ impl HouseholdSystem {
         for idx in 0..allocator.buildings.len() {
             let participates = {
                 let building = &allocator.buildings[idx];
-                if building.is_deserted || building.broken || building.economy_broken {
+                if building.is_deserted
+                    || building.broken
+                    || building.economy_broken
+                    || building.is_under_construction()
+                {
                     false
                 } else {
                     building_participates_in_budget_distress(&catalog, building)
@@ -173,7 +183,11 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         allocator.buildings.par_iter_mut().for_each(|building| {
             let zone = building.zone_type;
-            if building.broken || building.economy_broken || building.is_deserted {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+            {
                 return;
             }
             let Some(profile) = economy_profile_for_building(&catalog, building) else {

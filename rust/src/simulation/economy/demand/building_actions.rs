@@ -376,7 +376,11 @@ impl DemandSystem {
                 if building.zone_type != zone_type {
                     return None;
                 }
-                if building.broken || building.economy_broken || building.pending_redevelopment {
+                if building.broken
+                    || building.economy_broken
+                    || building.pending_redevelopment
+                    || building.is_under_construction()
+                {
                     return None;
                 }
                 let Some(entry) = allocator.registry.get(&building.asset_id) else {

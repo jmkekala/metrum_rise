@@ -83,6 +83,7 @@ impl ResidentialOccupantSnapshot {
                 || allocator.buildings[home_building_id].broken
                 || allocator.buildings[home_building_id].economy_broken
                 || allocator.buildings[home_building_id].is_deserted
+                || allocator.buildings[home_building_id].is_under_construction()
             {
                 return;
             }
@@ -169,13 +170,18 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) household_affordability: f32,
     pub(super) household_stock_stability: f32,
     pub(super) commercial_capacity_deficit: f32,
+    pub(super) under_construction_household_slots: u32,
+    #[cfg(test)]
     pub(super) unmet_commercial_consumer_demand: f32,
+    pub(super) committed_unmet_commercial_consumer_demand: f32,
     pub(super) industrial_input_capacity_deficit: f32,
     #[cfg(test)]
     pub(super) commercial_input_need_value: f32,
     #[cfg(test)]
     pub(super) local_industrial_input_capacity_value: f32,
+    #[cfg(test)]
     pub(super) industrial_missing_input_value: f32,
+    pub(super) committed_industrial_missing_input_value: f32,
     pub(super) external_connection_available: f32,
     pub(super) connected_border_count: u32,
     pub(super) city_treasury_balance: f32,
@@ -291,17 +297,23 @@ impl DailyDemandSnapshot {
         let total_commercial_expected_input = building_accumulator.total_commercial_expected_input;
         let candidate_household_size_sum = building_accumulator.candidate_household_size_sum;
         let candidate_household_slot_count = building_accumulator.candidate_household_slot_count;
+        let under_construction_household_slots =
+            building_accumulator.under_construction_household_slots;
         let filled_job_count = building_accumulator.filled_job_count;
         let open_job_slots = building_accumulator.open_job_slots;
         let open_job_wage_sum = building_accumulator.open_job_wage_sum;
-        let commercial_output_capacity_by_resource =
-            building_accumulator.commercial_output_capacity_by_resource;
+        let live_commercial_output_capacity_by_resource =
+            building_accumulator.live_commercial_output_capacity_by_resource;
+        let committed_commercial_output_capacity_by_resource =
+            building_accumulator.committed_commercial_output_capacity_by_resource;
         let commercial_input_need_by_resource =
             building_accumulator.commercial_input_need_by_resource;
-        let local_industrial_output_capacity_by_resource =
-            building_accumulator.local_industrial_output_capacity_by_resource;
-        let placed_output_capacity_by_resource =
-            building_accumulator.placed_output_capacity_by_resource;
+        let live_local_industrial_output_capacity_by_resource =
+            building_accumulator.live_local_industrial_output_capacity_by_resource;
+        let committed_local_industrial_output_capacity_by_resource =
+            building_accumulator.committed_local_industrial_output_capacity_by_resource;
+        let committed_output_capacity_by_resource =
+            building_accumulator.committed_output_capacity_by_resource;
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
         let candidate_household_size = if candidate_household_slot_count == 0 {
@@ -332,7 +344,7 @@ impl DailyDemandSnapshot {
         let household_stock_stability_sum = household_accumulator.household_stock_stability_sum;
         let output_absorption = OutputAbsorptionContext::from_resource_amounts(
             catalog.resource_count(),
-            &placed_output_capacity_by_resource,
+            &committed_output_capacity_by_resource,
             &demand_sink_rates_by_resource,
             housed_resident_count,
             &commercial_input_need_by_resource,
@@ -356,16 +368,25 @@ impl DailyDemandSnapshot {
         };
         let mut total_commercial_consumer_demand = 0.0_f32;
         let mut unmet_commercial_consumer_demand = 0.0_f32;
+        let mut committed_unmet_commercial_consumer_demand = 0.0_f32;
         for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
         {
             let consumer_demand = consumption_rate_per_resident * housed_resident_count as f32;
             if consumer_demand <= 0.0 {
                 continue;
             }
-            let placed_capacity =
-                resource_amount(&commercial_output_capacity_by_resource, resource_runtime_id);
+            let live_capacity = resource_amount(
+                &live_commercial_output_capacity_by_resource,
+                resource_runtime_id,
+            );
+            let committed_capacity = resource_amount(
+                &committed_commercial_output_capacity_by_resource,
+                resource_runtime_id,
+            );
             total_commercial_consumer_demand += consumer_demand;
-            unmet_commercial_consumer_demand += (consumer_demand - placed_capacity).max(0.0);
+            unmet_commercial_consumer_demand += (consumer_demand - live_capacity).max(0.0);
+            committed_unmet_commercial_consumer_demand +=
+                (consumer_demand - committed_capacity).max(0.0);
         }
         let commercial_capacity_deficit = if total_commercial_consumer_demand <= 0.0 {
             0.0
@@ -375,6 +396,7 @@ impl DailyDemandSnapshot {
         let mut commercial_input_need_value = 0.0_f32;
         let mut local_industrial_input_capacity_value = 0.0_f32;
         let mut industrial_missing_input_value = 0.0_f32;
+        let mut committed_industrial_missing_input_value = 0.0_f32;
         for &(resource_runtime_id, need_units) in &commercial_input_need_by_resource {
             let resource_price = catalog
                 .unit_price_for_resource(resource_runtime_id)
@@ -386,14 +408,21 @@ impl DailyDemandSnapshot {
                         "resource '{resource_id}' used by commercial input capacity has no catalog price"
                     )
                 });
-            let local_units = resource_amount(
-                &local_industrial_output_capacity_by_resource,
+            let live_local_units = resource_amount(
+                &live_local_industrial_output_capacity_by_resource,
+                resource_runtime_id,
+            );
+            let committed_local_units = resource_amount(
+                &committed_local_industrial_output_capacity_by_resource,
                 resource_runtime_id,
             );
             commercial_input_need_value += need_units.max(0.0) * resource_price.max(0.0);
-            local_industrial_input_capacity_value += local_units.max(0.0) * resource_price.max(0.0);
+            local_industrial_input_capacity_value +=
+                live_local_units.max(0.0) * resource_price.max(0.0);
             industrial_missing_input_value +=
-                (need_units - local_units).max(0.0) * resource_price.max(0.0);
+                (need_units - live_local_units).max(0.0) * resource_price.max(0.0);
+            committed_industrial_missing_input_value +=
+                (need_units - committed_local_units).max(0.0) * resource_price.max(0.0);
         }
         let industrial_input_capacity_deficit = if commercial_input_need_value <= EPSILON {
             0.0
@@ -453,7 +482,7 @@ impl DailyDemandSnapshot {
              unhoused_ratio={:.2} zero_budget_ratio={:.2} stock_stab={:.2} afford={:.2} \
              incoming_need={:.2} job_pull={:.2} com_cap_def={:.2} unmet_com_units={:.1} \
              ind_cap_def={:.2} com_input_need={:.1} local_ind_capacity={:.1} \
-             ind_missing={:.1} owa_dep={:.2} owa_input_value={:.1} \
+             ind_missing={:.1} pending_home_slots={} owa_dep={:.2} owa_input_value={:.1} \
              treasury={:.0} cand_size={:.1} \
              open_jobs={} existing_unemployed={} \
              private_buildings={}",
@@ -472,6 +501,7 @@ impl DailyDemandSnapshot {
             commercial_input_need_value,
             local_industrial_input_capacity_value,
             industrial_missing_input_value,
+            under_construction_household_slots,
             commercial_owa_dependency,
             total_commercial_owa_input,
             treasury_balance,
@@ -496,13 +526,18 @@ impl DailyDemandSnapshot {
             household_affordability,
             household_stock_stability,
             commercial_capacity_deficit,
+            #[cfg(test)]
             unmet_commercial_consumer_demand,
+            committed_unmet_commercial_consumer_demand,
+            under_construction_household_slots,
             industrial_input_capacity_deficit,
             #[cfg(test)]
             commercial_input_need_value,
             #[cfg(test)]
             local_industrial_input_capacity_value,
+            #[cfg(test)]
             industrial_missing_input_value,
+            committed_industrial_missing_input_value,
             external_connection_available,
             connected_border_count,
             city_treasury_balance: treasury_balance as f32,
@@ -535,13 +570,16 @@ struct BuildingSnapshotAccumulator {
     total_commercial_expected_input: f32,
     candidate_household_size_sum: f32,
     candidate_household_slot_count: u32,
+    under_construction_household_slots: u32,
     filled_job_count: u32,
     open_job_slots: u32,
     open_job_wage_sum: f32,
-    placed_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
-    commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
+    committed_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
+    live_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
+    committed_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     commercial_input_need_by_resource: Vec<(ResourceRuntimeId, f32)>,
-    local_industrial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
+    live_local_industrial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
+    committed_local_industrial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
 }
 
 impl BuildingSnapshotAccumulator {
@@ -568,6 +606,52 @@ impl BuildingSnapshotAccumulator {
                 self.existing_private_building_count.saturating_add(1);
         }
 
+        let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+
+        if building.is_under_construction() {
+            if matches!(building.zone_type, ZoneType::Residential) {
+                self.under_construction_household_slots = self
+                    .under_construction_household_slots
+                    .saturating_add(allocator.registry.household_capacity(&building.asset_id));
+            }
+            if let Some(profile) = active_profile {
+                for output_port in &profile.outputs {
+                    add_resource_amount(
+                        &mut self.committed_output_capacity_by_resource,
+                        output_port.resource_runtime_id,
+                        output_port.units_per_day,
+                    );
+                }
+                if matches!(building.zone_type, ZoneType::Commercial) {
+                    for output_port in &profile.outputs {
+                        if resource_amount(
+                            demand_sink_rates_by_resource,
+                            output_port.resource_runtime_id,
+                        ) > 0.0
+                        {
+                            add_resource_amount(
+                                &mut self.committed_commercial_output_capacity_by_resource,
+                                output_port.resource_runtime_id,
+                                output_port.units_per_day,
+                            );
+                        }
+                    }
+                }
+                if matches!(building.zone_type, ZoneType::Industrial) {
+                    for output_port in &profile.outputs {
+                        if resource_is_commercial_input(catalog, output_port.resource_runtime_id) {
+                            add_resource_amount(
+                                &mut self.committed_local_industrial_output_capacity_by_resource,
+                                output_port.resource_runtime_id,
+                                output_port.units_per_day,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         if matches!(building.zone_type, ZoneType::Residential) {
             let household_capacity = allocator.household_capacity(idx);
             self.total_household_slots = self
@@ -587,8 +671,6 @@ impl BuildingSnapshotAccumulator {
                 }
             }
         }
-
-        let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
 
         if let Some(profile) =
             active_profile.filter(|profile| profile_offers_work(building, profile))
@@ -612,7 +694,7 @@ impl BuildingSnapshotAccumulator {
         if let Some(profile) = active_profile {
             for output_port in &profile.outputs {
                 add_resource_amount(
-                    &mut self.placed_output_capacity_by_resource,
+                    &mut self.committed_output_capacity_by_resource,
                     output_port.resource_runtime_id,
                     output_port.units_per_day,
                 );
@@ -630,7 +712,12 @@ impl BuildingSnapshotAccumulator {
                     ) > 0.0
                     {
                         add_resource_amount(
-                            &mut self.commercial_output_capacity_by_resource,
+                            &mut self.live_commercial_output_capacity_by_resource,
+                            output_port.resource_runtime_id,
+                            output_port.units_per_day,
+                        );
+                        add_resource_amount(
+                            &mut self.committed_commercial_output_capacity_by_resource,
                             output_port.resource_runtime_id,
                             output_port.units_per_day,
                         );
@@ -664,7 +751,12 @@ impl BuildingSnapshotAccumulator {
                 for output_port in &profile.outputs {
                     if resource_is_commercial_input(catalog, output_port.resource_runtime_id) {
                         add_resource_amount(
-                            &mut self.local_industrial_output_capacity_by_resource,
+                            &mut self.live_local_industrial_output_capacity_by_resource,
+                            output_port.resource_runtime_id,
+                            output_port.units_per_day,
+                        );
+                        add_resource_amount(
+                            &mut self.committed_local_industrial_output_capacity_by_resource,
                             output_port.resource_runtime_id,
                             output_port.units_per_day,
                         );
@@ -691,24 +783,35 @@ impl BuildingSnapshotAccumulator {
         self.candidate_household_slot_count = self
             .candidate_household_slot_count
             .saturating_add(other.candidate_household_slot_count);
+        self.under_construction_household_slots = self
+            .under_construction_household_slots
+            .saturating_add(other.under_construction_household_slots);
         self.filled_job_count = self.filled_job_count.saturating_add(other.filled_job_count);
         self.open_job_slots = self.open_job_slots.saturating_add(other.open_job_slots);
         self.open_job_wage_sum += other.open_job_wage_sum;
         merge_resource_amounts(
-            &mut self.placed_output_capacity_by_resource,
-            other.placed_output_capacity_by_resource,
+            &mut self.committed_output_capacity_by_resource,
+            other.committed_output_capacity_by_resource,
         );
         merge_resource_amounts(
-            &mut self.commercial_output_capacity_by_resource,
-            other.commercial_output_capacity_by_resource,
+            &mut self.live_commercial_output_capacity_by_resource,
+            other.live_commercial_output_capacity_by_resource,
+        );
+        merge_resource_amounts(
+            &mut self.committed_commercial_output_capacity_by_resource,
+            other.committed_commercial_output_capacity_by_resource,
         );
         merge_resource_amounts(
             &mut self.commercial_input_need_by_resource,
             other.commercial_input_need_by_resource,
         );
         merge_resource_amounts(
-            &mut self.local_industrial_output_capacity_by_resource,
-            other.local_industrial_output_capacity_by_resource,
+            &mut self.committed_local_industrial_output_capacity_by_resource,
+            other.committed_local_industrial_output_capacity_by_resource,
+        );
+        merge_resource_amounts(
+            &mut self.live_local_industrial_output_capacity_by_resource,
+            other.live_local_industrial_output_capacity_by_resource,
         );
     }
 }
@@ -796,7 +899,8 @@ impl HouseholdSnapshotAccumulator {
             && household.home_building_id < allocator.buildings.len()
             && !allocator.buildings[household.home_building_id].broken
             && !allocator.buildings[household.home_building_id].economy_broken
-            && !allocator.buildings[household.home_building_id].is_deserted;
+            && !allocator.buildings[household.home_building_id].is_deserted
+            && allocator.buildings[household.home_building_id].is_operational();
         if is_housed {
             self.housed_household_count = self.housed_household_count.saturating_add(1);
             self.housed_resident_count = self

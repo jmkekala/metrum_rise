@@ -10,7 +10,9 @@ use crate::simulation::economy::agents::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::households::metrics::household_supply_unit_price;
+use crate::simulation::economy::households::metrics::{
+    household_is_housed, household_supply_unit_price,
+};
 use crate::simulation::economy::logistics::{
     CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem,
 };
@@ -71,6 +73,8 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         worker_count: 0,
         asset_id: asset_id.to_owned(),
         level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
         broken: false,
         economy_profile_runtime_id: runtime_id,
         economy_broken: false,
@@ -2155,6 +2159,24 @@ fn child_only_household_cannot_keep_housing() {
     assert_eq!(households.households[0].unhoused_days_elapsed, 1);
     assert_eq!(agents.home_building[child], usize::MAX);
     assert_eq!(allocator.buildings[0].occupancy, 0);
+}
+
+#[test]
+fn under_construction_home_does_not_count_as_housed() {
+    let household = make_household(0, 2, 3.0, 3.0);
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "under_construction_home",
+        ZoneClass::Residential,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.construction_total_hours = 6;
+    home.construction_remaining_hours = 6;
+    allocator.buildings.push(home);
+
+    assert!(!household_is_housed(&household, &allocator));
 }
 
 #[test]

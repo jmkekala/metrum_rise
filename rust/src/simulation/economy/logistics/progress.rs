@@ -49,6 +49,7 @@ impl ShipmentSystem {
                     && !allocator.buildings[src_idx].broken
                     && !allocator.buildings[src_idx].economy_broken
                     && !allocator.buildings[src_idx].is_deserted
+                    && !allocator.buildings[src_idx].is_under_construction()
                     && allocator.buildings[src_idx].inventory_units(shipment.resource_runtime_id)
                         >= shipment.amount
                 {
@@ -89,9 +90,11 @@ impl ShipmentSystem {
                         || allocator.buildings[src_idx].broken
                         || allocator.buildings[src_idx].economy_broken
                         || allocator.buildings[src_idx].is_deserted
+                        || allocator.buildings[src_idx].is_under_construction()
                         || allocator.buildings[dest_idx].broken
                         || allocator.buildings[dest_idx].economy_broken
                         || allocator.buildings[dest_idx].is_deserted
+                        || allocator.buildings[dest_idx].is_under_construction()
                         || allocator.buildings[src_idx]
                             .inventory_units(shipment.resource_runtime_id)
                             < shipment.amount
@@ -121,6 +124,7 @@ impl ShipmentSystem {
                     if allocator.buildings[dest_idx].broken
                         || allocator.buildings[dest_idx].economy_broken
                         || allocator.buildings[dest_idx].is_deserted
+                        || allocator.buildings[dest_idx].is_under_construction()
                         || !building_accepts_input_resource(
                             &catalog,
                             &allocator.buildings[dest_idx],
