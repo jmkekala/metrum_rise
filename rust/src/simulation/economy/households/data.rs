@@ -1,7 +1,17 @@
 //! Household record storage and building-reference maintenance.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
+
+use super::metrics::household_supply_resource_runtime_id;
+use super::replenishment::{
+    REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE, clear_replenishment_request,
+    register_replenishment_failure,
+};
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
@@ -22,14 +32,22 @@ pub struct Household {
     pub replenishment_state: u8,
     /// Remaining operational-hour cooldown steps before another replenishment retry.
     pub cooldown_hours: u16,
+    /// Consecutive failed replenishment attempts for the current shortage.
+    pub replenishment_failure_count: u16,
     /// Reserved source building for the current replenishment request, if any.
     pub reserved_store_building_id: usize,
-    /// Reserved amount waiting for household pickup-side fulfillment.
+    /// Reserved amount carried by the active household shopper.
     pub reserved_amount: f32,
     /// Reserved budget waiting to be transferred to the supplying store.
     pub reserved_total_cost: f32,
-    /// Remaining operational-hour steps before the reserved pickup completes.
-    pub pickup_eta_hours: u16,
+    /// Selected household member carrying the active shopping request.
+    pub shopping_agent_id: usize,
+    /// Stable guard for `shopping_agent_id`, used to reject stale agent swap-remove slots.
+    pub shopping_agent_schedule_seed: u32,
+    /// Remaining operational-hour budget for the current shopping leg.
+    pub shopping_timeout_hours_remaining: u16,
+    /// Deterministic store-search continuation cursor used after failed replenishment attempts.
+    pub replenishment_search_cursor: u32,
     /// Consecutive daily stay-rule failures for the current home.
     pub stay_failure_days: u32,
     /// Consecutive settled days with no valid home after the daily rehousing attempt.
@@ -53,6 +71,7 @@ pub struct HouseholdSystem {
     pub(super) household_member_next_scratch: Vec<usize>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
+    pub(super) shopper_candidate_scratch: Vec<AtomicUsize>,
     pub(super) workplace_route_cache: HashMap<(usize, usize, bool), Option<u16>>,
     pub(super) workplace_route_cache_building_revision: u64,
     pub(super) workplace_route_cache_entrance_revision: u64,
@@ -70,6 +89,7 @@ impl HouseholdSystem {
             household_member_next_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
+            shopper_candidate_scratch: Vec::new(),
             workplace_route_cache: HashMap::new(),
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
@@ -86,6 +106,7 @@ impl HouseholdSystem {
         self.household_member_next_scratch.clear();
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
+        self.shopper_candidate_scratch.clear();
         self.workplace_route_cache.clear();
         self.workplace_route_cache_building_revision = u64::MAX;
         self.workplace_route_cache_entrance_revision = u64::MAX;
@@ -105,18 +126,57 @@ impl HouseholdSystem {
     }
 
     /// Invalidates references to a building that is being removed.
-    pub fn invalidate_building(&mut self, removed_building: usize) {
+    pub fn invalidate_building(
+        &mut self,
+        removed_building: usize,
+        allocator: &mut BuildingAllocator,
+    ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        let retry_cooldown_hours = tuning
+            .operational_clock
+            .household_replenishment_retry_cooldown_hours;
+        let terminal_failure_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
         for household in &mut self.households {
-            if household.home_building_id == removed_building {
+            let removed_home = household.home_building_id == removed_building;
+            if removed_home {
                 household.home_building_id = usize::MAX;
             }
-            if household.reserved_store_building_id == removed_building {
-                // Return reserved budget to the household.
-                household.budget += household.reserved_total_cost;
+
+            let removed_store = household.reserved_store_building_id == removed_building;
+            let active_to_store = household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE;
+            let active_returning =
+                household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING;
+
+            if removed_store && active_returning && !removed_home {
                 household.reserved_store_building_id = usize::MAX;
-                household.reserved_amount = 0.0;
-                household.reserved_total_cost = 0.0;
-                household.replenishment_state = 0; // REPLENISHMENT_STABLE
+                continue;
+            }
+
+            if removed_store || removed_home {
+                if active_to_store {
+                    let store_idx = household.reserved_store_building_id;
+                    if store_idx < allocator.buildings.len() && store_idx != removed_building {
+                        allocator.buildings[store_idx].add_inventory_units(
+                            household_supply_resource,
+                            household.reserved_amount,
+                        );
+                    }
+                    household.budget += household.reserved_total_cost;
+                }
+                if active_to_store || active_returning {
+                    clear_replenishment_request(household);
+                    register_replenishment_failure(
+                        household,
+                        retry_cooldown_hours,
+                        terminal_failure_count,
+                    );
+                }
             }
         }
     }
@@ -132,6 +192,22 @@ impl HouseholdSystem {
         resize_atomic_scratch(&mut self.worker_count_scratch, building_count);
         &self.worker_count_scratch
     }
+
+    /// Returns max-filled per-household shopper candidates for deterministic parallel reductions.
+    pub(super) fn reset_shopper_candidate_scratch(&mut self) -> &[AtomicUsize] {
+        if self.shopper_candidate_scratch.len() > self.households.len() {
+            self.shopper_candidate_scratch
+                .truncate(self.households.len());
+        }
+        while self.shopper_candidate_scratch.len() < self.households.len() {
+            self.shopper_candidate_scratch
+                .push(AtomicUsize::new(usize::MAX));
+        }
+        for slot in &self.shopper_candidate_scratch {
+            slot.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+        &self.shopper_candidate_scratch
+    }
 }
 
 impl Clone for HouseholdSystem {
@@ -144,6 +220,7 @@ impl Clone for HouseholdSystem {
             household_member_next_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
+            shopper_candidate_scratch: Vec::new(),
             workplace_route_cache: HashMap::new(),
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,

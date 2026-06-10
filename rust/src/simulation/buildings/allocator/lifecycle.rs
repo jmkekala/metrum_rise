@@ -117,6 +117,8 @@ impl BuildingAllocator {
                 }
                 zoning.clear_parcel_occupancy(b_parcel_id);
 
+                agents.evict_building(i);
+                households.invalidate_building(i, self);
                 logistics.invalidate_building(i, self);
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
@@ -132,8 +134,6 @@ impl BuildingAllocator {
                     logistics.remap_building_indices(&mapping);
                     zoning.remap_parcel_occupancy(last_idx, i);
                 }
-
-                households.invalidate_building(i);
 
                 self.buildings.swap_remove(i);
                 self.dirty_index = true;
@@ -522,7 +522,7 @@ impl BuildingAllocator {
         zoning.clear_parcel_occupancy(building.parcel_id);
 
         agents.evict_building(building_idx);
-        households.invalidate_building(building_idx);
+        households.invalidate_building(building_idx, self);
         logistics.invalidate_building(building_idx, self);
         if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
             self.dirty_zones[zone_idx] = true;

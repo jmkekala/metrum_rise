@@ -1565,6 +1565,10 @@ Rules:
 - nearby or already-preferred suppliers should be checked first inside that candidate list
 - search should stop after a bounded chunk radius, a bounded candidate count, or both
 - candidates that lack stock, fail authored compatibility rules, or fail route feasibility should be rejected before reservation
+- a bounded candidate window must not permanently exclude reachable suppliers outside the first window;
+  if demand is still unresolved, the next coarse retry should resume or widen the deterministic
+  search frontier, or use a component-level allocation pass that can draw from farther reachable
+  suppliers
 - for ordinary shipped goods, if no local supplier is valid, the system may fall back to the `OWA` when the economy rules allow it
 - no request should perform an unbounded city-wide best-price scan
 
@@ -1618,6 +1622,18 @@ Rules:
   and assign that shopper
 - reservation and shopper assignment are one deterministic serial apply step; store stock and
   household budget must not be held without an assigned shopper
+- candidate stores must be reachable by the same ordinary building-origin trip planner the selected
+  shopper will use for both `Home -> Store` and `Store -> Home`; unreachable candidates are rejected
+  before inventory or budget is reserved
+- store discovery must be fair across reachable supply, not a permanent nearest-N cutoff: a household
+  whose local stores are empty must eventually consider farther reachable stores on later coarse
+  replenishment attempts, using a deterministic continuation cursor/frontier or a shared store
+  allocation pass
+- continuation windows must wrap or otherwise reset after exhausting the compatible supplier index,
+  so unlucky cursor values cannot permanently skip a subset of reachable stores
+- if serial reservation contention drains every store in a household's first candidate set, the
+  household should retry from the next deterministic reachable-supplier window rather than repeatedly
+  failing against the same depleted nearest stores
 - if the household cannot afford the full target refill, it may reserve the largest affordable
   partial basket from the store's available stock rather than failing the request outright
 - once a valid shopper and sale are both claimed, the store inventory is reserved or removed,
@@ -1631,7 +1647,14 @@ Rules:
   household budget, clear the shopper assignment, and enter bounded cooldown
 - if the shopper task is lost or invalidated before pickup, restore the reservation and retry from
   `waiting_for_shopper` or cooldown according to tuning
-- if fulfillment fails, the request follows the same bounded retry and cooldown rules as other economy requests
+- each active shopping leg has an explicit operational-hour timeout; timeout before pickup restores
+  the reserved store stock and household budget, while timeout after pickup clears the task and
+  records a failed fulfillment
+- if fulfillment fails, the request follows the same bounded retry and cooldown rules as other
+  economy requests; after the authored terminal-failure count it enters `failed_terminal` /
+  unresolved shortage instead of retrying forever
+- a `failed_terminal` household may retry only on its normal replenishment cadence, so player fixes
+  such as a new reachable grocery can recover the shortage without returning to per-hour retry spam
 
 Useful first-pass household replenishment states are:
 
@@ -1642,9 +1665,10 @@ Useful first-pass household replenishment states are:
 - `shopping_returning`
 - `fulfilled`
 - `cooldown`
+- `failed_terminal`
 
-The old abstract pickup ETA is not the baseline once visible shopping is implemented. Any timeout
-must be an explicit shopping timeout or failure rule, not hidden fulfillment.
+The old abstract pickup ETA is no longer part of the baseline. Any timeout must be an explicit
+shopping timeout or failure rule, not hidden fulfillment.
 
 This keeps essentials household-level while making the store trip visible. The scale bound is one
 active shopper task per replenishing household, planned on coarse cadence, with contested store

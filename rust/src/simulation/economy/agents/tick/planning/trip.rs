@@ -96,6 +96,30 @@ pub(in crate::simulation::economy::agents::tick) fn plan_building_origin_trip(
     })
 }
 
+/// Returns whether the ordinary building-origin trip planner can build this trip.
+pub(crate) fn building_origin_trip_is_feasible(
+    current_building: usize,
+    target_building: usize,
+    activity: u8,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> bool {
+    plan_building_origin_trip(
+        current_building,
+        target_building,
+        activity,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+    .is_some()
+}
+
 /// Estimates a building-origin trip duration in whole simulation minutes.
 pub(crate) fn estimate_building_origin_trip_minutes(
     current_building: usize,

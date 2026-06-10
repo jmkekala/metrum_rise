@@ -998,10 +998,12 @@ impl SimCore {
             let state_str = match h.replenishment_state {
                 0 => "STABLE",
                 1 => "NEEDS",
-                2 => "RESERVED",
-                3 => "PICKUP",
-                4 => "FULFILLED",
-                5 => "COOLDOWN",
+                2 => "WAITING_SHOPPER",
+                3 => "SHOPPING_TO_STORE",
+                4 => "SHOPPING_RETURNING",
+                5 => "FULFILLED",
+                6 => "COOLDOWN",
+                7 => "FAILED_TERMINAL",
                 _ => "UNKNOWN",
             };
 

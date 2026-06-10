@@ -4155,8 +4155,9 @@ impl SimulationNode {
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
         use crate::simulation::economy::households::{
-            REPLENISHMENT_COOLDOWN, REPLENISHMENT_FULFILLED, REPLENISHMENT_NEEDS,
-            REPLENISHMENT_PICKUP_PENDING, REPLENISHMENT_RESERVED, REPLENISHMENT_STABLE,
+            REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
+            REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
+            REPLENISHMENT_STABLE, REPLENISHMENT_WAITING_FOR_SHOPPER,
         };
         use crate::simulation::zoning::ZoneType;
 
@@ -4274,10 +4275,12 @@ impl SimulationNode {
                 match first_replenishment_state.unwrap_or(REPLENISHMENT_STABLE) {
                     REPLENISHMENT_STABLE => "Stable",
                     REPLENISHMENT_NEEDS => "Needs restock",
-                    REPLENISHMENT_RESERVED => "Reserved",
-                    REPLENISHMENT_PICKUP_PENDING => "Pickup pending",
+                    REPLENISHMENT_WAITING_FOR_SHOPPER => "Waiting for shopper",
+                    REPLENISHMENT_SHOPPING_TO_STORE => "Shopping to store",
+                    REPLENISHMENT_SHOPPING_RETURNING => "Shopping returning",
                     REPLENISHMENT_FULFILLED => "Fulfilled",
                     REPLENISHMENT_COOLDOWN => "Cooldown",
+                    REPLENISHMENT_FAILED_TERMINAL => "Unresolved shortage",
                     _ => "Unknown",
                 }
             };

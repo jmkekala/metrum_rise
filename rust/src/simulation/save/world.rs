@@ -282,7 +282,7 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
             usize_to_i64(hid)?,
@@ -294,10 +294,18 @@ pub(super) fn save_world(
             household.stock_days,
             i64::from(household.replenishment_state),
             i64::from(household.cooldown_hours),
+            i64::from(household.replenishment_failure_count),
             optional_building_to_db(household.reserved_store_building_id, maps)?,
             household.reserved_amount,
             household.reserved_total_cost,
-            i64::from(household.pickup_eta_hours),
+            if household.shopping_agent_id == usize::MAX {
+                -1_i64
+            } else {
+                usize_to_i64(household.shopping_agent_id)?
+            },
+            u32_to_i64(household.shopping_agent_schedule_seed)?,
+            i64::from(household.shopping_timeout_hours_remaining),
+            u32_to_i64(household.replenishment_search_cursor)?,
             i64::from(household.stay_failure_days),
             i64::from(household.unhoused_days_elapsed),
             i64::from(household.replenishment_offset_hours),
@@ -528,7 +536,7 @@ pub(super) fn load_buildings(
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -544,14 +552,18 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             stock_days: row.get(6)?,
             replenishment_state: i64_to_u8(row.get(7)?)?,
             cooldown_hours: i64_to_u16(row.get(8)?)?,
-            reserved_store_building_id: db_to_optional_usize(row.get(9)?)?,
-            reserved_amount: row.get(10)?,
-            reserved_total_cost: row.get(11)?,
-            pickup_eta_hours: i64_to_u16(row.get(12)?)?,
-            stay_failure_days: i64_to_u32(row.get(13)?)?,
-            unhoused_days_elapsed: i64_to_u32(row.get(14)?)?,
-            replenishment_offset_hours: i64_to_u16(row.get(15)?)?,
-            unemployment_days_elapsed: i64_to_u32(row.get(16)?)?,
+            replenishment_failure_count: i64_to_u16(row.get(9)?)?,
+            reserved_store_building_id: db_to_optional_usize(row.get(10)?)?,
+            reserved_amount: row.get(11)?,
+            reserved_total_cost: row.get(12)?,
+            shopping_agent_id: db_to_optional_usize(row.get(13)?)?,
+            shopping_agent_schedule_seed: i64_to_u32(row.get(14)?)?,
+            shopping_timeout_hours_remaining: i64_to_u16(row.get(15)?)?,
+            replenishment_search_cursor: i64_to_u32(row.get(16)?)?,
+            stay_failure_days: i64_to_u32(row.get(17)?)?,
+            unhoused_days_elapsed: i64_to_u32(row.get(18)?)?,
+            replenishment_offset_hours: i64_to_u16(row.get(19)?)?,
+            unemployment_days_elapsed: i64_to_u32(row.get(20)?)?,
         });
     }
     Ok(households)

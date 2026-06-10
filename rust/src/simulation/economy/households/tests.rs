@@ -325,10 +325,69 @@ fn register_test_utility_asset(
     format!("{pack_id}:{asset_id}")
 }
 
-#[test]
-fn household_replenishment_flows_through_reserved_and_pickup_states() {
+fn setup_replenishment_world(
+    household: Household,
+    home_asset: &str,
+    store_asset: &str,
+    store_stock: f32,
+    store_x: f32,
+) -> (
+    HouseholdSystem,
+    BuildingAllocator,
+    AgentSystem,
+    TransitNetwork,
+    RegionGraph,
+) {
     let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+    households.households.push(household);
+
+    let (graph, network) = work_graph_to(store_x.max(300.0) + 100.0);
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", home_asset, ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", store_asset, ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        store_x,
+        ZoneType::Commercial,
+        &commercial_asset,
+        store_stock,
+    ));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[shopper] = 0;
+    agents.current_building[shopper] = 0;
+    agents.transit[shopper] = TRANSIT_IN_BUILDING;
+    agents.activity[shopper] = 0;
+    (households, allocator, agents, network, graph)
+}
+
+fn arrive_agent_at_building(
+    agents: &mut AgentSystem,
+    agent_idx: usize,
+    building_idx: usize,
+    activity: u8,
+) {
+    agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent_idx] = building_idx;
+    agents.target_building[agent_idx] = usize::MAX;
+    agents.planned_target_building[agent_idx] = usize::MAX;
+    agents.planned_activity[agent_idx] = 0;
+    agents.activity[agent_idx] = activity;
+}
+
+#[test]
+fn household_replenishment_uses_one_visible_shopper_trip() {
+    let household = Household {
         home_building_id: 0,
         budget: 300.0,
         stock: 0.0,
@@ -337,48 +396,28 @@ fn household_replenishment_flows_through_reserved_and_pickup_states() {
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
-    });
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "replenish_res", "replenish_com", 50.0, 20.0);
 
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "replenish_res",
-        ZoneClass::Residential,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "replenish_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        50.0,
-    ));
-    allocator.rebuild_zone_index();
-
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
+        REPLENISHMENT_SHOPPING_TO_STORE
     );
+    let shopper = households.households[0].shopping_agent_id;
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -388,26 +427,32 @@ fn household_replenishment_flows_through_reserved_and_pickup_states() {
         40.0
     );
     assert_eq!(households.households[0].budget, 50.0);
+    assert_eq!(agents.planned_target_building[shopper], 1);
+    assert_eq!(agents.planned_activity[shopper], 2);
 
-    households.run_household_replenishment(&mut allocator, 0);
+    arrive_agent_at_building(&mut agents, shopper, 1, 2);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_PICKUP_PENDING
+        REPLENISHMENT_SHOPPING_RETURNING
     );
+    assert_eq!(households.households[0].stock, 0.0);
+    assert_eq!(allocator.buildings[1].revenue, 250.0);
+    assert_eq!(agents.planned_target_building[shopper], 0);
+    assert_eq!(agents.planned_activity[shopper], 0);
 
-    households.run_household_replenishment(&mut allocator, 0);
+    arrive_agent_at_building(&mut agents, shopper, 0, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
     assert_eq!(
         households.households[0].replenishment_state,
         REPLENISHMENT_FULFILLED
     );
     assert_eq!(households.households[0].stock, 10.0);
-    assert_eq!(allocator.buildings[1].revenue, 250.0);
 }
 
 #[test]
 fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
-    let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+    let household = Household {
         home_building_id: 0,
         budget: 300.0,
         stock: 0.0,
@@ -416,55 +461,38 @@ fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_STABLE,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 5,
         unemployment_days_elapsed: 0,
-    });
-
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
+    };
+    let (mut households, mut allocator, mut agents, network, graph) = setup_replenishment_world(
+        household,
         "urgent_replenish_res",
-        ZoneClass::Residential,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
         "urgent_replenish_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
         50.0,
-    ));
-    allocator.rebuild_zone_index();
+        20.0,
+    );
 
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
+        REPLENISHMENT_SHOPPING_TO_STORE
     );
 }
 
 #[test]
 fn household_can_restock_from_far_store() {
-    let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+    let household = Household {
         home_building_id: 0,
         budget: 300.0,
         stock: 0.0,
@@ -473,54 +501,33 @@ fn household_can_restock_from_far_store() {
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_STABLE,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 5,
         unemployment_days_elapsed: 0,
-    });
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "far_store_res", "far_store_com", 50.0, 6_000.0);
 
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "far_store_res",
-        ZoneClass::Residential,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "far_store_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        6_000.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        50.0,
-    ));
-    allocator.rebuild_zone_index();
-
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
+        REPLENISHMENT_SHOPPING_TO_STORE
     );
     assert_eq!(households.households[0].reserved_store_building_id, 1);
 }
 
 #[test]
-fn deserted_store_cannot_sell_household_supplies() {
+fn replenishment_search_cursor_reaches_next_store_window() {
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
@@ -531,27 +538,104 @@ fn deserted_store_cannot_sell_household_supplies() {
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
         cooldown_hours: 0,
+        replenishment_failure_count: 1,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 24,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
     });
 
+    let (graph, network) = work_graph_to(6_300.0);
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "cursor_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "cursor_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    for i in 0..409 {
+        let x = if i == 24 {
+            1_000.0
+        } else if i < 24 {
+            20.0 + i as f32 * 10.0
+        } else {
+            2_000.0 + i as f32 * 10.0
+        };
+        allocator.buildings.push(make_building(
+            x,
+            ZoneType::Commercial,
+            &commercial_asset,
+            50.0,
+        ));
+    }
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[shopper] = 0;
+    agents.current_building[shopper] = 0;
+    agents.transit[shopper] = TRANSIT_IN_BUILDING;
+    agents.activity[shopper] = 0;
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(households.households[0].reserved_store_building_id, 25);
+}
+
+#[test]
+fn replenishment_search_cursor_window_wraps_supplier_index() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 2,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 390,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    });
+
+    let (graph, network) = work_graph_to(4_300.0);
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_test_asset(
         &mut allocator,
         "test",
-        "deserted_res",
+        "cursor_wrap_res",
         ZoneClass::Residential,
     );
     let commercial_asset = register_test_asset(
         &mut allocator,
         "test",
-        "deserted_store",
+        "cursor_wrap_com",
         ZoneClass::Commercial,
     );
     allocator.buildings.push(make_building(
@@ -560,16 +644,132 @@ fn deserted_store_cannot_sell_household_supplies() {
         &residential_asset,
         0.0,
     ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        50.0,
-    ));
+    for i in 0..400 {
+        allocator.buildings.push(make_building(
+            20.0 + i as f32 * 10.0,
+            ZoneType::Commercial,
+            &commercial_asset,
+            50.0,
+        ));
+    }
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[shopper] = 0;
+    agents.current_building[shopper] = 0;
+    agents.transit[shopper] = TRANSIT_IN_BUILDING;
+    agents.activity[shopper] = 0;
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(households.households[0].reserved_store_building_id, 1);
+}
+
+#[test]
+fn unreachable_store_does_not_reserve_household_supplies() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, mut network, _graph) =
+        setup_replenishment_world(
+            household,
+            "unreachable_res",
+            "unreachable_com",
+            50.0,
+            1_000.0,
+        );
+
+    let mut graph = RegionGraph::new();
+    let h0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let h1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    let s0 = graph.add_node(Vector3::new(900.0, 0.0, 0.0), NodeType::Junction);
+    let s1 = graph.add_node(Vector3::new(1_100.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(make_road_edge(h0, h1, -100.0, 100.0));
+    graph.add_edge(make_road_edge(s0, s1, 900.0, 1_100.0));
+    graph.rebuild_adjacency_list();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    allocator.buildings[0].edge_idx = 0;
+    allocator.buildings[1].edge_idx = 1;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(households.households[0].replenishment_failure_count, 1);
+    assert_eq!(
+        households.households[0].reserved_store_building_id,
+        usize::MAX
+    );
+    assert_eq!(households.households[0].budget, 300.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        50.0
+    );
+}
+
+#[test]
+fn deserted_store_cannot_sell_household_supplies() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "deserted_res", "deserted_store", 50.0, 20.0);
     allocator.buildings[1].is_deserted = true;
     allocator.rebuild_zone_index();
 
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -590,117 +790,126 @@ fn deserted_store_cannot_sell_household_supplies() {
 }
 
 #[test]
-fn replenishment_respects_pickup_eta_above_one_hour() {
-    let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+fn repeated_replenishment_failures_become_terminal_shortage() {
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let household = Household {
         home_building_id: 0,
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
         consumption_rate: 1.0,
         stock_days: 0.0,
-        replenishment_state: REPLENISHMENT_RESERVED,
+        replenishment_state: REPLENISHMENT_NEEDS,
         cooldown_hours: 0,
-        reserved_store_building_id: 1,
-        reserved_amount: 5.0,
-        reserved_total_cost: 10.0,
-        pickup_eta_hours: 3,
+        replenishment_failure_count: tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count
+            .saturating_sub(1),
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
-    });
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "terminal_res", "terminal_store", 0.0, 20.0);
 
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset =
-        register_test_asset(&mut allocator, "test", "eta_res", ZoneClass::Residential);
-    let commercial_asset =
-        register_test_asset(&mut allocator, "test", "eta_store", ZoneClass::Commercial);
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        0.0,
-    ));
-    allocator.rebuild_zone_index();
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
-    households.run_household_replenishment(&mut allocator, 0);
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
+        REPLENISHMENT_FAILED_TERMINAL
     );
-    assert_eq!(households.households[0].pickup_eta_hours, 2);
-
-    households.run_household_replenishment(&mut allocator, 0);
-    assert_eq!(
-        households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
-    );
-    assert_eq!(households.households[0].pickup_eta_hours, 1);
-
-    households.run_household_replenishment(&mut allocator, 0);
-    assert_eq!(
-        households.households[0].replenishment_state,
-        REPLENISHMENT_PICKUP_PENDING
-    );
-
-    households.run_household_replenishment(&mut allocator, 0);
-    assert_eq!(
-        households.households[0].replenishment_state,
-        REPLENISHMENT_FULFILLED
-    );
-    assert_eq!(households.households[0].stock, 5.0);
+    assert_eq!(households.households[0].cooldown_hours, 0);
 }
 
 #[test]
-fn canceled_pickup_restores_reserved_store_inventory() {
-    let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+fn household_waits_without_reservation_when_no_member_is_home() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "waiting_res", "waiting_store", 50.0, 20.0);
+    agents.transit[0] = TRANSIT_ACCESS_INGRESS;
+    agents.current_building[0] = usize::MAX;
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_WAITING_FOR_SHOPPER
+    );
+    assert_eq!(households.households[0].budget, 300.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        50.0
+    );
+
+    arrive_agent_at_building(&mut agents, 0, 0, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 1);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+}
+
+#[test]
+fn canceled_shopping_to_store_restores_reserved_store_inventory() {
+    let mut household = Household {
         home_building_id: 0,
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
         consumption_rate: 1.0,
         stock_days: 0.0,
-        replenishment_state: REPLENISHMENT_PICKUP_PENDING,
+        replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: 1,
         reserved_amount: 5.0,
         reserved_total_cost: 10.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: 0,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 8,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
-    });
-
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset =
-        register_test_asset(&mut allocator, "test", "cancel_res", ZoneClass::Residential);
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "cancel_store",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        0.0,
-    ));
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household.clone(), "cancel_res", "cancel_store", 0.0, 20.0);
+    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    households.households[0] = household;
     allocator.buildings[1].is_deserted = true;
     allocator.rebuild_zone_index();
 
@@ -709,7 +918,206 @@ fn canceled_pickup_restores_reserved_store_inventory() {
         .resource_runtime_id_for_id("household_supplies")
         .expect("household supplies resource");
 
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(households.households[0].budget, 10.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        5.0
+    );
+    assert_eq!(agents.planned_target_building[0], usize::MAX);
+}
+
+#[test]
+fn shopping_timeout_restores_pre_pickup_reservation() {
+    let mut household = Household {
+        home_building_id: 0,
+        budget: 0.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: 1,
+        reserved_amount: 5.0,
+        reserved_total_cost: 10.0,
+        shopping_agent_id: 0,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 1,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household.clone(), "timeout_res", "timeout_store", 0.0, 20.0);
+    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    households.households[0] = household;
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(households.households[0].replenishment_failure_count, 1);
+    assert_eq!(households.households[0].budget, 10.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        5.0
+    );
+}
+
+#[test]
+fn invalidating_home_restores_pre_pickup_store_reservation() {
+    let mut household = Household {
+        home_building_id: 0,
+        budget: 0.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: 1,
+        reserved_amount: 5.0,
+        reserved_total_cost: 10.0,
+        shopping_agent_id: 0,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 8,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, agents, _network, _graph) = setup_replenishment_world(
+        household.clone(),
+        "home_removed_res",
+        "home_removed_store",
+        0.0,
+        20.0,
+    );
+    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    households.households[0] = household;
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+
+    households.invalidate_building(0, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_COOLDOWN
+    );
+    assert_eq!(households.households[0].replenishment_failure_count, 1);
+    assert_eq!(households.households[0].budget, 10.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(household_supplies),
+        5.0
+    );
+}
+
+#[test]
+fn terminal_replenishment_shortage_retries_on_normal_cadence() {
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let household = Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_FAILED_TERMINAL,
+        cooldown_hours: 0,
+        replenishment_failure_count: tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) = setup_replenishment_world(
+        household,
+        "terminal_retry_res",
+        "terminal_retry_com",
+        50.0,
+        20.0,
+    );
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+}
+
+#[test]
+fn store_losing_household_supply_profile_before_pickup_restores_reservation() {
+    let mut household = Household {
+        home_building_id: 0,
+        budget: 0.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: 1,
+        reserved_amount: 5.0,
+        reserved_total_cost: 10.0,
+        shopping_agent_id: 0,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 8,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) = setup_replenishment_world(
+        household.clone(),
+        "profile_lost_res",
+        "profile_lost_com",
+        0.0,
+        20.0,
+    );
+    household.shopping_agent_schedule_seed = agents.schedule_seed[0];
+    households.households[0] = household;
+    allocator.buildings[1].economy_profile_runtime_id = 0;
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     assert_eq!(
         households.households[0].replenishment_state,
@@ -731,8 +1139,7 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
         .unit_price_currency;
     let partial_units = 5.0;
 
-    let mut households = HouseholdSystem::new();
-    households.households.push(Household {
+    let household = Household {
         home_building_id: 0,
         budget: partial_units * unit_price,
         stock: 0.0,
@@ -741,54 +1148,41 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
         stock_days: 0.0,
         replenishment_state: REPLENISHMENT_NEEDS,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
-    });
-
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
+    };
+    let (mut households, mut allocator, mut agents, network, graph) = setup_replenishment_world(
+        household,
         "partial_restock_res",
-        ZoneClass::Residential,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
         "partial_restock_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
         50.0,
-    ));
-    allocator.rebuild_zone_index();
+        20.0,
+    );
 
-    households.run_household_replenishment(&mut allocator, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     assert_eq!(
         households.households[0].replenishment_state,
-        REPLENISHMENT_RESERVED
+        REPLENISHMENT_SHOPPING_TO_STORE
     );
     assert!((households.households[0].reserved_amount - partial_units).abs() < f32::EPSILON);
     assert_eq!(households.households[0].budget, 0.0);
 
-    households.run_household_replenishment(&mut allocator, 0);
-    households.run_household_replenishment(&mut allocator, 0);
+    let shopper = households.households[0].shopping_agent_id;
+    arrive_agent_at_building(&mut agents, shopper, 1, 2);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    arrive_agent_at_building(&mut agents, shopper, 0, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
 
     assert_eq!(
         households.households[0].replenishment_state,
@@ -1509,10 +1903,14 @@ fn make_household(
         stock_days,
         replenishment_state: REPLENISHMENT_STABLE,
         cooldown_hours: 0,
+        replenishment_failure_count: 0,
         reserved_store_building_id: usize::MAX,
         reserved_amount: 0.0,
         reserved_total_cost: 0.0,
-        pickup_eta_hours: 0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
         stay_failure_days: 0,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,

@@ -4,7 +4,7 @@ use super::HouseholdSystem;
 use super::metrics::{
     household_is_housed, household_reserve_days, household_supply_resource_runtime_id,
 };
-use super::replenishment::{REPLENISHMENT_PICKUP_PENDING, REPLENISHMENT_RESERVED};
+use super::replenishment::{REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
@@ -125,10 +125,12 @@ impl HouseholdSystem {
         let household = &self.households[household_id];
         if matches!(
             household.replenishment_state,
-            REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
         ) {
             let store_idx = household.reserved_store_building_id;
-            if store_idx < allocator.buildings.len() {
+            if store_idx < allocator.buildings.len()
+                && household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+            {
                 allocator.buildings[store_idx]
                     .add_inventory_units(household_supply_resource, household.reserved_amount);
             }

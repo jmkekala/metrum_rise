@@ -20,7 +20,9 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
-pub(crate) use planning::estimate_building_origin_trip_minutes;
+pub(crate) use planning::{
+    building_origin_trip_is_feasible, estimate_building_origin_trip_minutes,
+};
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.

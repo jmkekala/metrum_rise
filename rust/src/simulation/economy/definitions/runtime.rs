@@ -52,12 +52,15 @@ pub(crate) struct OperationalClockRuntimeTuning {
     /// Hours between household replenishment checks.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_replenishment_check_interval_hours: u16,
-    /// Hours between reserve creation and household pickup completion.
-    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
-    pub household_pickup_eta_hours: u16,
     /// Hours to wait before retrying a failed household replenishment.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_replenishment_retry_cooldown_hours: u16,
+    /// Consecutive failed household replenishment attempts before terminal shortage.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub household_replenishment_terminal_failure_count: u16,
+    /// Maximum operational hours a visible household shopper may spend on one leg.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
+    pub household_shopping_leg_timeout_hours: u16,
     /// Hours to wait before retrying a failed freight request.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub shipment_retry_cooldown_hours: u16,

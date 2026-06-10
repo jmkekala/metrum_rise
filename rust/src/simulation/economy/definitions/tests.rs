@@ -86,8 +86,9 @@ terminal_failure_attempts = 3
 seconds_per_day = 1440.0
 travel_estimate_refresh_minutes = 360
 household_replenishment_check_interval_hours = 6
-household_pickup_eta_hours = 1
 household_replenishment_retry_cooldown_hours = 1
+household_replenishment_terminal_failure_count = 3
+household_shopping_leg_timeout_hours = 8
 shipment_retry_cooldown_hours = 1
 
 [[runtime_tuning.operational_clock.work_profiles]]

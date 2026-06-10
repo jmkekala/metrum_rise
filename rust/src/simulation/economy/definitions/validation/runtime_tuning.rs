@@ -30,11 +30,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
                 .to_owned(),
         );
     }
-    if tuning.operational_clock.household_pickup_eta_hours == 0 {
-        return Err(
-            "runtime_tuning.operational_clock.household_pickup_eta_hours must be > 0".to_owned(),
-        );
-    }
     if tuning
         .operational_clock
         .household_replenishment_retry_cooldown_hours
@@ -42,6 +37,26 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     {
         return Err(
             "runtime_tuning.operational_clock.household_replenishment_retry_cooldown_hours must be > 0"
+                .to_owned(),
+        );
+    }
+    if tuning
+        .operational_clock
+        .household_replenishment_terminal_failure_count
+        == 0
+    {
+        return Err(
+            "runtime_tuning.operational_clock.household_replenishment_terminal_failure_count must be > 0"
+                .to_owned(),
+        );
+    }
+    if tuning
+        .operational_clock
+        .household_shopping_leg_timeout_hours
+        == 0
+    {
+        return Err(
+            "runtime_tuning.operational_clock.household_shopping_leg_timeout_hours must be > 0"
                 .to_owned(),
         );
     }

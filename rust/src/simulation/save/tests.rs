@@ -9,7 +9,9 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
-use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
+use crate::simulation::economy::households::{
+    Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
+};
 use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
@@ -245,12 +247,16 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         member_count: 2,
         consumption_rate: 1.0,
         stock_days: 1.5,
-        replenishment_state: REPLENISHMENT_STABLE,
+        replenishment_state: REPLENISHMENT_SHOPPING_TO_STORE,
         cooldown_hours: 0,
+        replenishment_failure_count: 1,
         reserved_store_building_id: 0,
         reserved_amount: 2.5,
         reserved_total_cost: 15.0,
-        pickup_eta_hours: 1,
+        shopping_agent_id: 0,
+        shopping_agent_schedule_seed: 1,
+        shopping_timeout_hours_remaining: 4,
+        replenishment_search_cursor: 24,
         stay_failure_days: 1,
         unhoused_days_elapsed: 0,
         replenishment_offset_hours: 0,
@@ -471,7 +477,23 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.households.households[0].reserved_amount, 2.5);
     assert_eq!(loaded.households.households[0].reserved_total_cost, 15.0);
-    assert_eq!(loaded.households.households[0].pickup_eta_hours, 1);
+    assert_eq!(
+        loaded.households.households[0].replenishment_failure_count,
+        1
+    );
+    assert_eq!(loaded.households.households[0].shopping_agent_id, 0);
+    assert_eq!(
+        loaded.households.households[0].shopping_agent_schedule_seed,
+        1
+    );
+    assert_eq!(
+        loaded.households.households[0].shopping_timeout_hours_remaining,
+        4
+    );
+    assert_eq!(
+        loaded.households.households[0].replenishment_search_cursor,
+        24
+    );
     assert_eq!(loaded.households.households[0].stay_failure_days, 1);
     assert_eq!(loaded.households.households[0].unhoused_days_elapsed, 0);
     assert_eq!(loaded.agents.len(), 2);

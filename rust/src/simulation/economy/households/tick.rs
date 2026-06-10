@@ -25,7 +25,13 @@ impl HouseholdSystem {
         self.rebuild_household_and_worker_counts(agents, allocator);
         self.run_building_economy(allocator);
         logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
-        self.run_household_operational_hour(agents, allocator, absolute_hour);
+        self.run_household_operational_hour(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            absolute_hour,
+        );
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
     }

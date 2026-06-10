@@ -14,6 +14,13 @@ pub mod tick;
 
 pub use data::{Agent, AgentSystem, AgentVec};
 
+/// Agent is at home or travelling to a home stop.
+pub const ACTIVITY_HOME: u8 = 0;
+/// Agent is at work or travelling to a work stop.
+pub const ACTIVITY_WORK: u8 = 1;
+/// Agent is shopping or at another non-home, non-work stop.
+pub const ACTIVITY_SHOPPING: u8 = 2;
+
 /// Agent is inside a building and hidden until the next trip trigger fires.
 pub const TRANSIT_IN_BUILDING: u8 = 0;
 /// Agent is traversing the short local segment from the building entry point to the network.

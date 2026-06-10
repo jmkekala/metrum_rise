@@ -72,9 +72,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   [`zoning.md`](zoning.md).
 - Transitioned the residential simulation to a **household-centric occupancy model**, replacing legacy per-resident capacity with family slots (`household_capacity`).
 - Household operational ticks now use a fused parallel agent reduction for household membership and worker counts, skip hot-path repair of stale household references in favor of debug validation, progress household stock / utility drain / replenishment classification in one household pass before deterministic reservation apply, and plan workplace assignment from hourly job-supply snapshots plus per-home ranked job options instead of per-agent job scans.
-- The household replenishment spec now defines the next visible shopping shape: a bounded one-shopper
-  household task that waits for an eligible member at home before claiming store stock, then uses
-  ordinary building-origin trips for `Home -> Store -> Home`. See [`economy.md`](economy.md) and
+- Household replenishment now uses a bounded one-shopper household task: it waits for an eligible
+  member at home before claiming store stock, then uses ordinary building-origin trips for
+  `Home -> Store -> Home`. Store reservations now require exact trip feasibility before stock or
+  budget is claimed, failed searches continue through farther deterministic supplier windows on
+  later coarse retries, active shopping legs have explicit timeouts, and repeated failures surface as
+  unresolved shortages instead of silent retry loops. See [`economy.md`](economy.md) and
   [`entrance_and_exit.md`](entrance_and_exit.md).
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.

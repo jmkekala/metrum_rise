@@ -68,13 +68,6 @@ impl Default for BuildingModeComponents {
 }
 
 impl BuildingModeComponents {
-    /// Creates a single synthetic component for non-network chunk scans.
-    pub(crate) fn single(component: u32) -> Self {
-        let mut components = Self::default();
-        components.push(component);
-        components
-    }
-
     /// Returns the component labels in deterministic order.
     pub(crate) fn as_slice(&self) -> &[u32] {
         &self.components[..self.count as usize]
@@ -138,11 +131,6 @@ impl ReachableBucketIndex {
         }
 
         Self { by_component }
-    }
-
-    /// Returns whether the index has no candidate buckets.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.by_component.is_empty()
     }
 
     /// Scans reachable chunks outward from an origin without a fixed radius.

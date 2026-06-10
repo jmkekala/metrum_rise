@@ -1,4 +1,4 @@
-//! Household stock consumption, store reservations, pickup, and replenishment state.
+//! Household stock consumption, shopper-carried store trips, and replenishment state.
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,38 +11,49 @@ use super::metrics::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
-    BuildingModeComponents, ReachableBucketEntry, ReachableBucketIndex, ReachableBucketScanEvent,
-    chunk_for_point,
+    BuildingModeComponents, ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex,
+    ReachableBucketScanEvent, chunk_for_point,
 };
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::tick::building_origin_trip_is_feasible;
+use crate::simulation::economy::agents::{
+    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
+};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
-const STORE_SUPPLY_COMPONENT: u32 = 0;
+const GROCERY_ROUTE_SCAN_CANDIDATES: usize = GROCERY_SEARCH_CANDIDATES * 16;
 
 /// Household stock is healthy and no replenishment is pending.
 pub const REPLENISHMENT_STABLE: u8 = 0;
 /// Household stock fell below the trigger and needs a restock attempt.
 pub const REPLENISHMENT_NEEDS: u8 = 1;
-/// Store inventory and household budget are reserved while pickup ETA counts down.
-pub const REPLENISHMENT_RESERVED: u8 = 2;
-/// Household has a reserved supply source and is waiting for pickup-side fulfillment.
-pub const REPLENISHMENT_PICKUP_PENDING: u8 = 3;
+/// Household needs restock but no eligible member is currently at home to carry it.
+pub const REPLENISHMENT_WAITING_FOR_SHOPPER: u8 = 2;
+/// A selected household member is travelling from home to the supplying store.
+pub const REPLENISHMENT_SHOPPING_TO_STORE: u8 = 3;
+/// A selected household member has picked up supplies and is returning home.
+pub const REPLENISHMENT_SHOPPING_RETURNING: u8 = 4;
 /// Household stock was replenished on the latest economy pass.
-pub const REPLENISHMENT_FULFILLED: u8 = 4;
+pub const REPLENISHMENT_FULFILLED: u8 = 5;
 /// Household is waiting before retrying another replenishment attempt.
-pub const REPLENISHMENT_COOLDOWN: u8 = 5;
+pub const REPLENISHMENT_COOLDOWN: u8 = 6;
+/// Household failed repeatedly and is exposed as an unresolved shortage.
+pub const REPLENISHMENT_FAILED_TERMINAL: u8 = 7;
 
 #[derive(Default)]
 struct ReplenishmentDiagnostics {
     attempts: u32,
     successes: u32,
     failed_no_store_candidates: u32,
+    failed_no_shopper: u32,
     failed_no_sale: u32,
     urgent_cooldown_skips: u32,
     candidate_count: u32,
@@ -51,6 +62,7 @@ struct ReplenishmentDiagnostics {
     rejected_missing_profile: u32,
     rejected_not_output: u32,
     rejected_unaffordable: u32,
+    rejected_unreachable: u32,
     rejected_zero_desired: u32,
     rejected_zero_amount: u32,
     reserved_amount: f32,
@@ -59,13 +71,14 @@ struct ReplenishmentDiagnostics {
 
 impl ReplenishmentDiagnostics {
     fn has_signal(&self) -> bool {
-        self.attempts > 0 || self.urgent_cooldown_skips > 0
+        self.attempts > 0 || self.failed_no_shopper > 0 || self.urgent_cooldown_skips > 0
     }
 
     fn merge(&mut self, other: Self) {
         self.attempts += other.attempts;
         self.successes += other.successes;
         self.failed_no_store_candidates += other.failed_no_store_candidates;
+        self.failed_no_shopper += other.failed_no_shopper;
         self.failed_no_sale += other.failed_no_sale;
         self.urgent_cooldown_skips += other.urgent_cooldown_skips;
         self.candidate_count += other.candidate_count;
@@ -74,6 +87,7 @@ impl ReplenishmentDiagnostics {
         self.rejected_missing_profile += other.rejected_missing_profile;
         self.rejected_not_output += other.rejected_not_output;
         self.rejected_unaffordable += other.rejected_unaffordable;
+        self.rejected_unreachable += other.rejected_unreachable;
         self.rejected_zero_desired += other.rejected_zero_desired;
         self.rejected_zero_amount += other.rejected_zero_amount;
         self.reserved_amount += other.reserved_amount;
@@ -83,6 +97,7 @@ impl ReplenishmentDiagnostics {
 
 struct ReplenishmentCandidatePlan {
     household_id: usize,
+    shopper_agent_id: usize,
     desired_amount: f32,
     candidate_count: u8,
     candidates: [usize; GROCERY_SEARCH_CANDIDATES],
@@ -93,7 +108,6 @@ struct HouseholdHourProgress {
     any_zero_stock: bool,
     restock_candidate_exists: bool,
     urgent_restock_candidate_exists: bool,
-    pickup_ready_households: Vec<usize>,
 }
 
 impl HouseholdHourProgress {
@@ -101,13 +115,20 @@ impl HouseholdHourProgress {
         self.any_zero_stock |= other.any_zero_stock;
         self.restock_candidate_exists |= other.restock_candidate_exists;
         self.urgent_restock_candidate_exists |= other.urgent_restock_candidate_exists;
-        self.pickup_ready_households
-            .extend(other.pickup_ready_households);
     }
 }
 
+struct StoreSupplyEntry {
+    building_idx: usize,
+    chunk: (i32, i32),
+    foot_components: BuildingModeComponents,
+    car_components: BuildingModeComponents,
+}
+
 struct StoreSupplyIndex {
-    buckets: ReachableBucketIndex,
+    entries: Vec<StoreSupplyEntry>,
+    foot_buckets: ReachableBucketIndex,
+    car_buckets: ReachableBucketIndex,
 }
 
 impl StoreSupplyIndex {
@@ -115,8 +136,11 @@ impl StoreSupplyIndex {
         allocator: &BuildingAllocator,
         catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
         household_supply_resource: u16,
+        graph: &RegionGraph,
+        foot_components: &ModeComponentIndex,
+        car_components: &ModeComponentIndex,
     ) -> Self {
-        let entries: Vec<_> = allocator
+        let mut entries: Vec<_> = allocator
             .buildings
             .par_iter()
             .enumerate()
@@ -133,66 +157,249 @@ impl StoreSupplyIndex {
                 {
                     return None;
                 }
-                Some(ReachableBucketEntry::new(
-                    STORE_SUPPLY_COMPONENT,
-                    chunk_for_point(store.center_x, store.center_y),
-                    idx,
-                ))
+                let foot_components =
+                    foot_components.building_components(allocator, graph, idx, TransitFlags::FOOT);
+                let car_components =
+                    car_components.building_components(allocator, graph, idx, TransitFlags::CAR);
+                if foot_components.as_slice().is_empty() && car_components.as_slice().is_empty() {
+                    return None;
+                }
+                Some(StoreSupplyEntry {
+                    building_idx: idx,
+                    chunk: chunk_for_point(store.center_x, store.center_y),
+                    foot_components,
+                    car_components,
+                })
             })
             .collect();
+        entries.sort_unstable_by_key(|entry| (entry.chunk, entry.building_idx));
+
+        let mut foot_bucket_entries = Vec::with_capacity(entries.len());
+        let mut car_bucket_entries = Vec::with_capacity(entries.len());
+        for (entry_idx, entry) in entries.iter().enumerate() {
+            index_store_components(
+                &mut foot_bucket_entries,
+                entry.foot_components,
+                entry.chunk,
+                entry_idx,
+            );
+            index_store_components(
+                &mut car_bucket_entries,
+                entry.car_components,
+                entry.chunk,
+                entry_idx,
+            );
+        }
+
         Self {
-            buckets: ReachableBucketIndex::from_entries(entries),
+            entries,
+            foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
+            car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
         }
     }
 
     fn has_any(&self) -> bool {
-        !self.buckets.is_empty()
+        !self.entries.is_empty()
     }
 
-    fn fill_nearest_candidates(
+    fn fill_route_feasible_candidates(
         &self,
-        origin_x: f32,
-        origin_y: f32,
-        candidate_limit: usize,
+        home_idx: usize,
+        has_car: bool,
         allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        foot_components: &ModeComponentIndex,
+        car_components: &ModeComponentIndex,
+        pathfind_count: &std::sync::atomic::AtomicU32,
+        search_cursor: u32,
         candidates: &mut Vec<usize>,
+        seen_candidates: &mut Vec<usize>,
+        diagnostics: &mut ReplenishmentDiagnostics,
     ) {
         candidates.clear();
-        if candidate_limit == 0 {
+        seen_candidates.clear();
+        if home_idx >= allocator.buildings.len() {
             return;
         }
-        self.buckets.scan_nearest(
-            BuildingModeComponents::single(STORE_SUPPLY_COMPONENT),
-            origin_x,
-            origin_y,
-            |event| match event {
-                ReachableBucketScanEvent::Item { item_idx } => {
+        if search_cursor > 0
+            && self.fill_cursor_window_candidates(
+                home_idx,
+                has_car,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                search_cursor,
+                candidates,
+                diagnostics,
+            )
+        {
+            return;
+        }
+
+        let home = &allocator.buildings[home_idx];
+        let home_foot_components =
+            foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
+        self.scan_candidate_bucket(
+            &self.foot_buckets,
+            home_foot_components,
+            home_idx,
+            home.center_x,
+            home.center_y,
+            allocator,
+            transit_network,
+            graph,
+            has_car,
+            pathfind_count,
+            candidates,
+            seen_candidates,
+            diagnostics,
+        );
+
+        if has_car {
+            let home_car_components =
+                car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+            self.scan_candidate_bucket(
+                &self.car_buckets,
+                home_car_components,
+                home_idx,
+                home.center_x,
+                home.center_y,
+                allocator,
+                transit_network,
+                graph,
+                has_car,
+                pathfind_count,
+                candidates,
+                seen_candidates,
+                diagnostics,
+            );
+        }
+    }
+
+    fn scan_candidate_bucket(
+        &self,
+        buckets: &ReachableBucketIndex,
+        components: BuildingModeComponents,
+        home_idx: usize,
+        origin_x: f32,
+        origin_y: f32,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        has_car: bool,
+        pathfind_count: &std::sync::atomic::AtomicU32,
+        candidates: &mut Vec<usize>,
+        seen_candidates: &mut Vec<usize>,
+        diagnostics: &mut ReplenishmentDiagnostics,
+    ) {
+        buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
+            ReachableBucketScanEvent::Item { item_idx } => {
+                if let Some(entry) = self.entries.get(item_idx) {
+                    if seen_candidates.contains(&entry.building_idx) {
+                        return true;
+                    }
+                    if seen_candidates.len() == GROCERY_ROUTE_SCAN_CANDIDATES {
+                        return false;
+                    }
+                    seen_candidates.push(entry.building_idx);
+                    if !shopping_route_is_feasible(
+                        home_idx,
+                        entry.building_idx,
+                        has_car,
+                        allocator,
+                        transit_network,
+                        graph,
+                        pathfind_count,
+                    ) {
+                        diagnostics.rejected_unreachable += 1;
+                        return true;
+                    }
                     insert_store_candidate(
                         candidates,
-                        candidate_limit,
-                        item_idx,
+                        GROCERY_SEARCH_CANDIDATES,
+                        entry.building_idx,
                         origin_x,
                         origin_y,
                         allocator,
                     );
-                    true
                 }
-                ReachableBucketScanEvent::RingComplete {
-                    next_min_distance_sq,
-                } => {
-                    if candidates.len() < candidate_limit {
-                        return true;
-                    }
-                    let worst = candidates
-                        .last()
-                        .map(|&idx| {
-                            squared_store_distance(origin_x, origin_y, &allocator.buildings[idx])
-                        })
-                        .unwrap_or(f32::MAX);
-                    next_min_distance_sq <= worst
+                true
+            }
+            ReachableBucketScanEvent::RingComplete {
+                next_min_distance_sq,
+            } => {
+                if candidates.len() < GROCERY_SEARCH_CANDIDATES {
+                    return true;
                 }
-            },
-        );
+                let worst = candidates
+                    .last()
+                    .map(|&idx| {
+                        squared_store_distance(origin_x, origin_y, &allocator.buildings[idx])
+                    })
+                    .unwrap_or(f32::MAX);
+                next_min_distance_sq <= worst
+            }
+        });
+    }
+
+    fn fill_cursor_window_candidates(
+        &self,
+        home_idx: usize,
+        has_car: bool,
+        allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        pathfind_count: &std::sync::atomic::AtomicU32,
+        search_cursor: u32,
+        candidates: &mut Vec<usize>,
+        diagnostics: &mut ReplenishmentDiagnostics,
+    ) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+        let total_entries = self.entries.len();
+        let start = search_cursor as usize % total_entries;
+        let inspected = total_entries.min(GROCERY_ROUTE_SCAN_CANDIDATES);
+        for offset in 0..inspected {
+            let entry = &self.entries[(start + offset) % total_entries];
+            if !has_car && entry.foot_components.as_slice().is_empty() {
+                continue;
+            }
+            if !shopping_route_is_feasible(
+                home_idx,
+                entry.building_idx,
+                has_car,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+            ) {
+                diagnostics.rejected_unreachable += 1;
+                continue;
+            }
+            insert_store_candidate(
+                candidates,
+                GROCERY_SEARCH_CANDIDATES,
+                entry.building_idx,
+                allocator.buildings[home_idx].center_x,
+                allocator.buildings[home_idx].center_y,
+                allocator,
+            );
+        }
+        inspected > 0
+    }
+}
+
+fn index_store_components(
+    target: &mut Vec<ReachableBucketEntry>,
+    components: BuildingModeComponents,
+    chunk: (i32, i32),
+    entry_idx: usize,
+) {
+    for &component in components.as_slice() {
+        target.push(ReachableBucketEntry::new(component, chunk, entry_idx));
     }
 }
 
@@ -205,6 +412,9 @@ fn insert_store_candidate(
     allocator: &BuildingAllocator,
 ) {
     if candidate >= allocator.buildings.len() {
+        return;
+    }
+    if candidates.contains(&candidate) {
         return;
     }
     let candidate_distance =
@@ -237,6 +447,8 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
         absolute_hour: u32,
     ) {
         let catalog = load_runtime_economy_catalog()
@@ -247,10 +459,16 @@ impl HouseholdSystem {
         let retry_cooldown_hours = tuning
             .operational_clock
             .household_replenishment_retry_cooldown_hours;
+        let terminal_failure_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
+        let shopping_leg_timeout_hours = tuning
+            .operational_clock
+            .household_shopping_leg_timeout_hours;
         let profile = household_demand_profile(&catalog);
         let trigger_days = profile.reorder_threshold_days;
 
-        let mut progress = self.progress_households_for_operational_hour(
+        let progress = self.progress_households_for_operational_hour(
             allocator.buildings.len(),
             trigger_days,
             tuning.households.utility_cost_per_member_per_day,
@@ -259,18 +477,21 @@ impl HouseholdSystem {
             apply_starvation_happiness_loss(&self.households, agents);
         }
 
-        progress.pickup_ready_households.sort_unstable();
-        for hid in progress.pickup_ready_households {
-            self.fulfill_pending_household_replenishment(
-                hid,
-                allocator,
-                household_supply_resource,
-                retry_cooldown_hours,
-            );
-        }
+        self.process_active_household_shopping(
+            agents,
+            allocator,
+            &catalog,
+            household_supply_resource,
+            retry_cooldown_hours,
+            terminal_failure_count,
+            shopping_leg_timeout_hours,
+        );
 
         self.plan_and_apply_household_replenishment(
+            agents,
             allocator,
+            transit_network,
+            graph,
             absolute_hour,
             &catalog,
             &tuning,
@@ -291,15 +512,9 @@ impl HouseholdSystem {
             .enumerate()
             .fold(
                 HouseholdHourProgress::default,
-                |mut progress, (hid, household)| {
+                |mut progress, (_, household)| {
                     if household.member_count == 0 {
                         return progress;
-                    }
-
-                    let was_pickup_pending =
-                        household.replenishment_state == REPLENISHMENT_PICKUP_PENDING;
-                    if was_pickup_pending {
-                        progress.pickup_ready_households.push(hid);
                     }
 
                     let hourly_consumption = household.member_count as f32
@@ -316,23 +531,36 @@ impl HouseholdSystem {
                         household.consumption_rate,
                     );
 
-                    if household.replenishment_state == REPLENISHMENT_RESERVED {
-                        if household.pickup_eta_hours > 0 {
-                            household.pickup_eta_hours -= 1;
-                        }
-                        if household.pickup_eta_hours == 0 {
-                            household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
-                        }
-                    } else if household.replenishment_state == REPLENISHMENT_PICKUP_PENDING {
+                    if matches!(
+                        household.replenishment_state,
+                        REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+                    ) {
                     } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
                         if household.cooldown_hours > 0 {
                             household.cooldown_hours -= 1;
                         }
+                        household.replenishment_failure_count = 0;
                         household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                    } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
+                        if household.stock_days >= trigger_days {
+                            household.replenishment_failure_count = 0;
+                            household.replenishment_search_cursor = 0;
+                            household.replenishment_state = REPLENISHMENT_STABLE;
+                        }
+                    } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
+                        if household.stock_days >= trigger_days {
+                            household.replenishment_failure_count = 0;
+                            household.replenishment_search_cursor = 0;
+                            household.replenishment_state = REPLENISHMENT_STABLE;
+                        }
                     } else if household.cooldown_hours > 0 {
                         household.cooldown_hours -= 1;
                         household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                    } else if household.stock_days < trigger_days {
+                        household.replenishment_state = REPLENISHMENT_NEEDS;
                     } else {
+                        household.replenishment_failure_count = 0;
+                        household.replenishment_search_cursor = 0;
                         household.replenishment_state = REPLENISHMENT_STABLE;
                     }
 
@@ -343,7 +571,7 @@ impl HouseholdSystem {
                         && household.home_building_id < building_count
                         && !matches!(
                             household.replenishment_state,
-                            REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
                         )
                     {
                         progress.restock_candidate_exists = true;
@@ -362,8 +590,11 @@ impl HouseholdSystem {
 
     #[cfg(test)]
     pub(super) fn consume_household_stock(&mut self, agents: &mut AgentSystem) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
         let any_zero_stock = AtomicBool::new(false);
         self.households.par_iter_mut().for_each(|household| {
             if household.member_count == 0 {
@@ -383,18 +614,35 @@ impl HouseholdSystem {
             );
             if matches!(
                 household.replenishment_state,
-                REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
             ) {
                 return;
             } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
                 if household.cooldown_hours > 0 {
                     household.cooldown_hours -= 1;
                 }
+                household.replenishment_failure_count = 0;
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
+            } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
+                if household.stock_days >= trigger_days {
+                    household.replenishment_failure_count = 0;
+                    household.replenishment_search_cursor = 0;
+                    household.replenishment_state = REPLENISHMENT_STABLE;
+                }
+            } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
+                if household.stock_days >= trigger_days {
+                    household.replenishment_failure_count = 0;
+                    household.replenishment_search_cursor = 0;
+                    household.replenishment_state = REPLENISHMENT_STABLE;
+                }
             } else if household.cooldown_hours > 0 {
                 household.cooldown_hours -= 1;
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
+            } else if household.stock_days < trigger_days {
+                household.replenishment_state = REPLENISHMENT_NEEDS;
             } else {
+                household.replenishment_failure_count = 0;
+                household.replenishment_search_cursor = 0;
                 household.replenishment_state = REPLENISHMENT_STABLE;
             }
 
@@ -411,7 +659,10 @@ impl HouseholdSystem {
     #[cfg(test)]
     pub(super) fn run_household_replenishment(
         &mut self,
+        agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
         absolute_hour: u32,
     ) {
         let catalog = load_runtime_economy_catalog()
@@ -422,16 +673,22 @@ impl HouseholdSystem {
         let retry_cooldown_hours = tuning
             .operational_clock
             .household_replenishment_retry_cooldown_hours;
+        let terminal_failure_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
+        let shopping_leg_timeout_hours = tuning
+            .operational_clock
+            .household_shopping_leg_timeout_hours;
 
-        for hid in 0..self.households.len() {
-            self.fulfill_pending_household_replenishment(
-                hid,
-                allocator,
-                household_supply_resource,
-                retry_cooldown_hours,
-            );
-        }
-        self.progress_reserved_replenishment_eta();
+        self.process_active_household_shopping(
+            agents,
+            allocator,
+            &catalog,
+            household_supply_resource,
+            retry_cooldown_hours,
+            terminal_failure_count,
+            shopping_leg_timeout_hours,
+        );
 
         let profile = household_demand_profile(&catalog);
         let trigger_days = profile.reorder_threshold_days;
@@ -441,7 +698,7 @@ impl HouseholdSystem {
                 && household.home_building_id < allocator.buildings.len()
                 && !matches!(
                     household.replenishment_state,
-                    REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
                 )
         });
         if !restock_candidate_exists {
@@ -453,11 +710,14 @@ impl HouseholdSystem {
                 && household.home_building_id < allocator.buildings.len()
                 && !matches!(
                     household.replenishment_state,
-                    REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
                 )
         });
         self.plan_and_apply_household_replenishment(
+            agents,
             allocator,
+            transit_network,
+            graph,
             absolute_hour,
             &catalog,
             &tuning,
@@ -469,7 +729,10 @@ impl HouseholdSystem {
 
     fn plan_and_apply_household_replenishment(
         &mut self,
+        agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
         absolute_hour: u32,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -488,9 +751,19 @@ impl HouseholdSystem {
         let profile = household_demand_profile(catalog);
         let target_days = profile.stock_target_days;
         let trigger_days = profile.reorder_threshold_days;
-        let store_index = StoreSupplyIndex::build(allocator, catalog, household_supply_resource);
+        let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
+        let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let store_index = StoreSupplyIndex::build(
+            allocator,
+            catalog,
+            household_supply_resource,
+            graph,
+            &foot_components,
+            &car_components,
+        );
         let stock_critical_purchase_available =
             urgent_restock_candidate_exists && store_index.has_any();
+        let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
         let (mut plans, mut diagnostics) = self
             .households
             .par_iter()
@@ -501,28 +774,37 @@ impl HouseholdSystem {
                         Vec::new(),
                         ReplenishmentDiagnostics::default(),
                         Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
+                        Vec::with_capacity(GROCERY_ROUTE_SCAN_CANDIDATES),
                     )
                 },
-                |(mut plans, mut diagnostics, mut candidates), (hid, household)| {
+                |(mut plans, mut diagnostics, mut candidates, mut seen_candidates),
+                 (hid, household)| {
                     if let Some(plan) = plan_household_replenishment(
                         hid,
                         household,
+                        shopper_candidates[hid],
+                        agents,
                         allocator,
                         &store_index,
+                        transit_network,
+                        graph,
+                        &foot_components,
+                        &car_components,
                         absolute_hour,
                         check_interval,
                         stock_critical_purchase_available,
                         target_days,
                         trigger_days,
                         &mut candidates,
+                        &mut seen_candidates,
                         &mut diagnostics,
                     ) {
                         plans.push(plan);
                     }
-                    (plans, diagnostics, candidates)
+                    (plans, diagnostics, candidates, seen_candidates)
                 },
             )
-            .map(|(plans, diagnostics, _)| (plans, diagnostics))
+            .map(|(plans, diagnostics, _, _)| (plans, diagnostics))
             .reduce(
                 || (Vec::new(), ReplenishmentDiagnostics::default()),
                 |mut left, right| {
@@ -536,12 +818,18 @@ impl HouseholdSystem {
             apply_replenishment_plan(
                 plan,
                 &mut self.households,
+                agents,
                 allocator,
                 household_supply_resource,
-                tuning.operational_clock.household_pickup_eta_hours,
                 tuning
                     .operational_clock
                     .household_replenishment_retry_cooldown_hours,
+                tuning
+                    .operational_clock
+                    .household_replenishment_terminal_failure_count,
+                tuning
+                    .operational_clock
+                    .household_shopping_leg_timeout_hours,
                 catalog,
                 &mut diagnostics,
             );
@@ -552,8 +840,9 @@ impl HouseholdSystem {
                 "economy",
                 "household replenishment diagnostics: hour={} attempts={} success={} failed={} \
                  urgent_cooldown_skips={} candidates={} no_store_candidates={} \
+                 no_shopper={} \
                  rejected_empty={} rejected_invalid_store={} rejected_missing_profile={} \
-                 rejected_not_output={} rejected_unaffordable={} rejected_zero_desired={} \
+                 rejected_not_output={} rejected_unaffordable={} rejected_unreachable={} rejected_zero_desired={} \
                  rejected_zero_amount={} reserved_amount={:.1} reserved_cost={:.1}",
                 absolute_hour,
                 diagnostics.attempts,
@@ -562,11 +851,13 @@ impl HouseholdSystem {
                 diagnostics.urgent_cooldown_skips,
                 diagnostics.candidate_count,
                 diagnostics.failed_no_store_candidates,
+                diagnostics.failed_no_shopper,
                 diagnostics.rejected_empty,
                 diagnostics.rejected_invalid_store,
                 diagnostics.rejected_missing_profile,
                 diagnostics.rejected_not_output,
                 diagnostics.rejected_unaffordable,
+                diagnostics.rejected_unreachable,
                 diagnostics.rejected_zero_desired,
                 diagnostics.rejected_zero_amount,
                 diagnostics.reserved_amount,
@@ -575,102 +866,262 @@ impl HouseholdSystem {
         }
     }
 
-    #[cfg(test)]
-    fn progress_reserved_replenishment_eta(&mut self) {
-        self.households.par_iter_mut().for_each(|household| {
-            if household.replenishment_state != REPLENISHMENT_RESERVED {
+    fn collect_eligible_shopper_candidates(&mut self, agents: &AgentSystem) -> Vec<usize> {
+        use std::sync::atomic::Ordering;
+
+        self.reset_shopper_candidate_scratch();
+        let scratch = &self.shopper_candidate_scratch;
+        let households = &self.households;
+        (0..agents.len()).into_par_iter().for_each(|agent_idx| {
+            let household_id = agents.household_id[agent_idx];
+            if household_id >= households.len()
+                || agents.transit[agent_idx] != TRANSIT_IN_BUILDING
+                || agents.activity[agent_idx] != ACTIVITY_HOME
+                || agents.planned_target_building[agent_idx] != usize::MAX
+                || agents.target_building[agent_idx] != usize::MAX
+            {
                 return;
             }
-            if household.pickup_eta_hours > 0 {
-                household.pickup_eta_hours -= 1;
+            let household = &households[household_id];
+            if agents.current_building[agent_idx] != household.home_building_id
+                || agents.home_building[agent_idx] != household.home_building_id
+            {
+                return;
             }
-            if household.pickup_eta_hours == 0 {
-                household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
+            let slot = &scratch[household_id];
+            let mut current = slot.load(Ordering::Relaxed);
+            while agent_idx < current {
+                match slot.compare_exchange_weak(
+                    current,
+                    agent_idx,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(next) => current = next,
+                }
             }
         });
+        scratch
+            .iter()
+            .map(|slot| slot.load(Ordering::Relaxed))
+            .collect()
     }
 
-    fn fulfill_pending_household_replenishment(
+    fn process_active_household_shopping(
         &mut self,
-        hid: usize,
+        agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
         household_supply_resource: u16,
         retry_cooldown_hours: u16,
+        terminal_failure_count: u16,
+        shopping_leg_timeout_hours: u16,
     ) {
-        let Some(household) = self.households.get_mut(hid) else {
-            return;
-        };
-        if household.replenishment_state != REPLENISHMENT_PICKUP_PENDING {
-            return;
+        for hid in 0..self.households.len() {
+            match self.households[hid].replenishment_state {
+                REPLENISHMENT_SHOPPING_TO_STORE => self.process_shopping_to_store(
+                    hid,
+                    agents,
+                    allocator,
+                    catalog,
+                    household_supply_resource,
+                    retry_cooldown_hours,
+                    terminal_failure_count,
+                    shopping_leg_timeout_hours,
+                ),
+                REPLENISHMENT_SHOPPING_RETURNING => self.process_shopping_returning(
+                    hid,
+                    agents,
+                    retry_cooldown_hours,
+                    terminal_failure_count,
+                ),
+                _ => {}
+            }
         }
+    }
 
-        let store_idx = household.reserved_store_building_id;
-        if store_idx == usize::MAX || store_idx >= allocator.buildings.len() {
-            cancel_replenishment_pickup(household, retry_cooldown_hours);
+    fn process_shopping_to_store(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        household_supply_resource: u16,
+        retry_cooldown_hours: u16,
+        terminal_failure_count: u16,
+        shopping_leg_timeout_hours: u16,
+    ) {
+        if !shopping_carrier_matches(&self.households[hid], hid, agents) {
+            cancel_replenishment_before_pickup(
+                &mut self.households[hid],
+                agents,
+                allocator,
+                household_supply_resource,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
             return;
         }
+        let store_idx = self.households[hid].reserved_store_building_id;
+        if !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx) {
+            cancel_replenishment_before_pickup(
+                &mut self.households[hid],
+                agents,
+                allocator,
+                household_supply_resource,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+            return;
+        }
+        let agent_idx = self.households[hid].shopping_agent_id;
+        if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+            && agents.current_building[agent_idx] == store_idx
+        {
+            let total_cost = self.households[hid].reserved_total_cost;
+            let store = &mut allocator.buildings[store_idx];
+            store.revenue += total_cost;
+            store.operating_budget += total_cost;
+            self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
+            self.households[hid].shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
+            schedule_shopper_home(&self.households[hid], agents);
+        } else if shopping_leg_timed_out(&mut self.households[hid]) {
+            cancel_replenishment_before_pickup(
+                &mut self.households[hid],
+                agents,
+                allocator,
+                household_supply_resource,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+        }
+    }
 
-        let store = &mut allocator.buildings[store_idx];
-        if store.broken || store.economy_broken || store.is_deserted {
-            store.add_inventory_units(household_supply_resource, household.reserved_amount);
-            cancel_replenishment_pickup(household, retry_cooldown_hours);
+    fn process_shopping_returning(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        retry_cooldown_hours: u16,
+        terminal_failure_count: u16,
+    ) {
+        if !shopping_carrier_matches(&self.households[hid], hid, agents) {
+            cancel_replenishment_after_pickup(
+                &mut self.households[hid],
+                agents,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
             return;
         }
-        store.revenue += household.reserved_total_cost;
-        store.operating_budget += household.reserved_total_cost;
-        household.stock += household.reserved_amount;
-        household.stock_days = stock_days(
-            household.stock,
-            household.member_count,
-            household.consumption_rate,
-        );
-        household.replenishment_state = REPLENISHMENT_FULFILLED;
-        household.cooldown_hours = 1;
-        household.reserved_store_building_id = usize::MAX;
-        household.reserved_amount = 0.0;
-        household.reserved_total_cost = 0.0;
-        household.pickup_eta_hours = 0;
+        let agent_idx = self.households[hid].shopping_agent_id;
+        let home_idx = self.households[hid].home_building_id;
+        if home_idx == usize::MAX {
+            cancel_replenishment_after_pickup(
+                &mut self.households[hid],
+                agents,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+            return;
+        }
+        if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+            && agents.current_building[agent_idx] == home_idx
+        {
+            let household = &mut self.households[hid];
+            household.stock += household.reserved_amount;
+            household.stock_days = stock_days(
+                household.stock,
+                household.member_count,
+                household.consumption_rate,
+            );
+            clear_replenishment_request(household);
+            household.replenishment_failure_count = 0;
+            household.replenishment_search_cursor = 0;
+            household.replenishment_state = REPLENISHMENT_FULFILLED;
+            household.cooldown_hours = 1;
+        } else if shopping_leg_timed_out(&mut self.households[hid]) {
+            cancel_replenishment_after_pickup(
+                &mut self.households[hid],
+                agents,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+        } else {
+            schedule_shopper_home(&self.households[hid], agents);
+        }
     }
 }
 
 fn plan_household_replenishment(
     hid: usize,
     household: &Household,
+    shopper_agent_id: usize,
+    agents: &AgentSystem,
     allocator: &BuildingAllocator,
     store_index: &StoreSupplyIndex,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    foot_components: &ModeComponentIndex,
+    car_components: &ModeComponentIndex,
     absolute_hour: u32,
     check_interval: u32,
     stock_critical_purchase_available: bool,
     target_days: f32,
     trigger_days: f32,
     candidates: &mut Vec<usize>,
+    seen_candidates: &mut Vec<usize>,
     diagnostics: &mut ReplenishmentDiagnostics,
 ) -> Option<ReplenishmentCandidatePlan> {
     let check_offset_matches = absolute_hour % check_interval
         == u32::from(household.replenishment_offset_hours % check_interval as u16);
     let stock_critical_urgent = household.stock_days == 0.0 && stock_critical_purchase_available;
+    let waiting_for_shopper = household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER;
+    let terminal_retry =
+        household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && check_offset_matches;
     if stock_critical_urgent && household.cooldown_hours > 0 {
         diagnostics.urgent_cooldown_skips += 1;
     }
     if household.member_count == 0
         || household.home_building_id == usize::MAX
         || household.home_building_id >= allocator.buildings.len()
-        || household.replenishment_state == REPLENISHMENT_RESERVED
-        || household.replenishment_state == REPLENISHMENT_PICKUP_PENDING
+        || household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+        || household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING
+        || (household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && !terminal_retry)
         || household.cooldown_hours > 0
         || household.stock_days >= trigger_days
-        || (!stock_critical_urgent && !check_offset_matches)
+        || (!waiting_for_shopper
+            && !terminal_retry
+            && !stock_critical_urgent
+            && !check_offset_matches)
     {
         return None;
     }
 
-    let home = &allocator.buildings[household.home_building_id];
-    store_index.fill_nearest_candidates(
-        home.center_x,
-        home.center_y,
-        GROCERY_SEARCH_CANDIDATES,
+    if shopper_agent_id == usize::MAX {
+        return Some(ReplenishmentCandidatePlan {
+            household_id: hid,
+            shopper_agent_id,
+            desired_amount: 0.0,
+            candidate_count: 0,
+            candidates: [usize::MAX; GROCERY_SEARCH_CANDIDATES],
+        });
+    }
+
+    let has_car = agents.has_car[shopper_agent_id];
+    store_index.fill_route_feasible_candidates(
+        household.home_building_id,
+        has_car,
         allocator,
+        transit_network,
+        graph,
+        foot_components,
+        car_components,
+        &agents.pathfind_count,
+        household.replenishment_search_cursor,
         candidates,
+        seen_candidates,
+        diagnostics,
     );
     diagnostics.attempts += 1;
     diagnostics.candidate_count += candidates.len() as u32;
@@ -682,14 +1133,21 @@ fn plan_household_replenishment(
     let target_stock = target_days * daily_consumption;
     let desired_amount = (target_stock - household.stock).max(0.0);
     let mut candidate_array = [usize::MAX; GROCERY_SEARCH_CANDIDATES];
-    for (slot, &candidate) in candidates.iter().enumerate() {
+    let mut route_feasible_count = 0usize;
+    for &candidate in candidates.iter() {
+        if route_feasible_count == GROCERY_SEARCH_CANDIDATES {
+            break;
+        }
+        let slot = route_feasible_count;
         candidate_array[slot] = candidate;
+        route_feasible_count += 1;
     }
 
     Some(ReplenishmentCandidatePlan {
         household_id: hid,
+        shopper_agent_id,
         desired_amount,
-        candidate_count: candidates.len() as u8,
+        candidate_count: route_feasible_count as u8,
         candidates: candidate_array,
     })
 }
@@ -712,19 +1170,30 @@ fn apply_starvation_happiness_loss(households: &[Household], agents: &mut AgentS
 fn apply_replenishment_plan(
     plan: ReplenishmentCandidatePlan,
     households: &mut [Household],
+    agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     household_supply_resource: u16,
-    pickup_eta_hours: u16,
     retry_cooldown_hours: u16,
+    terminal_failure_count: u16,
+    shopping_leg_timeout_hours: u16,
     catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
     diagnostics: &mut ReplenishmentDiagnostics,
 ) {
     let Some(household) = households.get(plan.household_id) else {
         return;
     };
-    if household.replenishment_state == REPLENISHMENT_RESERVED
-        || household.replenishment_state == REPLENISHMENT_PICKUP_PENDING
+    if household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+        || household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING
     {
+        return;
+    }
+    if !eligible_shopper_for_household(agents, plan.shopper_agent_id, plan.household_id, household)
+    {
+        let household = &mut households[plan.household_id];
+        household.replenishment_state = REPLENISHMENT_WAITING_FOR_SHOPPER;
+        household.shopping_agent_id = usize::MAX;
+        household.shopping_agent_schedule_seed = 0;
+        diagnostics.failed_no_shopper += 1;
         return;
     }
 
@@ -794,14 +1263,18 @@ fn apply_replenishment_plan(
         household.reserved_store_building_id = store_idx;
         household.reserved_amount = amount;
         household.reserved_total_cost = total_cost;
-        household.pickup_eta_hours = pickup_eta_hours;
-        household.replenishment_state = REPLENISHMENT_RESERVED;
+        household.shopping_agent_id = plan.shopper_agent_id;
+        household.shopping_agent_schedule_seed = agents.schedule_seed[plan.shopper_agent_id];
+        household.shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
+        household.replenishment_search_cursor = 0;
+        household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
+        agents.planned_target_building[plan.shopper_agent_id] = store_idx;
+        agents.planned_activity[plan.shopper_agent_id] = ACTIVITY_SHOPPING;
         diagnostics.successes += 1;
         diagnostics.reserved_amount += amount;
         diagnostics.reserved_cost += total_cost;
     } else {
-        household.replenishment_state = REPLENISHMENT_COOLDOWN;
-        household.cooldown_hours = retry_cooldown_hours;
+        register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
         diagnostics.failed_no_sale += 1;
     }
 }
@@ -812,14 +1285,166 @@ pub(super) fn clear_replenishment_request(household: &mut Household) {
     household.reserved_store_building_id = usize::MAX;
     household.reserved_amount = 0.0;
     household.reserved_total_cost = 0.0;
-    household.pickup_eta_hours = 0;
+    household.shopping_agent_id = usize::MAX;
+    household.shopping_agent_schedule_seed = 0;
+    household.shopping_timeout_hours_remaining = 0;
 }
 
-fn cancel_replenishment_pickup(household: &mut Household, retry_cooldown_hours: u16) {
+fn cancel_replenishment_before_pickup(
+    household: &mut Household,
+    agents: &mut AgentSystem,
+    allocator: &mut BuildingAllocator,
+    household_supply_resource: u16,
+    retry_cooldown_hours: u16,
+    terminal_failure_count: u16,
+) {
+    let store_idx = household.reserved_store_building_id;
+    if store_idx < allocator.buildings.len() && household.reserved_amount > 0.0 {
+        allocator.buildings[store_idx]
+            .add_inventory_units(household_supply_resource, household.reserved_amount);
+    }
     household.budget += household.reserved_total_cost;
+    schedule_shopper_home(household, agents);
     clear_replenishment_request(household);
-    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+    register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
+}
+
+fn cancel_replenishment_after_pickup(
+    household: &mut Household,
+    agents: &mut AgentSystem,
+    retry_cooldown_hours: u16,
+    terminal_failure_count: u16,
+) {
+    schedule_shopper_home(household, agents);
+    clear_replenishment_request(household);
+    register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
+}
+
+pub(super) fn register_replenishment_failure(
+    household: &mut Household,
+    retry_cooldown_hours: u16,
+    terminal_failure_count: u16,
+) {
+    household.replenishment_failure_count = household.replenishment_failure_count.saturating_add(1);
+    advance_replenishment_search_cursor(household);
     household.cooldown_hours = retry_cooldown_hours;
+    household.replenishment_state =
+        if household.replenishment_failure_count >= terminal_failure_count {
+            household.cooldown_hours = 0;
+            REPLENISHMENT_FAILED_TERMINAL
+        } else {
+            REPLENISHMENT_COOLDOWN
+        };
+}
+
+fn advance_replenishment_search_cursor(household: &mut Household) {
+    let advance = if household.replenishment_search_cursor == 0 {
+        GROCERY_SEARCH_CANDIDATES
+    } else {
+        GROCERY_ROUTE_SCAN_CANDIDATES
+    } as u32;
+    household.replenishment_search_cursor =
+        household.replenishment_search_cursor.wrapping_add(advance);
+}
+
+fn shopping_leg_timed_out(household: &mut Household) -> bool {
+    if household.shopping_timeout_hours_remaining == 0 {
+        return true;
+    }
+    household.shopping_timeout_hours_remaining -= 1;
+    household.shopping_timeout_hours_remaining == 0
+}
+
+fn eligible_shopper_for_household(
+    agents: &AgentSystem,
+    agent_idx: usize,
+    household_id: usize,
+    household: &Household,
+) -> bool {
+    agent_idx < agents.len()
+        && agents.household_id[agent_idx] == household_id
+        && agents.home_building[agent_idx] == household.home_building_id
+        && agents.current_building[agent_idx] == household.home_building_id
+        && agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+        && agents.activity[agent_idx] == ACTIVITY_HOME
+        && agents.target_building[agent_idx] == usize::MAX
+        && agents.planned_target_building[agent_idx] == usize::MAX
+}
+
+fn shopping_carrier_matches(
+    household: &Household,
+    household_id: usize,
+    agents: &AgentSystem,
+) -> bool {
+    let agent_idx = household.shopping_agent_id;
+    agent_idx < agents.len()
+        && agents.household_id[agent_idx] == household_id
+        && agents.schedule_seed[agent_idx] == household.shopping_agent_schedule_seed
+}
+
+fn valid_store_for_pickup(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    household_supply_resource: u16,
+    store_idx: usize,
+) -> bool {
+    allocator.buildings.get(store_idx).is_some_and(|store| {
+        !store.broken
+            && !store.economy_broken
+            && !store.is_deserted
+            && matches!(store.zone_type, ZoneType::Commercial)
+            && economy_profile_for_building(catalog, store)
+                .is_some_and(|profile| profile.output_port(household_supply_resource).is_some())
+    })
+}
+
+fn shopping_route_is_feasible(
+    home_idx: usize,
+    store_idx: usize,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &std::sync::atomic::AtomicU32,
+) -> bool {
+    building_origin_trip_is_feasible(
+        home_idx,
+        store_idx,
+        ACTIVITY_SHOPPING,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    ) && building_origin_trip_is_feasible(
+        store_idx,
+        home_idx,
+        ACTIVITY_HOME,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+}
+
+fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem) {
+    let agent_idx = household.shopping_agent_id;
+    if agent_idx >= agents.len()
+        || agents.schedule_seed[agent_idx] != household.shopping_agent_schedule_seed
+        || household.home_building_id == usize::MAX
+    {
+        return;
+    }
+    if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+        && agents.current_building[agent_idx] == household.home_building_id
+    {
+        agents.planned_target_building[agent_idx] = usize::MAX;
+        agents.planned_activity[agent_idx] = ACTIVITY_HOME;
+        return;
+    }
+    agents.planned_target_building[agent_idx] = household.home_building_id;
+    agents.planned_activity[agent_idx] = ACTIVITY_HOME;
 }
 
 fn squared_store_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
