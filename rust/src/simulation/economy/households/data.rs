@@ -13,6 +13,29 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 
+/// Daily diagnostic-only household money and shopping counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DailyHouseholdLedger {
+    /// Household budget at the start of the current debug ledger window.
+    pub(crate) budget_before: f32,
+    /// Household budget after daily settlement.
+    pub(crate) budget_after: f32,
+    /// Wage income received during daily settlement.
+    pub(crate) wage_income: f32,
+    /// Unemployment benefit received during daily settlement.
+    pub(crate) unemployment_benefit_income: f32,
+    /// Net household budget reserved or spent on shopping during the ledger window.
+    pub(crate) shopping_spend: f32,
+    /// Value of consumed household stock plus direct utility charges.
+    pub(crate) utility_stock_consumption_cost: f32,
+    /// Unemployed adult count observed by the daily benefit pass.
+    pub(crate) unemployed_adults: u16,
+    /// Shopper tasks completed during the ledger window.
+    pub(crate) shopper_trips_completed: u16,
+    /// Shopper tasks failed during the ledger window.
+    pub(crate) shopper_trips_failed: u16,
+}
+
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
 pub struct Household {
@@ -85,6 +108,7 @@ pub struct HouseholdSystem {
     pub(super) workplace_route_cache_building_revision: u64,
     pub(super) workplace_route_cache_entrance_revision: u64,
     pub(super) workplace_route_cache_cch_generation: u32,
+    pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
 }
 
 impl HouseholdSystem {
@@ -106,6 +130,7 @@ impl HouseholdSystem {
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
+            daily_ledgers: Vec::new(),
         }
     }
 
@@ -126,10 +151,12 @@ impl HouseholdSystem {
         self.workplace_route_cache_building_revision = u64::MAX;
         self.workplace_route_cache_entrance_revision = u64::MAX;
         self.workplace_route_cache_cch_generation = u32::MAX;
+        self.daily_ledgers.clear();
     }
 
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        self.ensure_daily_ledger_len();
         for household in &mut self.households {
             if let Some(&new_id) = mapping.get(&household.home_building_id) {
                 household.home_building_id = new_id;
@@ -157,7 +184,9 @@ impl HouseholdSystem {
         let terminal_failure_count = tuning
             .operational_clock
             .household_replenishment_terminal_failure_count;
-        for household in &mut self.households {
+        self.ensure_daily_ledger_len();
+        let daily_ledgers = &mut self.daily_ledgers;
+        for (household_id, household) in self.households.iter_mut().enumerate() {
             let removed_home = household.home_building_id == removed_building;
             if removed_home {
                 household.home_building_id = usize::MAX;
@@ -183,8 +212,14 @@ impl HouseholdSystem {
                         );
                     }
                     household.budget += household.reserved_total_cost;
+                    if let Some(ledger) = daily_ledgers.get_mut(household_id) {
+                        ledger.shopping_spend -= household.reserved_total_cost;
+                    }
                 }
                 if active_to_store || active_returning {
+                    if let Some(ledger) = daily_ledgers.get_mut(household_id) {
+                        ledger.shopper_trips_failed = ledger.shopper_trips_failed.saturating_add(1);
+                    }
                     clear_replenishment_request(household);
                     register_replenishment_failure(
                         household,
@@ -193,6 +228,52 @@ impl HouseholdSystem {
                     );
                 }
             }
+        }
+    }
+
+    /// Returns daily household ledgers for debug output.
+    pub(crate) fn daily_ledgers(&self) -> &[DailyHouseholdLedger] {
+        &self.daily_ledgers
+    }
+
+    /// Clears per-household daily ledgers after they have been emitted.
+    pub(crate) fn reset_daily_ledgers(&mut self) {
+        self.ensure_daily_ledger_len();
+        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
+            *ledger = DailyHouseholdLedger::default();
+            ledger.budget_before = household.budget;
+            ledger.budget_after = household.budget;
+        }
+    }
+
+    pub(super) fn ensure_daily_ledger_len(&mut self) {
+        if self.daily_ledgers.len() > self.households.len() {
+            self.daily_ledgers.truncate(self.households.len());
+        }
+        if self.daily_ledgers.len() < self.households.len() {
+            let start = self.daily_ledgers.len();
+            self.daily_ledgers.reserve(self.households.len() - start);
+            for household in &self.households[start..] {
+                let mut ledger = DailyHouseholdLedger::default();
+                ledger.budget_before = household.budget;
+                ledger.budget_after = household.budget;
+                self.daily_ledgers.push(ledger);
+            }
+        }
+    }
+
+    pub(super) fn begin_daily_ledger_settlement(&mut self) {
+        self.ensure_daily_ledger_len();
+        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
+            ledger.budget_after = household.budget;
+            ledger.unemployed_adults = 0;
+        }
+    }
+
+    pub(super) fn finish_daily_ledger_settlement(&mut self) {
+        self.ensure_daily_ledger_len();
+        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
+            ledger.budget_after = household.budget;
         }
     }
 
@@ -261,6 +342,7 @@ impl Clone for HouseholdSystem {
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
+            daily_ledgers: Vec::new(),
         }
     }
 }

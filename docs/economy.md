@@ -1690,6 +1690,14 @@ Useful first-pass household replenishment states are:
 - `cooldown`
 - `failed_terminal`
 
+The `economy` debug output should expose one daily per-household ledger line for active households
+with wage income, unemployment-benefit income, shopping spend or refunds, utility plus stock
+consumption cost, budget before and after the daily window, unemployed adult count, and completed /
+failed shopper trips. The same daily output should include a household ledger summary with households
+at the budget floor, households below `1`, `2`, and `3` days of stock, total wages paid, total
+household shopping spend, and total benefits paid. Unemployment-benefit diagnostics should identify
+recipient `household_id`, unemployed adult count, amount paid, and `unemployment_days_elapsed`.
+
 The old abstract pickup ETA is no longer part of the baseline. Any timeout must be an explicit
 shopping timeout or failure rule, not hidden fulfillment.
 

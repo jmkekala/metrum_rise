@@ -1,6 +1,6 @@
 //! Household admission and arrived carrier materialization.
 
-use super::data::{Household, HouseholdSystem};
+use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::household_demand_profile;
 use super::replenishment::{REPLENISHMENT_STABLE, stable_replenishment_offset_hours};
 use crate::debug_log;
@@ -29,9 +29,11 @@ impl HouseholdSystem {
         let member_count = member_count.max(1);
         let age_composition =
             household_age_composition(home_building_id, self.households.len(), member_count);
+        let starting_budget =
+            tuning.households.immigrant_starting_budget_per_member * member_count as f32;
         self.households.push(Household {
             home_building_id,
-            budget: tuning.households.immigrant_starting_budget_per_member * member_count as f32,
+            budget: starting_budget,
             stock: member_count as f32 * consumption_rate * starting_stock_days,
             member_count,
             child_count: age_composition.child_count,
@@ -57,6 +59,10 @@ impl HouseholdSystem {
                 self.households.len() as u32,
             ),
         });
+        let mut ledger = DailyHouseholdLedger::default();
+        ledger.budget_before = starting_budget;
+        ledger.budget_after = starting_budget;
+        self.daily_ledgers.push(ledger);
         self.households.len() - 1
     }
 

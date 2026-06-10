@@ -903,13 +903,15 @@ impl SimCore {
         );
     }
 
-    fn print_daily_building_economy(&self, day_index: u32) {
+    fn print_daily_building_economy(&mut self, day_index: u32) {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 
         if !crate::debug::category_enabled("economy") {
+            self.households.reset_daily_ledgers();
             return;
         }
         let Ok(catalog) = load_runtime_economy_catalog() else {
+            self.households.reset_daily_ledgers();
             return;
         };
 
@@ -1007,10 +1009,41 @@ impl SimCore {
             );
         }
 
+        let mut households_at_budget_floor = 0u32;
+        let mut households_below_1d_stock = 0u32;
+        let mut households_below_2d_stock = 0u32;
+        let mut households_below_3d_stock = 0u32;
+        let mut total_wages_paid = 0.0f32;
+        let mut total_household_shopping_spend = 0.0f32;
+        let mut total_benefits_paid = 0.0f32;
+        let mut total_utility_stock_cost = 0.0f32;
+
         for (idx, h) in self.households.households.iter().enumerate() {
             if h.member_count == 0 {
                 continue;
             }
+            let ledger = self
+                .households
+                .daily_ledgers()
+                .get(idx)
+                .copied()
+                .unwrap_or_default();
+            if h.budget <= f32::EPSILON {
+                households_at_budget_floor += 1;
+            }
+            if h.stock_days < 1.0 {
+                households_below_1d_stock += 1;
+            }
+            if h.stock_days < 2.0 {
+                households_below_2d_stock += 1;
+            }
+            if h.stock_days < 3.0 {
+                households_below_3d_stock += 1;
+            }
+            total_wages_paid += ledger.wage_income;
+            total_household_shopping_spend += ledger.shopping_spend;
+            total_benefits_paid += ledger.unemployment_benefit_income;
+            total_utility_stock_cost += ledger.utility_stock_consumption_cost;
             let home_asset = self
                 .allocator
                 .buildings
@@ -1036,7 +1069,7 @@ impl SimCore {
                 String::new()
             };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{}",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} benefit={:.1} shopping={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
                 day_index,
                 idx,
                 h.home_building_id,
@@ -1049,8 +1082,30 @@ impl SimCore {
                 h.stock_days,
                 state_str,
                 ub_str,
+                ledger.budget_before,
+                ledger.wage_income,
+                ledger.unemployment_benefit_income,
+                ledger.shopping_spend,
+                ledger.utility_stock_consumption_cost,
+                ledger.budget_after,
+                ledger.unemployed_adults,
+                ledger.shopper_trips_completed,
+                ledger.shopper_trips_failed,
             );
         }
+        println!(
+            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} benefits_paid={:.1} utility_stock_cost={:.1}",
+            day_index,
+            households_at_budget_floor,
+            households_below_1d_stock,
+            households_below_2d_stock,
+            households_below_3d_stock,
+            total_wages_paid,
+            total_household_shopping_spend,
+            total_benefits_paid,
+            total_utility_stock_cost,
+        );
+        self.households.reset_daily_ledgers();
     }
 
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
@@ -1248,7 +1303,7 @@ impl SimCore {
     }
 
     /// Called once per in-game day by the tick loop to emit per-building economy lines.
-    pub fn print_daily_building_economy_for_day(&self, day_index: u32) {
+    pub fn print_daily_building_economy_for_day(&mut self, day_index: u32) {
         self.print_daily_building_economy(day_index);
     }
 

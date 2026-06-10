@@ -42,16 +42,22 @@ impl HouseholdSystem {
         let mut total_disbursed = 0.0f32;
         let mut households_paid = 0u32;
         let mut households_exhausted = 0u32;
+        self.ensure_daily_ledger_len();
 
-        for (hid, household) in self.households.iter_mut().enumerate() {
-            if household.member_count == 0
-                || !valid_benefit_home(allocator, household.home_building_id)
-            {
+        let households = &mut self.households;
+        let daily_ledgers = &mut self.daily_ledgers;
+        for hid in 0..households.len() {
+            let household = &mut households[hid];
+            if household.member_count == 0 {
                 continue;
             }
             let unemployed = self.member_count_scratch[hid]
                 .load(Ordering::Relaxed)
                 .min(u32::from(u16::MAX)) as u16;
+            daily_ledgers[hid].unemployed_adults = unemployed;
+            if !valid_benefit_home(allocator, household.home_building_id) {
+                continue;
+            }
             if unemployed == 0 {
                 household.unemployment_days_elapsed = 0;
                 continue;
@@ -79,6 +85,15 @@ impl HouseholdSystem {
             };
             total_disbursed += paid;
             households_paid += 1;
+            daily_ledgers[hid].unemployment_benefit_income += paid;
+            debug_log!(
+                "economy",
+                "unemployment_benefit_recipient: household_id={} unemployed_adults={} amount_paid={:.1} unemployment_days_elapsed={}",
+                hid,
+                unemployed,
+                paid,
+                household.unemployment_days_elapsed
+            );
         }
 
         debug_log!(

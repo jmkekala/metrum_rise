@@ -152,6 +152,9 @@ impl HouseholdSystem {
 
         let last_household_id = self.households.len() - 1;
         self.households.swap_remove(household_id);
+        if household_id < self.daily_ledgers.len() {
+            self.daily_ledgers.swap_remove(household_id);
+        }
         if household_id < self.households.len() {
             let mut mapping = std::collections::HashMap::with_capacity(1);
             mapping.insert(last_household_id, household_id);

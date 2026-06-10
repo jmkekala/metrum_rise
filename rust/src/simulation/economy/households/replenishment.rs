@@ -3,10 +3,10 @@
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::data::{Household, HouseholdSystem};
+use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
-    household_supply_resource_runtime_id, stock_days,
+    household_supply_resource_runtime_id, household_supply_unit_price, stock_days,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -467,11 +467,13 @@ impl HouseholdSystem {
             .household_shopping_leg_timeout_hours;
         let profile = household_demand_profile(&catalog);
         let trigger_days = profile.reorder_threshold_days;
+        let household_supply_unit_price = household_supply_unit_price(&catalog);
 
         let progress = self.progress_households_for_operational_hour(
             allocator.buildings.len(),
             trigger_days,
             tuning.households.utility_cost_per_member_per_day,
+            household_supply_unit_price,
         );
         if progress.any_zero_stock {
             apply_starvation_happiness_loss(&self.households, agents);
@@ -506,13 +508,18 @@ impl HouseholdSystem {
         building_count: usize,
         trigger_days: f32,
         utility_cost_per_member_per_day: f32,
+        household_supply_unit_price: f32,
     ) -> HouseholdHourProgress {
-        self.households
+        self.ensure_daily_ledger_len();
+        let households = &mut self.households;
+        let daily_ledgers = &mut self.daily_ledgers;
+        households
             .par_iter_mut()
+            .zip(daily_ledgers.par_iter_mut())
             .enumerate()
             .fold(
                 HouseholdHourProgress::default,
-                |mut progress, (_, household)| {
+                |mut progress, (_, (household, ledger))| {
                     if household.member_count == 0 {
                         return progress;
                     }
@@ -525,6 +532,8 @@ impl HouseholdSystem {
                         * utility_cost_per_member_per_day
                         / OPERATIONAL_HOURS_PER_DAY;
                     household.budget = (household.budget - hourly_utility_cost).max(0.0);
+                    ledger.utility_stock_consumption_cost +=
+                        hourly_utility_cost + hourly_consumption * household_supply_unit_price;
                     household.stock_days = stock_days(
                         household.stock,
                         household.member_count,
@@ -595,61 +604,68 @@ impl HouseholdSystem {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
+        let supply_unit_price = household_supply_unit_price(&catalog);
         let any_zero_stock = AtomicBool::new(false);
-        self.households.par_iter_mut().for_each(|household| {
-            if household.member_count == 0 {
-                return;
-            }
-            let hourly_consumption = household.member_count as f32 * household.consumption_rate
-                / OPERATIONAL_HOURS_PER_DAY;
-            household.stock = (household.stock - hourly_consumption).max(0.0);
-            let hourly_utility_cost = household.member_count as f32
-                * tuning.households.utility_cost_per_member_per_day
-                / OPERATIONAL_HOURS_PER_DAY;
-            household.budget = (household.budget - hourly_utility_cost).max(0.0);
-            household.stock_days = stock_days(
-                household.stock,
-                household.member_count,
-                household.consumption_rate,
-            );
-            if matches!(
-                household.replenishment_state,
-                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-            ) {
-                return;
-            } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
-                if household.cooldown_hours > 0 {
+        self.ensure_daily_ledger_len();
+        self.households
+            .par_iter_mut()
+            .zip(self.daily_ledgers.par_iter_mut())
+            .for_each(|(household, ledger)| {
+                if household.member_count == 0 {
+                    return;
+                }
+                let hourly_consumption = household.member_count as f32 * household.consumption_rate
+                    / OPERATIONAL_HOURS_PER_DAY;
+                household.stock = (household.stock - hourly_consumption).max(0.0);
+                let hourly_utility_cost = household.member_count as f32
+                    * tuning.households.utility_cost_per_member_per_day
+                    / OPERATIONAL_HOURS_PER_DAY;
+                household.budget = (household.budget - hourly_utility_cost).max(0.0);
+                ledger.utility_stock_consumption_cost +=
+                    hourly_utility_cost + hourly_consumption * supply_unit_price;
+                household.stock_days = stock_days(
+                    household.stock,
+                    household.member_count,
+                    household.consumption_rate,
+                );
+                if matches!(
+                    household.replenishment_state,
+                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+                ) {
+                    return;
+                } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
+                    if household.cooldown_hours > 0 {
+                        household.cooldown_hours -= 1;
+                    }
+                    household.replenishment_failure_count = 0;
+                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
+                    if household.stock_days >= trigger_days {
+                        household.replenishment_failure_count = 0;
+                        household.replenishment_search_cursor = 0;
+                        household.replenishment_state = REPLENISHMENT_STABLE;
+                    }
+                } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
+                    if household.stock_days >= trigger_days {
+                        household.replenishment_failure_count = 0;
+                        household.replenishment_search_cursor = 0;
+                        household.replenishment_state = REPLENISHMENT_STABLE;
+                    }
+                } else if household.cooldown_hours > 0 {
                     household.cooldown_hours -= 1;
-                }
-                household.replenishment_failure_count = 0;
-                household.replenishment_state = REPLENISHMENT_COOLDOWN;
-            } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
-                if household.stock_days >= trigger_days {
+                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                } else if household.stock_days < trigger_days {
+                    household.replenishment_state = REPLENISHMENT_NEEDS;
+                } else {
                     household.replenishment_failure_count = 0;
                     household.replenishment_search_cursor = 0;
                     household.replenishment_state = REPLENISHMENT_STABLE;
                 }
-            } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
-                if household.stock_days >= trigger_days {
-                    household.replenishment_failure_count = 0;
-                    household.replenishment_search_cursor = 0;
-                    household.replenishment_state = REPLENISHMENT_STABLE;
-                }
-            } else if household.cooldown_hours > 0 {
-                household.cooldown_hours -= 1;
-                household.replenishment_state = REPLENISHMENT_COOLDOWN;
-            } else if household.stock_days < trigger_days {
-                household.replenishment_state = REPLENISHMENT_NEEDS;
-            } else {
-                household.replenishment_failure_count = 0;
-                household.replenishment_search_cursor = 0;
-                household.replenishment_state = REPLENISHMENT_STABLE;
-            }
 
-            if household.stock_days == 0.0 {
-                any_zero_stock.store(true, Ordering::Relaxed);
-            }
-        });
+                if household.stock_days == 0.0 {
+                    any_zero_stock.store(true, Ordering::Relaxed);
+                }
+            });
 
         if any_zero_stock.load(Ordering::Relaxed) {
             apply_starvation_happiness_loss(&self.households, agents);
@@ -814,10 +830,12 @@ impl HouseholdSystem {
                 },
             );
         plans.sort_unstable_by_key(|plan| plan.household_id);
+        self.ensure_daily_ledger_len();
         for plan in plans {
             apply_replenishment_plan(
                 plan,
                 &mut self.households,
+                &mut self.daily_ledgers,
                 agents,
                 allocator,
                 household_supply_resource,
@@ -919,6 +937,7 @@ impl HouseholdSystem {
         terminal_failure_count: u16,
         shopping_leg_timeout_hours: u16,
     ) {
+        self.ensure_daily_ledger_len();
         for hid in 0..self.households.len() {
             match self.households[hid].replenishment_state {
                 REPLENISHMENT_SHOPPING_TO_STORE => self.process_shopping_to_store(
@@ -954,8 +973,8 @@ impl HouseholdSystem {
         shopping_leg_timeout_hours: u16,
     ) {
         if !shopping_carrier_matches(&self.households[hid], hid, agents) {
-            cancel_replenishment_before_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_before_pickup_with_ledger(
+                hid,
                 agents,
                 allocator,
                 household_supply_resource,
@@ -966,8 +985,8 @@ impl HouseholdSystem {
         }
         let store_idx = self.households[hid].reserved_store_building_id;
         if !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx) {
-            cancel_replenishment_before_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_before_pickup_with_ledger(
+                hid,
                 agents,
                 allocator,
                 household_supply_resource,
@@ -988,8 +1007,8 @@ impl HouseholdSystem {
             self.households[hid].shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
             schedule_shopper_home(&self.households[hid], agents);
         } else if shopping_leg_timed_out(&mut self.households[hid]) {
-            cancel_replenishment_before_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_before_pickup_with_ledger(
+                hid,
                 agents,
                 allocator,
                 household_supply_resource,
@@ -1007,8 +1026,8 @@ impl HouseholdSystem {
         terminal_failure_count: u16,
     ) {
         if !shopping_carrier_matches(&self.households[hid], hid, agents) {
-            cancel_replenishment_after_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_after_pickup_with_ledger(
+                hid,
                 agents,
                 retry_cooldown_hours,
                 terminal_failure_count,
@@ -1018,8 +1037,8 @@ impl HouseholdSystem {
         let agent_idx = self.households[hid].shopping_agent_id;
         let home_idx = self.households[hid].home_building_id;
         if home_idx == usize::MAX {
-            cancel_replenishment_after_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_after_pickup_with_ledger(
+                hid,
                 agents,
                 retry_cooldown_hours,
                 terminal_failure_count,
@@ -1041,15 +1060,60 @@ impl HouseholdSystem {
             household.replenishment_search_cursor = 0;
             household.replenishment_state = REPLENISHMENT_FULFILLED;
             household.cooldown_hours = 1;
+            if let Some(ledger) = self.daily_ledgers.get_mut(hid) {
+                ledger.shopper_trips_completed = ledger.shopper_trips_completed.saturating_add(1);
+            }
         } else if shopping_leg_timed_out(&mut self.households[hid]) {
-            cancel_replenishment_after_pickup(
-                &mut self.households[hid],
+            self.cancel_replenishment_after_pickup_with_ledger(
+                hid,
                 agents,
                 retry_cooldown_hours,
                 terminal_failure_count,
             );
         } else {
             schedule_shopper_home(&self.households[hid], agents);
+        }
+    }
+
+    fn cancel_replenishment_before_pickup_with_ledger(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        household_supply_resource: u16,
+        retry_cooldown_hours: u16,
+        terminal_failure_count: u16,
+    ) {
+        let refund = self.households[hid].reserved_total_cost;
+        cancel_replenishment_before_pickup(
+            &mut self.households[hid],
+            agents,
+            allocator,
+            household_supply_resource,
+            retry_cooldown_hours,
+            terminal_failure_count,
+        );
+        if let Some(ledger) = self.daily_ledgers.get_mut(hid) {
+            ledger.shopping_spend -= refund;
+            ledger.shopper_trips_failed = ledger.shopper_trips_failed.saturating_add(1);
+        }
+    }
+
+    fn cancel_replenishment_after_pickup_with_ledger(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        retry_cooldown_hours: u16,
+        terminal_failure_count: u16,
+    ) {
+        cancel_replenishment_after_pickup(
+            &mut self.households[hid],
+            agents,
+            retry_cooldown_hours,
+            terminal_failure_count,
+        );
+        if let Some(ledger) = self.daily_ledgers.get_mut(hid) {
+            ledger.shopper_trips_failed = ledger.shopper_trips_failed.saturating_add(1);
         }
     }
 }
@@ -1171,6 +1235,7 @@ fn apply_starvation_happiness_loss(households: &[Household], agents: &mut AgentS
 fn apply_replenishment_plan(
     plan: ReplenishmentCandidatePlan,
     households: &mut [Household],
+    daily_ledgers: &mut [DailyHouseholdLedger],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     household_supply_resource: u16,
@@ -1269,6 +1334,9 @@ fn apply_replenishment_plan(
         household.shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
         household.replenishment_search_cursor = 0;
         household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
+        if let Some(ledger) = daily_ledgers.get_mut(plan.household_id) {
+            ledger.shopping_spend += total_cost;
+        }
         agents.planned_target_building[plan.shopper_agent_id] = store_idx;
         agents.planned_activity[plan.shopper_agent_id] = ACTIVITY_SHOPPING;
         diagnostics.successes += 1;

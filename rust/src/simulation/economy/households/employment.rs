@@ -288,6 +288,7 @@ impl HouseholdSystem {
             })
             .collect();
         plans.sort_unstable_by_key(|plan| plan.agent_idx);
+        self.ensure_daily_ledger_len();
 
         for plan in plans {
             if plan.agent_idx >= agents.len()
@@ -301,6 +302,7 @@ impl HouseholdSystem {
             if allocator.buildings[plan.work_building].operating_budget >= plan.wage {
                 allocator.buildings[plan.work_building].operating_budget -= plan.wage;
                 self.households[plan.household_id].budget += plan.wage;
+                self.daily_ledgers[plan.household_id].wage_income += plan.wage;
                 agents.consecutive_unpaid_days[plan.agent_idx] = 0;
             } else {
                 agents.consecutive_unpaid_days[plan.agent_idx] =

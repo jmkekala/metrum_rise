@@ -52,6 +52,7 @@ impl HouseholdSystem {
         self.materialize_arrived_household_carriers(agents, allocator);
         self.debug_validate_agent_household_refs(agents);
         self.rebuild_household_and_worker_counts(agents, allocator);
+        self.begin_daily_ledger_settlement();
         // Advance per-agent job-lock countdown once per day.
         agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
             *lock_days = lock_days.saturating_sub(1);
@@ -68,5 +69,6 @@ impl HouseholdSystem {
         self.resolve_household_housing(agents, allocator);
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
+        self.finish_daily_ledger_settlement();
     }
 }
