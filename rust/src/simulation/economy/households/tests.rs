@@ -143,10 +143,14 @@ fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x: f32) -> E
 }
 
 fn simple_work_graph() -> (RegionGraph, TransitNetwork) {
+    work_graph_to(300.0)
+}
+
+fn work_graph_to(end_x: f32) -> (RegionGraph, TransitNetwork) {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(300.0, 0.0, 0.0), NodeType::Junction);
-    graph.add_edge(make_road_edge(n0, n1, -100.0, 300.0));
+    let n1 = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(make_road_edge(n0, n1, -100.0, end_x));
     graph.rebuild_adjacency_list();
 
     let mut network = TransitNetwork::new();
@@ -973,6 +977,52 @@ fn no_car_agent_can_take_walk_reachable_job() {
     agents.has_car[agent] = false;
 
     households.recount_worker_assignments(&agents, &mut allocator);
+    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+
+    assert_eq!(agents.work_building[agent], 1);
+    assert_eq!(allocator.buildings[1].worker_count, 1);
+}
+
+#[test]
+fn worker_can_take_reachable_job_beyond_old_search_radius() {
+    let (graph, network) = work_graph_to(6_500.0);
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+    households.households[0].budget = 0.0;
+    households.households[0].stock = 0.0;
+    households.households[0].stock_days = 0.0;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "far_job_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "far_job_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        6_000.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.has_car[agent] = true;
+
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[agent], 1);

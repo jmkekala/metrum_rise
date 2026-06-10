@@ -13,6 +13,7 @@
 //! authored company-formation and construction loop is built. It no longer
 //! auto-spawns private buildings from zoned land.
 
+pub(crate) mod accessibility;
 pub mod agents;
 pub mod definitions;
 pub mod demand;

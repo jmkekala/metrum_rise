@@ -1,6 +1,7 @@
 //! Local supplier search and shipment creation.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::accessibility::ModeComponentIndex;
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
@@ -14,9 +15,7 @@ use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
-const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
 pub(super) const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
-const SUPPLIER_ROUTE_SCAN_CANDIDATES: usize = SUPPLIER_SEARCH_CANDIDATES * 4;
 
 impl ShipmentSystem {
     #[allow(clippy::too_many_arguments)]
@@ -33,6 +32,7 @@ impl ShipmentSystem {
         reservations: &mut ReservationViews,
         candidates: &mut Vec<usize>,
         supplier_index: &SupplierCandidateIndex,
+        freight_components: &ModeComponentIndex,
         route_cache: &mut FreightRouteCache,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
@@ -44,13 +44,14 @@ impl ShipmentSystem {
         }
         let destination = &allocator.buildings[dest_idx];
         let destination_budget = destination.operating_budget;
-        supplier_index.fill_nearby_candidates(
+        supplier_index.fill_reachable_candidates(
             resource_runtime_id,
+            dest_idx,
             destination.center_x,
             destination.center_y,
-            SUPPLIER_SEARCH_MAX_RING,
-            SUPPLIER_ROUTE_SCAN_CANDIDATES,
             allocator,
+            graph,
+            freight_components,
             candidates,
             |candidate_idx, supplier| {
                 if candidate_idx == dest_idx

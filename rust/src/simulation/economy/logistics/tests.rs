@@ -140,10 +140,14 @@ fn make_building(
 }
 
 fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32) {
+    graph_with_border_to(100.0)
+}
+
+fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usize, u32) {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Border);
     let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    let n2 = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
     let e0 = graph.add_edge(Edge {
         start_node: n0,
         end_node: n1,
@@ -155,7 +159,7 @@ fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32
         bkw_lanes: 1,
         speed_limit: 20.0,
         base_cost: 5.0,
-        physical_length: 100.0,
+        physical_length: end_x.max(1.0),
         current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
@@ -181,8 +185,8 @@ fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32
         current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
-        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(end_x, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(end_x, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access:
@@ -263,6 +267,52 @@ fn local_supplier_creates_and_delivers_shipment() {
             .iter()
             .all(|shipment| shipment.resource_runtime_id == staple_food)
     );
+}
+
+#[test]
+fn local_supplier_can_be_reachable_beyond_old_search_radius() {
+    let (graph, network, industrial_edge, commercial_edge, _) = graph_with_border_to(6_500.0);
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "far_logistics_industrial",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "far_logistics_commercial",
+        ZoneClass::Commercial,
+    );
+    let supplier = make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        industrial_edge,
+        &industrial_asset,
+        300.0,
+        0.0,
+    );
+    let destination = make_building(
+        &allocator,
+        6_000.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        100.0,
+        2_000.0,
+    );
+    allocator.buildings.push(supplier);
+    allocator.buildings.push(destination);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let mut shipments = ShipmentSystem::new();
+    shipments.hourly_tick(&mut allocator, &network, &graph, 480);
+
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(shipments.shipments[0].source, ShipmentEndpoint::Building(0));
 }
 
 #[test]

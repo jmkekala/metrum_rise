@@ -1,11 +1,13 @@
 //! Input restock request planning for profile-driven buildings.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::accessibility::ModeComponentIndex;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::TransitFlags;
 use rayon::prelude::*;
 
 use super::data::ShipmentSystem;
@@ -29,7 +31,9 @@ impl ShipmentSystem {
         let resource_count = catalog.resource_count();
         let mut reservations = self.build_reservation_views(resource_count);
         let border_nodes = connected_border_nodes(graph);
-        let supplier_index = SupplierCandidateIndex::build(allocator, &catalog);
+        let freight_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let supplier_index =
+            SupplierCandidateIndex::build(allocator, graph, &catalog, &freight_components);
         let mut route_cache = std::mem::take(&mut self.freight_route_cache);
         let mut eligible_destinations: Vec<usize> = allocator
             .buildings
@@ -129,6 +133,7 @@ impl ShipmentSystem {
                     &mut reservations,
                     &mut supplier_candidates,
                     &supplier_index,
+                    &freight_components,
                     &mut route_cache,
                     freight_profile,
                     minute_of_day,

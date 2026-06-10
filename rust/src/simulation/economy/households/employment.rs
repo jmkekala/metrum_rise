@@ -10,6 +10,9 @@ use super::data::{Household, HouseholdSystem};
 use super::metrics::{household_demand_profile, household_supply_unit_price};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::accessibility::{
+    BuildingModeComponents, ModeComponentIndex, NO_COMPONENT,
+};
 use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::definitions::{
@@ -18,8 +21,8 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
-use godot::prelude::Vector3;
 use rayon::prelude::*;
 
 const W_INCOME: f32 = 0.35;
@@ -29,7 +32,6 @@ const W_COMMUTE: f32 = 0.10;
 const GO_TO_WORK_THRESHOLD: f32 = 0.45;
 const JOB_LOCK_DAYS: u8 = 7;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
-const JOB_SEARCH_MAX_RING: i32 = 8;
 const JOB_SEARCH_CANDIDATES: usize = 24;
 const JOB_ROUTE_SCAN_CANDIDATES: usize = JOB_SEARCH_CANDIDATES * 4;
 const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
@@ -98,11 +100,14 @@ struct JobSupplyEntry {
     effective_capacity: u32,
     center_x: f32,
     center_y: f32,
+    foot_components: BuildingModeComponents,
+    car_components: BuildingModeComponents,
 }
 
 struct JobSupplySnapshot {
     entries: Vec<JobSupplyEntry>,
-    by_chunk: BTreeMap<(i32, i32), Vec<usize>>,
+    by_foot_component: BTreeMap<u32, Vec<usize>>,
+    by_car_component: BTreeMap<u32, Vec<usize>>,
 }
 
 struct WagePaymentPlan {
@@ -155,13 +160,23 @@ impl HouseholdSystem {
         eject_inactive_work_assignments(agents, allocator, &catalog);
 
         self.refresh_workplace_route_cache(allocator, transit_network);
-        let job_supply = JobSupplySnapshot::build(allocator, &catalog);
+        let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
+        let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let job_supply = JobSupplySnapshot::build(
+            allocator,
+            graph,
+            &catalog,
+            &foot_components,
+            &car_components,
+        );
         let (home_option_keys, current_job_keys) =
             collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
         let (home_job_options, current_job_options, new_route_entries) = build_home_job_options(
             &home_option_keys,
             &current_job_keys,
             &job_supply,
+            &foot_components,
+            &car_components,
             allocator,
             transit_network,
             graph,
@@ -568,7 +583,13 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
 }
 
 impl JobSupplySnapshot {
-    fn build(allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog) -> Self {
+    fn build(
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        foot_components: &ModeComponentIndex,
+        car_components: &ModeComponentIndex,
+    ) -> Self {
         let mut entries: Vec<_> = allocator
             .buildings
             .par_iter()
@@ -600,73 +621,64 @@ impl JobSupplySnapshot {
                 if open_slots == 0 {
                     return None;
                 }
-                let chunk = RegionGraph::get_chunk_coords(Vector3::new(
-                    building.center_x,
-                    0.0,
-                    building.center_y,
-                ));
-                Some((
-                    chunk,
-                    idx,
-                    JobSupplyEntry {
-                        building_idx: idx,
-                        open_slots,
-                        average_daily_wage,
-                        effective_capacity,
-                        center_x: building.center_x,
-                        center_y: building.center_y,
-                    },
-                ))
+                let foot_components =
+                    foot_components.building_components(allocator, graph, idx, TransitFlags::FOOT);
+                let car_components =
+                    car_components.building_components(allocator, graph, idx, TransitFlags::CAR);
+                if foot_components.as_slice().is_empty() && car_components.as_slice().is_empty() {
+                    return None;
+                }
+                Some(JobSupplyEntry {
+                    building_idx: idx,
+                    open_slots,
+                    average_daily_wage,
+                    effective_capacity,
+                    center_x: building.center_x,
+                    center_y: building.center_y,
+                    foot_components,
+                    car_components,
+                })
             })
             .collect();
-        entries.sort_unstable_by(|left, right| {
-            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
-        });
+        entries.sort_unstable_by_key(|entry| entry.building_idx);
 
-        let mut by_chunk = BTreeMap::new();
-        let mut supply_entries = Vec::with_capacity(entries.len());
-        for (chunk, _, entry) in entries {
-            let entry_idx = supply_entries.len();
-            supply_entries.push(entry);
-            by_chunk
-                .entry(chunk)
-                .or_insert_with(Vec::new)
-                .push(entry_idx);
+        let mut by_foot_component = BTreeMap::new();
+        let mut by_car_component = BTreeMap::new();
+        for (entry_idx, entry) in entries.iter().enumerate() {
+            index_job_components(&mut by_foot_component, entry.foot_components, entry_idx);
+            index_job_components(&mut by_car_component, entry.car_components, entry_idx);
         }
+
         Self {
-            entries: supply_entries,
-            by_chunk,
+            entries,
+            by_foot_component,
+            by_car_component,
         }
     }
 
-    fn fill_nearby_candidates(
+    fn fill_reachable_candidates(
         &self,
+        home_idx: usize,
+        has_car: bool,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        foot_components: &ModeComponentIndex,
+        car_components: &ModeComponentIndex,
         origin_x: f32,
         origin_y: f32,
-        max_chunk_radius: i32,
-        candidate_limit: usize,
         candidates: &mut Vec<usize>,
     ) {
         candidates.clear();
-        if candidate_limit == 0 {
-            return;
+        let home_foot_components =
+            foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
+        extend_component_candidates(&self.by_foot_component, home_foot_components, candidates);
+        if has_car {
+            let home_car_components =
+                car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+            extend_component_candidates(&self.by_car_component, home_car_components, candidates);
         }
-        let origin_chunk = RegionGraph::get_chunk_coords(Vector3::new(origin_x, 0.0, origin_y));
-
-        for ring in 0..=max_chunk_radius {
-            for dx in -ring..=ring {
-                for dz in -ring..=ring {
-                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
-                        continue;
-                    }
-                    let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
-                    let Some(indices) = self.by_chunk.get(&chunk_key) else {
-                        continue;
-                    };
-                    candidates.extend(indices.iter().copied());
-                }
-            }
-        }
+        candidates.sort_unstable();
+        candidates.dedup();
 
         candidates.sort_unstable_by(|&a, &b| {
             let left = &self.entries[a];
@@ -679,7 +691,33 @@ impl JobSupplySnapshot {
                 .then_with(|| right.open_slots.cmp(&left.open_slots))
                 .then_with(|| left.building_idx.cmp(&right.building_idx))
         });
-        candidates.truncate(candidate_limit);
+    }
+}
+
+fn index_job_components(
+    target: &mut BTreeMap<u32, Vec<usize>>,
+    components: BuildingModeComponents,
+    entry_idx: usize,
+) {
+    for &component in components.as_slice() {
+        if component != NO_COMPONENT {
+            target.entry(component).or_default().push(entry_idx);
+        }
+    }
+}
+
+fn extend_component_candidates(
+    source: &BTreeMap<u32, Vec<usize>>,
+    components: BuildingModeComponents,
+    candidates: &mut Vec<usize>,
+) {
+    for &component in components.as_slice() {
+        if component == NO_COMPONENT {
+            continue;
+        }
+        if let Some(indices) = source.get(&component) {
+            candidates.extend(indices.iter().copied());
+        }
     }
 }
 
@@ -731,6 +769,8 @@ fn build_home_job_options(
     keys: &[HomeJobOptionsKey],
     current_job_keys: &[CurrentJobOptionKey],
     job_supply: &JobSupplySnapshot,
+    foot_components: &ModeComponentIndex,
+    car_components: &ModeComponentIndex,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
@@ -753,6 +793,8 @@ fn build_home_job_options(
                 let options = build_home_job_options_for_key(
                     key,
                     job_supply,
+                    foot_components,
+                    car_components,
                     allocator,
                     transit_network,
                     graph,
@@ -837,6 +879,8 @@ fn build_home_job_options(
 fn build_home_job_options_for_key(
     key: HomeJobOptionsKey,
     job_supply: &JobSupplySnapshot,
+    foot_components: &ModeComponentIndex,
+    car_components: &ModeComponentIndex,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
@@ -853,11 +897,15 @@ fn build_home_job_options_for_key(
     if home.broken || home.economy_broken || home.is_deserted {
         return empty_home_job_options();
     }
-    job_supply.fill_nearby_candidates(
+    job_supply.fill_reachable_candidates(
+        key.home_idx,
+        key.has_car,
+        allocator,
+        graph,
+        foot_components,
+        car_components,
         home.center_x,
         home.center_y,
-        JOB_SEARCH_MAX_RING,
-        JOB_ROUTE_SCAN_CANDIDATES,
         candidates,
     );
 
