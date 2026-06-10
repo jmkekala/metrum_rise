@@ -270,7 +270,7 @@ fn local_supplier_creates_and_delivers_shipment() {
 }
 
 #[test]
-fn local_supplier_can_be_reachable_beyond_old_search_radius() {
+fn local_supplier_can_serve_far_reachable_destination() {
     let (graph, network, industrial_edge, commercial_edge, _) = graph_with_border_to(6_500.0);
     let mut allocator = BuildingAllocator::new();
     let industrial_asset = register_test_asset(

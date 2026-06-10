@@ -1,7 +1,7 @@
 //! Input restock request planning for profile-driven buildings.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::accessibility::ModeComponentIndex;
+use crate::simulation::economy::accessibility::{ModeComponentIndex, max_speed_for_modes};
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
@@ -11,7 +11,6 @@ use crate::simulation::network::types::TransitFlags;
 use rayon::prelude::*;
 
 use super::data::ShipmentSystem;
-use super::local_supplier::SUPPLIER_SEARCH_CANDIDATES;
 use super::resource::{freight_profile_for_building, required_unit_price};
 use super::routing::connected_border_nodes;
 use super::supplier_index::SupplierCandidateIndex;
@@ -32,6 +31,7 @@ impl ShipmentSystem {
         let mut reservations = self.build_reservation_views(resource_count);
         let border_nodes = connected_border_nodes(graph);
         let freight_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let max_freight_speed = max_speed_for_modes(graph, TransitFlags::CAR).max(1.0);
         let supplier_index =
             SupplierCandidateIndex::build(allocator, graph, &catalog, &freight_components);
         let mut route_cache = std::mem::take(&mut self.freight_route_cache);
@@ -55,7 +55,6 @@ impl ShipmentSystem {
             })
             .collect();
         eligible_destinations.sort_unstable();
-        let mut supplier_candidates = Vec::with_capacity(SUPPLIER_SEARCH_CANDIDATES);
 
         for dest_idx in eligible_destinations {
             let Some(building) = allocator.buildings.get(dest_idx) else {
@@ -131,7 +130,6 @@ impl ShipmentSystem {
                     transit_network,
                     graph,
                     &mut reservations,
-                    &mut supplier_candidates,
                     &supplier_index,
                     &freight_components,
                     &mut route_cache,
@@ -139,6 +137,7 @@ impl ShipmentSystem {
                     minute_of_day,
                     &catalog,
                     tuning.logistics.truck_load_units,
+                    max_freight_speed,
                 ) {
                     self.clear_request_failure(request_key);
                     continue;

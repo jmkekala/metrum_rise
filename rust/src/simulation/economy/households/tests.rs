@@ -462,6 +462,64 @@ fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
 }
 
 #[test]
+fn household_can_restock_from_far_store() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 300.0,
+        stock: 0.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_STABLE,
+        cooldown_hours: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        pickup_eta_hours: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 5,
+        unemployment_days_elapsed: 0,
+    });
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "far_store_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "far_store_com",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        6_000.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        50.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    households.run_household_replenishment(&mut allocator, 0);
+
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_RESERVED
+    );
+    assert_eq!(households.households[0].reserved_store_building_id, 1);
+}
+
+#[test]
 fn deserted_store_cannot_sell_household_supplies() {
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
@@ -984,7 +1042,7 @@ fn no_car_agent_can_take_walk_reachable_job() {
 }
 
 #[test]
-fn worker_can_take_reachable_job_beyond_old_search_radius() {
+fn worker_can_take_far_reachable_job() {
     let (graph, network) = work_graph_to(6_500.0);
     let mut households = HouseholdSystem::new();
     households.households.push(make_household(0, 1, 0.0, 0.0));

@@ -1,12 +1,15 @@
 //! Local supplier search and shipment creation.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::accessibility::ModeComponentIndex;
+use crate::simulation::economy::accessibility::{
+    ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
+};
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::TransitFlags;
 
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::quantization::quantize_requested_amount;
@@ -15,7 +18,13 @@ use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
-pub(super) const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
+#[derive(Clone, Copy)]
+struct LocalSupplierChoice {
+    supplier_idx: usize,
+    amount: f32,
+    total_cost: f32,
+    travel_seconds: f32,
+}
 
 impl ShipmentSystem {
     #[allow(clippy::too_many_arguments)]
@@ -30,7 +39,6 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         reservations: &mut ReservationViews,
-        candidates: &mut Vec<usize>,
         supplier_index: &SupplierCandidateIndex,
         freight_components: &ModeComponentIndex,
         route_cache: &mut FreightRouteCache,
@@ -38,141 +46,168 @@ impl ShipmentSystem {
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
         truck_load_units: f32,
+        max_freight_speed: f32,
     ) -> bool {
         if dest_idx >= allocator.entrances.len() {
             return false;
         }
         let destination = &allocator.buildings[dest_idx];
         let destination_budget = destination.operating_budget;
-        supplier_index.fill_reachable_candidates(
-            resource_runtime_id,
-            dest_idx,
+        let Some(buckets) = supplier_index.buckets_for_resource(resource_runtime_id) else {
+            return false;
+        };
+        let destination_components =
+            freight_components.building_components(allocator, graph, dest_idx, TransitFlags::CAR);
+
+        let mut best_choice = None::<LocalSupplierChoice>;
+        buckets.scan_nearest(
+            destination_components,
             destination.center_x,
             destination.center_y,
-            allocator,
-            graph,
-            freight_components,
-            candidates,
-            |candidate_idx, supplier| {
-                if candidate_idx == dest_idx
-                    || supplier.broken
-                    || supplier.economy_broken
-                    || supplier.is_deserted
-                {
-                    return false;
+            |event| match event {
+                ReachableBucketScanEvent::Item {
+                    item_idx: candidate_idx,
+                } => {
+                    update_best_local_supplier_choice(
+                        &mut best_choice,
+                        candidate_idx,
+                        dest_idx,
+                        desired_amount,
+                        allow_emergency,
+                        min_shipment_units,
+                        resource_runtime_id,
+                        destination_budget,
+                        allocator,
+                        transit_network,
+                        graph,
+                        reservations,
+                        route_cache,
+                        freight_profile,
+                        minute_of_day,
+                        catalog,
+                        truck_load_units,
+                    );
+                    true
                 }
-                let Some(supplier_profile) =
-                    catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
-                else {
-                    return false;
-                };
-                let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
-                    return false;
-                };
-                let reserved =
-                    reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
-                let available =
-                    (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
-                if available <= 0.0 {
-                    return false;
+                ReachableBucketScanEvent::RingComplete {
+                    next_min_distance_sq,
+                } => {
+                    let Some(choice) = best_choice else {
+                        return true;
+                    };
+                    lower_bound_travel_seconds(next_min_distance_sq, max_freight_speed)
+                        <= choice.travel_seconds
                 }
-
-                let effective_unit_price = adjusted_unit_price(
-                    supplier_profile.unit_price_currency,
-                    freight_profile,
-                    minute_of_day,
-                );
-                let max_affordable = destination_budget / effective_unit_price;
-                quantize_requested_amount(
-                    desired_amount,
-                    available,
-                    max_affordable,
-                    min_shipment_units,
-                    allow_emergency,
-                    truck_load_units,
-                )
-                .is_some()
             },
         );
 
-        for &candidate_idx in candidates.iter() {
-            if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
-                continue;
-            }
-            let supplier = &allocator.buildings[candidate_idx];
-            if supplier.broken || supplier.economy_broken || supplier.is_deserted {
-                continue;
-            }
-            let Some(supplier_profile) =
-                catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
-            else {
-                continue;
-            };
-            let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
-                continue;
-            };
-            let reserved =
-                reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
-            let available =
-                (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
-            if available <= 0.0 {
-                continue;
-            }
-
-            let effective_unit_price = adjusted_unit_price(
-                supplier_profile.unit_price_currency,
-                freight_profile,
-                minute_of_day,
-            );
-            let max_affordable =
-                allocator.buildings[dest_idx].operating_budget / effective_unit_price;
-            let Some(amount) = quantize_requested_amount(
-                desired_amount,
-                available,
-                max_affordable,
-                min_shipment_units,
-                allow_emergency,
-                truck_load_units,
-            ) else {
-                continue;
-            };
-            let total_cost = amount * effective_unit_price;
-
-            let Some(travel_seconds) = route_cache.between_buildings(
-                candidate_idx,
-                dest_idx,
-                allocator,
-                transit_network,
-                graph,
-            ) else {
-                continue;
-            };
-
-            allocator.buildings[dest_idx].operating_budget -= total_cost;
+        if let Some(choice) = best_choice {
+            allocator.buildings[dest_idx].operating_budget -= choice.total_cost;
             self.shipments.push(Shipment {
                 resource_runtime_id,
-                amount,
-                source: ShipmentEndpoint::Building(candidate_idx),
+                amount: choice.amount,
+                source: ShipmentEndpoint::Building(choice.supplier_idx),
                 destination: ShipmentEndpoint::Building(dest_idx),
                 carrier_class: CarrierClass::Truck,
                 status: ShipmentStatus::InTransit,
-                total_cost,
+                total_cost: choice.total_cost,
                 eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
-                    travel_seconds,
+                    choice.travel_seconds,
                     freight_profile,
                     minute_of_day,
                 )),
                 queued_hours: 0,
             });
             reservations.record_local_shipment(
-                candidate_idx,
+                choice.supplier_idx,
                 dest_idx,
                 resource_runtime_id,
-                amount,
+                choice.amount,
             );
             return true;
         }
 
         false
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_best_local_supplier_choice(
+    best_choice: &mut Option<LocalSupplierChoice>,
+    candidate_idx: usize,
+    dest_idx: usize,
+    desired_amount: f32,
+    allow_emergency: bool,
+    min_shipment_units: f32,
+    resource_runtime_id: ResourceRuntimeId,
+    destination_budget: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    reservations: &ReservationViews,
+    route_cache: &mut FreightRouteCache,
+    freight_profile: &FreightTimingProfile,
+    minute_of_day: u16,
+    catalog: &RuntimeEconomyCatalog,
+    truck_load_units: f32,
+) {
+    if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
+        return;
+    }
+    let supplier = &allocator.buildings[candidate_idx];
+    if supplier.broken || supplier.economy_broken || supplier.is_deserted {
+        return;
+    }
+    let Some(supplier_profile) = catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
+    else {
+        return;
+    };
+    let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
+        return;
+    };
+    let reserved = reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
+    let available = (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
+    if available <= 0.0 {
+        return;
+    }
+
+    let effective_unit_price = adjusted_unit_price(
+        supplier_profile.unit_price_currency,
+        freight_profile,
+        minute_of_day,
+    );
+    let max_affordable = destination_budget / effective_unit_price;
+    let Some(amount) = quantize_requested_amount(
+        desired_amount,
+        available,
+        max_affordable,
+        min_shipment_units,
+        allow_emergency,
+        truck_load_units,
+    ) else {
+        return;
+    };
+    let Some(travel_seconds) =
+        route_cache.between_buildings(candidate_idx, dest_idx, allocator, transit_network, graph)
+    else {
+        return;
+    };
+
+    let choice = LocalSupplierChoice {
+        supplier_idx: candidate_idx,
+        amount,
+        total_cost: amount * effective_unit_price,
+        travel_seconds,
+    };
+    if best_choice.is_none_or(|best| local_supplier_choice_precedes(choice, best)) {
+        *best_choice = Some(choice);
+    }
+}
+
+fn local_supplier_choice_precedes(left: LocalSupplierChoice, right: LocalSupplierChoice) -> bool {
+    left.travel_seconds
+        .total_cmp(&right.travel_seconds)
+        .then_with(|| left.total_cost.total_cmp(&right.total_cost))
+        .then_with(|| left.supplier_idx.cmp(&right.supplier_idx))
+        .is_lt()
 }

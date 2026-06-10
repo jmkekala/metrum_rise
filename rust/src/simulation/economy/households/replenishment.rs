@@ -1,6 +1,5 @@
 //! Household stock consumption, store reservations, pickup, and replenishment state.
 
-use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,18 +10,20 @@ use super::metrics::{
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::accessibility::{
+    BuildingModeComponents, ReachableBucketEntry, ReachableBucketIndex, ReachableBucketScanEvent,
+    chunk_for_point,
+};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
-use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
-use godot::prelude::Vector3;
 use rayon::prelude::*;
 
-const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
+const STORE_SUPPLY_COMPONENT: u32 = 0;
 
 /// Household stock is healthy and no replenishment is pending.
 pub const REPLENISHMENT_STABLE: u8 = 0;
@@ -106,7 +107,7 @@ impl HouseholdHourProgress {
 }
 
 struct StoreSupplyIndex {
-    by_chunk: BTreeMap<(i32, i32), Vec<usize>>,
+    buckets: ReachableBucketIndex,
 }
 
 impl StoreSupplyIndex {
@@ -115,7 +116,7 @@ impl StoreSupplyIndex {
         catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
         household_supply_resource: u16,
     ) -> Self {
-        let mut entries: Vec<_> = allocator
+        let entries: Vec<_> = allocator
             .buildings
             .par_iter()
             .enumerate()
@@ -132,32 +133,26 @@ impl StoreSupplyIndex {
                 {
                     return None;
                 }
-                let chunk = RegionGraph::get_chunk_coords(Vector3::new(
-                    store.center_x,
-                    0.0,
-                    store.center_y,
-                ));
-                Some((chunk, idx))
+                Some(ReachableBucketEntry::new(
+                    STORE_SUPPLY_COMPONENT,
+                    chunk_for_point(store.center_x, store.center_y),
+                    idx,
+                ))
             })
             .collect();
-        entries.sort_unstable();
-
-        let mut by_chunk = BTreeMap::new();
-        for (chunk, idx) in entries {
-            by_chunk.entry(chunk).or_insert_with(Vec::new).push(idx);
+        Self {
+            buckets: ReachableBucketIndex::from_entries(entries),
         }
-        Self { by_chunk }
     }
 
     fn has_any(&self) -> bool {
-        !self.by_chunk.is_empty()
+        !self.buckets.is_empty()
     }
 
-    fn fill_nearby_candidates(
+    fn fill_nearest_candidates(
         &self,
         origin_x: f32,
         origin_y: f32,
-        max_chunk_radius: i32,
         candidate_limit: usize,
         allocator: &BuildingAllocator,
         candidates: &mut Vec<usize>,
@@ -166,29 +161,74 @@ impl StoreSupplyIndex {
         if candidate_limit == 0 {
             return;
         }
-        let origin_chunk = RegionGraph::get_chunk_coords(Vector3::new(origin_x, 0.0, origin_y));
-
-        for ring in 0..=max_chunk_radius {
-            for dx in -ring..=ring {
-                for dz in -ring..=ring {
-                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
-                        continue;
-                    }
-                    let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
-                    let Some(indices) = self.by_chunk.get(&chunk_key) else {
-                        continue;
-                    };
-                    candidates.extend(indices.iter().copied());
+        self.buckets.scan_nearest(
+            BuildingModeComponents::single(STORE_SUPPLY_COMPONENT),
+            origin_x,
+            origin_y,
+            |event| match event {
+                ReachableBucketScanEvent::Item { item_idx } => {
+                    insert_store_candidate(
+                        candidates,
+                        candidate_limit,
+                        item_idx,
+                        origin_x,
+                        origin_y,
+                        allocator,
+                    );
+                    true
                 }
-            }
-        }
+                ReachableBucketScanEvent::RingComplete {
+                    next_min_distance_sq,
+                } => {
+                    if candidates.len() < candidate_limit {
+                        return true;
+                    }
+                    let worst = candidates
+                        .last()
+                        .map(|&idx| {
+                            squared_store_distance(origin_x, origin_y, &allocator.buildings[idx])
+                        })
+                        .unwrap_or(f32::MAX);
+                    next_min_distance_sq <= worst
+                }
+            },
+        );
+    }
+}
 
-        candidates.sort_unstable_by(|&a, &b| {
-            let da = squared_store_distance(origin_x, origin_y, &allocator.buildings[a]);
-            let db = squared_store_distance(origin_x, origin_y, &allocator.buildings[b]);
-            da.total_cmp(&db).then_with(|| a.cmp(&b))
-        });
-        candidates.truncate(candidate_limit);
+fn insert_store_candidate(
+    candidates: &mut Vec<usize>,
+    candidate_limit: usize,
+    candidate: usize,
+    origin_x: f32,
+    origin_y: f32,
+    allocator: &BuildingAllocator,
+) {
+    if candidate >= allocator.buildings.len() {
+        return;
+    }
+    let candidate_distance =
+        squared_store_distance(origin_x, origin_y, &allocator.buildings[candidate]);
+    let mut insert_at = 0usize;
+    while insert_at < candidates.len() {
+        let existing = candidates[insert_at];
+        let existing_distance =
+            squared_store_distance(origin_x, origin_y, &allocator.buildings[existing]);
+        if candidate_distance
+            .total_cmp(&existing_distance)
+            .then_with(|| candidate.cmp(&existing))
+            .is_lt()
+        {
+            break;
+        }
+        insert_at += 1;
+    }
+    if candidates.len() == candidate_limit && insert_at == candidates.len() {
+        return;
+    }
+    candidates.insert(insert_at, candidate);
+    if candidates.len() > candidate_limit {
+        candidates.pop();
     }
 }
 
@@ -625,10 +665,9 @@ fn plan_household_replenishment(
     }
 
     let home = &allocator.buildings[household.home_building_id];
-    store_index.fill_nearby_candidates(
+    store_index.fill_nearest_candidates(
         home.center_x,
         home.center_y,
-        GROCERY_SEARCH_MAX_RING,
         GROCERY_SEARCH_CANDIDATES,
         allocator,
         candidates,

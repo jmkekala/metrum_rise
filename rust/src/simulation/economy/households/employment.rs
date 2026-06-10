@@ -11,7 +11,9 @@ use super::metrics::{household_demand_profile, household_supply_unit_price};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
-    BuildingModeComponents, ModeComponentIndex, NO_COMPONENT,
+    BuildingModeComponents, ModeComponentIndex, NO_COMPONENT, ReachableBucketEntry,
+    ReachableBucketIndex, ReachableBucketScanEvent, chunk_for_point, lower_bound_travel_seconds,
+    max_speed_for_modes,
 };
 use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
@@ -41,6 +43,7 @@ const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
 };
 const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
     building_idx: usize::MAX,
+    commute_seconds: u16::MAX,
     commute_penalty: 1.0,
     average_daily_wage: 0.0,
     effective_capacity: 0,
@@ -68,6 +71,7 @@ struct HomeJobOptionsKey {
 #[derive(Clone, Copy)]
 struct HomeJobOption {
     building_idx: usize,
+    commute_seconds: u16,
     commute_penalty: f32,
     average_daily_wage: f32,
     effective_capacity: u32,
@@ -98,16 +102,15 @@ struct JobSupplyEntry {
     open_slots: u32,
     average_daily_wage: f32,
     effective_capacity: u32,
-    center_x: f32,
-    center_y: f32,
+    chunk: (i32, i32),
     foot_components: BuildingModeComponents,
     car_components: BuildingModeComponents,
 }
 
 struct JobSupplySnapshot {
     entries: Vec<JobSupplyEntry>,
-    by_foot_component: BTreeMap<u32, Vec<usize>>,
-    by_car_component: BTreeMap<u32, Vec<usize>>,
+    foot_buckets: ReachableBucketIndex,
+    car_buckets: ReachableBucketIndex,
 }
 
 struct WagePaymentPlan {
@@ -115,6 +118,42 @@ struct WagePaymentPlan {
     work_building: usize,
     household_id: usize,
     wage: f32,
+}
+
+struct HomeJobBuildScratch {
+    seen_entries: Vec<u32>,
+    seen_epoch: u32,
+}
+
+impl HomeJobBuildScratch {
+    fn new() -> Self {
+        Self {
+            seen_entries: Vec::new(),
+            seen_epoch: 0,
+        }
+    }
+
+    fn begin_query(&mut self, entry_count: usize) {
+        if self.seen_entries.len() < entry_count {
+            self.seen_entries.resize(entry_count, 0);
+        }
+        self.seen_epoch = self.seen_epoch.wrapping_add(1);
+        if self.seen_epoch == 0 {
+            self.seen_entries.fill(0);
+            self.seen_epoch = 1;
+        }
+    }
+
+    fn mark_seen(&mut self, entry_idx: usize) -> bool {
+        if entry_idx >= self.seen_entries.len() {
+            return false;
+        }
+        if self.seen_entries[entry_idx] == self.seen_epoch {
+            return false;
+        }
+        self.seen_entries[entry_idx] = self.seen_epoch;
+        true
+    }
 }
 
 impl HouseholdSystem {
@@ -171,6 +210,9 @@ impl HouseholdSystem {
         );
         let (home_option_keys, current_job_keys) =
             collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
+        let max_walk_commute_speed = max_speed_for_modes(graph, TransitFlags::FOOT).max(1.0);
+        let max_car_commute_speed =
+            max_speed_for_modes(graph, TransitFlags::FOOT | TransitFlags::CAR).max(1.0);
         let (home_job_options, current_job_options, new_route_entries) = build_home_job_options(
             &home_option_keys,
             &current_job_keys,
@@ -183,6 +225,8 @@ impl HouseholdSystem {
             &catalog,
             &self.workplace_route_cache,
             &agents.pathfind_count,
+            max_walk_commute_speed,
+            max_car_commute_speed,
         );
         for (key, result) in new_route_entries {
             self.workplace_route_cache.insert(key, result);
@@ -633,8 +677,7 @@ impl JobSupplySnapshot {
                     open_slots,
                     average_daily_wage,
                     effective_capacity,
-                    center_x: building.center_x,
-                    center_y: building.center_y,
+                    chunk: chunk_for_point(building.center_x, building.center_y),
                     foot_components,
                     car_components,
                 })
@@ -642,81 +685,40 @@ impl JobSupplySnapshot {
             .collect();
         entries.sort_unstable_by_key(|entry| entry.building_idx);
 
-        let mut by_foot_component = BTreeMap::new();
-        let mut by_car_component = BTreeMap::new();
+        let mut foot_bucket_entries = Vec::with_capacity(entries.len());
+        let mut car_bucket_entries = Vec::with_capacity(entries.len());
         for (entry_idx, entry) in entries.iter().enumerate() {
-            index_job_components(&mut by_foot_component, entry.foot_components, entry_idx);
-            index_job_components(&mut by_car_component, entry.car_components, entry_idx);
+            index_job_components(
+                &mut foot_bucket_entries,
+                entry.foot_components,
+                entry.chunk,
+                entry_idx,
+            );
+            index_job_components(
+                &mut car_bucket_entries,
+                entry.car_components,
+                entry.chunk,
+                entry_idx,
+            );
         }
 
         Self {
             entries,
-            by_foot_component,
-            by_car_component,
+            foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
+            car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
         }
-    }
-
-    fn fill_reachable_candidates(
-        &self,
-        home_idx: usize,
-        has_car: bool,
-        allocator: &BuildingAllocator,
-        graph: &RegionGraph,
-        foot_components: &ModeComponentIndex,
-        car_components: &ModeComponentIndex,
-        origin_x: f32,
-        origin_y: f32,
-        candidates: &mut Vec<usize>,
-    ) {
-        candidates.clear();
-        let home_foot_components =
-            foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
-        extend_component_candidates(&self.by_foot_component, home_foot_components, candidates);
-        if has_car {
-            let home_car_components =
-                car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
-            extend_component_candidates(&self.by_car_component, home_car_components, candidates);
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-
-        candidates.sort_unstable_by(|&a, &b| {
-            let left = &self.entries[a];
-            let right = &self.entries[b];
-            let da = squared_entry_distance(origin_x, origin_y, left);
-            let db = squared_entry_distance(origin_x, origin_y, right);
-            da.total_cmp(&db)
-                .then_with(|| right.average_daily_wage.total_cmp(&left.average_daily_wage))
-                .then_with(|| right.effective_capacity.cmp(&left.effective_capacity))
-                .then_with(|| right.open_slots.cmp(&left.open_slots))
-                .then_with(|| left.building_idx.cmp(&right.building_idx))
-        });
     }
 }
 
 fn index_job_components(
-    target: &mut BTreeMap<u32, Vec<usize>>,
+    target: &mut Vec<ReachableBucketEntry>,
     components: BuildingModeComponents,
+    chunk: (i32, i32),
     entry_idx: usize,
 ) {
     for &component in components.as_slice() {
         if component != NO_COMPONENT {
-            target.entry(component).or_default().push(entry_idx);
-        }
-    }
-}
-
-fn extend_component_candidates(
-    source: &BTreeMap<u32, Vec<usize>>,
-    components: BuildingModeComponents,
-    candidates: &mut Vec<usize>,
-) {
-    for &component in components.as_slice() {
-        if component == NO_COMPONENT {
-            continue;
-        }
-        if let Some(indices) = source.get(&component) {
-            candidates.extend(indices.iter().copied());
+            target.push(ReachableBucketEntry::new(component, chunk, entry_idx));
         }
     }
 }
@@ -777,6 +779,8 @@ fn build_home_job_options(
     catalog: &RuntimeEconomyCatalog,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
     pathfind_count: &AtomicU32,
+    max_walk_commute_speed: f32,
+    max_car_commute_speed: f32,
 ) -> (
     BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     BTreeMap<CurrentJobOptionKey, HomeJobOption>,
@@ -785,34 +789,36 @@ fn build_home_job_options(
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
     let mut builds: Vec<_> = keys
         .par_iter()
-        .map_init(
-            || Vec::with_capacity(JOB_ROUTE_SCAN_CANDIDATES),
-            |candidates, &key| {
-                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
-                let mut route_entry_count = 0usize;
-                let options = build_home_job_options_for_key(
-                    key,
-                    job_supply,
-                    foot_components,
-                    car_components,
-                    allocator,
-                    transit_network,
-                    graph,
-                    route_cache,
-                    pathfind_count,
-                    exact_entrance_cache_available,
-                    candidates,
-                    &mut route_entries,
-                    &mut route_entry_count,
-                );
-                HomeJobOptionsBuild {
-                    key,
-                    options,
-                    route_entry_count: route_entry_count as u8,
-                    route_entries,
-                }
-            },
-        )
+        .map_init(HomeJobBuildScratch::new, |scratch, &key| {
+            let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+            let mut route_entry_count = 0usize;
+            let options = build_home_job_options_for_key(
+                key,
+                job_supply,
+                foot_components,
+                car_components,
+                allocator,
+                transit_network,
+                graph,
+                route_cache,
+                pathfind_count,
+                exact_entrance_cache_available,
+                if key.has_car {
+                    max_car_commute_speed
+                } else {
+                    max_walk_commute_speed
+                },
+                scratch,
+                &mut route_entries,
+                &mut route_entry_count,
+            );
+            HomeJobOptionsBuild {
+                key,
+                options,
+                route_entry_count: route_entry_count as u8,
+                route_entries,
+            }
+        })
         .collect();
     builds.sort_unstable_by_key(|build| build.key);
 
@@ -887,7 +893,8 @@ fn build_home_job_options_for_key(
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
-    candidates: &mut Vec<usize>,
+    max_commute_speed: f32,
+    scratch: &mut HomeJobBuildScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> HomeJobOptions {
@@ -897,53 +904,143 @@ fn build_home_job_options_for_key(
     if home.broken || home.economy_broken || home.is_deserted {
         return empty_home_job_options();
     }
-    job_supply.fill_reachable_candidates(
-        key.home_idx,
-        key.has_car,
-        allocator,
-        graph,
-        foot_components,
-        car_components,
-        home.center_x,
-        home.center_y,
-        candidates,
-    );
 
     let mut options = empty_home_job_options();
     let mut option_count = 0usize;
-    for &entry_idx in candidates.iter() {
-        let Some(entry) = job_supply.entries.get(entry_idx) else {
-            continue;
-        };
-        let Some(commute_seconds) = cached_commute_seconds(
-            key.home_idx,
-            entry.building_idx,
-            key.has_car,
+    scratch.begin_query(job_supply.entries.len());
+
+    let home_foot_components =
+        foot_components.building_components(allocator, graph, key.home_idx, TransitFlags::FOOT);
+    scan_home_job_bucket(
+        &job_supply.foot_buckets,
+        home_foot_components,
+        key,
+        job_supply,
+        allocator,
+        transit_network,
+        graph,
+        route_cache,
+        pathfind_count,
+        exact_entrance_cache_available,
+        home.center_x,
+        home.center_y,
+        max_commute_speed,
+        scratch,
+        &mut options,
+        &mut option_count,
+        new_route_entries,
+        new_route_entry_count,
+    );
+
+    if key.has_car {
+        let home_car_components =
+            car_components.building_components(allocator, graph, key.home_idx, TransitFlags::CAR);
+        scan_home_job_bucket(
+            &job_supply.car_buckets,
+            home_car_components,
+            key,
+            job_supply,
             allocator,
             transit_network,
             graph,
             route_cache,
             pathfind_count,
             exact_entrance_cache_available,
+            home.center_x,
+            home.center_y,
+            max_commute_speed,
+            scratch,
+            &mut options,
+            &mut option_count,
             new_route_entries,
             new_route_entry_count,
-        ) else {
-            continue;
-        };
-        insert_home_job_option(
-            &mut options.options,
-            &mut option_count,
-            HomeJobOption {
-                building_idx: entry.building_idx,
-                commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
-                average_daily_wage: entry.average_daily_wage,
-                effective_capacity: entry.effective_capacity,
-                open_slots: entry.open_slots,
-            },
         );
     }
+
     options.option_count = option_count as u8;
     options
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_home_job_bucket(
+    bucket_index: &ReachableBucketIndex,
+    components: BuildingModeComponents,
+    key: HomeJobOptionsKey,
+    job_supply: &JobSupplySnapshot,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
+    exact_entrance_cache_available: bool,
+    origin_x: f32,
+    origin_y: f32,
+    max_commute_speed: f32,
+    scratch: &mut HomeJobBuildScratch,
+    options: &mut HomeJobOptions,
+    option_count: &mut usize,
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
+    new_route_entry_count: &mut usize,
+) {
+    bucket_index.scan_nearest(components, origin_x, origin_y, |event| match event {
+        ReachableBucketScanEvent::Item { item_idx } => {
+            if !scratch.mark_seen(item_idx) {
+                return true;
+            }
+            let Some(entry) = job_supply.entries.get(item_idx) else {
+                return true;
+            };
+            let Some(commute_seconds) = cached_commute_seconds(
+                key.home_idx,
+                entry.building_idx,
+                key.has_car,
+                allocator,
+                transit_network,
+                graph,
+                route_cache,
+                pathfind_count,
+                exact_entrance_cache_available,
+                new_route_entries,
+                new_route_entry_count,
+            ) else {
+                return true;
+            };
+            insert_home_job_option(
+                &mut options.options,
+                option_count,
+                HomeJobOption {
+                    building_idx: entry.building_idx,
+                    commute_seconds,
+                    commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
+                    average_daily_wage: entry.average_daily_wage,
+                    effective_capacity: entry.effective_capacity,
+                    open_slots: entry.open_slots,
+                },
+            );
+            true
+        }
+        ReachableBucketScanEvent::RingComplete {
+            next_min_distance_sq,
+        } => !home_job_search_can_stop(
+            options,
+            *option_count,
+            next_min_distance_sq,
+            max_commute_speed,
+        ),
+    });
+}
+
+fn home_job_search_can_stop(
+    options: &HomeJobOptions,
+    option_count: usize,
+    next_min_distance_sq: f32,
+    max_commute_speed: f32,
+) -> bool {
+    if option_count < JOB_SEARCH_CANDIDATES {
+        return false;
+    }
+    let worst_commute_seconds = options.options[option_count - 1].commute_seconds as f32;
+    lower_bound_travel_seconds(next_min_distance_sq, max_commute_speed) > worst_commute_seconds
 }
 
 fn empty_home_job_options() -> HomeJobOptions {
@@ -991,6 +1088,7 @@ fn build_current_job_option_for_key(
     let effective_capacity = profile.worker_capacity.min(budget_capacity);
     Some(HomeJobOption {
         building_idx: work_idx,
+        commute_seconds,
         commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
         average_daily_wage,
         effective_capacity,
@@ -1075,10 +1173,4 @@ fn cached_commute_seconds(
         *new_route_entry_count += 1;
     }
     result
-}
-
-fn squared_entry_distance(origin_x: f32, origin_y: f32, entry: &JobSupplyEntry) -> f32 {
-    let dx = entry.center_x - origin_x;
-    let dy = entry.center_y - origin_y;
-    dx * dx + dy * dy
 }
