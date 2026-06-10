@@ -491,8 +491,8 @@ These continue to make sense and should remain after the redesign:
 
 - household/building identity: `home_building`, `household_id`, `work_building`
 - world state: `pos_x`, `pos_y`
-- agent status: `activity`, `happiness`, `money`, `journey_start_time`
-- location references: `current_building`, `target_building`
+- agent status: `activity`, `planned_activity`, `happiness`, `money`, `journey_start_time`
+- location references: `current_building`, `target_building`, `planned_target_building`
 - live network state: `current_edge`, `current_lane_id`, `lane_distance`, `speed`, `transit_mode`
 - route buffer: `current_path`, `current_path_index`
 - mobility/visual state: `has_car`, `vehicle_type`, `pedestrian_type`, `walk_phase`
@@ -520,6 +520,27 @@ Instead, replace the current building-access meanings with:
 This keeps the SoA compact and avoids save/load churn from adding another per-agent state field.
 
 `TRANSIT_IMMIGRATING` is not a building-origin access phase. It is a network-origin border-entry state for agents spawned at a border connection with no origin `BuildingEntrance`.
+
+##### Activity and household shopping intent
+
+`activity` and `planned_activity` describe the purpose of the in-building stop, not the movement
+phase:
+
+- `0 = home`
+- `1 = work`
+- `2 = shopping or other non-home stop`
+
+Household replenishment shopping must not add a new `TRANSIT_*` state. The economy selects one
+eligible household member, records that carrier on the household request, writes
+`planned_target_building` to the store, and writes `planned_activity = 2`. The normal trip planner
+then moves the agent through `IN_BUILDING -> ACCESS_EGRESS -> NETWORK -> ACCESS_INGRESS ->
+IN_BUILDING`.
+
+After store arrival, the household economy pass observes the carrier in-building at the store,
+updates the household request, and schedules the same agent back home with `planned_target_building`
+set to the home building and `planned_activity = 0`. Movement code is responsible only for the
+trip; household stock, store inventory, budget reservation, refunds, and store revenue are owned by
+[`economy.md`](economy.md).
 
 ##### Add these new SoA fields
 
@@ -772,6 +793,9 @@ Failed planning or replanning must:
 - `current_building` is valid.
 - No local path is being reconstructed.
 - If the economy has selected a destination and `sim_time >= next_replan_time`, the agent may attempt exactly one trip plan build at the start of the tick.
+- For household shopping, the economy-owned request must already have selected this agent as the
+  carrier before writing `planned_target_building`; the entrance/exit system does not choose the
+  shopper.
 - A successful ordinary building-origin plan build from `IN_BUILDING` must perform these exact writes before the agent begins `ACCESS_EGRESS`:
   - `target_building = chosen destination building`
   - `planned_attach_node`, `planned_detach_node`, `planned_attach_lane_id`, `planned_detach_lane_id`, `planned_attach_lane_d`, and `planned_detach_lane_d` from the chosen candidate
@@ -938,6 +962,9 @@ No midpoint heuristics are needed here.
   - `access_flags = 0`
   - `transit = TRANSIT_IN_BUILDING`
 - No replanning is allowed during ordinary ingress movement.
+- Arrival only changes the agent's location and activity state. Economy-specific side effects such
+  as household-stock fulfillment, store revenue, reservation release, or return-trip scheduling must
+  be applied by the owning economy pass after it observes the agent in `TRANSIT_IN_BUILDING`.
 - If the destination entrance cache becomes invalid before the door is reached, abort ingress and return to the last network-side detach anchor:
   - restore the agent to the exact detach point on `planned_detach_lane_id` at `planned_detach_lane_d`
   - `current_node = planned_detach_node`

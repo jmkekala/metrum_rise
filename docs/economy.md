@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on per-agent shopping behavior that explodes pathfinding and logistics cost.
+Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on unbounded per-resident shopping behavior that explodes pathfinding and logistics cost. The baseline household-supply loop may use a bounded one-shopper carrier task per replenishing household.
 
 This document defines a building-centric economy with the following design goals:
 
@@ -36,7 +36,7 @@ The default model is:
 - logistics carriers move goods to distribution nodes, warehouses, and shops
 - residential buildings host one or more households
 - each household holds one shared stock buffer for the whole household
-- that household stock is replenished by occasional shopping or pickup in `v0.1`
+- that household stock is replenished by occasional household-owned shopping in `v0.1`
 - residents consume from household stock while at home
 
 An agent's everyday need is therefore not "buy bread now" but "does my household have access to supplies at home."
@@ -75,7 +75,7 @@ The economy must scale primarily with:
 
 Derived per-building or future per-policy-scope summaries may aggregate those households for UI and coarse analysis, but those summaries are not an alternative source of truth.
 
-It must not require per-tick per-agent inventory searches, market scans, or mandatory shopping trips.
+It must not require per-tick per-agent inventory searches, market scans, or one shopping trip per resident. Low-frequency household-owned trips are allowed only when they stay bounded to one active shopper per replenishing household and reuse the normal building-origin trip planner.
 
 ## Economy Time Scale
 
@@ -700,11 +700,11 @@ The decisions system should resolve choices made by agents, households, and buil
 - whether an agent goes to work
 - **Insolvency Exit**: If a building is insolvent and fails to pay wages, employees will "fire themselves" after a threshold period (default: 2 consecutive unpaid days). This frees them to seek solvent employment elsewhere.
 - when a household replenishes stock
-- whether replenishment uses shop pickup in `v0.1`, with future delivery modes added later if the design expands
+- which household member, if any, carries a `v0.1` shopping replenishment task, with future delivery modes added later if the design expands
 - which supplier or route is selected
 - which schedule window a workplace is currently filling
 
-In `v0.1`, household replenishment should be represented as a household-side economy/request state flow rather than as a new `TRANSIT_*` state in the agent FSM.
+In `v0.1`, household replenishment should be represented as a household-side economy/request state flow plus an ordinary building-origin trip for one selected household member. It must not add a new `TRANSIT_*` state to the agent FSM.
 
 The **Household Economic Model** is data-driven via the `basic_household_demand` profile:
 - `consumption_rate_per_resident`: base units consumed per agent per day.
@@ -1320,7 +1320,9 @@ Agents do not need a daily "buy food" trip. Instead:
 - lack of household stock reduces happiness, stability, or health-related metrics
 - optional leisure or personal shopping trips remain low-frequency and non-essential
 
-This keeps daily essentials in the logistics layer rather than the pathfinding layer.
+Essential replenishment may create a visible shopping task, but it is household-owned and limited
+to one selected carrier. This keeps daily essentials in the household/logistics layer rather than
+turning every resident into an independent grocery pathfinder.
 
 ### Recommended v0.1 Resource Chain
 
@@ -1583,33 +1585,70 @@ This prevents retry storms and makes debugging easier.
 
 ### Household replenishment
 
-Household replenishment in `v0.1` should use one fulfillment mode:
+Household replenishment in `v0.1` uses one visible fulfillment mode:
 
-- periodic shopping or pickup, represented as an occasional household-level replenishment action rather than one trip per resident
+- a bounded household-shopping carrier task, represented by one selected household member making
+  an ordinary `Home -> Store -> Home` trip
+
+The household record owns stock, money, reservations, and replenishment state. The selected agent
+is only the visible carrier.
 
 Rules:
 
-- replenishment is driven by the household stock system on coarse economy cadence, not by adding a new baseline `TRANSIT_*` movement state
-- when stock falls below the household's replenishment threshold, the household creates a replenishment request
+- replenishment is driven by the household stock system on coarse economy cadence, not by adding a
+  new baseline `TRANSIT_*` movement state
+- one household may have at most one active shopping task at a time
+- the shopper uses the ordinary building-origin trip planner with `planned_target_building` and
+  `planned_activity`; movement code must not directly mutate household stock, store inventory, or
+  store revenue
+- when stock falls below the household's replenishment threshold, the household creates a
+  replenishment need
 - when stock reaches `0.0 days`, the household may bypass its normal staggered check offset if a
   valid commercial store currently has sellable household supply; reservation and cooldown guards
   still apply
-- that request reserves a valid supply source and then waits for pickup-side fulfillment
+- before reserving store stock or spending household budget, the household must find an eligible
+  shopper currently at home
+- an eligible starter shopper belongs to the household, is `TRANSIT_IN_BUILDING`, is currently in
+  `home_building_id`, has home activity, has no existing planned target, and is not already carrying
+  another household task
+- if no eligible shopper is at home because all members are travelling, at work, or otherwise away,
+  the household enters `waiting_for_shopper`; it does not reserve inventory, spend budget, or enter
+  cooldown
+- when an eligible member later returns home, the next household economy pass may claim store stock
+  and assign that shopper
+- reservation and shopper assignment are one deterministic serial apply step; store stock and
+  household budget must not be held without an assigned shopper
 - if the household cannot afford the full target refill, it may reserve the largest affordable
   partial basket from the store's available stock rather than failing the request outright
-- on successful fulfillment, household stock increases and the request enters cooldown
+- once a valid shopper and sale are both claimed, the store inventory is reserved or removed,
+  household budget is reserved or spent, the household enters `shopping_to_store`, and the selected
+  agent receives a trip to the store
+- when the shopper arrives at the store, the household tick observes the arrival, credits store
+  revenue or budget, changes the household to `shopping_returning`, and schedules the same agent
+  back home
+- household stock increases only after the shopper returns home
+- if the store becomes invalid before pickup, restore reserved store inventory, refund the
+  household budget, clear the shopper assignment, and enter bounded cooldown
+- if the shopper task is lost or invalidated before pickup, restore the reservation and retry from
+  `waiting_for_shopper` or cooldown according to tuning
 - if fulfillment fails, the request follows the same bounded retry and cooldown rules as other economy requests
 
 Useful first-pass household replenishment states are:
 
 - `stable`
 - `needs_replenishment`
-- `reserved`
-- `pickup_pending`
+- `waiting_for_shopper`
+- `shopping_to_store`
+- `shopping_returning`
 - `fulfilled`
 - `cooldown`
 
-This keeps the first household loop simple while still avoiding daily per-agent shopping.
+The old abstract pickup ETA is not the baseline once visible shopping is implemented. Any timeout
+must be an explicit shopping timeout or failure rule, not hidden fulfillment.
+
+This keeps essentials household-level while making the store trip visible. The scale bound is one
+active shopper task per replenishing household, planned on coarse cadence, with contested store
+reservations applied deterministically.
 
 If `ADS` is added later, it should be treated as a convenience layer:
 
@@ -1680,9 +1719,9 @@ Example:
 
 - the developer runs the `Grocery Bottleneck` test case for 30 simulated days
 - the view shows that household stock drops below 1.0 days after day 12
-- the diagnostics panel reports that the grocery has enough goods, but pickup-side replenishment demand is arriving in bursts and shop-side queueing is too high
+- the diagnostics panel reports that the grocery has enough goods, but shopper-side replenishment demand is arriving in bursts and shop-side queueing is too high
 - the controller panel highlights that household replenishment cadence and grocery throughput are misaligned
-- the developer can immediately see that the problem is not food production, but local pickup balance and store throughput
+- the developer can immediately see that the problem is not food production, but local shopping balance and store throughput
 
 ### UI layout recommendation
 
@@ -1710,10 +1749,10 @@ Example: `Grocery Bottleneck` test case
 
 - Left panel: select the `Grocery Bottleneck` preset from a list of developer test cases.
 - Center graph: show `food_processor -> grocery -> basic_household_demand`, with an optional replenishment-pressure controller connected to the household demand sink.
-- Right inspector: expose values such as household count, household size, shop distance, pickup cadence, grocery throughput, and stock target.
+- Right inspector: expose values such as household count, household size, shop distance, replenishment cadence, grocery throughput, and stock target.
 - Bottom diagnostics: show stock days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
 
-In this example the graph, inspector, and diagnostics are enough to test whether local pickup and store throughput give the intended balance result.
+In this example the graph, inspector, and diagnostics are enough to test whether local shopping and store throughput give the intended balance result.
 
 ### Validation requirements
 
@@ -1850,7 +1889,8 @@ Later extensions may add richer controller effects to the same chain, for exampl
 - `wage pressure`: changes labor-cost pressure at workplaces in the chain
 - `price response`: applies bounded price-pressure adjustments to relevant chain steps
 
-Replenishment for this chain should happen through periodic shopping or pickup in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
+Replenishment for this chain should happen through the bounded one-shopper household shopping flow
+in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
 
 This example is intentionally broad. It avoids modeling "one loaf of bread per person per day" while still creating meaningful logistics, staffing, and shortage gameplay.
 
@@ -1927,7 +1967,7 @@ Recommended continuation order from the current runtime:
 
 - Treat the explicit-household plus bounded-freight path as the only authoritative `v0.1` baseline.
 - Keep one essential chain authoritative: local producer -> local shop or distribution -> household stock.
-- Do not widen scope into dynamic pricing, per-agent daily shopping, or broad multi-resource simulation yet.
+- Do not widen scope into dynamic pricing, unbounded per-agent daily shopping, or broad multi-resource simulation yet.
 
 Current status:
 
@@ -2439,7 +2479,9 @@ As implementation starts, remove or refactor any code, tests, editor UX, or help
 
 The current spec replaces these legacy assumptions:
 
-- per-agent daily shopping or `Home -> Work -> Shop -> Home` loops as the baseline essentials model
+- unbounded per-agent daily shopping or `Home -> Work -> Shop -> Home` loops as the baseline
+  essentials model; the allowed `v0.1` replacement is a bounded one-shopper household
+  replenishment task
 - implicit or aggregated household representation instead of explicit household runtime records
 - global demand counters as the primary economy loop rather than as one coarse pressure layer
 - probabilistic or RNG-driven activity selection instead of decision-utility scoring plus authored schedule profiles
@@ -2570,7 +2612,8 @@ The recommended design is:
 - logistics uses batched, reservation-based shipment rules with bounded supplier search and cooldown-based failure handling
 - the `OWA` acts as an external buyer and seller, but all imported and exported goods still move through physical border freight
 - future player policies such as income tax, property tax, `VAT`, tariffs, and subsidies use a separate bounded gameplay UI
-- households consume shared household supply so agents do not need constant shopping trips
+- households consume shared household supply, with bounded one-shopper replenishment trips rather
+  than constant per-resident shopping
 - fresh-map startup support and later private development remain bounded systems, and zoning alone must not spam empty buildings
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.
