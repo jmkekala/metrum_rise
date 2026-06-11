@@ -11,6 +11,7 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::economy::logistics::ShipmentSystem;
 
 impl HouseholdSystem {
     pub(crate) fn execute_demand_household_removal(
@@ -18,6 +19,7 @@ impl HouseholdSystem {
         households_to_remove_today: u32,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        logistics: &mut ShipmentSystem,
     ) -> u32 {
         if households_to_remove_today == 0 || self.households.is_empty() {
             return 0;
@@ -95,7 +97,9 @@ impl HouseholdSystem {
         }
         agent_indices.sort_unstable_by(|a, b| b.cmp(a));
         for agent_idx in agent_indices.iter().copied() {
-            agents.kill_agent(agent_idx, allocator);
+            if let Some((old_idx, new_idx)) = agents.kill_agent(agent_idx, allocator) {
+                logistics.remap_carrier_agent_index(old_idx, new_idx);
+            }
         }
 
         for household_id in selected_households {

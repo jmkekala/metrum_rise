@@ -879,7 +879,7 @@ fn test_vehicle_type_persistence() {
     let i2 = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
     let type2 = agents.vehicle_type[i2];
     let mut allocator = BuildingAllocator::new();
-    agents.kill_agent(1, &mut allocator);
+    let _ = agents.kill_agent(1, &mut allocator);
     assert_eq!(agents.len(), 2);
     assert_eq!(agents.vehicle_type[1], type2);
 }

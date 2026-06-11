@@ -21,7 +21,8 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
 pub(crate) use planning::{
-    building_origin_trip_is_feasible, estimate_building_origin_trip_minutes,
+    BuiltTripPlan, building_origin_trip_is_feasible, estimate_building_origin_trip_minutes,
+    plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
 
 impl AgentSystem {

@@ -1,7 +1,8 @@
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{
-    ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_IMMIGRATING,
+    TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
@@ -181,6 +182,9 @@ unsafe fn repair_stale_detach_plan(
         let s_next_replan_time = &slices.next_replan_time;
 
         if (*s_access_flags.get(i) & ACCESS_PLAN_VALID) == 0 {
+            return true;
+        }
+        if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
             return true;
         }
 

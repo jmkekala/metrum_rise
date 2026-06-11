@@ -6,8 +6,9 @@ mod network;
 mod trip;
 mod types;
 
-pub(super) use immigration::plan_immigration_trip;
+pub(crate) use immigration::plan_immigration_trip;
 pub(super) use network::plan_network_replan;
-pub(super) use trip::plan_building_origin_trip;
 pub(crate) use trip::{building_origin_trip_is_feasible, estimate_building_origin_trip_minutes};
-pub(super) use types::{BuiltNetworkReplan, BuiltTripPlan};
+pub(crate) use trip::{plan_building_origin_trip, plan_building_to_border_trip};
+pub(super) use types::BuiltNetworkReplan;
+pub(crate) use types::BuiltTripPlan;

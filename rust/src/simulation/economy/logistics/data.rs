@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
 use super::route_cache::FreightRouteCache;
@@ -73,6 +74,8 @@ pub enum ShipmentStatus {
     Queued,
     /// Travelling and consuming active freight capacity.
     InTransit,
+    /// Delivered and settled; the empty carrier is returning to its source/base.
+    Returning,
     /// Delivered and ready to be removed from the active job list.
     Fulfilled,
     /// Failed once and ready to be removed from the active job list.
@@ -89,6 +92,7 @@ impl ShipmentStatus {
             ShipmentStatus::Fulfilled => 2,
             ShipmentStatus::Failed => 3,
             ShipmentStatus::Expired => 4,
+            ShipmentStatus::Returning => 5,
         }
     }
 
@@ -99,11 +103,19 @@ impl ShipmentStatus {
             2 => Some(ShipmentStatus::Fulfilled),
             3 => Some(ShipmentStatus::Failed),
             4 => Some(ShipmentStatus::Expired),
+            5 => Some(ShipmentStatus::Returning),
             _ => None,
         }
     }
 
     pub(crate) fn is_open(self) -> bool {
+        matches!(
+            self,
+            ShipmentStatus::Queued | ShipmentStatus::InTransit | ShipmentStatus::Returning
+        )
+    }
+
+    pub(crate) fn reserves_cargo(self) -> bool {
         matches!(self, ShipmentStatus::Queued | ShipmentStatus::InTransit)
     }
 }
@@ -111,6 +123,8 @@ impl ShipmentStatus {
 /// One reserved freight job moving stock between buildings or through `OWA`.
 #[derive(Clone, Debug)]
 pub struct Shipment {
+    /// Stable shipment id used to bind the physical carrier agent to this freight job.
+    pub id: u64,
     /// Runtime resource id carried by this shipment.
     pub resource_runtime_id: ResourceRuntimeId,
     /// Reserved amount in resource units.
@@ -123,6 +137,8 @@ pub struct Shipment {
     pub carrier_class: CarrierClass,
     /// Current shipment state.
     pub status: ShipmentStatus,
+    /// Agent index for the active physical carrier; `usize::MAX` means not dispatched yet.
+    pub carrier_agent_id: usize,
     /// Reserved payment held by the destination until completion or failure.
     pub total_cost: f32,
     /// Reserved purchase tax held until completion or failure.
@@ -156,6 +172,8 @@ pub struct FreightRequestFailure {
 pub struct ShipmentSystem {
     /// All queued or in-transit shipment jobs plus fulfilled/failed jobs awaiting cleanup.
     pub shipments: Vec<Shipment>,
+    /// Next stable shipment id to assign.
+    pub next_shipment_id: u64,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
     /// Freight ETA cache reused while topology revisions remain unchanged.
@@ -173,6 +191,7 @@ impl ShipmentSystem {
     pub fn new() -> Self {
         Self {
             shipments: Vec::new(),
+            next_shipment_id: 0,
             request_failures: BTreeMap::new(),
             freight_route_cache: FreightRouteCache::default(),
             freight_route_cache_building_revision: u64::MAX,
@@ -184,11 +203,28 @@ impl ShipmentSystem {
     /// Clears all active shipments and freight request diagnostics.
     pub fn clear(&mut self) {
         self.shipments.clear();
+        self.next_shipment_id = 0;
         self.request_failures.clear();
         self.freight_route_cache.clear();
         self.freight_route_cache_building_revision = u64::MAX;
         self.freight_route_cache_entrance_revision = u64::MAX;
         self.freight_route_cache_cch_generation = u32::MAX;
+    }
+
+    pub(super) fn allocate_shipment_id(&mut self) -> u64 {
+        let id = self.next_shipment_id;
+        self.next_shipment_id = self.next_shipment_id.saturating_add(1);
+        id
+    }
+
+    /// Rebuilds the next stable shipment id after loading persisted shipment rows.
+    pub(crate) fn rebuild_next_shipment_id(&mut self) {
+        self.next_shipment_id = self
+            .shipments
+            .iter()
+            .map(|shipment| shipment.id)
+            .max()
+            .map_or(0, |max_id| max_id.saturating_add(1));
     }
 
     /// Remaps building references after a building swap-remove.
@@ -212,12 +248,23 @@ impl ShipmentSystem {
         self.freight_route_cache_cch_generation = u32::MAX;
     }
 
+    /// Remaps an active physical carrier index after an agent swap-remove.
+    pub(crate) fn remap_carrier_agent_index(&mut self, old_idx: usize, new_idx: usize) {
+        for shipment in &mut self.shipments {
+            if shipment.carrier_agent_id == old_idx {
+                shipment.carrier_agent_id = new_idx;
+            }
+        }
+    }
+
     /// Cancels any shipment touching the removed building before swap-remove happens.
     pub fn invalidate_building(
         &mut self,
         removed_building: usize,
         allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
     ) {
+        let mut carriers_to_remove = Vec::new();
         self.shipments.retain(|shipment| {
             let touches_removed = shipment.source.touches_building(removed_building)
                 || shipment.destination.touches_building(removed_building);
@@ -235,8 +282,16 @@ impl ShipmentSystem {
                     shipment.total_cost + shipment.tax_cost;
             }
 
+            if shipment.carrier_agent_id != usize::MAX {
+                carriers_to_remove.push(shipment.carrier_agent_id);
+            }
             false
         });
+        carriers_to_remove.sort_unstable();
+        carriers_to_remove.dedup();
+        for carrier_agent_id in carriers_to_remove.into_iter().rev() {
+            self.remove_carrier_agent(agents, carrier_agent_id);
+        }
 
         self.request_failures
             .retain(|key, _| key.destination_building_id != removed_building);

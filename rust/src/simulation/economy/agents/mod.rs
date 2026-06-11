@@ -76,6 +76,8 @@ pub const ACCESS_ZERO_HOP_NODE_PATH: u8 = 0x02;
 pub const ACCESS_PATH_FROM_FLOW_FIELD: u8 = 0x04;
 /// Trip-plan bit: the trip originated from a border-node immigration spawn, not a building egress.
 pub const ACCESS_IMMIGRATION_ORIGIN: u8 = 0x08;
+/// Trip-plan bit: the network leg ends at a border freight terminal instead of a building ingress.
+pub const ACCESS_FREIGHT_BORDER_DESTINATION: u8 = 0x10;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).
@@ -102,6 +104,8 @@ pub const VEHICLE_SPORTS: u8 = 1;
 pub const VEHICLE_SUV: u8 = 2;
 /// Premium civilian SUV.
 pub const VEHICLE_LUXURY: u8 = 3;
+/// Delivery freight truck used by physical shipment carriers.
+pub const VEHICLE_FREIGHT_DELIVERY: u8 = 4;
 
 /// Returns whether an age group may hold a workplace.
 pub(crate) fn age_group_can_work(age_group: u8) -> bool {

@@ -538,8 +538,25 @@ pub(super) fn db_to_optional_u32(v: i64) -> SaveLoadResult<u32> {
         i64_to_u32(v)
     }
 }
+pub(super) fn optional_u64_to_db(v: u64) -> SaveLoadResult<i64> {
+    if v == u64::MAX {
+        Ok(NONE_REF)
+    } else {
+        u64_to_i64(v)
+    }
+}
+pub(super) fn db_to_optional_u64(v: i64) -> SaveLoadResult<u64> {
+    if v == NONE_REF {
+        Ok(u64::MAX)
+    } else {
+        u64::try_from(v).map_err(|_| SaveLoadError::custom("u64 underflow"))
+    }
+}
 pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> {
     i64::try_from(v).map_err(|_| SaveLoadError::custom("usize overflow"))
+}
+pub(super) fn u64_to_i64(v: u64) -> SaveLoadResult<i64> {
+    i64::try_from(v).map_err(|_| SaveLoadError::custom("u64 overflow"))
 }
 pub(super) fn u32_to_i64(v: u32) -> SaveLoadResult<i64> {
     Ok(i64::from(v))

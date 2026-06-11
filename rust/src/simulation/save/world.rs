@@ -24,8 +24,8 @@ use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
     db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_usize,
-    optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob,
-    unpack_flux_blob, usize_to_i64,
+    optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, u64_to_i64,
+    unpack_f32_blob, unpack_flux_blob, usize_to_i64,
 };
 
 const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
@@ -318,14 +318,14 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, tax_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
-    for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, tax_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
+    for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
         let (destination_kind, destination_building_id, destination_border_node) =
             shipment_endpoint_to_db(shipment.destination, maps)?;
         shipment_stmt.execute(params![
-            usize_to_i64(shipment_id)?,
+            u64_to_i64(shipment.id)?,
             i64::from(shipment.resource_runtime_id),
             shipment.amount,
             source_kind,
@@ -336,6 +336,11 @@ pub(super) fn save_world(
             destination_border_node,
             shipment.carrier_class.code(),
             shipment.status.code(),
+            if shipment.carrier_agent_id == usize::MAX {
+                -1_i64
+            } else {
+                usize_to_i64(shipment.carrier_agent_id)?
+            },
             shipment.total_cost,
             shipment.tax_cost,
             i64::from(shipment.eta_hours),
@@ -596,26 +601,26 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, tax_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, tax_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
-        let shipment_id = i64_to_usize(row.get(0)?)?;
-        if shipment_id != logistics.shipments.len() {
-            return Err(SaveLoadError::custom("non-contiguous shipment ids"));
-        }
         logistics.shipments.push(Shipment {
+            id: u64::try_from(row.get::<_, i64>(0)?)
+                .map_err(|_| SaveLoadError::custom("bad shipment id"))?,
             resource_runtime_id: i64_to_u16(row.get(1)?)?,
             amount: row.get(2)?,
             source: shipment_endpoint_from_db(row.get(3)?, row.get(4)?, row.get(5)?)?,
             destination: shipment_endpoint_from_db(row.get(6)?, row.get(7)?, row.get(8)?)?,
             carrier_class: carrier_class_from_db(row.get(9)?)?,
             status: shipment_status_from_db(row.get(10)?)?,
-            total_cost: row.get(11)?,
-            tax_cost: row.get(12)?,
-            eta_hours: i64_to_u16(row.get(13)?)?,
-            queued_hours: i64_to_u16(row.get(14)?)?,
+            carrier_agent_id: db_to_optional_usize(row.get(11)?)?,
+            total_cost: row.get(12)?,
+            tax_cost: row.get(13)?,
+            eta_hours: i64_to_u16(row.get(14)?)?,
+            queued_hours: i64_to_u16(row.get(15)?)?,
         });
     }
+    logistics.rebuild_next_shipment_id();
     let mut failure_stmt = conn.prepare("SELECT destination_building_id, resource_runtime_id, failures, terminal FROM freight_request_failures ORDER BY destination_building_id, resource_runtime_id")?;
     let mut failure_rows = failure_stmt.query([])?;
     while let Some(row) = failure_rows.next()? {

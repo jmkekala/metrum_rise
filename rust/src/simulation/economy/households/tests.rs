@@ -6,6 +6,7 @@ use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, Placement
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{
     AGE_CHILD, AGE_ELDER, AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+    VEHICLE_FREIGHT_DELIVERY,
 };
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -1409,12 +1410,14 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
 
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
+        id: 0,
         resource_runtime_id: household_supplies,
         amount: 20.0,
         source: ShipmentEndpoint::Building(0),
         destination: ShipmentEndpoint::OwaBorder(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
+        carrier_agent_id: usize::MAX,
         total_cost: 0.0,
         tax_cost: 0.0,
         eta_hours: 1,
@@ -2232,7 +2235,8 @@ fn demand_household_removal_prioritizes_unhoused_households() {
     agents.household_id[housed_b] = 2;
     agents.recalculate_occupancy(&mut allocator);
 
-    households.execute_demand_household_removal(1, &mut agents, &mut allocator);
+    let mut logistics = ShipmentSystem::new();
+    households.execute_demand_household_removal(1, &mut agents, &mut allocator, &mut logistics);
 
     assert_eq!(households.households.len(), 2);
     assert_eq!(agents.len(), 2);
@@ -2243,6 +2247,61 @@ fn demand_household_removal_prioritizes_unhoused_households() {
             .all(|&household_id| household_id < households.households.len())
     );
     assert!(agents.home_building.iter().all(|&home| home != usize::MAX));
+}
+
+#[test]
+fn demand_household_removal_remaps_moved_freight_carrier() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removal_freight_res",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let resident = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[resident] = 0;
+    let freight = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[freight] = usize::MAX;
+    agents.home_building[freight] = usize::MAX;
+    agents.current_building[freight] = usize::MAX;
+    agents.target_building[freight] = usize::MAX;
+    agents.freight_shipment_id[freight] = 77;
+    agents.vehicle_type[freight] = VEHICLE_FREIGHT_DELIVERY;
+    agents.recalculate_occupancy(&mut allocator);
+
+    let mut logistics = ShipmentSystem::new();
+    logistics.shipments.push(Shipment {
+        id: 77,
+        resource_runtime_id: 0,
+        amount: 1.0,
+        source: ShipmentEndpoint::Building(0),
+        destination: ShipmentEndpoint::OwaBorder(0),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
+        carrier_agent_id: freight,
+        total_cost: 0.0,
+        tax_cost: 0.0,
+        eta_hours: 1,
+        queued_hours: 0,
+    });
+
+    households.execute_demand_household_removal(1, &mut agents, &mut allocator, &mut logistics);
+
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents.freight_shipment_id[0], 77);
+    assert_eq!(logistics.shipments[0].carrier_agent_id, 0);
 }
 
 #[test]
@@ -2286,7 +2345,8 @@ fn demand_household_removal_uses_weaker_housed_households_after_unhoused_pool() 
     agents.target_building[unhoused] = usize::MAX;
     agents.recalculate_occupancy(&mut allocator);
 
-    households.execute_demand_household_removal(2, &mut agents, &mut allocator);
+    let mut logistics = ShipmentSystem::new();
+    households.execute_demand_household_removal(2, &mut agents, &mut allocator, &mut logistics);
 
     assert_eq!(households.households.len(), 1);
     assert_eq!(agents.len(), 1);
@@ -2533,7 +2593,8 @@ fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     assert_eq!(agents.household_id[a0], 0);
     assert_eq!(agents.household_id[a1], 0);
 
-    households.execute_demand_household_removal(1, &mut agents, &mut allocator);
+    let mut logistics = ShipmentSystem::new();
+    households.execute_demand_household_removal(1, &mut agents, &mut allocator, &mut logistics);
 
     assert_eq!(households.households.len(), 0);
     assert_eq!(agents.len(), 0);

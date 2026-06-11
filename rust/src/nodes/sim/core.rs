@@ -1312,6 +1312,7 @@ impl SimCore {
             self.demand.households_to_remove_today,
             &mut self.agents,
             &mut self.allocator,
+            &mut self.logistics,
         );
         self.demand
             .record_household_removal_execution(removed_households);

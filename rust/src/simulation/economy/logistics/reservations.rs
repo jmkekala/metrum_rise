@@ -186,29 +186,28 @@ impl ShipmentSystem {
         let mut border_queued_job_counts = HashMap::new();
 
         for shipment in &self.shipments {
-            if !shipment.status.is_open() {
-                continue;
-            }
-            if let ShipmentEndpoint::Building(destination_building_id) = shipment.destination
-                && let Some(slot) = reservation_slot(
-                    destination_building_id,
-                    shipment.resource_runtime_id,
-                    resource_count,
-                )
-                && slot < reserved_inbound.len()
-            {
-                reserved_inbound[slot] += shipment.amount;
-                has_open_inbound[slot] = true;
-            }
-            if let ShipmentEndpoint::Building(source_building_id) = shipment.source
-                && let Some(slot) = reservation_slot(
-                    source_building_id,
-                    shipment.resource_runtime_id,
-                    resource_count,
-                )
-                && slot < reserved_outbound.len()
-            {
-                reserved_outbound[slot] += shipment.amount;
+            if shipment.status.reserves_cargo() {
+                if let ShipmentEndpoint::Building(destination_building_id) = shipment.destination
+                    && let Some(slot) = reservation_slot(
+                        destination_building_id,
+                        shipment.resource_runtime_id,
+                        resource_count,
+                    )
+                    && slot < reserved_inbound.len()
+                {
+                    reserved_inbound[slot] += shipment.amount;
+                    has_open_inbound[slot] = true;
+                }
+                if let ShipmentEndpoint::Building(source_building_id) = shipment.source
+                    && let Some(slot) = reservation_slot(
+                        source_building_id,
+                        shipment.resource_runtime_id,
+                        resource_count,
+                    )
+                    && slot < reserved_outbound.len()
+                {
+                    reserved_outbound[slot] += shipment.amount;
+                }
             }
             if let Some(border_node) = shipment
                 .source

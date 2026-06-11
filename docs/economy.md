@@ -412,8 +412,8 @@ The movement of goods and money is represented through explicit shipments:
 - **Shipments**: Discrete logistics jobs that carry a specific quantity of resource between a source and destination.
 - **Cooldowns**: Buildings enter a mandatory settlement period after starting a shipment to prevent overwhelming the road network with micro-deliveries.
 - **Batching**: Both local trades and OWA exports prioritize efficient loads by waiting for a `min_shipment_units` volume before dispatching a vehicle.
-- **Capital Lockdown**: While a shipment is in transit, the associated budget or inventory is locked and cannot be double-spent.
-- **Fulfilment**: The transaction is credited only when the physical vehicle reaches its destination. Failures (e.g. building removal) return the locked capital but may penalize the reputation or cooldown of the building.
+- **Capital Lockdown**: While a shipment is open, the associated budget or inventory is locked and cannot be double-spent. Source inventory is removed from the building only when the physical carrier is successfully dispatched.
+- **Fulfilment**: The transaction is credited only when the physical freight vehicle reaches its destination endpoint. Failures (e.g. building removal or missing carrier) return locked buyer capital when a buyer exists and put involved buildings into cooldown.
 - roads and city-owned facilities also create recurring maintenance or operating costs that withdraw from the city treasury
 - `v0.1` should treat these as simple treasury costs rather than as a full construction-material or contractor simulation
 - future city systems such as deeper services simulation, public works, debt, or borrowing may also use this ledger, but those richer layers are outside the first economy pass
@@ -656,8 +656,8 @@ For `v0.1`, the economy-side contract is:
 - demand may read economy-owned starter savings, essential cost, unemployment benefit amount,
   treasury balance, and budget-backed job openings to calculate deterministic move-in acceptance;
   economy still owns the actual benefit payment and household materialization
-- the economy spec does not require a physically simulated border-entry transport visualization path in `v0.1`
-- whether a later transport layer visualizes arrival or departure through border spawns or exits is a separate transport-layer decision
+- household admission does not require a physically simulated border-entry transport visualization path in `v0.1`
+- whether a later transport layer visualizes household arrival or departure through border spawns or exits is a separate transport-layer decision
 - births and other within-household demographic change are later systems, not part of the `v0.1` economy model
 
 ### Household housing affordability, relocation, and eviction
@@ -1571,12 +1571,14 @@ The simulation should create shipments at the building or terminal level, not on
 
 Each shipment should minimally contain:
 
+- stable shipment id
 - resource type
 - amount
-- source node
-- destination node
+- source endpoint (`Building` or `OWA` border node)
+- destination endpoint (`Building` or `OWA` border node)
 - assigned carrier class
-- status
+- status (`Queued`, `InTransit`, `Returning`, `Fulfilled`, `Failed`, or `Expired`)
+- active carrier agent id when dispatched
 
 ### Carrier classes
 
@@ -1585,6 +1587,33 @@ Initial carrier hierarchy:
 - trucks for local delivery
 - later trains and ships for bulk long-distance transfer
 - later airplanes only for special high-value chains
+
+### Physical carrier lifecycle
+
+Truck freight in `v0.1` is represented by ordinary lane-bound vehicle agents using the freight
+truck model under `godot/assets/models/vehicles/freight/`.
+
+Rules:
+
+- a shipment may be planned only after route feasibility is proven through the existing entrance /
+  car-access planner
+- building-to-building freight spawns one carrier at the source building and drives to the
+  destination building, then returns empty to the source building before the carrier is removed
+- `OWA` imports spawn one carrier at the selected border node and drive to the destination building
+  before returning empty to the same border node
+- `OWA` exports spawn one carrier at the source building and drive to the selected border node
+  before returning empty to the source building
+- shipment delivery settlement runs on the coarse logistics cadence; an arrived carrier may settle
+  cargo on the next logistics pass rather than on the exact render frame of arrival
+- after cargo settlement, the shipment remains open in `Returning` only to track and clean up the
+  empty carrier; the return leg must not keep source inventory or destination demand reserved
+- `eta_hours` is an estimate for timing/debug/capacity decisions, not the authority that completes a
+  shipment
+- active carrier removal, building removal, or invalid endpoint state must resolve the shipment
+  deterministically as fulfilled, failed, or expired; no carrier may remain orphaned after its
+  shipment is closed
+
+This keeps goods visible in traffic without adding a second movement stack.
 
 ### Compression rule
 
@@ -1646,6 +1675,8 @@ Rules:
 - when a shipment is created, the source reserves the promised stock immediately
 - the destination reserves the corresponding unmet demand immediately
 - reserved stock may not be sold twice, and reserved demand may not spawn duplicate requests
+- when a carrier is dispatched from a building source, the source inventory is moved out of the
+  building and into the shipment; seller revenue is still credited only on successful delivery
 - if a shipment fails, expires, or is canceled, both reservations must be released deterministically
 
 This prevents double-selling, phantom shortages, and duplicate jobs.

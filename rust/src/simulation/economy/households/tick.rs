@@ -27,7 +27,7 @@ impl HouseholdSystem {
         self.rebuild_household_and_worker_counts(agents, allocator);
         self.run_building_economy(allocator);
         let business_purchase_tax =
-            logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
+            logistics.hourly_tick(allocator, agents, transit_network, graph, minute_of_day);
         let household_vat = self.run_household_operational_hour(
             agents,
             allocator,

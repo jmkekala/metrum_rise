@@ -3,9 +3,9 @@
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
-    ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, AGE_ELDER, Agent, AgentSystem, MODE_CAR,
-    TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
-    age_group_can_work,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, AGE_ELDER,
+    Agent, AgentSystem, MODE_CAR, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
+    TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -14,8 +14,9 @@ use std::collections::HashMap;
 
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
-    db_to_optional_u32, db_to_optional_usize, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_usize,
-    optional_building_to_db, optional_edge_to_db, optional_node_to_db, u32_to_i64, usize_to_i64,
+    db_to_optional_u32, db_to_optional_u64, db_to_optional_usize, i64_to_u8, i64_to_u16,
+    i64_to_u32, i64_to_usize, optional_building_to_db, optional_edge_to_db, optional_node_to_db,
+    optional_u64_to_db, u32_to_i64, usize_to_i64,
 };
 
 pub(super) struct LoadedAgentRecord {
@@ -23,9 +24,11 @@ pub(super) struct LoadedAgentRecord {
     pub household_id: usize,
     pub age_group: u8,
     pub pending_household_size: u16,
+    pub freight_shipment_id: u64,
     pub work_building: usize,
     pub current_building: usize,
     pub target_building: usize,
+    pub freight_target_border_node: u32,
     pub current_node: u32,
     pub planned_attach_node: u32,
     pub planned_detach_node: u32,
@@ -71,7 +74,7 @@ pub(super) fn save_agents(
     network: &TransitNetwork,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, work_building, current_building, target_building, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -108,9 +111,11 @@ pub(super) fn save_agents(
             },
             i64::from(agents.age_group[i]),
             i64::from(agents.pending_household_size[i]),
+            optional_u64_to_db(agents.freight_shipment_id[i])?,
             optional_building_to_db(agents.work_building[i], maps)?,
             optional_building_to_db(agents.current_building[i], maps)?,
             optional_building_to_db(agents.target_building[i], maps)?,
+            optional_node_to_db(graph, agents.freight_target_border_node[i], maps)?,
             optional_node_to_db(graph, agents.current_node[i], maps)?,
             u32_to_i64(span)?,
             u32_to_i64(spdn)?,
@@ -185,7 +190,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, work_building, current_building, target_building, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -199,42 +204,44 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
                     household_id: db_to_optional_usize(row.get(2)?)?,
                     age_group: i64_to_u8(row.get(3)?)?,
                     pending_household_size: i64_to_u16(row.get(4)?)?,
-                    work_building: db_to_optional_usize(row.get(5)?)?,
-                    current_building: db_to_optional_usize(row.get(6)?)?,
-                    target_building: db_to_optional_usize(row.get(7)?)?,
-                    current_node: db_to_optional_u32(row.get(8)?)?,
-                    planned_attach_node: i64_to_u32(row.get(9)?)?,
-                    planned_detach_node: i64_to_u32(row.get(10)?)?,
-                    planned_attach_lane_id: i64_to_u32(row.get(11)?)?,
-                    planned_detach_lane_id: i64_to_u32(row.get(12)?)?,
-                    planned_attach_lane_d: row.get(13)?,
-                    planned_detach_lane_d: row.get(14)?,
-                    access_flags: i64_to_u8(row.get(15)?)?,
-                    next_replan_time: row.get(16)?,
-                    current_edge: db_to_optional_usize(row.get(17)?)?,
-                    current_lane_id: row.get(18)?,
-                    lane_distance: row.get(19)?,
-                    pos_x: row.get(20)?,
-                    pos_y: row.get(21)?,
-                    activity: i64_to_u8(row.get(22)?)?,
-                    transit: i64_to_u8(row.get(23)?)?,
-                    transit_mode: i64_to_u8(row.get(24)?)?,
-                    happiness: row.get(26)?,
-                    money: row.get(27)?,
-                    journey_start_time: row.get(28)?,
-                    schedule_seed: i64_to_u32(row.get(29)?)?,
-                    cached_commute_minutes: i64_to_u16(row.get(30)?)?,
-                    next_commute_refresh_time: row.get(31)?,
-                    next_departure_day: i64_to_u32(row.get(32)?)?,
-                    next_departure_minute: i64_to_u16(row.get(33)?)?,
-                    next_departure_origin_building: db_to_optional_usize(row.get(34)?)?,
-                    next_departure_target_building: db_to_optional_usize(row.get(35)?)?,
-                    next_departure_activity: i64_to_u8(row.get(36)?)?,
-                    cached_schedule_work_building: db_to_optional_usize(row.get(37)?)?,
-                    cached_work_profile_index: i64_to_u16(row.get(38)?)?,
-                    has_car: row.get(39)?,
-                    vehicle_type: i64_to_u8(row.get(40)?)?,
-                    current_path_index: i64_to_usize(row.get(41)?)?,
+                    freight_shipment_id: db_to_optional_u64(row.get(5)?)?,
+                    work_building: db_to_optional_usize(row.get(6)?)?,
+                    current_building: db_to_optional_usize(row.get(7)?)?,
+                    target_building: db_to_optional_usize(row.get(8)?)?,
+                    freight_target_border_node: db_to_optional_u32(row.get(9)?)?,
+                    current_node: db_to_optional_u32(row.get(10)?)?,
+                    planned_attach_node: i64_to_u32(row.get(11)?)?,
+                    planned_detach_node: i64_to_u32(row.get(12)?)?,
+                    planned_attach_lane_id: i64_to_u32(row.get(13)?)?,
+                    planned_detach_lane_id: i64_to_u32(row.get(14)?)?,
+                    planned_attach_lane_d: row.get(15)?,
+                    planned_detach_lane_d: row.get(16)?,
+                    access_flags: i64_to_u8(row.get(17)?)?,
+                    next_replan_time: row.get(18)?,
+                    current_edge: db_to_optional_usize(row.get(19)?)?,
+                    current_lane_id: row.get(20)?,
+                    lane_distance: row.get(21)?,
+                    pos_x: row.get(22)?,
+                    pos_y: row.get(23)?,
+                    activity: i64_to_u8(row.get(24)?)?,
+                    transit: i64_to_u8(row.get(25)?)?,
+                    transit_mode: i64_to_u8(row.get(26)?)?,
+                    happiness: row.get(28)?,
+                    money: row.get(29)?,
+                    journey_start_time: row.get(30)?,
+                    schedule_seed: i64_to_u32(row.get(31)?)?,
+                    cached_commute_minutes: i64_to_u16(row.get(32)?)?,
+                    next_commute_refresh_time: row.get(33)?,
+                    next_departure_day: i64_to_u32(row.get(34)?)?,
+                    next_departure_minute: i64_to_u16(row.get(35)?)?,
+                    next_departure_origin_building: db_to_optional_usize(row.get(36)?)?,
+                    next_departure_target_building: db_to_optional_usize(row.get(37)?)?,
+                    next_departure_activity: i64_to_u8(row.get(38)?)?,
+                    cached_schedule_work_building: db_to_optional_usize(row.get(39)?)?,
+                    cached_work_profile_index: i64_to_u16(row.get(40)?)?,
+                    has_car: row.get(41)?,
+                    vehicle_type: i64_to_u8(row.get(42)?)?,
+                    current_path_index: i64_to_usize(row.get(43)?)?,
                     current_path: car_paths.remove(&aid).unwrap_or_default(),
                     pedestrian_type: 0,
                     walk_phase: 0.0,
@@ -255,6 +262,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         household_id: rec.household_id,
         age_group: rec.age_group,
         pending_household_size: rec.pending_household_size,
+        freight_shipment_id: rec.freight_shipment_id,
         work_building: rec.work_building,
         pos_x: rec.pos_x,
         pos_y: rec.pos_y,
@@ -277,6 +285,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         current_building: rec.current_building,
         target_building: rec.target_building,
         planned_target_building: usize::MAX,
+        freight_target_border_node: rec.freight_target_border_node,
         current_node: rec.current_node,
         planned_attach_node: rec.planned_attach_node,
         planned_detach_node: rec.planned_detach_node,
@@ -323,6 +332,14 @@ pub(super) fn validate_loaded_agents(
             && (agents.current_node[i] as usize) >= graph.node_count()
         {
             return Err(SaveLoadError::custom(format!("agent {} has bad node", i)));
+        }
+        if agents.freight_target_border_node[i] != u32::MAX
+            && (agents.freight_target_border_node[i] as usize) >= graph.node_count()
+        {
+            return Err(SaveLoadError::custom(format!(
+                "agent {} has bad freight border node",
+                i
+            )));
         }
         if agents.age_group[i] > AGE_ELDER {
             return Err(SaveLoadError::custom(format!(
@@ -392,9 +409,16 @@ pub(super) fn validate_loaded_agents(
                 agents.planned_attach_node[i] < graph.node_count() as u32
                     && agents.planned_attach_lane_id[i] != u32::MAX
             };
-            let detach_ok = agents.planned_detach_node[i] < graph.node_count() as u32
-                && agents.planned_detach_lane_id[i] != u32::MAX;
-            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xF0) != 0 {
+            let freight_border_destination =
+                agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0;
+            let detach_ok = if freight_border_destination {
+                agents.planned_detach_node[i] < graph.node_count() as u32
+                    && agents.planned_detach_lane_id[i] == u32::MAX
+            } else {
+                agents.planned_detach_node[i] < graph.node_count() as u32
+                    && agents.planned_detach_lane_id[i] != u32::MAX
+            };
+            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xE0) != 0 {
                 clear_agent_access_plan(agents, i);
             }
         }
@@ -457,8 +481,12 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_id[i] != u32::MAX
                 && (agents.planned_attach_lane_id[i] as usize) < lane_count
         };
-        let detach_ok = agents.planned_detach_lane_id[i] != u32::MAX
-            && (agents.planned_detach_lane_id[i] as usize) < lane_count;
+        let detach_ok = if agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0 {
+            agents.planned_detach_lane_id[i] == u32::MAX
+        } else {
+            agents.planned_detach_lane_id[i] != u32::MAX
+                && (agents.planned_detach_lane_id[i] as usize) < lane_count
+        };
 
         if !attach_ok || !detach_ok {
             clear_agent_access_plan(agents, i);

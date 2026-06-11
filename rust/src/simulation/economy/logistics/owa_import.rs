@@ -90,13 +90,16 @@ impl ShipmentSystem {
             };
 
         allocator.buildings[dest_idx].operating_budget -= total_cost + tax_cost;
+        let shipment_id = self.allocate_shipment_id();
         self.shipments.push(Shipment {
+            id: shipment_id,
             resource_runtime_id,
             amount,
             source: ShipmentEndpoint::OwaBorder(best_border),
             destination: ShipmentEndpoint::Building(dest_idx),
             carrier_class: CarrierClass::Truck,
             status,
+            carrier_agent_id: usize::MAX,
             total_cost,
             tax_cost,
             eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(

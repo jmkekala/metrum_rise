@@ -22,6 +22,8 @@ pub struct Agent {
     /// Pending resident count carried by a border-origin household arrival car; `0` for normal
     /// agents.
     pub pending_household_size: u16,
+    /// Stable freight shipment id carried by this vehicle; `u64::MAX` means ordinary resident.
+    pub freight_shipment_id: u64,
     /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
     pub work_building: usize,
 
@@ -69,6 +71,8 @@ pub struct Agent {
     pub target_building: usize,
     /// Economy-selected destination building for the next idle departure.
     pub planned_target_building: usize,
+    /// Border node target for freight exports; `u32::MAX` when not carrying export freight.
+    pub freight_target_border_node: u32,
     /// Graph node the agent is currently at or most recently passed through.
     pub current_node: u32,
     /// Planned road-graph endpoint that the origin frontage leg routes toward.

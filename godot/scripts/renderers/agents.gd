@@ -112,7 +112,8 @@ func _ready():
 		0: "res://assets/models/vehicles/civilian/sedan.glb",
 		1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
 		2: "res://assets/models/vehicles/civilian/suv.glb",
-		3: "res://assets/models/vehicles/civilian/suv-luxury.glb"
+		3: "res://assets/models/vehicles/civilian/suv-luxury.glb",
+		4: "res://assets/models/vehicles/freight/delivery.glb"
 	}
 
 	# We'll create 5 color variations for each model by shifting UVs
@@ -132,8 +133,9 @@ func _ready():
 
 	for v_type in car_models:
 		var loaded_model = false
-		if car_texture_cache_ready:
-			loaded_model = _add_car_model_variants(v_type, car_models[v_type], color_offsets)
+		var offsets = [0.0, 0.0, 0.0, 0.0, 0.0] if v_type == 4 else color_offsets
+		if car_texture_cache_ready or v_type == 4:
+			loaded_model = _add_car_model_variants(v_type, car_models[v_type], offsets)
 		if not loaded_model:
 			_add_procedural_car_variants(v_type, car_colors)
 

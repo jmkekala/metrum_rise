@@ -1,7 +1,8 @@
 //! Network lane-entry bootstrap for agents without an active lane.
 
 use super::super::super::super::{
-    ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK,
+    TRANSIT_NETWORK,
 };
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::plan_network_replan;
@@ -88,6 +89,10 @@ pub(super) unsafe fn prepare_lane_entry(
             }
 
             if access_plan_valid {
+                if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
+                    *s_speed.get_mut(i) = 0.0;
+                    return LaneEntryAction::Break;
+                }
                 if sim_time < *s_next_replan_time.get(i) {
                     *s_speed.get_mut(i) = 0.0;
                     return LaneEntryAction::Break;

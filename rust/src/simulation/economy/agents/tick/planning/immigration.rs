@@ -17,7 +17,7 @@ use crate::simulation::network::types::TransitFlags;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Builds an initial exact access plan for an immigrating car entering from a border node.
-pub(in crate::simulation::economy::agents::tick) fn plan_immigration_trip(
+pub(crate) fn plan_immigration_trip(
     border_node: u32,
     target_building: usize,
     allocator: &BuildingAllocator,

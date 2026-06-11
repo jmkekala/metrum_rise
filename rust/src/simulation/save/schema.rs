@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 40;
+pub const SAVE_VERSION: i64 = 42;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -230,6 +230,7 @@ CREATE TABLE shipments(
     destination_border_node INTEGER NOT NULL,
     carrier_class INTEGER NOT NULL,
     status INTEGER NOT NULL,
+    carrier_agent_id INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     tax_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
@@ -248,9 +249,11 @@ CREATE TABLE agents(
     household_id INTEGER NOT NULL,
     age_group INTEGER NOT NULL,
     pending_household_size INTEGER NOT NULL DEFAULT 0,
+    freight_shipment_id INTEGER NOT NULL,
     work_building INTEGER NOT NULL,
     current_building INTEGER NOT NULL,
     target_building INTEGER NOT NULL,
+    freight_target_border_node INTEGER NOT NULL,
     current_node INTEGER NOT NULL,
     planned_attach_node INTEGER NOT NULL DEFAULT 4294967295,
     planned_detach_node INTEGER NOT NULL DEFAULT 4294967295,

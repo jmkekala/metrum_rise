@@ -4,7 +4,7 @@ mod enter;
 mod exit;
 mod zero_hop;
 
-use super::super::super::super::ACCESS_PLAN_VALID;
+use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID};
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
@@ -141,6 +141,11 @@ pub(super) unsafe fn handle_lane_end(
         s_path.get_mut(i).clear();
         *s_lane_id.get_mut(i) = usize::MAX;
         if access_plan_valid {
+            if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
+                *s_path_idx.get_mut(i) = 0;
+                *s_speed.get_mut(i) = 0.0;
+                return LaneEndAction::Break;
+            }
             if sim_time >= *s_next_replan_time.get(i) {
                 if let Some(replan) = plan_network_replan(
                     *s_cur_n.get(i),

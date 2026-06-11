@@ -152,13 +152,16 @@ impl ShipmentSystem {
                 let adjusted_eta =
                     adjusted_travel_seconds(best_eta, freight_profile, minute_of_day);
 
+                let shipment_id = self.allocate_shipment_id();
                 self.shipments.push(Shipment {
+                    id: shipment_id,
                     resource_runtime_id: output_port.resource_runtime_id,
                     amount: export_amount,
                     source: ShipmentEndpoint::Building(src_idx),
                     destination: ShipmentEndpoint::OwaBorder(best_border),
                     carrier_class: CarrierClass::Truck,
                     status,
+                    carrier_agent_id: usize::MAX,
                     total_cost: total_revenue,
                     tax_cost: 0.0,
                     eta_hours: eta_hours_from_travel_seconds(adjusted_eta),

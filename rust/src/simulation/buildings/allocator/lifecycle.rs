@@ -128,7 +128,7 @@ impl BuildingAllocator {
 
                 agents.evict_building(i);
                 households.invalidate_building(i, self);
-                logistics.invalidate_building(i, self);
+                logistics.invalidate_building(i, self, agents);
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
                     if let Some(zone_idx) =
@@ -545,7 +545,7 @@ impl BuildingAllocator {
 
         agents.evict_building(building_idx);
         households.invalidate_building(building_idx, self);
-        logistics.invalidate_building(building_idx, self);
+        logistics.invalidate_building(building_idx, self, agents);
         if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
             self.dirty_zones[zone_idx] = true;
         }
