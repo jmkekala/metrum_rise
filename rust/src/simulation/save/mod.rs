@@ -174,11 +174,20 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     )?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
-        "INSERT INTO city_treasury(balance, lifetime_build_cost, last_daily_upkeep) VALUES (?1, ?2, ?3)",
+        "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_purchase_tax, last_daily_property_tax, pending_income_tax, pending_household_vat, pending_business_purchase_tax, pending_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             view.treasury.balance,
             view.treasury.lifetime_build_cost,
-            view.treasury.last_daily_upkeep
+            view.treasury.lifetime_tax_revenue,
+            view.treasury.last_daily_upkeep,
+            view.treasury.last_daily_income_tax,
+            view.treasury.last_daily_household_vat,
+            view.treasury.last_daily_business_purchase_tax,
+            view.treasury.last_daily_property_tax,
+            view.treasury.pending_income_tax,
+            view.treasury.pending_household_vat,
+            view.treasury.pending_business_purchase_tax,
+            view.treasury.pending_property_tax,
         ],
     )?;
 
@@ -317,15 +326,39 @@ pub(crate) fn load_from_sqlite(
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&zoning, &pollution, &noise);
 
-    let treasury_row: (f64, f64, f64) = conn.query_row(
-        "SELECT balance, lifetime_build_cost, last_daily_upkeep FROM city_treasury LIMIT 1",
+    let treasury_row: (f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) = conn.query_row(
+        "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_purchase_tax, last_daily_property_tax, pending_income_tax, pending_household_vat, pending_business_purchase_tax, pending_property_tax FROM city_treasury LIMIT 1",
         [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+                r.get(11)?,
+            ))
+        },
     )?;
     let treasury = CityTreasury {
         balance: treasury_row.0,
         lifetime_build_cost: treasury_row.1,
-        last_daily_upkeep: treasury_row.2,
+        lifetime_tax_revenue: treasury_row.2,
+        last_daily_upkeep: treasury_row.3,
+        last_daily_income_tax: treasury_row.4,
+        last_daily_household_vat: treasury_row.5,
+        last_daily_business_purchase_tax: treasury_row.6,
+        last_daily_property_tax: treasury_row.7,
+        pending_income_tax: treasury_row.8,
+        pending_household_vat: treasury_row.9,
+        pending_business_purchase_tax: treasury_row.10,
+        pending_property_tax: treasury_row.11,
     };
 
     Ok(LoadedSimulation {

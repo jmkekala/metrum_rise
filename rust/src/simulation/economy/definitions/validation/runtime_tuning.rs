@@ -107,6 +107,48 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         &tuning.construction.industrial_hours_by_level,
         "runtime_tuning.construction.industrial_hours_by_level",
     )?;
+    validate_range(
+        tuning.fiscal.income_tax_rate,
+        0.0,
+        1.0,
+        "runtime_tuning.fiscal.income_tax_rate",
+    )?;
+    validate_range(
+        tuning.fiscal.household_vat_rate,
+        0.0,
+        1.0,
+        "runtime_tuning.fiscal.household_vat_rate",
+    )?;
+    validate_range(
+        tuning.fiscal.business_purchase_tax_rate,
+        0.0,
+        1.0,
+        "runtime_tuning.fiscal.business_purchase_tax_rate",
+    )?;
+    validate_range(
+        tuning.fiscal.residential_property_tax_base,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.fiscal.residential_property_tax_base",
+    )?;
+    validate_range(
+        tuning.fiscal.commercial_property_tax_base,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.fiscal.commercial_property_tax_base",
+    )?;
+    validate_range(
+        tuning.fiscal.industrial_property_tax_base,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.fiscal.industrial_property_tax_base",
+    )?;
+    validate_range(
+        tuning.fiscal.property_tax_level_multiplier,
+        1.0,
+        f32::INFINITY,
+        "runtime_tuning.fiscal.property_tax_level_multiplier",
+    )?;
     validate_work_profiles(&tuning.operational_clock)?;
     validate_freight_profiles(&tuning.operational_clock)?;
     validate_range(
@@ -233,6 +275,12 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         0.0,
         1.0,
         "runtime_tuning.owa_export_price_multiplier",
+    )?;
+    validate_range(
+        tuning.owa_distress_liquidation_multiplier,
+        0.0,
+        tuning.owa_export_price_multiplier,
+        "runtime_tuning.owa_distress_liquidation_multiplier",
     )?;
     Ok(())
 }

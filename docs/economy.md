@@ -62,7 +62,10 @@ Developers should use a tool, not raw text files, to balance production chains, 
 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
 
-Future player-facing fiscal controls such as income tax, property tax, real estate tax, value added tax (`VAT`), tariffs, and subsidies are a separate gameplay policy layer. They must not be treated as raw access to the developer economy editor.
+Player-facing fiscal controls such as tax sliders, tariffs, and subsidies are a separate gameplay
+policy layer. Baseline income tax, purchase tax, and construction property tax are authored runtime
+tuning values; player UI must expose curated bounded controls later rather than raw access to the
+developer economy editor.
 
 ### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
@@ -386,10 +389,21 @@ Rules:
 
 - the city treasury is a separate ledger from household budgets and building budgets
 - startup treasury funds initialize that ledger at game start
-- income tax, property tax, real estate tax, `VAT`, tariffs, and similar city-owned fiscal inflows deposit into the city treasury
+- income tax, construction property tax, household `VAT`, business purchase tax, tariffs, and
+  similar city-owned fiscal inflows deposit into the city treasury
 - ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
 - subsidies and other city-funded support measures withdraw from the city treasury
 - road building, infrastructure placement, and city-owned facility construction withdraw from the city treasury
+
+Baseline fiscal tuning lives in `economy/profiles.toml` under `runtime_tuning.fiscal`:
+
+- `income_tax_rate`: fraction withheld from gross daily wages before households receive income
+- `household_vat_rate`: fraction added to household store purchases
+- `business_purchase_tax_rate`: fraction added to business input purchases through local freight or
+  `OWA` import freight
+- `residential_property_tax_base`, `commercial_property_tax_base`,
+  `industrial_property_tax_base`: one-time construction-start tax bases for fresh private spawns
+- `property_tax_level_multiplier`: multiplier applied per level above level 1
 
 ### Logistics and Shipments
 
@@ -450,10 +464,31 @@ Rules:
 Rules:
 
 - fiscal ledgers settle once per operational day
-- taxes, tariffs, subsidies, and recurring city upkeep may accrue during the day, but they post to the city treasury on the daily fiscal settlement pass
-- this daily settlement updates household budgets, building budgets, and the city treasury in one deterministic step
+- transaction-backed taxes update the city treasury when the underlying deterministic transaction
+  succeeds: wage payment, store pickup, freight delivery, or construction start
+- the treasury keeps pending tax buckets during the day and finalizes them into daily reporting
+  buckets on the daily fiscal settlement pass
+- the minute-0 operational-hour work and the midnight demand pass are part of the closing
+  settlement boundary; finalized tax buckets are rolled after those deterministic phases complete
+- recurring road upkeep posts on the daily fiscal settlement pass
+- daily fiscal settlement updates household budgets, building budgets, and daily treasury
+  reporting in deterministic phase order
 
 This keeps the first fiscal model understandable and consistent with the rest of the economy cadence.
+
+### Income tax
+
+Income tax is withheld from gross wage payments.
+
+Rules:
+
+- employers pay the full gross authored wage from their building operating budget
+- households receive net wage after `runtime_tuning.fiscal.income_tax_rate`
+- the withheld amount deposits into the city treasury as income tax revenue
+- if the employer cannot pay the gross wage, no wage or income tax is paid for that worker
+- wage payments apply in stable agent-index order after inactive employers have ejected workers
+
+This keeps income tax tied to real employment instead of a background population modifier.
 
 ### Value Added Tax (`VAT`)
 
@@ -465,9 +500,32 @@ Rules:
 - for baseline household essentials in `v0.1`, this effectively means the household budget pays the tax when buying goods
 - for business or operational purchases, the building budget pays the tax unless a later system introduces another explicit budget-owning buyer type
 - seller revenue is the pre-tax sale value; the `VAT` portion is city tax revenue rather than normal seller income
-- `VAT` liability may accrue during the day, but it settles into the city treasury on the daily fiscal pass
+- household `VAT` is reserved in the gross shopping payment, but it is collected only once the
+  shopper reaches the store and pickup succeeds
+- business purchase tax is reserved with the shipment payment, refunded on shipment failure or
+  expiry, and collected only when freight is delivered
+- daily fiscal reporting separates household `VAT` from business purchase tax
 
 This keeps `VAT` tied to actual consumption instead of treating it as a vague background modifier.
+
+### Construction property tax
+
+Fresh private buildings pay a one-time property tax when construction starts.
+
+Rules:
+
+- the tax applies only to demand-owned fresh private spawns, not to road placement or future
+  city-owned facilities
+- the amount is selected from the zone-specific base in `runtime_tuning.fiscal` and multiplied by
+  `property_tax_level_multiplier` for each level above level 1
+- the tax is paid into the city treasury immediately after the building action creates the
+  under-construction building
+- the payer is the private building/developer budget represented by the new building's operating
+  budget; property tax must not be minted as treasury revenue without an equal private debit
+- construction completion does not charge a second property tax
+
+This gives growth an immediate city revenue signal without making private construction treasury
+funded.
 
 ### Treasury deficits
 
@@ -581,7 +639,8 @@ The logistics system tries local suppliers first and falls back to the `OWA` onl
 Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** and no local buyer is available, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. 
 
 **Export Constraints**:
-- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.6x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.45x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Distress pricing**: forced bankruptcy liquidation uses the separate `owa_distress_liquidation_multiplier`, which must be no higher than the scheduled export multiplier. The shipped value is lower than scheduled export pricing so fire-sale liquidation is a rescue path, not a preferred operating model.
 - **Efficiency**: Exports must meet the building's `min_shipment_units` threshold and respect the building's global shipment cooldown. This forces industrial sites to batch their overproduction into meaningful truckloads rather than spamming tiny hourly export shipments.
 - **Zoning**: In `v0.1`, only Industrial buildings may export; Commercial buildings do not export their inventories.
 
@@ -2013,12 +2072,12 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - local base price for `household_supplies`: `25 currency / unit`
 - `OWA import_ask` for `staple_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
 - `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
-- initial `OWA export_bid` for `staple_food`: `9 currency / unit` (local × `owa_export_price_multiplier = 0.6`)
+- initial `OWA export_bid` for `staple_food`: `6.75 currency / unit` (local × `owa_export_price_multiplier = 0.45`)
 - OWA utility cost when local utility service is incomplete: `8 currency/day` for commercial and `12 currency/day` for industrial
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
-**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer and no local buyer is available, the logistics system creates an outbound export shipment. The OWA pays `local_unit_price × owa_export_price_multiplier`. A value of `0.6` means the OWA pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Values outside `[0.0, 1.0]` are rejected at validation time.
+**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer and no local buyer is available, the logistics system creates an outbound export shipment. The OWA pays `local_unit_price × owa_export_price_multiplier`. A value of `0.45` means the OWA pays 45% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Values outside `[0.0, 1.0]` are rejected at validation time.
 
 These numbers are only a bootstrap reference pack. They live in editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges. Runtime code must validate this data and fail loudly when required values are missing; it must not silently substitute balance values from Rust.
 
@@ -2152,7 +2211,8 @@ Why this is needed before Phase 6:
 Current status:
 
 - complete
-- `CityTreasury { balance, lifetime_build_cost, last_daily_upkeep }` lives in `SimCore`
+- `CityTreasury` lives in `SimCore` and tracks balance, lifetime build cost, lifetime tax revenue,
+  daily road upkeep, and pending/finalized daily tax buckets
 - startup balance initialised at `100,000` currency
 - road placement deducts `100 currency/meter` from the treasury; balance may go negative per spec
 - daily road upkeep deducts `0.1 currency/meter/day` on the daily fiscal settlement pass
@@ -2161,7 +2221,7 @@ Current status:
   `runtime_tuning.owa_import_price_multiplier`
 - `grocery_basic` currently ships with `starting_inventory_days = 0.0`; stores do not receive
   hidden Rust-seeded output inventory
-- save version bumped to 24; treasury is persisted in the `city_treasury` SQLite table
+- treasury is persisted in the `city_treasury` SQLite table
 - `get_treasury_balance()` Godot func exposes the live balance for UI display
 
 Goal: make money flow explicit before adding richer service or policy behavior.
@@ -2362,6 +2422,8 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.construction.residential_hours_by_level` | [6, 12, 18] | Fresh residential construction hours by target level |
 | `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
 | `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
+| `owa_export_price_multiplier` | 0.45 | Scheduled OWA surplus export price multiplier |
+| `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
 | `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
 | `industrial_owa_utility_cost_per_day` | 12.0 | OWA utility charge per industrial building |
 
@@ -2461,7 +2523,7 @@ cadence and are not part of this sequence.
 
 ```
 if operating_budget < 0:
-    forced_owa_liquidation()   // sell all unreserved inventory at OWA prices
+    forced_owa_liquidation()   // sell all unreserved inventory at distress OWA prices
     budget_distress = true     // flag checked tomorrow in Step 1
 else:
     budget_distress = false    // recovered: clear the flag
@@ -2475,10 +2537,13 @@ revenue insufficient), Step 1 tomorrow sees both `budget_distress = true` and
 `operating_budget < 0` — bankruptcy is declared.
 
 `forced_owa_liquidation` iterates every output resource slot and sells the full unreserved
-inventory at the standard OWA export price, crediting `operating_budget` immediately. It bypasses
-the normal `min_shipment_units` buffer check — the sale is a distress action, not a scheduled
-shipment. If inventory is empty (e.g. a ghost farm with no workers and no production), the
-liquidation yields nothing and `budget_distress` is still set to `true`.
+inventory at `local_unit_price × owa_distress_liquidation_multiplier`, crediting
+`operating_budget` immediately. The distress multiplier must be no higher than the scheduled
+`owa_export_price_multiplier` and is lower in the shipped tuning (`0.25` vs `0.45`) so liquidation
+is a fire-sale rescue path rather than a profitable operating model. It bypasses the normal
+`min_shipment_units` buffer check — the sale is a distress action, not a scheduled shipment. If
+inventory is empty (e.g. a ghost farm with no workers and no production), the liquidation yields
+nothing and `budget_distress` is still set to `true`.
 
 ### Throughput Factor
 

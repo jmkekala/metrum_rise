@@ -160,6 +160,7 @@ impl ShipmentSystem {
                     carrier_class: CarrierClass::Truck,
                     status,
                     total_cost: total_revenue,
+                    tax_cost: 0.0,
                     eta_hours: eta_hours_from_travel_seconds(adjusted_eta),
                     queued_hours: 0,
                 });

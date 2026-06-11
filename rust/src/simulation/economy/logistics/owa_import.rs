@@ -4,6 +4,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, LogisticsRuntimeTuning, ResourceRuntimeId,
 };
+use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
@@ -32,6 +33,7 @@ impl ShipmentSystem {
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
         logistics_tuning: &LogisticsRuntimeTuning,
+        business_purchase_tax_rate: f32,
     ) -> bool {
         if border_nodes.is_empty() {
             return false;
@@ -40,8 +42,10 @@ impl ShipmentSystem {
         // Use the actual charge price (including any outside-window premium) for the
         // affordability check so the building cannot be charged more than it can afford.
         let effective_unit_price = adjusted_unit_price(unit_price, freight_profile, minute_of_day);
+        let taxed_unit_price =
+            effective_unit_price + tax_amount(effective_unit_price, business_purchase_tax_rate);
         let max_affordable_amount =
-            allocator.buildings[dest_idx].operating_budget / effective_unit_price;
+            allocator.buildings[dest_idx].operating_budget / taxed_unit_price.max(f32::EPSILON);
         let Some(amount) = quantize_requested_amount(
             desired_amount,
             f32::MAX,
@@ -53,6 +57,7 @@ impl ShipmentSystem {
             return false;
         };
         let total_cost = amount * effective_unit_price;
+        let tax_cost = tax_amount(total_cost, business_purchase_tax_rate);
 
         let active_cap = usize::from(logistics_tuning.border_active_jobs_per_node);
         let queued_cap = usize::from(logistics_tuning.border_queued_jobs_per_node);
@@ -84,7 +89,7 @@ impl ShipmentSystem {
                 return false;
             };
 
-        allocator.buildings[dest_idx].operating_budget -= total_cost;
+        allocator.buildings[dest_idx].operating_budget -= total_cost + tax_cost;
         self.shipments.push(Shipment {
             resource_runtime_id,
             amount,
@@ -93,6 +98,7 @@ impl ShipmentSystem {
             carrier_class: CarrierClass::Truck,
             status,
             total_cost,
+            tax_cost,
             eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
                 best_cost,
                 freight_profile,

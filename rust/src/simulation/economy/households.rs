@@ -23,6 +23,7 @@ pub use replenishment::{
 
 pub(crate) use metrics::{
     building_operating_buffer_days, building_staffing_ratio, building_total_output_inventory,
-    expected_adult_members_for_household_size, household_reserve_days,
-    industrial_input_coverage_factor, industrial_output_headroom_factor, level_tuning_value,
+    candidate_immigrant_household_size_from_flat_size, expected_adult_members_for_household_size,
+    household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
+    level_tuning_value,
 };

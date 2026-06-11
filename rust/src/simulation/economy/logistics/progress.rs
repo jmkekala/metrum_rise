@@ -12,7 +12,7 @@ use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::resource::building_accepts_input_resource;
 
 impl ShipmentSystem {
-    pub(super) fn progress_shipments(&mut self, allocator: &mut BuildingAllocator) {
+    pub(super) fn progress_shipments(&mut self, allocator: &mut BuildingAllocator) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -26,6 +26,7 @@ impl ShipmentSystem {
             retry_cooldown_hours,
         );
 
+        let mut business_purchase_tax_collected = 0.0;
         for shipment in &mut self.shipments {
             if shipment.status != ShipmentStatus::InTransit {
                 continue;
@@ -104,7 +105,8 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
+                        allocator.buildings[dest_idx].operating_budget +=
+                            shipment.total_cost + shipment.tax_cost;
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
                         shipment.status = ShipmentStatus::Failed;
@@ -118,6 +120,7 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
+                    business_purchase_tax_collected += shipment.tax_cost;
                     shipment.status = ShipmentStatus::Fulfilled;
                 }
                 ShipmentEndpoint::OwaBorder(_) => {
@@ -131,7 +134,8 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
+                        allocator.buildings[dest_idx].operating_budget +=
+                            shipment.total_cost + shipment.tax_cost;
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
                         shipment.status = ShipmentStatus::Failed;
@@ -140,10 +144,12 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
+                    business_purchase_tax_collected += shipment.tax_cost;
                     shipment.status = ShipmentStatus::Fulfilled;
                 }
             }
         }
+        business_purchase_tax_collected
     }
 }
 
@@ -201,7 +207,8 @@ fn expire_queued_shipment(
     if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
         && destination_idx < allocator.buildings.len()
     {
-        allocator.buildings[destination_idx].operating_budget += shipment.total_cost;
+        allocator.buildings[destination_idx].operating_budget +=
+            shipment.total_cost + shipment.tax_cost;
         allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
     }
     shipment.status = ShipmentStatus::Expired;

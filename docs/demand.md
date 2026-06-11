@@ -457,8 +457,10 @@ Baseline ownership rule:
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
 - `city_treasury_balance` is read from the city treasury owned by the fiscal ledger
-- `candidate_household_size` is the vacancy-weighted expected household size for currently open
-  residential slots, using the same authored flat-size rule as the allocator
+- `candidate_household_size` is the vacancy-weighted starter immigrant household size for
+  currently open residential slots. It must fit the authored flat-size capacity, but it is capped
+  to the baseline starter household size so large homes do not force first-arrival households to
+  fill every possible bedroom.
 - `candidate_effective_workers` is the expected adult-worker count for that candidate household
   size, using the same deterministic baseline age mix as household admission
 - `candidate_daily_essential_cost` combines household demand-sink resource prices and

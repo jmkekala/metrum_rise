@@ -163,7 +163,7 @@ impl HouseholdSystem {
                     &catalog,
                     &reserved_outbound,
                     resource_count,
-                    tuning.owa_export_price_multiplier,
+                    tuning.owa_distress_liquidation_multiplier,
                 );
                 building.budget_distress = true;
                 debug_log!(

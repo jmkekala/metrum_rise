@@ -72,6 +72,26 @@ fn register_family_asset_with_economy_profile(
     level: u8,
     economy_profile: Option<&str>,
 ) -> String {
+    register_family_asset_with_economy_profile_and_flat_size(
+        allocator,
+        asset_id,
+        zone_type,
+        asset_set,
+        level,
+        economy_profile,
+        None,
+    )
+}
+
+fn register_family_asset_with_economy_profile_and_flat_size(
+    allocator: &mut BuildingAllocator,
+    asset_id: &str,
+    zone_type: ZoneType,
+    asset_set: Option<&str>,
+    level: u8,
+    economy_profile: Option<&str>,
+    flat_size_m2: Option<f32>,
+) -> String {
     let (zone_class, household_capacity, worker_capacity) = match zone_type {
         ZoneType::Residential => (ZoneClass::Residential, Some(6), None),
         ZoneType::Commercial => (ZoneClass::Commercial, None, Some(4)),
@@ -99,7 +119,7 @@ fn register_family_asset_with_economy_profile(
         }],
         building: Some(BuildingData {
             flat_size_m2: if matches!(zone_type, ZoneType::Residential | ZoneType::Mixed) {
-                Some(80.0)
+                Some(flat_size_m2.unwrap_or(80.0))
             } else {
                 None
             },
@@ -976,6 +996,48 @@ fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_borde
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
     assert!(demand.households_to_admit_today > 0);
+}
+
+#[test]
+fn hourly_pass_admits_starter_household_into_large_vacant_home_without_jobs() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_family_asset_with_economy_profile_and_flat_size(
+        &mut allocator,
+        "large_residential",
+        ZoneType::Residential,
+        None,
+        1,
+        None,
+        Some(200.0),
+    );
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        0,
+        0,
+        residential_asset,
+    ));
+
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let zoning = empty_zoning();
+    let mut demand = DemandSystem::new();
+
+    for _ in 0..24 {
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+        if demand.households_to_admit_today > 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        demand.last_admission_diagnostics.candidate_household_size,
+        2.0
+    );
+    assert!(
+        demand.households_to_admit_today > 0,
+        "large homes should admit a starter household instead of requiring a full large-family runway"
+    );
 }
 
 #[test]

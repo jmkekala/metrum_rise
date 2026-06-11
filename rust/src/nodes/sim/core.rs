@@ -22,6 +22,7 @@ use crate::simulation::economy::agents::{
     age_group_can_work, transit_is_visible,
 };
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -99,8 +100,26 @@ pub struct CityTreasury {
     pub balance: f64,
     /// Running total of all infrastructure build costs since game start.
     pub lifetime_build_cost: f64,
+    /// Running total of all collected tax revenue since game start.
+    pub lifetime_tax_revenue: f64,
     /// Road upkeep deducted in the most recent daily settlement.
     pub last_daily_upkeep: f64,
+    /// Income tax collected in the most recently finalized fiscal day.
+    pub last_daily_income_tax: f64,
+    /// Household VAT collected in the most recently finalized fiscal day.
+    pub last_daily_household_vat: f64,
+    /// Business purchase tax collected in the most recently finalized fiscal day.
+    pub last_daily_business_purchase_tax: f64,
+    /// Property tax collected in the most recently finalized fiscal day.
+    pub last_daily_property_tax: f64,
+    /// Income tax collected since the last daily fiscal finalization.
+    pub pending_income_tax: f64,
+    /// Household VAT collected since the last daily fiscal finalization.
+    pub pending_household_vat: f64,
+    /// Business purchase tax collected since the last daily fiscal finalization.
+    pub pending_business_purchase_tax: f64,
+    /// Property tax collected since the last daily fiscal finalization.
+    pub pending_property_tax: f64,
 }
 
 impl CityTreasury {
@@ -109,7 +128,16 @@ impl CityTreasury {
         Self {
             balance: startup_balance,
             lifetime_build_cost: 0.0,
+            lifetime_tax_revenue: 0.0,
             last_daily_upkeep: 0.0,
+            last_daily_income_tax: 0.0,
+            last_daily_household_vat: 0.0,
+            last_daily_business_purchase_tax: 0.0,
+            last_daily_property_tax: 0.0,
+            pending_income_tax: 0.0,
+            pending_household_vat: 0.0,
+            pending_business_purchase_tax: 0.0,
+            pending_property_tax: 0.0,
         }
     }
 
@@ -124,6 +152,60 @@ impl CityTreasury {
         self.balance -= amount;
         self.last_daily_upkeep = amount;
     }
+
+    /// Records wage income tax withheld from household income.
+    pub(crate) fn collect_income_tax(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::Income);
+    }
+
+    /// Records VAT collected from household shopping purchases.
+    pub(crate) fn collect_household_vat(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::HouseholdVat);
+    }
+
+    /// Records tax collected from business input purchases.
+    pub(crate) fn collect_business_purchase_tax(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::BusinessPurchase);
+    }
+
+    /// Records one-time property tax from new private construction.
+    pub(crate) fn collect_property_tax(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::Property);
+    }
+
+    /// Rolls the current pending fiscal window into daily reporting buckets.
+    pub(crate) fn finalize_daily_tax_window(&mut self) {
+        self.last_daily_income_tax = self.pending_income_tax;
+        self.last_daily_household_vat = self.pending_household_vat;
+        self.last_daily_business_purchase_tax = self.pending_business_purchase_tax;
+        self.last_daily_property_tax = self.pending_property_tax;
+        self.pending_income_tax = 0.0;
+        self.pending_household_vat = 0.0;
+        self.pending_business_purchase_tax = 0.0;
+        self.pending_property_tax = 0.0;
+    }
+
+    fn record_tax(&mut self, amount: f64, bucket: TaxBucket) {
+        if amount <= 0.0 {
+            return;
+        }
+        self.balance += amount;
+        self.lifetime_tax_revenue += amount;
+        match bucket {
+            TaxBucket::Income => self.pending_income_tax += amount,
+            TaxBucket::HouseholdVat => self.pending_household_vat += amount,
+            TaxBucket::BusinessPurchase => self.pending_business_purchase_tax += amount,
+            TaxBucket::Property => self.pending_property_tax += amount,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TaxBucket {
+    Income,
+    HouseholdVat,
+    BusinessPurchase,
+    Property,
 }
 
 /// Validation state for one transient world-editor lake-fill preview.
@@ -879,7 +961,8 @@ impl SimCore {
              stock_empty={} stock_low={} resident_agents={} pending_carriers={} \
              children={} adults={} elders={} employed={} unemployed={} jobs={}/{} open_jobs={} \
              commercial_jobs={}/{} commercial_open={} industrial_jobs={}/{} industrial_open={} \
-             homes={}/{} vacant_homes={} treasury={:.0}",
+             homes={}/{} vacant_homes={} treasury={:.0} taxes=(income={:.1} household_vat={:.1} \
+             business_purchase={:.1} property={:.1} lifetime={:.1})",
             day_index,
             net_households,
             self.debug_household_admissions_since_daily,
@@ -910,6 +993,11 @@ impl SimCore {
             diagnostics.total_household_slots,
             diagnostics.vacant_household_slots,
             self.treasury.balance,
+            self.treasury.last_daily_income_tax,
+            self.treasury.last_daily_household_vat,
+            self.treasury.last_daily_business_purchase_tax,
+            self.treasury.last_daily_property_tax,
+            self.treasury.lifetime_tax_revenue,
         );
     }
 
@@ -1115,6 +1203,21 @@ impl SimCore {
             total_benefits_paid,
             total_utility_stock_cost,
         );
+        println!(
+            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
+            day_index,
+            self.treasury.last_daily_income_tax,
+            self.treasury.last_daily_household_vat,
+            self.treasury.last_daily_business_purchase_tax,
+            self.treasury.last_daily_property_tax,
+            self.treasury.last_daily_income_tax
+                + self.treasury.last_daily_household_vat
+                + self.treasury.last_daily_business_purchase_tax
+                + self.treasury.last_daily_property_tax,
+            self.treasury.lifetime_tax_revenue,
+            self.treasury.last_daily_upkeep,
+            self.treasury.balance,
+        );
         self.households.reset_daily_ledgers();
     }
 
@@ -1125,7 +1228,7 @@ impl SimCore {
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
         self.allocator.advance_construction_hour();
-        self.households.operational_hour_tick(
+        let fiscal_revenue = self.households.operational_hour_tick(
             &mut self.agents,
             &mut self.allocator,
             &mut self.logistics,
@@ -1134,6 +1237,7 @@ impl SimCore {
             absolute_hour,
             minute_of_day,
         );
+        self.collect_fiscal_revenue(fiscal_revenue);
         if minute_of_day != 0 {
             self.execute_hourly_demand_pass(day_index, minute_of_day);
         }
@@ -1178,7 +1282,7 @@ impl SimCore {
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability
             .tick(&self.zoning, &self.pollution, &self.noise);
-        self.households.daily_settlement_tick(
+        let fiscal_revenue = self.households.daily_settlement_tick(
             &mut self.agents,
             &mut self.allocator,
             &self.logistics,
@@ -1186,6 +1290,7 @@ impl SimCore {
             &self.region_graph,
             &mut self.treasury.balance,
         );
+        self.collect_fiscal_revenue(fiscal_revenue);
         // City treasury: settle daily road upkeep on the fiscal cadence.
         let road_length_m: f64 = self
             .region_graph
@@ -1213,6 +1318,10 @@ impl SimCore {
         self.demand
             .log_daily_household_action_diagnostics(day_index);
         self.execute_hourly_demand_pass(day_index, 0);
+        // Minute 0 is the deterministic closing boundary: operational-hour work,
+        // daily settlement, and midnight demand all post before the daily tax
+        // buckets roll into the report.
+        self.treasury.finalize_daily_tax_window();
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
         self.debug_household_admissions_since_daily = 0;
         // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
@@ -1274,7 +1383,7 @@ impl SimCore {
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
-        self.allocator.execute_demand_building_actions(
+        let building_action_execution = self.allocator.execute_demand_building_actions(
             &self.demand.building_actions,
             &mut self.zoning,
             &mut self.agents,
@@ -1285,6 +1394,8 @@ impl SimCore {
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
         );
+        self.treasury
+            .collect_property_tax(building_action_execution.property_tax_paid as f64);
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         self.demand
@@ -1311,6 +1422,16 @@ impl SimCore {
             self.demand.building_actions.commercial.despawns.len(),
             self.demand.building_actions.industrial.despawns.len(),
         );
+    }
+
+    fn collect_fiscal_revenue(&mut self, revenue: FiscalRevenue) {
+        self.treasury.collect_income_tax(revenue.income_tax as f64);
+        self.treasury
+            .collect_household_vat(revenue.household_vat as f64);
+        self.treasury
+            .collect_business_purchase_tax(revenue.business_purchase_tax as f64);
+        self.treasury
+            .collect_property_tax(revenue.property_tax as f64);
     }
 
     /// Called once per in-game day by the tick loop to emit per-building economy lines.

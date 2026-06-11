@@ -22,6 +22,7 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
+use crate::simulation::economy::fiscal::{split_gross_tax, tax_amount};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -451,7 +452,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         absolute_hour: u32,
-    ) {
+    ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -480,7 +481,7 @@ impl HouseholdSystem {
             apply_starvation_happiness_loss(&self.households, agents);
         }
 
-        self.process_active_household_shopping(
+        let household_vat_collected = self.process_active_household_shopping(
             agents,
             allocator,
             &catalog,
@@ -488,6 +489,7 @@ impl HouseholdSystem {
             retry_cooldown_hours,
             terminal_failure_count,
             shopping_leg_timeout_hours,
+            tuning.fiscal.household_vat_rate,
         );
 
         self.plan_and_apply_household_replenishment(
@@ -502,6 +504,7 @@ impl HouseholdSystem {
             progress.restock_candidate_exists,
             progress.urgent_restock_candidate_exists,
         );
+        household_vat_collected
     }
 
     fn progress_households_for_operational_hour(
@@ -705,6 +708,7 @@ impl HouseholdSystem {
             retry_cooldown_hours,
             terminal_failure_count,
             shopping_leg_timeout_hours,
+            tuning.fiscal.household_vat_rate,
         );
 
         let profile = household_demand_profile(&catalog);
@@ -850,6 +854,7 @@ impl HouseholdSystem {
                     .operational_clock
                     .household_shopping_leg_timeout_hours,
                 catalog,
+                tuning.fiscal.household_vat_rate,
                 &mut diagnostics,
             );
         }
@@ -937,20 +942,25 @@ impl HouseholdSystem {
         retry_cooldown_hours: u16,
         terminal_failure_count: u16,
         shopping_leg_timeout_hours: u16,
-    ) {
+        household_vat_rate: f32,
+    ) -> f32 {
         self.ensure_daily_ledger_len();
+        let mut household_vat_collected = 0.0;
         for hid in 0..self.households.len() {
             match self.households[hid].replenishment_state {
-                REPLENISHMENT_SHOPPING_TO_STORE => self.process_shopping_to_store(
-                    hid,
-                    agents,
-                    allocator,
-                    catalog,
-                    household_supply_resource,
-                    retry_cooldown_hours,
-                    terminal_failure_count,
-                    shopping_leg_timeout_hours,
-                ),
+                REPLENISHMENT_SHOPPING_TO_STORE => {
+                    household_vat_collected += self.process_shopping_to_store(
+                        hid,
+                        agents,
+                        allocator,
+                        catalog,
+                        household_supply_resource,
+                        retry_cooldown_hours,
+                        terminal_failure_count,
+                        shopping_leg_timeout_hours,
+                        household_vat_rate,
+                    );
+                }
                 REPLENISHMENT_SHOPPING_RETURNING => self.process_shopping_returning(
                     hid,
                     agents,
@@ -960,6 +970,7 @@ impl HouseholdSystem {
                 _ => {}
             }
         }
+        household_vat_collected
     }
 
     fn process_shopping_to_store(
@@ -972,7 +983,8 @@ impl HouseholdSystem {
         retry_cooldown_hours: u16,
         terminal_failure_count: u16,
         shopping_leg_timeout_hours: u16,
-    ) {
+        household_vat_rate: f32,
+    ) -> f32 {
         if !shopping_carrier_matches(&self.households[hid], hid, agents) {
             self.cancel_replenishment_before_pickup_with_ledger(
                 hid,
@@ -982,7 +994,7 @@ impl HouseholdSystem {
                 retry_cooldown_hours,
                 terminal_failure_count,
             );
-            return;
+            return 0.0;
         }
         let store_idx = self.households[hid].reserved_store_building_id;
         if !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx) {
@@ -994,19 +1006,22 @@ impl HouseholdSystem {
                 retry_cooldown_hours,
                 terminal_failure_count,
             );
-            return;
+            return 0.0;
         }
         let agent_idx = self.households[hid].shopping_agent_id;
         if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
             && agents.current_building[agent_idx] == store_idx
         {
-            let total_cost = self.households[hid].reserved_total_cost;
+            let gross_total_cost = self.households[hid].reserved_total_cost;
+            let (store_revenue, household_vat_collected) =
+                split_gross_tax(gross_total_cost, household_vat_rate);
             let store = &mut allocator.buildings[store_idx];
-            store.revenue += total_cost;
-            store.operating_budget += total_cost;
+            store.revenue += store_revenue;
+            store.operating_budget += store_revenue;
             self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
             self.households[hid].shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
             schedule_shopper_home(&self.households[hid], agents);
+            return household_vat_collected;
         } else if shopping_leg_timed_out(&mut self.households[hid]) {
             self.cancel_replenishment_before_pickup_with_ledger(
                 hid,
@@ -1017,6 +1032,7 @@ impl HouseholdSystem {
                 terminal_failure_count,
             );
         }
+        0.0
     }
 
     fn process_shopping_returning(
@@ -1244,6 +1260,7 @@ fn apply_replenishment_plan(
     terminal_failure_count: u16,
     shopping_leg_timeout_hours: u16,
     catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
+    household_vat_rate: f32,
     diagnostics: &mut ReplenishmentDiagnostics,
 ) {
     let Some(household) = households.get(plan.household_id) else {
@@ -1304,15 +1321,17 @@ fn apply_replenishment_plan(
             continue;
         }
         let available_stock = store.inventory_units(household_supply_resource);
-        let max_affordable_amount = if store_profile.unit_price_currency > 0.0 {
-            household.budget / store_profile.unit_price_currency
+        let gross_unit_price = store_profile.unit_price_currency
+            + tax_amount(store_profile.unit_price_currency, household_vat_rate);
+        let max_affordable_amount = if gross_unit_price > 0.0 {
+            household.budget / gross_unit_price
         } else {
             f32::MAX
         };
         let amount = desired_amount
             .min(available_stock)
             .min(max_affordable_amount);
-        let total_cost = amount * store_profile.unit_price_currency;
+        let total_cost = amount * gross_unit_price;
         if amount > 0.0 && household.budget >= total_cost {
             found_sale = Some((candidate, amount, total_cost));
             break;

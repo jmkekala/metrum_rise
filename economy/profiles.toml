@@ -134,7 +134,8 @@ outputs = []
 
 [runtime_tuning]
 owa_import_price_multiplier = 1.75
-owa_export_price_multiplier = 0.6000000238418579
+owa_export_price_multiplier = 0.45
+owa_distress_liquidation_multiplier = 0.25
 commercial_owa_utility_cost_per_day = 8.0
 industrial_owa_utility_cost_per_day = 12.0
 startup_treasury_balance = 100000.0
@@ -152,6 +153,15 @@ terminal_failure_attempts = 3
 residential_hours_by_level = [6, 12, 18]
 commercial_hours_by_level = [8, 16, 24]
 industrial_hours_by_level = [12, 24, 36]
+
+[runtime_tuning.fiscal]
+income_tax_rate = 0.12
+household_vat_rate = 0.08
+business_purchase_tax_rate = 0.03
+residential_property_tax_base = 250.0
+commercial_property_tax_base = 500.0
+industrial_property_tax_base = 750.0
+property_tax_level_multiplier = 1.75
 
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0

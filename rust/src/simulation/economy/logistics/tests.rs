@@ -555,6 +555,7 @@ fn deserted_destination_rejects_inbound_delivery() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
         total_cost: 600.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -604,6 +605,7 @@ fn under_construction_destination_rejects_inbound_delivery() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
         total_cost: 600.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -666,6 +668,7 @@ fn deserted_local_source_releases_reserved_delivery() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
         total_cost: 600.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -715,6 +718,7 @@ fn queued_owa_import_expires_and_refunds_destination() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::Queued,
         total_cost: 240.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: tuning.logistics.queued_shipment_expiry_hours - 1,
     });

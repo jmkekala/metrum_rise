@@ -433,7 +433,7 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
         allocator.buildings[1].inventory_units(household_supplies),
         40.0
     );
-    assert_eq!(households.households[0].budget, 50.0);
+    assert_eq!(households.households[0].budget, 30.0);
     assert_eq!(agents.planned_target_building[shopper], 1);
     assert_eq!(agents.planned_activity[shopper], 2);
 
@@ -444,7 +444,7 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
         REPLENISHMENT_SHOPPING_RETURNING
     );
     assert_eq!(households.households[0].stock, 0.0);
-    assert_eq!(allocator.buildings[1].revenue, 250.0);
+    assert!((allocator.buildings[1].revenue - 250.0).abs() < 0.001);
     assert_eq!(agents.planned_target_building[shopper], 0);
     assert_eq!(agents.planned_activity[shopper], 0);
 
@@ -1277,11 +1277,12 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
         .profile_for_id("grocery_basic")
         .expect("grocery starter profile")
         .unit_price_currency;
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let partial_units = 5.0;
 
     let household = Household {
         home_building_id: 0,
-        budget: partial_units * unit_price,
+        budget: partial_units * unit_price * (1.0 + tuning.fiscal.household_vat_rate),
         stock: 0.0,
         member_count: 2,
         child_count: 0,
@@ -1386,6 +1387,7 @@ fn ensure_agent_households_does_not_materialize_missing_household_ids() {
 #[test]
 fn forced_liquidation_sells_only_unreserved_inventory() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
         .expect("household supplies resource");
@@ -1414,6 +1416,7 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
         total_cost: 0.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -1424,6 +1427,15 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
     assert_eq!(
         allocator.buildings[0].inventory_units(household_supplies),
         20.0
+    );
+    let household_supply_unit_price = catalog
+        .unit_price_for_resource(household_supplies)
+        .expect("household supplies unit price");
+    let expected_budget = -10.0 - tuning.commercial_owa_utility_cost_per_day
+        + 30.0 * household_supply_unit_price * tuning.owa_distress_liquidation_multiplier;
+    assert!(
+        (allocator.buildings[0].operating_budget - expected_budget).abs() < 0.001,
+        "forced liquidation should use distress multiplier, not scheduled export multiplier"
     );
 }
 
@@ -1842,7 +1854,7 @@ fn deserted_employer_is_ejected_before_wages() {
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
 
-    households.pay_daily_wages(&mut agents, &mut allocator);
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0);
 
     assert_eq!(agents.work_building[agent], usize::MAX);
     assert_eq!(allocator.buildings[1].worker_count, 0);
@@ -1891,7 +1903,7 @@ fn insolvent_self_fire_decrements_worker_count() {
     agents.assign_work_building(agent, 1, 0);
     agents.consecutive_unpaid_days[agent] = 1;
 
-    households.pay_daily_wages(&mut agents, &mut allocator);
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0);
 
     assert_eq!(agents.work_building[agent], usize::MAX);
     assert_eq!(allocator.buildings[1].worker_count, 0);

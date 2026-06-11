@@ -11,7 +11,10 @@ use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
     demand_building_action_key,
 };
-use crate::simulation::economy::households::HouseholdSystem;
+use crate::simulation::economy::fiscal::construction_property_tax;
+use crate::simulation::economy::households::{
+    HouseholdSystem, candidate_immigrant_household_size_from_flat_size,
+};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -22,6 +25,12 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 
 const REZONE_GRACE_DAYS: u8 = 3;
+
+/// Summary of building mutations performed by one demand-owned building action pass.
+pub(crate) struct DemandBuildingActionExecution {
+    /// Property tax debited from fresh private building budgets during this pass.
+    pub(crate) property_tax_paid: f32,
+}
 
 impl BuildingAllocator {
     /// Removes buildings if their zone category has changed or their road edge no longer exists.
@@ -257,7 +266,7 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-    ) {
+    ) -> DemandBuildingActionExecution {
         let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
             .buildings
             .iter()
@@ -265,6 +274,9 @@ impl BuildingAllocator {
             .map(|(idx, building)| (demand_building_action_key(building), idx))
             .collect();
         let mut mutated_any = false;
+        let mut execution = DemandBuildingActionExecution {
+            property_tax_paid: 0.0,
+        };
 
         for use_plan in [&plan.residential, &plan.commercial, &plan.industrial] {
             for action in &use_plan.despawns {
@@ -313,7 +325,18 @@ impl BuildingAllocator {
             }
 
             for action in &use_plan.spawns {
-                if self.execute_demand_spawn_action(action, zoning, graph, catalog, tuning) {
+                if let Some(building_idx) =
+                    self.execute_demand_spawn_action(action, zoning, graph, catalog, tuning)
+                {
+                    let property_tax = construction_property_tax(
+                        self.buildings[building_idx].zone_type,
+                        self.buildings[building_idx].level,
+                        &tuning.fiscal,
+                    );
+                    if property_tax > 0.0 {
+                        self.buildings[building_idx].operating_budget -= property_tax;
+                        execution.property_tax_paid += property_tax;
+                    }
                     mutated_any = true;
                 }
             }
@@ -325,6 +348,7 @@ impl BuildingAllocator {
             }
             self.rebuild_entrance_cache(graph, lanes);
         }
+        execution
     }
 
     /// Recomputes world-space building transforms from saved frontage attachment data.
@@ -410,17 +434,15 @@ impl BuildingAllocator {
                 if free_slots == 0 {
                     continue;
                 }
-                fallback_idx = building_idx;
 
-                // Derive household size from the building's authored flat size.
-                // Baseline: 40m2 per person, minimum 1, maximum 5.
                 let flat_size = self.flat_size_m2(building_idx);
-                if flat_size <= 1.0 {
+                let Some(candidate_size) =
+                    candidate_immigrant_household_size_from_flat_size(flat_size)
+                else {
                     continue;
-                }
-                let derived_size = ((flat_size / 40.0).ceil() as u16).clamp(1, 5);
-
-                fallback_size = derived_size;
+                };
+                fallback_idx = building_idx;
+                fallback_size = candidate_size;
                 break 'fallback;
             }
         }

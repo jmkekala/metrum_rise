@@ -1847,7 +1847,8 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
 #[test]
 fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() {
     use crate::simulation::economy::demand::{
-        DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSystem,
+        DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+        DemandSpawnAction, DemandSystem,
     };
     use godot::prelude::Vector3;
 
@@ -2008,6 +2009,21 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     allocator.rebuild_zone_index();
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
 
+    let spawn_parcel_id = zoning
+        .parcels()
+        .iter()
+        .find(|parcel| {
+            parcel.id().raw() != 0
+                && parcel.is_available()
+                && zoning
+                    .profiles
+                    .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+                    == ZoneType::Residential
+        })
+        .expect("residential spawn parcel")
+        .id()
+        .raw();
+
     let mut plan = DemandBuildingActionPlan::default();
     plan.residential.despawns.push(DemandBuildingActionKey {
         parcel_id: 0,
@@ -2045,9 +2061,13 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         },
         target_asset_id: residential_level_2.clone(),
     });
+    plan.residential.spawns.push(DemandSpawnAction {
+        parcel_id: spawn_parcel_id,
+        asset_id: residential_level_1.clone(),
+    });
 
     let demand = DemandSystem::new();
-    allocator.execute_demand_building_actions(
+    let execution = allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
         &mut agents,
@@ -2059,7 +2079,14 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         demand.runtime_tuning(),
     );
 
-    assert_eq!(allocator.buildings.len(), 2);
+    let expected_property_tax = crate::simulation::economy::fiscal::construction_property_tax(
+        ZoneType::Residential,
+        1,
+        &demand.runtime_tuning().fiscal,
+    );
+    assert!((execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON);
+
+    assert_eq!(allocator.buildings.len(), 3);
     assert!(
         allocator.buildings.iter().any(|building| {
             building.cell_x == 0 && building.asset_id == residential_level_2 && building.level == 2
@@ -2078,5 +2105,122 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
             .iter()
             .all(|building| building.cell_x != 4),
         "despawn action should remove the empty third building"
+    );
+    let spawned = allocator
+        .buildings
+        .iter()
+        .find(|building| building.parcel_id == spawn_parcel_id)
+        .expect("spawn action should place a building on the selected parcel");
+    assert!((spawned.operating_budget + expected_property_tax).abs() <= f32::EPSILON);
+}
+
+#[test]
+fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() {
+    use crate::simulation::economy::demand::{
+        DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
+    };
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset =
+        register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
+    let mut graph = RegionGraph::new();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(120.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    paint_zone_rect(
+        &mut zoning,
+        &graph,
+        -40.0,
+        -40.0,
+        120.0,
+        40.0,
+        ZoneType::Commercial,
+    );
+    let parcel_id = zoning
+        .parcels()
+        .iter()
+        .find(|parcel| {
+            parcel.is_available()
+                && zoning
+                    .profiles
+                    .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+                    == ZoneType::Commercial
+        })
+        .expect("commercial spawn parcel")
+        .id()
+        .raw();
+
+    let mut plan = DemandBuildingActionPlan::default();
+    plan.commercial.spawns.push(DemandSpawnAction {
+        parcel_id,
+        asset_id: commercial_asset,
+    });
+
+    let demand = DemandSystem::new();
+    let execution = allocator.execute_demand_building_actions(
+        &plan,
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &graph,
+        &network.lane_system,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
+    );
+
+    let building = allocator
+        .buildings
+        .iter()
+        .find(|building| building.parcel_id == parcel_id)
+        .expect("commercial demand spawn should create a building");
+    let profile = demand
+        .runtime_catalog()
+        .profile_by_runtime_id(building.economy_profile_runtime_id)
+        .expect("spawned commercial building should have a profile");
+    let first_import_base_cost = profile
+        .inputs
+        .iter()
+        .map(|port| {
+            profile.inventory_target_units_for(port)
+                * demand
+                    .runtime_catalog()
+                    .unit_price_for_resource(port.resource_runtime_id)
+                    .expect("input resource should have a unit price")
+                * demand.runtime_tuning().owa_import_price_multiplier
+        })
+        .sum::<f32>();
+    assert!(first_import_base_cost > 0.0);
+    let first_import_cost = first_import_base_cost
+        + crate::simulation::economy::fiscal::tax_amount(
+            first_import_base_cost,
+            demand.runtime_tuning().fiscal.business_purchase_tax_rate,
+        );
+    let expected_startup_budget =
+        (profile.worker_capacity as f32 * profile.average_daily_wage() * 7.0 + first_import_cost)
+            .max(500.0);
+    let expected_property_tax = crate::simulation::economy::fiscal::construction_property_tax(
+        ZoneType::Commercial,
+        1,
+        &demand.runtime_tuning().fiscal,
+    );
+
+    assert!((execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON);
+    assert!(
+        (building.operating_budget - (expected_startup_budget - expected_property_tax)).abs()
+            <= 0.01
     );
 }

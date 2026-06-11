@@ -125,6 +125,8 @@ pub struct Shipment {
     pub status: ShipmentStatus,
     /// Reserved payment held by the destination until completion or failure.
     pub total_cost: f32,
+    /// Reserved purchase tax held until completion or failure.
+    pub tax_cost: f32,
     /// Remaining operational-hour steps before the shipment arrives once dispatched.
     pub eta_hours: u16,
     /// Operational hours spent queued at a border terminal.
@@ -229,7 +231,8 @@ impl ShipmentSystem {
                 && destination_id < allocator.buildings.len()
                 && destination_id != removed_building
             {
-                allocator.buildings[destination_id].operating_budget += shipment.total_cost;
+                allocator.buildings[destination_id].operating_budget +=
+                    shipment.total_cost + shipment.tax_cost;
             }
 
             false

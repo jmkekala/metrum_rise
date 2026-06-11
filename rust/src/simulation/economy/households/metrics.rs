@@ -10,6 +10,7 @@ use crate::simulation::zoning::ZoneType;
 
 const HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
 const HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
+const STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
 pub(super) const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
@@ -121,6 +122,19 @@ pub(crate) fn expected_adult_members_for_household_size(household_size: f32) -> 
             .min(MAX_ADULTS_PER_HOUSEHOLD as f32)
             .min(household_size)
     }
+}
+
+/// Returns the deterministic starter immigrant household size that fits one residential flat.
+///
+/// Residential capacity is a household slot count, not a requirement that a new household fills
+/// the whole authored home. Starter admissions therefore use a small baseline household capped by
+/// the home's flat-size capacity.
+pub(crate) fn candidate_immigrant_household_size_from_flat_size(flat_size_m2: f32) -> Option<u16> {
+    if flat_size_m2 <= 1.0 {
+        return None;
+    }
+    let flat_capacity = ((flat_size_m2 / 40.0).ceil() as u16).max(1);
+    Some(flat_capacity.min(STARTER_IMMIGRANT_HOUSEHOLD_SIZE))
 }
 
 pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {

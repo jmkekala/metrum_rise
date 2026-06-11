@@ -140,6 +140,7 @@ impl ShipmentSystem {
                     &catalog,
                     tuning.logistics.truck_load_units,
                     max_freight_speed,
+                    tuning.fiscal.business_purchase_tax_rate,
                 ) {
                     self.clear_request_failure(request_key);
                     continue;
@@ -164,6 +165,7 @@ impl ShipmentSystem {
                     freight_profile,
                     minute_of_day,
                     &tuning.logistics,
+                    tuning.fiscal.business_purchase_tax_rate,
                 ) {
                     self.clear_request_failure(request_key);
                     continue;

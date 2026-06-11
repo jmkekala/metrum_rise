@@ -10,6 +10,7 @@ use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEcon
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
+use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
@@ -342,19 +343,18 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-    ) -> bool {
+    ) -> Option<usize> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
-            return false;
+            return None;
         };
         let Some(parcel) = zoning.parcel_by_raw_id(action.parcel_id) else {
-            return false;
+            return None;
         };
         let Some(resolved) = self.resolve_slot(&action.asset_id, &params, parcel, zoning, graph)
         else {
-            return false;
+            return None;
         };
-        self.commit_resolved_slot(resolved, zoning, catalog, tuning);
-        true
+        Some(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
     fn place_building_instance(
@@ -414,7 +414,7 @@ impl BuildingAllocator {
                     // Add expected cost of the first full OWA input import so the building can
                     // absorb it without going into distress on its opening day.
                     let owa_import_multiplier = tuning.owa_import_price_multiplier;
-                    let first_import_cost = profile
+                    let first_import_base_cost = profile
                         .inputs
                         .iter()
                         .map(|port| {
@@ -434,6 +434,11 @@ impl BuildingAllocator {
                                 * owa_import_multiplier
                         })
                         .sum::<f32>();
+                    let first_import_cost = first_import_base_cost
+                        + tax_amount(
+                            first_import_base_cost,
+                            tuning.fiscal.business_purchase_tax_rate,
+                        );
 
                     (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
                 }

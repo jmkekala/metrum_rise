@@ -282,6 +282,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
         total_cost: 640.0,
+        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });

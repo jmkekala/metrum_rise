@@ -15,13 +15,14 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
-    ) {
+    ) -> f32 {
         self.refresh_freight_route_cache(allocator, transit_network);
-        self.progress_shipments(allocator);
+        let business_purchase_tax_collected = self.progress_shipments(allocator);
         self.decrement_building_cooldowns(allocator);
         self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
         self.create_profile_output_exports(allocator, transit_network, graph, minute_of_day);
         self.shipments.retain(|shipment| shipment.status.is_open());
+        business_purchase_tax_collected
     }
 
     pub(super) fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {

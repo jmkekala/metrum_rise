@@ -17,6 +17,8 @@ pub(crate) struct RuntimeEconomyTuning {
     pub logistics: LogisticsRuntimeTuning,
     /// Private building construction durations for fresh demand-owned spawns.
     pub construction: ConstructionRuntimeTuning,
+    /// City revenue policy applied to wages, consumption, freight purchases, and new buildings.
+    pub fiscal: FiscalRuntimeTuning,
     /// Daily OWA utility charge for one commercial building when local utilities are incomplete.
     pub commercial_owa_utility_cost_per_day: f32,
     /// Daily OWA utility charge for one industrial building when local utilities are incomplete.
@@ -31,6 +33,10 @@ pub(crate) struct RuntimeEconomyTuning {
     /// keeping the OWA as a safety-valve rather than a primary revenue source. Must be in
     /// `[0.0, 1.0]`; values outside this range are rejected at validation time.
     pub owa_export_price_multiplier: f32,
+    /// Multiplier applied when a distressed building fire-sells unreserved output inventory.
+    /// Must be no higher than scheduled exports; shipped tuning keeps it lower so bankruptcy
+    /// liquidation is a last resort, not a profitable operating model.
+    pub owa_distress_liquidation_multiplier: f32,
     /// Starting city treasury balance at new-game creation.
     /// Migrated from the `STARTUP_TREASURY_BALANCE` Rust constant to make it tunable per-profile.
     pub startup_treasury_balance: f64,
@@ -104,6 +110,25 @@ pub(crate) struct ConstructionRuntimeTuning {
     pub commercial_hours_by_level: Vec<u16>,
     /// Fresh industrial construction hours by target level, indexed from level 1.
     pub industrial_hours_by_level: Vec<u16>,
+}
+
+/// Runtime fiscal policy that controls city treasury revenue flows.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub(crate) struct FiscalRuntimeTuning {
+    /// Fraction of gross daily wages withheld before household income is received.
+    pub income_tax_rate: f32,
+    /// Fraction added to household store purchases and remitted to the city at pickup.
+    pub household_vat_rate: f32,
+    /// Fraction added to business input purchases and remitted to the city on delivery.
+    pub business_purchase_tax_rate: f32,
+    /// One-time tax charged when a residential private building starts construction.
+    pub residential_property_tax_base: f32,
+    /// One-time tax charged when a commercial private building starts construction.
+    pub commercial_property_tax_base: f32,
+    /// One-time tax charged when an industrial private building starts construction.
+    pub industrial_property_tax_base: f32,
+    /// Per-level multiplier applied to property tax above level 1.
+    pub property_tax_level_multiplier: f32,
 }
 
 /// One authored minute range from operational midnight.

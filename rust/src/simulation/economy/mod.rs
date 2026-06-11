@@ -17,5 +17,6 @@ pub(crate) mod accessibility;
 pub mod agents;
 pub mod definitions;
 pub mod demand;
+pub(crate) mod fiscal;
 pub mod households;
 pub mod logistics;

@@ -21,6 +21,7 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -259,7 +260,12 @@ impl HouseholdSystem {
     }
 
     /// Pays wages into each employed agent's household budget.
-    pub fn pay_daily_wages(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
+    pub fn pay_daily_wages(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        income_tax_rate: f32,
+    ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         eject_inactive_work_assignments(agents, allocator, &catalog);
@@ -290,6 +296,7 @@ impl HouseholdSystem {
         plans.sort_unstable_by_key(|plan| plan.agent_idx);
         self.ensure_daily_ledger_len();
 
+        let mut income_tax_collected = 0.0;
         for plan in plans {
             if plan.agent_idx >= agents.len()
                 || agents.work_building[plan.agent_idx] != plan.work_building
@@ -300,9 +307,12 @@ impl HouseholdSystem {
                 continue;
             }
             if allocator.buildings[plan.work_building].operating_budget >= plan.wage {
+                let income_tax = tax_amount(plan.wage, income_tax_rate);
+                let net_wage = plan.wage - income_tax;
                 allocator.buildings[plan.work_building].operating_budget -= plan.wage;
-                self.households[plan.household_id].budget += plan.wage;
-                self.daily_ledgers[plan.household_id].wage_income += plan.wage;
+                self.households[plan.household_id].budget += net_wage;
+                self.daily_ledgers[plan.household_id].wage_income += net_wage;
+                income_tax_collected += income_tax;
                 agents.consecutive_unpaid_days[plan.agent_idx] = 0;
             } else {
                 agents.consecutive_unpaid_days[plan.agent_idx] =
@@ -324,6 +334,7 @@ impl HouseholdSystem {
             }
         }
         self.sync_agent_money_from_households(agents);
+        income_tax_collected
     }
 
     fn refresh_workplace_route_cache(

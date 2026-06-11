@@ -17,8 +17,10 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, expected_adult_members_for_household_size, household_reserve_days,
+    Household, HouseholdSystem, candidate_immigrant_household_size_from_flat_size,
+    expected_adult_members_for_household_size, household_reserve_days,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
@@ -287,6 +289,7 @@ impl DailyDemandSnapshot {
         let building_accumulator = collect_building_snapshot_accumulator(
             allocator,
             catalog,
+            tuning.fiscal.income_tax_rate,
             &demand_sink_rates_by_resource,
         );
         let total_household_slots = building_accumulator.total_household_slots;
@@ -587,6 +590,7 @@ impl BuildingSnapshotAccumulator {
         &mut self,
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
+        income_tax_rate: f32,
         demand_sink_rates_by_resource: &[(u16, f32)],
         idx: usize,
         building: &Building,
@@ -662,7 +666,7 @@ impl BuildingSnapshotAccumulator {
             let free_slots = household_capacity.saturating_sub(occupied);
             if free_slots > 0 {
                 if let Some(candidate_size) =
-                    candidate_household_size_from_flat_size(allocator.flat_size_m2(idx))
+                    candidate_immigrant_household_size_from_flat_size(allocator.flat_size_m2(idx))
                 {
                     self.candidate_household_size_sum += candidate_size as f32 * free_slots as f32;
                     self.candidate_household_slot_count = self
@@ -685,8 +689,10 @@ impl BuildingSnapshotAccumulator {
                         (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
                     let effective_capacity = worker_capacity.min(budget_capacity);
                     let open_slots = effective_capacity.saturating_sub(filled_workers);
+                    let net_daily_wage =
+                        average_daily_wage - tax_amount(average_daily_wage, income_tax_rate);
                     self.open_job_slots = self.open_job_slots.saturating_add(open_slots);
-                    self.open_job_wage_sum += open_slots as f32 * average_daily_wage.max(0.0);
+                    self.open_job_wage_sum += open_slots as f32 * net_daily_wage.max(0.0);
                 }
             }
         }
@@ -829,6 +835,7 @@ fn profile_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> 
 fn collect_building_snapshot_accumulator(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
+    income_tax_rate: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
 ) -> BuildingSnapshotAccumulator {
     let mut chunks: Vec<_> = allocator
@@ -842,6 +849,7 @@ fn collect_building_snapshot_accumulator(
                 accumulator.absorb_building(
                     allocator,
                     catalog,
+                    income_tax_rate,
                     demand_sink_rates_by_resource,
                     start_idx + local_idx,
                     building,
@@ -993,14 +1001,6 @@ fn collect_household_snapshot_accumulator(
     merged
 }
 
-fn candidate_household_size_from_flat_size(flat_size_m2: f32) -> Option<u16> {
-    if flat_size_m2 > 1.0 {
-        Some(((flat_size_m2 / 40.0).ceil() as u16).clamp(1, 5))
-    } else {
-        None
-    }
-}
-
 fn construction_candidate_household_size_from_registry(allocator: &BuildingAllocator) -> f32 {
     let mut candidate_size_sum = 0.0_f32;
     let mut candidate_count = 0_u32;
@@ -1020,9 +1020,9 @@ fn construction_candidate_household_size_from_registry(allocator: &BuildingAlloc
         {
             continue;
         }
-        if let Some(candidate_size) =
-            candidate_household_size_from_flat_size(allocator.registry.flat_size_m2(asset_id))
-        {
+        if let Some(candidate_size) = candidate_immigrant_household_size_from_flat_size(
+            allocator.registry.flat_size_m2(asset_id),
+        ) {
             candidate_size_sum += candidate_size as f32;
             candidate_count = candidate_count.saturating_add(1);
         }

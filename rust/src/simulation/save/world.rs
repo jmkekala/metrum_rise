@@ -318,7 +318,7 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, tax_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
     for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
@@ -337,6 +337,7 @@ pub(super) fn save_world(
             shipment.carrier_class.code(),
             shipment.status.code(),
             shipment.total_cost,
+            shipment.tax_cost,
             i64::from(shipment.eta_hours),
             i64::from(shipment.queued_hours),
         ])?;
@@ -595,7 +596,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, total_cost, tax_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let shipment_id = i64_to_usize(row.get(0)?)?;
@@ -610,8 +611,9 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             carrier_class: carrier_class_from_db(row.get(9)?)?,
             status: shipment_status_from_db(row.get(10)?)?,
             total_cost: row.get(11)?,
-            eta_hours: i64_to_u16(row.get(12)?)?,
-            queued_hours: i64_to_u16(row.get(13)?)?,
+            tax_cost: row.get(12)?,
+            eta_hours: i64_to_u16(row.get(13)?)?,
+            queued_hours: i64_to_u16(row.get(14)?)?,
         });
     }
     let mut failure_stmt = conn.prepare("SELECT destination_building_id, resource_runtime_id, failures, terminal FROM freight_request_failures ORDER BY destination_building_id, resource_runtime_id")?;

@@ -3,6 +3,8 @@
 use super::HouseholdSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -10,7 +12,7 @@ use rayon::prelude::*;
 
 impl HouseholdSystem {
     /// Runs one operational-hour household pass for membership, production, logistics, and labor.
-    pub fn operational_hour_tick(
+    pub(crate) fn operational_hour_tick(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
@@ -19,13 +21,14 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         absolute_hour: u32,
         minute_of_day: u16,
-    ) {
+    ) -> FiscalRevenue {
         self.materialize_arrived_household_carriers(agents, allocator);
         self.debug_validate_agent_household_refs(agents);
         self.rebuild_household_and_worker_counts(agents, allocator);
         self.run_building_economy(allocator);
-        logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
-        self.run_household_operational_hour(
+        let business_purchase_tax =
+            logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
+        let household_vat = self.run_household_operational_hour(
             agents,
             allocator,
             transit_network,
@@ -34,13 +37,18 @@ impl HouseholdSystem {
         );
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
+        FiscalRevenue {
+            household_vat,
+            business_purchase_tax,
+            ..FiscalRevenue::default()
+        }
     }
 
     /// Runs one daily settlement pass after the final operational-hour step of the day.
     ///
     /// Implements the four-step bankruptcy spec from `economy.md § Building Bankruptcy`:
     /// Step 1 — bankruptcy check, Step 2 — wages, Step 3 — utility cost, Step 4 — distress.
-    pub fn daily_settlement_tick(
+    pub(crate) fn daily_settlement_tick(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
@@ -48,7 +56,9 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
-    ) {
+    ) -> FiscalRevenue {
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         self.materialize_arrived_household_carriers(agents, allocator);
         self.debug_validate_agent_household_refs(agents);
         self.rebuild_household_and_worker_counts(agents, allocator);
@@ -61,7 +71,7 @@ impl HouseholdSystem {
         // still negative. Must run before wages so workers are ejected on the same day.
         self.run_bankruptcy_check(allocator);
         // Step 2: pay wages (budget does not go negative from this step).
-        self.pay_daily_wages(agents, allocator);
+        let income_tax = self.pay_daily_wages(agents, allocator, tuning.fiscal.income_tax_rate);
         // Step 3: pay unemployment benefit to eligible households from the city treasury.
         self.pay_unemployment_benefits(agents, allocator, treasury_balance);
         // Steps 4 + 5: charge utility, then liquidate if still negative.
@@ -70,5 +80,9 @@ impl HouseholdSystem {
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
         self.finish_daily_ledger_settlement();
+        FiscalRevenue {
+            income_tax,
+            ..FiscalRevenue::default()
+        }
     }
 }
