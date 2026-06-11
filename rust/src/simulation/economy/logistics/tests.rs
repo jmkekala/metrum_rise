@@ -176,6 +176,7 @@ fn make_building(
         resource_inventory,
         revenue: 0.0,
         operating_budget: budget,
+        profit_tax_budget_baseline: budget,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,

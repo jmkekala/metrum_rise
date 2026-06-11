@@ -63,9 +63,9 @@ Developers should use a tool, not raw text files, to balance production chains, 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
 
 Player-facing fiscal controls such as tax sliders, tariffs, and subsidies are a separate gameplay
-policy layer. Baseline income tax, purchase tax, and construction property tax are authored runtime
-tuning values; player UI must expose curated bounded controls later rather than raw access to the
-developer economy editor.
+policy layer. Baseline income tax, purchase tax, business profit tax, and construction property tax
+are authored runtime tuning values; player UI must expose curated bounded controls later rather
+than raw access to the developer economy editor.
 
 ### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
@@ -389,7 +389,7 @@ Rules:
 
 - the city treasury is a separate ledger from household budgets and building budgets
 - startup treasury funds initialize that ledger at game start
-- income tax, construction property tax, household `VAT`, business purchase tax, tariffs, and
+- income tax, construction property tax, household `VAT`, business purchase tax, business profit tax, tariffs, and
   similar city-owned fiscal inflows deposit into the city treasury
 - ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
 - subsidies and other city-funded support measures withdraw from the city treasury
@@ -401,6 +401,8 @@ Baseline fiscal tuning lives in `economy/profiles.toml` under `runtime_tuning.fi
 - `household_vat_rate`: fraction added to household store purchases
 - `business_purchase_tax_rate`: fraction added to business input purchases through local freight or
   `OWA` import freight
+- `business_profit_tax_rate`: fraction charged daily on positive private business operating-budget
+  growth after operating costs and settlement
 - `residential_property_tax_base`, `commercial_property_tax_base`,
   `industrial_property_tax_base`: one-time construction-start tax bases for fresh private spawns
 - `property_tax_level_multiplier`: multiplier applied per level above level 1
@@ -466,6 +468,9 @@ Rules:
 - fiscal ledgers settle once per operational day
 - transaction-backed taxes update the city treasury when the underlying deterministic transaction
   succeeds: wage payment, store pickup, freight delivery, or construction start
+- business profit tax updates the city treasury during the daily settlement pass, after business
+  budgets have absorbed that day's wages, utility charges, freight settlement, shopping revenue,
+  and distress liquidation
 - the treasury keeps pending tax buckets during the day and finalizes them into daily reporting
   buckets on the daily fiscal settlement pass
 - the minute-0 operational-hour work and the midnight demand pass are part of the closing
@@ -507,6 +512,31 @@ Rules:
 - daily fiscal reporting separates household `VAT` from business purchase tax
 
 This keeps `VAT` tied to actual consumption instead of treating it as a vague background modifier.
+
+### Business profit tax
+
+Commercial and industrial buildings pay a daily tax on positive net operating-budget growth.
+
+Recommended `v0.1` rule:
+
+- `business_profit_tax_rate = 0.10`
+- only active private commercial and industrial buildings are taxable
+- broken, economy-broken, deserted, detached, or under-construction buildings are not taxable
+- each building stores a daily profit-tax baseline equal to its operating budget after the most
+  recent profit-tax settlement
+- taxable profit is `max(0, operating_budget - profit_tax_budget_baseline)` after wages,
+  utility costs, freight settlement, household shopping revenue, and distress liquidation have
+  already posted
+- tax is deducted from the building operating budget and deposited into the city treasury
+- tax is capped to the building's positive operating budget and must not create a new negative
+  budget after distress resolution has already run
+- after settlement, the baseline resets to the post-tax operating budget so the same profit is not
+  taxed again tomorrow
+- there is no loss carryforward in `v0.1`; a loss day simply resets the next day's baseline lower
+- startup floats and construction property-tax debits are baseline capital, not taxable profit
+
+This gives the city recurring revenue from profitable businesses without taxing gross sales or
+making unprofitable starter firms fail faster than their actual cash flow warrants.
 
 ### Construction property tax
 

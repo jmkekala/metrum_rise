@@ -126,6 +126,12 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         "runtime_tuning.fiscal.business_purchase_tax_rate",
     )?;
     validate_range(
+        tuning.fiscal.business_profit_tax_rate,
+        0.0,
+        1.0,
+        "runtime_tuning.fiscal.business_profit_tax_rate",
+    )?;
+    validate_range(
         tuning.fiscal.residential_property_tax_base,
         0.0,
         f32::INFINITY,

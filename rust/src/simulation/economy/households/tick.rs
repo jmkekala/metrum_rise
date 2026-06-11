@@ -76,12 +76,16 @@ impl HouseholdSystem {
         self.pay_unemployment_benefits(agents, allocator, treasury_balance);
         // Steps 4 + 5: charge utility, then liquidate if still negative.
         self.settle_daily_utilities(allocator, logistics);
+        // Step 6: collect tax on positive daily business operating-budget growth.
+        let business_profit_tax =
+            self.settle_business_profit_tax(allocator, tuning.fiscal.business_profit_tax_rate);
         self.resolve_household_housing(agents, allocator);
         self.assign_agent_workplaces(agents, allocator, transit_network, graph);
         self.sync_agent_money_from_households(agents);
         self.finish_daily_ledger_settlement();
         FiscalRevenue {
             income_tax,
+            business_profit_tax,
             ..FiscalRevenue::default()
         }
     }

@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 42;
+pub const SAVE_VERSION: i64 = 43;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -159,6 +159,7 @@ CREATE TABLE buildings(
     worker_count INTEGER NOT NULL,
     revenue REAL NOT NULL,
     operating_budget REAL NOT NULL,
+    profit_tax_budget_baseline REAL NOT NULL,
     shipment_cooldown_hours INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
@@ -212,10 +213,12 @@ CREATE TABLE city_treasury(
     last_daily_income_tax REAL NOT NULL,
     last_daily_household_vat REAL NOT NULL,
     last_daily_business_purchase_tax REAL NOT NULL,
+    last_daily_business_profit_tax REAL NOT NULL,
     last_daily_property_tax REAL NOT NULL,
     pending_income_tax REAL NOT NULL,
     pending_household_vat REAL NOT NULL,
     pending_business_purchase_tax REAL NOT NULL,
+    pending_business_profit_tax REAL NOT NULL,
     pending_property_tax REAL NOT NULL
 );
 CREATE TABLE shipments(

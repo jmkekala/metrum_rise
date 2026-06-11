@@ -121,6 +121,8 @@ pub(crate) struct FiscalRuntimeTuning {
     pub household_vat_rate: f32,
     /// Fraction added to business input purchases and remitted to the city on delivery.
     pub business_purchase_tax_rate: f32,
+    /// Fraction of positive daily business operating-budget growth remitted to the city.
+    pub business_profit_tax_rate: f32,
     /// One-time tax charged when a residential private building starts construction.
     pub residential_property_tax_base: f32,
     /// One-time tax charged when a commercial private building starts construction.

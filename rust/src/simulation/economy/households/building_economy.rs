@@ -11,6 +11,7 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -176,6 +177,52 @@ impl HouseholdSystem {
                 building.budget_distress = false;
             }
         }
+    }
+
+    /// Collects daily business profit tax from positive commercial/industrial budget growth.
+    ///
+    /// The baseline is reset after each daily settlement so the tax applies to today's net
+    /// operating-budget increase only, after wages, utilities, freight, shopping, and liquidation.
+    /// It never debits below zero; distress handling has already run for the day.
+    pub(super) fn settle_business_profit_tax(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        tax_rate: f32,
+    ) -> f32 {
+        if tax_rate <= 0.0 {
+            for building in &mut allocator.buildings {
+                building.profit_tax_budget_baseline = building.operating_budget;
+            }
+            return 0.0;
+        }
+
+        let mut total_tax = 0.0f32;
+        for building in &mut allocator.buildings {
+            let taxable = matches!(
+                building.zone_type,
+                ZoneType::Commercial | ZoneType::Industrial
+            ) && !building.broken
+                && !building.economy_broken
+                && !building.is_deserted
+                && !building.is_under_construction()
+                && building.edge_idx != usize::MAX;
+
+            if taxable {
+                let baseline = if building.profit_tax_budget_baseline.is_finite() {
+                    building.profit_tax_budget_baseline
+                } else {
+                    building.operating_budget
+                };
+                let profit = building.operating_budget - baseline;
+                let tax = tax_amount(profit, tax_rate).min(building.operating_budget.max(0.0));
+                if tax > 0.0 {
+                    building.operating_budget -= tax;
+                    total_tax += tax;
+                }
+            }
+            building.profit_tax_budget_baseline = building.operating_budget;
+        }
+        total_tax
     }
 
     pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {

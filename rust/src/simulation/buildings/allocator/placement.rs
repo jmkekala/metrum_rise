@@ -476,6 +476,7 @@ impl BuildingAllocator {
             resource_inventory,
             revenue: 0.0,
             operating_budget: startup_budget,
+            profit_tax_budget_baseline: startup_budget,
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,

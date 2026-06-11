@@ -121,6 +121,8 @@ pub struct Building {
     ///
     /// May go negative after utility payment; see `budget_distress` and the bankruptcy spec.
     pub operating_budget: f32,
+    /// Operating-budget baseline captured after the most recent daily profit-tax settlement.
+    pub profit_tax_budget_baseline: f32,
     /// Remaining hourly cooldown steps before this building may open another freight request.
     pub shipment_cooldown_hours: u16,
     /// Currency value of input shipments received from OWA during the current day.

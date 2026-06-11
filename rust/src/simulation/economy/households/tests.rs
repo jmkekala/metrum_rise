@@ -82,6 +82,7 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         resource_inventory,
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1440,6 +1441,96 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         (allocator.buildings[0].operating_budget - expected_budget).abs() < 0.001,
         "forced liquidation should use distress multiplier, not scheduled export multiplier"
     );
+}
+
+#[test]
+fn business_profit_tax_charges_only_positive_active_business_growth() {
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "profit_store",
+        ZoneClass::Commercial,
+    );
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "profit_factory",
+        ZoneClass::Industrial,
+    );
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "profit_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        10.0,
+        ZoneType::Industrial,
+        &industrial_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings[0].profit_tax_budget_baseline = 500.0;
+    allocator.buildings[0].operating_budget = 650.0;
+    allocator.buildings[1].profit_tax_budget_baseline = 500.0;
+    allocator.buildings[1].operating_budget = 700.0;
+    allocator.buildings[1].is_deserted = true;
+    allocator.buildings[2].profit_tax_budget_baseline = 500.0;
+    allocator.buildings[2].operating_budget = 900.0;
+
+    let mut households = HouseholdSystem::new();
+    let tax = households.settle_business_profit_tax(&mut allocator, 0.10);
+
+    assert!((tax - 15.0).abs() < 0.001);
+    assert!((allocator.buildings[0].operating_budget - 635.0).abs() < 0.001);
+    assert!((allocator.buildings[0].profit_tax_budget_baseline - 635.0).abs() < 0.001);
+    assert_eq!(allocator.buildings[1].operating_budget, 700.0);
+    assert_eq!(allocator.buildings[1].profit_tax_budget_baseline, 700.0);
+    assert_eq!(allocator.buildings[2].operating_budget, 900.0);
+    assert_eq!(allocator.buildings[2].profit_tax_budget_baseline, 900.0);
+
+    let second_tax = households.settle_business_profit_tax(&mut allocator, 0.10);
+    assert_eq!(second_tax, 0.0);
+    assert!((allocator.buildings[0].operating_budget - 635.0).abs() < 0.001);
+}
+
+#[test]
+fn business_profit_tax_does_not_push_recovering_business_negative() {
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "recovering_profit_store",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[0].profit_tax_budget_baseline = -100.0;
+    allocator.buildings[0].operating_budget = 5.0;
+
+    let mut households = HouseholdSystem::new();
+    let tax = households.settle_business_profit_tax(&mut allocator, 0.10);
+
+    assert_eq!(tax, 5.0);
+    assert_eq!(allocator.buildings[0].operating_budget, 0.0);
+    assert_eq!(allocator.buildings[0].profit_tax_budget_baseline, 0.0);
+    assert!(!allocator.buildings[0].budget_distress);
 }
 
 #[test]

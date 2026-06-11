@@ -110,6 +110,8 @@ pub struct CityTreasury {
     pub last_daily_household_vat: f64,
     /// Business purchase tax collected in the most recently finalized fiscal day.
     pub last_daily_business_purchase_tax: f64,
+    /// Business profit tax collected in the most recently finalized fiscal day.
+    pub last_daily_business_profit_tax: f64,
     /// Property tax collected in the most recently finalized fiscal day.
     pub last_daily_property_tax: f64,
     /// Income tax collected since the last daily fiscal finalization.
@@ -118,6 +120,8 @@ pub struct CityTreasury {
     pub pending_household_vat: f64,
     /// Business purchase tax collected since the last daily fiscal finalization.
     pub pending_business_purchase_tax: f64,
+    /// Business profit tax collected since the last daily fiscal finalization.
+    pub pending_business_profit_tax: f64,
     /// Property tax collected since the last daily fiscal finalization.
     pub pending_property_tax: f64,
 }
@@ -133,10 +137,12 @@ impl CityTreasury {
             last_daily_income_tax: 0.0,
             last_daily_household_vat: 0.0,
             last_daily_business_purchase_tax: 0.0,
+            last_daily_business_profit_tax: 0.0,
             last_daily_property_tax: 0.0,
             pending_income_tax: 0.0,
             pending_household_vat: 0.0,
             pending_business_purchase_tax: 0.0,
+            pending_business_profit_tax: 0.0,
             pending_property_tax: 0.0,
         }
     }
@@ -168,6 +174,11 @@ impl CityTreasury {
         self.record_tax(amount, TaxBucket::BusinessPurchase);
     }
 
+    /// Records tax collected from positive daily business profit.
+    pub(crate) fn collect_business_profit_tax(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::BusinessProfit);
+    }
+
     /// Records one-time property tax from new private construction.
     pub(crate) fn collect_property_tax(&mut self, amount: f64) {
         self.record_tax(amount, TaxBucket::Property);
@@ -178,10 +189,12 @@ impl CityTreasury {
         self.last_daily_income_tax = self.pending_income_tax;
         self.last_daily_household_vat = self.pending_household_vat;
         self.last_daily_business_purchase_tax = self.pending_business_purchase_tax;
+        self.last_daily_business_profit_tax = self.pending_business_profit_tax;
         self.last_daily_property_tax = self.pending_property_tax;
         self.pending_income_tax = 0.0;
         self.pending_household_vat = 0.0;
         self.pending_business_purchase_tax = 0.0;
+        self.pending_business_profit_tax = 0.0;
         self.pending_property_tax = 0.0;
     }
 
@@ -195,6 +208,7 @@ impl CityTreasury {
             TaxBucket::Income => self.pending_income_tax += amount,
             TaxBucket::HouseholdVat => self.pending_household_vat += amount,
             TaxBucket::BusinessPurchase => self.pending_business_purchase_tax += amount,
+            TaxBucket::BusinessProfit => self.pending_business_profit_tax += amount,
             TaxBucket::Property => self.pending_property_tax += amount,
         }
     }
@@ -205,6 +219,7 @@ enum TaxBucket {
     Income,
     HouseholdVat,
     BusinessPurchase,
+    BusinessProfit,
     Property,
 }
 
@@ -962,7 +977,7 @@ impl SimCore {
              children={} adults={} elders={} employed={} unemployed={} jobs={}/{} open_jobs={} \
              commercial_jobs={}/{} commercial_open={} industrial_jobs={}/{} industrial_open={} \
              homes={}/{} vacant_homes={} treasury={:.0} taxes=(income={:.1} household_vat={:.1} \
-             business_purchase={:.1} property={:.1} lifetime={:.1})",
+             business_purchase={:.1} business_profit={:.1} property={:.1} lifetime={:.1})",
             day_index,
             net_households,
             self.debug_household_admissions_since_daily,
@@ -996,6 +1011,7 @@ impl SimCore {
             self.treasury.last_daily_income_tax,
             self.treasury.last_daily_household_vat,
             self.treasury.last_daily_business_purchase_tax,
+            self.treasury.last_daily_business_profit_tax,
             self.treasury.last_daily_property_tax,
             self.treasury.lifetime_tax_revenue,
         );
@@ -1204,15 +1220,17 @@ impl SimCore {
             total_utility_stock_cost,
         );
         println!(
-            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
+            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} business_profit_tax={:.1} property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
             day_index,
             self.treasury.last_daily_income_tax,
             self.treasury.last_daily_household_vat,
             self.treasury.last_daily_business_purchase_tax,
+            self.treasury.last_daily_business_profit_tax,
             self.treasury.last_daily_property_tax,
             self.treasury.last_daily_income_tax
                 + self.treasury.last_daily_household_vat
                 + self.treasury.last_daily_business_purchase_tax
+                + self.treasury.last_daily_business_profit_tax
                 + self.treasury.last_daily_property_tax,
             self.treasury.lifetime_tax_revenue,
             self.treasury.last_daily_upkeep,
@@ -1431,6 +1449,8 @@ impl SimCore {
             .collect_household_vat(revenue.household_vat as f64);
         self.treasury
             .collect_business_purchase_tax(revenue.business_purchase_tax as f64);
+        self.treasury
+            .collect_business_profit_tax(revenue.business_profit_tax as f64);
         self.treasury
             .collect_property_tax(revenue.property_tax as f64);
     }

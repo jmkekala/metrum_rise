@@ -382,6 +382,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
+            profit_tax_budget_baseline: 500.0,
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
@@ -465,6 +466,7 @@ fn test_zone_index_consistency() {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
+            profit_tax_budget_baseline: 500.0,
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
@@ -547,6 +549,7 @@ fn test_vacancy_index_consistency() {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
+            profit_tax_budget_baseline: 500.0,
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
@@ -649,6 +652,7 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1167,6 +1171,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1287,6 +1292,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1406,6 +1412,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1547,6 +1554,7 @@ fn test_immigration_claims_vacant_home() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1688,6 +1696,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1724,6 +1733,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1924,6 +1934,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1960,6 +1971,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
@@ -1996,6 +2008,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,

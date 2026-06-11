@@ -337,6 +337,8 @@ impl BuildingAllocator {
                         self.buildings[building_idx].operating_budget -= property_tax;
                         execution.property_tax_paid += property_tax;
                     }
+                    self.buildings[building_idx].profit_tax_budget_baseline =
+                        self.buildings[building_idx].operating_budget;
                     mutated_any = true;
                 }
             }

@@ -232,6 +232,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         },
         revenue: 0.0,
         operating_budget: 500.0,
+        profit_tax_budget_baseline: 375.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -403,6 +404,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             walk_phase: 0.0,
         },
     );
+    let mut treasury = CityTreasury::new(1_000.0);
+    treasury.lifetime_tax_revenue = 250.0;
+    treasury.last_daily_business_profit_tax = 12.5;
+    treasury.pending_business_profit_tax = 3.25;
+
     let path = temp_path("round_trip");
     save_to_sqlite(
         &path,
@@ -421,7 +427,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             logistics: &logistics,
             agents: &agents_sys,
             network: &network_sys,
-            treasury: &CityTreasury::new(0.0),
+            treasury: &treasury,
         },
     )
     .expect("save");
@@ -529,6 +535,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.next_replan_time[0], 9.5);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
+    assert_eq!(
+        loaded.allocator.buildings[0].profit_tax_budget_baseline,
+        375.0
+    );
+    assert_eq!(loaded.treasury.balance, treasury.balance);
+    assert_eq!(
+        loaded.treasury.last_daily_business_profit_tax,
+        treasury.last_daily_business_profit_tax
+    );
+    assert_eq!(
+        loaded.treasury.pending_business_profit_tax,
+        treasury.pending_business_profit_tax
+    );
     let staple_food = catalog
         .resource_runtime_id_for_id("staple_food")
         .expect("staple food resource");

@@ -12,6 +12,8 @@ pub(crate) struct FiscalRevenue {
     pub household_vat: f32,
     /// Business purchase tax collected from local and OWA input freight.
     pub business_purchase_tax: f32,
+    /// Daily tax collected from positive commercial and industrial budget growth.
+    pub business_profit_tax: f32,
     /// One-time property tax collected from new private building construction.
     pub property_tax: f32,
 }
@@ -69,6 +71,7 @@ mod tests {
             income_tax_rate: 0.12,
             household_vat_rate: 0.08,
             business_purchase_tax_rate: 0.03,
+            business_profit_tax_rate: 0.10,
             residential_property_tax_base: 250.0,
             commercial_property_tax_base: 500.0,
             industrial_property_tax_base: 750.0,
