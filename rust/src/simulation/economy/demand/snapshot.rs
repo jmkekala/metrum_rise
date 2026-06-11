@@ -195,7 +195,6 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) open_job_slots: u32,
     pub(super) average_open_job_wage_per_day: f32,
     pub(super) output_absorption: OutputAbsorptionContext,
-    #[cfg(test)]
     // Fraction of commercial input value sourced from OWA rather than local industrial.
     pub(super) commercial_owa_dependency: f32,
     #[cfg(test)]
@@ -552,7 +551,6 @@ impl DailyDemandSnapshot {
             open_job_slots,
             average_open_job_wage_per_day,
             output_absorption,
-            #[cfg(test)]
             commercial_owa_dependency,
             #[cfg(test)]
             commercial_owa_input_value: total_commercial_owa_input,

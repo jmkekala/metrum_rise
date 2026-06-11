@@ -666,6 +666,11 @@ Local supply chains should usually beat permanent `OWA` dependence through:
 
 The logistics system tries local suppliers first and falls back to the `OWA` only when no valid local source is available. The `OWA` import price is derived as `local_unit_price × owa_import_price_multiplier` (configured in `[runtime_tuning]` in `economy/profiles.toml`), ensuring that a healthy local producer is always cheaper than the `OWA` alternative.
 
+Daily demand snapshots read commercial `OWA` input reliance as import-substitution pressure for
+industrial growth. That pressure is diagnostic of actual outside-input use; industrial spawn
+quantity remains guarded by the demand-side committed local input-capacity accounting in
+[`demand.md`](demand.md).
+
 Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** and no local buyer is available, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. 
 
 **Export Constraints**:
@@ -2812,13 +2817,13 @@ enters `is_deserted`, which is the correct signal for the demand system to consi
 
 **Observed**: Adding roads between two daily ticks caused commercial candidates to jump from 13 → 79 and industrial from 34 → 90, spawning 4 grocery stores and 5 farms in a single day — far exceeding the 0–1 that is normal when the road network is stable.
 
-**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path now computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial need is based on active commercial input capacity not covered by local industrial output. The exact formulas are owned by [`demand.md`](demand.md).
+**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path now computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial spawn quantity is based on committed commercial input capacity not covered by local industrial output. Industrial growth pressure can also rise from actual commercial `OWA` input dependency. The exact formulas are owned by [`demand.md`](demand.md).
 
 ### 10. ECON-05: Pioneer Demand Floor Leaks into Non-Residential Spawn Rate
 
 **Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
 
-**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs. Unemployment benefit is the bootstrap income source for households.
+**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs and actual commercial `OWA` input dependency. Unemployment benefit is the bootstrap income source for households.
 
 ## Future Calibration Targets
 

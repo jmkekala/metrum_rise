@@ -433,15 +433,15 @@ Baseline `v0.1` city-level signal families:
 - `open_job_slots`
 - `average_open_job_wage_per_day`
 - `industrial_input_capacity_deficit` — fraction of commercial input value not covered by live
-  local industrial output capacity; this is the `IndustrialGrowth` pressure source
+  local industrial output capacity; this is one `IndustrialGrowth` pressure source
 - `commercial_input_need_value` — daily value of active commercial input capacity demand
 - `local_industrial_input_capacity_value` — daily value of live local industrial output capacity
   for resources consumed by commercial profiles
 - `industrial_missing_input_value` — daily commercial input value still missing after local
   industrial capacity is subtracted resource-by-resource
 - `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
-  than local industrial; retained as throughput telemetry and no longer the industrial spawn
-  source
+  than local industrial; this is the actual-throughput import-substitution signal for
+  `IndustrialGrowth`
 
 Baseline ownership rule:
 
@@ -481,7 +481,8 @@ Baseline ownership rule:
   `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
   `total_owa / max(total_owa + total_local, total_expected_commercial_input_value)` across active
   commercial buildings, `0.0` when no commercial buildings exist or none have transacted yet. This
-  remains useful diagnostics for actual throughput, but it does not set industrial spawn count.
+  raises industrial pressure when commercial actually relies on outside inputs, but it does not
+  directly set industrial spawn count.
 
 Normalization rule:
 
@@ -598,6 +599,9 @@ industrial_input_capacity_deficit =
         0.0,
         1.0
     )
+industrial_import_substitution_pressure = commercial_owa_dependency
+industrial_need =
+    max(industrial_input_capacity_deficit, industrial_import_substitution_pressure)
 household_purchase_power =
     clamp(
         household_affordability * household_affordability_target_reserve_days,
@@ -724,7 +728,7 @@ CommercialGrowth =
     clamp(commercial_need * household_purchase_power * external_connection_available, 0.0, 1.0)
 
 IndustrialGrowth =
-    clamp(industrial_input_capacity_deficit * external_connection_available, 0.0, 1.0)
+    clamp(industrial_need * external_connection_available, 0.0, 1.0)
 ```
 
 5. Compute the action-limit gate for building spawns. All use families are uncapped so they can
@@ -756,10 +760,14 @@ Interpretation:
 - `CommercialGrowth` rises when a real resident/customer base exists, either household stock is
   unstable or commercial output capacity is missing, households have enough short-run buying power
   for essential purchases, and the city is connected enough to support more commerce
-- `IndustrialGrowth` is driven by local industrial input-capacity deficit. Active commercial
-  profiles define daily input need, live industrial profiles define local output capacity for those
-  input resources, and the missing value ratio becomes the pressure. OWA dependency remains
-  throughput telemetry, not the source of spawn volume.
+- `IndustrialGrowth` is driven by the stronger of local industrial input-capacity deficit and
+  actual commercial OWA input dependency. Active commercial profiles define daily input need, live
+  industrial profiles define local output capacity for those input resources, and the missing value
+  ratio captures paper capacity shortage. `commercial_owa_dependency` captures actual outside-input
+  reliance when commercial buildings bought inputs from OWA instead of local industry. Industrial
+  spawn quantity still uses committed missing input capacity, so existing or under-construction
+  local factories prevent duplicate factory spawns even when the pressure signal exposes a failing
+  local supply chain.
 
 ### Construction Pipeline
 
@@ -1252,6 +1260,7 @@ Deterministic `v0.1` day-boundary rule:
    - `external_connection_available`
    - `commercial_capacity_deficit`
    - `industrial_input_capacity_deficit`
+   - `commercial_owa_dependency`
 5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
 6. Compute `households_to_remove_today` from that same frozen snapshot.
 7. Execute the resulting demand-owned removal action before the next operational day's sub-daily

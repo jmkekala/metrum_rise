@@ -425,7 +425,7 @@ fn daily_pass_uses_short_run_purchase_power_for_missing_shop_capacity() {
 }
 
 #[test]
-fn industrial_pressure_uses_capacity_balance_not_owa_accumulator() {
+fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
     let mut allocator = BuildingAllocator::new();
     let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
     let industrial_asset = register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
@@ -470,7 +470,25 @@ fn industrial_pressure_uses_capacity_balance_not_owa_accumulator() {
 
     let mut covered_demand = DemandSystem::new();
     covered_demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
-    assert_eq!(covered_demand.industrial, 0.0);
+    assert!(
+        covered_demand.industrial > 0.95,
+        "actual OWA reliance should still raise industrial pressure even when paper local capacity covers need"
+    );
+}
+
+#[test]
+fn industrial_pressure_takes_owa_dependency_as_secondary_need_signal() {
+    let mut snapshot = vacant_admission_snapshot();
+    snapshot.industrial_input_capacity_deficit = 0.0;
+    snapshot.commercial_owa_dependency = 0.625;
+
+    let mut demand = DemandSystem::new();
+    demand.update_pressure_channels_from_snapshot(&snapshot);
+
+    assert!(
+        (demand.industrial - 0.625).abs() < 0.001,
+        "industrial pressure should use normalized OWA dependency when capacity deficit is lower"
+    );
 }
 
 #[test]

@@ -157,8 +157,13 @@ impl DemandSystem {
         // capacity to keep those stocks stable. Uses short-run purchase power rather than the
         // long-run reserve target so starter cities can spawn shops before household stockout.
         self.commercial = clamp01(commercial_need * household_purchase_power * ext_conn);
-        // Industrial: active commercial input capacity not covered by local industrial output.
-        self.industrial = clamp01(snapshot.industrial_input_capacity_deficit * ext_conn);
+        // Industrial: paper input-capacity gaps plus actual commercial OWA reliance. Spawn volume
+        // still uses committed missing input capacity, so this pressure can flag a failing local
+        // supply chain without blindly duplicating already committed factories.
+        let industrial_need = snapshot
+            .industrial_input_capacity_deficit
+            .max(snapshot.commercial_owa_dependency);
+        self.industrial = clamp01(industrial_need * ext_conn);
 
         DemandPressureInputs {
             admission_pressure,
