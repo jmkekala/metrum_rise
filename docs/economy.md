@@ -365,8 +365,15 @@ Rules:
 - the first implementation applies construction only to fresh private spawns; upgrades,
   downgrades, and despawns stay instant until a later occupied-building redevelopment model can
   preserve residents, workers, inventory, and budgets safely
-- construction visuals are MultiMesh-based: a generic site/foundation layer and a scaled final
-  asset layer are driven by the building's deterministic construction progress
+- construction visuals are MultiMesh-based: the renderer shows a dark compacted site pad, a raised
+  neutral foundation, procedural scaffold bars, and the final building asset in its original
+  material
+- the final building asset must remain full-scale; construction progress is shown by translating
+  that full-scale mesh upward from below the site until it reaches the normal finished transform
+- the visual rise interpolates linearly through the current operational hour, even though
+  construction completion and economy participation still advance on the operational-hour cadence
+- construction must not recolor the final asset mesh, flatten it, or scale it like a reveal/balloon
+  animation; progress is also exposed through diagnostics/inspection
 
 This keeps growth visible and bounded without adding per-building Godot nodes or per-agent
 construction behavior.

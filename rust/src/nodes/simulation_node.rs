@@ -4135,16 +4135,6 @@ impl SimulationNode {
             .get_deserted_building_transforms_for_asset_internal(&asset_id.to_string())
     }
 
-    /// Returns the packed 12-float transforms for under-construction buildings with the asset ID.
-    #[func]
-    pub fn get_construction_building_transforms_for_asset(
-        &self,
-        asset_id: GString,
-    ) -> PackedFloat32Array {
-        self.lock_core()
-            .get_construction_building_transforms_for_asset_internal(&asset_id.to_string())
-    }
-
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
@@ -4157,6 +4147,20 @@ impl SimulationNode {
     pub fn get_construction_site_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
         self.lock_core()
             .get_construction_site_transforms_internal(zone_type_int)
+    }
+
+    /// Returns the packed construction-foundation transforms for a specific zone type.
+    #[func]
+    pub fn get_construction_foundation_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
+        self.lock_core()
+            .get_construction_foundation_transforms_internal(zone_type_int)
+    }
+
+    /// Returns the packed procedural scaffold bar transforms for a specific zone type.
+    #[func]
+    pub fn get_construction_scaffold_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
+        self.lock_core()
+            .get_construction_scaffold_transforms_internal(zone_type_int)
     }
 
     /// Returns a Dictionary of live stats for the building whose centre is closest to
