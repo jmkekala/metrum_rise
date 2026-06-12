@@ -194,6 +194,10 @@ preview, submit, and render Rust-authored results.
 - drag rezone over existing parcels
 - preview display
 
+Single-parcel hover preview keeps the last Rust-authored legal parcel visible while the mouse is
+over an illegal placement position. The preview moves only after Rust returns a new legal parcel.
+Changing the selected profile or parcel dimensions clears this retained preview.
+
 `godot/scripts/renderers/zoning_overlay.gd` renders Rust-authored parcel geometry with an
 `ImmediateMesh`. It also draws orange no-build edge guide lines while the zoning tool is active.
 

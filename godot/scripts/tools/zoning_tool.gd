@@ -31,6 +31,7 @@ var _preview_cache_width_cells: int = -1
 var _preview_cache_depth_cells: int = -1
 var _preview_cache_gap_m: float = -1.0
 var _preview_cache_mesh: Mesh = null
+var _last_valid_single_preview_mesh: Mesh = null
 
 const DRAG_THRESHOLD_M: float = 4.0
 const PREVIEW_REFRESH_DISTANCE_M: float = 1.0
@@ -228,7 +229,7 @@ func _update_preview() -> void:
 		return
 
 	if _preview_cache_matches(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp):
-		_apply_preview_mesh(_preview_cache_mesh)
+		_apply_single_preview_mesh(_preview_cache_mesh)
 		return
 
 	var payload: Dictionary = simulation_node.get_zoning_parcel_preview(
@@ -240,7 +241,7 @@ func _update_preview() -> void:
 	)
 	var mesh: Mesh = null if payload.is_empty() else _build_parcels_mesh([payload], true)
 	_store_preview_cache(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp, mesh)
-	_apply_preview_mesh(mesh)
+	_apply_single_preview_mesh(mesh)
 
 func _preview_cache_matches(kind: int, start: Vector2, end: Vector2) -> bool:
 	if not _preview_cache_valid:
@@ -271,10 +272,20 @@ func _store_preview_cache(kind: int, start: Vector2, end: Vector2, mesh: Mesh) -
 func _clear_preview_cache() -> void:
 	_preview_cache_valid = false
 	_preview_cache_mesh = null
+	_last_valid_single_preview_mesh = null
+	if preview_mesh != null:
+		preview_mesh.visible = false
 
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
 	preview_mesh.visible = mesh != null
+
+func _apply_single_preview_mesh(mesh: Mesh) -> void:
+	if mesh != null:
+		_last_valid_single_preview_mesh = mesh
+		_apply_preview_mesh(mesh)
+	else:
+		_apply_preview_mesh(_last_valid_single_preview_mesh)
 
 func _build_parcels_mesh(payloads: Array, include_fill: bool) -> Mesh:
 	if payloads.is_empty():
