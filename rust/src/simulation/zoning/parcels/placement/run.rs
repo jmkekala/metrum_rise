@@ -53,11 +53,6 @@ pub(crate) fn project_parcel_run_from_existing(
         return Err(ParcelPlacementError::NoRoadAttachment);
     };
 
-    let max_centerline_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + depth_m + 8.0;
-    if end.dist_m > max_centerline_dist {
-        return Err(ParcelPlacementError::NoRoadAttachment);
-    }
-
     let spacing_m = frontage_m + gap_m;
     if spacing_m <= 0.0 || !spacing_m.is_finite() {
         return Err(ParcelPlacementError::InvalidGap);
@@ -71,7 +66,7 @@ pub(crate) fn project_parcel_run_from_existing(
 
     while directed_s_within_limit(center_s, limit_s, direction) {
         if center_s < frontage_m * 0.5 || center_s > edge.physical_length - frontage_m * 0.5 {
-            return Err(ParcelPlacementError::FrontageOutOfBounds);
+            break;
         }
         let Some((accepted_s, geometry)) = next_non_overlapping_run_geometry_directed(
             graph,
@@ -106,15 +101,9 @@ fn project_parcel_run_from_projected_start(
     depth_m: f32,
     gap_m: f32,
 ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
-    let edge = graph.edge(start.edge_idx);
     let Some(end) = project_point_to_edge(graph, start.edge_idx, end_pos) else {
         return Err(ParcelPlacementError::NoRoadAttachment);
     };
-
-    let max_centerline_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + depth_m + 8.0;
-    if end.dist_m > max_centerline_dist {
-        return Err(ParcelPlacementError::NoRoadAttachment);
-    }
 
     let spacing_m = frontage_m + gap_m;
     if spacing_m <= 0.0 || !spacing_m.is_finite() {
@@ -127,7 +116,7 @@ fn project_parcel_run_from_projected_start(
     let mut geometries = Vec::new();
     while center_s <= max_s + 0.001 {
         if center_s < frontage_m * 0.5 || center_s > start.edge_len_m - frontage_m * 0.5 {
-            return Err(ParcelPlacementError::FrontageOutOfBounds);
+            break;
         }
         let Some((accepted_s, geometry)) = next_non_overlapping_run_geometry(
             graph,

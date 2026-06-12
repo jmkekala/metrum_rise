@@ -45,4 +45,8 @@ impl ZoningSystem {
     pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
         self.parcels.remove_edges_not_in_mapping(mapping);
     }
+
+    pub(crate) fn remove_parcels_attached_to_edge(&mut self, edge_idx: usize) -> usize {
+        self.parcels.remove_attached_to_edge(edge_idx)
+    }
 }

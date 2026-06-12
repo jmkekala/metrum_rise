@@ -26,15 +26,6 @@ pub(crate) fn geometry_overlaps_road(graph: &RegionGraph, geometry: &ParcelGeome
         })
 }
 
-pub(crate) fn any_geometry_overlaps_road(
-    graph: &RegionGraph,
-    geometries: &[ParcelGeometry],
-) -> bool {
-    geometries
-        .iter()
-        .any(|geometry| geometry_overlaps_road(graph, geometry))
-}
-
 fn geometry_overlaps_edge(graph: &RegionGraph, geometry: &ParcelGeometry, edge_idx: usize) -> bool {
     let edge = graph.edge(edge_idx);
     if edge.deleted || edge.physical_geometry.len() < 2 {

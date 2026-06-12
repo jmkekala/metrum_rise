@@ -1,10 +1,8 @@
 //! Parcel rectangle and stroke overlap tests.
 
 use super::bounds::geometry_for_parcel;
-use super::spatial::chunks_for_aabb;
 use crate::simulation::zoning::parcels::{OVERLAP_EPSILON_M, ParcelGeometry, ZoningParcel};
 use godot::prelude::Vector2;
-use std::collections::{HashMap, HashSet};
 
 pub(crate) fn geometries_overlap(a: &ParcelGeometry, b: &ParcelGeometry) -> bool {
     let axes = [a.tangent, a.normal, b.tangent, b.normal];
@@ -13,32 +11,6 @@ pub(crate) fn geometries_overlap(a: &ParcelGeometry, b: &ParcelGeometry) -> bool
         let (b_min, b_max) = project_corners(&b.corners, axis);
         a_max > b_min + OVERLAP_EPSILON_M && b_max > a_min + OVERLAP_EPSILON_M
     })
-}
-
-pub(crate) fn geometries_have_overlap(geometries: &[ParcelGeometry]) -> bool {
-    let mut chunk_index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-    let mut visited = HashSet::new();
-    for (index, geometry) in geometries.iter().enumerate() {
-        let chunks = chunks_for_aabb(geometry.aabb_min, geometry.aabb_max);
-        visited.clear();
-        for chunk in &chunks {
-            let Some(previous_indices) = chunk_index.get(chunk) else {
-                continue;
-            };
-            for &previous_index in previous_indices {
-                if !visited.insert(previous_index) {
-                    continue;
-                }
-                if geometries_overlap(&geometries[previous_index], geometry) {
-                    return true;
-                }
-            }
-        }
-        for chunk in chunks {
-            chunk_index.entry(chunk).or_default().push(index);
-        }
-    }
-    false
 }
 
 pub(crate) fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {

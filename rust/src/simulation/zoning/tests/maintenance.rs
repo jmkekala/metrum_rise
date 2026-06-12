@@ -23,3 +23,19 @@ fn test_parcel_edge_compaction_remaps_and_drops_missing_edges() {
     z.update_edge_indices(&std::collections::HashMap::new());
     assert!(z.parcels().is_empty());
 }
+
+#[test]
+fn test_no_build_edge_cleanup_removes_attached_parcels() {
+    let (graph, edge_idx) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    z.place_or_rezone_default_parcel_at(0.0, -20.0, residential, &graph)
+        .expect("parcel");
+
+    assert_eq!(z.remove_parcels_attached_to_edge(edge_idx), 1);
+    assert!(z.parcels().is_empty());
+}

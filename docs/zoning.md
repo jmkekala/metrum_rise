@@ -15,6 +15,7 @@ Zoning authority is Rust-owned road-aligned parcels.
 - There is no map-wide zoning paint surface; render resources are derived display only.
 - Parcel geometry is stored in metres, with parcel dimensions authored in zoning cells converted
   through `WorldConfig::zone_cell_m`.
+- The default tool parcel is `2 x 2` zoning cells (`20 m x 20 m` with the default `10 m` cell).
 
 The owning Rust module is:
 
@@ -109,7 +110,7 @@ rust/src/simulation/zoning/parcels/placement/run/spacing.rs
 
 ## 3. Placement Rules
 
-Parcel placement is all-or-nothing.
+Single-parcel placement is all-or-nothing.
 
 - The selected zoning profile must exist, except runtime id `0` for free/unzoned parcels.
 - The parcel must attach to a buildable road edge.
@@ -119,8 +120,12 @@ Parcel placement is all-or-nothing.
 - The parcel must not overlap another road-owned corridor.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
 
-Drag-run placement uses the same validation. On curves, Rust may widen spacing between generated
-parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
+Drag-run placement projects deterministic same-road candidate parcels, then keeps only legal
+candidates. A blocked candidate caused by a road corridor, world edge, existing parcel, or another
+accepted candidate is skipped rather than cancelling the whole preview or commit. If no generated
+candidate is legal, the drag fails without mutation. On curves, Rust may widen spacing between
+generated parcels to preserve non-overlap, then stops when no further parcel fits inside the
+dragged span.
 
 When dragging from an existing parcel, the first generated parcel starts after:
 
@@ -185,7 +190,7 @@ preview, submit, and render Rust-authored results.
 - parcel width/depth in zoning cells
 - parcel gap in metres
 - single-click create/rezone
-- drag-run create
+- drag-run create, with Rust-authored legal-candidate filtering
 - drag rezone over existing parcels
 - preview display
 
@@ -244,8 +249,10 @@ Old save compatibility is not required for this project stage.
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines
 
-Changing the flag marks the allocator dirty and rebuilds building entrances so existing buildings
-that face a newly blocked edge can be cleaned up by the allocator lifecycle.
+Enabling the flag runs allocator maintenance immediately, removes buildings facing the newly
+blocked edge, and removes zoning parcels attached to that edge so saves cannot retain invalid
+parcel attachments. Changing the flag also marks the allocator dirty and rebuilds building
+entrances.
 
 ---
 
@@ -272,5 +279,5 @@ generation.
 - parcel-run drag works, including extension from an existing parcel
 - drag rezone works over existing parcels
 - hover/drag previews are Rust-authored
-- road overlap and existing parcel overlap are rejected in Rust
+- single parcel overlap is rejected in Rust; drag-run overlap candidates are skipped in Rust
 - allocator, demand, save/load, and overlay consume parcel data

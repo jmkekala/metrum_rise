@@ -7,7 +7,7 @@ use crate::simulation::zoning::{DEFAULT_PARCEL_DEPTH_M, DEFAULT_PARCEL_FRONTAGE_
 use godot::prelude::Vector2;
 
 impl ZoningSystem {
-    /// Projects a default 20 x 30 m parcel at a world position without mutating storage.
+    /// Projects a default 20 x 20 m parcel at a world position without mutating storage.
     pub fn preview_default_parcel_at(
         &self,
         world_x: f32,
@@ -43,7 +43,7 @@ impl ZoningSystem {
         Ok(geometry)
     }
 
-    /// Projects an all-or-nothing same-road parcel run without mutating storage.
+    /// Projects the legal parcels in a same-road drag run without mutating storage.
     pub fn preview_parcel_run_at(
         &self,
         start_x: f32,
@@ -83,8 +83,7 @@ impl ZoningSystem {
                 gap_m,
             )?
         };
-        self.validate_parcel_run_geometries(&geometries, graph)?;
-        Ok(geometries)
+        self.valid_parcel_run_geometries(geometries, graph)
     }
 
     /// Returns authored parcel geometries touched by one world-space zoning paint stroke.

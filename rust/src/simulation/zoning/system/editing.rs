@@ -52,11 +52,12 @@ impl ZoningSystem {
         Ok(self.parcels.insert_new(geometry, runtime_id))
     }
 
-    /// Creates a same-road parcel run using the requested gap as minimum center spacing.
+    /// Creates the legal parcels in a same-road drag run using the requested minimum gap.
     ///
-    /// Existing-parcel overlap or out-of-bounds geometry rejects the whole run. On curved roads,
-    /// Rust may widen spacing between generated parcels to preserve non-overlap, then stops when
-    /// no further parcel can fit inside the drag span.
+    /// Blocked candidates are skipped so a road, world edge, or existing parcel does not cancel
+    /// already legal parcels in the same drag stroke. On curved roads, Rust may widen spacing
+    /// between generated parcels to preserve non-overlap, then stops when no further parcel can
+    /// fit inside the drag span.
     pub fn place_parcel_run_at(
         &mut self,
         start_x: f32,

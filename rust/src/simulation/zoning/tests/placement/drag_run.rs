@@ -48,14 +48,21 @@ fn test_parcel_drag_run_uses_same_edge_side_and_gap() {
 }
 
 #[test]
-fn test_parcel_drag_run_rejects_nearby_road_overlap() {
+fn test_parcel_drag_run_skips_nearby_road_overlap() {
     let (mut graph, _) = make_straight_road();
     add_vertical_road_at_x(&mut graph, 14.0);
     let z = make_zoning();
 
-    let result = z.preview_parcel_run_at(-20.0, -7.0, 20.0, -7.0, 20.0, 30.0, 0.0, &graph);
+    let preview = z
+        .preview_parcel_run_at(-20.0, -7.0, 20.0, -7.0, 20.0, 30.0, 0.0, &graph)
+        .expect("road-overlapping candidates should be skipped");
 
-    assert!(matches!(result, Err(ParcelPlacementError::OverlapsRoad)));
+    assert!(!preview.is_empty());
+    assert!(
+        preview
+            .iter()
+            .all(|geometry| !parcels::geometry_overlaps_road(&graph, geometry))
+    );
 }
 
 #[test]
@@ -95,7 +102,11 @@ fn test_parcel_drag_run_inner_curve_widens_spacing_instead_of_rejecting() {
 
     assert!(run.len() >= 2);
     assert!(run.iter().all(|geometry| geometry.side == -1));
-    assert!(!parcels::geometries_have_overlap(&run));
+    for left in 0..run.len() {
+        for right in (left + 1)..run.len() {
+            assert!(!parcels::geometries_overlap(&run[left], &run[right]));
+        }
+    }
     assert!(
         run.windows(2).any(|window| {
             let gap = (window[1].frontage_center_t - window[0].frontage_center_t)
@@ -108,7 +119,7 @@ fn test_parcel_drag_run_inner_curve_widens_spacing_instead_of_rejecting() {
 }
 
 #[test]
-fn test_parcel_drag_run_rejects_existing_overlap() {
+fn test_parcel_drag_run_skips_existing_overlap() {
     let (graph, _) = make_straight_road();
     let mut z = make_zoning();
     let residential = z
@@ -119,11 +130,15 @@ fn test_parcel_drag_run_rejects_existing_overlap() {
     z.place_or_rezone_parcel_at(0.0, -20.0, residential, 20.0, 30.0, &graph)
         .expect("existing parcel");
 
-    let result = z.preview_parcel_run_at(-20.0, -20.0, 20.0, -20.0, 20.0, 30.0, 0.0, &graph);
-    assert!(matches!(
-        result,
-        Err(ParcelPlacementError::OverlapsExistingParcel)
-    ));
+    let preview = z
+        .preview_parcel_run_at(-20.0, -20.0, 20.0, -20.0, 20.0, 30.0, 0.0, &graph)
+        .expect("existing-overlap candidates should be skipped");
+    let centers: Vec<f32> = preview
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+
+    assert_eq!(centers, vec![-20.0, 20.0]);
 }
 
 #[test]
@@ -134,7 +149,7 @@ fn test_parcel_drag_run_detects_internal_overlap() {
         .preview_parcel_at(0.0, -20.0, 20.0, 30.0, &graph)
         .expect("preview parcel");
 
-    assert!(parcels::geometries_have_overlap(&[geometry, geometry]));
+    assert!(parcels::geometries_overlap(&geometry, &geometry));
 }
 
 #[test]
@@ -144,6 +159,38 @@ fn test_parcel_drag_run_rejects_invalid_gap() {
 
     let result = z.preview_parcel_run_at(-20.0, -20.0, 20.0, -20.0, 20.0, 30.0, 25.0, &graph);
     assert!(matches!(result, Err(ParcelPlacementError::InvalidGap)));
+}
+
+#[test]
+fn test_parcel_drag_run_stops_at_road_end_without_cancelling_prefix() {
+    let (graph, _) = make_straight_road();
+    let z = make_zoning();
+
+    let preview = z
+        .preview_parcel_run_at(-50.0, -20.0, 80.0, -20.0, 20.0, 30.0, 0.0, &graph)
+        .expect("prefix before road end should remain valid");
+    let centers: Vec<f32> = preview
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+
+    assert_eq!(centers, vec![-50.0, -30.0, -10.0, 10.0, 30.0, 50.0]);
+}
+
+#[test]
+fn test_parcel_drag_run_keeps_prefix_when_endpoint_leaves_frontage_band() {
+    let (graph, _) = make_straight_road();
+    let z = make_zoning();
+
+    let preview = z
+        .preview_parcel_run_at(-20.0, -20.0, 40.0, -400.0, 20.0, 30.0, 0.0, &graph)
+        .expect("off-frontage endpoint should not cancel the same-edge run");
+    let centers: Vec<f32> = preview
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+
+    assert_eq!(centers, vec![-20.0, 0.0, 20.0, 40.0]);
 }
 
 #[test]

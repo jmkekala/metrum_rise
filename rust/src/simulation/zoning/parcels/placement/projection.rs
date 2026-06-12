@@ -12,8 +12,9 @@ pub(super) fn project_buildable_road_point_at(
     depth_m: f32,
 ) -> Result<ProjectedRoadPoint, ParcelPlacementError> {
     let search_radius = depth_m + frontage_m + 48.0;
-    let nearby_edges =
+    let mut nearby_edges =
         graph.get_edges_near_point(Vector3::new(world_pos.x, 0.0, world_pos.y), search_radius);
+    nearby_edges.sort_unstable();
     let mut best: Option<ProjectedRoadPoint> = None;
 
     for edge_idx in nearby_edges {

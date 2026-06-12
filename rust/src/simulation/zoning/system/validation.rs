@@ -5,8 +5,9 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::parcels::{self, ParcelGeometry, ParcelPlacementError};
 use crate::simulation::zoning::{
     MAX_PARCEL_DEPTH_M, MAX_PARCEL_FRONTAGE_M, MAX_PARCEL_GAP_M, MIN_PARCEL_DEPTH_M,
-    MIN_PARCEL_FRONTAGE_M, MIN_PARCEL_GAP_M,
+    MIN_PARCEL_FRONTAGE_M, MIN_PARCEL_GAP_M, ParcelId,
 };
+use std::collections::{HashMap, HashSet};
 
 impl ZoningSystem {
     pub(super) fn validate_single_parcel_geometry(
@@ -47,26 +48,76 @@ impl ZoningSystem {
         Ok(())
     }
 
-    pub(super) fn validate_parcel_run_geometries(
+    pub(super) fn valid_parcel_run_geometries(
         &self,
-        geometries: &[ParcelGeometry],
+        geometries: Vec<ParcelGeometry>,
         graph: &RegionGraph,
-    ) -> Result<(), ParcelPlacementError> {
+    ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
+        let mut accepted = Vec::with_capacity(geometries.len());
+        let mut accepted_chunks: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut accepted_seen = HashSet::new();
+        let mut existing_seen: HashSet<ParcelId> = HashSet::new();
+        let mut blocked_by_world = false;
+        let mut blocked_by_road = false;
+        let mut blocked_by_existing = false;
+
         for geometry in geometries {
-            if !parcels::geometry_inside_world(geometry, self.config.width_m, self.config.height_m)
+            if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m)
             {
-                return Err(ParcelPlacementError::OutsideWorld);
+                blocked_by_world = true;
+                continue;
+            }
+            if parcels::geometry_overlaps_road(graph, &geometry) {
+                blocked_by_road = true;
+                continue;
+            }
+            existing_seen.clear();
+            if self
+                .parcels
+                .overlaps_existing_with_scratch(&geometry, &mut existing_seen)
+            {
+                blocked_by_existing = true;
+                continue;
+            }
+
+            let chunks = parcels::chunks_for_aabb(geometry.aabb_min, geometry.aabb_max);
+            accepted_seen.clear();
+            let overlaps_accepted = chunks.iter().any(|chunk| {
+                accepted_chunks.get(chunk).is_some_and(|indices| {
+                    indices.iter().any(|&index| {
+                        accepted_seen.insert(index)
+                            && parcels::geometries_overlap(&accepted[index], &geometry)
+                    })
+                })
+            });
+            if overlaps_accepted {
+                blocked_by_existing = true;
+                continue;
+            }
+
+            let accepted_index = accepted.len();
+            accepted.push(geometry);
+            for chunk in chunks {
+                accepted_chunks
+                    .entry(chunk)
+                    .or_default()
+                    .push(accepted_index);
             }
         }
-        if parcels::any_geometry_overlaps_road(graph, geometries) {
-            return Err(ParcelPlacementError::OverlapsRoad);
+
+        if !accepted.is_empty() {
+            return Ok(accepted);
         }
-        if self.parcels.overlaps_any_existing(geometries)
-            || parcels::geometries_have_overlap(geometries)
-        {
-            return Err(ParcelPlacementError::OverlapsExistingParcel);
+
+        if blocked_by_world {
+            Err(ParcelPlacementError::OutsideWorld)
+        } else if blocked_by_road {
+            Err(ParcelPlacementError::OverlapsRoad)
+        } else if blocked_by_existing {
+            Err(ParcelPlacementError::OverlapsExistingParcel)
+        } else {
+            Err(ParcelPlacementError::NoRoadAttachment)
         }
-        Ok(())
     }
 
     pub(super) fn validate_profile_id(&self, runtime_id: u16) -> Result<(), ParcelPlacementError> {

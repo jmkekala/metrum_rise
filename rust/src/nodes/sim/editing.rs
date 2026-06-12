@@ -77,6 +77,24 @@ impl SimCore {
             .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
     }
 
+    fn run_building_allocator_maintenance_internal(&mut self) {
+        self.allocator.tick(
+            &mut self.zoning,
+            &mut self.agents,
+            &mut self.households,
+            &mut self.logistics,
+            &mut self.transit_network,
+            &mut self.region_graph,
+        );
+        use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
+        for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
+            if self.allocator.dirty_zones[zone_idx] {
+                self.allocator.dirty_zones[zone_idx] = false;
+                self.transit_network.flow_fields.mark_zone_dirty(*zone);
+            }
+        }
+    }
+
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
@@ -275,9 +293,12 @@ impl SimCore {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
-        self.region_graph
-            .edge_mut(edge_idx as usize)
-            .no_building_spawn = enabled;
+        let edge_idx = edge_idx as usize;
+        self.region_graph.edge_mut(edge_idx).no_building_spawn = enabled;
+        if enabled {
+            self.run_building_allocator_maintenance_internal();
+            self.zoning.remove_parcels_attached_to_edge(edge_idx);
+        }
         self.allocator.dirty = true;
         self.rebuild_building_entrances_internal();
     }
@@ -840,7 +861,7 @@ mod tests {
     };
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
-    use crate::simulation::zoning::ZoningSystem;
+    use crate::simulation::zoning::{ZoneType, ZoningSystem};
     use godot::prelude::{Vector2, Vector3};
     use std::collections::{HashMap, VecDeque};
 
@@ -931,6 +952,51 @@ mod tests {
             core.region_graph.edge(0).vehicle_frontage_access,
             VehicleFrontageAccess::SameSideOnly
         );
+    }
+
+    #[test]
+    fn set_no_building_spawn_internal_removes_attached_zoning_parcels() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 120.0,
+            physical_length: 120.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        let residential = core
+            .zoning
+            .profiles
+            .default_runtime_id_for_zone_type(ZoneType::Residential)
+            .unwrap();
+        core.zoning
+            .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &core.region_graph)
+            .expect("parcel");
+
+        core.set_no_building_spawn_internal(0, true);
+
+        assert!(core.region_graph.edge(0).no_building_spawn);
+        assert!(core.zoning.parcels().is_empty());
     }
 
     #[test]

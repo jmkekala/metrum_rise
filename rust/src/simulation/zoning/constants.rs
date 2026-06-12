@@ -3,7 +3,7 @@
 /// First-slice authored parcel frontage in metres.
 pub const DEFAULT_PARCEL_FRONTAGE_M: f32 = 20.0;
 /// First-slice authored parcel depth in metres.
-pub const DEFAULT_PARCEL_DEPTH_M: f32 = 30.0;
+pub const DEFAULT_PARCEL_DEPTH_M: f32 = 20.0;
 /// Smallest player-authored parcel frontage accepted by the Rust placement path.
 pub const MIN_PARCEL_FRONTAGE_M: f32 = 5.0;
 /// Largest player-authored parcel frontage accepted by the Rust placement path.

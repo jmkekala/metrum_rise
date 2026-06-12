@@ -13,7 +13,7 @@ extends Node3D
 var active: bool = false
 var current_profile_runtime_id: int = 0
 var parcel_width_cells: int = 2
-var parcel_depth_cells: int = 3
+var parcel_depth_cells: int = 2
 var parcel_gap_m: float = 0.0
 var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}

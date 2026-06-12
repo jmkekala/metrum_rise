@@ -3676,7 +3676,7 @@ impl SimulationNode {
             .unwrap_or(-1)
     }
 
-    /// Returns preview geometry for an all-or-nothing road-side parcel drag run.
+    /// Returns preview geometry for legal parcels in a road-side parcel drag run.
     #[func]
     pub fn get_zoning_parcel_drag_preview(
         &self,
@@ -3713,7 +3713,7 @@ impl SimulationNode {
         zoning_parcel_geometries_array(&core, &geometries, runtime_id)
     }
 
-    /// Returns packed preview geometry for an all-or-nothing road-side parcel drag run.
+    /// Returns packed preview geometry for legal parcels in a road-side parcel drag run.
     #[func]
     pub fn get_zoning_parcel_drag_preview_packed(
         &self,
@@ -3782,7 +3782,7 @@ impl SimulationNode {
         zoning_parcel_geometries_packed_dict(&core, &geometries, runtime_id)
     }
 
-    /// Creates an all-or-nothing road-side parcel drag run.
+    /// Creates legal parcels in a road-side parcel drag run.
     #[func]
     pub fn apply_zoning_parcel_drag(
         &mut self,

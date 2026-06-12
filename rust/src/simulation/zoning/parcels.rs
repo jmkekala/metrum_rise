@@ -14,8 +14,8 @@ pub use store::ParcelStore;
 pub use types::{ParcelGeometry, ParcelId, ParcelPlacementError, ZoningParcel};
 
 pub(crate) use geometry::{
-    any_geometry_overlaps_road, geometries_have_overlap, geometry_for_parcel,
-    geometry_from_attachment, geometry_inside_world, geometry_overlaps_road,
+    chunks_for_aabb, geometries_overlap, geometry_for_parcel, geometry_from_attachment,
+    geometry_inside_world, geometry_overlaps_road,
 };
 pub(crate) use placement::{
     project_default_parcel_at, project_parcel_run_at, project_parcel_run_from_existing,

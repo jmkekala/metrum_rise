@@ -110,6 +110,20 @@ impl ParcelStore {
         }
     }
 
+    pub(crate) fn remove_attached_to_edge(&mut self, edge_idx: usize) -> usize {
+        let before = self.parcels.len();
+        self.parcels.retain(|parcel| parcel.edge_idx() != edge_idx);
+        let removed = before - self.parcels.len();
+        if removed > 0 {
+            self.id_to_index.clear();
+            for (idx, parcel) in self.parcels.iter().enumerate() {
+                self.id_to_index.insert(parcel.id(), idx);
+            }
+            self.rebuild_chunk_index();
+        }
+        removed
+    }
+
     pub(crate) fn find_at_point(&self, point: Vector2) -> Option<ParcelId> {
         let chunk = super::geometry::chunk_key(point);
         let ids = self.chunk_index.get(&chunk)?;
@@ -154,15 +168,7 @@ impl ParcelStore {
         self.overlaps_existing_with_scratch(geometry, &mut visited)
     }
 
-    pub(crate) fn overlaps_any_existing(&self, geometries: &[ParcelGeometry]) -> bool {
-        let mut visited = HashSet::new();
-        geometries.iter().any(|geometry| {
-            visited.clear();
-            self.overlaps_existing_with_scratch(geometry, &mut visited)
-        })
-    }
-
-    fn overlaps_existing_with_scratch(
+    pub(crate) fn overlaps_existing_with_scratch(
         &self,
         geometry: &ParcelGeometry,
         visited: &mut HashSet<ParcelId>,
