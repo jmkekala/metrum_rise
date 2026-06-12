@@ -8,7 +8,9 @@ use super::types::{ParcelGeometry, ParcelPlacementError};
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
 
-pub(crate) use run::{project_parcel_run_at, project_parcel_run_from_existing};
+pub(crate) use run::{
+    ParcelRunProjection, project_parcel_run_from_existing, project_parcel_run_layouts_at,
+};
 
 pub(crate) fn project_default_parcel_at(
     graph: &RegionGraph,

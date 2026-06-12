@@ -32,6 +32,10 @@ var _preview_cache_depth_cells: int = -1
 var _preview_cache_gap_m: float = -1.0
 var _preview_cache_mesh: Mesh = null
 var _last_valid_single_preview_mesh: Mesh = null
+var _last_valid_drag_preview_mesh: Mesh = null
+var _last_valid_drag_preview_kind: int = -1
+var _last_valid_drag_preview_start: Vector2 = Vector2.ZERO
+var _last_valid_drag_preview_end: Vector2 = Vector2.ZERO
 
 const DRAG_THRESHOLD_M: float = 4.0
 const PREVIEW_REFRESH_DISTANCE_M: float = 1.0
@@ -140,12 +144,20 @@ func _finish_drag() -> void:
 	dragging = false
 	drag_start_world = null
 	drag_mode = DRAG_MODE_NONE
-	if start == null or end == null:
+	if start == null:
+		_clear_preview_cache()
 		return
-	if start.distance_to(end) >= DRAG_THRESHOLD_M and mode == DRAG_MODE_REZONE:
-		_commit_rezone_drag(start, end)
-	elif start.distance_to(end) >= DRAG_THRESHOLD_M:
-		_commit_drag(start, end)
+	var drag_kind := PREVIEW_KIND_REZONE_DRAG if mode == DRAG_MODE_REZONE else PREVIEW_KIND_CREATE_DRAG
+	var commit_end = _retained_drag_preview_end(drag_kind, start)
+	if commit_end == null:
+		commit_end = end
+	if commit_end == null:
+		_clear_preview_cache()
+		return
+	if start.distance_to(commit_end) >= DRAG_THRESHOLD_M and mode == DRAG_MODE_REZONE:
+		_commit_rezone_drag(start, commit_end)
+	elif start.distance_to(commit_end) >= DRAG_THRESHOLD_M:
+		_commit_drag(start, commit_end)
 	else:
 		_commit_single_at(start)
 	_clear_preview_cache()
@@ -194,7 +206,7 @@ func _update_preview() -> void:
 	if dragging and drag_start_world != null and drag_start_world.distance_to(wp) >= DRAG_THRESHOLD_M:
 		if drag_mode == DRAG_MODE_REZONE:
 			if _preview_cache_matches(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp):
-				_apply_preview_mesh(_preview_cache_mesh)
+				_apply_drag_preview_mesh(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, _preview_cache_mesh)
 				return
 
 			var rezone_payload: Dictionary = simulation_node.get_zoning_parcel_rezone_drag_preview_packed(
@@ -206,11 +218,11 @@ func _update_preview() -> void:
 			)
 			var rezone_mesh := _build_packed_parcels_mesh(rezone_payload, true)
 			_store_preview_cache(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
-			_apply_preview_mesh(rezone_mesh)
+			_apply_drag_preview_mesh(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
 			return
 
 		if _preview_cache_matches(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp):
-			_apply_preview_mesh(_preview_cache_mesh)
+			_apply_drag_preview_mesh(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, _preview_cache_mesh)
 			return
 
 		var drag_payload: Dictionary = simulation_node.get_zoning_parcel_drag_preview_packed(
@@ -225,7 +237,7 @@ func _update_preview() -> void:
 		)
 		var drag_mesh := _build_packed_parcels_mesh(drag_payload, true)
 		_store_preview_cache(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
-		_apply_preview_mesh(drag_mesh)
+		_apply_drag_preview_mesh(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
 		return
 
 	if _preview_cache_matches(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp):
@@ -273,6 +285,8 @@ func _clear_preview_cache() -> void:
 	_preview_cache_valid = false
 	_preview_cache_mesh = null
 	_last_valid_single_preview_mesh = null
+	_last_valid_drag_preview_mesh = null
+	_last_valid_drag_preview_kind = -1
 	if preview_mesh != null:
 		preview_mesh.visible = false
 
@@ -286,6 +300,27 @@ func _apply_single_preview_mesh(mesh: Mesh) -> void:
 		_apply_preview_mesh(mesh)
 	else:
 		_apply_preview_mesh(_last_valid_single_preview_mesh)
+
+func _apply_drag_preview_mesh(kind: int, start: Vector2, end: Vector2, mesh: Mesh) -> void:
+	if mesh != null:
+		_last_valid_drag_preview_kind = kind
+		_last_valid_drag_preview_start = start
+		_last_valid_drag_preview_end = end
+		_last_valid_drag_preview_mesh = mesh
+		_apply_preview_mesh(mesh)
+	elif _retained_drag_preview_end(kind, start) != null:
+		_apply_preview_mesh(_last_valid_drag_preview_mesh)
+	else:
+		_apply_preview_mesh(null)
+
+func _retained_drag_preview_end(kind: int, start: Vector2) -> Variant:
+	if _last_valid_drag_preview_mesh == null:
+		return null
+	if _last_valid_drag_preview_kind != kind:
+		return null
+	if _last_valid_drag_preview_start.distance_to(start) > 0.001:
+		return null
+	return _last_valid_drag_preview_end
 
 func _build_parcels_mesh(payloads: Array, include_fill: bool) -> Mesh:
 	if payloads.is_empty():

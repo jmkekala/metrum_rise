@@ -64,26 +64,27 @@ impl ZoningSystem {
             .find_at_point(start_point)
             .and_then(|id| self.parcels.get(id))
             .map(parcels::geometry_for_parcel);
-        let geometries = if let Some(existing_geometry) = existing_start.as_ref() {
-            parcels::project_parcel_run_from_existing(
+        if let Some(existing_geometry) = existing_start.as_ref() {
+            let geometries = parcels::project_parcel_run_from_existing(
                 graph,
                 existing_geometry,
                 end_point,
                 frontage_m,
                 depth_m,
                 gap_m,
-            )?
-        } else {
-            parcels::project_parcel_run_at(
-                graph,
-                start_point,
-                end_point,
-                frontage_m,
-                depth_m,
-                gap_m,
-            )?
-        };
-        self.valid_parcel_run_geometries(geometries, graph)
+            )?;
+            return self.valid_parcel_run_geometries(geometries, graph);
+        }
+
+        let projection = parcels::project_parcel_run_layouts_at(
+            graph,
+            start_point,
+            end_point,
+            frontage_m,
+            depth_m,
+            gap_m,
+        )?;
+        self.best_valid_parcel_run_layout(projection, graph)
     }
 
     /// Returns authored parcel geometries touched by one world-space zoning paint stroke.

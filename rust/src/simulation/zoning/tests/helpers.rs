@@ -9,9 +9,14 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
 
 pub(super) fn make_straight_road() -> (RegionGraph, usize) {
+    make_straight_road_span(-60.0, 60.0)
+}
+
+pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph, usize) {
     let mut graph = RegionGraph::new();
-    let start = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
-    let end = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+    let start = graph.add_node(Vector3::new(start_x, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(end_x, 0.0, 0.0), NodeType::Junction);
+    let length = (end_x - start_x).abs();
     let edge_idx = graph.add_edge(Edge {
         start_node: start,
         end_node: end,
@@ -22,13 +27,19 @@ pub(super) fn make_straight_road() -> (RegionGraph, usize) {
         fwd_lanes: 1,
         bkw_lanes: 1,
         speed_limit: 50.0,
-        base_cost: 120.0,
-        physical_length: 120.0,
+        base_cost: length,
+        physical_length: length,
         current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
-        geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
-        physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+        geometry: vec![
+            Vector3::new(start_x, 0.0, 0.0),
+            Vector3::new(end_x, 0.0, 0.0),
+        ],
+        physical_geometry: vec![
+            Vector3::new(start_x, 0.0, 0.0),
+            Vector3::new(end_x, 0.0, 0.0),
+        ],
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,

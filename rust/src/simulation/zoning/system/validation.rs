@@ -2,7 +2,9 @@
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::zoning::parcels::{self, ParcelGeometry, ParcelPlacementError};
+use crate::simulation::zoning::parcels::{
+    self, ParcelGeometry, ParcelPlacementError, ParcelRunProjection,
+};
 use crate::simulation::zoning::{
     MAX_PARCEL_DEPTH_M, MAX_PARCEL_FRONTAGE_M, MAX_PARCEL_GAP_M, MIN_PARCEL_DEPTH_M,
     MIN_PARCEL_FRONTAGE_M, MIN_PARCEL_GAP_M, ParcelId,
@@ -120,11 +122,85 @@ impl ZoningSystem {
         }
     }
 
+    pub(super) fn best_valid_parcel_run_layout(
+        &self,
+        projection: ParcelRunProjection,
+        graph: &RegionGraph,
+    ) -> Result<Vec<ParcelGeometry>, ParcelPlacementError> {
+        let mut best: Option<(Vec<ParcelGeometry>, f32, usize)> = None;
+        let mut best_error: Option<ParcelPlacementError> = None;
+
+        for (layout_index, layout) in projection.layouts.into_iter().enumerate() {
+            match self.valid_parcel_run_geometries(layout, graph) {
+                Ok(valid) => {
+                    let reach = endpoint_reach_score(&valid, graph, projection.endpoint_direction);
+                    let replace = best
+                        .as_ref()
+                        .map(|(current, current_reach, current_index)| {
+                            valid.len() > current.len()
+                                || (valid.len() == current.len()
+                                    && (reach > *current_reach + 0.001
+                                        || ((reach - *current_reach).abs() <= 0.001
+                                            && layout_index < *current_index)))
+                        })
+                        .unwrap_or(true);
+                    if replace {
+                        best = Some((valid, reach, layout_index));
+                    }
+                }
+                Err(err) => {
+                    best_error = Some(best_error.map_or(err, |current| {
+                        if parcel_error_priority(err) > parcel_error_priority(current) {
+                            err
+                        } else {
+                            current
+                        }
+                    }));
+                }
+            }
+        }
+
+        best.map(|(valid, _, _)| valid)
+            .ok_or(best_error.unwrap_or(ParcelPlacementError::NoRoadAttachment))
+    }
+
     pub(super) fn validate_profile_id(&self, runtime_id: u16) -> Result<(), ParcelPlacementError> {
         if runtime_id == 0 || self.profiles.profile_by_runtime_id(runtime_id).is_some() {
             Ok(())
         } else {
             Err(ParcelPlacementError::UnknownProfile)
         }
+    }
+}
+
+fn endpoint_reach_score(
+    geometries: &[ParcelGeometry],
+    graph: &RegionGraph,
+    endpoint_direction: f32,
+) -> f32 {
+    geometries
+        .iter()
+        .map(|geometry| {
+            let center_s =
+                geometry.frontage_center_t * graph.edge(geometry.edge_idx).physical_length;
+            if endpoint_direction >= 0.0 {
+                center_s + geometry.frontage_m * 0.5
+            } else {
+                -(center_s - geometry.frontage_m * 0.5)
+            }
+        })
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+fn parcel_error_priority(error: ParcelPlacementError) -> u8 {
+    match error {
+        ParcelPlacementError::OutsideWorld => 4,
+        ParcelPlacementError::OverlapsRoad => 3,
+        ParcelPlacementError::OverlapsExistingParcel => 2,
+        ParcelPlacementError::FrontageOutOfBounds => 1,
+        ParcelPlacementError::NoRoadAttachment
+        | ParcelPlacementError::UnknownProfile
+        | ParcelPlacementError::InvalidDimensions
+        | ParcelPlacementError::InvalidGap => 0,
     }
 }

@@ -2,7 +2,7 @@
 
 use super::super::helpers::{
     add_vertical_road_at_x, inward_arc_point, make_quarter_arc_road, make_straight_road,
-    make_zoning,
+    make_straight_road_span, make_zoning,
 };
 use crate::simulation::zoning::parcels;
 use crate::simulation::zoning::{ParcelPlacementError, ZoneType};
@@ -58,6 +58,36 @@ fn test_parcel_drag_run_skips_nearby_road_overlap() {
         .expect("road-overlapping candidates should be skipped");
 
     assert!(!preview.is_empty());
+    assert!(
+        preview
+            .iter()
+            .all(|geometry| !parcels::geometry_overlaps_road(&graph, geometry))
+    );
+}
+
+#[test]
+fn test_parcel_drag_run_packs_toward_nearby_road() {
+    let (mut graph, _) = make_straight_road_span(-60.0, 120.0);
+    add_vertical_road_at_x(&mut graph, 70.0);
+    let z = make_zoning();
+
+    let preview = z
+        .preview_parcel_run_at(-20.0, -7.0, 70.0, -7.0, 20.0, 30.0, 0.0, &graph)
+        .expect("run should keep legal candidates near the cross road");
+    let max_right_edge = preview
+        .iter()
+        .flat_map(|geometry| geometry.corners.iter().map(|corner| corner.x))
+        .fold(f32::NEG_INFINITY, f32::max);
+    let centers: Vec<f32> = preview
+        .iter()
+        .map(|geometry| geometry.front_center.x)
+        .collect();
+
+    assert_eq!(preview.len(), 4);
+    assert!(
+        max_right_edge >= 64.0,
+        "max_right_edge={max_right_edge} centers={centers:?}"
+    );
     assert!(
         preview
             .iter()

@@ -120,12 +120,14 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap another road-owned corridor.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
 
-Drag-run placement projects deterministic same-road candidate parcels, then keeps only legal
-candidates. A blocked candidate caused by a road corridor, world edge, existing parcel, or another
-accepted candidate is skipped rather than cancelling the whole preview or commit. If no generated
-candidate is legal, the drag fails without mutation. On curves, Rust may widen spacing between
-generated parcels to preserve non-overlap, then stops when no further parcel fits inside the
-dragged span.
+Drag-run placement projects bounded deterministic same-road candidate layouts across the current
+drag span, then keeps the best legal layout. Rust may re-layout the candidate phase as the span
+changes so legal parcels can pack beside existing parcels and near road-corridor blockers. Layout
+selection prefers more legal parcels, then the layout that reaches closest toward the dragged end.
+A blocked candidate caused by a road corridor, world edge, existing parcel, or another accepted
+candidate is skipped rather than cancelling the whole preview or commit. If no generated candidate
+is legal, the drag fails without mutation. On curves, Rust may widen spacing between generated
+parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
 
 When dragging from an existing parcel, the first generated parcel starts after:
 
@@ -197,6 +199,11 @@ preview, submit, and render Rust-authored results.
 Single-parcel hover preview keeps the last Rust-authored legal parcel visible while the mouse is
 over an illegal placement position. The preview moves only after Rust returns a new legal parcel.
 Changing the selected profile or parcel dimensions clears this retained preview.
+
+Drag preview follows the same retained-preview rule during one drag gesture: while the current
+cursor position has no legal candidate set, Godot keeps showing the last Rust-authored legal drag
+preview for that gesture. Releasing the mouse commits the displayed retained drag preview when one
+exists.
 
 `godot/scripts/renderers/zoning_overlay.gd` renders Rust-authored parcel geometry with an
 `ImmediateMesh`. It also draws orange no-build edge guide lines while the zoning tool is active.
