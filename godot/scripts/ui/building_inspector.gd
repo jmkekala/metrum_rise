@@ -235,21 +235,42 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				str(info.get("household_replenishment_active", 0))
 			)
 	else:
-		_add_section(stats_body, "Staff")
-		_add_row(
-			stats_body,
-			"Workers",
-			"%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
-		)
-		_add_section(stats_body, "Economy")
-		_add_row(stats_body, "Profile", str(info.get("economy_profile", "-")))
-		_add_row(stats_body, "Budget", "$%.1f" % float(info.get("operating_budget", 0.0)))
-		_add_row(stats_body, "Revenue", "$%.1f" % float(info.get("revenue", 0.0)))
+		_add_section(stats_body, "Business")
+		if info.get("business_summary", false):
+			_add_row(stats_body, "Status", str(info.get("business_status", "-")))
+			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
+			_add_row(stats_body, "Today", _signed_money(float(info.get("business_profit_today", 0.0))))
+			_add_row(stats_body, "Yesterday", _signed_money(float(info.get("business_profit_yesterday", 0.0))))
+			var workers := int(info.get("worker_count", 0))
+			var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
+			var max_capacity := int(info.get("worker_capacity", 0))
+			var worker_text := "%d / %d" % [workers, max_capacity]
+			if active_capacity != max_capacity:
+				worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
+			_add_row(stats_body, "Workers", worker_text)
+			_add_row(
+				stats_body,
+				"Production",
+				"%.0f%%" % (float(info.get("business_production_ratio", 0.0)) * 100.0)
+			)
+			if info.get("business_has_inventory_fill", false):
+				_add_row(
+					stats_body,
+					"Inventory",
+					"%.0f%% full" % (float(info.get("business_inventory_fill_ratio", 0.0)) * 100.0)
+				)
+		else:
+			_add_row(
+				stats_body,
+				"Workers",
+				"%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
+			)
+			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
 		if info.has("utility_service_available"):
 			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
 
 	var inventory: Array = info.get("inventory", [])
-	if inventory.size() > 0:
+	if inventory.size() > 0 and not info.get("business_summary", false):
 		_add_section(stats_body, "Inventory")
 		for item in inventory:
 			_add_row(stats_body, str(item.get("name", "?")), "%.1f" % float(item.get("amount", 0.0)))
@@ -259,6 +280,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 		flags.append("Asset broken")
 	if info.get("economy_broken", false):
 		flags.append("Economy broken")
+	if info.get("is_deserted", false):
+		flags.append("Deserted")
 	if info.get("pending_redevelopment", false):
 		flags.append("Rezone (%d d grace)" % info.get("rezone_grace_days", 0))
 	if info.get("under_construction", false):
@@ -275,6 +298,13 @@ func _zone_label(zone: String) -> String:
 		"industrial": return "Industrial"
 		"utility": return "Utility"
 		_: return zone.capitalize()
+
+func _money(amount: float) -> String:
+	return "$%.0f" % amount
+
+func _signed_money(amount: float) -> String:
+	var sign := "+" if amount >= 0.0 else "-"
+	return "%s$%.0f" % [sign, absf(amount)]
 
 func _add_section(stats_body: VBoxContainer, title: String) -> void:
 	stats_body.add_child(HSeparator.new())

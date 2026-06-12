@@ -666,15 +666,28 @@ Local supply chains should usually beat permanent `OWA` dependence through:
 
 The logistics system tries local suppliers first and falls back to the `OWA` only when no valid local source is available. The `OWA` import price is derived as `local_unit_price × owa_import_price_multiplier` (configured in `[runtime_tuning]` in `economy/profiles.toml`), ensuring that a healthy local producer is always cheaper than the `OWA` alternative.
 
+Local commercial input demand also has priority over industrial exports. Before an industrial
+building exports surplus output, the export planner computes affordable, non-terminal commercial
+input requests using the same truckload quantization, compatible-supplier index, component
+reachability, and exact freight-route feasibility as inbound freight. Only demand that can be
+served by a valid local supplier creates a source-specific output hold. Active inbound
+reservations already count toward the buyer stock, so this hold protects unmet local demand
+without double-counting open freight jobs or blocking exports for disconnected/unreachable
+buyers.
+
 Daily demand snapshots read commercial `OWA` input reliance as import-substitution pressure for
 industrial growth. That pressure is diagnostic of actual outside-input use; industrial spawn
 quantity remains guarded by the demand-side committed local input-capacity accounting in
 [`demand.md`](demand.md).
 
-Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** and no local buyer is available, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. 
+Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** after local input holds, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal.
 
 **Export Constraints**:
 - **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.45x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Saturation**: repeated fulfilled exports of the same resource reduce the effective export bid.
+  Authored logistics tuning controls the truckloads needed to reach the floor, the floor factor,
+  and the recovery hours. Queued, failed, expired, or still-in-transit export offers do not
+  saturate the external market.
 - **Distress pricing**: forced bankruptcy liquidation uses the separate `owa_distress_liquidation_multiplier`, which must be no higher than the scheduled export multiplier. The shipped value is lower than scheduled export pricing so fire-sale liquidation is a rescue path, not a preferred operating model.
 - **Efficiency**: Exports must meet the building's `min_shipment_units` threshold and respect the building's global shipment cooldown. This forces industrial sites to batch their overproduction into meaningful truckloads rather than spamming tiny hourly export shipments.
 - **Zoning**: In `v0.1`, only Industrial buildings may export; Commercial buildings do not export their inventories.
@@ -1589,7 +1602,14 @@ Where:
 
 - `base_rate` is the authored full-capacity output rate for the building or recipe
 - `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
-- `input_factor` is the limiting required-input coverage for the current production step, clamped to `0.0..1.0`
+- commercial store `filled_workers` is capped by the larger of recent household sales and a
+  local household-demand floor before this ratio is calculated; the demand floor includes current
+  resident consumption plus household stock recovery spread over the authored pantry target days
+- a zero-sales store still keeps one bootstrap worker slot, but household shortage can open more
+  active worker slots before sales recover so essential shops do not deadlock on empty shelves
+- `input_factor` is the limiting required-input coverage for the current production step, clamped
+  to `0.0..1.0`; production compares input inventory to the current effective hourly input need,
+  not to the full authored daily input for a fully staffed building
 - utility costs are paid through the utility/bankruptcy sequence; there is no `utility_factor` term
   in the current `v0.1` throughput multiplier
 - `controller_factor` is a bounded multiplier from allowed controller effects
@@ -2139,11 +2159,21 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - `OWA import_ask` for `staple_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
 - `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
 - initial `OWA export_bid` for `staple_food`: `6.75 currency / unit` (local × `owa_export_price_multiplier = 0.45`)
+- saturated `OWA export_bid` bottoms at `35%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
 - OWA utility cost when local utility service is incomplete: `8 currency/day` for commercial and `12 currency/day` for industrial
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
-**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer and no local buyer is available, the logistics system creates an outbound export shipment. The OWA pays `local_unit_price × owa_export_price_multiplier`. A value of `0.45` means the OWA pays 45% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Values outside `[0.0, 1.0]` are rejected at validation time.
+**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local commercial input holds, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.45` means the OWA initially pays 45% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
+
+**Commercial store scaling implementation:** commercial store active worker capacity and input
+inventory targets scale from the larger of recent household sales and local essential demand.
+The local demand floor is computed from housed household consumption plus below-target pantry
+recovery demand, divided across live household-facing shop output capacity. A new or zero-sales
+store keeps one active worker slot and at least one minimum truckload worth of input target so it
+can bootstrap; household shortage can raise that floor before sales recover. Larger stores still
+use sales as the long-run brake against immediately operating at full authored capacity when the
+resident base does not justify it.
 
 These numbers are only a bootstrap reference pack. They live in editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges. Runtime code must validate this data and fail loudly when required values are missing; it must not silently substitute balance values from Rust.
 

@@ -192,9 +192,13 @@ fn building(
         revenue: 0.0,
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
+        last_day_profit: 0.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_household_sales_value: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     }
@@ -441,9 +445,9 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(missing_snapshot.commercial_owa_dependency > 0.99);
-    assert_eq!(missing_snapshot.commercial_input_need_value, 2_400.0);
+    assert_eq!(missing_snapshot.commercial_input_need_value, 160.0);
     assert_eq!(missing_snapshot.local_industrial_input_capacity_value, 0.0);
-    assert_eq!(missing_snapshot.industrial_missing_input_value, 2_400.0);
+    assert_eq!(missing_snapshot.industrial_missing_input_value, 160.0);
     assert_eq!(missing_snapshot.industrial_input_capacity_deficit, 1.0);
 
     let mut demand = DemandSystem::new();
@@ -460,7 +464,7 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(covered_snapshot.commercial_owa_dependency > 0.99);
-    assert_eq!(covered_snapshot.commercial_input_need_value, 2_400.0);
+    assert_eq!(covered_snapshot.commercial_input_need_value, 160.0);
     assert_eq!(
         covered_snapshot.local_industrial_input_capacity_value,
         2_400.0
@@ -830,6 +834,58 @@ fn pending_commercial_construction_is_committed_but_not_live_capacity() {
 }
 
 #[test]
+fn commercial_spawn_need_uses_effective_shop_capacity_after_stock_recovery_demand() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+    allocator.buildings.push(building(
+        ZoneType::Commercial,
+        0.0,
+        0,
+        0,
+        commercial_asset.clone(),
+    ));
+
+    let mut households = HouseholdSystem::new();
+    for _ in 0..75 {
+        households
+            .households
+            .push(housed_household(0, 2, 1_000.0, 0.0));
+    }
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
+
+    assert!(
+        snapshot.committed_unmet_commercial_consumer_demand > 90.0,
+        "one 200/day grocery should not hide a 300/day pantry recovery demand"
+    );
+
+    let candidates = [DemandSpawnCandidate {
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: commercial_asset,
+        },
+        density: "low".to_owned(),
+    }];
+    assert_eq!(
+        commercial_spawn_need_buildings(&allocator, catalog.as_ref(), &snapshot, &candidates),
+        1.0
+    );
+}
+
+#[test]
 fn pending_industrial_construction_is_committed_but_not_live_capacity() {
     let mut allocator = BuildingAllocator::new();
     let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
@@ -850,9 +906,9 @@ fn pending_industrial_construction_is_committed_but_not_live_capacity() {
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
-    assert_eq!(snapshot.commercial_input_need_value, 2_400.0);
+    assert_eq!(snapshot.commercial_input_need_value, 160.0);
     assert_eq!(snapshot.local_industrial_input_capacity_value, 0.0);
-    assert_eq!(snapshot.industrial_missing_input_value, 2_400.0);
+    assert_eq!(snapshot.industrial_missing_input_value, 160.0);
     assert_eq!(snapshot.committed_industrial_missing_input_value, 0.0);
     assert_eq!(snapshot.industrial_input_capacity_deficit, 1.0);
 
@@ -1320,9 +1376,10 @@ fn open_jobs_make_move_in_viable_without_benefits() {
 #[test]
 fn snapshot_computes_owa_dependency_from_input_accumulators() {
     // Commercial building (grocery_basic profile) with 75 currency from OWA and 25 from local.
-    // Expected daily input = 160 staple_food * 15.0/unit = 2400.
-    // denom = max(actual=100, expected=2400) = 2400.
-    // owa_dependency = 75 / 2400 = 0.03125.
+    // With no residents, the shop carries only its one-worker bootstrap input need:
+    // expected = 160 staple_food * 15.0/unit / 15 workers = 160.
+    // denom = max(actual=100, expected=160) = 160.
+    // owa_dependency = 75 / 160 = 0.46875.
     let mut allocator = BuildingAllocator::new();
     let commercial_asset = register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
     let mut com = building(ZoneType::Commercial, 40.0, 0, 1, commercial_asset);
@@ -1338,7 +1395,7 @@ fn snapshot_computes_owa_dependency_from_input_accumulators() {
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(
-        (snapshot.commercial_owa_dependency - 0.03125).abs() < 1e-4,
+        (snapshot.commercial_owa_dependency - 0.46875).abs() < 1e-4,
         "owa_dependency must equal owa/max(actual,expected): got={:.6}",
         snapshot.commercial_owa_dependency
     );

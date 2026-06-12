@@ -95,6 +95,22 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     if tuning.logistics.terminal_failure_attempts == 0 {
         return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
     }
+    if tuning.logistics.owa_export_saturation_loads_to_floor <= 0.0 {
+        return Err(
+            "runtime_tuning.logistics.owa_export_saturation_loads_to_floor must be > 0".to_owned(),
+        );
+    }
+    if !(0.0..=1.0).contains(&tuning.logistics.owa_export_saturation_floor_factor) {
+        return Err(
+            "runtime_tuning.logistics.owa_export_saturation_floor_factor must be between 0 and 1"
+                .to_owned(),
+        );
+    }
+    if tuning.logistics.owa_export_saturation_recovery_hours <= 0.0 {
+        return Err(
+            "runtime_tuning.logistics.owa_export_saturation_recovery_hours must be > 0".to_owned(),
+        );
+    }
     validate_nonempty_u16_level_array(
         &tuning.construction.residential_hours_by_level,
         "runtime_tuning.construction.residential_hours_by_level",

@@ -2,8 +2,8 @@
 
 use super::HouseholdSystem;
 use super::metrics::{
-    OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, industrial_input_coverage_factor,
-    industrial_output_headroom_factor,
+    OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
+    refresh_commercial_activity_floor,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -189,15 +189,13 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         tax_rate: f32,
     ) -> f32 {
-        if tax_rate <= 0.0 {
-            for building in &mut allocator.buildings {
-                building.profit_tax_budget_baseline = building.operating_budget;
-            }
-            return 0.0;
-        }
-
         let mut total_tax = 0.0f32;
         for building in &mut allocator.buildings {
+            let tracked_business = matches!(
+                building.zone_type,
+                ZoneType::Commercial | ZoneType::Industrial
+            ) && !building.is_under_construction()
+                && building.edge_idx != usize::MAX;
             let taxable = matches!(
                 building.zone_type,
                 ZoneType::Commercial | ZoneType::Industrial
@@ -207,18 +205,27 @@ impl HouseholdSystem {
                 && !building.is_under_construction()
                 && building.edge_idx != usize::MAX;
 
-            if taxable {
+            if tracked_business {
                 let baseline = if building.profit_tax_budget_baseline.is_finite() {
                     building.profit_tax_budget_baseline
                 } else {
                     building.operating_budget
                 };
                 let profit = building.operating_budget - baseline;
-                let tax = tax_amount(profit, tax_rate).min(building.operating_budget.max(0.0));
-                if tax > 0.0 {
-                    building.operating_budget -= tax;
-                    total_tax += tax;
+                building.last_day_profit = profit;
+                if taxable {
+                    let tax = if tax_rate > 0.0 {
+                        tax_amount(profit, tax_rate).min(building.operating_budget.max(0.0))
+                    } else {
+                        0.0
+                    };
+                    if tax > 0.0 {
+                        building.operating_budget -= tax;
+                        total_tax += tax;
+                    }
                 }
+            } else {
+                building.last_day_profit = 0.0;
             }
             building.profit_tax_budget_baseline = building.operating_budget;
         }
@@ -228,6 +235,7 @@ impl HouseholdSystem {
     pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         allocator.buildings.par_iter_mut().for_each(|building| {
             let zone = building.zone_type;
             if building.broken
@@ -240,12 +248,8 @@ impl HouseholdSystem {
             let Some(profile) = economy_profile_for_building(&catalog, building) else {
                 return;
             };
-            let worker_capacity = profile.worker_capacity.max(1);
-            let staffing_factor =
-                (building.worker_count as f32 / worker_capacity as f32).clamp(0.0, 1.0);
-            let input_factor = industrial_input_coverage_factor(&catalog, building);
-            let output_headroom_factor = industrial_output_headroom_factor(&catalog, building);
-            let throughput_factor = staffing_factor * input_factor * output_headroom_factor;
+            let factors = building_operation_factors(&catalog, building, profile);
+            let throughput_factor = factors.throughput_factor;
 
             for input_port in &profile.inputs {
                 let hourly_input_units =

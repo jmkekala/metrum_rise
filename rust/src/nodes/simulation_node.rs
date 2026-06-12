@@ -4168,7 +4168,7 @@ impl SimulationNode {
     ///
     /// Returns an empty Dictionary when no building is within range.
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
-    /// `worker_capacity`, `operating_budget`, `revenue`, `budget_distress`,
+    /// `worker_capacity`, compact business summary fields, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
     /// `economy_profile`, `center_x`, `center_z`, residential household aggregates,
     /// and `inventory` (Array of `{name, amount}` Dictionaries).
@@ -4179,6 +4179,9 @@ impl SimulationNode {
             REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
             REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
             REPLENISHMENT_STABLE, REPLENISHMENT_WAITING_FOR_SHOPPER,
+        };
+        use crate::simulation::economy::households::{
+            building_inventory_fill_ratio, building_operation_factors,
         };
         use crate::simulation::zoning::ZoneType;
 
@@ -4352,9 +4355,61 @@ impl SimulationNode {
         dict.set("worker_capacity", worker_capacity as i32);
         dict.set("operating_budget", b.operating_budget as f64);
         dict.set("revenue", b.revenue as f64);
+        if b.zone_type != ZoneType::Residential {
+            if let Some(cat) = &catalog
+                && let Some(profile) = cat.profile_by_runtime_id(b.economy_profile_runtime_id)
+            {
+                let factors = building_operation_factors(cat.as_ref(), b, profile);
+                let inventory_fill = building_inventory_fill_ratio(cat.as_ref(), b, profile);
+                let profit_today = b.operating_budget - b.profit_tax_budget_baseline;
+                let business_status = if b.broken {
+                    "Asset broken"
+                } else if b.economy_broken {
+                    "Economy broken"
+                } else if b.is_deserted {
+                    "Deserted"
+                } else if b.is_under_construction() {
+                    "Under construction"
+                } else if b.budget_distress || b.operating_budget < 0.0 {
+                    "Distressed"
+                } else if factors.active_worker_capacity > 0 && factors.effective_workers == 0 {
+                    "No workers"
+                } else if factors.input_factor < 0.5 {
+                    "Needs inputs"
+                } else if factors.output_headroom_factor < 0.5 {
+                    "Storage full"
+                } else if factors.active_worker_capacity < profile.worker_capacity {
+                    "Demand-limited"
+                } else if factors.throughput_factor >= 0.8 {
+                    "Running"
+                } else if factors.throughput_factor > 0.0 {
+                    "Limited"
+                } else {
+                    "Idle"
+                };
+                dict.set("business_summary", true);
+                dict.set("business_status", GString::from(business_status));
+                dict.set("business_profit_today", profit_today as f64);
+                dict.set("business_profit_yesterday", b.last_day_profit as f64);
+                dict.set(
+                    "business_active_worker_capacity",
+                    factors.active_worker_capacity as i32,
+                );
+                dict.set(
+                    "business_production_ratio",
+                    factors.throughput_factor as f64,
+                );
+                dict.set(
+                    "business_inventory_fill_ratio",
+                    inventory_fill.unwrap_or(0.0) as f64,
+                );
+                dict.set("business_has_inventory_fill", inventory_fill.is_some());
+            }
+        }
         dict.set("budget_distress", b.budget_distress);
         dict.set("economy_broken", b.economy_broken);
         dict.set("broken", b.broken);
+        dict.set("is_deserted", b.is_deserted);
         dict.set("pending_redevelopment", b.pending_redevelopment);
         dict.set("rezone_grace_days", b.rezone_grace_days_remaining as i32);
         dict.set("economy_profile", GString::from(profile_id.as_str()));

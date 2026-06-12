@@ -95,6 +95,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   destination building or border terminal; empty carriers then return to their source building or
   border base before being removed. The Godot renderer maps the freight vehicle type to
   `assets/models/vehicles/freight/delivery.glb`. See [`economy.md`](economy.md).
+- Industrial exports now hold affordable local commercial input demand before selling to `OWA`,
+  repeated same-resource exports saturate to a lower outside bid, and commercial store jobs/input
+  targets scale from the larger of recent household sales and local household demand/stock
+  recovery instead of immediately using full authored capacity.
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.
 - Updated the Inspector UI to display both Household occupancy and total Agent counts.

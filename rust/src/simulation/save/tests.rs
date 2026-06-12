@@ -233,9 +233,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         revenue: 0.0,
         operating_budget: 500.0,
         profit_tax_budget_baseline: 375.0,
+        last_day_profit: 125.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_household_sales_value: 123.0,
+        recent_household_sales_value: 456.0,
+        commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -299,6 +303,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             terminal: true,
         },
     );
+    logistics.set_owa_export_saturation_units(household_supplies, 120.0);
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
     let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
@@ -539,6 +544,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.allocator.buildings[0].profit_tax_budget_baseline,
         375.0
     );
+    assert_eq!(loaded.allocator.buildings[0].last_day_profit, 125.0);
+    assert_eq!(
+        loaded.allocator.buildings[0].daily_household_sales_value,
+        123.0
+    );
+    assert_eq!(
+        loaded.allocator.buildings[0].recent_household_sales_value,
+        456.0
+    );
     assert_eq!(loaded.treasury.balance, treasury.balance);
     assert_eq!(
         loaded.treasury.last_daily_business_profit_tax,
@@ -569,5 +583,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             failures: 2,
             terminal: true,
         })
+    );
+    assert_eq!(
+        loaded.logistics.owa_export_saturation_units()[household_supplies as usize - 1],
+        120.0
     );
 }

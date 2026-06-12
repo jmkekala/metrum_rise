@@ -114,6 +114,11 @@ impl ShipmentSystem {
                     && !allocator.buildings[src_idx].is_deserted
                     && !allocator.buildings[src_idx].is_under_construction()
                 {
+                    self.record_owa_export_saturation(
+                        shipment.resource_runtime_id,
+                        shipment.amount,
+                        catalog.resource_count(),
+                    );
                     allocator.buildings[src_idx].revenue += shipment.total_cost;
                     allocator.buildings[src_idx].operating_budget += shipment.total_cost;
 

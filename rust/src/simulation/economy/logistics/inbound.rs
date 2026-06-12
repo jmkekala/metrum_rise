@@ -1,19 +1,14 @@
 //! Input restock request planning for profile-driven buildings.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::accessibility::{ModeComponentIndex, max_speed_for_modes};
-use crate::simulation::economy::definitions::{
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
-};
+use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::TransitFlags;
 use rayon::prelude::*;
 
 use super::data::ShipmentSystem;
+use super::planning::FreightPlanningContext;
 use super::resource::{freight_profile_for_building, required_unit_price};
-use super::routing::connected_border_nodes;
-use super::supplier_index::SupplierCandidateIndex;
 
 impl ShipmentSystem {
     pub(super) fn create_profile_input_shipments(
@@ -22,19 +17,10 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
+        planning: &mut FreightPlanningContext,
     ) {
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let resource_count = catalog.resource_count();
-        let mut reservations = self.build_reservation_views(resource_count);
-        let border_nodes = connected_border_nodes(graph);
-        let freight_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
-        let max_freight_speed = max_speed_for_modes(graph, TransitFlags::CAR).max(1.0);
-        let supplier_index =
-            SupplierCandidateIndex::build(allocator, graph, &catalog, &freight_components);
-        let mut route_cache = std::mem::take(&mut self.freight_route_cache);
+        let catalog = planning.catalog.clone();
+        let tuning = planning.tuning.clone();
         let mut eligible_destinations: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -86,20 +72,28 @@ impl ShipmentSystem {
             let mut failed_any_request = false;
             for input_port in &profile.inputs {
                 let request_key = Self::request_key(dest_idx, input_port.resource_runtime_id);
-                if reservations.has_open_inbound(dest_idx, input_port.resource_runtime_id) {
+                if planning
+                    .reservations
+                    .has_open_inbound(dest_idx, input_port.resource_runtime_id)
+                {
                     self.clear_request_failure(request_key);
                     continue;
                 }
 
-                let target_units = profile.inventory_target_units_for(input_port);
+                let (target_units, reorder_units, critical_units) =
+                    scaled_input_inventory_targets_for_building(
+                        &catalog,
+                        &allocator.buildings[dest_idx],
+                        profile,
+                        input_port,
+                    );
                 if target_units <= 0.0 {
                     continue;
                 }
-                let reorder_units = profile.inventory_reorder_units_for(input_port);
-                let critical_units = profile.inventory_critical_units_for(input_port);
                 let effective_input_stock = allocator.buildings[dest_idx]
                     .inventory_units(input_port.resource_runtime_id)
-                    + reservations
+                    + planning
+                        .reservations
                         .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id);
                 if reorder_units > 0.0 && effective_input_stock >= reorder_units {
                     self.clear_request_failure(request_key);
@@ -131,15 +125,15 @@ impl ShipmentSystem {
                     allocator,
                     transit_network,
                     graph,
-                    &mut reservations,
-                    &supplier_index,
-                    &freight_components,
-                    &mut route_cache,
+                    &mut planning.reservations,
+                    &planning.supplier_index,
+                    &planning.freight_components,
+                    &mut planning.route_cache,
                     freight_profile,
                     minute_of_day,
                     &catalog,
                     tuning.logistics.truck_load_units,
-                    max_freight_speed,
+                    planning.max_freight_speed,
                     tuning.fiscal.business_purchase_tax_rate,
                 ) {
                     self.clear_request_failure(request_key);
@@ -159,9 +153,9 @@ impl ShipmentSystem {
                     allocator,
                     transit_network,
                     graph,
-                    &border_nodes,
-                    &mut reservations,
-                    &mut route_cache,
+                    &planning.border_nodes,
+                    &mut planning.reservations,
+                    &mut planning.route_cache,
                     freight_profile,
                     minute_of_day,
                     &tuning.logistics,
@@ -191,6 +185,5 @@ impl ShipmentSystem {
                     tuning.operational_clock.shipment_retry_cooldown_hours;
             }
         }
-        self.freight_route_cache = route_cache;
     }
 }

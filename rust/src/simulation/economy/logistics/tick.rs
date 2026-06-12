@@ -7,6 +7,7 @@ use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
 
 use super::data::ShipmentSystem;
+use super::planning::FreightPlanningContext;
 
 impl ShipmentSystem {
     /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
@@ -20,8 +21,22 @@ impl ShipmentSystem {
     ) -> f32 {
         self.refresh_freight_route_cache(allocator, transit_network);
         self.decrement_building_cooldowns(allocator);
-        self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
-        self.create_profile_output_exports(allocator, transit_network, graph, minute_of_day);
+        let mut planning = FreightPlanningContext::build(self, allocator, graph);
+        self.create_profile_input_shipments(
+            allocator,
+            transit_network,
+            graph,
+            minute_of_day,
+            &mut planning,
+        );
+        self.create_profile_output_exports(
+            allocator,
+            transit_network,
+            graph,
+            minute_of_day,
+            &mut planning,
+        );
+        planning.finish(self);
         let business_purchase_tax_collected =
             self.progress_shipments(allocator, agents, transit_network, graph);
         self.shipments.retain(|shipment| shipment.status.is_open());

@@ -123,6 +123,8 @@ pub struct Building {
     pub operating_budget: f32,
     /// Operating-budget baseline captured after the most recent daily profit-tax settlement.
     pub profit_tax_budget_baseline: f32,
+    /// Completed previous-day operating-budget delta captured before the daily baseline reset.
+    pub last_day_profit: f32,
     /// Remaining hourly cooldown steps before this building may open another freight request.
     pub shipment_cooldown_hours: u16,
     /// Currency value of input shipments received from OWA during the current day.
@@ -134,6 +136,20 @@ pub struct Building {
     ///
     /// Reset once per day after the demand snapshot is taken.
     pub daily_local_input_value: f32,
+    /// Net sales revenue collected from household shopping during the current day.
+    ///
+    /// Rolled into [`Self::recent_household_sales_value`] at the daily economy reset.
+    pub daily_household_sales_value: f32,
+    /// Most recently completed day's household sales revenue.
+    ///
+    /// Commercial staffing and input targets use this as a cheap demand signal instead of
+    /// assuming every shop should immediately operate at full authored capacity.
+    pub recent_household_sales_value: f32,
+    /// Runtime-only commercial activity floor derived from local household demand and stock gaps.
+    ///
+    /// This is rebuilt by the household economy before production, hiring, and demand accounting;
+    /// it is not persisted because it is a deterministic aggregate of live city state.
+    pub commercial_activity_floor_scale: f32,
     /// True when the current painted zoning profile is incompatible and the building is waiting
     /// for the rezoning grace timer to expire.
     pub pending_redevelopment: bool,
@@ -605,14 +621,16 @@ impl BuildingAllocator {
         self.registry.household_capacity(&b.asset_id)
     }
 
-    /// Resets the daily OWA and local input value accumulators on every building.
+    /// Resets daily economy accumulators on every building.
     ///
     /// Called once per day after the demand snapshot has been taken, so the next day's
-    /// logistics ticks accumulate against a clean baseline.
+    /// logistics and household sales ticks accumulate against a clean baseline.
     pub(crate) fn reset_daily_input_accumulators(&mut self) {
         for building in &mut self.buildings {
             building.daily_owa_input_value = 0.0;
             building.daily_local_input_value = 0.0;
+            building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
+            building.daily_household_sales_value = 0.0;
         }
     }
 

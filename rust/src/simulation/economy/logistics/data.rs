@@ -184,6 +184,8 @@ pub struct ShipmentSystem {
     pub(super) freight_route_cache_entrance_revision: u64,
     /// CCH graph generation captured when the freight cache was last validated.
     pub(super) freight_route_cache_cch_generation: u32,
+    /// Recent exported units by runtime resource id, used to soften repeated `OWA` export prices.
+    pub(super) owa_export_saturation_by_resource: Vec<f32>,
 }
 
 impl ShipmentSystem {
@@ -197,6 +199,7 @@ impl ShipmentSystem {
             freight_route_cache_building_revision: u64::MAX,
             freight_route_cache_entrance_revision: u64::MAX,
             freight_route_cache_cch_generation: u32::MAX,
+            owa_export_saturation_by_resource: Vec::new(),
         }
     }
 
@@ -209,12 +212,34 @@ impl ShipmentSystem {
         self.freight_route_cache_building_revision = u64::MAX;
         self.freight_route_cache_entrance_revision = u64::MAX;
         self.freight_route_cache_cch_generation = u32::MAX;
+        self.owa_export_saturation_by_resource.clear();
     }
 
     pub(super) fn allocate_shipment_id(&mut self) -> u64 {
         let id = self.next_shipment_id;
         self.next_shipment_id = self.next_shipment_id.saturating_add(1);
         id
+    }
+
+    /// Returns recent exported units by resource slot for save/load persistence.
+    pub(crate) fn owa_export_saturation_units(&self) -> &[f32] {
+        &self.owa_export_saturation_by_resource
+    }
+
+    /// Restores recent exported units for one runtime resource id.
+    pub(crate) fn set_owa_export_saturation_units(
+        &mut self,
+        resource_runtime_id: ResourceRuntimeId,
+        units: f32,
+    ) {
+        if resource_runtime_id == 0 {
+            return;
+        }
+        let slot = resource_runtime_id as usize - 1;
+        if self.owa_export_saturation_by_resource.len() <= slot {
+            self.owa_export_saturation_by_resource.resize(slot + 1, 0.0);
+        }
+        self.owa_export_saturation_by_resource[slot] = units.max(0.0);
     }
 
     /// Rebuilds the next stable shipment id after loading persisted shipment rows.

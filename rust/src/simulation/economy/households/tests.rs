@@ -12,7 +12,8 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::metrics::{
-    household_is_housed, household_supply_unit_price,
+    active_worker_capacity_for_profile, household_is_housed, household_supply_resource_runtime_id,
+    household_supply_unit_price, refresh_commercial_activity_floor,
 };
 use crate::simulation::economy::logistics::{
     CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem,
@@ -83,12 +84,87 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         revenue: 0.0,
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
+        last_day_profit: 0.0,
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_household_sales_value: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     }
+}
+
+#[test]
+fn zero_sales_commercial_active_worker_capacity_is_bootstrap_sized() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let building = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
+    let profile = catalog
+        .profile_by_runtime_id(building.economy_profile_runtime_id)
+        .expect("grocery runtime profile");
+
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &building, profile),
+        1
+    );
+}
+
+#[test]
+fn household_shortage_floor_opens_commercial_workers_without_sales() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut allocator = BuildingAllocator::new();
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, "test:home", 0.0));
+    allocator.buildings.push(make_building(
+        10.0,
+        ZoneType::Commercial,
+        "test:grocery",
+        0.0,
+    ));
+
+    let mut households = HouseholdSystem::new();
+    for _ in 0..7 {
+        households.households.push(make_household(0, 2, 10.0, 0.0));
+    }
+
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+    let store = &allocator.buildings[1];
+    let profile = catalog
+        .profile_by_runtime_id(store.economy_profile_runtime_id)
+        .expect("grocery runtime profile");
+
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, store, profile),
+        3,
+        "14 residents with empty household stock should open a demand floor above the one-worker bootstrap"
+    );
+}
+
+#[test]
+fn one_worker_commercial_production_uses_hourly_input_need() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+    let mut allocator = BuildingAllocator::new();
+    let mut store = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
+    let profile = catalog
+        .profile_by_runtime_id(store.economy_profile_runtime_id)
+        .expect("grocery runtime profile");
+    let input_port = profile.inputs.first().expect("grocery has an input");
+    store.worker_count = 1;
+    store.resource_inventory[input_port.resource_runtime_id as usize - 1] = 28.5;
+    allocator.buildings.push(store);
+
+    let mut households = HouseholdSystem::new();
+    households.run_building_economy(&mut allocator);
+
+    let output_units = allocator.buildings[0].inventory_units(household_supply_resource);
+    let expected_units = profile.outputs[0].units_per_day / 24.0 / profile.worker_capacity as f32;
+    assert!(
+        (output_units - expected_units).abs() < 0.001,
+        "one active worker with more than one hourly input need should produce at full one-worker rate: got={output_units:.3} expected={expected_units:.3}"
+    );
 }
 
 fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
@@ -1496,10 +1572,13 @@ fn business_profit_tax_charges_only_positive_active_business_growth() {
     assert!((tax - 15.0).abs() < 0.001);
     assert!((allocator.buildings[0].operating_budget - 635.0).abs() < 0.001);
     assert!((allocator.buildings[0].profit_tax_budget_baseline - 635.0).abs() < 0.001);
+    assert!((allocator.buildings[0].last_day_profit - 150.0).abs() < 0.001);
     assert_eq!(allocator.buildings[1].operating_budget, 700.0);
     assert_eq!(allocator.buildings[1].profit_tax_budget_baseline, 700.0);
+    assert_eq!(allocator.buildings[1].last_day_profit, 200.0);
     assert_eq!(allocator.buildings[2].operating_budget, 900.0);
     assert_eq!(allocator.buildings[2].profit_tax_budget_baseline, 900.0);
+    assert_eq!(allocator.buildings[2].last_day_profit, 0.0);
 
     let second_tax = households.settle_business_profit_tax(&mut allocator, 0.10);
     assert_eq!(second_tax, 0.0);
@@ -1530,7 +1609,37 @@ fn business_profit_tax_does_not_push_recovering_business_negative() {
     assert_eq!(tax, 5.0);
     assert_eq!(allocator.buildings[0].operating_budget, 0.0);
     assert_eq!(allocator.buildings[0].profit_tax_budget_baseline, 0.0);
+    assert_eq!(allocator.buildings[0].last_day_profit, 105.0);
     assert!(!allocator.buildings[0].budget_distress);
+}
+
+#[test]
+fn same_day_bankruptcy_preserves_yesterday_profit_for_inspector() {
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "bankrupt_profit_factory",
+        ZoneClass::Industrial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Industrial,
+        &industrial_asset,
+        0.0,
+    ));
+    allocator.buildings[0].profit_tax_budget_baseline = 500.0;
+    allocator.buildings[0].operating_budget = -50.0;
+    allocator.buildings[0].budget_distress = true;
+
+    let mut households = HouseholdSystem::new();
+    households.run_bankruptcy_check(&mut allocator);
+    let tax = households.settle_business_profit_tax(&mut allocator, 0.10);
+
+    assert_eq!(tax, 0.0);
+    assert!(allocator.buildings[0].is_deserted);
+    assert_eq!(allocator.buildings[0].last_day_profit, -550.0);
+    assert_eq!(allocator.buildings[0].profit_tax_budget_baseline, -50.0);
 }
 
 #[test]

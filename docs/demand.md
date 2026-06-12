@@ -1092,10 +1092,15 @@ If any denominator is `<= EPSILON`, that use's raw spawn need is `0.0` for the p
 count does not multiply spawn need; it only caps how many deterministic empty sites can be selected.
 This means one valid industrial parcel can receive the full one-factory need immediately instead of
 turning the need into `1 / 24` of a parcel-count-scaled daily drip.
-Because `industrial_missing_input_value_per_day` subtracts existing local capacity, one commercial
-building that needs `160` units/day and one industrial building that outputs `160` units/day yields
-zero further industrial spawn need even if the commercial building imported a large one-time OWA
-starter shipment earlier in the day.
+Commercial `unmet_commercial_consumer_demand_units_per_day` includes baseline resident consumption
+plus below-target household pantry recovery spread over the authored stock target window. Existing
+live commercial shops subtract only their effective demand-responsive output capacity, not their
+raw full-profile output, while under-construction shops remain committed future capacity so the
+planner does not duplicate an already-started site. Because
+`industrial_missing_input_value_per_day` subtracts existing local capacity from active commercial
+input need, one commercial building that actively needs `160` input units/day and one industrial
+building that outputs `160` compatible units/day yields zero further industrial spawn need even if
+the commercial building imported a large one-time OWA starter shipment earlier in the day.
 
 For upgrade:
 

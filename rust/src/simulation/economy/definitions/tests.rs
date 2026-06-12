@@ -82,6 +82,9 @@ border_active_jobs_per_node = 4
 border_queued_jobs_per_node = 4
 queued_shipment_expiry_hours = 12
 terminal_failure_attempts = 3
+owa_export_saturation_loads_to_floor = 4.0
+owa_export_saturation_floor_factor = 0.35
+owa_export_saturation_recovery_hours = 24.0
 
 [runtime_tuning.construction]
 residential_hours_by_level = [6, 12, 18]

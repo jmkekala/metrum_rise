@@ -19,7 +19,8 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, candidate_immigrant_household_size_from_flat_size,
+    Household, HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
+    candidate_immigrant_household_size_from_flat_size, commercial_activity_signal_for_city,
     expected_adult_members_for_household_size, household_reserve_days,
 };
 use crate::simulation::network::graph::RegionGraph;
@@ -285,11 +286,14 @@ impl DailyDemandSnapshot {
         }
         let daily_essential_cost_per_resident =
             daily_supply_cost_per_resident + tuning.households.utility_cost_per_member_per_day;
+        let commercial_activity_signal =
+            commercial_activity_signal_for_city(catalog, &households.households, allocator);
         let building_accumulator = collect_building_snapshot_accumulator(
             allocator,
             catalog,
             tuning.fiscal.income_tax_rate,
             &demand_sink_rates_by_resource,
+            commercial_activity_signal.activity_floor_scale,
         );
         let total_household_slots = building_accumulator.total_household_slots;
         let occupied_household_slots = building_accumulator.occupied_household_slots;
@@ -373,7 +377,13 @@ impl DailyDemandSnapshot {
         let mut committed_unmet_commercial_consumer_demand = 0.0_f32;
         for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
         {
-            let consumer_demand = consumption_rate_per_resident * housed_resident_count as f32;
+            let consumer_demand = if resource_runtime_id
+                == commercial_activity_signal.household_supply_resource_runtime_id
+            {
+                commercial_activity_signal.demand_units_per_day
+            } else {
+                consumption_rate_per_resident * housed_resident_count as f32
+            };
             if consumer_demand <= 0.0 {
                 continue;
             }
@@ -590,6 +600,7 @@ impl BuildingSnapshotAccumulator {
         catalog: &RuntimeEconomyCatalog,
         income_tax_rate: f32,
         demand_sink_rates_by_resource: &[(u16, f32)],
+        commercial_activity_floor_scale: f32,
         idx: usize,
         building: &Building,
     ) {
@@ -677,7 +688,12 @@ impl BuildingSnapshotAccumulator {
         if let Some(profile) =
             active_profile.filter(|profile| profile_offers_work(building, profile))
         {
-            let worker_capacity = profile.worker_capacity;
+            let worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
+                catalog,
+                building,
+                profile,
+                commercial_activity_floor_scale,
+            );
             if worker_capacity > 0 {
                 let average_daily_wage = profile.average_daily_wage();
                 let filled_workers = building.worker_count.min(worker_capacity);
@@ -696,11 +712,17 @@ impl BuildingSnapshotAccumulator {
         }
 
         if let Some(profile) = active_profile {
+            let output_capacity_scale = profile_output_capacity_scale(
+                catalog,
+                building,
+                profile,
+                commercial_activity_floor_scale,
+            );
             for output_port in &profile.outputs {
                 add_resource_amount(
                     &mut self.committed_output_capacity_by_resource,
                     output_port.resource_runtime_id,
-                    output_port.units_per_day,
+                    output_port.units_per_day * output_capacity_scale,
                 );
             }
         }
@@ -709,6 +731,12 @@ impl BuildingSnapshotAccumulator {
             self.total_commercial_owa_input += building.daily_owa_input_value;
             self.total_commercial_local_input += building.daily_local_input_value;
             if let Some(profile) = active_profile {
+                let commercial_capacity_scale = profile_output_capacity_scale(
+                    catalog,
+                    building,
+                    profile,
+                    commercial_activity_floor_scale,
+                );
                 for output_port in &profile.outputs {
                     if resource_amount(
                         demand_sink_rates_by_resource,
@@ -718,20 +746,21 @@ impl BuildingSnapshotAccumulator {
                         add_resource_amount(
                             &mut self.live_commercial_output_capacity_by_resource,
                             output_port.resource_runtime_id,
-                            output_port.units_per_day,
+                            output_port.units_per_day * commercial_capacity_scale,
                         );
                         add_resource_amount(
                             &mut self.committed_commercial_output_capacity_by_resource,
                             output_port.resource_runtime_id,
-                            output_port.units_per_day,
+                            output_port.units_per_day * commercial_capacity_scale,
                         );
                     }
                 }
                 for input_port in &profile.inputs {
+                    let input_units_per_day = input_port.units_per_day * commercial_capacity_scale;
                     add_resource_amount(
                         &mut self.commercial_input_need_by_resource,
                         input_port.resource_runtime_id,
-                        input_port.units_per_day,
+                        input_units_per_day,
                     );
                     let resource_price = catalog
                         .unit_price_for_resource(input_port.resource_runtime_id)
@@ -744,8 +773,7 @@ impl BuildingSnapshotAccumulator {
                                 profile.id
                             )
                         });
-                    self.total_commercial_expected_input +=
-                        input_port.units_per_day * resource_price;
+                    self.total_commercial_expected_input += input_units_per_day * resource_price;
                 }
             }
         }
@@ -835,6 +863,7 @@ fn collect_building_snapshot_accumulator(
     catalog: &RuntimeEconomyCatalog,
     income_tax_rate: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
+    commercial_activity_floor_scale: f32,
 ) -> BuildingSnapshotAccumulator {
     let mut chunks: Vec<_> = allocator
         .buildings
@@ -849,6 +878,7 @@ fn collect_building_snapshot_accumulator(
                     catalog,
                     income_tax_rate,
                     demand_sink_rates_by_resource,
+                    commercial_activity_floor_scale,
                     start_idx + local_idx,
                     building,
                 );
@@ -863,6 +893,24 @@ fn collect_building_snapshot_accumulator(
         merged.merge(accumulator);
     }
     merged
+}
+
+fn profile_output_capacity_scale(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    commercial_activity_floor_scale: f32,
+) -> f32 {
+    if !matches!(building.zone_type, ZoneType::Commercial) || profile.worker_capacity == 0 {
+        return 1.0;
+    }
+    let active_capacity = active_worker_capacity_for_profile_with_floor_scale(
+        catalog,
+        building,
+        profile,
+        commercial_activity_floor_scale,
+    );
+    (active_capacity as f32 / profile.worker_capacity.max(1) as f32).clamp(0.0, 1.0)
 }
 
 fn merge_resource_amounts(

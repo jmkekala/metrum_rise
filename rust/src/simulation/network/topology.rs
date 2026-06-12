@@ -1079,9 +1079,13 @@ mod tests {
                 revenue: 0.0,
                 operating_budget: 500.0,
                 profit_tax_budget_baseline: 500.0,
+                last_day_profit: 0.0,
                 shipment_cooldown_hours: 0,
                 daily_owa_input_value: 0.0,
                 daily_local_input_value: 0.0,
+                daily_household_sales_value: 0.0,
+                recent_household_sales_value: 0.0,
+                commercial_activity_floor_scale: 0.0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
             });

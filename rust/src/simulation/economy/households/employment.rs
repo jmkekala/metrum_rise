@@ -7,7 +7,10 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
 use super::data::{Household, HouseholdSystem};
-use super::metrics::{household_demand_profile, household_supply_unit_price};
+use super::metrics::{
+    active_worker_capacity_for_profile, household_demand_profile, household_supply_unit_price,
+    refresh_commercial_activity_floor,
+};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
@@ -198,6 +201,7 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
@@ -268,7 +272,17 @@ impl HouseholdSystem {
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         eject_inactive_work_assignments(agents, allocator, &catalog);
+        let active_worker_capacity_by_building: Vec<u32> = allocator
+            .buildings
+            .par_iter()
+            .map(|building| {
+                active_work_profile(&catalog, building)
+                    .map(|profile| active_worker_capacity_for_profile(&catalog, building, profile))
+                    .unwrap_or(0)
+            })
+            .collect();
         let mut plans: Vec<_> = (0..agents.len())
             .into_par_iter()
             .filter_map(|i| {
@@ -297,6 +311,7 @@ impl HouseholdSystem {
         self.ensure_daily_ledger_len();
 
         let mut income_tax_collected = 0.0;
+        let mut paid_workers_by_building = vec![0u32; allocator.buildings.len()];
         for plan in plans {
             if plan.agent_idx >= agents.len()
                 || agents.work_building[plan.agent_idx] != plan.work_building
@@ -306,13 +321,25 @@ impl HouseholdSystem {
             {
                 continue;
             }
-            if allocator.buildings[plan.work_building].operating_budget >= plan.wage {
+            let within_active_capacity = paid_workers_by_building
+                .get(plan.work_building)
+                .copied()
+                .unwrap_or(0)
+                < active_worker_capacity_by_building
+                    .get(plan.work_building)
+                    .copied()
+                    .unwrap_or(0);
+            if within_active_capacity
+                && allocator.buildings[plan.work_building].operating_budget >= plan.wage
+            {
                 let income_tax = tax_amount(plan.wage, income_tax_rate);
                 let net_wage = plan.wage - income_tax;
                 allocator.buildings[plan.work_building].operating_budget -= plan.wage;
                 self.households[plan.household_id].budget += net_wage;
                 self.daily_ledgers[plan.household_id].wage_income += net_wage;
                 income_tax_collected += income_tax;
+                paid_workers_by_building[plan.work_building] =
+                    paid_workers_by_building[plan.work_building].saturating_add(1);
                 agents.consecutive_unpaid_days[plan.agent_idx] = 0;
             } else {
                 agents.consecutive_unpaid_days[plan.agent_idx] =
@@ -542,7 +569,8 @@ fn apply_workplace_plan(
         }
 
         let average_daily_wage = economy_profile.average_daily_wage();
-        let worker_capacity = economy_profile.worker_capacity;
+        let worker_capacity =
+            active_worker_capacity_for_profile(catalog, building, economy_profile);
         if worker_capacity == 0 {
             continue;
         }
@@ -685,7 +713,8 @@ impl JobSupplySnapshot {
                     return None;
                 }
                 let average_daily_wage = profile.average_daily_wage();
-                let worker_capacity = profile.worker_capacity;
+                let worker_capacity =
+                    active_worker_capacity_for_profile(catalog, building, profile);
                 if worker_capacity == 0 {
                     return None;
                 }
@@ -1117,12 +1146,13 @@ fn build_current_job_option_for_key(
         new_route_entry_count,
     )?;
     let average_daily_wage = profile.average_daily_wage();
+    let worker_capacity = active_worker_capacity_for_profile(catalog, work, profile);
     let budget_capacity = if average_daily_wage > 0.1 {
         (work.operating_budget.max(0.0) / average_daily_wage).floor() as u32
     } else {
-        profile.worker_capacity
+        worker_capacity
     };
-    let effective_capacity = profile.worker_capacity.min(budget_capacity);
+    let effective_capacity = worker_capacity.min(budget_capacity);
     Some(HomeJobOption {
         building_idx: work_idx,
         commute_seconds,

@@ -1018,6 +1018,7 @@ impl HouseholdSystem {
             let store = &mut allocator.buildings[store_idx];
             store.revenue += store_revenue;
             store.operating_budget += store_revenue;
+            store.daily_household_sales_value += store_revenue;
             self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
             self.households[hid].shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
             schedule_shopper_home(&self.households[hid], agents);

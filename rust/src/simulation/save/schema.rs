@@ -160,6 +160,7 @@ CREATE TABLE buildings(
     revenue REAL NOT NULL,
     operating_budget REAL NOT NULL,
     profit_tax_budget_baseline REAL NOT NULL,
+    last_day_profit REAL NOT NULL,
     shipment_cooldown_hours INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
@@ -171,7 +172,9 @@ CREATE TABLE buildings(
     pending_redevelopment INTEGER NOT NULL DEFAULT 0,
     rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0,
     is_deserted INTEGER NOT NULL DEFAULT 0,
-    budget_distress INTEGER NOT NULL DEFAULT 0
+    budget_distress INTEGER NOT NULL DEFAULT 0,
+    daily_household_sales_value REAL NOT NULL,
+    recent_household_sales_value REAL NOT NULL
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -245,6 +248,10 @@ CREATE TABLE freight_request_failures(
     failures INTEGER NOT NULL,
     terminal INTEGER NOT NULL,
     PRIMARY KEY(destination_building_id, resource_runtime_id)
+);
+CREATE TABLE owa_export_saturation(
+    resource_runtime_id INTEGER PRIMARY KEY,
+    units REAL NOT NULL
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,

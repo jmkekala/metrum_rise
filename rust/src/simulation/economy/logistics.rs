@@ -10,6 +10,7 @@ mod exports;
 mod inbound;
 mod local_supplier;
 mod owa_import;
+mod planning;
 mod progress;
 mod quantization;
 mod reservations;

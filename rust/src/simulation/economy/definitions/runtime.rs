@@ -99,6 +99,12 @@ pub(crate) struct LogisticsRuntimeTuning {
     /// Failed request attempts before a building/resource request becomes terminal.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub terminal_failure_attempts: u16,
+    /// Same-resource `OWA` export truckloads needed to reach the saturated export bid.
+    pub owa_export_saturation_loads_to_floor: f32,
+    /// Lowest multiplier applied to the normal `OWA` export bid when saturated.
+    pub owa_export_saturation_floor_factor: f32,
+    /// Operational hours without further exports needed to clear full saturation.
+    pub owa_export_saturation_recovery_hours: f32,
 }
 
 /// Runtime controls for fresh private building construction.
