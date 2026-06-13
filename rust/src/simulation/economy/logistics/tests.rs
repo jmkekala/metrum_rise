@@ -138,6 +138,7 @@ fn register_test_asset_with_profile(
             length_m: None,
             vehicle_class: None,
         }],
+        site_surfaces: vec![],
         building: Some(BuildingData {
             flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,

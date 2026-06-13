@@ -22,6 +22,8 @@ const MAIN_ENTRANCE_PICK_RADIUS_PX := 18.0
 const PANEL_PAD := 8
 const PANEL_GAP := 6
 const ASSET_CONTEXT_USE_AS_GHOST := 1
+const SITE_SURFACE_CONTEXT_ADD_VERTEX := 1
+const SITE_SURFACE_CONTEXT_DELETE_VERTEX := 2
 const PACK_MENU_CREATE_NEW := 1000000
 const PACK_MENU_NO_PACKS := 1000001
 const PACK_SCHEMA_VERSION := 1
@@ -29,6 +31,8 @@ const MESH_ROTATION_DRAG_DEG_PER_PX := 0.35
 const MESH_ROTATION_CARDINAL_SNAP_DEG := 4.0
 const SELECTION_DRAG_THRESHOLD_PX := 6.0
 const SITE_ANCHOR_DRAG_RADIUS_M := 1.25
+const SITE_SURFACE_VERTEX_PICK_RADIUS_M := 1.25
+const SITE_SURFACE_EDGE_PICK_RADIUS_M := 1.10
 const SITE_ANCHOR_DEFAULT_WIDTH_M := {
 	"driveway": 3.0,
 	"parking": 2.5,
@@ -37,6 +41,18 @@ const SITE_ANCHOR_DEFAULT_WIDTH_M := {
 const SITE_ANCHOR_DEFAULT_LENGTH_M := {
 	"parking": 5.0,
 	"loading_bay": 8.0,
+}
+const SITE_SURFACE_MATERIALS := [
+	{"id": "asphalt", "label": "Asphalt"},
+	{"id": "concrete", "label": "Concrete"},
+	{"id": "gravel", "label": "Gravel"},
+	{"id": "paving", "label": "Paving"},
+]
+const SITE_SURFACE_DEFAULT_SIZE_M := {
+	"asphalt": Vector2(5.0, 7.0),
+	"concrete": Vector2(1.4, 6.0),
+	"gravel": Vector2(5.0, 7.0),
+	"paving": Vector2(2.0, 4.0),
 }
 const PLACEMENT_MODES := [
 	{"id": "zoned_private", "label": "Zoned Private"},
@@ -145,6 +161,11 @@ var _site_anchor_z_spin: SpinBox
 var _site_anchor_yaw_spin: SpinBox
 var _site_anchor_width_spin: SpinBox
 var _site_anchor_length_spin: SpinBox
+var _site_surface_list: ItemList
+var _site_surface_name_edit: LineEdit
+var _site_surface_material_btn: OptionButton
+var _site_surface_y_spin: SpinBox
+var _site_surface_context_menu: PopupMenu
 var _glb_path: String = ""
 
 # 3D preview node
@@ -194,11 +215,17 @@ var _log_plain_lines: Array[String] = []
 var _bbcode_strip_regex: RegEx
 var _main_entrance_auto: bool = true
 var _site_anchors_data: Array[Dictionary] = []
+var _site_surfaces_data: Array[Dictionary] = []
 var _selected_site_anchor_index: int = -1
 var _selected_site_anchor_indices: Array[int] = []
+var _selected_site_surface_index: int = -1
 var _updating_site_anchor_controls: bool = false
 var _updating_site_anchor_list: bool = false
+var _updating_site_surface_controls: bool = false
+var _updating_site_surface_list: bool = false
 var _dragging_site_anchor: bool = false
+var _dragging_site_surface: bool = false
+var _dragging_site_surface_vertex: bool = false
 var _dragging_mesh_part: bool = false
 var _selecting_mesh_parts: bool = false
 var _rotating_site_anchor: bool = false
@@ -208,6 +235,14 @@ var _site_anchor_drag_start_hit: Vector3 = Vector3.ZERO
 var _site_anchor_drag_start_positions: Array[Vector3] = []
 var _site_anchor_rotate_start_x: float = 0.0
 var _site_anchor_rotate_start_yaw: float = 0.0
+var _site_surface_drag_start_hit: Vector3 = Vector3.ZERO
+var _site_surface_drag_start_vertices: Array = []
+var _site_surface_drag_index: int = -1
+var _site_surface_vertex_drag_index: int = -1
+var _site_surface_context_index: int = -1
+var _site_surface_context_vertex_index: int = -1
+var _site_surface_context_edge_index: int = -1
+var _site_surface_context_insert_point: Vector2 = Vector2.ZERO
 var _mesh_part_drag_start_hit: Vector3 = Vector3.ZERO
 var _mesh_part_drag_start_positions: Array[Vector3] = []
 var _mesh_part_rotate_start_x: float = 0.0
@@ -769,6 +804,51 @@ func _build_right_panel(parent: Control) -> void:
 	clear_ghost_btn.text = "Clear Ghost"
 	clear_ghost_btn.pressed.connect(_on_clear_ghost_pressed)
 	preview_box.add_child(clear_ghost_btn)
+
+	var yard_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Yard")
+	_add_label(yard_box, "Site Surfaces", _font_size_section)
+	_site_surface_list = ItemList.new()
+	_site_surface_list.custom_minimum_size.y = 140
+	_site_surface_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_site_surface_list.select_mode = ItemList.SELECT_SINGLE
+	_site_surface_list.item_selected.connect(_on_site_surface_selected)
+	yard_box.add_child(_site_surface_list)
+	_site_surface_context_menu = PopupMenu.new()
+	_site_surface_context_menu.id_pressed.connect(_on_site_surface_context_menu_id_pressed)
+	yard_box.add_child(_site_surface_context_menu)
+	EditorTheme.style_popup_menu(_site_surface_context_menu, _theme_mode)
+
+	var surface_button_row := HBoxContainer.new()
+	surface_button_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	surface_button_row.add_theme_constant_override("separation", PANEL_GAP)
+	yard_box.add_child(surface_button_row)
+	for material in SITE_SURFACE_MATERIALS:
+		var add_surface_btn := Button.new()
+		add_surface_btn.text = str(material["label"])
+		add_surface_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		add_surface_btn.pressed.connect(Callable(self, "_add_site_surface").bind(str(material["id"])))
+		surface_button_row.add_child(add_surface_btn)
+	var remove_surface_btn := Button.new()
+	remove_surface_btn.text = "Remove Surface"
+	remove_surface_btn.pressed.connect(_remove_selected_site_surface)
+	yard_box.add_child(remove_surface_btn)
+
+	_site_surface_name_edit = _add_line_edit(yard_box, "Name", "")
+	_site_surface_name_edit.text_changed.connect(_on_site_surface_text_changed)
+	_add_label(yard_box, "Material", _font_size_label)
+	_site_surface_material_btn = OptionButton.new()
+	for material in SITE_SURFACE_MATERIALS:
+		_site_surface_material_btn.add_item(str(material["label"]))
+		_site_surface_material_btn.set_item_metadata(
+			_site_surface_material_btn.get_item_count() - 1,
+			str(material["id"])
+		)
+	_site_surface_material_btn.item_selected.connect(_on_site_surface_material_selected)
+	yard_box.add_child(_site_surface_material_btn)
+	_site_surface_y_spin = _add_spinbox(yard_box, "Surface Y (m)", -5.0, 5.0, 0.01)
+	_site_surface_y_spin.step = 0.01
+	_site_surface_y_spin.value_changed.connect(_on_site_surface_spin_changed)
+	_refresh_site_surface_list()
 
 	var anchors_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Anchors")
 	_add_label(anchors_box, "Frontage", _font_size_section)
@@ -1504,8 +1584,10 @@ func _start_new_asset() -> void:
 	_auto_suggest_asset_id()
 	_set_economy_profile_selection("")
 	_site_anchors_data.clear()
+	_site_surfaces_data.clear()
 	_selected_site_anchor_index = -1
 	_selected_site_anchor_indices.clear()
+	_selected_site_surface_index = -1
 	_glb_path = ""
 	_clear_mesh_parts()
 	_loaded_asset_pack_id = ""
@@ -1521,6 +1603,7 @@ func _start_new_asset() -> void:
 	_set_main_entrance_forward(Vector3.FORWARD)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
 	_refresh_site_anchor_list()
+	_refresh_site_surface_list()
 	_update_building_mode_visibility()
 	_update_economy_profile_status()
 	_log("Started a new asset.")
@@ -1601,6 +1684,7 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	if loaded_profile_id.strip_edges().is_empty():
 		_auto_select_profile_for_service(_selected_service_class())
 	_site_anchors_data.clear()
+	_site_surfaces_data.clear()
 
 	var main_anchor_pos := _default_main_entrance_position()
 	var main_anchor_fwd := Vector3.FORWARD
@@ -1633,6 +1717,7 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_site_anchors_data.append(anchor)
 	_selected_site_anchor_index = -1
 	_selected_site_anchor_indices.clear()
+	_selected_site_surface_index = -1
 
 	_set_frontage_forward(_anchor_forward(entrance_anchor))
 	if not has_main_anchor:
@@ -1642,6 +1727,11 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_main_entrance_auto = false
 		_update_site_anchor_preview()
 	_refresh_site_anchor_list()
+
+	for surface in data.get("site_surfaces", []):
+		if surface is Dictionary:
+			_site_surfaces_data.append(_sanitize_site_surface_dict(surface))
+	_refresh_site_surface_list()
 
 	_clear_mesh_parts()
 	var mesh_parts: Array = data.get("mesh_parts", [])
@@ -1840,6 +1930,7 @@ func _on_zone_or_lot_changed(_idx) -> void:
 		_update_main_entrance_preview()
 	_clamp_mesh_parts_to_lot()
 	_clamp_site_anchors_to_lot()
+	_clamp_site_surfaces_to_lot()
 	_update_economy_profile_status()
 
 func _sync_preview_lot_size_from_fields() -> void:
@@ -2206,10 +2297,12 @@ func _select_mesh_part(index: int, clear_site_anchors: bool = true) -> void:
 		_set_selected_mesh_parts([], -1)
 		if clear_site_anchors:
 			_set_selected_site_anchors([], -1)
+		_set_selected_site_surface(-1)
 		return
 	_set_selected_mesh_parts([index], index)
 	if clear_site_anchors:
 		_set_selected_site_anchors([], -1)
+	_set_selected_site_surface(-1)
 
 func _on_mesh_part_selected(index: int) -> void:
 	if _updating_mesh_part_selection:
@@ -2281,6 +2374,270 @@ func _remove_selected_mesh_parts() -> bool:
 	_set_selected_mesh_parts([next_index] if next_index >= 0 else [], next_index)
 	_log("Removed %d mesh part(s)." % remove_indices.size())
 	return true
+
+func _site_surface_material_label(material: String) -> String:
+	match material:
+		"asphalt":
+			return "Asphalt"
+		"concrete":
+			return "Concrete"
+		"gravel":
+			return "Gravel"
+		"paving":
+			return "Paving"
+		_:
+			return material.capitalize()
+
+func _add_site_surface(material: String) -> void:
+	var size: Vector2 = SITE_SURFACE_DEFAULT_SIZE_M.get(material, Vector2(3.0, 5.0))
+	var center := _default_site_surface_position(material)
+	var half := size * 0.5
+	var surface := {
+		"material": material,
+		"name": "",
+		"y_m": 0.01,
+		"vertices": [
+			[snappedf(center.x - half.x, 0.01), snappedf(center.z - half.y, 0.01)],
+			[snappedf(center.x + half.x, 0.01), snappedf(center.z - half.y, 0.01)],
+			[snappedf(center.x + half.x, 0.01), snappedf(center.z + half.y, 0.01)],
+			[snappedf(center.x - half.x, 0.01), snappedf(center.z + half.y, 0.01)],
+		],
+	}
+	_clamp_site_surface_vertices_to_lot(surface)
+	_site_surfaces_data.append(surface)
+	_set_selected_site_surface(_site_surfaces_data.size() - 1)
+	_log("Added %s site surface." % _site_surface_material_label(material))
+
+func _default_site_surface_position(material: String) -> Vector3:
+	var count := _site_surface_count(material)
+	var side_offset := float((count % 5) - 2) * 2.0
+	var depth_offset := float(count / 5) * 2.0
+	var fwd := _frontage_fwd.normalized()
+	if fwd.length_squared() < 0.001:
+		fwd = Vector3.FORWARD
+	var side := Vector3(-fwd.z, 0.0, fwd.x)
+	return _clamp_anchor_position_to_lot(side * side_offset - fwd * depth_offset)
+
+func _site_surface_count(material: String) -> int:
+	var count := 0
+	for surface in _site_surfaces_data:
+		if str(surface.get("material", "")).strip_edges() == material:
+			count += 1
+	return count
+
+func _refresh_site_surface_list() -> void:
+	if not _site_surface_list:
+		return
+	_updating_site_surface_list = true
+	_site_surface_list.clear()
+	var material_counts := {}
+	for i in _site_surfaces_data.size():
+		var surface := _site_surfaces_data[i]
+		var material := str(surface.get("material", "")).strip_edges()
+		material_counts[material] = int(material_counts.get(material, 0)) + 1
+		_site_surface_list.add_item(_site_surface_display_label(i, material_counts[material]))
+	if _selected_site_surface_index >= 0 and _selected_site_surface_index < _site_surface_list.item_count:
+		_site_surface_list.select(_selected_site_surface_index, false)
+	_updating_site_surface_list = false
+	_update_site_surface_controls()
+	_update_site_surface_preview()
+
+func _site_surface_display_label(index: int, material_index: int = -1) -> String:
+	if index < 0 or index >= _site_surfaces_data.size():
+		return "Surface"
+	var surface := _site_surfaces_data[index]
+	var material := str(surface.get("material", "")).strip_edges()
+	var name := str(surface.get("name", "")).strip_edges()
+	if not name.is_empty():
+		return "%s - %s" % [_site_surface_material_label(material), name]
+	if material_index < 0:
+		material_index = _site_surface_index_among_material(index)
+	return "%s %d" % [_site_surface_material_label(material), material_index]
+
+func _site_surface_index_among_material(index: int) -> int:
+	if index < 0 or index >= _site_surfaces_data.size():
+		return 0
+	var material := str(_site_surfaces_data[index].get("material", "")).strip_edges()
+	var count := 0
+	for i in index + 1:
+		if str(_site_surfaces_data[i].get("material", "")).strip_edges() == material:
+			count += 1
+	return count
+
+func _set_selected_site_surface(index: int) -> void:
+	_selected_site_surface_index = index if index >= 0 and index < _site_surfaces_data.size() else -1
+	_refresh_site_surface_list()
+	if _selected_site_surface_index >= 0:
+		_set_selected_mesh_parts([], -1)
+		_set_selected_site_anchors([], -1)
+
+func _on_site_surface_selected(index: int) -> void:
+	if _updating_site_surface_list:
+		return
+	_set_selected_site_surface(index)
+
+func _remove_selected_site_surface() -> bool:
+	if _selected_site_surface_index < 0 or _selected_site_surface_index >= _site_surfaces_data.size():
+		_log("[color=yellow]No site surface selected to remove.[/color]")
+		return false
+	var material := str(_site_surfaces_data[_selected_site_surface_index].get("material", ""))
+	_site_surfaces_data.remove_at(_selected_site_surface_index)
+	var next_index := -1
+	if not _site_surfaces_data.is_empty():
+		next_index = mini(_selected_site_surface_index, _site_surfaces_data.size() - 1)
+	_selected_site_surface_index = next_index
+	_refresh_site_surface_list()
+	_log("Removed %s site surface." % _site_surface_material_label(material))
+	return true
+
+func _update_site_surface_controls() -> void:
+	_updating_site_surface_controls = true
+	var has_surface := _selected_site_surface_index >= 0 and _selected_site_surface_index < _site_surfaces_data.size()
+	var surface := _site_surfaces_data[_selected_site_surface_index] if has_surface else {}
+	_site_surface_name_edit.text = str(surface.get("name", "")) if has_surface else ""
+	_set_option_by_metadata(_site_surface_material_btn, str(surface.get("material", "asphalt")))
+	_site_surface_y_spin.value = _site_surface_number(surface, "y_m", 0.01) if has_surface else 0.0
+	_site_surface_name_edit.editable = has_surface
+	_site_surface_material_btn.disabled = not has_surface
+	_site_surface_y_spin.editable = has_surface
+	_updating_site_surface_controls = false
+
+func _on_site_surface_text_changed(_value: String) -> void:
+	if _updating_site_surface_controls:
+		return
+	_apply_site_surface_controls()
+
+func _on_site_surface_material_selected(_index: int) -> void:
+	if _updating_site_surface_controls:
+		return
+	_apply_site_surface_controls()
+
+func _on_site_surface_spin_changed(_value: float) -> void:
+	if _updating_site_surface_controls:
+		return
+	_apply_site_surface_controls()
+
+func _apply_site_surface_controls() -> void:
+	if _selected_site_surface_index < 0 or _selected_site_surface_index >= _site_surfaces_data.size():
+		return
+	var surface := _site_surfaces_data[_selected_site_surface_index]
+	surface["name"] = _site_surface_name_edit.text.strip_edges()
+	surface["material"] = _selected_option_metadata(_site_surface_material_btn, "asphalt")
+	surface["y_m"] = snappedf(float(_site_surface_y_spin.value), 0.01)
+	_refresh_site_surface_list()
+
+func _update_site_surface_preview() -> void:
+	if _preview and _preview.has_method("set_site_surfaces"):
+		_preview.set_site_surfaces(_site_surfaces_data, _selected_site_surface_index)
+
+func _site_surface_number(surface: Dictionary, key: String, fallback: float) -> float:
+	var value = surface.get(key, null)
+	if value == null:
+		return fallback
+	if _anchor_value_is_number(value):
+		return float(value)
+	if value is String:
+		var text := (value as String).strip_edges()
+		if text.is_valid_float():
+			return text.to_float()
+	return fallback
+
+func _site_surface_vertices(surface: Dictionary) -> Array[Vector2]:
+	var vertices: Array[Vector2] = []
+	var raw_vertices = surface.get("vertices", [])
+	if raw_vertices is Array:
+		for raw_vertex in raw_vertices:
+			if raw_vertex is Array and raw_vertex.size() >= 2:
+				vertices.append(Vector2(float(raw_vertex[0]), float(raw_vertex[1])))
+	return vertices
+
+func _site_surface_vertices_to_arrays(vertices: Array[Vector2]) -> Array:
+	var result := []
+	for vertex in vertices:
+		result.append([snappedf(vertex.x, 0.01), snappedf(vertex.y, 0.01)])
+	return result
+
+func _site_surface_polygon_area(vertices: Array[Vector2]) -> float:
+	if vertices.size() < 3:
+		return 0.0
+	var twice_area := 0.0
+	for i in vertices.size():
+		var a := vertices[i]
+		var b := vertices[(i + 1) % vertices.size()]
+		twice_area += a.x * b.y - b.x * a.y
+	return twice_area * 0.5
+
+func _site_surface_polygon_is_valid(vertices: Array[Vector2]) -> bool:
+	if vertices.size() < 3:
+		return false
+	if absf(_site_surface_polygon_area(vertices)) <= 0.001:
+		return false
+	for i in vertices.size():
+		for j in range(i + 1, vertices.size()):
+			var i_next := (i + 1) % vertices.size()
+			var j_next := (j + 1) % vertices.size()
+			if i == j or i == j_next or i_next == j or i_next == j_next:
+				continue
+			if _segments_intersect_2d(vertices[i], vertices[i_next], vertices[j], vertices[j_next]):
+				return false
+	return true
+
+func _segments_intersect_2d(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool:
+	var eps := 0.0001
+	var ab_c := _orientation_2d(a, b, c)
+	var ab_d := _orientation_2d(a, b, d)
+	var cd_a := _orientation_2d(c, d, a)
+	var cd_b := _orientation_2d(c, d, b)
+	if absf(ab_c) <= eps and _point_on_segment_2d(a, b, c):
+		return true
+	if absf(ab_d) <= eps and _point_on_segment_2d(a, b, d):
+		return true
+	if absf(cd_a) <= eps and _point_on_segment_2d(c, d, a):
+		return true
+	if absf(cd_b) <= eps and _point_on_segment_2d(c, d, b):
+		return true
+	return (ab_c > eps) != (ab_d > eps) and (cd_a > eps) != (cd_b > eps)
+
+func _orientation_2d(a: Vector2, b: Vector2, c: Vector2) -> float:
+	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+
+func _point_on_segment_2d(a: Vector2, b: Vector2, p: Vector2) -> bool:
+	var eps := 0.0001
+	return (
+		p.x >= minf(a.x, b.x) - eps
+		and p.x <= maxf(a.x, b.x) + eps
+		and p.y >= minf(a.y, b.y) - eps
+		and p.y <= maxf(a.y, b.y) + eps
+	)
+
+func _sanitize_site_surface_dict(surface: Dictionary) -> Dictionary:
+	var clean := surface.duplicate(true)
+	var material := str(clean.get("material", "asphalt")).strip_edges()
+	if not _site_surface_material_is_valid(material):
+		material = "asphalt"
+	clean["material"] = material
+	if clean.get("name", null) == null:
+		clean["name"] = ""
+	clean["y_m"] = snappedf(_site_surface_number(clean, "y_m", 0.01), 0.01)
+	var vertices := _site_surface_vertices(clean)
+	clean["vertices"] = _site_surface_vertices_to_arrays(vertices)
+	_clamp_site_surface_vertices_to_lot(clean)
+	return clean
+
+func _site_surface_material_is_valid(material: String) -> bool:
+	for entry in SITE_SURFACE_MATERIALS:
+		if str(entry["id"]) == material:
+			return true
+	return false
+
+func _export_site_surface(surface: Dictionary) -> Dictionary:
+	var clean := _sanitize_site_surface_dict(surface)
+	return {
+		"material": str(clean.get("material", "asphalt")),
+		"name": str(clean.get("name", "")).strip_edges(),
+		"y_m": float(clean.get("y_m", 0.01)),
+		"vertices": clean.get("vertices", []),
+	}
 
 func _site_anchor_type_label(anchor_type: String) -> String:
 	match anchor_type:
@@ -2431,6 +2788,7 @@ func _select_site_anchor(index: int, clear_mesh_parts: bool = true) -> void:
 		_set_selected_site_anchors([index], index)
 		if clear_mesh_parts:
 			_set_selected_mesh_parts([], -1)
+		_set_selected_site_surface(-1)
 
 func _set_selected_site_anchors(indices: Array, primary_index: int = -1) -> void:
 	var seen := {}
@@ -2609,7 +2967,6 @@ func _anchor_forward(anchor: Dictionary) -> Vector3:
 
 func _sanitize_site_anchor_dict(anchor: Dictionary) -> Dictionary:
 	var clean := anchor.duplicate(true)
-	clean.erase("purpose")
 	var anchor_type := str(clean.get("anchor_type", "")).strip_edges()
 	if anchor_type == "entrance":
 		clean["name"] = "main"
@@ -2944,6 +3301,10 @@ func _export_asset(move_original_after_export: bool) -> void:
 	var anchors := []
 	for anchor in _site_anchors_data:
 		anchors.append(_export_site_anchor(anchor))
+	_clamp_site_surfaces_to_lot()
+	var site_surfaces := []
+	for surface in _site_surfaces_data:
+		site_surfaces.append(_export_site_surface(surface))
 
 	var tags_raw: String = _tags_edit.text.strip_edges()
 	var tags: Array = []
@@ -2999,6 +3360,7 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"worker_capacity":    int(_workers_spin.value)   if _workers_spin.value > 0 else null,
 		"mesh_parts": mesh_parts,
 		"anchors": anchors,
+		"site_surfaces": site_surfaces,
 	}
 
 	var output_dir: String = ProjectSettings.globalize_path("user://mods/" + pack_id + "/")
@@ -3249,6 +3611,8 @@ func _apply_editor_theme(root: Node) -> void:
 	EditorTheme.apply_to_tree(root, _theme_mode)
 	if _asset_context_menu:
 		EditorTheme.style_popup_menu(_asset_context_menu, _theme_mode)
+	if _site_surface_context_menu:
+		EditorTheme.style_popup_menu(_site_surface_context_menu, _theme_mode)
 	if _pack_select_menu:
 		EditorTheme.style_popup_menu(_pack_select_menu, _theme_mode)
 	if _pack_create_window and is_instance_valid(_pack_create_window):
@@ -3453,6 +3817,56 @@ func _site_anchor_footprint_offsets(anchor: Dictionary) -> Array:
 		-side * half_w + forward * length,
 	]
 
+func _clamp_site_surface_vertices_to_lot(surface: Dictionary) -> void:
+	var vertices := _site_surface_vertices(surface)
+	if vertices.is_empty():
+		return
+	for i in vertices.size():
+		vertices[i] = _clamp_site_surface_vertex_to_lot(vertices[i])
+	surface["vertices"] = _site_surface_vertices_to_arrays(vertices)
+
+func _clamp_site_surface_vertex_to_lot(vertex: Vector2) -> Vector2:
+	if not _width_spin or not _depth_spin:
+		return vertex
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	return Vector2(
+		clampf(vertex.x, -lot_half_w, lot_half_w),
+		clampf(vertex.y, -lot_half_d, lot_half_d)
+	)
+
+func _clamp_site_surface_delta_to_lot(vertices: Array, delta: Vector2) -> Vector2:
+	if not _width_spin or not _depth_spin or vertices.is_empty():
+		return delta
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	var min_x := 0.0
+	var max_x := 0.0
+	var min_z := 0.0
+	var max_z := 0.0
+	var first := true
+	for raw_vertex in vertices:
+		if not (raw_vertex is Vector2):
+			continue
+		var vertex := raw_vertex as Vector2
+		if first:
+			min_x = vertex.x
+			max_x = vertex.x
+			min_z = vertex.y
+			max_z = vertex.y
+			first = false
+		else:
+			min_x = minf(min_x, vertex.x)
+			max_x = maxf(max_x, vertex.x)
+			min_z = minf(min_z, vertex.y)
+			max_z = maxf(max_z, vertex.y)
+	if first:
+		return delta
+	return Vector2(
+		_clamp_to_possible_interval(delta.x, -lot_half_w - min_x, lot_half_w - max_x),
+		_clamp_to_possible_interval(delta.y, -lot_half_d - min_z, lot_half_d - max_z)
+	)
+
 func _clamp_to_possible_interval(value: float, min_value: float, max_value: float) -> float:
 	if min_value <= max_value:
 		return clampf(value, min_value, max_value)
@@ -3470,6 +3884,18 @@ func _clamp_site_anchors_to_lot() -> void:
 		_refresh_site_anchor_list()
 	else:
 		_update_site_anchor_preview()
+
+func _clamp_site_surfaces_to_lot() -> void:
+	var changed := false
+	for i in _site_surfaces_data.size():
+		var before: Array = _site_surfaces_data[i].get("vertices", []).duplicate(true)
+		_clamp_site_surface_vertices_to_lot(_site_surfaces_data[i])
+		if before != _site_surfaces_data[i].get("vertices", []):
+			changed = true
+	if changed:
+		_refresh_site_surface_list()
+	else:
+		_update_site_surface_preview()
 
 func _clamp_mesh_part_position_to_lot(part_index: int, pos: Vector3) -> Vector3:
 	if not _width_spin or not _depth_spin:
@@ -3722,6 +4148,8 @@ func _input(event: InputEvent) -> void:
 			and not _ui_captures_editor_text_input()
 		):
 			var removed := false
+			if _selected_site_surface_index >= 0:
+				removed = _remove_selected_site_surface()
 			if not _selected_site_anchor_indices.is_empty():
 				removed = _remove_selected_site_anchor()
 			if not _selected_part_indices.is_empty():
@@ -3750,6 +4178,12 @@ func _input(event: InputEvent) -> void:
 					_begin_box_selection(mouse_pos, true)
 					get_viewport().set_input_as_handled()
 					return
+				if _try_begin_site_surface_vertex_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
+				if _try_begin_site_surface_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
 				if _try_begin_site_anchor_drag(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
@@ -3763,6 +4197,9 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 				return
 			if mb.button_index == MOUSE_BUTTON_RIGHT:
+				if _try_open_site_surface_context_menu(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
 				if _try_begin_site_anchor_rotation(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
@@ -3773,6 +4210,14 @@ func _input(event: InputEvent) -> void:
 			_dragging_site_anchor = false
 			_site_anchor_drag_start_positions.clear()
 			_mesh_part_drag_start_positions.clear()
+			get_viewport().set_input_as_handled()
+		if _dragging_site_surface:
+			_dragging_site_surface = false
+			_site_surface_drag_start_vertices.clear()
+			get_viewport().set_input_as_handled()
+		if _dragging_site_surface_vertex:
+			_dragging_site_surface_vertex = false
+			_site_surface_drag_start_vertices.clear()
 			get_viewport().set_input_as_handled()
 		if _dragging_mesh_part:
 			_dragging_mesh_part = false
@@ -3795,6 +4240,12 @@ func _input(event: InputEvent) -> void:
 
 	if event is InputEventMouseMotion and _dragging_site_anchor:
 		if _drag_site_anchor_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _dragging_site_surface:
+		if _drag_site_surface_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _dragging_site_surface_vertex:
+		if _drag_site_surface_vertex_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _dragging_mesh_part:
 		if _drag_mesh_part_from_mouse(get_viewport().get_mouse_position()):
@@ -3829,6 +4280,156 @@ func _ui_captures_editor_text_input() -> bool:
 		or focus_owner is CodeEdit
 		or focus_owner is SpinBox
 	)
+
+func _try_begin_site_surface_vertex_drag(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var vertex_hit := _site_surface_vertex_hit_at_world_xz(hit)
+	if vertex_hit.is_empty():
+		return false
+	_site_surface_drag_index = int(vertex_hit["surface"])
+	_site_surface_vertex_drag_index = int(vertex_hit["vertex"])
+	_set_selected_site_surface(_site_surface_drag_index)
+	_site_surface_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
+	_site_surface_drag_start_vertices = _site_surface_vertices(_site_surfaces_data[_site_surface_drag_index])
+	_dragging_site_surface_vertex = true
+	return true
+
+func _try_begin_site_surface_drag(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var surface_index := _site_surface_index_at_world_xz(hit)
+	if surface_index < 0:
+		return false
+	_site_surface_drag_index = surface_index
+	_set_selected_site_surface(surface_index)
+	_site_surface_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
+	_site_surface_drag_start_vertices = _site_surface_vertices(_site_surfaces_data[surface_index])
+	_dragging_site_surface = true
+	return true
+
+func _drag_site_surface_from_mouse(mouse_pos: Vector2) -> bool:
+	if _site_surface_drag_index < 0 or _site_surface_drag_index >= _site_surfaces_data.size():
+		return false
+	if _site_surface_drag_start_vertices.is_empty():
+		return false
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var delta := Vector2(hit.x - _site_surface_drag_start_hit.x, hit.z - _site_surface_drag_start_hit.z)
+	delta = _clamp_site_surface_delta_to_lot(_site_surface_drag_start_vertices, delta)
+	var vertices: Array[Vector2] = []
+	for raw_vertex in _site_surface_drag_start_vertices:
+		if raw_vertex is Vector2:
+			vertices.append((raw_vertex as Vector2) + delta)
+	if not _site_surface_polygon_is_valid(vertices):
+		return false
+	_site_surfaces_data[_site_surface_drag_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
+	_update_site_surface_controls()
+	_update_site_surface_preview()
+	return true
+
+func _drag_site_surface_vertex_from_mouse(mouse_pos: Vector2) -> bool:
+	if _site_surface_drag_index < 0 or _site_surface_drag_index >= _site_surfaces_data.size():
+		return false
+	if _site_surface_vertex_drag_index < 0 or _site_surface_vertex_drag_index >= _site_surface_drag_start_vertices.size():
+		return false
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var vertices: Array[Vector2] = []
+	for raw_vertex in _site_surface_drag_start_vertices:
+		if raw_vertex is Vector2:
+			vertices.append(raw_vertex as Vector2)
+	if _site_surface_vertex_drag_index >= vertices.size():
+		return false
+	vertices[_site_surface_vertex_drag_index] = _clamp_site_surface_vertex_to_lot(Vector2(hit.x, hit.z))
+	if not _site_surface_polygon_is_valid(vertices):
+		return false
+	_site_surfaces_data[_site_surface_drag_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
+	_update_site_surface_controls()
+	_update_site_surface_preview()
+	return true
+
+func _try_open_site_surface_context_menu(mouse_pos: Vector2) -> bool:
+	if not _site_surface_context_menu:
+		return false
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var vertex_hit := _site_surface_vertex_hit_at_world_xz(hit)
+	var edge_hit := {}
+	if vertex_hit.is_empty():
+		edge_hit = _site_surface_edge_hit_at_world_xz(hit)
+	if vertex_hit.is_empty() and edge_hit.is_empty():
+		return false
+
+	_site_surface_context_menu.clear()
+	_site_surface_context_index = -1
+	_site_surface_context_vertex_index = -1
+	_site_surface_context_edge_index = -1
+	_site_surface_context_insert_point = Vector2(hit.x, hit.z)
+	if not vertex_hit.is_empty():
+		_site_surface_context_index = int(vertex_hit["surface"])
+		_site_surface_context_vertex_index = int(vertex_hit["vertex"])
+		_set_selected_site_surface(_site_surface_context_index)
+		var vertices := _site_surface_vertices(_site_surfaces_data[_site_surface_context_index])
+		_site_surface_context_menu.add_item("Delete Vertex", SITE_SURFACE_CONTEXT_DELETE_VERTEX)
+		_site_surface_context_menu.set_item_disabled(0, vertices.size() <= 3)
+	else:
+		_site_surface_context_index = int(edge_hit["surface"])
+		_site_surface_context_edge_index = int(edge_hit["edge"])
+		_site_surface_context_insert_point = edge_hit["point"] as Vector2
+		_set_selected_site_surface(_site_surface_context_index)
+		_site_surface_context_menu.add_item("Add Vertex", SITE_SURFACE_CONTEXT_ADD_VERTEX)
+	var popup_pos := get_viewport().get_mouse_position()
+	_site_surface_context_menu.position = Vector2i(int(round(popup_pos.x)), int(round(popup_pos.y)))
+	_site_surface_context_menu.popup()
+	return true
+
+func _on_site_surface_context_menu_id_pressed(id: int) -> void:
+	match id:
+		SITE_SURFACE_CONTEXT_ADD_VERTEX:
+			_add_site_surface_vertex_from_context()
+		SITE_SURFACE_CONTEXT_DELETE_VERTEX:
+			_delete_site_surface_vertex_from_context()
+
+func _add_site_surface_vertex_from_context() -> void:
+	var surface_index := _site_surface_context_index
+	if surface_index < 0 or surface_index >= _site_surfaces_data.size():
+		return
+	var edge_index := _site_surface_context_edge_index
+	var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
+	if edge_index < 0 or edge_index >= vertices.size():
+		return
+	vertices.insert(edge_index + 1, _clamp_site_surface_vertex_to_lot(_site_surface_context_insert_point))
+	if not _site_surface_polygon_is_valid(vertices):
+		_log("[color=yellow]Cannot add vertex there; it would create an invalid yard polygon.[/color]")
+		return
+	_site_surfaces_data[surface_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
+	_set_selected_site_surface(surface_index)
+	_log("Added yard vertex.")
+
+func _delete_site_surface_vertex_from_context() -> void:
+	var surface_index := _site_surface_context_index
+	if surface_index < 0 or surface_index >= _site_surfaces_data.size():
+		return
+	var vertex_index := _site_surface_context_vertex_index
+	var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
+	if vertices.size() <= 3:
+		_log("[color=yellow]Yard polygons need at least three vertices.[/color]")
+		return
+	if vertex_index < 0 or vertex_index >= vertices.size():
+		return
+	vertices.remove_at(vertex_index)
+	if not _site_surface_polygon_is_valid(vertices):
+		_log("[color=yellow]Cannot delete that vertex; it would create an invalid yard polygon.[/color]")
+		return
+	_site_surfaces_data[surface_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
+	_set_selected_site_surface(surface_index)
+	_log("Deleted yard vertex.")
 
 func _try_begin_site_anchor_drag(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
@@ -3947,6 +4548,114 @@ func _site_anchor_contains_world_xz(index: int, world_pos: Vector3) -> bool:
 		)
 	return rel.length() <= SITE_ANCHOR_DRAG_RADIUS_M
 
+func _site_surface_index_at_world_xz(world_pos: Vector3) -> int:
+	if (
+		_selected_site_surface_index >= 0
+		and _selected_site_surface_index < _site_surfaces_data.size()
+		and _site_surface_contains_world_xz(_selected_site_surface_index, world_pos)
+	):
+		return _selected_site_surface_index
+	for i in range(_site_surfaces_data.size() - 1, -1, -1):
+		if _site_surface_contains_world_xz(i, world_pos):
+			return i
+	return -1
+
+func _site_surface_contains_world_xz(index: int, world_pos: Vector3) -> bool:
+	if index < 0 or index >= _site_surfaces_data.size():
+		return false
+	return _point_in_site_surface_polygon(Vector2(world_pos.x, world_pos.z), _site_surface_vertices(_site_surfaces_data[index]))
+
+func _point_in_site_surface_polygon(point: Vector2, vertices: Array[Vector2]) -> bool:
+	if vertices.size() < 3:
+		return false
+	var inside := false
+	var j := vertices.size() - 1
+	for i in vertices.size():
+		var vi := vertices[i]
+		var vj := vertices[j]
+		var crosses := (vi.y > point.y) != (vj.y > point.y)
+		if crosses:
+			var denom := vj.y - vi.y
+			if absf(denom) < 0.000001:
+				denom = 0.000001 if denom >= 0.0 else -0.000001
+			var x_at_y := (vj.x - vi.x) * (point.y - vi.y) / denom + vi.x
+			if point.x < x_at_y:
+				inside = not inside
+		j = i
+	return inside
+
+func _site_surface_vertex_hit_at_world_xz(world_pos: Vector3) -> Dictionary:
+	var point := Vector2(world_pos.x, world_pos.z)
+	if _selected_site_surface_index >= 0 and _selected_site_surface_index < _site_surfaces_data.size():
+		var selected_vertices := _site_surface_vertices(_site_surfaces_data[_selected_site_surface_index])
+		for vertex_index in selected_vertices.size():
+			if point.distance_to(selected_vertices[vertex_index]) <= SITE_SURFACE_VERTEX_PICK_RADIUS_M:
+				return {"surface": _selected_site_surface_index, "vertex": vertex_index}
+	for surface_index in range(_site_surfaces_data.size() - 1, -1, -1):
+		if surface_index == _selected_site_surface_index:
+			continue
+		var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
+		for vertex_index in vertices.size():
+			if point.distance_to(vertices[vertex_index]) <= SITE_SURFACE_VERTEX_PICK_RADIUS_M:
+				return {"surface": surface_index, "vertex": vertex_index}
+	return {}
+
+func _site_surface_edge_hit_at_world_xz(world_pos: Vector3) -> Dictionary:
+	var point := Vector2(world_pos.x, world_pos.z)
+	var best_surface := -1
+	var best_edge := -1
+	var best_point := Vector2.ZERO
+	var best_dist_sq := SITE_SURFACE_EDGE_PICK_RADIUS_M * SITE_SURFACE_EDGE_PICK_RADIUS_M
+	if _selected_site_surface_index >= 0 and _selected_site_surface_index < _site_surfaces_data.size():
+		var selected_hit := _site_surface_edge_hit_for_surface(_selected_site_surface_index, point, best_dist_sq)
+		if not selected_hit.is_empty():
+			return selected_hit
+	for surface_index in range(_site_surfaces_data.size() - 1, -1, -1):
+		if surface_index == _selected_site_surface_index:
+			continue
+		var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
+		for edge_index in vertices.size():
+			var a := vertices[edge_index]
+			var b := vertices[(edge_index + 1) % vertices.size()]
+			var nearest := _nearest_point_on_segment_2d(a, b, point)
+			var dist_sq := nearest.distance_squared_to(point)
+			if dist_sq <= best_dist_sq:
+				best_dist_sq = dist_sq
+				best_surface = surface_index
+				best_edge = edge_index
+				best_point = nearest
+	if best_surface < 0:
+		return {}
+	return {"surface": best_surface, "edge": best_edge, "point": best_point}
+
+func _site_surface_edge_hit_for_surface(surface_index: int, point: Vector2, max_dist_sq: float) -> Dictionary:
+	if surface_index < 0 or surface_index >= _site_surfaces_data.size():
+		return {}
+	var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
+	var best_edge := -1
+	var best_point := Vector2.ZERO
+	var best_dist_sq := max_dist_sq
+	for edge_index in vertices.size():
+		var a := vertices[edge_index]
+		var b := vertices[(edge_index + 1) % vertices.size()]
+		var nearest := _nearest_point_on_segment_2d(a, b, point)
+		var dist_sq := nearest.distance_squared_to(point)
+		if dist_sq <= best_dist_sq:
+			best_dist_sq = dist_sq
+			best_edge = edge_index
+			best_point = nearest
+	if best_edge < 0:
+		return {}
+	return {"surface": surface_index, "edge": best_edge, "point": best_point}
+
+func _nearest_point_on_segment_2d(a: Vector2, b: Vector2, point: Vector2) -> Vector2:
+	var ab := b - a
+	var len_sq := ab.length_squared()
+	if len_sq <= 0.000001:
+		return a
+	var t := clampf((point - a).dot(ab) / len_sq, 0.0, 1.0)
+	return a + ab * t
+
 func _try_begin_mesh_part_drag(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
 	if hit == null:
@@ -4048,22 +4757,29 @@ func _finish_mesh_part_box_selection(mouse_pos: Vector2) -> void:
 		if not _selection_additive:
 			_set_selected_site_anchors([], -1)
 			_set_selected_mesh_parts([], -1)
+			_set_selected_site_surface(-1)
 		_selection_additive = false
 		return
 	var selection_rect := _selection_screen_rect()
 	var selected_meshes := _mesh_parts_in_screen_rect(selection_rect)
 	var selected_anchors := _site_anchors_in_screen_rect(selection_rect)
+	var selected_surfaces := _site_surfaces_in_screen_rect(selection_rect)
 	if _selection_additive:
 		selected_meshes = _merged_indices(_selected_part_indices, selected_meshes)
 		selected_anchors = _merged_indices(_selected_site_anchor_indices, selected_anchors)
-	_set_selected_mesh_parts(
-		selected_meshes,
-		int(selected_meshes[0]) if not selected_meshes.is_empty() else -1
-	)
-	_set_selected_site_anchors(
-		selected_anchors,
-		int(selected_anchors[0]) if not selected_anchors.is_empty() else -1
-	)
+	if selected_meshes.is_empty() and selected_anchors.is_empty() and not selected_surfaces.is_empty():
+		_set_selected_site_surface(int(selected_surfaces[0]))
+	else:
+		_set_selected_mesh_parts(
+			selected_meshes,
+			int(selected_meshes[0]) if not selected_meshes.is_empty() else -1
+		)
+		_set_selected_site_anchors(
+			selected_anchors,
+			int(selected_anchors[0]) if not selected_anchors.is_empty() else -1
+		)
+		if not _selection_additive:
+			_set_selected_site_surface(-1)
 	_selection_additive = false
 
 func _selection_screen_rect() -> Rect2:
@@ -4096,6 +4812,17 @@ func _site_anchors_in_screen_rect(selection_rect: Rect2) -> Array[int]:
 	for index in _site_anchors_data.size():
 		var anchor_rect = _site_anchor_screen_rect(index, cam)
 		if anchor_rect != null and selection_rect.intersects(anchor_rect, true):
+			selected.append(index)
+	return selected
+
+func _site_surfaces_in_screen_rect(selection_rect: Rect2) -> Array[int]:
+	var cam := get_viewport().get_camera_3d()
+	if not cam:
+		return []
+	var selected: Array[int] = []
+	for index in _site_surfaces_data.size():
+		var surface_rect = _site_surface_screen_rect(index, cam)
+		if surface_rect != null and selection_rect.intersects(surface_rect, true):
 			selected.append(index)
 	return selected
 
@@ -4139,6 +4866,15 @@ func _mesh_part_screen_rect(part_index: int, cam: Camera3D):
 	var corners: Array = _preview.mesh_part_world_corners(part_index)
 	return _screen_rect_for_world_points(corners, cam)
 
+func _site_surface_screen_rect(index: int, cam: Camera3D):
+	if index < 0 or index >= _site_surfaces_data.size():
+		return null
+	var points: Array = []
+	var y := _site_surface_number(_site_surfaces_data[index], "y_m", 0.01)
+	for vertex in _site_surface_vertices(_site_surfaces_data[index]):
+		points.append(Vector3(vertex.x, y, vertex.y))
+	return _screen_rect_for_world_points(points, cam)
+
 func _screen_rect_for_world_points(points: Array, cam: Camera3D):
 	var has_point := false
 	var min_pos := Vector2.ZERO
@@ -4180,6 +4916,14 @@ func _toggle_selection_at_mouse(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
 	if hit == null:
 		return false
+	var surface_vertex := _site_surface_vertex_hit_at_world_xz(hit)
+	if not surface_vertex.is_empty():
+		_toggle_site_surface_selection(int(surface_vertex["surface"]))
+		return true
+	var surface_index := _site_surface_index_at_world_xz(hit)
+	if surface_index >= 0:
+		_toggle_site_surface_selection(surface_index)
+		return true
 	var anchor_index := _site_anchor_index_at_world_xz(hit)
 	if anchor_index >= 0:
 		_toggle_site_anchor_selection(anchor_index)
@@ -4189,6 +4933,14 @@ func _toggle_selection_at_mouse(mouse_pos: Vector2) -> bool:
 		_toggle_mesh_part_selection(part_index)
 		return true
 	return false
+
+func _toggle_site_surface_selection(index: int) -> void:
+	if index < 0 or index >= _site_surfaces_data.size():
+		return
+	if _selected_site_surface_index == index:
+		_set_selected_site_surface(-1)
+	else:
+		_set_selected_site_surface(index)
 
 func _toggle_mesh_part_selection(index: int) -> void:
 	if index < 0 or index >= _lod_source_paths.size():

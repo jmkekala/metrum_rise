@@ -4182,6 +4182,13 @@ impl SimulationNode {
             .get_construction_scaffold_transforms_internal(zone_type_int)
     }
 
+    /// Returns packed triangle vertices for render-only authored building-site surfaces.
+    #[func]
+    pub fn get_building_site_surface_mesh(&self, surface_type: u8) -> PackedFloat32Array {
+        self.lock_core()
+            .get_building_site_surface_mesh_internal(surface_type)
+    }
+
     /// Returns a Dictionary of live stats for the building whose centre is closest to
     /// (`world_x`, `world_z`) within a 30 m pick radius.
     ///

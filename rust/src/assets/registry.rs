@@ -299,6 +299,7 @@ mod tests {
                 }],
             }],
             anchors: vec![],
+            site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,

@@ -117,6 +117,7 @@ fn register_family_asset_with_economy_profile_and_flat_size(
             length_m: None,
             vehicle_class: None,
         }],
+        site_surfaces: vec![],
         building: Some(BuildingData {
             flat_size_m2: if matches!(zone_type, ZoneType::Residential | ZoneType::Mixed) {
                 Some(flat_size_m2.unwrap_or(80.0))

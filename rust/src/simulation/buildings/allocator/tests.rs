@@ -129,6 +129,7 @@ fn register_test_asset_with_family_level(
             length_m: None,
             vehicle_class: None,
         }],
+        site_surfaces: vec![],
         building: Some(BuildingData {
             flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
                 Some(80.0)
@@ -1242,6 +1243,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             length_m: None,
             vehicle_class: None,
         }],
+        site_surfaces: vec![],
         building: Some(BuildingData {
             flat_size_m2: Some(80.0),
             placement_mode: PlacementMode::ZonedPrivate,

@@ -5,7 +5,7 @@
 //! validation, and writes the output files. Pack TOML is only written when the file does
 //! not already exist, so re-exporting individual assets never overwrites pack metadata.
 
-use crate::assets::asset::{AnchorType, PlacementMode};
+use crate::assets::asset::{AnchorType, PlacementMode, SiteSurfaceMaterial};
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
 use crate::simulation::economy::definitions::{
@@ -19,6 +19,7 @@ use std::path::Path;
 
 /// LOD entry sent from the building importer form.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LodParams {
     /// Path to the `.glb` file for this LOD level, relative to the pack directory.
     pub file: String,
@@ -31,6 +32,7 @@ pub struct LodParams {
 
 /// Anchor point entry sent from the building importer form.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchorParams {
     /// Semantic type of this anchor (e.g. `"entrance"`, `"driveway"`).
     pub anchor_type: String,
@@ -52,8 +54,25 @@ pub struct AnchorParams {
     pub vehicle_class: Option<String>,
 }
 
+/// Visual yard surface entry sent from the building importer form.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteSurfaceParams {
+    /// Surface material key such as `"asphalt"` or `"concrete"`.
+    pub material: String,
+    /// Optional editor label for this surface.
+    #[serde(default)]
+    pub name: String,
+    /// Local vertical offset relative to the building placement origin.
+    #[serde(default)]
+    pub y_m: f32,
+    /// Local `[x, z]` polygon vertices in winding order.
+    pub vertices: Vec<[f32; 2]>,
+}
+
 /// One renderable mesh part sent from the building importer form.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeshPartParams {
     /// Editor label for this mesh part.
     pub name: String,
@@ -76,6 +95,7 @@ pub struct MeshPartParams {
 
 /// Flat JSON payload sent by the building importer form.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExportParams {
     /// Pack identifier string (e.g. `"kenney"`).
     pub pack_id: String,
@@ -149,6 +169,9 @@ pub struct ExportParams {
     /// Named anchor points (frontage, entrances, etc.).
     #[serde(default)]
     pub anchors: Vec<AnchorParams>,
+    /// Authored visual yard surfaces.
+    #[serde(default)]
+    pub site_surfaces: Vec<SiteSurfaceParams>,
 }
 
 fn default_version() -> String {
@@ -341,6 +364,23 @@ fn build_asset_toml(p: &ExportParams) -> String {
         }
     }
 
+    for surface in &p.site_surfaces {
+        out.push_str("\n[[site_surfaces]]\n");
+        out.push_str(&format!("material = {}\n", toml_string(&surface.material)));
+        if !surface.name.is_empty() {
+            out.push_str(&format!("name = {}\n", toml_string(&surface.name)));
+        }
+        out.push_str(&format!("y_m = {}\n", surface.y_m));
+        out.push_str("vertices = [");
+        for (index, [x, z]) in surface.vertices.iter().copied().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("[{x}, {z}]"));
+        }
+        out.push_str("]\n");
+    }
+
     out
 }
 
@@ -375,6 +415,15 @@ fn anchor_type_key(anchor_type: AnchorType) -> &'static str {
         AnchorType::LoadingBay => "loading_bay",
         AnchorType::Wheel => "wheel",
         AnchorType::Light => "light",
+    }
+}
+
+fn site_surface_material_key(material: SiteSurfaceMaterial) -> &'static str {
+    match material {
+        SiteSurfaceMaterial::Asphalt => "asphalt",
+        SiteSurfaceMaterial::Concrete => "concrete",
+        SiteSurfaceMaterial::Gravel => "gravel",
+        SiteSurfaceMaterial::Paving => "paving",
     }
 }
 
@@ -681,6 +730,12 @@ pub fn get_asset_manifest_json_internal(
             "length_m": a.length_m,
             "vehicle_class": a.vehicle_class.as_deref(),
         })).collect::<Vec<_>>(),
+        "site_surfaces": m.site_surfaces.iter().map(|s| serde_json::json!({
+            "material": site_surface_material_key(s.material),
+            "name": s.name,
+            "y_m": s.y_m,
+            "vertices": s.vertices,
+        })).collect::<Vec<_>>(),
     });
 
     if let Some(b) = &m.building {
@@ -874,6 +929,23 @@ mod tests {
 
         let content = std::fs::read_to_string(dir.join("pack.toml")).unwrap();
         assert_eq!(content, "# sentinel\n", "pack.toml must not be overwritten");
+    }
+
+    #[test]
+    fn export_rejects_unknown_json_fields() {
+        let dir = std::env::temp_dir().join("metrum_export_unknown_fields");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut json: serde_json::Value = serde_json::from_str(&minimal_building_json(
+            "building.residential.unknown_fields",
+        ))
+        .unwrap();
+        json["legacy_field"] = serde_json::json!(true);
+
+        let result = validate_and_export_asset_internal(&json.to_string(), dir.to_str().unwrap());
+        assert!(
+            result.contains("unknown field"),
+            "expected unknown-field parse error, got: {result}"
+        );
     }
 
     #[test]

@@ -17,8 +17,8 @@ pub mod scanner;
 
 pub use asset::{
     Anchor, AnchorType, ArchetypeFamily, AssetClass, AssetManifest, BuildingData, CharacterData,
-    ColorVariant, LodEntry, MeshPart, PropData, SkinVariant, SnapMode, TerrainBehavior,
-    VehicleClass, VehicleData, VehicleFamily, ZoneClass,
+    ColorVariant, LodEntry, MeshPart, PropData, SiteSurface, SiteSurfaceMaterial, SkinVariant,
+    SnapMode, TerrainBehavior, VehicleClass, VehicleData, VehicleFamily, ZoneClass,
 };
 pub use pack::PackManifest;
 pub use registry::{AssetEntry, AssetRegistry};

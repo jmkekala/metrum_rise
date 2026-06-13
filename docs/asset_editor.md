@@ -433,10 +433,39 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 Runtime use in v1:
 
 - `entrance/main` remains the only anchor consumed by the live entrance/exit system.
-- Driveway, parking, and loading-bay anchors are exported and validated now, but yard-surface
-  generation, vehicle parking, and freight-side stop targeting are later runtime hooks.
+- `driveway`, `parking`, and `loading_bay` anchors are semantic site-layout metadata only. They do
+  not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
+  visuals by themselves.
+- Building yard visuals are authored explicitly through `[[site_surfaces]]`. The live renderer
+  draws those surfaces exactly as exported by the asset editor.
+- Site surfaces are render-only. They do not affect trip planning, vehicle parking,
+  freight stop targeting, queueing, capacity, terrain grading, or road ownership in v1.
 - Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
   feature, not to baseline site-layout tooling.
+
+### Building Site Surfaces
+
+V1 yard visuals are authored, not inferred. The asset editor is the source of truth for asphalt,
+concrete, gravel, paving, walkways, parking pads, service pads, and driveway aprons.
+
+Rules:
+
+- Asset manifests and editor export payloads are strict schemas. Unknown fields are rejected
+  instead of silently preserved or repaired; when the schema changes, authored assets must be
+  re-exported into the current shape.
+- Building assets may define zero or more `[[site_surfaces]]` polygons.
+- A site surface has `material`, optional `name`, local vertical offset `y_m`, and local-space
+  polygon `vertices = [[x, z], ...]` in winding order.
+- Site surfaces must fit fully inside the authored lot rectangle.
+- Site surface polygons must have at least three vertices, non-zero area, and no self-intersection.
+- Site surfaces are visual only. They do not imply access, parking capacity, freight capacity,
+  service eligibility, pedestrian paths, or vehicle routing.
+- Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
+- If an asset exports no site surfaces, the runtime renders no additional yard treatment.
+- The editor can create rectangular starting surfaces, then authors can move the whole polygon,
+  drag vertices, right-click an edge to add a vertex, and right-click an existing vertex to delete it
+  while preserving the minimum three-vertex polygon.
+- Painted decals, curbs, markings, and per-material texture selection are later extensions.
 
 ### Editor Workspace
 
@@ -771,7 +800,12 @@ Rules:
 Anchor requirements by asset class:
 
 - Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
-- Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored site-layout metadata in v1; later runtime systems can consume them for generated yard surfaces, vehicle parking, and freight stop targets.
+- Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
+  site-layout metadata in v1. They do not generate visual yard surfaces; vehicle parking and
+  freight stop behavior remain later runtime hooks.
+- Buildings may define optional `[[site_surfaces]]` polygons for visual yard materials such as
+  asphalt, concrete, gravel, and paving. Site surfaces are the only v1 way for an asset to add
+  driveways, walkways, service yards, parking pads, or other ground treatment visuals.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
 - Props use their exported origin as the placement point and do not require a separate anchor in v1.
 - Characters use the exported feet-center origin as the placement point and do not require additional anchors in v1.
@@ -800,6 +834,18 @@ forward = [0.0, 0.0, -1.0]
 width_m = 3.5
 length_m = 8.0
 vehicle_class = "freight"
+
+[[site_surfaces]]
+material = "concrete"
+name = "front_walk"
+y_m = 0.01
+vertices = [[-0.7, 1.0], [0.7, 1.0], [0.7, 8.0], [-0.7, 8.0]]
+
+[[site_surfaces]]
+material = "asphalt"
+name = "driveway_pad"
+y_m = 0.01
+vertices = [[2.25, -2.0], [5.75, -2.0], [5.75, 6.0], [2.25, 6.0]]
 ```
 
 Built-in anchor types:
@@ -812,6 +858,13 @@ Built-in anchor types:
 - `light`
 
 All asset classes use the same `[[anchors]]` table shape, including single-anchor cases.
+
+Built-in site surface materials:
+
+- `asphalt`
+- `concrete`
+- `gravel`
+- `paving`
 
 ## LOD Strategy
 
@@ -1639,6 +1692,14 @@ Optional `[[anchors]]` table:
 - `vehicle_class`: optional string, baseline values `car`, `freight`, or `service`. If present,
   validation rejects any other value.
 
+Optional `[[site_surfaces]]` table for building visual yard polygons:
+
+- `material`: enum, one of `asphalt`, `concrete`, `gravel`, or `paving`
+- `name`: optional editor label
+- `y_m`: optional finite vertical offset in asset-local metres, default `0.0`
+- `vertices`: at least three `[x, z]` pairs in asset-local metres, in winding order
+- `vertices` must define a finite, non-self-intersecting polygon fully inside the authored lot
+
 Optional `[[lods]]` table for non-building mesh assets:
 
 - `name`: string
@@ -1815,9 +1876,12 @@ Building rules:
 - Additional building-side site points use `type = "driveway"`, `type = "parking"`, or
   `type = "loading_bay"`, not a second generic `entrance` anchor.
 - Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
-- In v1, driveway, parking, and loading-bay anchors are authored extension points only. The generic
-  entrance/exit runtime uses only the `main` entrance anchor and does not interpret site-anchor
-  capacity, queue behavior, yard surface, parking, or freight stop behavior yet.
+- In v1, driveway, parking, and loading-bay anchors are not rendered as ground treatment. Authored
+  `[[site_surfaces]]` polygons own asphalt, concrete, gravel, paving, walkways, parking pads,
+  loading pads, and driveway-apron visuals.
+- The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret
+  site-anchor capacity, queue behavior, parking, or freight stop behavior yet.
+- Every `[[site_surfaces]]` polygon must fit fully inside the authored lot rectangle.
 - In the normal case, `min_zone_*` equals the footprint size.
 - `min_zone_*` reserves room for future yard or setback support without changing the core format.
 - `employment_type` is not part of the v1 building schema. If job-category metadata is needed later, add it as a later extension.

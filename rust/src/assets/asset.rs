@@ -20,6 +20,7 @@ const ANCHOR_LOT_EPS_M: f32 = 0.001;
 ///
 /// LOD tiers must be listed in ascending distance order (nearest first = LOD0).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LodEntry {
     /// Path to the `.glb` file for this tier, relative to the asset folder.
     pub file: String,
@@ -36,6 +37,7 @@ pub struct LodEntry {
 /// transform relative to the building placement origin and owns the LOD list for that
 /// part. Runtime rendering still batches by asset part through MultiMesh instances.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeshPart {
     /// Short editor label for this mesh part.
     pub name: String,
@@ -86,6 +88,7 @@ fn default_mesh_part_scale() -> f32 {
 ///
 /// All asset classes use the same `[[anchors]]` array-of-tables shape.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Anchor {
     /// Role of this anchor in the simulation and editor.
     #[serde(rename = "type")]
@@ -126,6 +129,36 @@ pub enum AnchorType {
     Light,
 }
 
+/// Visual ground-treatment material for an authored building yard surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteSurfaceMaterial {
+    /// Dark paved surface, commonly used for vehicle aprons and parking pads.
+    Asphalt,
+    /// Light hard surface, commonly used for walkways and service pads.
+    Concrete,
+    /// Loose aggregate yard treatment.
+    Gravel,
+    /// Decorative paver or tile surface.
+    Paving,
+}
+
+/// One authored polygon ground-treatment surface inside a building lot.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteSurface {
+    /// Visual material used by the live renderer.
+    pub material: SiteSurfaceMaterial,
+    /// Optional editor label for this surface.
+    #[serde(default)]
+    pub name: String,
+    /// Local-space vertical offset in metres relative to the building placement origin.
+    #[serde(default)]
+    pub y_m: f32,
+    /// Local-space `[x, z]` polygon vertices, in winding order, relative to the asset origin.
+    pub vertices: Vec<[f32; 2]>,
+}
+
 // ── Zone / land-use ───────────────────────────────────────────────────────────
 
 /// Land-use category for a zoned building asset.
@@ -160,6 +193,7 @@ pub enum PlacementMode {
 
 /// Class-specific data for a building asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildingData {
     /// How this building enters the world.
     #[serde(default = "default_placement_mode")]
@@ -252,6 +286,7 @@ pub enum TerrainBehavior {
 
 /// Class-specific data for a prop or environment detail asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PropData {
     /// Logical category used by the content browser (e.g. `"street_furniture"`, `"foliage"`).
     pub category: String,
@@ -299,6 +334,7 @@ pub enum VehicleFamily {
 
 /// One colour or livery variant for a vehicle asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColorVariant {
     /// Short display name for this variant (e.g. `"red"`, `"police_livery"`).
     pub name: String,
@@ -308,6 +344,7 @@ pub struct ColorVariant {
 
 /// Class-specific data for a vehicle asset.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VehicleData {
     /// Gameplay category (determines spawning rules and icon).
     pub vehicle_class: VehicleClass,
@@ -340,6 +377,7 @@ pub enum ArchetypeFamily {
 
 /// One skin or clothing texture variant for a character.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkinVariant {
     /// Short display name (e.g. `"default"`, `"summer"`).
     pub name: String,
@@ -352,6 +390,7 @@ pub struct SkinVariant {
 /// Runtime packs ship baked VAT outputs only. Source clip references
 /// are editor-only and are not included in exported runtime packs.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CharacterData {
     /// Archetype family this character belongs to.
     pub archetype_family: ArchetypeFamily,
@@ -385,6 +424,7 @@ pub enum AssetClass {
 /// optional subsections (`building`, `prop`, `vehicle`, `character`). Exactly one
 /// subsection must be populated; [`AssetManifest::validate`] enforces this.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssetManifest {
     /// Stable dot-separated identifier within the pack (e.g. `"building.residential.lowrise_corner"`).
     /// Combined with the pack's `pack_id` to form the globally unique `pack_id:asset_id`.
@@ -411,6 +451,9 @@ pub struct AssetManifest {
     /// Anchor points for entrance, service, prop sockets, wheels, and lights.
     #[serde(default)]
     pub anchors: Vec<Anchor>,
+    /// Building-only authored visual yard surfaces.
+    #[serde(default)]
+    pub site_surfaces: Vec<SiteSurface>,
 
     // ── Class-specific subsections (exactly one must be Some after parsing) ──
     /// Populated when this is a building asset.
@@ -631,9 +674,17 @@ impl AssetManifest {
                     self.asset_id
                 )));
             }
+            for surface in &self.site_surfaces {
+                validate_building_site_surface(&self.asset_id, b, surface)?;
+            }
         } else if !self.mesh_parts.is_empty() {
             return Err(ManifestError::Validation(format!(
                 "asset_id '{}': [[mesh_parts]] is only valid for building assets",
+                self.asset_id
+            )));
+        } else if !self.site_surfaces.is_empty() {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': [[site_surfaces]] is only valid for building assets",
                 self.asset_id
             )));
         }
@@ -804,6 +855,121 @@ fn validate_building_site_anchor_footprint(
     Ok(())
 }
 
+fn validate_building_site_surface(
+    asset_id: &str,
+    building: &BuildingData,
+    surface: &SiteSurface,
+) -> Result<(), ManifestError> {
+    if !surface.y_m.is_finite() {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': site surface '{}' has invalid y_m {}; expected a finite value",
+            asset_id, surface.name, surface.y_m
+        )));
+    }
+    if surface.vertices.len() < 3 {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': site surface '{}' must contain at least three vertices",
+            asset_id, surface.name
+        )));
+    }
+    let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
+    let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
+
+    for (vertex_index, [x, z]) in surface.vertices.iter().copied().enumerate() {
+        if !x.is_finite() || !z.is_finite() {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': site surface '{}' vertex {} has invalid coordinate [{}, {}]; expected finite values",
+                asset_id, surface.name, vertex_index, x, z
+            )));
+        }
+        if x.abs() > half_lot_width + ANCHOR_LOT_EPS_M
+            || z.abs() > half_lot_depth + ANCHOR_LOT_EPS_M
+        {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': site surface '{}' vertex {} crosses the building lot bounds +/-{}m x +/-{}m",
+                asset_id, surface.name, vertex_index, half_lot_width, half_lot_depth
+            )));
+        }
+    }
+
+    if site_surface_polygon_signed_area(&surface.vertices).abs() <= 0.001 {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': site surface '{}' has zero or near-zero polygon area",
+            asset_id, surface.name
+        )));
+    }
+
+    if site_surface_polygon_self_intersects(&surface.vertices) {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': site surface '{}' polygon self-intersects",
+            asset_id, surface.name
+        )));
+    }
+
+    Ok(())
+}
+
+fn site_surface_polygon_signed_area(vertices: &[[f32; 2]]) -> f32 {
+    let mut twice_area = 0.0;
+    for i in 0..vertices.len() {
+        let [ax, az] = vertices[i];
+        let [bx, bz] = vertices[(i + 1) % vertices.len()];
+        twice_area += ax * bz - bx * az;
+    }
+    twice_area * 0.5
+}
+
+fn site_surface_polygon_self_intersects(vertices: &[[f32; 2]]) -> bool {
+    for a in 0..vertices.len() {
+        let b = (a + 1) % vertices.len();
+        for c in (a + 1)..vertices.len() {
+            let d = (c + 1) % vertices.len();
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            if site_surface_segments_intersect(vertices[a], vertices[b], vertices[c], vertices[d]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn site_surface_segments_intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+    const EPS: f32 = 0.0001;
+    let ab_c = site_surface_orientation(a, b, c);
+    let ab_d = site_surface_orientation(a, b, d);
+    let cd_a = site_surface_orientation(c, d, a);
+    let cd_b = site_surface_orientation(c, d, b);
+
+    if ab_c.abs() <= EPS && site_surface_point_on_segment(a, b, c) {
+        return true;
+    }
+    if ab_d.abs() <= EPS && site_surface_point_on_segment(a, b, d) {
+        return true;
+    }
+    if cd_a.abs() <= EPS && site_surface_point_on_segment(c, d, a) {
+        return true;
+    }
+    if cd_b.abs() <= EPS && site_surface_point_on_segment(c, d, b) {
+        return true;
+    }
+
+    (ab_c > EPS) != (ab_d > EPS) && (cd_a > EPS) != (cd_b > EPS)
+}
+
+fn site_surface_orientation(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn site_surface_point_on_segment(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> bool {
+    const EPS: f32 = 0.0001;
+    p[0] >= a[0].min(b[0]) - EPS
+        && p[0] <= a[0].max(b[0]) + EPS
+        && p[1] >= a[1].min(b[1]) - EPS
+        && p[1] <= a[1].max(b[1]) + EPS
+}
+
 fn validate_building_mesh_parts(
     asset_id: &str,
     mesh_parts: &[MeshPart],
@@ -924,6 +1090,12 @@ width_m = 2.5
 length_m = 5.0
 vehicle_class = "car"
 
+[[site_surfaces]]
+material = "concrete"
+name = "front_walk"
+y_m = 0.01
+vertices = [[-0.7, 1.0], [0.7, 1.0], [0.7, 7.0], [-0.7, 7.0]]
+
 [[mesh_parts]]
 name = "main"
 position = [0.0, 0.0, 0.0]
@@ -966,6 +1138,11 @@ distance_max_m = 600.0
         assert_eq!(m.anchors[1].width_m, Some(2.5));
         assert_eq!(m.anchors[1].length_m, Some(5.0));
         assert_eq!(m.anchors[1].vehicle_class.as_deref(), Some("car"));
+        assert_eq!(m.site_surfaces.len(), 1);
+        assert_eq!(m.site_surfaces[0].material, SiteSurfaceMaterial::Concrete);
+        assert_eq!(m.site_surfaces[0].name, "front_walk");
+        assert_eq!(m.site_surfaces[0].y_m, 0.01);
+        assert_eq!(m.site_surfaces[0].vertices.len(), 4);
     }
 
     #[test]
@@ -992,6 +1169,42 @@ file = "lod0.glb"
 distance_min_m = 0.0
 "#;
         assert!(AssetManifest::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn building_rejects_unknown_top_level_manifest_field() {
+        let toml = BUILDING_TOML.replace(
+            "display_name = \"Low-rise Corner Building\"",
+            "display_name = \"Low-rise Corner Building\"\nlegacy_field = true",
+        );
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_unknown_anchor_field() {
+        let toml = BUILDING_TOML.replace(
+            "vehicle_class = \"car\"",
+            "vehicle_class = \"car\"\npurpose = \"resident\"",
+        );
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_unknown_site_surface_field() {
+        let toml = BUILDING_TOML.replace("y_m = 0.01", "y_m = 0.01\nwidth_m = 1.4");
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field parse error, got: {err}"
+        );
     }
 
     #[test]
@@ -1108,6 +1321,32 @@ forward = [0.0, 0.0, -1.0]
         assert!(
             err.to_string().contains("site footprint"),
             "expected footprint validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_site_surface_vertex_outside_lot() {
+        let toml = BUILDING_TOML.replace(
+            "vertices = [[-0.7, 1.0], [0.7, 1.0], [0.7, 7.0], [-0.7, 7.0]]",
+            "vertices = [[-0.7, 1.0], [16.0, 1.0], [0.7, 7.0], [-0.7, 7.0]]",
+        );
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("crosses the building lot bounds"),
+            "expected site-surface bounds validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_site_surface_self_intersection() {
+        let toml = BUILDING_TOML.replace(
+            "vertices = [[-0.7, 1.0], [0.7, 1.0], [0.7, 7.0], [-0.7, 7.0]]",
+            "vertices = [[-2.0, 0.0], [2.0, 0.0], [-2.0, 2.0], [2.0, 2.0], [2.0, 4.0], [-2.0, 4.0]]",
+        );
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("polygon self-intersects"),
+            "expected site-surface self-intersection validation error, got: {err}"
         );
     }
 

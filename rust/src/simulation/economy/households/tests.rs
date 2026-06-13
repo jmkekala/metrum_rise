@@ -271,6 +271,7 @@ fn register_test_asset(
                 length_m: None,
                 vehicle_class: None,
             }],
+            site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
                     Some(80.0)
@@ -328,6 +329,7 @@ fn register_test_residential_asset_with_capacity(
                 length_m: None,
                 vehicle_class: None,
             }],
+            site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: Some(80.0),
                 placement_mode: PlacementMode::ZonedPrivate,
@@ -377,6 +379,7 @@ fn register_test_utility_asset(
                 length_m: None,
                 vehicle_class: None,
             }],
+            site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: None,
                 placement_mode: PlacementMode::Explicit,

@@ -46,6 +46,7 @@ mod tests {
                 length_m: None,
                 vehicle_class: None,
             }],
+            site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,

@@ -11,6 +11,7 @@
 ##   get_construction_site_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_foundation_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_scaffold_transforms(zone_id: int) -> PackedFloat32Array
+##   get_building_site_surface_mesh(surface_type: int) -> PackedFloat32Array
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
 ## passes each enabled pack's native path to Rust for manifest scanning. Packs not
@@ -22,6 +23,16 @@ extends Node3D
 
 const CFG_PATH := "user://active_packs.cfg"
 const PART_KEY_SEP := "|part:"
+const SITE_SURFACE_ASPHALT := 1
+const SITE_SURFACE_CONCRETE := 2
+const SITE_SURFACE_GRAVEL := 3
+const SITE_SURFACE_PAVING := 4
+const SITE_SURFACE_IDS := [
+	SITE_SURFACE_ASPHALT,
+	SITE_SURFACE_CONCRETE,
+	SITE_SURFACE_GRAVEL,
+	SITE_SURFACE_PAVING,
+]
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
@@ -42,6 +53,8 @@ var construction_site_multimeshes: Dictionary = {}
 var construction_foundation_multimeshes: Dictionary = {}
 ## construction_scaffold_multimeshes[zone_id] = MultiMeshInstance3D
 var construction_scaffold_multimeshes: Dictionary = {}
+## site_surface_meshes[surface_type] = MeshInstance3D
+var site_surface_meshes: Dictionary = {}
 
 var show_foundations := false
 
@@ -77,6 +90,8 @@ func _ready() -> void:
 		_setup_construction_site(zone_id)
 		_setup_construction_foundation(zone_id)
 		_setup_construction_scaffold(zone_id)
+	for surface_type in SITE_SURFACE_IDS:
+		_setup_site_surface(surface_type)
 
 	# Build one MultiMeshInstance3D for each registered building asset.
 	_rebuild_multimeshes()
@@ -92,6 +107,8 @@ func update_all_buildings() -> void:
 		_update_construction_site(zone_id)
 		_update_construction_foundation(zone_id)
 		_update_construction_scaffold(zone_id)
+	for surface_type in SITE_SURFACE_IDS:
+		_update_site_surface(surface_type)
 
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
@@ -332,6 +349,27 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 	add_child(mmi)
 	construction_scaffold_multimeshes[zone_id] = mmi
 
+func _setup_site_surface(surface_type: int) -> void:
+	var mesh_instance := MeshInstance3D.new()
+	var mat := StandardMaterial3D.new()
+	mat.roughness = 0.9
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	match surface_type:
+		SITE_SURFACE_ASPHALT:
+			mat.albedo_color = Color(0.26, 0.27, 0.25, 1.0)
+		SITE_SURFACE_CONCRETE:
+			mat.albedo_color = Color(0.55, 0.56, 0.53, 1.0)
+		SITE_SURFACE_GRAVEL:
+			mat.albedo_color = Color(0.43, 0.40, 0.34, 1.0)
+		SITE_SURFACE_PAVING:
+			mat.albedo_color = Color(0.48, 0.45, 0.40, 1.0)
+		_:
+			mat.albedo_color = Color(0.20, 0.20, 0.20, 1.0)
+	mesh_instance.material_override = mat
+	mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mesh_instance)
+	site_surface_meshes[surface_type] = mesh_instance
+
 func _process(_delta: float) -> void:
 	if Engine.get_frames_drawn() % 30 == 0:
 		_rebuild_multimeshes()
@@ -345,6 +383,8 @@ func _process(_delta: float) -> void:
 			_update_construction_site(zone_id)
 			_update_construction_foundation(zone_id)
 			_update_construction_scaffold(zone_id)
+		for surface_type in SITE_SURFACE_IDS:
+			_update_site_surface(surface_type)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -416,3 +456,23 @@ func _update_construction_scaffold(zone_id: int) -> void:
 	mmi.multimesh.instance_count = count
 	if count > 0:
 		mmi.multimesh.buffer = buffer
+
+func _update_site_surface(surface_type: int) -> void:
+	if not site_surface_meshes.has(surface_type):
+		return
+	var buffer: PackedFloat32Array = simulation_node.get_building_site_surface_mesh(surface_type)
+	var mesh_instance: MeshInstance3D = site_surface_meshes[surface_type]
+	if buffer.size() < 9:
+		mesh_instance.mesh = null
+		return
+	var vertices := PackedVector3Array()
+	vertices.resize(buffer.size() / 3)
+	for i in vertices.size():
+		var offset := i * 3
+		vertices[i] = Vector3(buffer[offset], buffer[offset + 1], buffer[offset + 2])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh_instance.mesh = mesh

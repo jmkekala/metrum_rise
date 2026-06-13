@@ -135,6 +135,7 @@ mod tests {
                 lods: vec![],
                 mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
                 anchors: vec![],
+                site_surfaces: vec![],
                 building: Some(BuildingData {
                     flat_size_m2: None,
                     placement_mode: PlacementMode::ZonedPrivate,

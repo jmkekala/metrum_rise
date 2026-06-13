@@ -1,6 +1,6 @@
 ## Manages the 3D preview for the building importer.
 ## Handles the imported GLB mesh, lot rectangle wireframe, frontage arrow,
-## site anchors, ground grid, human-scale reference figure, and ghost comparison mesh.
+## authored site surfaces, site anchors, ground grid, human-scale reference figure, and ghost comparison mesh.
 extends Node3D
 
 ## Emitted after a GLB mesh is successfully loaded.
@@ -19,6 +19,8 @@ const LABEL_PIXEL_SIZE := 0.025
 const LABEL_HEIGHT_M := 1.15
 const ANCHOR_FILL_ALPHA := 0.30
 const SELECTED_ANCHOR_FILL_ALPHA := 0.42
+const SITE_SURFACE_FILL_ALPHA := 0.70
+const SELECTED_SITE_SURFACE_FILL_ALPHA := 0.82
 const LOT_BORDER_WIDTH_M := 0.14
 const ANCHOR_BORDER_WIDTH_M := 0.14
 const GUIDE_ARROW_WIDTH_M := 0.16
@@ -35,20 +37,24 @@ const GUIDE_HALO_WIDTH_MULT := 2.35
 
 var _mesh_instance: Node3D
 var _selection_overlay: MeshInstance3D
+var _site_surface_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
 var _ground_grid: MeshInstance3D
 var _human_figure: MeshInstance3D  # 1.8 m reference capsule
 var _frontage_label: Label3D
+var _site_surface_label_root: Node3D
 var _site_anchor_label_root: Node3D
 var _mesh_parts: Array[Node3D] = []
 var _mesh_part_aabbs: Array[AABB] = []
 var _selected_mesh_part_indices: Array[int] = []
 var _active_mesh_part_index: int = -1
 var _site_anchors: Array[Dictionary] = []
+var _site_surfaces: Array[Dictionary] = []
 var _selected_site_anchor_indices: Array[int] = []
 var _selected_site_anchor_index: int = -1
+var _selected_site_surface_index: int = -1
 
 # Ghost: explicitly selected comparison mesh shown semi-transparent.
 var _ghost_root: Node3D
@@ -81,6 +87,9 @@ func _ready() -> void:
 	_selection_overlay = MeshInstance3D.new()
 	add_child(_selection_overlay)
 
+	_site_surface_overlay = MeshInstance3D.new()
+	add_child(_site_surface_overlay)
+
 	_site_anchor_overlay = MeshInstance3D.new()
 	add_child(_site_anchor_overlay)
 
@@ -95,6 +104,9 @@ func _ready() -> void:
 
 	_frontage_label = _new_overlay_label("Frontage")
 	add_child(_frontage_label)
+
+	_site_surface_label_root = Node3D.new()
+	add_child(_site_surface_label_root)
 
 	_site_anchor_label_root = Node3D.new()
 	add_child(_site_anchor_label_root)
@@ -188,12 +200,22 @@ func set_site_anchors(anchors: Array, selected_indices: Array = [], active_index
 	)
 	_build_site_anchor_overlay()
 
+## Replace the editor-only authored site surface preview list.
+func set_site_surfaces(surfaces: Array, active_index: int = -1) -> void:
+	_site_surfaces.clear()
+	for surface in surfaces:
+		if surface is Dictionary:
+			_site_surfaces.append((surface as Dictionary).duplicate(true))
+	_selected_site_surface_index = active_index if active_index >= 0 and active_index < _site_surfaces.size() else -1
+	_build_site_surface_overlay()
+
 ## Switch overlay colours for the editor preview theme.
 func set_theme_mode(mode: String) -> void:
 	var resolved := mode.strip_edges().to_lower()
 	theme_mode = THEME_LIGHT if resolved == THEME_LIGHT else THEME_DARK
 	_rebuild_overlays()
 	_build_selection_overlay()
+	_build_site_surface_overlay()
 	_build_site_anchor_overlay()
 
 ## Return the eight world-space corners of a mesh part's transformed local AABB.
@@ -255,6 +277,7 @@ func place_human_at(world_x: float, world_z: float) -> void:
 ## Clear the active mesh and overlays. The explicit comparison ghost remains loaded.
 func clear() -> void:
 	clear_mesh_parts()
+	clear_site_surfaces()
 	clear_site_anchors()
 	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
@@ -271,6 +294,14 @@ func clear_mesh_parts() -> void:
 	_active_mesh_part_index = -1
 	if _selection_overlay:
 		_selection_overlay.mesh = null
+
+## Clear only editor-only authored site surfaces and their overlay.
+func clear_site_surfaces() -> void:
+	_site_surfaces.clear()
+	_selected_site_surface_index = -1
+	if _site_surface_overlay:
+		_site_surface_overlay.mesh = null
+		_clear_site_surface_labels()
 
 ## Clear only editor-only site anchors and their overlay.
 func clear_site_anchors() -> void:
@@ -440,6 +471,7 @@ func _rebuild_overlays() -> void:
 	_build_lot_wireframe()
 	_build_frontage_arrow()
 	_build_human_figure()
+	_build_site_surface_overlay()
 
 func _is_light_theme() -> bool:
 	return theme_mode == THEME_LIGHT
@@ -467,6 +499,19 @@ func _loading_color() -> Color:
 
 func _selected_anchor_color() -> Color:
 	return Color(0.08, 0.08, 0.09, 1.0) if _is_light_theme() else Color(1.0, 0.92, 0.15, 1.0)
+
+func _site_surface_color(material: String) -> Color:
+	match material:
+		"asphalt":
+			return Color(0.25, 0.26, 0.24, 1.0) if _is_light_theme() else Color(0.34, 0.35, 0.32, 1.0)
+		"concrete":
+			return Color(0.58, 0.59, 0.56, 1.0) if _is_light_theme() else Color(0.62, 0.63, 0.60, 1.0)
+		"gravel":
+			return Color(0.43, 0.40, 0.34, 1.0) if _is_light_theme() else Color(0.50, 0.46, 0.38, 1.0)
+		"paving":
+			return Color(0.50, 0.46, 0.40, 1.0) if _is_light_theme() else Color(0.58, 0.52, 0.45, 1.0)
+		_:
+			return Color(0.45, 0.45, 0.42, 1.0)
 
 func _label_outline_color() -> Color:
 	return Color(1.0, 1.0, 1.0, 1.0) if _is_light_theme() else Color(0.0, 0.0, 0.0, 1.0)
@@ -590,6 +635,92 @@ func _build_selection_overlay() -> void:
 
 	im.surface_set_material(0, _new_overlay_material())
 	_selection_overlay.mesh = im
+
+func _build_site_surface_overlay() -> void:
+	if not _site_surface_overlay:
+		return
+	_clear_site_surface_labels()
+	if _site_surfaces.is_empty():
+		_site_surface_overlay.mesh = null
+		return
+
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	var material_counts := {}
+	for index in _site_surfaces.size():
+		var surface := _site_surfaces[index]
+		var material := str(surface.get("material", "asphalt"))
+		material_counts[material] = int(material_counts.get(material, 0)) + 1
+		var vertices := _site_surface_vertices(surface, 0.055)
+		if vertices.size() < 3:
+			continue
+		var selected := index == _selected_site_surface_index
+		var color := _selected_anchor_color() if selected else _site_surface_color(material)
+		var fill_alpha := SELECTED_SITE_SURFACE_FILL_ALPHA if selected else SITE_SURFACE_FILL_ALPHA
+		_draw_polygon_fill(im, vertices, Color(color.r, color.g, color.b, fill_alpha))
+		for edge in vertices.size():
+			if selected:
+				_draw_editor_line(im, vertices[edge], vertices[(edge + 1) % vertices.size()], color, ANCHOR_BORDER_WIDTH_M)
+			else:
+				_draw_dashed_line(
+					im,
+					vertices[edge],
+					vertices[(edge + 1) % vertices.size()],
+					color,
+					ANCHOR_BORDER_WIDTH_M,
+					ANCHOR_DASH_M,
+					ANCHOR_GAP_M
+				)
+		if selected:
+			for vertex in vertices:
+				_draw_site_surface_vertex_handle(im, vertex, color)
+		var label := _new_overlay_label(_site_surface_label(surface, material_counts[material]))
+		_site_surface_label_root.add_child(label)
+		var label_pos := _site_surface_label_position(surface)
+		label_pos.y = 0.08 + LABEL_HEIGHT_M
+		_style_overlay_label(label, label.text, color, label_pos)
+	im.surface_end()
+
+	im.surface_set_material(0, _new_overlay_material())
+	_site_surface_overlay.mesh = im
+
+func _site_surface_vertices(surface: Dictionary, y: float) -> Array:
+	var result := []
+	var raw_vertices = surface.get("vertices", [])
+	if raw_vertices is Array:
+		for raw_vertex in raw_vertices:
+			if raw_vertex is Array and raw_vertex.size() >= 2:
+				result.append(Vector3(float(raw_vertex[0]), y, float(raw_vertex[1])))
+	return result
+
+func _site_surface_label_position(surface: Dictionary) -> Vector3:
+	var vertices := _site_surface_vertices(surface, 0.08)
+	if vertices.is_empty():
+		return Vector3.ZERO
+	var center := Vector3.ZERO
+	for vertex in vertices:
+		center += vertex
+	return center / float(vertices.size())
+
+func _site_surface_label(surface: Dictionary, material_index: int) -> String:
+	var name := str(surface.get("name", "")).strip_edges()
+	var material := _site_surface_label_prefix(str(surface.get("material", "")))
+	if not name.is_empty():
+		return "%s: %s" % [material, name]
+	return "%s %d" % [material, material_index]
+
+func _site_surface_label_prefix(material: String) -> String:
+	match material:
+		"asphalt":
+			return "Asphalt"
+		"concrete":
+			return "Concrete"
+		"gravel":
+			return "Gravel"
+		"paving":
+			return "Paving"
+		_:
+			return "Surface"
 
 func _build_site_anchor_overlay() -> void:
 	if not _site_anchor_overlay:
@@ -730,6 +861,95 @@ func _draw_quad_fill(im: ImmediateMesh, corners: Array, color: Color) -> void:
 	im.surface_set_color(color)
 	im.surface_add_vertex(corners[3])
 
+func _draw_polygon_fill(im: ImmediateMesh, vertices: Array, color: Color) -> void:
+	var local_points: Array[Vector2] = []
+	for vertex in vertices:
+		if vertex is Vector3:
+			local_points.append(Vector2((vertex as Vector3).x, (vertex as Vector3).z))
+	var triangles := _triangulate_polygon_indices(local_points)
+	for triangle in triangles:
+		for raw_index in triangle:
+			var index := int(raw_index)
+			if index < 0 or index >= vertices.size():
+				continue
+			im.surface_set_color(color)
+			im.surface_add_vertex(vertices[index])
+
+func _triangulate_polygon_indices(points: Array[Vector2]) -> Array:
+	if points.size() < 3:
+		return []
+	var indices := []
+	for i in points.size():
+		indices.append(i)
+	if _polygon_signed_area(points) < 0.0:
+		indices.reverse()
+	var triangles := []
+	var guard := 0
+	while indices.size() > 3 and guard < points.size() * points.size():
+		guard += 1
+		var clipped := false
+		for i in indices.size():
+			var prev := int(indices[(i + indices.size() - 1) % indices.size()])
+			var current := int(indices[i])
+			var next := int(indices[(i + 1) % indices.size()])
+			if _orientation_2d(points[prev], points[current], points[next]) <= 0.0001:
+				continue
+			var contains_point := false
+			for raw_candidate in indices:
+				var candidate := int(raw_candidate)
+				if candidate == prev or candidate == current or candidate == next:
+					continue
+				if _point_in_triangle_2d(points[candidate], points[prev], points[current], points[next]):
+					contains_point = true
+					break
+			if contains_point:
+				continue
+			triangles.append([prev, current, next])
+			indices.remove_at(i)
+			clipped = true
+			break
+		if not clipped:
+			return []
+	if indices.size() == 3:
+		triangles.append([int(indices[0]), int(indices[1]), int(indices[2])])
+	return triangles
+
+func _polygon_signed_area(points: Array[Vector2]) -> float:
+	var twice_area := 0.0
+	for i in points.size():
+		var a := points[i]
+		var b := points[(i + 1) % points.size()]
+		twice_area += a.x * b.y - b.x * a.y
+	return twice_area * 0.5
+
+func _orientation_2d(a: Vector2, b: Vector2, c: Vector2) -> float:
+	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+
+func _point_in_triangle_2d(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool:
+	var eps := 0.0001
+	return (
+		_orientation_2d(a, b, p) >= -eps
+		and _orientation_2d(b, c, p) >= -eps
+		and _orientation_2d(c, a, p) >= -eps
+	)
+
+func _draw_site_surface_vertex_handle(im: ImmediateMesh, vertex: Vector3, color: Color) -> void:
+	var size := 0.35
+	_draw_editor_line(
+		im,
+		vertex + Vector3(-size, 0.02, 0.0),
+		vertex + Vector3(size, 0.02, 0.0),
+		color,
+		ANCHOR_BORDER_WIDTH_M * 0.85
+	)
+	_draw_editor_line(
+		im,
+		vertex + Vector3(0.0, 0.02, -size),
+		vertex + Vector3(0.0, 0.02, size),
+		color,
+		ANCHOR_BORDER_WIDTH_M * 0.85
+	)
+
 func _draw_line(im: ImmediateMesh, a: Vector3, b: Vector3, color: Color) -> void:
 	im.surface_set_color(color)
 	im.surface_add_vertex(a)
@@ -868,6 +1088,12 @@ func _clear_site_anchor_labels() -> void:
 	if not _site_anchor_label_root:
 		return
 	for child in _site_anchor_label_root.get_children():
+		child.queue_free()
+
+func _clear_site_surface_labels() -> void:
+	if not _site_surface_label_root:
+		return
+	for child in _site_surface_label_root.get_children():
 		child.queue_free()
 
 func _preview_anchor_position(anchor: Dictionary) -> Vector3:
