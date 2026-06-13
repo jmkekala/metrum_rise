@@ -271,7 +271,7 @@ impl AssetRegistry {
 mod tests {
     use super::*;
     use crate::assets::AssetManifest;
-    use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
+    use crate::assets::asset::{BuildingData, LodEntry, MeshPart, PlacementMode, ZoneClass};
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
         let (household_capacity, worker_capacity) = match zone {
@@ -285,10 +285,18 @@ mod tests {
             asset_set: None,
             tags: vec![],
             thumbnail: None,
-            lods: vec![LodEntry {
-                file: "lod0.glb".to_owned(),
-                distance_min_m: 0.0,
-                distance_max_m: None,
+            lods: vec![],
+            mesh_parts: vec![MeshPart {
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.0],
+                rotation_degrees: [0.0, 0.0, 0.0],
+                scale: 1.0,
+                pivot_offset: None,
+                lods: vec![LodEntry {
+                    file: "lod0.glb".to_owned(),
+                    distance_min_m: 0.0,
+                    distance_max_m: None,
+                }],
             }],
             anchors: vec![],
             building: Some(BuildingData {
@@ -305,12 +313,10 @@ mod tests {
                 worker_capacity,
                 service_class: None,
                 economy_profile: None,
-                preview_scale: None,
             }),
             prop: None,
             vehicle: None,
             character: None,
-            pivot_offset: None,
         }
     }
 

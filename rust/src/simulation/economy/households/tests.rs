@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{
     AGE_CHILD, AGE_ELDER, AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
@@ -260,11 +260,8 @@ fn register_test_asset(
             asset_set: None,
             tags: vec![],
             thumbnail: None,
-            lods: vec![LodEntry {
-                file: "lod0.glb".to_owned(),
-                distance_min_m: 0.0,
-                distance_max_m: None,
-            }],
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
             anchors: vec![Anchor {
                 anchor_type: AnchorType::Entrance,
                 name: "main".to_owned(),
@@ -293,12 +290,10 @@ fn register_test_asset(
                     ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
                     _ => None,
                 },
-                preview_scale: Some(1.0),
             }),
             prop: None,
             vehicle: None,
             character: None,
-            pivot_offset: None,
         },
         String::new(),
     );
@@ -319,11 +314,8 @@ fn register_test_residential_asset_with_capacity(
             asset_set: None,
             tags: vec![],
             thumbnail: None,
-            lods: vec![LodEntry {
-                file: "lod0.glb".to_owned(),
-                distance_min_m: 0.0,
-                distance_max_m: None,
-            }],
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
             anchors: vec![Anchor {
                 anchor_type: AnchorType::Entrance,
                 name: "main".to_owned(),
@@ -344,12 +336,10 @@ fn register_test_residential_asset_with_capacity(
                 worker_capacity: None,
                 service_class: None,
                 economy_profile: None,
-                preview_scale: Some(1.0),
             }),
             prop: None,
             vehicle: None,
             character: None,
-            pivot_offset: None,
         },
         String::new(),
     );
@@ -370,11 +360,8 @@ fn register_test_utility_asset(
             asset_set: None,
             tags: vec![],
             thumbnail: None,
-            lods: vec![LodEntry {
-                file: "lod0.glb".to_owned(),
-                distance_min_m: 0.0,
-                distance_max_m: None,
-            }],
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
             anchors: vec![Anchor {
                 anchor_type: AnchorType::Entrance,
                 name: "main".to_owned(),
@@ -395,12 +382,10 @@ fn register_test_utility_asset(
                 worker_capacity: Some(4),
                 service_class: None,
                 economy_profile: Some(profile_id.to_owned()),
-                preview_scale: Some(1.0),
             }),
             prop: None,
             vehicle: None,
             character: None,
-            pivot_offset: None,
         },
         String::new(),
     );

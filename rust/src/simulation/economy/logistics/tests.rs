@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, resolve_building_economy_profile_binding,
 };
@@ -127,11 +127,8 @@ fn register_test_asset_with_profile(
         asset_set: None,
         tags: vec![],
         thumbnail: None,
-        lods: vec![LodEntry {
-            file: "lod0.glb".to_owned(),
-            distance_min_m: 0.0,
-            distance_max_m: None,
-        }],
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
             anchor_type: AnchorType::Entrance,
             name: "main".to_owned(),
@@ -152,12 +149,10 @@ fn register_test_asset_with_profile(
             worker_capacity,
             service_class: None,
             economy_profile,
-            preview_scale: Some(1.0),
         }),
         prop: None,
         vehicle: None,
         character: None,
-        pivot_offset: None,
     };
     allocator
         .registry

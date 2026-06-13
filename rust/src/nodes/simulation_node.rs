@@ -4111,28 +4111,47 @@ impl SimulationNode {
         PackedStringArray::from_iter(ids)
     }
 
-    /// Returns the native filesystem path to the LOD0 mesh file for a registered asset.
+    /// Returns the number of renderable building mesh parts for a registered asset.
     #[func]
-    pub fn get_lod0_native_path(&self, qualified_id: GString) -> GString {
-        use super::sim::bridge::assets::get_lod0_native_path;
-        get_lod0_native_path(&self.lock_core(), qualified_id)
+    pub fn get_building_mesh_part_count(&self, qualified_id: GString) -> i32 {
+        use super::sim::bridge::assets::get_building_mesh_part_count;
+        get_building_mesh_part_count(&self.lock_core(), qualified_id)
     }
 
-    /// Returns the packed 12-float transforms for all placed buildings with the given asset ID.
+    /// Returns the native filesystem path to one building mesh part's LOD0 mesh file.
     #[func]
-    pub fn get_building_transforms_for_asset(&self, asset_id: GString) -> PackedFloat32Array {
-        self.lock_core()
-            .get_building_transforms_for_asset_internal(&asset_id.to_string())
+    pub fn get_building_mesh_part_lod0_native_path(
+        &self,
+        qualified_id: GString,
+        part_index: i32,
+    ) -> GString {
+        use super::sim::bridge::assets::get_building_mesh_part_lod0_native_path;
+        get_building_mesh_part_lod0_native_path(&self.lock_core(), qualified_id, part_index)
     }
 
-    /// Returns the packed 12-float transforms for all deserted buildings with the given asset ID.
+    /// Returns the packed 12-float transforms for all placed buildings of the given asset part.
     #[func]
-    pub fn get_deserted_building_transforms_for_asset(
+    pub fn get_building_transforms_for_asset_part(
         &self,
         asset_id: GString,
+        part_index: i32,
     ) -> PackedFloat32Array {
         self.lock_core()
-            .get_deserted_building_transforms_for_asset_internal(&asset_id.to_string())
+            .get_building_transforms_for_asset_part_internal(&asset_id.to_string(), part_index)
+    }
+
+    /// Returns the packed 12-float transforms for all deserted buildings of the given asset part.
+    #[func]
+    pub fn get_deserted_building_transforms_for_asset_part(
+        &self,
+        asset_id: GString,
+        part_index: i32,
+    ) -> PackedFloat32Array {
+        self.lock_core()
+            .get_deserted_building_transforms_for_asset_part_internal(
+                &asset_id.to_string(),
+                part_index,
+            )
     }
 
     /// Returns the packed transforms for building plots/foundations of a specific zone type.

@@ -14,13 +14,14 @@ const ENTRANCE_SPHERE_RADIUS_M := 0.35
 const GHOST_TINT := Color(0.16, 0.38, 0.95, 0.58)
 const GHOST_ORIGINAL_COLOR_BLEND := 0.55
 
-var _mesh_instance: MeshInstance3D
+var _mesh_instance: Node3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
 var _entrance_gizmo: MeshInstance3D
 var _entrance_sphere: MeshInstance3D
 var _ground_grid: MeshInstance3D
 var _human_figure: MeshInstance3D  # 1.8 m reference capsule
+var _mesh_parts: Array[Node3D] = []
 
 # Ghost: explicitly selected comparison mesh shown semi-transparent.
 var _ghost_root: Node3D
@@ -48,7 +49,7 @@ func _ready() -> void:
 	_ghost_root = Node3D.new()
 	add_child(_ghost_root)
 
-	_mesh_instance = MeshInstance3D.new()
+	_mesh_instance = Node3D.new()
 	add_child(_mesh_instance)
 
 	_lot_overlay = MeshInstance3D.new()
@@ -72,6 +73,12 @@ func _ready() -> void:
 
 ## Load a GLB, GLTF, or FBX from an absolute native path and place it at the origin.
 func load_glb(native_path: String) -> void:
+	clear_mesh_parts()
+	var aabb := add_mesh_part(native_path)
+	emit_signal("mesh_loaded", aabb)
+
+## Add a GLB, GLTF, or FBX as another building mesh part and return its local AABB.
+func add_mesh_part(native_path: String) -> AABB:
 	var ext := native_path.get_extension().to_lower()
 	var doc: GLTFDocument
 	var state: GLTFState
@@ -84,21 +91,38 @@ func load_glb(native_path: String) -> void:
 	var err := doc.append_from_file(native_path, state)
 	if err != OK:
 		push_warning("BuildingPreview: failed to load '%s' (error %d)" % [native_path, err])
-		return
-
-	for child in _mesh_instance.get_children():
-		child.queue_free()
+		return AABB()
 
 	var scene: Node = doc.generate_scene(state)
+	var part_root := Node3D.new()
+	_mesh_instance.add_child(part_root)
 	if scene:
-		_mesh_instance.add_child(scene)
+		part_root.add_child(scene)
+	_mesh_parts.append(part_root)
 
 	_rebuild_overlays()
 
 	var aabb := AABB()
 	if scene is Node3D:
 		aabb = _compute_aabb(scene as Node3D)
-	emit_signal("mesh_loaded", aabb)
+	return aabb
+
+## Update one mesh part's local transform.
+func set_mesh_part_transform(
+	part_index: int,
+	position: Vector3,
+	yaw_degrees: float,
+	scale_value: float,
+	pivot_offset: Vector3 = Vector3.ZERO
+) -> void:
+	if part_index < 0 or part_index >= _mesh_parts.size():
+		return
+	var root := _mesh_parts[part_index]
+	root.rotation_degrees = Vector3(0.0, yaw_degrees, 0.0)
+	var scale := maxf(0.001, scale_value)
+	root.scale = Vector3.ONE * scale
+	var pivot := Basis(Vector3.UP, deg_to_rad(yaw_degrees)) * (pivot_offset * scale)
+	root.position = position + pivot
 
 ## Update lot dimensions and rebuild overlays.
 func set_lot_size(width_cells: int, depth_cells: int) -> void:
@@ -109,7 +133,8 @@ func set_lot_size(width_cells: int, depth_cells: int) -> void:
 ## Apply a uniform scale to the mesh. Does not affect lot overlays.
 func set_preview_scale(scale_value: float) -> void:
 	preview_scale = maxf(0.001, scale_value)
-	_mesh_instance.scale = Vector3.ONE * preview_scale
+	for part in _mesh_parts:
+		part.scale = Vector3.ONE * preview_scale
 
 ## Update frontage forward vector and rebuild the arrow.
 func set_frontage_forward(fwd: Vector3) -> void:
@@ -137,13 +162,18 @@ func place_human_at(world_x: float, world_z: float) -> void:
 
 ## Clear the active mesh and overlays. The explicit comparison ghost remains loaded.
 func clear() -> void:
-	for child in _mesh_instance.get_children():
-		child.queue_free()
+	clear_mesh_parts()
 	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
 	_entrance_gizmo.mesh = null
 	_entrance_sphere.mesh = null
 	_human_figure.mesh = null
+
+## Clear only active mesh parts. The explicit comparison ghost remains loaded.
+func clear_mesh_parts() -> void:
+	for child in _mesh_instance.get_children():
+		child.queue_free()
+	_mesh_parts.clear()
 
 ## Load an explicit comparison ghost without changing the active preview mesh.
 func load_ghost(native_path: String, scale_value: float, width_cells: int, depth_cells: int) -> bool:

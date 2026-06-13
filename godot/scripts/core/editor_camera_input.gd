@@ -8,6 +8,7 @@ var panel_right_w := 300.0
 var panel_top_h := 28.0
 var panel_bot_h := 140.0
 var viewport_rect_control: Control
+var right_mouse_pan_enabled := true
 
 const MIN_DISTANCE := 0.5
 const MAX_DISTANCE := 1000.0
@@ -93,7 +94,7 @@ func _input(event: InputEvent) -> void:
 					_orbit_active = event.pressed
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_RIGHT:
-				if not over_ui or not event.pressed:
+				if right_mouse_pan_enabled and (not over_ui or not event.pressed):
 					_pan_active = event.pressed
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_UP:

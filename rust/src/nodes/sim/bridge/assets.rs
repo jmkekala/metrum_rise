@@ -53,11 +53,31 @@ pub fn load_asset_packs(
     GString::from(result.warnings.join("\n").as_str())
 }
 
-/// Returns the native filesystem path to the LOD0 mesh file for a registered asset.
-pub fn get_lod0_native_path(core: &SimCore, qualified_id: GString) -> GString {
+/// Returns the number of renderable building mesh parts for a registered asset.
+pub fn get_building_mesh_part_count(core: &SimCore, qualified_id: GString) -> i32 {
+    let qid = qualified_id.to_string();
+    core.allocator
+        .registry
+        .get(&qid)
+        .map(|entry| entry.manifest.mesh_parts.len() as i32)
+        .unwrap_or(0)
+}
+
+/// Returns the native filesystem path to one building mesh part's LOD0 mesh file.
+pub fn get_building_mesh_part_lod0_native_path(
+    core: &SimCore,
+    qualified_id: GString,
+    part_index: i32,
+) -> GString {
+    if part_index < 0 {
+        return GString::new();
+    }
     let qid = qualified_id.to_string();
     if let Some(entry) = core.allocator.registry.get(&qid) {
-        if let Some(lod) = entry.manifest.lods.first() {
+        if let Some(part) = entry.manifest.mesh_parts.get(part_index as usize) {
+            let Some(lod) = part.lods.first() else {
+                return GString::new();
+            };
             let path = Path::new(&entry.asset_dir).join(&lod.file);
             return GString::from(path.to_string_lossy().as_ref());
         }

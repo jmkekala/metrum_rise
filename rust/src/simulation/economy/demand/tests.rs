@@ -4,7 +4,7 @@ use super::credits::advance_spawn_need_credit;
 use super::spawn_need::{OutputAbsorptionContext, nonresidential_passes_absorption_gate};
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
@@ -106,11 +106,8 @@ fn register_family_asset_with_economy_profile_and_flat_size(
         asset_set: asset_set.map(str::to_owned),
         tags: vec![],
         thumbnail: None,
-        lods: vec![LodEntry {
-            file: "lod0.glb".to_owned(),
-            distance_min_m: 0.0,
-            distance_max_m: None,
-        }],
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
             anchor_type: AnchorType::Entrance,
             name: "main".to_owned(),
@@ -135,12 +132,10 @@ fn register_family_asset_with_economy_profile_and_flat_size(
             worker_capacity,
             service_class: None,
             economy_profile: economy_profile.map(str::to_owned),
-            preview_scale: Some(1.0),
         }),
         prop: None,
         vehicle: None,
         character: None,
-        pivot_offset: None,
     };
     allocator.registry.register("test", manifest, String::new());
     format!("test:{asset_id}")

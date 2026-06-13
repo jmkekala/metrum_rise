@@ -164,9 +164,6 @@ license = "MIT"
     const BUILDING_TOML: &str = r#"
 asset_id = "building.residential.house"
 display_name = "House"
-[[lods]]
-file = "lod0.glb"
-distance_min_m = 0.0
 
 [[anchors]]
 type = "entrance"
@@ -181,6 +178,13 @@ density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
 household_capacity = 6
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
 "#;
 
     #[test]
@@ -289,7 +293,7 @@ household_capacity = 6
     ///   `<mods>/<pack_id>/assets/<asset_id>/<lod_file>`
     ///
     /// Checks: scan finds the pack, assets register into the correct zone index,
-    /// `lot_size` and `preview_scale` round-trip, and `asset_dir` resolves to the LOD file.
+    /// `lot_size` round-trips, and `asset_dir` resolves to the building mesh file.
     #[test]
     fn scan_and_register_kenney_style_pack() {
         use crate::assets::asset::ZoneClass;
@@ -316,10 +320,12 @@ lot_width_cells = 1
 lot_depth_cells = 1
 level = 1
 household_capacity = 5
-preview_scale = 7.18
 density = "low"
 
-[[lods]]
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
 file = "building-type-a.glb"
 distance_min_m = 0
 distance_max_m = 150
@@ -340,10 +346,12 @@ lot_width_cells = 2
 lot_depth_cells = 1
 level = 1
 worker_capacity = 8
-preview_scale = 4.80
 density = "low"
 
-[[lods]]
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
 file = "shop-a.glb"
 distance_min_m = 0
 distance_max_m = 150
@@ -397,16 +405,10 @@ forward = [0, 0, -1]
             (2, 1)
         );
 
-        // preview_scale round-trips.
-        let house_scale = registry
-            .get("kenney:building.residential.house_a")
-            .and_then(|e| e.manifest.building.as_ref())
-            .and_then(|b| b.preview_scale);
-        assert_eq!(house_scale, Some(7.18));
-
-        // asset_dir + lod file resolves to the file we created on disk.
+        // asset_dir + part LOD file resolves to the file we created on disk.
         let entry = registry.get("kenney:building.residential.house_a").unwrap();
-        let lod_path = std::path::Path::new(&entry.asset_dir).join(&entry.manifest.lods[0].file);
+        let lod_path =
+            std::path::Path::new(&entry.asset_dir).join(&entry.manifest.mesh_parts[0].lods[0].file);
         assert!(lod_path.exists(), "LOD file not found at {:?}", lod_path);
 
         // density field round-trips.

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
-    use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
+    use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::agents::AgentSystem;
@@ -32,11 +32,8 @@ mod tests {
                 asset_set: None,
                 tags: vec![],
                 thumbnail: None,
-                lods: vec![LodEntry {
-                    file: "lod0.glb".to_owned(),
-                    distance_min_m: 0.0,
-                    distance_max_m: None,
-                }],
+                lods: vec![],
+                mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
                 anchors: vec![],
                 building: Some(BuildingData {
                     flat_size_m2: None,
@@ -52,12 +49,10 @@ mod tests {
                     worker_capacity,
                     service_class: None,
                     economy_profile: None,
-                    preview_scale: None,
                 }),
                 prop: None,
                 vehicle: None,
                 character: None,
-                pivot_offset: None,
             },
             String::new(),
         );

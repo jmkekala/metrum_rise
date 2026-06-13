@@ -42,6 +42,28 @@ pub struct AnchorParams {
     pub forward: [f32; 3],
 }
 
+/// One renderable mesh part sent from the building importer form.
+#[derive(Deserialize)]
+pub struct MeshPartParams {
+    /// Editor label for this mesh part.
+    pub name: String,
+    /// Local position relative to the building placement origin.
+    #[serde(default)]
+    pub position: [f32; 3],
+    /// Local Euler rotation in degrees. Building runtime supports Y rotation.
+    #[serde(default)]
+    pub rotation_degrees: [f32; 3],
+    /// Uniform part scale.
+    #[serde(default = "default_part_scale")]
+    pub scale: f32,
+    /// Optional pivot correction for this part.
+    #[serde(default)]
+    pub pivot_offset: Option<[f32; 3]>,
+    /// LOD entries ordered from highest to lowest detail.
+    #[serde(default)]
+    pub lods: Vec<LodParams>,
+}
+
 /// Flat JSON payload sent by the building importer form.
 #[derive(Deserialize)]
 pub struct ExportParams {
@@ -110,16 +132,10 @@ pub struct ExportParams {
     /// Reference to an authored economy profile selected from the current economy catalog.
     #[serde(default)]
     pub economy_profile: Option<String>,
-    /// Uniform scale applied in the asset preview viewport.
-    #[serde(default)]
-    pub preview_scale: Option<f32>,
-    /// Pivot offset applied when placing the asset in world space.
-    #[serde(default)]
-    pub pivot_offset: Option<[f32; 3]>,
 
-    /// LOD entries ordered from highest to lowest detail.
+    /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
-    pub lods: Vec<LodParams>,
+    pub mesh_parts: Vec<MeshPartParams>,
     /// Named anchor points (frontage, entrances, etc.).
     #[serde(default)]
     pub anchors: Vec<AnchorParams>,
@@ -133,6 +149,10 @@ fn default_license() -> String {
 }
 fn default_level() -> u8 {
     1
+}
+
+fn default_part_scale() -> f32 {
+    1.0
 }
 
 fn default_placement_mode() -> String {
@@ -228,16 +248,6 @@ fn build_asset_toml(p: &ExportParams) -> String {
                     out.push_str(&format!("economy_profile = \"{ep}\"\n"));
                 }
             }
-            if let Some(ps) = p.preview_scale {
-                if (ps - 1.0).abs() > 0.001 {
-                    out.push_str(&format!("preview_scale = {ps}\n"));
-                }
-            }
-            if let Some([px, py, pz]) = p.pivot_offset {
-                if px.abs() > 1e-4 || py.abs() > 1e-4 || pz.abs() > 1e-4 {
-                    out.push_str(&format!("pivot_offset = [{px}, {py}, {pz}]\n"));
-                }
-            }
         }
         other => {
             // Future: prop, vehicle. Return an error-shaped string that the caller detects.
@@ -245,12 +255,26 @@ fn build_asset_toml(p: &ExportParams) -> String {
         }
     }
 
-    for lod in &p.lods {
-        out.push_str("\n[[lods]]\n");
-        out.push_str(&format!("file = \"{}\"\n", lod.file));
-        out.push_str(&format!("distance_min_m = {}\n", lod.distance_min_m));
-        if let Some(max) = lod.distance_max_m {
-            out.push_str(&format!("distance_max_m = {max}\n"));
+    for part in &p.mesh_parts {
+        out.push_str("\n[[mesh_parts]]\n");
+        out.push_str(&format!("name = \"{}\"\n", part.name));
+        let [x, y, z] = part.position;
+        out.push_str(&format!("position = [{x}, {y}, {z}]\n"));
+        let [rx, ry, rz] = part.rotation_degrees;
+        out.push_str(&format!("rotation_degrees = [{rx}, {ry}, {rz}]\n"));
+        out.push_str(&format!("scale = {}\n", part.scale));
+        if let Some([px, py, pz]) = part.pivot_offset {
+            if px.abs() > 1e-4 || py.abs() > 1e-4 || pz.abs() > 1e-4 {
+                out.push_str(&format!("pivot_offset = [{px}, {py}, {pz}]\n"));
+            }
+        }
+        for lod in &part.lods {
+            out.push_str("\n[[mesh_parts.lods]]\n");
+            out.push_str(&format!("file = \"{}\"\n", lod.file));
+            out.push_str(&format!("distance_min_m = {}\n", lod.distance_min_m));
+            if let Some(max) = lod.distance_max_m {
+                out.push_str(&format!("distance_max_m = {max}\n"));
+            }
         }
     }
 
@@ -381,6 +405,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
     }
     if params.min_zone_width_cells == Some(0) || params.min_zone_depth_cells == Some(0) {
         return Err("min_zone_width_cells and min_zone_depth_cells must be > 0".to_owned());
+    }
+    if params.mesh_parts.is_empty() {
+        return Err("building exports require at least one mesh part".to_owned());
     }
 
     match placement_mode {
@@ -569,10 +596,17 @@ pub fn get_asset_manifest_json_internal(
         "asset_set": m.asset_set,
         "tags": m.tags,
         "asset_class": m.class().map(|c| format!("{c:?}").to_lowercase()).unwrap_or_default(),
-        "lods": m.lods.iter().map(|l| serde_json::json!({
-            "file": l.file,
-            "distance_min_m": l.distance_min_m,
-            "distance_max_m": l.distance_max_m,
+        "mesh_parts": m.mesh_parts.iter().map(|part| serde_json::json!({
+            "name": part.name,
+            "position": part.position,
+            "rotation_degrees": part.rotation_degrees,
+            "scale": part.scale,
+            "pivot_offset": part.pivot_offset,
+            "lods": part.lods.iter().map(|l| serde_json::json!({
+                "file": l.file,
+                "distance_min_m": l.distance_min_m,
+                "distance_max_m": l.distance_max_m,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "anchors": m.anchors.iter().map(|a| serde_json::json!({
             "anchor_type": format!("{:?}", a.anchor_type).to_lowercase(),
@@ -605,10 +639,6 @@ pub fn get_asset_manifest_json_internal(
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
-        obj["preview_scale"] = serde_json::json!(b.preview_scale.unwrap_or(1.0));
-    }
-    if let Some(po) = m.pivot_offset {
-        obj["pivot_offset"] = serde_json::json!(po);
     }
 
     serde_json::to_string(&obj).unwrap_or_default()
@@ -652,6 +682,16 @@ pub fn get_pack_manifest_json_internal(pack_dir: &str) -> String {
 mod tests {
     use super::*;
 
+    fn one_mesh_part_json() -> serde_json::Value {
+        serde_json::json!([{
+            "name": "main",
+            "position": [0.0, 0.0, 0.0],
+            "rotation_degrees": [0.0, 0.0, 0.0],
+            "scale": 1.0,
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
+        }])
+    }
+
     fn minimal_building_json(asset_id: &str) -> String {
         serde_json::json!({
             "pack_id": "test-pack",
@@ -667,7 +707,7 @@ mod tests {
             "lot_depth_cells": 2,
             "level": 1,
             "household_capacity": 6,
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -730,7 +770,7 @@ mod tests {
             "density": "low",
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
+            "mesh_parts": one_mesh_part_json()
         })
         .to_string();
 
@@ -753,7 +793,7 @@ mod tests {
             "density": "low",
             "lot_width_cells": 0,
             "lot_depth_cells": 2,
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
+            "mesh_parts": one_mesh_part_json()
         })
         .to_string();
 
@@ -783,7 +823,7 @@ mod tests {
             "lot_depth_cells": 2,
             "worker_capacity": 8,
             "economy_profile": "grocery_basic",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -822,7 +862,7 @@ mod tests {
             "lot_depth_cells": 2,
             "household_capacity": 2,
             "service_class": "fire",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -854,7 +894,7 @@ mod tests {
             "lot_depth_cells": 4,
             "worker_capacity": 4,
             "service_class": "power",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -887,7 +927,7 @@ mod tests {
             "worker_capacity": 4,
             "service_class": "sewage",
             "economy_profile": "wastewater_treatment_basic",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -920,7 +960,7 @@ mod tests {
             "worker_capacity": 4,
             "service_class": "power",
             "economy_profile": "water_plant_basic",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",
@@ -954,7 +994,7 @@ mod tests {
             "worker_capacity": 4,
             "service_class": "power",
             "economy_profile": "power_plant_basic",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "mesh_parts": one_mesh_part_json(),
             "anchors": [{
                 "anchor_type": "entrance",
                 "name": "main",

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -118,11 +118,8 @@ fn register_test_asset_with_family_level(
         asset_set: asset_set.map(str::to_owned),
         tags: vec![],
         thumbnail: None,
-        lods: vec![LodEntry {
-            file: "lod0.glb".to_owned(),
-            distance_min_m: 0.0,
-            distance_max_m: None,
-        }],
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
             anchor_type: AnchorType::Entrance,
             name: "main".to_owned(),
@@ -151,12 +148,10 @@ fn register_test_asset_with_family_level(
                 ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
                 _ => None,
             },
-            preview_scale: Some(1.0),
         }),
         prop: None,
         vehicle: None,
         character: None,
-        pivot_offset: None,
     };
     allocator
         .registry
@@ -1233,11 +1228,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         asset_set: None,
         tags: vec![],
         thumbnail: None,
-        lods: vec![LodEntry {
-            file: "lod0.glb".to_owned(),
-            distance_min_m: 0.0,
-            distance_max_m: None,
-        }],
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
         anchors: vec![Anchor {
             anchor_type: AnchorType::Entrance,
             name: "main".to_owned(),
@@ -1258,12 +1250,10 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             worker_capacity: None,
             service_class: None,
             economy_profile: None,
-            preview_scale: Some(7.18),
         }),
         prop: None,
         vehicle: None,
         character: None,
-        pivot_offset: Some([4.0, 0.0, -3.0]),
     };
     allocator.registry.register("base", manifest, String::new());
 

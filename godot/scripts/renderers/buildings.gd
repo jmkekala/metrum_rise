@@ -1,10 +1,12 @@
-## Building renderer — maintains one MultiMeshInstance3D per registered asset ID.
+## Building renderer — maintains one MultiMeshInstance3D per registered building asset part.
 ##
 ## Rust methods called:
 ##   load_asset_packs(dir_path: String) -> String
 ##   get_registered_asset_ids() -> PackedStringArray
-##   get_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
-##   get_deserted_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
+##   get_building_mesh_part_count(asset_id: String) -> int
+##   get_building_mesh_part_lod0_native_path(asset_id: String, part_index: int) -> String
+##   get_building_transforms_for_asset_part(asset_id: String, part_index: int) -> PackedFloat32Array
+##   get_deserted_building_transforms_for_asset_part(asset_id: String, part_index: int) -> PackedFloat32Array
 ##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_site_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_foundation_transforms(zone_id: int) -> PackedFloat32Array
@@ -13,20 +15,25 @@
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
 ## passes each enabled pack's native path to Rust for manifest scanning. Packs not
 ## listed in the config are ignored. Rust parses the manifests; GDScript loads the
-## corresponding mesh files and maintains one MultiMeshInstance3D per asset_id.
+## corresponding mesh files and maintains one MultiMeshInstance3D per asset_id/part.
 ## Building transforms are polled every 30 frames.
 ## A parallel deserted_multimeshes dict renders economically dead buildings in gray.
 extends Node3D
 
 const CFG_PATH := "user://active_packs.cfg"
+const PART_KEY_SEP := "|part:"
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
 
-## multimeshes[asset_id] = MultiMeshInstance3D
+## multimeshes[asset_part_key] = MultiMeshInstance3D
 var multimeshes: Dictionary = {}
-## deserted_multimeshes[asset_id] = MultiMeshInstance3D — gray material override for deserted state
+## deserted_multimeshes[asset_part_key] = MultiMeshInstance3D — gray material override for deserted state
 var deserted_multimeshes: Dictionary = {}
+## part_assets[asset_part_key] = qualified asset id
+var part_assets: Dictionary = {}
+## part_indices[asset_part_key] = mesh part index
+var part_indices: Dictionary = {}
 ## foundation_multimeshes[zone_id] = MultiMeshInstance3D
 var foundation_multimeshes: Dictionary = {}
 ## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
@@ -76,10 +83,10 @@ func _ready() -> void:
 
 func update_all_buildings() -> void:
 	_rebuild_multimeshes()
-	for aid in multimeshes.keys():
-		_update_buildings_for_asset(aid)
-	for aid in deserted_multimeshes.keys():
-		_update_deserted_multimesh(aid)
+	for key in multimeshes.keys():
+		_update_buildings_for_asset_part(key)
+	for key in deserted_multimeshes.keys():
+		_update_deserted_multimesh(key)
 	for zone_id in ZONE_IDS:
 		_update_foundation(zone_id)
 		_update_construction_site(zone_id)
@@ -89,11 +96,23 @@ func update_all_buildings() -> void:
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
 	for aid in asset_ids:
-		if not multimeshes.has(aid):
-			_setup_multimesh_for_asset(aid)
+		if aid == "broken:error":
+			var broken_key := _part_key(aid, 0)
+			if not multimeshes.has(broken_key):
+				_setup_multimesh_for_asset_part(aid, 0)
+			continue
+		var part_count: int = simulation_node.get_building_mesh_part_count(aid)
+		for part_index in part_count:
+			var key := _part_key(aid, part_index)
+			if not multimeshes.has(key):
+				_setup_multimesh_for_asset_part(aid, part_index)
 
-func _setup_multimesh_for_asset(asset_id: String) -> void:
-	var mesh := _load_mesh_for_asset(asset_id)
+func _part_key(asset_id: String, part_index: int) -> String:
+	return "%s%s%d" % [asset_id, PART_KEY_SEP, part_index]
+
+func _setup_multimesh_for_asset_part(asset_id: String, part_index: int) -> void:
+	var key := _part_key(asset_id, part_index)
+	var mesh := _load_mesh_for_asset_part(asset_id, part_index)
 	var is_broken := asset_id == "broken:error"
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
@@ -112,12 +131,15 @@ func _setup_multimesh_for_asset(asset_id: String) -> void:
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	add_child(mmi)
-	multimeshes[asset_id] = mmi
+	multimeshes[key] = mmi
+	part_assets[key] = asset_id
+	part_indices[key] = part_index
 	# Deserted variant: same mesh geometry, warm gray material override.
 	if not is_broken:
-		_setup_deserted_multimesh_for_asset(asset_id, mesh)
+		_setup_deserted_multimesh_for_asset_part(asset_id, part_index, mesh)
 
-func _setup_deserted_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
+func _setup_deserted_multimesh_for_asset_part(asset_id: String, part_index: int, mesh: Mesh) -> void:
+	var key := _part_key(asset_id, part_index)
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -134,11 +156,13 @@ func _setup_deserted_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	add_child(mmi)
-	deserted_multimeshes[asset_id] = mmi
+	deserted_multimeshes[key] = mmi
 
-func _load_mesh_for_asset(asset_id: String) -> Mesh:
-	# Ask Rust for the native path to the LOD0 file for this asset.
-	var native_path: String = simulation_node.get_lod0_native_path(asset_id)
+func _load_mesh_for_asset_part(asset_id: String, part_index: int) -> Mesh:
+	if asset_id == "broken:error":
+		return null
+	# Ask Rust for the native path to the LOD0 file for this asset part.
+	var native_path: String = simulation_node.get_building_mesh_part_lod0_native_path(asset_id, part_index)
 	if native_path.is_empty():
 		return null
 	# Convert native path to a Godot res:// or user:// path via globalize/localize.
@@ -150,7 +174,7 @@ func _load_mesh_for_asset(asset_id: String) -> Mesh:
 	else:
 		godot_path = native_path  # fallback: use native path directly
 	if not FileAccess.file_exists(godot_path):
-		push_warning("Buildings: LOD0 file not found for '%s': %s" % [asset_id, godot_path])
+		push_warning("Buildings: LOD0 file not found for '%s' part %d: %s" % [asset_id, part_index, godot_path])
 		return null
 	var ext := native_path.get_extension().to_lower()
 	var doc: Resource
@@ -162,7 +186,7 @@ func _load_mesh_for_asset(asset_id: String) -> Mesh:
 		doc = GLTFDocument.new()
 		state = GLTFState.new()
 	if doc.append_from_file(native_path, state) != OK:
-		push_warning("Buildings: failed to load mesh for '%s': %s" % [asset_id, native_path])
+		push_warning("Buildings: failed to load mesh for '%s' part %d: %s" % [asset_id, part_index, native_path])
 		return null
 	var scene: Node = doc.generate_scene(state)
 	if not scene:
@@ -312,10 +336,10 @@ func _process(_delta: float) -> void:
 	if Engine.get_frames_drawn() % 30 == 0:
 		_rebuild_multimeshes()
 		if zoning_overlay: zoning_overlay.mark_occupied_dirty()
-		for aid in multimeshes.keys():
-			_update_buildings_for_asset(aid)
-		for aid in deserted_multimeshes.keys():
-			_update_deserted_multimesh(aid)
+		for key in multimeshes.keys():
+			_update_buildings_for_asset_part(key)
+		for key in deserted_multimeshes.keys():
+			_update_deserted_multimesh(key)
 		for zone_id in ZONE_IDS:
 			_update_foundation(zone_id)
 			_update_construction_site(zone_id)
@@ -329,21 +353,25 @@ func _input(event: InputEvent) -> void:
 			for mmi in foundation_multimeshes.values():
 				mmi.visible = show_foundations
 
-func _update_buildings_for_asset(asset_id: String) -> void:
-	if not multimeshes.has(asset_id):
+func _update_buildings_for_asset_part(key: String) -> void:
+	if not multimeshes.has(key):
 		return
-	var buffer: PackedFloat32Array = simulation_node.get_building_transforms_for_asset(asset_id)
-	var mmi: MultiMeshInstance3D = multimeshes[asset_id]
+	var asset_id: String = part_assets.get(key, "")
+	var part_index: int = part_indices.get(key, 0)
+	var buffer: PackedFloat32Array = simulation_node.get_building_transforms_for_asset_part(asset_id, part_index)
+	var mmi: MultiMeshInstance3D = multimeshes[key]
 	var count := buffer.size() / 12
 	mmi.multimesh.instance_count = count
 	if count > 0:
 		mmi.multimesh.buffer = buffer
 
-func _update_deserted_multimesh(asset_id: String) -> void:
-	if not deserted_multimeshes.has(asset_id):
+func _update_deserted_multimesh(key: String) -> void:
+	if not deserted_multimeshes.has(key):
 		return
-	var buffer: PackedFloat32Array = simulation_node.get_deserted_building_transforms_for_asset(asset_id)
-	var mmi: MultiMeshInstance3D = deserted_multimeshes[asset_id]
+	var asset_id: String = part_assets.get(key, "")
+	var part_index: int = part_indices.get(key, 0)
+	var buffer: PackedFloat32Array = simulation_node.get_deserted_building_transforms_for_asset_part(asset_id, part_index)
+	var mmi: MultiMeshInstance3D = deserted_multimeshes[key]
 	var count := buffer.size() / 12
 	mmi.multimesh.instance_count = count
 	if count > 0:

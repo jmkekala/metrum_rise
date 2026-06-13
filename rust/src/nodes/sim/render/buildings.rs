@@ -2,7 +2,7 @@
 //!
 //! Handles building instance transform generation and plot/construction-site visuals.
 
-use crate::assets::{AnchorType, AssetEntry};
+use crate::assets::{AnchorType, AssetEntry, MeshPart};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::zoning::ZoneType;
@@ -18,13 +18,22 @@ const SCAFFOLD_RAIL_THICKNESS_M: f32 = 0.22;
 impl SimCore {
     // ── Building Renderer ──
 
-    /// Returns the 12-float transforms for all placed buildings with the given asset ID.
-    pub fn get_building_transforms_for_asset_internal(&self, asset_id: &str) -> PackedFloat32Array {
+    /// Returns the 12-float transforms for all placed buildings with the given asset part.
+    pub fn get_building_transforms_for_asset_part_internal(
+        &self,
+        asset_id: &str,
+        part_index: i32,
+    ) -> PackedFloat32Array {
+        if part_index < 0 {
+            return PackedFloat32Array::new();
+        }
         let mut buffer = Vec::new();
+        let entry = self.allocator.registry.get(asset_id);
+        let part = entry.and_then(|entry| entry.manifest.mesh_parts.get(part_index as usize));
 
         for b in &self.allocator.buildings {
             if asset_id == "broken:error" {
-                if !b.broken || b.is_under_construction() {
+                if part_index != 0 || !b.broken || b.is_under_construction() {
                     continue;
                 }
             } else {
@@ -42,21 +51,33 @@ impl SimCore {
                 let progress = construction_visual_progress(b, self.operational_hour_fraction());
                 world_y -= construction_rise_offset_m(b, progress);
             }
-            let entry = self.allocator.registry.get(asset_id);
-            push_building_transform(&mut buffer, b, entry, world_y);
+            if let Some(part) = part {
+                push_building_part_transform(&mut buffer, b, entry, part, world_y);
+            } else if asset_id == "broken:error" {
+                push_broken_building_transform(&mut buffer, b, world_y);
+            }
         }
 
         PackedFloat32Array::from_iter(buffer)
     }
 
-    /// Returns the 12-float transforms for all deserted buildings with the given asset ID.
+    /// Returns the 12-float transforms for all deserted buildings with the given asset part.
     ///
     /// Deserted buildings render in a parallel multimesh with a gray material override.
-    pub fn get_deserted_building_transforms_for_asset_internal(
+    pub fn get_deserted_building_transforms_for_asset_part_internal(
         &self,
         asset_id: &str,
+        part_index: i32,
     ) -> PackedFloat32Array {
+        if part_index < 0 {
+            return PackedFloat32Array::new();
+        }
         let mut buffer = Vec::new();
+        let entry = self.allocator.registry.get(asset_id);
+        let part = entry.and_then(|entry| entry.manifest.mesh_parts.get(part_index as usize));
+        let Some(part) = part else {
+            return PackedFloat32Array::new();
+        };
 
         for b in &self.allocator.buildings {
             if b.broken || b.is_under_construction() || !b.is_deserted || b.asset_id != asset_id {
@@ -66,8 +87,7 @@ impl SimCore {
             let world_x = b.center_x;
             let world_z = b.center_y;
             let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
-            let entry = self.allocator.registry.get(asset_id);
-            push_building_transform(&mut buffer, b, entry, world_y);
+            push_building_part_transform(&mut buffer, b, entry, part, world_y);
         }
 
         PackedFloat32Array::from_iter(buffer)
@@ -271,51 +291,79 @@ impl SimCore {
     }
 }
 
-fn push_building_transform(
+fn push_building_part_transform(
     buffer: &mut Vec<f32>,
     building: &Building,
     entry: Option<&AssetEntry>,
+    part: &MeshPart,
     world_y: f32,
 ) {
     let world_x = building.center_x;
     let world_z = building.center_y;
     let (basis_x, basis_z) =
         building_local_xz_basis(building.facing_dir, main_anchor_forward(entry));
-    let b_xx = basis_x.x;
-    let b_xz = basis_x.y;
-    let b_zx = basis_z.x;
-    let b_zz = basis_z.y;
-    let s = entry
-        .and_then(|e| e.manifest.building.as_ref())
-        .and_then(|b| b.preview_scale)
-        .unwrap_or(crate::config::BUILDING_VISUAL_SCALE);
-    let sx = s;
-    let sy = s;
-    let sz = s;
 
-    // Pivot offset centres the mesh over the lot and grounds it after scale+rotation.
-    let (po_x, po_y, po_z) = entry
-        .and_then(|e| e.manifest.pivot_offset)
-        .map(|[x, y, z]| (x, y, z))
-        .unwrap_or((0.0, 0.0, 0.0));
-    let tx = world_x + (b_xx * po_x + b_zx * po_z) * sx;
-    let ty = world_y + po_y * sy;
-    let tz = world_z + (b_xz * po_x + b_zz * po_z) * sz;
+    let yaw = part.rotation_degrees[1].to_radians();
+    let cos_yaw = yaw.cos();
+    let sin_yaw = yaw.sin();
+    let part_x_axis = basis_x * cos_yaw + basis_z * sin_yaw;
+    let part_z_axis = basis_z * cos_yaw - basis_x * sin_yaw;
+    let s = part.scale.max(0.001);
 
-    buffer.push(b_xx * sx);
+    let [px, py, pz] = part.position;
+    let [po_x, po_y, po_z] = part.pivot_offset.unwrap_or([0.0, 0.0, 0.0]);
+
+    let tx = world_x
+        + basis_x.x * px
+        + basis_z.x * pz
+        + part_x_axis.x * po_x * s
+        + part_z_axis.x * po_z * s;
+    let ty = world_y + py + po_y * s;
+    let tz = world_z
+        + basis_x.y * px
+        + basis_z.y * pz
+        + part_x_axis.y * po_x * s
+        + part_z_axis.y * po_z * s;
+
+    buffer.push(part_x_axis.x * s);
     buffer.push(0.0);
-    buffer.push(b_zx * sz);
+    buffer.push(part_z_axis.x * s);
     buffer.push(tx);
 
     buffer.push(0.0);
-    buffer.push(sy);
+    buffer.push(s);
     buffer.push(0.0);
     buffer.push(ty);
 
-    buffer.push(b_xz * sx);
+    buffer.push(part_x_axis.y * s);
     buffer.push(0.0);
-    buffer.push(b_zz * sz);
+    buffer.push(part_z_axis.y * s);
     buffer.push(tz);
+}
+
+fn push_broken_building_transform(buffer: &mut Vec<f32>, building: &Building, world_y: f32) {
+    let s = crate::config::BUILDING_VISUAL_SCALE;
+    let front = if building.facing_dir.length_squared() > 1e-12 {
+        building.facing_dir.normalized()
+    } else {
+        Vector2::new(0.0, 1.0)
+    };
+    let right = Vector2::new(front.y, -front.x);
+
+    buffer.push(right.x * s);
+    buffer.push(0.0);
+    buffer.push(front.x * s);
+    buffer.push(building.center_x);
+
+    buffer.push(0.0);
+    buffer.push(s);
+    buffer.push(0.0);
+    buffer.push(world_y);
+
+    buffer.push(right.y * s);
+    buffer.push(0.0);
+    buffer.push(front.y * s);
+    buffer.push(building.center_y);
 }
 
 fn push_scaffold_transforms(

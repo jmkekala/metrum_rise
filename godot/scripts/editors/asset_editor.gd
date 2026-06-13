@@ -24,6 +24,8 @@ const ASSET_CONTEXT_USE_AS_GHOST := 1
 const PACK_MENU_CREATE_NEW := 1000000
 const PACK_MENU_NO_PACKS := 1000001
 const PACK_SCHEMA_VERSION := 1
+const MESH_ROTATION_DRAG_DEG_PER_PX := 0.35
+const MESH_ROTATION_CARDINAL_SNAP_DEG := 4.0
 const PLACEMENT_MODES := [
 	{"id": "zoned_private", "label": "Zoned Private"},
 	{"id": "explicit", "label": "Explicit"},
@@ -111,7 +113,13 @@ var _service_class_btn: OptionButton
 var _economy_profile_btn: OptionButton
 var _economy_profile_status_lbl: Label
 var _lod_list: ItemList
-var _lod_source_paths: Array[String] = []  # parallel to _lod_list items
+var _lod_source_paths: Array[String] = []  # one source mesh path per mesh part
+var _part_positions: Array[Vector3] = []
+var _part_rotation_y: Array[float] = []
+var _part_scales: Array[float] = []
+var _part_pivot_offsets: Array[Vector3] = []
+var _part_aabbs: Array[AABB] = []
+var _selected_part_index: int = -1
 var _frontage_lbl: Label  # shows current frontage forward vector
 var _entrance_x_spin: SpinBox
 var _entrance_y_spin: SpinBox
@@ -132,6 +140,10 @@ var _pivot_offset: Vector3 = Vector3.ZERO
 
 # Inspector – preview scale
 var _preview_scale_spin: SpinBox
+var _part_x_spin: SpinBox
+var _part_y_spin: SpinBox
+var _part_z_spin: SpinBox
+var _part_rotation_y_spin: SpinBox
 var _dim_label: Label          # live "→ W × D × H m" display
 var _scale_preset_btn: OptionButton
 var _human_btn: CheckButton
@@ -144,6 +156,7 @@ var _autofit_on_load: bool = false   # true when loading from browser with scale
 var _keep_camera: bool = false       # true when loading from browser — skip focus_on
 var _human_visible: bool = false     # mirrors the human figure toggle state
 var _suppress_preview_scale_changed: bool = false
+var _suppress_part_transform_changed: bool = false
 var _last_glb_dir: String = ""     # last directory used in GLB file dialogs
 var _config: ConfigFile            # persistent editor preferences
 var _theme_mode: String = EditorTheme.MODE_DARK
@@ -162,6 +175,11 @@ var _main_entrance_auto: bool = true
 var _updating_main_entrance_fields: bool = false
 var _extra_anchors: Array[Dictionary] = []
 var _dragging_main_entrance: bool = false
+var _dragging_mesh_part: bool = false
+var _rotating_mesh_part: bool = false
+var _mesh_part_drag_offset: Vector3 = Vector3.ZERO
+var _mesh_part_rotate_start_x: float = 0.0
+var _mesh_part_rotate_start_yaw: float = 0.0
 var _dragging_ghost: bool = false
 var _ghost_drag_offset: Vector3 = Vector3.ZERO
 var _zoning_profiles: Array[Dictionary] = []
@@ -254,6 +272,7 @@ func _build_preview_node() -> void:
 	var cam_script := load("res://scripts/core/editor_camera_input.gd")
 	_cam_input = Node.new()
 	_cam_input.set_script(cam_script)
+	_cam_input.right_mouse_pan_enabled = false
 	add_child(_cam_input)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -564,13 +583,14 @@ func _build_right_panel(parent: Control) -> void:
 	_asset_set_edit   = _add_line_edit(asset_box, "Upgrade Family / Asset Set (optional)", "")
 	_tags_edit        = _add_line_edit(asset_box, "Tags (comma-separated)", "")
 
-	_add_label(asset_box, "LOD Files", _font_size_section)
+	_add_label(asset_box, "Mesh Parts", _font_size_section)
 	_lod_list = ItemList.new()
 	_lod_list.custom_minimum_size.y = 150
 	_lod_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_lod_list.item_selected.connect(_on_mesh_part_selected)
 	asset_box.add_child(_lod_list)
 	var add_lod_btn := Button.new()
-	add_lod_btn.text = "Add LOD..."
+	add_lod_btn.text = "Add Mesh Part..."
 	add_lod_btn.pressed.connect(_on_add_lod_pressed)
 	asset_box.add_child(add_lod_btn)
 
@@ -661,9 +681,22 @@ func _build_right_panel(parent: Control) -> void:
 	_scale_preset_btn.item_selected.connect(_on_scale_preset_selected)
 	preview_box.add_child(_scale_preset_btn)
 
-	_preview_scale_spin = _add_spinbox(preview_box, "Scale multiplier", 0.01, 1000.0, 1.0)
+	_preview_scale_spin = _add_spinbox(preview_box, "Selected Part Scale", 0.01, 1000.0, 1.0)
 	_preview_scale_spin.step = 0.01
 	_preview_scale_spin.value_changed.connect(_on_preview_scale_changed)
+
+	_part_x_spin = _add_spinbox(preview_box, "Selected Part X (m)", -500.0, 500.0, 0.0)
+	_part_x_spin.step = 0.1
+	_part_x_spin.value_changed.connect(_on_part_transform_changed)
+	_part_y_spin = _add_spinbox(preview_box, "Selected Part Y (m)", -100.0, 100.0, 0.0)
+	_part_y_spin.step = 0.1
+	_part_y_spin.value_changed.connect(_on_part_transform_changed)
+	_part_z_spin = _add_spinbox(preview_box, "Selected Part Z (m)", -500.0, 500.0, 0.0)
+	_part_z_spin.step = 0.1
+	_part_z_spin.value_changed.connect(_on_part_transform_changed)
+	_part_rotation_y_spin = _add_spinbox(preview_box, "Selected Part Rotation Y", -180.0, 180.0, 0.0)
+	_part_rotation_y_spin.step = 1.0
+	_part_rotation_y_spin.value_changed.connect(_on_part_transform_changed)
 
 	# Live dimension label.
 	_dim_label = Label.new()
@@ -1289,11 +1322,11 @@ func _use_asset_as_ghost(aid: String) -> void:
 	if data.is_empty():
 		_log("[color=yellow]Could not load asset manifest for ghost: %s[/color]" % aid)
 		return
-	var ghost_path := _asset_lod0_path(data)
+	var ghost_path := _asset_first_mesh_part_path(data)
 	if ghost_path.is_empty() or not FileAccess.file_exists(ghost_path):
 		_log("[color=yellow]Ghost LOD0 file not found for %s[/color]" % aid)
 		return
-	var scale := float(data.get("preview_scale", 1.0) if data.get("preview_scale") != null else 1.0)
+	var scale := _asset_first_mesh_part_scale(data)
 	var lot_width := int(data.get("lot_width_cells", 1))
 	var lot_depth := int(data.get("lot_depth_cells", 1))
 	if _preview.load_ghost(ghost_path, scale, lot_width, lot_depth):
@@ -1311,19 +1344,29 @@ func _asset_manifest(aid: String) -> Dictionary:
 		return parsed
 	return {}
 
-func _asset_lod0_path(data: Dictionary) -> String:
+func _asset_first_mesh_part_path(data: Dictionary) -> String:
 	var pack_id := str(data.get("pack_id", "")).strip_edges()
 	var asset_id := str(data.get("asset_id", "")).strip_edges()
-	var lods: Array = data.get("lods", [])
-	if pack_id.is_empty() or asset_id.is_empty() or lods.is_empty():
+	var parts: Array = data.get("mesh_parts", [])
+	if pack_id.is_empty() or asset_id.is_empty() or parts.is_empty():
 		return ""
-	var lod0 = lods[0]
-	if not (lod0 is Dictionary):
+	var first_part = parts[0]
+	if not (first_part is Dictionary):
 		return ""
+	var lods: Array = (first_part as Dictionary).get("lods", [])
+	if lods.is_empty() or not (lods[0] is Dictionary):
+		return ""
+	var lod0 := lods[0] as Dictionary
 	var file_name := str((lod0 as Dictionary).get("file", "")).strip_edges()
 	if file_name.is_empty():
 		return ""
 	return ProjectSettings.globalize_path("user://mods/%s/assets/%s/%s" % [pack_id, asset_id, file_name])
+
+func _asset_first_mesh_part_scale(data: Dictionary) -> float:
+	var parts: Array = data.get("mesh_parts", [])
+	if parts.is_empty() or not (parts[0] is Dictionary):
+		return 1.0
+	return maxf(0.001, float((parts[0] as Dictionary).get("scale", 1.0)))
 
 func _start_new_asset() -> void:
 	if _asset_tree:
@@ -1372,8 +1415,7 @@ func _start_new_asset() -> void:
 	_set_economy_profile_selection("")
 	_extra_anchors.clear()
 	_glb_path = ""
-	_lod_source_paths.clear()
-	_lod_list.clear()
+	_clear_mesh_parts()
 	_loaded_asset_pack_id = ""
 	_loaded_asset_id = ""
 	_mesh_aabb = AABB()
@@ -1381,9 +1423,7 @@ func _start_new_asset() -> void:
 	_dim_label.text = "→ —"
 
 	if _preview:
-		_preview.clear()
 		_preview.set_lot_size(2, 2)
-		_preview.set_preview_scale(1.0)
 		_preview.set_show_human(false)
 	_set_frontage_forward(Vector3.FORWARD)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
@@ -1435,13 +1475,9 @@ func _populate_inspector_from(data: Dictionary) -> void:
 
 	_workers_spin.value     = data.get("worker_capacity", 0) if data.get("worker_capacity") != null else 0
 	_suppress_preview_scale_changed = true
-	_preview_scale_spin.value = data.get("preview_scale", 1.0) if data.get("preview_scale") != null else 1.0
+	_preview_scale_spin.value = 1.0
 	_suppress_preview_scale_changed = false
-	var po = data.get("pivot_offset", null)
-	if po is Array and po.size() == 3:
-		_pivot_offset = Vector3(po[0], po[1], po[2])
-	else:
-		_pivot_offset = Vector3.ZERO
+	_pivot_offset = Vector3.ZERO
 
 	_set_placement_mode_selection(str(data.get("placement_mode", "zoned_private")))
 	_set_service_class_selection(str(data.get("service_class", "none")))
@@ -1499,39 +1535,45 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 		_log("[color=yellow]Loaded asset has no 'entrance/main' anchor; using frontage default.[/color]")
 
-	_lod_list.clear()
-	_lod_source_paths.clear()
-	var lods: Array = data.get("lods", [])
-	for lod in lods:
-		_lod_list.add_item("%s  (%.0f–%s m)" % [
-			lod.get("file", "?"),
-			lod.get("distance_min_m", 0.0),
-			str(lod.get("distance_max_m", "∞")),
-		])
-		# Resolve the source path from the mods directory.
+	_clear_mesh_parts()
+	var mesh_parts: Array = data.get("mesh_parts", [])
+	for part in mesh_parts:
+		if not (part is Dictionary):
+			continue
+		var part_dict := part as Dictionary
+		var lods: Array = part_dict.get("lods", [])
+		if lods.is_empty() or not (lods[0] is Dictionary):
+			continue
+		var lod0 := lods[0] as Dictionary
+		var fname := str(lod0.get("file", "")).strip_edges()
+		if fname.is_empty():
+			continue
 		var asset_id: String = data.get("asset_id", "")
-		var fname: String = lod.get("file", "")
 		var native: String = ProjectSettings.globalize_path(
 			"user://mods/%s/assets/%s/%s" % [pack_id, asset_id, fname])
-		_lod_source_paths.append(native)
+		if not FileAccess.file_exists(native):
+			_log("[color=yellow]Mesh part file not found on disk: %s[/color]" % native)
+			continue
+		var pos := _array_to_vector3(part_dict.get("position", []), Vector3.ZERO)
+		var rot := _array_to_vector3(part_dict.get("rotation_degrees", []), Vector3.ZERO)
+		var pivot := _array_to_vector3(part_dict.get("pivot_offset", []), Vector3.ZERO)
+		var scale := maxf(0.001, float(part_dict.get("scale", 1.0)))
+		_add_mesh_part_from_path(native, str(part_dict.get("name", "")), pos, rot.y, scale, pivot, false)
 
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
 	_update_economy_profile_status()
+	if _lod_source_paths.size() > 0:
+		_glb_path = _lod_source_paths[0]
+		_keep_camera = true
+		_select_mesh_part(0)
+		_update_dim_label()
+	else:
+		_preview.clear_mesh_parts()
 
-	# Load LOD0 mesh into the preview if the file exists on disk.
-	if lods.size() > 0 and not pack_id.is_empty():
-		var lod0_path: String = _lod_source_paths[0]
-		if FileAccess.file_exists(lod0_path):
-			_glb_path = lod0_path
-			# Auto-fit when the asset has never been scaled (scale == 1.0).
-			_autofit_on_load = absf(_preview_scale_spin.value - 1.0) < 0.01
-			_keep_camera = true
-			_preview.load_glb(lod0_path)
-			_preview.set_preview_scale(_preview_scale_spin.value)
-			_update_dim_label()
-		else:
-			_log("[color=yellow]LOD0 file not found on disk: %s[/color]" % lod0_path)
-			_preview.clear()
+func _array_to_vector3(value, fallback: Vector3) -> Vector3:
+	if value is Array and value.size() == 3:
+		return Vector3(float(value[0]), float(value[1]), float(value[2]))
+	return fallback
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Lot / zone change
@@ -1968,55 +2010,132 @@ func _on_glb_file_selected(path: String) -> void:
 	_last_glb_dir = path.get_base_dir()
 	_save_config()
 	_glb_path = path
-	_preview.load_glb(path)
-
-	var fname := path.get_file()
-	if _lod_list.item_count == 0:
-		# First import — add LOD0 entry.
-		_lod_list.add_item("%s  (0–150 m)" % fname)
-		_lod_source_paths.append(path)
-	else:
-		# Replace LOD0 with the new file, preserving the distance band text.
-		var old_text: String = _lod_list.get_item_text(0)
-		var band := "0–150 m"
-		var parts := old_text.split("  ")
-		if parts.size() >= 2:
-			band = parts[1].trim_prefix("(").trim_suffix(")")
-		_lod_list.set_item_text(0, "%s  (%s)" % [fname, band])
-		if _lod_source_paths.size() > 0:
-			_lod_source_paths[0] = path
-		else:
-			_lod_source_paths.append(path)
-	_log("LOD0 set to '%s'." % fname)
+	var idx := _add_mesh_part_from_path(path, "")
+	if idx >= 0:
+		_select_mesh_part(idx)
+	_log("Added mesh part '%s'." % path.get_file())
 
 # ──────────────────────────────────────────────────────────────────────────────
-# LOD management
+# Mesh part management
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _on_add_lod_pressed() -> void:
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.glb ; GLB Files", "*.gltf ; GLTF Files", "*.fbx ; FBX Files"])
-	if not _last_glb_dir.is_empty():
-		dialog.current_dir = _last_glb_dir
-	dialog.file_selected.connect(_on_lod_file_selected)
-	dialog.canceled.connect(dialog.queue_free)
+	var dialog := MeshImportDialog.new()
+	dialog.theme_mode = _theme_mode
+	dialog.mesh_selected.connect(_on_lod_file_selected)
 	add_child(dialog)
-	dialog.popup_centered(Vector2i(800, 600))
+	dialog.open(_last_glb_dir)
 
 func _on_lod_file_selected(path: String) -> void:
 	_last_glb_dir = path.get_base_dir()
 	_save_config()
-	var fname := path.get_file()
-	var idx := _lod_list.item_count
-	# Default distance bands per LOD tier.
-	var min_m := [0.0, 150.0, 600.0, 2000.0]
-	var max_m := ["150", "600", "2000", "∞"]
-	var i := mini(idx, min_m.size() - 1)
-	_lod_list.add_item("%s  (%.0f–%s m)" % [fname, min_m[i], max_m[i]])
+	var idx := _add_mesh_part_from_path(path, "")
+	if idx >= 0:
+		_select_mesh_part(idx)
+	_log("Added mesh part '%s'." % path.get_file())
+
+func _add_mesh_part_from_path(
+	path: String,
+	part_name: String,
+	position: Vector3 = Vector3.ZERO,
+	rotation_y: float = 0.0,
+	scale: float = 1.0,
+	pivot_offset: Vector3 = Vector3.ZERO,
+	auto_pivot: bool = true
+) -> int:
+	if not _preview:
+		return -1
+	var idx := _lod_source_paths.size()
+	var name := part_name.strip_edges()
+	if name.is_empty():
+		name = "part_%d" % [idx + 1]
+	var aabb: AABB = _preview.add_mesh_part(path)
+	var stored_pivot := pivot_offset
+	if auto_pivot:
+		stored_pivot = Vector3(
+			-(aabb.position.x + aabb.size.x * 0.5),
+			-aabb.position.y,
+			-(aabb.position.z + aabb.size.z * 0.5)
+		)
 	_lod_source_paths.append(path)
-	_log("LOD%d set to '%s'." % [idx, fname])
+	_part_positions.append(position)
+	_part_rotation_y.append(rotation_y)
+	_part_scales.append(maxf(0.001, scale))
+	_part_pivot_offsets.append(stored_pivot)
+	_part_aabbs.append(aabb)
+	_lod_list.add_item("%s  —  %s" % [name, path.get_file()])
+	_preview.set_mesh_part_transform(idx, position, rotation_y, scale, stored_pivot)
+	return idx
+
+func _select_mesh_part(index: int) -> void:
+	if index < 0 or index >= _lod_source_paths.size():
+		_selected_part_index = -1
+	else:
+		_selected_part_index = index
+		if _lod_list and index < _lod_list.item_count:
+			_lod_list.select(index)
+		_mesh_aabb = _part_aabbs[index]
+		_pivot_offset = _part_pivot_offsets[index]
+	_refresh_selected_part_controls()
+	_update_dim_label()
+
+func _on_mesh_part_selected(index: int) -> void:
+	_select_mesh_part(index)
+
+func _refresh_selected_part_controls() -> void:
+	_suppress_part_transform_changed = true
+	_suppress_preview_scale_changed = true
+	var has_part := _selected_part_index >= 0 and _selected_part_index < _lod_source_paths.size()
+	var pos := _part_positions[_selected_part_index] if has_part else Vector3.ZERO
+	_part_x_spin.value = pos.x
+	_part_y_spin.value = pos.y
+	_part_z_spin.value = pos.z
+	_part_rotation_y_spin.value = _part_rotation_y[_selected_part_index] if has_part else 0.0
+	_preview_scale_spin.value = _part_scales[_selected_part_index] if has_part else 1.0
+	_suppress_preview_scale_changed = false
+	_suppress_part_transform_changed = false
+
+func _on_part_transform_changed(_value: float) -> void:
+	if _suppress_part_transform_changed:
+		return
+	_apply_selected_part_transform()
+
+func _apply_selected_part_transform() -> void:
+	if _selected_part_index < 0 or _selected_part_index >= _lod_source_paths.size():
+		return
+	var pos := Vector3(_part_x_spin.value, _part_y_spin.value, _part_z_spin.value)
+	var rot_y := float(_part_rotation_y_spin.value)
+	var scale := maxf(0.001, float(_preview_scale_spin.value))
+	_part_positions[_selected_part_index] = pos
+	_part_rotation_y[_selected_part_index] = rot_y
+	_part_scales[_selected_part_index] = scale
+	_preview.set_mesh_part_transform(
+		_selected_part_index,
+		pos,
+		rot_y,
+		scale,
+		_part_pivot_offsets[_selected_part_index]
+	)
+	_update_dim_label()
+
+func _clear_mesh_parts() -> void:
+	_lod_source_paths.clear()
+	_part_positions.clear()
+	_part_rotation_y.clear()
+	_part_scales.clear()
+	_part_pivot_offsets.clear()
+	_part_aabbs.clear()
+	_selected_part_index = -1
+	if _lod_list:
+		_lod_list.clear()
+	if _preview and _preview.has_method("clear_mesh_parts"):
+		_preview.clear_mesh_parts()
+	_refresh_selected_part_controls()
+
+func _selected_part_aabb() -> AABB:
+	if _selected_part_index < 0 or _selected_part_index >= _part_aabbs.size():
+		return AABB()
+	return _part_aabbs[_selected_part_index]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Frontage
@@ -2035,7 +2154,7 @@ func _on_set_front_from_view() -> void:
 	if horizontal.length_squared() < 0.001:
 		_log("[color=yellow]Camera is directly above — frontage unchanged.[/color]")
 		return
-	_set_frontage_forward(horizontal)
+	_set_frontage_forward(_snap_xz_to_cardinal(horizontal))
 	if _main_entrance_auto:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 	_log("Frontage set: front face points toward camera.")
@@ -2139,19 +2258,27 @@ func _export_asset(move_original_after_export: bool) -> void:
 	var source_pack_id := _loaded_asset_pack_id
 	var source_asset_id := _loaded_asset_id
 
-	if _lod_list.item_count == 0:
-		_log("[color=yellow]Warning: no LOD files registered. Add at least LOD0.[/color]")
+	if _lod_source_paths.is_empty():
+		_log("[color=red]At least one mesh part is required.[/color]")
+		return
 
-	# Build LOD array from the list items. The file name is the first token before spaces.
-	var lods := []
-	var default_min := [0.0, 150.0, 600.0, 2000.0]
-	var default_max := [150.0, 600.0, 2000.0, null]
-	for i in _lod_list.item_count:
-		var fname := _lod_list.get_item_text(i).split(" ")[0]
-		lods.append({
-			"file": fname,
-			"distance_min_m": default_min[mini(i, default_min.size() - 1)],
-			"distance_max_m": default_max[mini(i, default_max.size() - 1)],
+	var mesh_parts := []
+	for i in _lod_source_paths.size():
+		var src_path := _lod_source_paths[i]
+		var part_name := _part_name_for_index(i)
+		var pos := _part_positions[i]
+		var pivot := _part_pivot_offsets[i]
+		mesh_parts.append({
+			"name": part_name,
+			"position": [snappedf(pos.x, 0.01), snappedf(pos.y, 0.01), snappedf(pos.z, 0.01)],
+			"rotation_degrees": [0.0, snappedf(_part_rotation_y[i], 0.01), 0.0],
+			"scale": snappedf(_part_scales[i], 0.001),
+			"pivot_offset": [snappedf(pivot.x, 0.001), snappedf(pivot.y, 0.001), snappedf(pivot.z, 0.001)],
+			"lods": [{
+				"file": src_path.get_file(),
+				"distance_min_m": 0.0,
+				"distance_max_m": null,
+			}],
 		})
 
 	# Build entrance anchor from frontage forward.
@@ -2219,12 +2346,10 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"level":             int(_level_spin.value),
 		"service_class":     service_class if service_class != "none" else null,
 		"economy_profile":   economy_profile_id if not economy_profile_id.is_empty() else null,
-		"preview_scale":     _preview_scale_spin.value,
-		"pivot_offset":      [_pivot_offset.x, _pivot_offset.y, _pivot_offset.z],
 		"household_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,
 		"flat_size_m2":      _flat_size_spin.value if _flat_size_spin.value > 0 else null,
 		"worker_capacity":    int(_workers_spin.value)   if _workers_spin.value > 0 else null,
-		"lods":    lods,
+		"mesh_parts": mesh_parts,
 		"anchors": anchors,
 	}
 
@@ -2239,8 +2364,10 @@ func _export_asset(move_original_after_export: bool) -> void:
 
 		# Collect the set of filenames that should exist after this export.
 		var expected_files: Array[String] = []
-		for lod_entry in lods:
-			expected_files.append(lod_entry["file"])
+		for part in mesh_parts:
+			var part_lods: Array = part["lods"]
+			for lod_entry in part_lods:
+				expected_files.append(lod_entry["file"])
 
 		# Delete stale GLB files in the asset dir that are no longer referenced.
 		var da_check := DirAccess.open(asset_dir)
@@ -2258,14 +2385,14 @@ func _export_asset(move_original_after_export: bool) -> void:
 		for i in _lod_source_paths.size():
 			var src: String = _lod_source_paths[i]
 			if src.is_empty() or not FileAccess.file_exists(src):
-				_log("[color=yellow]LOD%d source not found on disk — skipped: %s[/color]" % [i, src])
+				_log("[color=yellow]Mesh part %d source not found on disk — skipped: %s[/color]" % [i, src])
 				copy_errors += 1
 				continue
 			var dst: String = asset_dir + src.get_file()
 			if src != dst:
 				var copy_err := DirAccess.copy_absolute(src, dst)
 				if copy_err != OK:
-					_log("[color=red]Failed to copy LOD%d '%s' (error %d)[/color]" % [i, src.get_file(), copy_err])
+					_log("[color=red]Failed to copy mesh part %d '%s' (error %d)[/color]" % [i, src.get_file(), copy_err])
 					copy_errors += 1
 				else:
 					copied += 1
@@ -2305,10 +2432,16 @@ func _export_asset(move_original_after_export: bool) -> void:
 		_loaded_asset_pack_id = pack_id
 		_loaded_asset_id = asset_id
 		_refresh_asset_browser()
-		if _lod_list.item_count == 1:
-			_log("[color=yellow]Warning: only LOD0 exported — consider adding LOD1/LOD2.[/color]")
 	else:
 		_log("[color=red]Export failed:[/color]\n" + err)
+
+func _part_name_for_index(index: int) -> String:
+	if _lod_list and index >= 0 and index < _lod_list.item_count:
+		var label := _lod_list.get_item_text(index)
+		var split := label.split("  —  ")
+		if split.size() > 0 and not str(split[0]).strip_edges().is_empty():
+			return str(split[0]).strip_edges()
+	return "part_%d" % [index + 1]
 
 func _move_original_asset_after_export(
 	source_pack_id: String,
@@ -2562,6 +2695,11 @@ func _set_frontage_forward(fwd: Vector3) -> void:
 	_preview.set_frontage_forward(_frontage_fwd)
 	_update_main_entrance_preview()
 
+func _snap_xz_to_cardinal(dir: Vector3) -> Vector3:
+	if absf(dir.x) >= absf(dir.z):
+		return Vector3(1.0 if dir.x >= 0.0 else -1.0, 0.0, 0.0)
+	return Vector3(0.0, 0.0, 1.0 if dir.z >= 0.0 else -1.0)
+
 func _on_main_entrance_changed(_value: float) -> void:
 	if _updating_main_entrance_fields:
 		return
@@ -2601,12 +2739,15 @@ func _update_main_entrance_preview() -> void:
 
 func _on_mesh_loaded(aabb: AABB) -> void:
 	_mesh_aabb = aabb
-	# Compute pivot offset: centre XZ, ground Y (bottom face → Y=0).
+	# Compatibility path for one-shot preview loading: compute selected-part pivot data.
 	_pivot_offset = Vector3(
 		-(aabb.position.x + aabb.size.x * 0.5),
 		-aabb.position.y,
 		-(aabb.position.z + aabb.size.z * 0.5)
 	)
+	if _selected_part_index >= 0 and _selected_part_index < _part_aabbs.size():
+		_part_aabbs[_selected_part_index] = aabb
+		_part_pivot_offsets[_selected_part_index] = _pivot_offset
 	if _autofit_on_load:
 		_autofit_on_load = false
 		_on_autofit_pressed()
@@ -2622,8 +2763,7 @@ func _on_mesh_loaded(aabb: AABB) -> void:
 func _on_preview_scale_changed(value: float) -> void:
 	if _suppress_preview_scale_changed:
 		return
-	_preview.set_preview_scale(value)
-	_update_dim_label()
+	_apply_selected_part_transform()
 	# Revert preset display to "Custom" when spinner is edited directly.
 	if _scale_preset_btn.selected != 0:
 		_scale_preset_btn.selected = 0
@@ -2631,7 +2771,7 @@ func _on_preview_scale_changed(value: float) -> void:
 func _on_scale_preset_selected(idx: int) -> void:
 	if idx == 0:  # Custom — do nothing
 		return
-	if _mesh_aabb.size.length() < 0.001:
+	if _selected_part_aabb().size.length() < 0.001:
 		_log("[color=yellow]No mesh loaded — cannot apply preset.[/color]")
 		_scale_preset_btn.selected = 0
 		return
@@ -2641,28 +2781,30 @@ func _on_scale_preset_selected(idx: int) -> void:
 		3: _apply_scale_fraction(0.25)     # ¼ Lot
 
 func _apply_scale_fraction(fraction: float) -> void:
+	var aabb := _selected_part_aabb()
 	var lot_w := _width_spin.value * 10.0
 	var lot_d := _depth_spin.value * 10.0
-	var mesh_w := _mesh_aabb.size.x
-	var mesh_d := _mesh_aabb.size.z
+	var mesh_w := aabb.size.x
+	var mesh_d := aabb.size.z
 	if mesh_w < 0.001 or mesh_d < 0.001:
 		return
 	var fit_scale := minf(lot_w / mesh_w, lot_d / mesh_d)
 	var scale := snappedf(fit_scale * fraction, 0.01)
 	_preview_scale_spin.value = scale
-	_preview.set_preview_scale(scale)
+	_apply_selected_part_transform()
 	_update_dim_label()
 
 func _suggest_capacity() -> void:
-	if _mesh_aabb.size.length() < 0.001:
+	var aabb := _selected_part_aabb()
+	if aabb.size.length() < 0.001:
 		return
 	if _selected_placement_mode() != "zoned_private":
 		_log("[color=yellow]Capacity suggestion currently supports zoned private buildings only.[/color]")
 		return
 	var s         := _preview_scale_spin.value
-	var sw        := _mesh_aabb.size.x * s
-	var sd        := _mesh_aabb.size.z * s
-	var sh        := _mesh_aabb.size.y * s
+	var sw        := aabb.size.x * s
+	var sd        := aabb.size.z * s
+	var sh        := aabb.size.y * s
 	# Residential roofs inflate height — discount to habitable portion before estimating floors.
 	var res_h  := sh * 0.65
 	var floors    := maxi(1, roundi(sh / 3.5))
@@ -2696,12 +2838,13 @@ func _suggest_capacity() -> void:
 				_workers_spin.value = maxi(1, roundi(footprint * floors / (sqm_wrk * 1.25)))
 
 func _update_dim_label() -> void:
-	if _mesh_aabb.size.length() < 0.001 or not _dim_label:
+	var aabb := _selected_part_aabb()
+	if aabb.size.length() < 0.001 or not _dim_label:
 		return
 	var s := _preview_scale_spin.value
-	var w := snappedf(_mesh_aabb.size.x * s, 0.1)
-	var d := snappedf(_mesh_aabb.size.z * s, 0.1)
-	var h := snappedf(_mesh_aabb.size.y * s, 0.1)
+	var w := snappedf(aabb.size.x * s, 0.1)
+	var d := snappedf(aabb.size.z * s, 0.1)
+	var h := snappedf(aabb.size.y * s, 0.1)
 	_dim_label.text = "→ %.1fm × %.1fm × %.1fm" % [w, d, h]
 
 func _on_human_toggled(pressed: bool) -> void:
@@ -2714,23 +2857,36 @@ func _on_clear_ghost_pressed() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index != MOUSE_BUTTON_LEFT:
+		if mb.button_index != MOUSE_BUTTON_LEFT and mb.button_index != MOUSE_BUTTON_RIGHT:
 			return
 		if mb.pressed:
 			if not _is_mouse_in_3d_area():
 				return
 			var mouse_pos := get_viewport().get_mouse_position()
-			if _try_begin_main_entrance_drag(mouse_pos):
-				get_viewport().set_input_as_handled()
+			if mb.button_index == MOUSE_BUTTON_LEFT:
+				if _try_begin_main_entrance_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
+				if _try_begin_mesh_part_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
+				if _try_begin_ghost_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
+				if _human_visible and _place_human_from_mouse(mouse_pos):
+					get_viewport().set_input_as_handled()
 				return
-			if _try_begin_ghost_drag(mouse_pos):
-				get_viewport().set_input_as_handled()
-				return
-			if _human_visible and _place_human_from_mouse(mouse_pos):
+			if mb.button_index == MOUSE_BUTTON_RIGHT and _try_begin_mesh_part_rotation(mouse_pos):
 				get_viewport().set_input_as_handled()
 			return
 		if _dragging_main_entrance:
 			_dragging_main_entrance = false
+			get_viewport().set_input_as_handled()
+		if _dragging_mesh_part:
+			_dragging_mesh_part = false
+			get_viewport().set_input_as_handled()
+		if _rotating_mesh_part:
+			_rotating_mesh_part = false
 			get_viewport().set_input_as_handled()
 		if _dragging_ghost:
 			_dragging_ghost = false
@@ -2740,6 +2896,12 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and _dragging_main_entrance:
 		if _drag_main_entrance_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _dragging_mesh_part:
+		if _drag_mesh_part_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _rotating_mesh_part:
+		_rotate_mesh_part_from_mouse(get_viewport().get_mouse_position())
+		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _dragging_ghost:
 		if _drag_ghost_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
@@ -2776,6 +2938,128 @@ func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
 		return false
 	_set_main_entrance_position(Vector3(hit.x, anchor_pos.y, hit.z), false)
 	return true
+
+func _try_begin_mesh_part_drag(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var part_index := _mesh_part_index_at_world_xz(hit)
+	if part_index < 0:
+		return false
+	_select_mesh_part(part_index)
+	var current_pos := _part_positions[_selected_part_index]
+	_mesh_part_drag_offset = current_pos - Vector3(hit.x, current_pos.y, hit.z)
+	_dragging_mesh_part = true
+	return _drag_mesh_part_from_mouse(mouse_pos)
+
+func _drag_mesh_part_from_mouse(mouse_pos: Vector2) -> bool:
+	if not _has_selected_mesh_part():
+		return false
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var current_pos := _part_positions[_selected_part_index]
+	var target := Vector3(hit.x, current_pos.y, hit.z) + _mesh_part_drag_offset
+	_set_selected_mesh_part_position(target)
+	return true
+
+func _try_begin_mesh_part_rotation(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var part_index := _mesh_part_index_at_world_xz(hit)
+	if part_index < 0:
+		return false
+	_select_mesh_part(part_index)
+	_mesh_part_rotate_start_x = mouse_pos.x
+	_mesh_part_rotate_start_yaw = _part_rotation_y[_selected_part_index]
+	_rotating_mesh_part = true
+	return true
+
+func _rotate_mesh_part_from_mouse(mouse_pos: Vector2) -> void:
+	if not _has_selected_mesh_part():
+		return
+	var delta_px := mouse_pos.x - _mesh_part_rotate_start_x
+	var raw_rotation := _mesh_part_rotate_start_yaw + delta_px * MESH_ROTATION_DRAG_DEG_PER_PX
+	_set_selected_mesh_part_rotation_y(_snap_rotation_y_to_cardinal_if_close(raw_rotation))
+
+func _has_selected_mesh_part() -> bool:
+	return _selected_part_index >= 0 and _selected_part_index < _lod_source_paths.size()
+
+func _mesh_part_index_at_world_xz(world_pos: Vector3) -> int:
+	for i in range(_lod_source_paths.size() - 1, -1, -1):
+		if _mesh_part_contains_world_xz(i, world_pos):
+			return i
+	return -1
+
+func _mesh_part_contains_world_xz(part_index: int, world_pos: Vector3) -> bool:
+	if part_index < 0 or part_index >= _lod_source_paths.size():
+		return false
+	var aabb := _part_aabbs[part_index]
+	if aabb.size.x < 0.001 or aabb.size.z < 0.001:
+		return false
+	var scale := maxf(0.001, _part_scales[part_index])
+	var yaw := deg_to_rad(_part_rotation_y[part_index])
+	var pos := _part_positions[part_index]
+	var rel := Vector3(world_pos.x - pos.x, 0.0, world_pos.z - pos.z)
+	var local := (Basis(Vector3.UP, -yaw) * rel) * (1.0 / scale) - _part_pivot_offsets[part_index]
+	var min_x := aabb.position.x - 0.75
+	var max_x := aabb.position.x + aabb.size.x + 0.75
+	var min_z := aabb.position.z - 0.75
+	var max_z := aabb.position.z + aabb.size.z + 0.75
+	return local.x >= min_x and local.x <= max_x and local.z >= min_z and local.z <= max_z
+
+func _set_selected_mesh_part_position(position: Vector3) -> void:
+	if not _has_selected_mesh_part():
+		return
+	_part_positions[_selected_part_index] = position
+	_sync_selected_mesh_part_controls()
+	_apply_selected_part_transform_from_state()
+
+func _set_selected_mesh_part_rotation_y(rotation_y: float) -> void:
+	if not _has_selected_mesh_part():
+		return
+	_part_rotation_y[_selected_part_index] = rotation_y
+	_sync_selected_mesh_part_controls()
+	_apply_selected_part_transform_from_state()
+
+func _sync_selected_mesh_part_controls() -> void:
+	if not _has_selected_mesh_part():
+		return
+	_suppress_part_transform_changed = true
+	var pos := _part_positions[_selected_part_index]
+	_part_x_spin.value = pos.x
+	_part_y_spin.value = pos.y
+	_part_z_spin.value = pos.z
+	_part_rotation_y_spin.value = _part_rotation_y[_selected_part_index]
+	_suppress_part_transform_changed = false
+
+func _apply_selected_part_transform_from_state() -> void:
+	if not _has_selected_mesh_part():
+		return
+	_preview.set_mesh_part_transform(
+		_selected_part_index,
+		_part_positions[_selected_part_index],
+		_part_rotation_y[_selected_part_index],
+		_part_scales[_selected_part_index],
+		_part_pivot_offsets[_selected_part_index]
+	)
+
+func _normalize_degrees(value: float) -> float:
+	var result := value
+	while result > 180.0:
+		result -= 360.0
+	while result < -180.0:
+		result += 360.0
+	return snappedf(result, 0.1)
+
+func _snap_rotation_y_to_cardinal_if_close(value: float) -> float:
+	var normalized := _normalize_degrees(value)
+	var nearest_cardinal := _normalize_degrees(roundf(normalized / 90.0) * 90.0)
+	var distance := absf(_normalize_degrees(normalized - nearest_cardinal))
+	if distance <= MESH_ROTATION_CARDINAL_SNAP_DEG:
+		return nearest_cardinal
+	return normalized
 
 func _try_begin_ghost_drag(mouse_pos: Vector2) -> bool:
 	if not _preview or not _preview.has_method("ghost_contains_world_xz"):
@@ -2824,13 +3108,14 @@ func _on_copy_log_pressed() -> void:
 	DisplayServer.clipboard_set("\n".join(_log_plain_lines))
 
 func _on_autofit_pressed() -> void:
-	if _mesh_aabb.size.length() < 0.001:
+	var aabb := _selected_part_aabb()
+	if aabb.size.length() < 0.001:
 		_log("[color=yellow]No mesh loaded yet — import a .glb first.[/color]")
 		return
 	var lot_w: float = _width_spin.value * 10.0   # CELL_M = 10
 	var lot_d: float = _depth_spin.value * 10.0
-	var mesh_w: float = _mesh_aabb.size.x
-	var mesh_d: float = _mesh_aabb.size.z
+	var mesh_w: float = aabb.size.x
+	var mesh_d: float = aabb.size.z
 	if mesh_w < 0.001 or mesh_d < 0.001:
 		_log("[color=yellow]Mesh has zero XZ extent — cannot auto-fit.[/color]")
 		return
@@ -2839,13 +3124,13 @@ func _on_autofit_pressed() -> void:
 	var scale_z := lot_d / mesh_d
 	var fit_scale := minf(scale_x, scale_z)
 	_preview_scale_spin.value = snappedf(fit_scale, 0.01)
-	_preview.set_preview_scale(fit_scale)
+	_apply_selected_part_transform()
 	_update_dim_label()
 	if _scale_preset_btn:
 		_scale_preset_btn.selected = 1  # Fit to Lot
 	var scaled_w := snappedf(mesh_w * fit_scale, 0.1)
 	var scaled_d := snappedf(mesh_d * fit_scale, 0.1)
-	var scaled_h := snappedf(_mesh_aabb.size.y * fit_scale, 0.1)
+	var scaled_h := snappedf(aabb.size.y * fit_scale, 0.1)
 	_log("Building footprint: %.1fm × %.1fm × %.1fm scaled to fit %.0fm × %.0fm lot (scale %.2fx)" % [
 		scaled_w, scaled_d, scaled_h, lot_w, lot_d, fit_scale])
 

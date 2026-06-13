@@ -119,7 +119,7 @@ AssetEditor menu:
 
 Deterministic rule:
 
-- `New Asset` clears the right-side pack/asset/building fields, active preview mesh, and LOD list
+- `New Asset` clears the right-side pack/asset/building fields, active preview mesh parts, and mesh part list
   while preserving the explicit comparison ghost
 - AssetEditor does not expose `Return To Game`
 
