@@ -1,7 +1,6 @@
 ## Manages the 3D preview for the building importer.
 ## Handles the imported GLB mesh, lot rectangle wireframe, frontage arrow,
-## main entrance anchor sphere/gizmo, ground grid, human-scale reference figure,
-## and ghost comparison mesh.
+## site anchors, ground grid, human-scale reference figure, and ghost comparison mesh.
 extends Node3D
 
 ## Emitted after a GLB mesh is successfully loaded.
@@ -10,7 +9,6 @@ signal mesh_loaded(aabb: AABB)
 
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
-const ENTRANCE_SPHERE_RADIUS_M := 0.35
 const GHOST_TINT := Color(0.16, 0.38, 0.95, 0.58)
 const GHOST_ORIGINAL_COLOR_BLEND := 0.55
 const SELECTED_PART_COLOR := Color(0.05, 0.85, 1.0, 0.88)
@@ -40,12 +38,9 @@ var _selection_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
-var _entrance_gizmo: MeshInstance3D
-var _entrance_sphere: MeshInstance3D
 var _ground_grid: MeshInstance3D
 var _human_figure: MeshInstance3D  # 1.8 m reference capsule
 var _frontage_label: Label3D
-var _entrance_label: Label3D
 var _site_anchor_label_root: Node3D
 var _mesh_parts: Array[Node3D] = []
 var _mesh_part_aabbs: Array[AABB] = []
@@ -54,7 +49,6 @@ var _active_mesh_part_index: int = -1
 var _site_anchors: Array[Dictionary] = []
 var _selected_site_anchor_indices: Array[int] = []
 var _selected_site_anchor_index: int = -1
-var _main_entrance_selected: bool = false
 
 # Ghost: explicitly selected comparison mesh shown semi-transparent.
 var _ghost_root: Node3D
@@ -68,8 +62,6 @@ var _depth_cells: int = 1
 
 var preview_scale: float = 1.0
 var frontage_forward: Vector3 = Vector3.FORWARD
-var entrance_anchor_local: Vector3 = Vector3(0.0, 0.0, CELL_M * 0.5)
-var entrance_anchor_forward: Vector3 = Vector3.FORWARD
 var theme_mode: String = THEME_DARK
 var _show_human: bool = false
 
@@ -98,20 +90,11 @@ func _ready() -> void:
 	_frontage_arrow = MeshInstance3D.new()
 	add_child(_frontage_arrow)
 
-	_entrance_gizmo = MeshInstance3D.new()
-	add_child(_entrance_gizmo)
-
-	_entrance_sphere = MeshInstance3D.new()
-	add_child(_entrance_sphere)
-
 	_human_figure = MeshInstance3D.new()
 	add_child(_human_figure)
 
 	_frontage_label = _new_overlay_label("Frontage")
 	add_child(_frontage_label)
-
-	_entrance_label = _new_overlay_label("Entrance")
-	add_child(_entrance_label)
 
 	_site_anchor_label_root = Node3D.new()
 	add_child(_site_anchor_label_root)
@@ -260,21 +243,6 @@ func set_frontage_forward(fwd: Vector3) -> void:
 	frontage_forward = fwd.normalized()
 	_rebuild_overlays()
 
-## Update the previewed main entrance anchor.
-func set_entrance_anchor(position: Vector3, forward: Vector3) -> void:
-	entrance_anchor_local = position
-	entrance_anchor_forward = forward.normalized()
-	_rebuild_entrance_visuals()
-
-## Highlight the required main entrance when it is part of the viewport selection.
-func set_main_entrance_selected(selected: bool) -> void:
-	_main_entrance_selected = selected
-	_rebuild_entrance_visuals()
-
-## Returns the current main entrance anchor in world space for mouse picking.
-func get_entrance_anchor_world_position() -> Vector3:
-	return to_global(entrance_anchor_local)
-
 ## Show or hide the 1.8 m human reference figure.
 func set_show_human(visible: bool) -> void:
 	_show_human = visible
@@ -288,14 +256,10 @@ func place_human_at(world_x: float, world_z: float) -> void:
 func clear() -> void:
 	clear_mesh_parts()
 	clear_site_anchors()
-	_main_entrance_selected = false
 	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
-	_entrance_gizmo.mesh = null
-	_entrance_sphere.mesh = null
 	_human_figure.mesh = null
 	_frontage_label.visible = false
-	_entrance_label.visible = false
 
 ## Clear only active mesh parts. The explicit comparison ghost remains loaded.
 func clear_mesh_parts() -> void:
@@ -475,12 +439,7 @@ func _rebuild_overlays() -> void:
 	_build_ground_grid()
 	_build_lot_wireframe()
 	_build_frontage_arrow()
-	_rebuild_entrance_visuals()
 	_build_human_figure()
-
-func _rebuild_entrance_visuals() -> void:
-	_build_entrance_gizmo()
-	_build_entrance_sphere()
 
 func _is_light_theme() -> bool:
 	return theme_mode == THEME_LIGHT
@@ -940,6 +899,8 @@ func _preview_anchor_number(anchor: Dictionary, key: String, fallback: float) ->
 
 func _site_anchor_color(anchor_type: String) -> Color:
 	match anchor_type:
+		"entrance":
+			return _entrance_color()
 		"parking":
 			return _parking_color()
 		"loading_bay":
@@ -957,6 +918,8 @@ func _site_anchor_label(anchor: Dictionary, type_index: int) -> String:
 
 func _site_anchor_label_prefix(anchor_type: String) -> String:
 	match anchor_type:
+		"entrance":
+			return "Entrance"
 		"parking":
 			return "Parking"
 		"loading_bay":
@@ -1057,60 +1020,3 @@ func _build_frontage_arrow() -> void:
 		color,
 		edge_center + fwd * (CELL_M * 0.75) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)
 	)
-
-func _build_entrance_gizmo() -> void:
-	var base := entrance_anchor_local + Vector3(0.0, 0.08, 0.0)
-	var forward := Vector3(entrance_anchor_forward.x, 0.0, entrance_anchor_forward.z)
-	if forward.length_squared() < 0.001:
-		forward = Vector3.FORWARD
-	forward = forward.normalized()
-	var side := Vector3(-forward.z, 0.0, forward.x)
-
-	var arrow_len := CELL_M * 0.35
-	var cross_len := CELL_M * 0.18
-	var head_len := CELL_M * 0.12
-	var head_w := CELL_M * 0.10
-	var color := _selected_anchor_color() if _main_entrance_selected else _entrance_color()
-
-	var im := ImmediateMesh.new()
-	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-
-	_draw_editor_line(im, base - side * cross_len, base + side * cross_len, color, GUIDE_ARROW_WIDTH_M)
-	_draw_editor_line(
-		im,
-		base - Vector3(0.0, cross_len * 0.5, 0.0),
-		base + Vector3(0.0, cross_len * 0.5, 0.0),
-		color,
-		GUIDE_ARROW_WIDTH_M
-	)
-
-	var tail := base - forward * (CELL_M * 0.08)
-	var tip := base + forward * arrow_len
-	_draw_editor_line(im, tail, tip, color, GUIDE_ARROW_WIDTH_M)
-	_draw_editor_line(im, tip, tip - forward * head_len + side * head_w, color, GUIDE_ARROW_WIDTH_M)
-	_draw_editor_line(im, tip, tip - forward * head_len - side * head_w, color, GUIDE_ARROW_WIDTH_M)
-	im.surface_end()
-
-	im.surface_set_material(0, _new_overlay_material())
-	_entrance_gizmo.mesh = im
-	_style_overlay_label(
-		_entrance_label,
-		"Entrance",
-		color,
-		base + forward * (CELL_M * 0.42) + Vector3(0.0, LABEL_HEIGHT_M, 0.0)
-	)
-
-func _build_entrance_sphere() -> void:
-	if _entrance_sphere.mesh == null:
-		var sphere := SphereMesh.new()
-		sphere.radius = ENTRANCE_SPHERE_RADIUS_M
-		var mat := StandardMaterial3D.new()
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		sphere.surface_set_material(0, mat)
-		_entrance_sphere.mesh = sphere
-	var material := _entrance_sphere.mesh.surface_get_material(0) as StandardMaterial3D
-	if material:
-		var color := _selected_anchor_color() if _main_entrance_selected else _entrance_color()
-		material.albedo_color = Color(color.r, color.g, color.b, 0.92)
-	_entrance_sphere.position = entrance_anchor_local

@@ -136,9 +136,6 @@ var _selected_part_index: int = -1
 var _selected_part_indices: Array[int] = []
 var _updating_mesh_part_selection: bool = false
 var _frontage_lbl: Label  # shows current frontage forward vector
-var _entrance_x_spin: SpinBox
-var _entrance_y_spin: SpinBox
-var _entrance_z_spin: SpinBox
 var _site_anchor_list: ItemList
 var _site_anchor_name_edit: LineEdit
 var _site_anchor_vehicle_class_btn: OptionButton
@@ -196,14 +193,11 @@ var _economy_catalog_error: String = ""
 var _log_plain_lines: Array[String] = []
 var _bbcode_strip_regex: RegEx
 var _main_entrance_auto: bool = true
-var _main_entrance_selected: bool = false
-var _updating_main_entrance_fields: bool = false
-var _extra_anchors: Array[Dictionary] = []
+var _site_anchors_data: Array[Dictionary] = []
 var _selected_site_anchor_index: int = -1
 var _selected_site_anchor_indices: Array[int] = []
 var _updating_site_anchor_controls: bool = false
 var _updating_site_anchor_list: bool = false
-var _dragging_main_entrance: bool = false
 var _dragging_site_anchor: bool = false
 var _dragging_mesh_part: bool = false
 var _selecting_mesh_parts: bool = false
@@ -212,8 +206,6 @@ var _rotating_mesh_part: bool = false
 var _site_anchor_drag_offset: Vector3 = Vector3.ZERO
 var _site_anchor_drag_start_hit: Vector3 = Vector3.ZERO
 var _site_anchor_drag_start_positions: Array[Vector3] = []
-var _main_entrance_drag_start_hit: Vector3 = Vector3.ZERO
-var _main_entrance_drag_start_position: Vector3 = Vector3.ZERO
 var _site_anchor_rotate_start_x: float = 0.0
 var _site_anchor_rotate_start_yaw: float = 0.0
 var _mesh_part_drag_start_hit: Vector3 = Vector3.ZERO
@@ -258,6 +250,7 @@ func _ready() -> void:
 	_bbcode_strip_regex = RegEx.new()
 	_bbcode_strip_regex.compile("\\[/?[^\\]]+\\]")
 	_set_frontage_forward(_frontage_fwd)
+	_set_main_entrance_forward(_frontage_fwd)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
 	_load_economy_profiles()
 	_load_packs()
@@ -787,27 +780,12 @@ func _build_right_panel(parent: Control) -> void:
 	set_front_btn.text = "Set Front From View"
 	set_front_btn.pressed.connect(_on_set_front_from_view)
 	anchors_box.add_child(set_front_btn)
-	_add_label(anchors_box, "Main Entrance (local)", _font_size_label)
-	_entrance_x_spin = _add_spinbox(anchors_box, "X (m)", -500.0, 500.0, 0.0)
-	_entrance_y_spin = _add_spinbox(anchors_box, "Y (m)", -500.0, 500.0, 0.0)
-	_entrance_z_spin = _add_spinbox(anchors_box, "Z (m)", -500.0, 500.0, 10.0)
-	_entrance_x_spin.step = 0.1
-	_entrance_y_spin.step = 0.1
-	_entrance_z_spin.step = 0.1
-	_entrance_x_spin.value_changed.connect(_on_main_entrance_changed)
-	_entrance_y_spin.value_changed.connect(_on_main_entrance_changed)
-	_entrance_z_spin.value_changed.connect(_on_main_entrance_changed)
 	var reset_entrance_btn := Button.new()
 	reset_entrance_btn.text = "Reset Entrance To Frontage"
 	reset_entrance_btn.pressed.connect(_on_reset_main_entrance_pressed)
 	anchors_box.add_child(reset_entrance_btn)
-	var entrance_hint := Label.new()
-	entrance_hint.text = "Drag the yellow sphere in the viewport to move X/Z. Use Y for height."
-	entrance_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	entrance_hint.add_theme_font_size_override("font_size", _font_size_label)
-	anchors_box.add_child(entrance_hint)
 
-	_add_label(anchors_box, "Site Anchors", _font_size_section)
+	_add_label(anchors_box, "Anchors", _font_size_section)
 	_site_anchor_list = ItemList.new()
 	_site_anchor_list.custom_minimum_size.y = 130
 	_site_anchor_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -830,7 +808,7 @@ func _build_right_panel(parent: Control) -> void:
 	remove_anchor_btn.pressed.connect(_remove_selected_site_anchor)
 	anchors_box.add_child(remove_anchor_btn)
 
-	_site_anchor_name_edit = _add_line_edit(anchors_box, "Optional Name", "")
+	_site_anchor_name_edit = _add_line_edit(anchors_box, "Name", "")
 	_site_anchor_name_edit.text_changed.connect(_on_site_anchor_text_changed)
 
 	_add_label(anchors_box, "Vehicle Class", _font_size_label)
@@ -1525,11 +1503,9 @@ func _start_new_asset() -> void:
 
 	_auto_suggest_asset_id()
 	_set_economy_profile_selection("")
-	_extra_anchors.clear()
-	_set_main_entrance_selected(false)
+	_site_anchors_data.clear()
 	_selected_site_anchor_index = -1
 	_selected_site_anchor_indices.clear()
-	_refresh_site_anchor_list()
 	_glb_path = ""
 	_clear_mesh_parts()
 	_loaded_asset_pack_id = ""
@@ -1542,7 +1518,9 @@ func _start_new_asset() -> void:
 		_preview.set_lot_size(2, 2)
 		_preview.set_show_human(false)
 	_set_frontage_forward(Vector3.FORWARD)
+	_set_main_entrance_forward(Vector3.FORWARD)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
+	_refresh_site_anchor_list()
 	_update_building_mode_visibility()
 	_update_economy_profile_status()
 	_log("Started a new asset.")
@@ -1622,38 +1600,48 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	_set_economy_profile_selection(loaded_profile_id)
 	if loaded_profile_id.strip_edges().is_empty():
 		_auto_select_profile_for_service(_selected_service_class())
-	_extra_anchors.clear()
+	_site_anchors_data.clear()
 
 	var main_anchor_pos := _default_main_entrance_position()
 	var main_anchor_fwd := Vector3.FORWARD
 	var has_main_anchor := false
+	var loaded_anchors: Array[Dictionary] = []
 	for anchor in data.get("anchors", []):
 		if not (anchor is Dictionary):
 			continue
 		var anchor_dict: Dictionary = anchor
 		var anchor_type := str(anchor_dict.get("anchor_type", "")).strip_edges()
 		var anchor_name := str(anchor_dict.get("name", "")).strip_edges()
-		if anchor_type == "entrance" and anchor_name == "main" and not has_main_anchor:
-			var pos = anchor_dict.get("position", [])
-			if pos is Array and pos.size() == 3:
-				main_anchor_pos = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
-			var fwd = anchor_dict.get("forward", [])
-			if fwd is Array and fwd.size() == 3:
-				main_anchor_fwd = Vector3(float(fwd[0]), float(fwd[1]), float(fwd[2]))
-			has_main_anchor = true
+		if anchor_type == "entrance":
+			if anchor_name == "main" and not has_main_anchor:
+				var pos = anchor_dict.get("position", [])
+				if pos is Array and pos.size() == 3:
+					main_anchor_pos = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
+				var fwd = anchor_dict.get("forward", [])
+				if fwd is Array and fwd.size() == 3:
+					main_anchor_fwd = Vector3(float(fwd[0]), float(fwd[1]), float(fwd[2]))
+				has_main_anchor = true
 			continue
-		_extra_anchors.append(_sanitize_site_anchor_dict(anchor_dict))
-	_set_main_entrance_selected(false)
+		loaded_anchors.append(_sanitize_site_anchor_dict(anchor_dict))
+
+	var entrance_anchor := _make_main_entrance_anchor(
+		main_anchor_pos,
+		main_anchor_fwd if has_main_anchor else Vector3.FORWARD
+	)
+	_site_anchors_data.append(entrance_anchor)
+	for anchor in loaded_anchors:
+		_site_anchors_data.append(anchor)
 	_selected_site_anchor_index = -1
 	_selected_site_anchor_indices.clear()
-	_refresh_site_anchor_list()
 
-	_set_frontage_forward(main_anchor_fwd if has_main_anchor else Vector3.FORWARD)
-	if has_main_anchor:
-		_set_main_entrance_position(main_anchor_pos, false)
-	else:
+	_set_frontage_forward(_anchor_forward(entrance_anchor))
+	if not has_main_anchor:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 		_log("[color=yellow]Loaded asset has no 'entrance/main' anchor; using frontage default.[/color]")
+	else:
+		_main_entrance_auto = false
+		_update_site_anchor_preview()
+	_refresh_site_anchor_list()
 
 	_clear_mesh_parts()
 	var mesh_parts: Array = data.get("mesh_parts", [])
@@ -2218,12 +2206,10 @@ func _select_mesh_part(index: int, clear_site_anchors: bool = true) -> void:
 		_set_selected_mesh_parts([], -1)
 		if clear_site_anchors:
 			_set_selected_site_anchors([], -1)
-			_set_main_entrance_selected(false)
 		return
 	_set_selected_mesh_parts([index], index)
 	if clear_site_anchors:
 		_set_selected_site_anchors([], -1)
-		_set_main_entrance_selected(false)
 
 func _on_mesh_part_selected(index: int) -> void:
 	if _updating_mesh_part_selection:
@@ -2298,6 +2284,8 @@ func _remove_selected_mesh_parts() -> bool:
 
 func _site_anchor_type_label(anchor_type: String) -> String:
 	match anchor_type:
+		"entrance":
+			return "Entrance"
 		"driveway":
 			return "Driveway"
 		"parking":
@@ -2307,7 +2295,45 @@ func _site_anchor_type_label(anchor_type: String) -> String:
 		_:
 			return anchor_type.capitalize()
 
+func _make_main_entrance_anchor(position: Vector3, forward: Vector3) -> Dictionary:
+	var resolved := forward
+	if resolved.length_squared() < 0.001:
+		resolved = _frontage_fwd
+	if resolved.length_squared() < 0.001:
+		resolved = Vector3.FORWARD
+	return {
+		"anchor_type": "entrance",
+		"name": "main",
+		"position": _vector3_to_array(_clamp_anchor_position_to_lot(position), 0.01),
+		"forward": _vector3_to_array(resolved.normalized(), 0.001),
+	}
+
+func _is_main_entrance_anchor(anchor: Dictionary) -> bool:
+	return (
+		str(anchor.get("anchor_type", "")).strip_edges() == "entrance"
+		and str(anchor.get("name", "")).strip_edges() == "main"
+	)
+
+func _main_entrance_index() -> int:
+	for i in _site_anchors_data.size():
+		if _is_main_entrance_anchor(_site_anchors_data[i]):
+			return i
+	return -1
+
+func _ensure_main_entrance_anchor() -> int:
+	var index := _main_entrance_index()
+	if index >= 0:
+		return index
+	_site_anchors_data.insert(
+		0,
+		_make_main_entrance_anchor(_default_main_entrance_position(), _frontage_fwd)
+	)
+	return 0
+
 func _add_site_anchor(anchor_type: String) -> void:
+	if anchor_type == "entrance":
+		_select_site_anchor(_ensure_main_entrance_anchor())
+		return
 	var anchor := {
 		"anchor_type": anchor_type,
 		"name": "",
@@ -2322,8 +2348,8 @@ func _add_site_anchor(anchor_type: String) -> void:
 		_clamp_site_anchor_position_to_lot(anchor, _anchor_position(anchor)),
 		0.01
 	)
-	_extra_anchors.append(anchor)
-	_select_site_anchor(_extra_anchors.size() - 1)
+	_site_anchors_data.append(anchor)
+	_select_site_anchor(_site_anchors_data.size() - 1)
 	_log("Added %s anchor." % _site_anchor_type_label(anchor_type))
 
 func _default_site_anchor_position(anchor_type: String) -> Vector3:
@@ -2347,7 +2373,7 @@ func _default_site_anchor_position(anchor_type: String) -> Vector3:
 
 func _site_anchor_count(anchor_type: String) -> int:
 	var count := 0
-	for anchor in _extra_anchors:
+	for anchor in _site_anchors_data:
 		if str(anchor.get("anchor_type", "")).strip_edges() == anchor_type:
 			count += 1
 	return count
@@ -2358,11 +2384,12 @@ func _default_site_anchor_vehicle_class(anchor_type: String) -> String:
 func _refresh_site_anchor_list() -> void:
 	if not _site_anchor_list:
 		return
+	_ensure_main_entrance_anchor()
 	_updating_site_anchor_list = true
 	_site_anchor_list.clear()
 	var type_counts := {}
-	for i in _extra_anchors.size():
-		var anchor := _extra_anchors[i]
+	for i in _site_anchors_data.size():
+		var anchor := _site_anchors_data[i]
 		var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
 		type_counts[anchor_type] = int(type_counts.get(anchor_type, 0)) + 1
 		_site_anchor_list.add_item(_site_anchor_display_label(i, type_counts[anchor_type]))
@@ -2374,11 +2401,13 @@ func _refresh_site_anchor_list() -> void:
 	_update_site_anchor_preview()
 
 func _site_anchor_display_label(index: int, type_index: int = -1) -> String:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return "Anchor"
-	var anchor := _extra_anchors[index]
+	var anchor := _site_anchors_data[index]
 	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
 	var name := str(anchor.get("name", "")).strip_edges()
+	if _is_main_entrance_anchor(anchor):
+		return "Entrance - main"
 	if not name.is_empty():
 		return "%s - %s" % [_site_anchor_type_label(anchor_type), name]
 	if type_index < 0:
@@ -2386,38 +2415,29 @@ func _site_anchor_display_label(index: int, type_index: int = -1) -> String:
 	return "%s %d" % [_site_anchor_type_label(anchor_type), type_index]
 
 func _site_anchor_index_among_type(index: int) -> int:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return 0
-	var anchor_type := str(_extra_anchors[index].get("anchor_type", "")).strip_edges()
+	var anchor_type := str(_site_anchors_data[index].get("anchor_type", "")).strip_edges()
 	var count := 0
 	for i in index + 1:
-		if str(_extra_anchors[i].get("anchor_type", "")).strip_edges() == anchor_type:
+		if str(_site_anchors_data[i].get("anchor_type", "")).strip_edges() == anchor_type:
 			count += 1
 	return count
 
 func _select_site_anchor(index: int, clear_mesh_parts: bool = true) -> void:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		_set_selected_site_anchors([], -1)
 	else:
 		_set_selected_site_anchors([index], index)
 		if clear_mesh_parts:
 			_set_selected_mesh_parts([], -1)
-			_set_main_entrance_selected(false)
-
-func _set_main_entrance_selected(selected: bool) -> void:
-	_main_entrance_selected = selected
-	if _preview and _preview.has_method("set_main_entrance_selected"):
-		_preview.set_main_entrance_selected(selected)
-
-func _toggle_main_entrance_selection() -> void:
-	_set_main_entrance_selected(not _main_entrance_selected)
 
 func _set_selected_site_anchors(indices: Array, primary_index: int = -1) -> void:
 	var seen := {}
 	var resolved: Array[int] = []
 	for raw_index in indices:
 		var index := int(raw_index)
-		if index < 0 or index >= _extra_anchors.size() or seen.has(index):
+		if index < 0 or index >= _site_anchors_data.size() or seen.has(index):
 			continue
 		seen[index] = true
 		resolved.append(index)
@@ -2430,7 +2450,7 @@ func _set_selected_site_anchors(indices: Array, primary_index: int = -1) -> void
 	_refresh_site_anchor_list()
 
 func _toggle_site_anchor_selection(index: int) -> void:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return
 	var selected := _selected_site_anchor_indices.duplicate()
 	if selected.has(index):
@@ -2447,7 +2467,6 @@ func _on_site_anchor_selected(index: int) -> void:
 	_set_selected_site_anchors(selected, index)
 	if not Input.is_key_pressed(KEY_CTRL):
 		_set_selected_mesh_parts([], -1)
-		_set_main_entrance_selected(false)
 
 func _on_site_anchor_multi_selected(index: int, _selected: bool) -> void:
 	if _updating_site_anchor_list:
@@ -2465,16 +2484,24 @@ func _remove_selected_site_anchor() -> bool:
 	remove_indices.sort()
 	var first_removed := int(remove_indices[0])
 	var removed_labels: Array[String] = []
+	var skipped_required := false
 	for i in range(remove_indices.size() - 1, -1, -1):
 		var index := int(remove_indices[i])
-		if index < 0 or index >= _extra_anchors.size():
+		if index < 0 or index >= _site_anchors_data.size():
 			continue
-		var removed_type := str(_extra_anchors[index].get("anchor_type", ""))
+		if _is_main_entrance_anchor(_site_anchors_data[index]):
+			skipped_required = true
+			continue
+		var removed_type := str(_site_anchors_data[index].get("anchor_type", ""))
 		removed_labels.append(_site_anchor_type_label(removed_type))
-		_extra_anchors.remove_at(index)
+		_site_anchors_data.remove_at(index)
+	if removed_labels.is_empty():
+		if skipped_required:
+			_log("[color=yellow]Entrance is required and cannot be removed.[/color]")
+		return false
 	var next_index := -1
-	if not _extra_anchors.is_empty():
-		next_index = mini(first_removed, _extra_anchors.size() - 1)
+	if not _site_anchors_data.is_empty():
+		next_index = mini(first_removed, _site_anchors_data.size() - 1)
 	_set_selected_site_anchors([next_index] if next_index >= 0 else [], next_index)
 	if removed_labels.size() == 1:
 		_log("Removed %s anchor." % removed_labels[0])
@@ -2484,8 +2511,12 @@ func _remove_selected_site_anchor() -> bool:
 
 func _update_site_anchor_controls() -> void:
 	_updating_site_anchor_controls = true
-	var has_anchor := _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _extra_anchors.size()
-	var anchor := _extra_anchors[_selected_site_anchor_index] if has_anchor else {}
+	var has_anchor := _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _site_anchors_data.size()
+	var anchor := _site_anchors_data[_selected_site_anchor_index] if has_anchor else {}
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var is_entrance := has_anchor and _is_main_entrance_anchor(anchor)
+	var has_size := has_anchor and anchor_type != "entrance"
+	var has_length := has_anchor and (anchor_type == "parking" or anchor_type == "loading_bay")
 	var pos := _anchor_position(anchor)
 	var yaw := _yaw_from_forward(_anchor_forward(anchor))
 	_site_anchor_name_edit.text = str(anchor.get("name", "")) if has_anchor else ""
@@ -2494,24 +2525,14 @@ func _update_site_anchor_controls() -> void:
 	_site_anchor_y_spin.value = pos.y
 	_site_anchor_z_spin.value = pos.z
 	_site_anchor_yaw_spin.value = yaw
-	_site_anchor_width_spin.value = _anchor_number(anchor, "width_m", 3.0) if has_anchor else 3.0
-	_site_anchor_length_spin.value = _anchor_number(anchor, "length_m", 0.0) if has_anchor else 0.0
-	for control in [
-		_site_anchor_name_edit,
-		_site_anchor_vehicle_class_btn,
-		_site_anchor_x_spin,
-		_site_anchor_y_spin,
-		_site_anchor_z_spin,
-		_site_anchor_yaw_spin,
-		_site_anchor_width_spin,
-		_site_anchor_length_spin,
-	]:
-		if control is LineEdit:
-			(control as LineEdit).editable = has_anchor
-		elif control is SpinBox:
-			(control as SpinBox).editable = has_anchor
-		elif control is OptionButton:
-			(control as OptionButton).disabled = not has_anchor
+	_site_anchor_width_spin.value = _anchor_number(anchor, "width_m", 3.0) if has_size else 0.0
+	_site_anchor_length_spin.value = _anchor_number(anchor, "length_m", 0.0) if has_length else 0.0
+	_site_anchor_name_edit.editable = has_anchor and not is_entrance
+	_site_anchor_vehicle_class_btn.disabled = not has_size
+	for control in [_site_anchor_x_spin, _site_anchor_y_spin, _site_anchor_z_spin, _site_anchor_yaw_spin]:
+		(control as SpinBox).editable = has_anchor
+	_site_anchor_width_spin.editable = has_size
+	_site_anchor_length_spin.editable = has_length
 	_updating_site_anchor_controls = false
 
 func _on_site_anchor_text_changed(_value: String) -> void:
@@ -2530,18 +2551,27 @@ func _on_site_anchor_spin_changed(_value: float) -> void:
 	_apply_site_anchor_controls()
 
 func _apply_site_anchor_controls() -> void:
-	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _extra_anchors.size():
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors_data.size():
 		return
-	var anchor := _extra_anchors[_selected_site_anchor_index]
-	anchor["name"] = _site_anchor_name_edit.text.strip_edges()
-	anchor["vehicle_class"] = _selected_option_metadata(_site_anchor_vehicle_class_btn, "car")
+	var anchor := _site_anchors_data[_selected_site_anchor_index]
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var is_entrance := _is_main_entrance_anchor(anchor)
+	if is_entrance:
+		_main_entrance_auto = false
+	if is_entrance:
+		anchor["name"] = "main"
+		anchor.erase("vehicle_class")
+		anchor.erase("width_m")
+		anchor.erase("length_m")
+	else:
+		anchor["name"] = _site_anchor_name_edit.text.strip_edges()
+		anchor["vehicle_class"] = _selected_option_metadata(_site_anchor_vehicle_class_btn, "car")
+		anchor["width_m"] = snappedf(maxf(0.1, float(_site_anchor_width_spin.value)), 0.01)
 	anchor["forward"] = _vector3_to_array(
 		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(_site_anchor_yaw_spin.value)),
 		0.001
 	)
-	anchor["width_m"] = snappedf(maxf(0.1, float(_site_anchor_width_spin.value)), 0.01)
-	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
-	if anchor_type == "parking" or anchor_type == "loading_bay":
+	if not is_entrance and (anchor_type == "parking" or anchor_type == "loading_bay"):
 		anchor["length_m"] = snappedf(maxf(0.1, float(_site_anchor_length_spin.value)), 0.01)
 	elif anchor.has("length_m"):
 		anchor.erase("length_m")
@@ -2558,7 +2588,7 @@ func _apply_site_anchor_controls() -> void:
 func _update_site_anchor_preview() -> void:
 	if _preview and _preview.has_method("set_site_anchors"):
 		_preview.set_site_anchors(
-			_extra_anchors,
+			_site_anchors_data,
 			_selected_site_anchor_indices,
 			_selected_site_anchor_index
 		)
@@ -2580,6 +2610,13 @@ func _anchor_forward(anchor: Dictionary) -> Vector3:
 func _sanitize_site_anchor_dict(anchor: Dictionary) -> Dictionary:
 	var clean := anchor.duplicate(true)
 	clean.erase("purpose")
+	var anchor_type := str(clean.get("anchor_type", "")).strip_edges()
+	if anchor_type == "entrance":
+		clean["name"] = "main"
+		clean.erase("vehicle_class")
+		clean.erase("width_m")
+		clean.erase("length_m")
+		return clean
 	for key in ["name", "vehicle_class"]:
 		if clean.get(key, null) == null:
 			clean.erase(key)
@@ -2616,24 +2653,24 @@ func _anchor_text(anchor: Dictionary, key: String, fallback: String) -> String:
 	return str(value).strip_edges()
 
 func _set_site_anchor_position(index: int, pos: Vector3) -> void:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return
-	_extra_anchors[index]["position"] = _vector3_to_array(
-		_clamp_site_anchor_position_to_lot(_extra_anchors[index], pos),
+	_site_anchors_data[index]["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(_site_anchors_data[index], pos),
 		0.01
 	)
 	_update_site_anchor_controls()
 	_update_site_anchor_preview()
 
 func _set_site_anchor_yaw(index: int, yaw_degrees: float) -> void:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return
-	_extra_anchors[index]["forward"] = _vector3_to_array(
+	_site_anchors_data[index]["forward"] = _vector3_to_array(
 		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(yaw_degrees)),
 		0.001
 	)
-	_extra_anchors[index]["position"] = _vector3_to_array(
-		_clamp_site_anchor_position_to_lot(_extra_anchors[index], _anchor_position(_extra_anchors[index])),
+	_site_anchors_data[index]["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(_site_anchors_data[index], _anchor_position(_site_anchors_data[index])),
 		0.01
 	)
 	_update_site_anchor_controls()
@@ -2680,8 +2717,11 @@ func _export_site_anchor(anchor: Dictionary) -> Dictionary:
 		"name": str(anchor.get("name", "")).strip_edges(),
 		"position": _vector3_to_array(pos, 0.01),
 		"forward": _vector3_to_array(fwd, 0.001),
-		"width_m": snappedf(maxf(0.1, _anchor_number(anchor, "width_m", 2.0)), 0.01),
 	}
+	if anchor_type == "entrance":
+		exported["name"] = "main"
+		return exported
+	exported["width_m"] = snappedf(maxf(0.1, _anchor_number(anchor, "width_m", 2.0)), 0.01)
 	var vehicle_class := _anchor_text(anchor, "vehicle_class", "")
 	if not vehicle_class.is_empty():
 		exported["vehicle_class"] = vehicle_class
@@ -2769,6 +2809,7 @@ func _on_set_front_from_view() -> void:
 		return
 	_set_frontage_forward(_snap_xz_to_cardinal(horizontal))
 	if _main_entrance_auto:
+		_set_main_entrance_forward(_frontage_fwd)
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 	_log("Frontage set: front face points toward camera.")
 
@@ -2899,20 +2940,9 @@ func _export_asset(move_original_after_export: bool) -> void:
 			}],
 		})
 
-	# Build entrance anchor from frontage forward.
-	var fwd := _frontage_fwd
-	var entrance_pos := _get_main_entrance_position()
-	var anchors := [{
-		"anchor_type": "entrance",
-		"name": "main",
-		"position": [
-			snappedf(entrance_pos.x, 0.01),
-			snappedf(entrance_pos.y, 0.01),
-			snappedf(entrance_pos.z, 0.01),
-		],
-		"forward": [snappedf(fwd.x, 0.001), 0.0, snappedf(fwd.z, 0.001)],
-	}]
-	for anchor in _extra_anchors:
+	_ensure_main_entrance_anchor()
+	var anchors := []
+	for anchor in _site_anchors_data:
 		anchors.append(_export_site_anchor(anchor))
 
 	var tags_raw: String = _tags_edit.text.strip_edges()
@@ -3318,18 +3348,10 @@ func _snap_xz_to_cardinal(dir: Vector3) -> Vector3:
 		return Vector3(1.0 if dir.x >= 0.0 else -1.0, 0.0, 0.0)
 	return Vector3(0.0, 0.0, 1.0 if dir.z >= 0.0 else -1.0)
 
-func _on_main_entrance_changed(_value: float) -> void:
-	if _updating_main_entrance_fields:
-		return
-	_main_entrance_auto = false
-	_update_main_entrance_preview()
-
 func _on_reset_main_entrance_pressed() -> void:
+	_set_main_entrance_forward(_frontage_fwd)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
 	_log("Main entrance reset to the current frontage edge.")
-
-func _get_main_entrance_position() -> Vector3:
-	return Vector3(_entrance_x_spin.value, _entrance_y_spin.value, _entrance_z_spin.value)
 
 func _default_main_entrance_position() -> Vector3:
 	var lot_half_w := _width_spin.value * 10.0 * 0.5
@@ -3343,27 +3365,22 @@ func _default_main_entrance_position() -> Vector3:
 
 func _set_main_entrance_position(pos: Vector3, auto_anchor: bool) -> void:
 	_main_entrance_auto = auto_anchor
-	var clamped := _clamp_anchor_position_to_lot(pos)
-	_updating_main_entrance_fields = true
-	_entrance_x_spin.value = clamped.x
-	_entrance_y_spin.value = clamped.y
-	_entrance_z_spin.value = clamped.z
-	_updating_main_entrance_fields = false
-	_update_main_entrance_preview()
+	_set_site_anchor_position(_ensure_main_entrance_anchor(), pos)
+
+func _set_main_entrance_forward(fwd: Vector3) -> void:
+	var resolved := fwd
+	if resolved.length_squared() < 0.001:
+		resolved = _frontage_fwd
+	if resolved.length_squared() < 0.001:
+		resolved = Vector3.FORWARD
+	var index := _ensure_main_entrance_anchor()
+	_site_anchors_data[index]["forward"] = _vector3_to_array(resolved.normalized(), 0.001)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
 
 func _update_main_entrance_preview() -> void:
-	if not _preview or not _entrance_x_spin or not _entrance_y_spin or not _entrance_z_spin:
-		return
-	var clamped := _clamp_anchor_position_to_lot(_get_main_entrance_position())
-	if clamped.distance_squared_to(_get_main_entrance_position()) > 0.0001:
-		_updating_main_entrance_fields = true
-		_entrance_x_spin.value = clamped.x
-		_entrance_y_spin.value = clamped.y
-		_entrance_z_spin.value = clamped.z
-		_updating_main_entrance_fields = false
-	_preview.set_entrance_anchor(clamped, _frontage_fwd)
-	if _preview.has_method("set_main_entrance_selected"):
-		_preview.set_main_entrance_selected(_main_entrance_selected)
+	_ensure_main_entrance_anchor()
+	_update_site_anchor_preview()
 
 func _clamp_anchor_position_to_lot(pos: Vector3) -> Vector3:
 	if not _width_spin or not _depth_spin:
@@ -3443,11 +3460,11 @@ func _clamp_to_possible_interval(value: float, min_value: float, max_value: floa
 
 func _clamp_site_anchors_to_lot() -> void:
 	var changed := false
-	for i in _extra_anchors.size():
-		var pos := _anchor_position(_extra_anchors[i])
-		var clamped := _clamp_site_anchor_position_to_lot(_extra_anchors[i], pos)
+	for i in _site_anchors_data.size():
+		var pos := _anchor_position(_site_anchors_data[i])
+		var clamped := _clamp_site_anchor_position_to_lot(_site_anchors_data[i], pos)
 		if clamped.distance_squared_to(pos) > 0.0001:
-			_extra_anchors[i]["position"] = _vector3_to_array(clamped, 0.01)
+			_site_anchors_data[i]["position"] = _vector3_to_array(clamped, 0.01)
 			changed = true
 	if changed:
 		_refresh_site_anchor_list()
@@ -3736,9 +3753,6 @@ func _input(event: InputEvent) -> void:
 				if _try_begin_site_anchor_drag(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
-				if _try_begin_main_entrance_drag(mouse_pos):
-					get_viewport().set_input_as_handled()
-					return
 				if _try_begin_mesh_part_drag(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
@@ -3755,11 +3769,6 @@ func _input(event: InputEvent) -> void:
 				if _try_begin_mesh_part_rotation(mouse_pos):
 					get_viewport().set_input_as_handled()
 			return
-		if _dragging_main_entrance:
-			_dragging_main_entrance = false
-			_site_anchor_drag_start_positions.clear()
-			_mesh_part_drag_start_positions.clear()
-			get_viewport().set_input_as_handled()
 		if _dragging_site_anchor:
 			_dragging_site_anchor = false
 			_site_anchor_drag_start_positions.clear()
@@ -3784,10 +3793,7 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		return
 
-	if event is InputEventMouseMotion and _dragging_main_entrance:
-		if _drag_main_entrance_from_mouse(get_viewport().get_mouse_position()):
-			get_viewport().set_input_as_handled()
-	elif event is InputEventMouseMotion and _dragging_site_anchor:
+	if event is InputEventMouseMotion and _dragging_site_anchor:
 		if _drag_site_anchor_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _dragging_mesh_part:
@@ -3824,73 +3830,6 @@ func _ui_captures_editor_text_input() -> bool:
 		or focus_owner is SpinBox
 	)
 
-func _try_begin_main_entrance_drag(mouse_pos: Vector2) -> bool:
-	if not _preview:
-		return false
-	var cam := get_viewport().get_camera_3d()
-	if not cam:
-		return false
-	var anchor_world: Vector3 = _preview.get_entrance_anchor_world_position()
-	if cam.is_position_behind(anchor_world):
-		return false
-	var anchor_screen: Vector2 = cam.unproject_position(anchor_world)
-	if anchor_screen.distance_to(mouse_pos) > MAIN_ENTRANCE_PICK_RADIUS_PX:
-		return false
-	if not _main_entrance_selected:
-		_set_main_entrance_selected(true)
-		_set_selected_site_anchors([], -1)
-		_set_selected_mesh_parts([], -1)
-	var anchor_pos := _get_main_entrance_position()
-	var hit = _project_mouse_to_horizontal_plane(mouse_pos, anchor_pos.y)
-	if hit == null:
-		return false
-	_main_entrance_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
-	_main_entrance_drag_start_position = anchor_pos
-	_site_anchor_drag_start_hit = _main_entrance_drag_start_hit
-	_site_anchor_drag_start_positions.clear()
-	for index in _site_anchor_drag_indices():
-		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
-	_mesh_part_drag_start_hit = _main_entrance_drag_start_hit
-	_mesh_part_drag_start_positions.clear()
-	for index in _mesh_part_drag_indices():
-		_mesh_part_drag_start_positions.append(_part_positions[index])
-	_dragging_main_entrance = true
-	_main_entrance_auto = false
-	return true
-
-func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
-	var hit = _project_mouse_to_horizontal_plane(mouse_pos, _main_entrance_drag_start_position.y)
-	if hit == null:
-		return false
-	var delta := Vector3(hit.x, 0.0, hit.z) - _main_entrance_drag_start_hit
-	if _main_entrance_selected:
-		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
-	var anchor_indices := _site_anchor_drag_indices()
-	for i in anchor_indices.size():
-		var index := anchor_indices[i]
-		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
-			continue
-		var start_pos := _site_anchor_drag_start_positions[i]
-		_extra_anchors[index]["position"] = _vector3_to_array(
-			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
-			0.01
-		)
-	var mesh_indices := _mesh_part_drag_indices()
-	for i in mesh_indices.size():
-		var index := mesh_indices[i]
-		if index < 0 or index >= _part_positions.size() or i >= _mesh_part_drag_start_positions.size():
-			continue
-		_part_positions[index] = _clamp_mesh_part_position_to_lot(
-			index,
-			_mesh_part_drag_start_positions[i] + delta
-		)
-		_apply_mesh_part_transform_from_state(index)
-	_update_site_anchor_controls()
-	_update_site_anchor_preview()
-	_sync_selected_mesh_part_controls()
-	_update_dim_label()
-	return true
-
 func _try_begin_site_anchor_drag(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
 	if hit == null:
@@ -3902,18 +3841,18 @@ func _try_begin_site_anchor_drag(mouse_pos: Vector2) -> bool:
 		_select_site_anchor(anchor_index)
 	else:
 		_set_selected_site_anchors(_selected_site_anchor_indices, anchor_index)
-	var pos := _anchor_position(_extra_anchors[anchor_index])
+	if _is_main_entrance_anchor(_site_anchors_data[anchor_index]):
+		_main_entrance_auto = false
+	var pos := _anchor_position(_site_anchors_data[anchor_index])
 	_site_anchor_drag_offset = pos - Vector3(hit.x, pos.y, hit.z)
 	_site_anchor_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
 	_site_anchor_drag_start_positions.clear()
 	for index in _site_anchor_drag_indices():
-		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
+		_site_anchor_drag_start_positions.append(_anchor_position(_site_anchors_data[index]))
 	_mesh_part_drag_start_hit = _site_anchor_drag_start_hit
 	_mesh_part_drag_start_positions.clear()
 	for index in _mesh_part_drag_indices():
 		_mesh_part_drag_start_positions.append(_part_positions[index])
-	_main_entrance_drag_start_hit = _site_anchor_drag_start_hit
-	_main_entrance_drag_start_position = _get_main_entrance_position()
 	_dragging_site_anchor = true
 	return true
 
@@ -3924,20 +3863,18 @@ func _drag_site_anchor_from_mouse(mouse_pos: Vector2) -> bool:
 		return false
 	var plane_y := 0.0
 	if not anchor_indices.is_empty():
-		plane_y = _anchor_position(_extra_anchors[anchor_indices[0]]).y
+		plane_y = _anchor_position(_site_anchors_data[anchor_indices[0]]).y
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, plane_y)
 	if hit == null:
 		return false
 	var delta := Vector3(hit.x, 0.0, hit.z) - _site_anchor_drag_start_hit
-	if _main_entrance_selected:
-		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
 	for i in anchor_indices.size():
 		var index := anchor_indices[i]
-		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
+		if index < 0 or index >= _site_anchors_data.size() or i >= _site_anchor_drag_start_positions.size():
 			continue
 		var start_pos := _site_anchor_drag_start_positions[i]
-		_extra_anchors[index]["position"] = _vector3_to_array(
-			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
+		_site_anchors_data[index]["position"] = _vector3_to_array(
+			_clamp_site_anchor_position_to_lot(_site_anchors_data[index], start_pos + delta),
 			0.01
 		)
 	for i in mesh_indices.size():
@@ -3963,28 +3900,30 @@ func _try_begin_site_anchor_rotation(mouse_pos: Vector2) -> bool:
 	if anchor_index < 0:
 		return false
 	_select_site_anchor(anchor_index)
+	if _is_main_entrance_anchor(_site_anchors_data[anchor_index]):
+		_main_entrance_auto = false
 	_site_anchor_rotate_start_x = mouse_pos.x
-	_site_anchor_rotate_start_yaw = _yaw_from_forward(_anchor_forward(_extra_anchors[anchor_index]))
+	_site_anchor_rotate_start_yaw = _yaw_from_forward(_anchor_forward(_site_anchors_data[anchor_index]))
 	_rotating_site_anchor = true
 	return true
 
 func _rotate_site_anchor_from_mouse(mouse_pos: Vector2) -> void:
-	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _extra_anchors.size():
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors_data.size():
 		return
 	var delta_px := mouse_pos.x - _site_anchor_rotate_start_x
 	var raw_rotation := _site_anchor_rotate_start_yaw + delta_px * MESH_ROTATION_DRAG_DEG_PER_PX
 	_set_site_anchor_yaw(_selected_site_anchor_index, raw_rotation)
 
 func _site_anchor_index_at_world_xz(world_pos: Vector3) -> int:
-	for i in range(_extra_anchors.size() - 1, -1, -1):
+	for i in range(_site_anchors_data.size() - 1, -1, -1):
 		if _site_anchor_contains_world_xz(i, world_pos):
 			return i
 	return -1
 
 func _site_anchor_contains_world_xz(index: int, world_pos: Vector3) -> bool:
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return false
-	var anchor := _extra_anchors[index]
+	var anchor := _site_anchors_data[index]
 	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
 	var pos := _anchor_position(anchor)
 	var forward := _anchor_forward(anchor)
@@ -4029,9 +3968,7 @@ func _try_begin_mesh_part_drag(mouse_pos: Vector2) -> bool:
 	_site_anchor_drag_start_hit = _mesh_part_drag_start_hit
 	_site_anchor_drag_start_positions.clear()
 	for index in _site_anchor_drag_indices():
-		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
-	_main_entrance_drag_start_hit = _mesh_part_drag_start_hit
-	_main_entrance_drag_start_position = _get_main_entrance_position()
+		_site_anchor_drag_start_positions.append(_anchor_position(_site_anchors_data[index]))
 	_dragging_mesh_part = true
 	return true
 
@@ -4044,8 +3981,6 @@ func _drag_mesh_part_from_mouse(mouse_pos: Vector2) -> bool:
 	if hit == null:
 		return false
 	var delta := Vector3(hit.x, 0.0, hit.z) - _mesh_part_drag_start_hit
-	if _main_entrance_selected:
-		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
 	for i in selected_indices.size():
 		var index := selected_indices[i]
 		if index < 0 or index >= _part_positions.size() or i >= _mesh_part_drag_start_positions.size():
@@ -4057,11 +3992,11 @@ func _drag_mesh_part_from_mouse(mouse_pos: Vector2) -> bool:
 		_apply_mesh_part_transform_from_state(index)
 	for i in anchor_indices.size():
 		var index := anchor_indices[i]
-		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
+		if index < 0 or index >= _site_anchors_data.size() or i >= _site_anchor_drag_start_positions.size():
 			continue
 		var start_pos := _site_anchor_drag_start_positions[i]
-		_extra_anchors[index]["position"] = _vector3_to_array(
-			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
+		_site_anchors_data[index]["position"] = _vector3_to_array(
+			_clamp_site_anchor_position_to_lot(_site_anchors_data[index], start_pos + delta),
 			0.01
 		)
 	_update_site_anchor_controls()
@@ -4080,7 +4015,7 @@ func _mesh_part_drag_indices() -> Array[int]:
 func _site_anchor_drag_indices() -> Array[int]:
 	if not _selected_site_anchor_indices.is_empty():
 		return _selected_site_anchor_indices
-	if _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _extra_anchors.size():
+	if _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _site_anchors_data.size():
 		return [_selected_site_anchor_index]
 	return []
 
@@ -4113,17 +4048,14 @@ func _finish_mesh_part_box_selection(mouse_pos: Vector2) -> void:
 		if not _selection_additive:
 			_set_selected_site_anchors([], -1)
 			_set_selected_mesh_parts([], -1)
-			_set_main_entrance_selected(false)
 		_selection_additive = false
 		return
 	var selection_rect := _selection_screen_rect()
 	var selected_meshes := _mesh_parts_in_screen_rect(selection_rect)
 	var selected_anchors := _site_anchors_in_screen_rect(selection_rect)
-	var selected_entrance := _main_entrance_in_screen_rect(selection_rect)
 	if _selection_additive:
 		selected_meshes = _merged_indices(_selected_part_indices, selected_meshes)
 		selected_anchors = _merged_indices(_selected_site_anchor_indices, selected_anchors)
-		selected_entrance = selected_entrance or _main_entrance_selected
 	_set_selected_mesh_parts(
 		selected_meshes,
 		int(selected_meshes[0]) if not selected_meshes.is_empty() else -1
@@ -4132,7 +4064,6 @@ func _finish_mesh_part_box_selection(mouse_pos: Vector2) -> void:
 		selected_anchors,
 		int(selected_anchors[0]) if not selected_anchors.is_empty() else -1
 	)
-	_set_main_entrance_selected(selected_entrance)
 	_selection_additive = false
 
 func _selection_screen_rect() -> Rect2:
@@ -4162,33 +4093,16 @@ func _site_anchors_in_screen_rect(selection_rect: Rect2) -> Array[int]:
 	if not cam:
 		return []
 	var selected: Array[int] = []
-	for index in _extra_anchors.size():
+	for index in _site_anchors_data.size():
 		var anchor_rect = _site_anchor_screen_rect(index, cam)
 		if anchor_rect != null and selection_rect.intersects(anchor_rect, true):
 			selected.append(index)
 	return selected
 
-func _main_entrance_in_screen_rect(selection_rect: Rect2) -> bool:
-	var cam := get_viewport().get_camera_3d()
-	if not cam:
-		return false
-	var entrance_rect = _main_entrance_screen_rect(cam)
-	return entrance_rect != null and selection_rect.intersects(entrance_rect, true)
-
-func _main_entrance_screen_rect(cam: Camera3D):
-	if not _preview or not _preview.has_method("get_entrance_anchor_world_position"):
-		return null
-	var world_pos: Vector3 = _preview.get_entrance_anchor_world_position()
-	if cam.is_position_behind(world_pos):
-		return null
-	var screen_pos := cam.unproject_position(world_pos)
-	var radius := MAIN_ENTRANCE_PICK_RADIUS_PX
-	return Rect2(screen_pos - Vector2(radius, radius), Vector2(radius * 2.0, radius * 2.0))
-
 func _site_anchor_screen_rect(index: int, cam: Camera3D):
-	if index < 0 or index >= _extra_anchors.size():
+	if index < 0 or index >= _site_anchors_data.size():
 		return null
-	var anchor := _extra_anchors[index]
+	var anchor := _site_anchors_data[index]
 	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
 	var pos := _anchor_position(anchor)
 	var forward := _anchor_forward(anchor)
@@ -4214,7 +4128,11 @@ func _site_anchor_screen_rect(index: int, cam: Camera3D):
 			pos - side * half_w + forward * length_m,
 		]
 	else:
-		points = [pos]
+		if cam.is_position_behind(pos):
+			return null
+		var screen_pos := cam.unproject_position(pos)
+		var radius := MAIN_ENTRANCE_PICK_RADIUS_PX
+		return Rect2(screen_pos - Vector2(radius, radius), Vector2(radius * 2.0, radius * 2.0))
 	return _screen_rect_for_world_points(points, cam)
 
 func _mesh_part_screen_rect(part_index: int, cam: Camera3D):
@@ -4259,12 +4177,6 @@ func _merged_indices(existing: Array, incoming: Array) -> Array[int]:
 	return result
 
 func _toggle_selection_at_mouse(mouse_pos: Vector2) -> bool:
-	var cam := get_viewport().get_camera_3d()
-	if cam:
-		var entrance_rect = _main_entrance_screen_rect(cam)
-		if entrance_rect != null and entrance_rect.has_point(mouse_pos):
-			_toggle_main_entrance_selection()
-			return true
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
 	if hit == null:
 		return false

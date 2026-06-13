@@ -416,9 +416,9 @@ Limitation:
 
 ### Building Site Anchors
 
-V1 keeps the generic entrance/exit runtime intentionally simple: it uses the required `entrance`
-anchor named `main` for pedestrian access and entrance-cache derivation. Building assets may also
-author site anchors for visual/site-layout intent:
+V1 keeps the generic entrance/exit runtime intentionally simple: every building has one required
+`entrance` anchor named `main` for pedestrian access and entrance-cache derivation. The editor
+stores and edits that entrance in the same anchor list as the optional site-layout anchors:
 
 - `driveway`: connector intent from lot interior toward the road-facing edge; requires `width_m`
 - `parking`: car stop/stand position inside the lot; requires `width_m` and `length_m`
@@ -427,6 +427,8 @@ author site anchors for visual/site-layout intent:
   `parking`, and `loading_bay`, the whole authored footprint/rectangle must remain inside the lot;
   the anchor handle alone being inside is not enough. Driveway footprint length is derived by the
   editor from `width_m` in v1. All anchor `forward` vectors must be finite non-zero unit vectors.
+- `entrance/main` cannot be deleted. Dragging any anchor moves it; right-click dragging or the
+  shared yaw field rotates its `forward`.
 
 Runtime use in v1:
 
