@@ -8,11 +8,22 @@
 extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
+const MeshImportDialog = preload("res://scripts/editors/mesh_import_dialog.gd")
+const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 
-const PANEL_LEFT_W  := 270
-const PANEL_RIGHT_W := 300
+const PANEL_LEFT_W  := 360
+const PANEL_RIGHT_W := 420
 const PANEL_BOT_H   := 140
+const PANEL_LEFT_MIN_W := 240
+const PANEL_RIGHT_MIN_W := 340
+const PANEL_BOTTOM_MIN_H := 96
 const MAIN_ENTRANCE_PICK_RADIUS_PX := 18.0
+const PANEL_PAD := 8
+const PANEL_GAP := 6
+const ASSET_CONTEXT_USE_AS_GHOST := 1
+const PACK_MENU_CREATE_NEW := 1000000
+const PACK_MENU_NO_PACKS := 1000001
+const PACK_SCHEMA_VERSION := 1
 const PLACEMENT_MODES := [
 	{"id": "zoned_private", "label": "Zoned Private"},
 	{"id": "explicit", "label": "Explicit"},
@@ -30,6 +41,11 @@ const SERVICE_CLASSES := [
 	{"id": "parks", "label": "Parks"},
 	{"id": "government", "label": "Government"},
 ]
+const UTILITY_PROFILE_BY_SERVICE := {
+	"power": "power_plant_basic",
+	"water": "water_plant_basic",
+	"waste": "wastewater_treatment_basic",
+}
 
 const TEMPLATES := [
 	"Flat Studio",
@@ -43,13 +59,36 @@ const TEMPLATES := [
 
 # ── UI refs ───────────────────────────────────────────────────────────────────
 var _log_label: RichTextLabel
-var _asset_list: ItemList
+var _asset_tree: Tree
+var _asset_search_edit: LineEdit
+var _asset_count_lbl: Label
+var _asset_context_menu: PopupMenu
+var _asset_context_asset_id: String = ""
 var _template_btn: OptionButton
+var _main_vsplit: VSplitContainer
+var _left_split: HSplitContainer
+var _right_split: HSplitContainer
+var _preview_view_rect: Control
+var _theme_root: Control
+var _top_menu: Node
+var _layout_restoring: bool = false
 
 # Inspector – pack
-var _pack_id_edit: LineEdit
-var _pack_name_edit: LineEdit
-var _pack_author_edit: LineEdit
+var _selected_pack_id: String = "my-pack"
+var _selected_pack_name: String = "My Pack"
+var _selected_pack_author: String = ""
+var _pack_summary_lbl: Label
+var _pack_set_btn: Button
+var _pack_select_menu: PopupMenu
+var _pack_create_window: Window
+var _new_pack_id_edit: LineEdit
+var _new_pack_name_edit: LineEdit
+var _new_pack_author_edit: LineEdit
+var _known_packs: Array[Dictionary] = []
+var _loaded_asset_pack_id: String = ""
+var _loaded_asset_id: String = ""
+var _retarget_export_window: Window
+var _retarget_export_message_lbl: Label
 
 # Inspector – asset
 var _asset_id_edit: LineEdit
@@ -95,15 +134,19 @@ var _pivot_offset: Vector3 = Vector3.ZERO
 var _preview_scale_spin: SpinBox
 var _dim_label: Label          # live "→ W × D × H m" display
 var _scale_preset_btn: OptionButton
+var _human_btn: CheckButton
 
 # Registered asset IDs, refreshed after pack load.
-var _asset_ids: PackedStringArray = []
+var _asset_ids: Array[String] = []
+var _asset_display_names: Dictionary = {}
 var _asset_id_auto: bool = true  # false once the user manually edits the ID field
 var _autofit_on_load: bool = false   # true when loading from browser with scale=1 (never fitted)
 var _keep_camera: bool = false       # true when loading from browser — skip focus_on
 var _human_visible: bool = false     # mirrors the human figure toggle state
+var _suppress_preview_scale_changed: bool = false
 var _last_glb_dir: String = ""     # last directory used in GLB file dialogs
 var _config: ConfigFile            # persistent editor preferences
+var _theme_mode: String = EditorTheme.MODE_DARK
 var _font_size_header:  int = 14   # section title labels ("Asset Browser", "Building Importer")
 var _font_size_section: int = 12   # sub-section labels ("Pack", "Asset", "Building", etc.)
 var _font_size_label:   int = 11   # spinbox labels and small info text
@@ -119,6 +162,8 @@ var _main_entrance_auto: bool = true
 var _updating_main_entrance_fields: bool = false
 var _extra_anchors: Array[Dictionary] = []
 var _dragging_main_entrance: bool = false
+var _dragging_ghost: bool = false
+var _ghost_drag_offset: Vector3 = Vector3.ZERO
 var _zoning_profiles: Array[Dictionary] = []
 var _zone_types: Array[String] = []
 var _density_types_by_zone: Dictionary = {}
@@ -133,16 +178,19 @@ func _ready() -> void:
 	if not sim.is_asset_editor_mode():
 		push_error("AssetEditor scene loaded without --asset-editor flag")
 
-	_attach_top_menu()
 	_config = ConfigFile.new()
 	_config.load(CONFIG_PATH)  # silently no-ops if file doesn't exist yet
+	_theme_mode = EditorTheme.normalize_mode(str(_config.get_value("ui", "theme_mode", EditorTheme.MODE_DARK)))
 	_last_glb_dir = _config.get_value("import", "last_glb_dir", "")
 
 	_font_size_header  = _config.get_value("ui", "font_size_header",  14)
 	_font_size_section = _config.get_value("ui", "font_size_section", 12)
 	_font_size_label   = _config.get_value("ui", "font_size_label",   11)
 	_save_config()  # write defaults if keys are missing
+	_restore_window_geometry()
 
+	_attach_top_menu()
+	_configure_preview_environment()
 	_load_zone_profiles()
 	_build_preview_node()
 	_build_ui()
@@ -153,6 +201,12 @@ func _ready() -> void:
 	_load_economy_profiles()
 	_load_packs()
 	_apply_template(0)
+
+func _configure_preview_environment() -> void:
+	var world_environment := find_child("WorldEnvironment", true, false) as WorldEnvironment
+	if not world_environment:
+		return
+	world_environment.environment = EditorTheme.preview_environment(_theme_mode)
 
 func _load_zone_profiles() -> void:
 	_zoning_profiles.clear()
@@ -216,31 +270,138 @@ func _build_ui() -> void:
 	anchor.set_anchors_preset(Control.PRESET_FULL_RECT)
 	anchor.offset_top = TopMenu.BAR_HEIGHT
 	canvas.add_child(anchor)
+	_theme_root = anchor
 
-	# Root VBox fills the anchor.
-	var root := VBoxContainer.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.add_theme_constant_override("separation", 0)
-	anchor.add_child(root)
+	_main_vsplit = VSplitContainer.new()
+	_main_vsplit.set_anchors_preset(Control.PRESET_FULL_RECT)
+	anchor.add_child(_main_vsplit)
 
-	# Top row: left panel | transparent center | right panel — expands vertically.
-	var h_row := HBoxContainer.new()
-	h_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	h_row.add_theme_constant_override("separation", 0)
-	root.add_child(h_row)
+	_left_split = HSplitContainer.new()
+	_left_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_main_vsplit.add_child(_left_split)
 
-	_build_left_panel(h_row)
+	_build_left_panel(_left_split)
 
-	# Center spacer — 3D viewport shows through.
-	# MOUSE_FILTER_IGNORE so the GUI system never claims mouse events here,
-	# which lets gui_get_hover_control() return null in the 3D area.
+	_right_split = HSplitContainer.new()
+	_right_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_right_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_left_split.add_child(_right_split)
+
+	# Center spacer — 3D viewport shows through. It also becomes the authoritative
+	# hit rect for camera and preview-anchor mouse interaction.
 	var center := Control.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	h_row.add_child(center)
+	_right_split.add_child(center)
+	_preview_view_rect = center
+	if _cam_input:
+		_cam_input.viewport_rect_control = center
 
-	_build_right_panel(h_row)
-	_build_bottom_panel(root)
+	_build_right_panel(_right_split)
+	_build_bottom_panel(_main_vsplit)
+	_apply_editor_theme(anchor)
+	call_deferred("_restore_split_layout")
+	_connect_layout_signals()
+
+func _restore_window_geometry() -> void:
+	var window := get_window()
+	if not window:
+		return
+	var width := int(_config.get_value("layout", "window_width", window.size.x))
+	var height := int(_config.get_value("layout", "window_height", window.size.y))
+	width = maxi(width, 960)
+	height = maxi(height, 640)
+	if width != window.size.x or height != window.size.y:
+		window.size = Vector2i(width, height)
+	if _config.has_section_key("layout", "window_x") and _config.has_section_key("layout", "window_y"):
+		window.position = Vector2i(
+			int(_config.get_value("layout", "window_x", window.position.x)),
+			int(_config.get_value("layout", "window_y", window.position.y))
+		)
+
+func _restore_split_layout() -> void:
+	_layout_restoring = true
+	var vp_size := get_viewport().get_visible_rect().size
+	if _main_vsplit:
+		var content_h := maxf(0.0, vp_size.y - TopMenu.BAR_HEIGHT)
+		var bottom_h := float(_config.get_value("layout", "bottom_log_height", PANEL_BOT_H))
+		bottom_h = clampf(bottom_h, float(PANEL_BOTTOM_MIN_H), maxf(float(PANEL_BOTTOM_MIN_H), content_h - 240.0))
+		_main_vsplit.split_offset = int(maxf(240.0, content_h - bottom_h))
+	if _left_split:
+		var left_w := int(_config.get_value("layout", "left_panel_width", PANEL_LEFT_W))
+		var max_left := int(maxf(float(PANEL_LEFT_MIN_W), vp_size.x - PANEL_RIGHT_MIN_W - 320.0))
+		_left_split.split_offset = clampi(left_w, PANEL_LEFT_MIN_W, max_left)
+	if _right_split:
+		var available_w := _right_split.size.x
+		if available_w <= 0.0:
+			available_w = maxf(0.0, vp_size.x - PANEL_LEFT_W)
+		var right_w := int(_config.get_value("layout", "right_panel_width", PANEL_RIGHT_W))
+		var max_right := int(maxf(float(PANEL_RIGHT_MIN_W), available_w - 320.0))
+		right_w = clampi(right_w, PANEL_RIGHT_MIN_W, max_right)
+		_right_split.split_offset = int(maxf(320.0, available_w - right_w))
+	_layout_restoring = false
+
+func _connect_layout_signals() -> void:
+	var window := get_window()
+	if window and window.has_signal("size_changed"):
+		window.connect("size_changed", Callable(self, "_on_layout_changed"))
+	if _main_vsplit and _main_vsplit.has_signal("dragged"):
+		_main_vsplit.connect("dragged", Callable(self, "_on_split_dragged"))
+	if _left_split and _left_split.has_signal("dragged"):
+		_left_split.connect("dragged", Callable(self, "_on_split_dragged"))
+	if _right_split and _right_split.has_signal("dragged"):
+		_right_split.connect("dragged", Callable(self, "_on_split_dragged"))
+
+func _on_split_dragged(_offset: int) -> void:
+	_save_layout_state()
+
+func _on_layout_changed() -> void:
+	if _layout_restoring:
+		return
+	_save_layout_state()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
+		_save_layout_state()
+
+func _save_layout_state() -> void:
+	if _layout_restoring or not _config:
+		return
+	var window := get_window()
+	if window:
+		_config.set_value("layout", "window_width", window.size.x)
+		_config.set_value("layout", "window_height", window.size.y)
+		_config.set_value("layout", "window_x", window.position.x)
+		_config.set_value("layout", "window_y", window.position.y)
+	if _left_split:
+		_config.set_value("layout", "left_panel_width", _left_split.split_offset)
+	if _right_split and _right_split.size.x > 0.0:
+		_config.set_value(
+			"layout",
+			"right_panel_width",
+			maxi(PANEL_RIGHT_MIN_W, int(round(_right_split.size.x - _right_split.split_offset)))
+		)
+	if _main_vsplit:
+		var content_h := _current_editor_content_height()
+		_config.set_value(
+			"layout",
+			"bottom_log_height",
+			maxi(PANEL_BOTTOM_MIN_H, int(round(content_h - _main_vsplit.split_offset)))
+		)
+	_save_config()
+
+func _current_editor_content_height() -> float:
+	var viewport := get_viewport()
+	if viewport:
+		return maxf(0.0, viewport.get_visible_rect().size.y - TopMenu.BAR_HEIGHT)
+	var window := get_window()
+	if window:
+		return maxf(0.0, float(window.size.y) - TopMenu.BAR_HEIGHT)
+	return maxf(
+		float(PANEL_BOTTOM_MIN_H),
+		float(_config.get_value("layout", "window_height", 720)) - TopMenu.BAR_HEIGHT
+	)
 
 func _attach_top_menu() -> void:
 	if has_node("TopMenu"):
@@ -249,13 +410,34 @@ func _attach_top_menu() -> void:
 	top_menu.name = "TopMenu"
 	top_menu.scene_kind = TopMenu.SCENE_ASSET_EDITOR
 	add_child(top_menu)
+	_top_menu = top_menu
+	if top_menu.has_method("set_editor_theme_mode"):
+		top_menu.set_editor_theme_mode(_theme_mode)
+
+func get_ui_theme_mode() -> String:
+	return _theme_mode
+
+func menu_toggle_ui_theme() -> String:
+	set_ui_theme_mode(EditorTheme.next_mode(_theme_mode))
+	return _theme_mode
+
+func set_ui_theme_mode(mode: String) -> void:
+	var next_mode := EditorTheme.normalize_mode(mode)
+	if _theme_mode == next_mode:
+		return
+	_theme_mode = next_mode
+	_save_config()
+	_configure_preview_environment()
+	if _theme_root:
+		_apply_editor_theme(_theme_root)
+	if _top_menu and _top_menu.has_method("set_editor_theme_mode"):
+		_top_menu.set_editor_theme_mode(_theme_mode)
 
 func menu_save() -> void:
 	_on_export_pressed()
 
-func menu_return_to_game() -> void:
-	_spawn_project_instance([])
-	get_tree().quit()
+func menu_new_asset() -> void:
+	_start_new_asset()
 
 func menu_reload_packs() -> void:
 	_load_packs()
@@ -263,34 +445,46 @@ func menu_reload_packs() -> void:
 func menu_import_mesh() -> void:
 	_on_import_glb_pressed()
 
-func _spawn_project_instance(arguments: PackedStringArray) -> void:
-	var launch_args := PackedStringArray()
-	if not arguments.is_empty():
-		launch_args.append("--")
-		launch_args.append_array(arguments)
-	var pid := OS.create_instance(launch_args)
-	if pid == -1:
-		push_error("Failed to launch a new project instance.")
-
 func _build_left_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = PANEL_LEFT_W
+	panel.custom_minimum_size.x = PANEL_LEFT_MIN_W
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	parent.add_child(panel)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(scroll)
+	var margin := _add_panel_margin(panel)
 
 	var vbox := VBoxContainer.new()
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
+	vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", PANEL_GAP)
+	margin.add_child(vbox)
 
 	_add_label(vbox, "Asset Browser", _font_size_header)
-	_asset_list = ItemList.new()
-	_asset_list.custom_minimum_size.y = 160
-	_asset_list.item_activated.connect(_on_asset_selected)
-	vbox.add_child(_asset_list)
+	_asset_search_edit = LineEdit.new()
+	_asset_search_edit.placeholder_text = "Search assets"
+	_asset_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_asset_search_edit.text_changed.connect(_on_asset_search_changed)
+	vbox.add_child(_asset_search_edit)
+
+	_asset_count_lbl = Label.new()
+	_asset_count_lbl.text = "0 assets"
+	_asset_count_lbl.add_theme_font_size_override("font_size", _font_size_label)
+	vbox.add_child(_asset_count_lbl)
+
+	_asset_tree = Tree.new()
+	_asset_tree.hide_root = true
+	_asset_tree.columns = 1
+	_asset_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_asset_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_asset_tree.item_activated.connect(_on_asset_tree_activated)
+	_asset_tree.gui_input.connect(_on_asset_tree_gui_input)
+	vbox.add_child(_asset_tree)
+
+	_asset_context_menu = PopupMenu.new()
+	_asset_context_menu.add_item("Use as Ghost", ASSET_CONTEXT_USE_AS_GHOST)
+	_asset_context_menu.id_pressed.connect(_on_asset_context_menu_id_pressed)
+	panel.add_child(_asset_context_menu)
+	EditorTheme.style_popup_menu(_asset_context_menu, _theme_mode)
 
 	vbox.add_child(HSeparator.new())
 	_add_label(vbox, "Scene Template", _font_size_section)
@@ -302,45 +496,86 @@ func _build_left_panel(parent: Control) -> void:
 
 func _build_right_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = PANEL_RIGHT_W
+	panel.custom_minimum_size.x = PANEL_RIGHT_MIN_W
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	parent.add_child(panel)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(scroll)
+	var margin := _add_panel_margin(panel)
 
-	var vbox := VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", PANEL_GAP)
+	margin.add_child(root)
 
-	_add_label(vbox, "Building Importer", _font_size_header)
+	_add_label(root, "Building Importer", _font_size_header)
 
 	# Import GLB
 	var glb_btn := Button.new()
 	glb_btn.text = "Import mesh..."
 	glb_btn.pressed.connect(_on_import_glb_pressed)
-	vbox.add_child(glb_btn)
+	root.add_child(glb_btn)
 
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "Pack", _font_size_section)
-	_pack_id_edit     = _add_line_edit(vbox, "Pack ID (kebab-case)", "my-pack")
-	_pack_name_edit   = _add_line_edit(vbox, "Pack Name", "My Pack")
-	_pack_author_edit = _add_line_edit(vbox, "Author", "")
+	var tab_shell := VBoxContainer.new()
+	tab_shell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tab_shell.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tab_shell.add_theme_constant_override("separation", PANEL_GAP)
+	root.add_child(tab_shell)
 
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "Asset", _font_size_section)
-	_asset_id_edit    = _add_line_edit(vbox, "Asset ID (dot.separated)", "building.residential.house")
+	var tab_header := HBoxContainer.new()
+	tab_header.add_theme_constant_override("separation", PANEL_GAP)
+	tab_shell.add_child(tab_header)
+
+	var tab_buttons: Array[Button] = []
+
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tabs.tabs_visible = false
+	tabs.use_hidden_tabs_for_min_size = true
+	tabs.clip_tabs = true
+	tabs.tab_changed.connect(func(tab: int): _sync_inspector_tab_buttons(tab_buttons, tab))
+	tab_shell.add_child(tabs)
+
+	var pack_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Pack")
+	_pack_set_btn = Button.new()
+	_pack_set_btn.text = "Set Pack..."
+	_pack_set_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_pack_set_btn.pressed.connect(func(): _open_pack_select_menu(_pack_set_btn))
+	pack_box.add_child(_pack_set_btn)
+
+	_pack_summary_lbl = Label.new()
+	_pack_summary_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_pack_summary_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_pack_summary_lbl.add_theme_font_size_override("font_size", _font_size_label)
+	pack_box.add_child(_pack_summary_lbl)
+	_update_pack_summary()
+
+	_pack_select_menu = PopupMenu.new()
+	_pack_select_menu.id_pressed.connect(_on_pack_select_menu_id_pressed)
+	pack_box.add_child(_pack_select_menu)
+	EditorTheme.style_popup_menu(_pack_select_menu, _theme_mode)
+
+	var asset_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Asset")
+	_asset_id_edit    = _add_line_edit(asset_box, "Asset ID (dot.separated)", "building.residential.house")
 	_asset_id_edit.text_changed.connect(_on_asset_id_text_changed)
-	_display_name_edit = _add_line_edit(vbox, "Display Name", "House")
+	_display_name_edit = _add_line_edit(asset_box, "Display Name", "House")
 	_display_name_edit.text_changed.connect(func(_t): _auto_suggest_asset_id())
-	_asset_set_edit   = _add_line_edit(vbox, "Upgrade Family / Asset Set (optional)", "")
-	_tags_edit        = _add_line_edit(vbox, "Tags (comma-separated)", "")
+	_asset_set_edit   = _add_line_edit(asset_box, "Upgrade Family / Asset Set (optional)", "")
+	_tags_edit        = _add_line_edit(asset_box, "Tags (comma-separated)", "")
 
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "Building", _font_size_section)
+	_add_label(asset_box, "LOD Files", _font_size_section)
+	_lod_list = ItemList.new()
+	_lod_list.custom_minimum_size.y = 150
+	_lod_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	asset_box.add_child(_lod_list)
+	var add_lod_btn := Button.new()
+	add_lod_btn.text = "Add LOD..."
+	add_lod_btn.pressed.connect(_on_add_lod_pressed)
+	asset_box.add_child(add_lod_btn)
 
-	_add_label(vbox, "Placement Mode", _font_size_label)
+	var building_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Building")
+	_add_label(building_box, "Placement Mode", _font_size_label)
 	_placement_mode_btn = OptionButton.new()
 	for mode in PLACEMENT_MODES:
 		_placement_mode_btn.add_item(str(mode["label"]))
@@ -349,10 +584,11 @@ func _build_right_panel(parent: Control) -> void:
 			str(mode["id"])
 		)
 	_placement_mode_btn.item_selected.connect(_on_placement_mode_selected)
-	vbox.add_child(_placement_mode_btn)
+	building_box.add_child(_placement_mode_btn)
 
 	_zoned_only_box = VBoxContainer.new()
-	vbox.add_child(_zoned_only_box)
+	_zoned_only_box.add_theme_constant_override("separation", PANEL_GAP)
+	building_box.add_child(_zoned_only_box)
 
 	_add_label(_zoned_only_box, "Zone Type", _font_size_label)
 	_zone_type_btn = OptionButton.new()
@@ -367,16 +603,16 @@ func _build_right_panel(parent: Control) -> void:
 	_zoned_only_box.add_child(_density_btn)
 	_refresh_density_options()
 
-	_width_spin    = _add_spinbox(vbox, "Lot Width (cells)", 1, 20, 2)
-	_depth_spin    = _add_spinbox(vbox, "Lot Depth (cells)", 1, 20, 2)
+	_width_spin    = _add_spinbox(building_box, "Lot Width (cells)", 1, 20, 2)
+	_depth_spin    = _add_spinbox(building_box, "Lot Depth (cells)", 1, 20, 2)
 	_min_zone_width_spin = _add_spinbox(_zoned_only_box, "Min Zoned Width (cells)", 1, 20, 2)
 	_min_zone_depth_spin = _add_spinbox(_zoned_only_box, "Min Zoned Depth (cells)", 1, 20, 2)
-	_level_spin    = _add_spinbox(vbox, "Level", 1, 255, 1)
-	_residents_spin = _add_spinbox(vbox, "Household Capacity", 0, 9999, 0)
-	_flat_size_spin = _add_spinbox(vbox, "Avg Flat Size (m²)", 0, 9999, 60.0)
+	_level_spin    = _add_spinbox(building_box, "Level", 1, 255, 1)
+	_residents_spin = _add_spinbox(building_box, "Household Capacity", 0, 9999, 0)
+	_flat_size_spin = _add_spinbox(building_box, "Avg Flat Size (m²)", 0, 9999, 60.0)
 	_flat_size_spin.step = 0.5
-	_workers_spin  = _add_spinbox(vbox, "Worker Capacity", 0, 9999, 0)
-	_add_label(vbox, "Service Class", _font_size_label)
+	_workers_spin  = _add_spinbox(building_box, "Worker Capacity", 0, 9999, 0)
+	_add_label(building_box, "Service Class", _font_size_label)
 	_service_class_btn = OptionButton.new()
 	for service_class in SERVICE_CLASSES:
 		_service_class_btn.add_item(str(service_class["label"]))
@@ -385,9 +621,10 @@ func _build_right_panel(parent: Control) -> void:
 			str(service_class["id"])
 		)
 	_service_class_btn.item_selected.connect(_on_service_class_selected)
-	vbox.add_child(_service_class_btn)
-	_add_label(vbox, "Economy Profile", _font_size_label)
+	building_box.add_child(_service_class_btn)
+	_add_label(building_box, "Economy Profile", _font_size_label)
 	var economy_row := HBoxContainer.new()
+	economy_row.add_theme_constant_override("separation", PANEL_GAP)
 	_economy_profile_btn = OptionButton.new()
 	_economy_profile_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_economy_profile_btn.item_selected.connect(_on_economy_profile_selected)
@@ -396,15 +633,15 @@ func _build_right_panel(parent: Control) -> void:
 	refresh_profiles_btn.text = "Refresh"
 	refresh_profiles_btn.pressed.connect(_load_economy_profiles)
 	economy_row.add_child(refresh_profiles_btn)
-	vbox.add_child(economy_row)
+	building_box.add_child(economy_row)
 	_economy_profile_status_lbl = Label.new()
 	_economy_profile_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_economy_profile_status_lbl.add_theme_font_size_override("font_size", _font_size_label)
-	vbox.add_child(_economy_profile_status_lbl)
+	building_box.add_child(_economy_profile_status_lbl)
 	var suggest_btn := Button.new()
 	suggest_btn.text = "Suggest Flat Size"
 	suggest_btn.pressed.connect(_suggest_capacity)
-	vbox.add_child(suggest_btn)
+	building_box.add_child(suggest_btn)
 
 	_width_spin.value_changed.connect(func(_v): _on_zone_or_lot_changed(0))
 	_depth_spin.value_changed.connect(func(_v): _on_zone_or_lot_changed(0))
@@ -414,9 +651,7 @@ func _build_right_panel(parent: Control) -> void:
 	_min_zone_depth_spin.value = _depth_spin.value
 	_update_building_mode_visibility()
 
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "Preview Scale", _font_size_section)
-
+	var preview_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Preview")
 	# Preset dropdown.
 	_scale_preset_btn = OptionButton.new()
 	_scale_preset_btn.add_item("Custom")
@@ -424,9 +659,9 @@ func _build_right_panel(parent: Control) -> void:
 	_scale_preset_btn.add_item("½ Lot")
 	_scale_preset_btn.add_item("¼ Lot")
 	_scale_preset_btn.item_selected.connect(_on_scale_preset_selected)
-	vbox.add_child(_scale_preset_btn)
+	preview_box.add_child(_scale_preset_btn)
 
-	_preview_scale_spin = _add_spinbox(vbox, "Scale multiplier", 0.01, 1000.0, 1.0)
+	_preview_scale_spin = _add_spinbox(preview_box, "Scale multiplier", 0.01, 1000.0, 1.0)
 	_preview_scale_spin.step = 0.01
 	_preview_scale_spin.value_changed.connect(_on_preview_scale_changed)
 
@@ -435,47 +670,37 @@ func _build_right_panel(parent: Control) -> void:
 	_dim_label.text = "→ —"
 	_dim_label.add_theme_font_size_override("font_size", _font_size_label)
 	_dim_label.add_theme_color_override("font_color", Color(0.7, 0.9, 0.7))
-	vbox.add_child(_dim_label)
+	preview_box.add_child(_dim_label)
 
 	var autofit_btn := Button.new()
 	autofit_btn.text = "Auto-fit to Lot"
 	autofit_btn.pressed.connect(_on_autofit_pressed)
-	vbox.add_child(autofit_btn)
+	preview_box.add_child(autofit_btn)
 
-	var human_btn := CheckButton.new()
-	human_btn.text = "Show Human (1.8 m)"
-	human_btn.toggled.connect(_on_human_toggled)
-	vbox.add_child(human_btn)
+	_human_btn = CheckButton.new()
+	_human_btn.text = "Show Human (1.8 m)"
+	_human_btn.toggled.connect(_on_human_toggled)
+	preview_box.add_child(_human_btn)
 
 	var clear_ghost_btn := Button.new()
 	clear_ghost_btn.text = "Clear Ghost"
 	clear_ghost_btn.pressed.connect(_on_clear_ghost_pressed)
-	vbox.add_child(clear_ghost_btn)
+	preview_box.add_child(clear_ghost_btn)
 
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "LOD Files", _font_size_section)
-	_lod_list = ItemList.new()
-	_lod_list.custom_minimum_size.y = 60
-	vbox.add_child(_lod_list)
-	var add_lod_btn := Button.new()
-	add_lod_btn.text = "Add LOD..."
-	add_lod_btn.pressed.connect(_on_add_lod_pressed)
-	vbox.add_child(add_lod_btn)
-
-	vbox.add_child(HSeparator.new())
-	_add_label(vbox, "Frontage", _font_size_section)
+	var anchors_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Anchors")
+	_add_label(anchors_box, "Frontage", _font_size_section)
 	_frontage_lbl = Label.new()
 	_frontage_lbl.text = "Forward: (0, 0, 1)"
 	_frontage_lbl.add_theme_font_size_override("font_size", _font_size_label)
-	vbox.add_child(_frontage_lbl)
+	anchors_box.add_child(_frontage_lbl)
 	var set_front_btn := Button.new()
 	set_front_btn.text = "Set Front From View"
 	set_front_btn.pressed.connect(_on_set_front_from_view)
-	vbox.add_child(set_front_btn)
-	_add_label(vbox, "Main Entrance (local)", _font_size_label)
-	_entrance_x_spin = _add_spinbox(vbox, "X (m)", -500.0, 500.0, 0.0)
-	_entrance_y_spin = _add_spinbox(vbox, "Y (m)", -500.0, 500.0, 0.0)
-	_entrance_z_spin = _add_spinbox(vbox, "Z (m)", -500.0, 500.0, 10.0)
+	anchors_box.add_child(set_front_btn)
+	_add_label(anchors_box, "Main Entrance (local)", _font_size_label)
+	_entrance_x_spin = _add_spinbox(anchors_box, "X (m)", -500.0, 500.0, 0.0)
+	_entrance_y_spin = _add_spinbox(anchors_box, "Y (m)", -500.0, 500.0, 0.0)
+	_entrance_z_spin = _add_spinbox(anchors_box, "Z (m)", -500.0, 500.0, 10.0)
 	_entrance_x_spin.step = 0.1
 	_entrance_y_spin.step = 0.1
 	_entrance_z_spin.step = 0.1
@@ -485,30 +710,34 @@ func _build_right_panel(parent: Control) -> void:
 	var reset_entrance_btn := Button.new()
 	reset_entrance_btn.text = "Reset Entrance To Frontage"
 	reset_entrance_btn.pressed.connect(_on_reset_main_entrance_pressed)
-	vbox.add_child(reset_entrance_btn)
+	anchors_box.add_child(reset_entrance_btn)
 	var entrance_hint := Label.new()
 	entrance_hint.text = "Drag the yellow sphere in the viewport to move X/Z. Use Y for height."
 	entrance_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	entrance_hint.add_theme_font_size_override("font_size", _font_size_label)
-	vbox.add_child(entrance_hint)
+	anchors_box.add_child(entrance_hint)
 
-	vbox.add_child(HSeparator.new())
 	var export_btn := Button.new()
 	export_btn.text = "Export Asset"
 	export_btn.pressed.connect(_on_export_pressed)
-	vbox.add_child(export_btn)
+	root.add_child(export_btn)
+	_sync_inspector_tab_buttons(tab_buttons, tabs.current_tab)
 
 func _build_bottom_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = PANEL_BOT_H
+	panel.custom_minimum_size.y = PANEL_BOTTOM_MIN_H
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(panel)
 
+	var margin := _add_panel_margin(panel)
+
 	var vbox := VBoxContainer.new()
 	vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(vbox)
+	vbox.add_theme_constant_override("separation", PANEL_GAP)
+	margin.add_child(vbox)
 
 	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", PANEL_GAP)
 	vbox.add_child(header)
 	var title := Label.new()
 	title.text = "Import Log"
@@ -550,11 +779,403 @@ func _refresh_asset_browser() -> void:
 	var warnings: String = sim.load_asset_packs(mods_path, "")
 	if not warnings.is_empty():
 		_log("[color=yellow]%s[/color]" % warnings)
-	_asset_ids = sim.get_registered_asset_ids()
-	_asset_list.clear()
-	for aid in _asset_ids:
-		_asset_list.add_item(aid)
+	_asset_ids.clear()
+	for aid in sim.get_registered_asset_ids():
+		_asset_ids.append(str(aid))
+	_asset_ids.sort()
+	_refresh_known_packs(mods_path)
+	_refresh_asset_display_name_cache()
+	_rebuild_asset_tree()
 	_log("Registry: %d asset(s) loaded." % _asset_ids.size())
+
+func _refresh_known_packs(mods_path: String) -> void:
+	var by_id := {}
+	if DirAccess.dir_exists_absolute(mods_path):
+		var dir := DirAccess.open(mods_path)
+		if dir:
+			dir.list_dir_begin()
+			var entry := dir.get_next()
+			while not entry.is_empty():
+				if not entry.begins_with(".") and dir.current_is_dir():
+					var pack := _pack_manifest_from_dir(mods_path.path_join(entry))
+					if not pack.is_empty():
+						by_id[str(pack.get("pack_id", ""))] = pack
+				entry = dir.get_next()
+			dir.list_dir_end()
+
+	for aid in _asset_ids:
+		var pack_id := _asset_pack_id(aid)
+		if pack_id.is_empty() or by_id.has(pack_id):
+			continue
+		var pack := _pack_manifest_from_dir(mods_path.path_join(pack_id))
+		if pack.is_empty():
+			pack = {
+				"pack_id": pack_id,
+				"display_name": pack_id,
+				"author": "",
+			}
+		by_id[pack_id] = pack
+
+	_known_packs.clear()
+	for pack in by_id.values():
+		if pack is Dictionary:
+			_known_packs.append(pack)
+	_known_packs.sort_custom(func(a: Dictionary, b: Dictionary):
+		return str(a.get("pack_id", "")) < str(b.get("pack_id", ""))
+	)
+
+func _pack_manifest_from_dir(pack_dir: String) -> Dictionary:
+	if not FileAccess.file_exists(pack_dir.path_join("pack.toml")):
+		return {}
+	var json_str: String = sim.get_pack_manifest_json(pack_dir)
+	if json_str.is_empty():
+		return {}
+	var parsed = JSON.parse_string(json_str)
+	if parsed is Dictionary:
+		var pack_id := str((parsed as Dictionary).get("pack_id", "")).strip_edges()
+		if not pack_id.is_empty():
+			return parsed
+	return {}
+
+func _open_pack_select_menu(field: Control) -> void:
+	if not _pack_select_menu:
+		return
+	_rebuild_pack_select_menu()
+	var pos := field.global_position + Vector2(0.0, field.size.y + 2.0)
+	_pack_select_menu.position = Vector2i(int(round(pos.x)), int(round(pos.y)))
+	_pack_select_menu.popup()
+
+func _rebuild_pack_select_menu() -> void:
+	_pack_select_menu.clear()
+	if _known_packs.is_empty():
+		_pack_select_menu.add_item("No installed packs", PACK_MENU_NO_PACKS)
+		_pack_select_menu.set_item_disabled(_pack_select_menu.get_item_count() - 1, true)
+	else:
+		for i in _known_packs.size():
+			var pack := _known_packs[i]
+			var pack_id := str(pack.get("pack_id", "")).strip_edges()
+			var display_name := str(pack.get("display_name", "")).strip_edges()
+			var label := pack_id
+			if not display_name.is_empty() and display_name != pack_id:
+				label = "%s  (%s)" % [display_name, pack_id]
+			_pack_select_menu.add_item(label, i)
+	_pack_select_menu.add_separator()
+	_pack_select_menu.add_item("Create New Pack...", PACK_MENU_CREATE_NEW)
+
+func _on_pack_select_menu_id_pressed(id: int) -> void:
+	if id == PACK_MENU_CREATE_NEW:
+		_open_new_pack_dialog()
+		return
+	if id < 0 or id >= _known_packs.size():
+		return
+	_apply_pack_fields(_known_packs[id])
+
+func _apply_pack_fields(pack: Dictionary) -> void:
+	var pack_id := str(pack.get("pack_id", "")).strip_edges()
+	var display_name := str(pack.get("display_name", "")).strip_edges()
+	var author := str(pack.get("author", "")).strip_edges()
+	if display_name.is_empty():
+		display_name = pack_id
+	_selected_pack_id = pack_id
+	_selected_pack_name = display_name
+	_selected_pack_author = author
+	_update_pack_summary()
+
+func _update_pack_summary() -> void:
+	if not _pack_summary_lbl:
+		return
+	var pack_id := _selected_pack_id.strip_edges()
+	var display_name := _selected_pack_name.strip_edges()
+	var author := _selected_pack_author.strip_edges()
+	if display_name.is_empty():
+		display_name = pack_id
+	var lines := PackedStringArray()
+	lines.append("%s (%s)" % [display_name, pack_id])
+	lines.append("Author: %s" % (author if not author.is_empty() else "Unspecified"))
+	_pack_summary_lbl.text = "\n".join(lines)
+
+func _open_new_pack_dialog() -> void:
+	_ensure_pack_create_window()
+	var current_id := _selected_pack_id.strip_edges()
+	if current_id.is_empty() or _pack_id_exists(current_id):
+		current_id = _suggest_new_pack_id()
+	_new_pack_id_edit.text = current_id
+	_new_pack_name_edit.text = _display_name_from_pack_id(current_id)
+	_new_pack_author_edit.text = ""
+	_pack_create_window.popup_centered(Vector2i(460, 250))
+	_new_pack_id_edit.grab_focus()
+	_new_pack_id_edit.select_all()
+
+func _display_name_from_pack_id(pack_id: String) -> String:
+	var words := PackedStringArray()
+	for part in pack_id.replace("_", "-").split("-"):
+		var word := str(part).strip_edges()
+		if word.is_empty():
+			continue
+		words.append(word.substr(0, 1).to_upper() + word.substr(1))
+	if words.is_empty():
+		return "My Pack"
+	return " ".join(words)
+
+func _ensure_pack_create_window() -> void:
+	if _pack_create_window and is_instance_valid(_pack_create_window):
+		return
+	_pack_create_window = Window.new()
+	_pack_create_window.title = "Create Pack"
+	_pack_create_window.min_size = Vector2i(420, 220)
+	_pack_create_window.size = Vector2i(460, 250)
+	_pack_create_window.close_requested.connect(func(): _pack_create_window.hide())
+	add_child(_pack_create_window)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pack_create_window.add_child(panel)
+
+	var margin := _add_panel_margin(panel)
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", PANEL_GAP)
+	margin.add_child(root)
+
+	_add_label(root, "New Pack", _font_size_header)
+	_new_pack_id_edit = _add_line_edit(root, "Pack ID (kebab-case)", "")
+	_new_pack_name_edit = _add_line_edit(root, "Pack Name", "")
+	_new_pack_author_edit = _add_line_edit(root, "Author", "")
+
+	var hint := Label.new()
+	hint.text = "Creates user://mods/<pack_id>/pack.toml now. Asset files are added on export."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_font_size_override("font_size", _font_size_label)
+	root.add_child(hint)
+
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", PANEL_GAP)
+	root.add_child(footer)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(spacer)
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	cancel_btn.pressed.connect(func(): _pack_create_window.hide())
+	footer.add_child(cancel_btn)
+	var create_btn := Button.new()
+	create_btn.text = "Create"
+	create_btn.pressed.connect(_on_create_pack_pressed)
+	footer.add_child(create_btn)
+	_apply_editor_theme(_pack_create_window)
+
+func _on_create_pack_pressed() -> void:
+	var pack_id := _new_pack_id_edit.text.strip_edges()
+	var display_name := _new_pack_name_edit.text.strip_edges()
+	var author := _new_pack_author_edit.text.strip_edges()
+	if display_name.is_empty():
+		display_name = pack_id
+	if not _pack_id_is_valid(pack_id):
+		_log("[color=red]Pack ID must match ^[a-z0-9][a-z0-9_-]*$.[/color]")
+		return
+	if _pack_id_exists(pack_id):
+		_log("[color=red]Pack already exists: %s[/color]" % pack_id)
+		return
+
+	var mods_path := ProjectSettings.globalize_path("user://mods/")
+	var err := DirAccess.make_dir_recursive_absolute(mods_path)
+	if err != OK:
+		_log("[color=red]Could not create mods directory: %s (error %d)[/color]" % [mods_path, err])
+		return
+	var pack_dir := mods_path.path_join(pack_id)
+	err = DirAccess.make_dir_recursive_absolute(pack_dir)
+	if err != OK:
+		_log("[color=red]Could not create pack directory: %s (error %d)[/color]" % [pack_dir, err])
+		return
+
+	var pack_path := pack_dir.path_join("pack.toml")
+	if FileAccess.file_exists(pack_path):
+		_log("[color=red]Pack manifest already exists: %s[/color]" % pack_path)
+		return
+	var file := FileAccess.open(pack_path, FileAccess.WRITE)
+	if file == null:
+		_log("[color=red]Could not write pack manifest: %s (error %d)[/color]" % [pack_path, FileAccess.get_open_error()])
+		return
+	file.store_string(_build_pack_toml(pack_id, display_name, author))
+	file.close()
+
+	var pack := {
+		"pack_id": pack_id,
+		"display_name": display_name,
+		"author": author,
+	}
+	_refresh_known_packs(mods_path)
+	_apply_pack_fields(pack)
+	_pack_create_window.hide()
+	_log("[color=green]Created pack '%s' at %s[/color]" % [pack_id, pack_path])
+
+func _build_pack_toml(pack_id: String, display_name: String, author: String) -> String:
+	return (
+		"pack_id = \"%s\"\n" % _toml_escape(pack_id)
+		+ "schema_version = %d\n" % PACK_SCHEMA_VERSION
+		+ "display_name = \"%s\"\n" % _toml_escape(display_name)
+		+ "version = \"0.1.0\"\n"
+		+ "author = \"%s\"\n" % _toml_escape(author)
+		+ "license = \"CC0\"\n"
+		+ "description = \"\"\n"
+	)
+
+func _toml_escape(value: String) -> String:
+	return value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+
+func _pack_id_is_valid(pack_id: String) -> bool:
+	if pack_id.is_empty():
+		return false
+	if not _is_ascii_lower_or_digit(pack_id.substr(0, 1)):
+		return false
+	for i in pack_id.length():
+		var ch := pack_id.substr(i, 1)
+		if not _is_ascii_lower_or_digit(ch) and ch != "_" and ch != "-":
+			return false
+	return true
+
+func _is_ascii_lower_or_digit(ch: String) -> bool:
+	if ch.is_empty():
+		return false
+	var code := ch.unicode_at(0)
+	return (code >= 97 and code <= 122) or (code >= 48 and code <= 57)
+
+func _pack_id_exists(pack_id: String) -> bool:
+	var target := pack_id.strip_edges()
+	if target.is_empty():
+		return false
+	for pack in _known_packs:
+		if str(pack.get("pack_id", "")).strip_edges() == target:
+			return true
+	var pack_path := ProjectSettings.globalize_path("user://mods/%s/pack.toml" % target)
+	return FileAccess.file_exists(pack_path)
+
+func _suggest_new_pack_id() -> String:
+	var base := "my-pack"
+	if not _pack_id_exists(base):
+		return base
+	var i := 2
+	while i < 10000:
+		var candidate := "%s-%d" % [base, i]
+		if not _pack_id_exists(candidate):
+			return candidate
+		i += 1
+	return "my-pack-%d" % int(Time.get_unix_time_from_system())
+
+func _refresh_asset_display_name_cache() -> void:
+	_asset_display_names.clear()
+	for aid in _asset_ids:
+		var json_str: String = sim.get_asset_manifest_json(aid)
+		if json_str.is_empty():
+			continue
+		var parsed = JSON.parse_string(json_str)
+		if not (parsed is Dictionary):
+			continue
+		var display_name := str((parsed as Dictionary).get("display_name", "")).strip_edges()
+		if not display_name.is_empty():
+			_asset_display_names[aid] = display_name
+
+func _on_asset_search_changed(_text: String) -> void:
+	_rebuild_asset_tree()
+
+func _rebuild_asset_tree() -> void:
+	if not _asset_tree:
+		return
+
+	var query := ""
+	if _asset_search_edit:
+		query = _asset_search_edit.text.strip_edges().to_lower()
+
+	_asset_tree.clear()
+	var root := _asset_tree.create_item()
+	var visible_ids: Array[String] = []
+	for aid in _asset_ids:
+		if _asset_matches_query(aid, query):
+			visible_ids.append(aid)
+
+	if _asset_count_lbl:
+		if query.is_empty():
+			_asset_count_lbl.text = "%d assets" % _asset_ids.size()
+		else:
+			_asset_count_lbl.text = "%d / %d assets" % [visible_ids.size(), _asset_ids.size()]
+
+	if visible_ids.is_empty():
+		var empty_item := _asset_tree.create_item(root)
+		empty_item.set_text(0, "No matching assets")
+		empty_item.set_selectable(0, false)
+		return
+
+	var pack_counts := {}
+	var category_counts := {}
+	for aid in visible_ids:
+		var pack := _asset_pack_id(aid)
+		var category := _asset_category_id(aid)
+		pack_counts[pack] = int(pack_counts.get(pack, 0)) + 1
+		var category_key := "%s\n%s" % [pack, category]
+		category_counts[category_key] = int(category_counts.get(category_key, 0)) + 1
+
+	var pack_items := {}
+	var category_items := {}
+	for aid in visible_ids:
+		var pack := _asset_pack_id(aid)
+		var category := _asset_category_id(aid)
+		var pack_item: TreeItem = pack_items.get(pack, null)
+		if pack_item == null:
+			pack_item = _asset_tree.create_item(root)
+			pack_item.set_text(0, "%s (%d)" % [pack, int(pack_counts.get(pack, 0))])
+			pack_item.set_selectable(0, false)
+			pack_item.set_collapsed(false)
+			pack_items[pack] = pack_item
+
+		var category_key := "%s\n%s" % [pack, category]
+		var category_item: TreeItem = category_items.get(category_key, null)
+		if category_item == null:
+			category_item = _asset_tree.create_item(pack_item)
+			category_item.set_text(
+				0,
+				"%s (%d)" % [category, int(category_counts.get(category_key, 0))]
+			)
+			category_item.set_selectable(0, false)
+			category_item.set_collapsed(false)
+			category_items[category_key] = category_item
+
+		var asset_item := _asset_tree.create_item(category_item)
+		asset_item.set_text(0, _asset_browser_label(aid))
+		asset_item.set_metadata(0, aid)
+		asset_item.set_tooltip_text(0, aid)
+
+func _asset_matches_query(aid: String, query: String) -> bool:
+	if query.is_empty():
+		return true
+	return (
+		aid.to_lower().contains(query)
+		or _asset_browser_label(aid).to_lower().contains(query)
+	)
+
+func _asset_pack_id(aid: String) -> String:
+	var sep := aid.find(":")
+	if sep < 0:
+		return "unpacked"
+	return aid.substr(0, sep)
+
+func _asset_local_id(aid: String) -> String:
+	var sep := aid.find(":")
+	if sep < 0:
+		return aid
+	return aid.substr(sep + 1)
+
+func _asset_category_id(aid: String) -> String:
+	var local_id := _asset_local_id(aid)
+	var parts := local_id.split(".")
+	if parts.size() >= 2:
+		return "%s / %s" % [str(parts[0]), str(parts[1])]
+	if parts.size() == 1 and not str(parts[0]).is_empty():
+		return str(parts[0])
+	return "uncategorized"
+
+func _asset_browser_label(aid: String) -> String:
+	return str(_asset_display_names.get(aid, _asset_local_id(aid))).strip_edges()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scene templates
@@ -600,10 +1221,58 @@ func _set_sun_angle(degrees: float) -> void:
 # Asset browser
 # ──────────────────────────────────────────────────────────────────────────────
 
-func _on_asset_selected(idx: int) -> void:
-	if idx < 0 or idx >= _asset_ids.size():
+func _on_asset_tree_activated() -> void:
+	_load_selected_asset_from_tree()
+
+func _on_asset_tree_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton):
 		return
-	var aid: String = _asset_ids[idx]
+	var mb := event as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_RIGHT or not mb.pressed:
+		return
+	if _open_asset_context_menu_at(mb.position):
+		_asset_tree.accept_event()
+
+func _open_asset_context_menu_at(mouse_position: Vector2) -> bool:
+	if not _asset_tree or not _asset_context_menu:
+		return false
+	var item := _asset_tree.get_item_at_position(mouse_position)
+	if item == null:
+		return false
+	var metadata = item.get_metadata(0)
+	if metadata == null:
+		return false
+	_asset_context_asset_id = str(metadata).strip_edges()
+	if _asset_context_asset_id.is_empty():
+		return false
+	item.select(0)
+	var popup_pos := _asset_tree.get_global_mouse_position()
+	_asset_context_menu.position = Vector2i(int(round(popup_pos.x)), int(round(popup_pos.y)))
+	_asset_context_menu.popup()
+	return true
+
+func _on_asset_context_menu_id_pressed(id: int) -> void:
+	if id != ASSET_CONTEXT_USE_AS_GHOST:
+		return
+	if _asset_context_asset_id.is_empty():
+		return
+	_use_asset_as_ghost(_asset_context_asset_id)
+
+func _load_selected_asset_from_tree() -> void:
+	if not _asset_tree:
+		return
+	var item := _asset_tree.get_selected()
+	if item == null:
+		return
+	var metadata = item.get_metadata(0)
+	if metadata == null:
+		return
+	var aid := str(metadata).strip_edges()
+	if aid.is_empty():
+		return
+	_load_asset_manifest(aid)
+
+func _load_asset_manifest(aid: String) -> void:
 	var json_str: String = sim.get_asset_manifest_json(aid)
 	if json_str.is_empty():
 		return
@@ -611,20 +1280,133 @@ func _on_asset_selected(idx: int) -> void:
 	if data == null:
 		return
 	_populate_inspector_from(data)
+	_loaded_asset_pack_id = str(data.get("pack_id", _asset_pack_id(aid))).strip_edges()
+	_loaded_asset_id = str(data.get("asset_id", _asset_local_id(aid))).strip_edges()
 	_log("Loaded manifest for '%s'." % aid)
+
+func _use_asset_as_ghost(aid: String) -> void:
+	var data := _asset_manifest(aid)
+	if data.is_empty():
+		_log("[color=yellow]Could not load asset manifest for ghost: %s[/color]" % aid)
+		return
+	var ghost_path := _asset_lod0_path(data)
+	if ghost_path.is_empty() or not FileAccess.file_exists(ghost_path):
+		_log("[color=yellow]Ghost LOD0 file not found for %s[/color]" % aid)
+		return
+	var scale := float(data.get("preview_scale", 1.0) if data.get("preview_scale") != null else 1.0)
+	var lot_width := int(data.get("lot_width_cells", 1))
+	var lot_depth := int(data.get("lot_depth_cells", 1))
+	if _preview.load_ghost(ghost_path, scale, lot_width, lot_depth):
+		var label := str(data.get("display_name", aid)).strip_edges()
+		if label.is_empty():
+			label = aid
+		_log("Using '%s' as ghost." % label)
+
+func _asset_manifest(aid: String) -> Dictionary:
+	var json_str: String = sim.get_asset_manifest_json(aid)
+	if json_str.is_empty():
+		return {}
+	var parsed = JSON.parse_string(json_str)
+	if parsed is Dictionary:
+		return parsed
+	return {}
+
+func _asset_lod0_path(data: Dictionary) -> String:
+	var pack_id := str(data.get("pack_id", "")).strip_edges()
+	var asset_id := str(data.get("asset_id", "")).strip_edges()
+	var lods: Array = data.get("lods", [])
+	if pack_id.is_empty() or asset_id.is_empty() or lods.is_empty():
+		return ""
+	var lod0 = lods[0]
+	if not (lod0 is Dictionary):
+		return ""
+	var file_name := str((lod0 as Dictionary).get("file", "")).strip_edges()
+	if file_name.is_empty():
+		return ""
+	return ProjectSettings.globalize_path("user://mods/%s/assets/%s/%s" % [pack_id, asset_id, file_name])
+
+func _start_new_asset() -> void:
+	if _asset_tree:
+		_asset_tree.deselect_all()
+	_asset_context_asset_id = ""
+
+	_apply_pack_fields({
+		"pack_id": "my-pack",
+		"display_name": "My Pack",
+		"author": "",
+	})
+
+	_asset_id_auto = true
+	_display_name_edit.text = "House"
+	_asset_set_edit.text = ""
+	_tags_edit.text = ""
+	_set_placement_mode_selection("zoned_private")
+	_set_service_class_selection("none")
+	var residential_idx := _zone_types.find("residential")
+	if residential_idx >= 0:
+		_zone_type_btn.select(residential_idx)
+	elif _zone_type_btn.get_item_count() > 0:
+		_zone_type_btn.select(0)
+	_refresh_density_options("low")
+
+	_width_spin.value = 2
+	_depth_spin.value = 2
+	_min_zone_width_spin.value = 2
+	_min_zone_depth_spin.value = 2
+	_last_lot_width_cells = 2
+	_last_lot_depth_cells = 2
+	_level_spin.value = 1
+	_residents_spin.value = 0
+	_flat_size_spin.value = 60.0
+	_workers_spin.value = 0
+	_suppress_preview_scale_changed = true
+	_preview_scale_spin.value = 1.0
+	_suppress_preview_scale_changed = false
+	if _scale_preset_btn:
+		_scale_preset_btn.select(0)
+	_human_visible = false
+	if _human_btn:
+		_human_btn.button_pressed = false
+
+	_auto_suggest_asset_id()
+	_set_economy_profile_selection("")
+	_extra_anchors.clear()
+	_glb_path = ""
+	_lod_source_paths.clear()
+	_lod_list.clear()
+	_loaded_asset_pack_id = ""
+	_loaded_asset_id = ""
+	_mesh_aabb = AABB()
+	_pivot_offset = Vector3.ZERO
+	_dim_label.text = "→ —"
+
+	if _preview:
+		_preview.clear()
+		_preview.set_lot_size(2, 2)
+		_preview.set_preview_scale(1.0)
+		_preview.set_show_human(false)
+	_set_frontage_forward(Vector3.FORWARD)
+	_set_main_entrance_position(_default_main_entrance_position(), true)
+	_update_building_mode_visibility()
+	_update_economy_profile_status()
+	_log("Started a new asset.")
 
 func _populate_inspector_from(data: Dictionary) -> void:
 	# Pack fields — read from pack.toml on disk via Rust.
 	var pack_id: String = data.get("pack_id", "")
 	if not pack_id.is_empty():
-		_pack_id_edit.text = pack_id
 		var pack_dir: String = ProjectSettings.globalize_path("user://mods/" + pack_id + "/")
+		var pack_data := {
+			"pack_id": pack_id,
+			"display_name": pack_id,
+			"author": "",
+		}
 		var pack_json: String = sim.get_pack_manifest_json(pack_dir)
 		if not pack_json.is_empty():
-			var pack_data = JSON.parse_string(pack_json)
-			if pack_data is Dictionary:
-				_pack_name_edit.text   = pack_data.get("display_name", "")
-				_pack_author_edit.text = pack_data.get("author", "")
+			var parsed_pack_data = JSON.parse_string(pack_json)
+			if parsed_pack_data is Dictionary:
+				pack_data = parsed_pack_data
+		_apply_pack_fields(pack_data)
 
 	# Prevent auto-suggest from overwriting the loaded asset ID.
 	_asset_id_auto = false
@@ -652,8 +1434,9 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_flat_size_spin.value = default_sqm
 
 	_workers_spin.value     = data.get("worker_capacity", 0) if data.get("worker_capacity") != null else 0
+	_suppress_preview_scale_changed = true
 	_preview_scale_spin.value = data.get("preview_scale", 1.0) if data.get("preview_scale") != null else 1.0
-	_preview.set_preview_scale(_preview_scale_spin.value)
+	_suppress_preview_scale_changed = false
 	var po = data.get("pivot_offset", null)
 	if po is Array and po.size() == 3:
 		_pivot_offset = Vector3(po[0], po[1], po[2])
@@ -683,7 +1466,10 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		else lot_depth
 	)
 	_update_building_mode_visibility()
-	_set_economy_profile_selection(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
+	var loaded_profile_id := str(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
+	_set_economy_profile_selection(loaded_profile_id)
+	if loaded_profile_id.strip_edges().is_empty():
+		_auto_select_profile_for_service(_selected_service_class())
 	_extra_anchors.clear()
 
 	var main_anchor_pos := _default_main_entrance_position()
@@ -741,6 +1527,8 @@ func _populate_inspector_from(data: Dictionary) -> void:
 			_autofit_on_load = absf(_preview_scale_spin.value - 1.0) < 0.01
 			_keep_camera = true
 			_preview.load_glb(lod0_path)
+			_preview.set_preview_scale(_preview_scale_spin.value)
+			_update_dim_label()
 		else:
 			_log("[color=yellow]LOD0 file not found on disk: %s[/color]" % lod0_path)
 			_preview.clear()
@@ -792,6 +1580,48 @@ func _set_service_class_selection(service_class: String) -> void:
 			return
 	_service_class_btn.select(0)
 
+func _expected_utility_service_for_class(service_class: String) -> String:
+	match service_class.strip_edges():
+		"power":
+			return "power"
+		"water":
+			return "water"
+		"waste":
+			return "sewage"
+	return ""
+
+func _is_utility_service_class(service_class: String) -> bool:
+	return UTILITY_PROFILE_BY_SERVICE.has(service_class.strip_edges())
+
+func _default_economy_profile_for_service(service_class: String) -> String:
+	return str(UTILITY_PROFILE_BY_SERVICE.get(service_class.strip_edges(), "")).strip_edges()
+
+func _auto_select_profile_for_service(service_class: String) -> void:
+	if not _selected_economy_profile_id().is_empty():
+		return
+	var profile_id := _default_economy_profile_for_service(service_class)
+	if profile_id.is_empty():
+		return
+	if _economy_profiles_cache.has(profile_id):
+		_set_economy_profile_selection(profile_id)
+
+func _utility_profile_matches_service(profile_id: String, service_class: String) -> bool:
+	var selected_id := profile_id.strip_edges()
+	if selected_id.is_empty():
+		return false
+	if not _economy_catalog_loaded:
+		return false
+	var expected_service := _expected_utility_service_for_class(service_class)
+	if expected_service.is_empty():
+		return true
+	var profile = _economy_profiles_cache.get(selected_id)
+	if not (profile is Dictionary):
+		return false
+	var kind := str(profile.get("kind", "")).strip_edges()
+	if kind != "utility_producer" and kind != "utility_processor":
+		return false
+	return str(profile.get("utility_service", "")).strip_edges() == expected_service
+
 func _update_building_mode_visibility() -> void:
 	var is_zoned_private := _selected_placement_mode() == "zoned_private"
 	if _zoned_only_box:
@@ -820,11 +1650,22 @@ func _on_zone_type_selected(_idx: int) -> void:
 	_on_zone_or_lot_changed(0)
 
 func _on_placement_mode_selected(_idx: int) -> void:
+	var previous_service := _selected_service_class()
+	if _selected_placement_mode() == "zoned_private" and previous_service != "none":
+		var selected_profile := _selected_economy_profile_id()
+		_set_service_class_selection("none")
+		if selected_profile == _default_economy_profile_for_service(previous_service):
+			_set_economy_profile_selection("")
 	_update_building_mode_visibility()
 	_auto_suggest_asset_id()
 	_on_zone_or_lot_changed(0)
 
 func _on_service_class_selected(_idx: int) -> void:
+	var service_class := _selected_service_class()
+	if service_class != "none" and _selected_placement_mode() != "explicit":
+		_set_placement_mode_selection("explicit")
+		_update_building_mode_visibility()
+	_auto_select_profile_for_service(service_class)
 	_auto_suggest_asset_id()
 	_update_economy_profile_status()
 
@@ -914,8 +1755,12 @@ func _load_economy_profiles() -> void:
 			_economy_catalog_warning_count += 1
 
 	_economy_catalog_loaded = true
-	_update_economy_profile_status()
-	_set_economy_profile_selection(current_id)
+	if current_id.is_empty():
+		_auto_select_profile_for_service(_selected_service_class())
+		if _selected_economy_profile_id().is_empty():
+			_update_economy_profile_status()
+	else:
+		_set_economy_profile_selection(current_id)
 
 func _selected_economy_profile_id() -> String:
 	if not _economy_profile_btn or _economy_profile_btn.get_item_count() == 0:
@@ -976,10 +1821,25 @@ func _update_economy_profile_status() -> void:
 	var selected_id := _selected_economy_profile_id()
 	var placement_mode := _selected_placement_mode()
 	var zone_type := _selected_zone_type()
+	var service_class := _selected_service_class()
+	if service_class != "none" and placement_mode != "explicit":
+		_set_economy_profile_status(
+			"Service assets must use explicit placement.",
+			Color(1.0, 0.42, 0.36)
+		)
+		return
+
 	if not _economy_catalog_loaded:
 		var msg := "Economy catalog unavailable."
 		if not _economy_catalog_error.is_empty():
 			msg = "Economy catalog unavailable: %s" % _economy_catalog_error
+		if _is_utility_service_class(service_class):
+			if selected_id.is_empty():
+				msg += " Utility service assets require a resolved matching profile."
+			else:
+				msg += " Cannot validate utility profile '%s'." % selected_id
+			_set_economy_profile_status(msg, Color(1.0, 0.42, 0.36))
+			return
 		if not selected_id.is_empty():
 			msg += " Existing selection will be preserved on export."
 		_set_economy_profile_status(msg, Color(0.95, 0.78, 0.38))
@@ -993,6 +1853,19 @@ func _update_economy_profile_status() -> void:
 		return
 
 	if placement_mode == "explicit":
+		if _is_utility_service_class(service_class):
+			if selected_id.is_empty():
+				_set_economy_profile_status(
+					"Utility service assets require an economy profile.",
+					Color(1.0, 0.42, 0.36)
+				)
+				return
+			if not _utility_profile_matches_service(selected_id, service_class):
+				_set_economy_profile_status(
+					"Selected profile does not provide the %s utility service." % _expected_utility_service_for_class(service_class),
+					Color(1.0, 0.42, 0.36)
+				)
+				return
 		if selected_id.is_empty():
 			var explicit_msg := "Explicit buildings are outside zoned-private growth. Economy profile is optional."
 			if _economy_catalog_warning_count > 0:
@@ -1085,16 +1958,11 @@ func _sync_workers_to_profile() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _on_import_glb_pressed() -> void:
-	var dialog := FileDialog.new()
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.filters = PackedStringArray(["*.glb ; GLB Files", "*.gltf ; GLTF Files", "*.fbx ; FBX Files"])
-	if not _last_glb_dir.is_empty():
-		dialog.current_dir = _last_glb_dir
-	dialog.file_selected.connect(_on_glb_file_selected)
-	dialog.canceled.connect(dialog.queue_free)
+	var dialog := MeshImportDialog.new()
+	dialog.theme_mode = _theme_mode
+	dialog.mesh_selected.connect(_on_glb_file_selected)
 	add_child(dialog)
-	dialog.popup_centered(Vector2i(800, 600))
+	dialog.open(_last_glb_dir)
 
 func _on_glb_file_selected(path: String) -> void:
 	_last_glb_dir = path.get_base_dir()
@@ -1177,7 +2045,89 @@ func _on_set_front_from_view() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _on_export_pressed() -> void:
-	var pack_id: String = _pack_id_edit.text.strip_edges()
+	if _export_needs_pack_retarget_choice():
+		_open_export_retarget_dialog()
+		return
+	_export_asset(false)
+
+func _export_needs_pack_retarget_choice() -> bool:
+	return (
+		not _loaded_asset_pack_id.is_empty()
+		and not _loaded_asset_id.is_empty()
+		and _selected_pack_id.strip_edges() != _loaded_asset_pack_id
+	)
+
+func _open_export_retarget_dialog() -> void:
+	_ensure_export_retarget_window()
+	var target_pack := _selected_pack_id.strip_edges()
+	var target_asset := _asset_id_edit.text.strip_edges()
+	if _retarget_export_message_lbl:
+		_retarget_export_message_lbl.text = (
+			"This asset was loaded from:\n%s:%s\n\nExporting now targets:\n%s:%s\n\n"
+			+ "Copy creates/updates the target asset and leaves the original untouched.\n"
+			+ "Move creates/updates the target asset, then deletes the original asset folder after export succeeds."
+		) % [_loaded_asset_pack_id, _loaded_asset_id, target_pack, target_asset]
+	_retarget_export_window.popup_centered(Vector2i(560, 310))
+
+func _ensure_export_retarget_window() -> void:
+	if _retarget_export_window and is_instance_valid(_retarget_export_window):
+		return
+	_retarget_export_window = Window.new()
+	_retarget_export_window.title = "Export To Different Pack"
+	_retarget_export_window.min_size = Vector2i(520, 280)
+	_retarget_export_window.size = Vector2i(560, 310)
+	_retarget_export_window.close_requested.connect(func(): _retarget_export_window.hide())
+	add_child(_retarget_export_window)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_retarget_export_window.add_child(panel)
+
+	var margin := _add_panel_margin(panel)
+	var root := VBoxContainer.new()
+	root.name = "Root"
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", PANEL_GAP)
+	margin.add_child(root)
+
+	var message := Label.new()
+	message.name = "Message"
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	message.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	message.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	message.add_theme_font_size_override("font_size", _font_size_label)
+	root.add_child(message)
+	_retarget_export_message_lbl = message
+
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", PANEL_GAP)
+	root.add_child(footer)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(spacer)
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	cancel_btn.pressed.connect(func(): _retarget_export_window.hide())
+	footer.add_child(cancel_btn)
+	var copy_btn := Button.new()
+	copy_btn.text = "Copy"
+	copy_btn.pressed.connect(func():
+		_retarget_export_window.hide()
+		_export_asset(false)
+	)
+	footer.add_child(copy_btn)
+	var move_btn := Button.new()
+	move_btn.text = "Move"
+	move_btn.pressed.connect(func():
+		_retarget_export_window.hide()
+		_export_asset(true)
+	)
+	footer.add_child(move_btn)
+	_apply_editor_theme(_retarget_export_window)
+
+func _export_asset(move_original_after_export: bool) -> void:
+	var pack_id: String = _selected_pack_id.strip_edges()
 	if pack_id.is_empty():
 		_log("[color=red]Pack ID is required.[/color]")
 		return
@@ -1186,6 +2136,8 @@ func _on_export_pressed() -> void:
 	if asset_id.is_empty():
 		_log("[color=red]Asset ID is required.[/color]")
 		return
+	var source_pack_id := _loaded_asset_pack_id
+	var source_asset_id := _loaded_asset_id
 
 	if _lod_list.item_count == 0:
 		_log("[color=yellow]Warning: no LOD files registered. Add at least LOD0.[/color]")
@@ -1230,6 +2182,19 @@ func _on_export_pressed() -> void:
 	var economy_profile_id := _selected_economy_profile_id()
 	var placement_mode := _selected_placement_mode()
 	var service_class := _selected_service_class()
+	if service_class != "none" and placement_mode != "explicit":
+		_log("[color=red]Service assets must use explicit placement.[/color]")
+		return
+	if _is_utility_service_class(service_class):
+		if economy_profile_id.is_empty():
+			_log("[color=red]Utility service assets require an economy profile.[/color]")
+			return
+		if not _economy_catalog_loaded:
+			_log("[color=red]Economy catalog unavailable; utility service assets require a resolved matching profile.[/color]")
+			return
+		if not _utility_profile_matches_service(economy_profile_id, service_class):
+			_log("[color=red]Selected economy profile does not match the utility service class.[/color]")
+			return
 	var lot_width := int(_width_spin.value)
 	var lot_depth := int(_depth_spin.value)
 	var min_zone_width := int(_min_zone_width_spin.value)
@@ -1237,8 +2202,8 @@ func _on_export_pressed() -> void:
 
 	var params := {
 		"pack_id":          pack_id,
-		"pack_name":        _pack_name_edit.text.strip_edges(),
-		"pack_author":      _pack_author_edit.text.strip_edges(),
+		"pack_name":        _selected_pack_name.strip_edges(),
+		"pack_author":      _selected_pack_author.strip_edges(),
 		"asset_class":      "building",
 		"asset_id":         asset_id,
 		"display_name":     _display_name_edit.text.strip_edges(),
@@ -1294,6 +2259,7 @@ func _on_export_pressed() -> void:
 			var src: String = _lod_source_paths[i]
 			if src.is_empty() or not FileAccess.file_exists(src):
 				_log("[color=yellow]LOD%d source not found on disk — skipped: %s[/color]" % [i, src])
+				copy_errors += 1
 				continue
 			var dst: String = asset_dir + src.get_file()
 			if src != dst:
@@ -1314,20 +2280,70 @@ func _on_export_pressed() -> void:
 				var ref_dst := asset_dir + rel_path
 				if ref_src == ref_dst:
 					continue
-				DirAccess.make_dir_recursive_absolute(ref_dst.get_base_dir())
+				var ref_dir_err := DirAccess.make_dir_recursive_absolute(ref_dst.get_base_dir())
+				if ref_dir_err != OK:
+					_log("[color=red]Could not create directory for external ref '%s' (error %d)[/color]" % [rel_path, ref_dir_err])
+					copy_errors += 1
+					continue
 				var ref_err := DirAccess.copy_absolute(ref_src, ref_dst)
 				if ref_err != OK:
 					_log("[color=yellow]Could not copy external ref '%s' (error %d)[/color]" % [rel_path, ref_err])
+					copy_errors += 1
 				else:
 					_log("Copied external ref: %s" % rel_path)
 		_log("[color=green]Exported '%s:%s' → %s (%d mesh file(s) copied)[/color]" % [pack_id, asset_id, output_dir, copied])
 		if copy_errors > 0:
 			_log("[color=yellow]%d file(s) failed to copy — check paths.[/color]" % copy_errors)
+		if move_original_after_export:
+			_move_original_asset_after_export(
+				source_pack_id,
+				source_asset_id,
+				pack_id,
+				asset_id,
+				copy_errors
+			)
+		_loaded_asset_pack_id = pack_id
+		_loaded_asset_id = asset_id
 		_refresh_asset_browser()
 		if _lod_list.item_count == 1:
 			_log("[color=yellow]Warning: only LOD0 exported — consider adding LOD1/LOD2.[/color]")
 	else:
 		_log("[color=red]Export failed:[/color]\n" + err)
+
+func _move_original_asset_after_export(
+	source_pack_id: String,
+	source_asset_id: String,
+	target_pack_id: String,
+	target_asset_id: String,
+	copy_errors: int
+) -> void:
+	if source_pack_id.is_empty() or source_asset_id.is_empty():
+		_log("[color=yellow]Move skipped: this editor state has no original asset path.[/color]")
+		return
+	if copy_errors > 0:
+		_log("[color=yellow]Move skipped: export had file copy errors, so the original was left untouched.[/color]")
+		return
+	var source_dir := ProjectSettings.globalize_path(
+		"user://mods/%s/assets/%s" % [source_pack_id, source_asset_id]
+	)
+	var target_dir := ProjectSettings.globalize_path(
+		"user://mods/%s/assets/%s" % [target_pack_id, target_asset_id]
+	)
+	if source_dir == target_dir:
+		return
+	if not DirAccess.dir_exists_absolute(source_dir):
+		_log("[color=yellow]Move skipped: original asset folder was not found: %s[/color]" % source_dir)
+		return
+	var err := _remove_dir_recursive(source_dir)
+	if err != OK:
+		_log("[color=red]Move exported the target, but failed to delete original asset folder '%s' (error %d).[/color]" % [source_dir, err])
+		return
+	_log("[color=green]Moved asset from '%s:%s' to '%s:%s'.[/color]" % [
+		source_pack_id,
+		source_asset_id,
+		target_pack_id,
+		target_asset_id,
+	])
 
 # Parses a GLB file's embedded JSON chunk and returns a list of external file
 # URI references (images with a relative `uri`, not embedded buffer views or
@@ -1387,6 +2403,7 @@ func _collect_uris(gltf: Dictionary) -> Array[String]:
 # Returns OK on success or the first non-OK error encountered.
 func _save_config() -> void:
 	_config.set_value("import", "last_glb_dir",    _last_glb_dir)
+	_config.set_value("ui",     "theme_mode",      _theme_mode)
 	_config.set_value("ui",     "font_size_header",  _font_size_header)
 	_config.set_value("ui",     "font_size_section", _font_size_section)
 	_config.set_value("ui",     "font_size_label",   _font_size_label)
@@ -1420,13 +2437,96 @@ func _copy_dir_recursive(src_dir: String, dst_dir: String) -> Error:
 	da.list_dir_end()
 	return OK
 
+func _remove_dir_recursive(path: String) -> Error:
+	var da := DirAccess.open(path)
+	if not da:
+		return FAILED
+	da.list_dir_begin()
+	var entry := da.get_next()
+	while entry != "":
+		if entry == "." or entry == "..":
+			entry = da.get_next()
+			continue
+		var child_path := path.path_join(entry)
+		var err := OK
+		if da.current_is_dir():
+			err = _remove_dir_recursive(child_path)
+		else:
+			err = DirAccess.remove_absolute(child_path)
+		if err != OK:
+			da.list_dir_end()
+			return err
+		entry = da.get_next()
+	da.list_dir_end()
+	return DirAccess.remove_absolute(path)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # UI helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+func _apply_editor_theme(root: Node) -> void:
+	EditorTheme.apply_to_tree(root, _theme_mode)
+	if _asset_context_menu:
+		EditorTheme.style_popup_menu(_asset_context_menu, _theme_mode)
+	if _pack_select_menu:
+		EditorTheme.style_popup_menu(_pack_select_menu, _theme_mode)
+	if _pack_create_window and is_instance_valid(_pack_create_window):
+		EditorTheme.apply_to_tree(_pack_create_window, _theme_mode)
+	if _retarget_export_window and is_instance_valid(_retarget_export_window):
+		EditorTheme.apply_to_tree(_retarget_export_window, _theme_mode)
+
+func _add_panel_margin(parent: Control) -> MarginContainer:
+	var margin := MarginContainer.new()
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.add_theme_constant_override("margin_left", PANEL_PAD)
+	margin.add_theme_constant_override("margin_right", PANEL_PAD)
+	margin.add_theme_constant_override("margin_top", PANEL_PAD)
+	margin.add_theme_constant_override("margin_bottom", PANEL_PAD)
+	parent.add_child(margin)
+	return margin
+
+func _add_inspector_tab(
+	tabs: TabContainer,
+	header: HBoxContainer,
+	buttons: Array[Button],
+	title: String
+) -> VBoxContainer:
+	var tab_index := buttons.size()
+	var button := Button.new()
+	button.text = title
+	button.toggle_mode = true
+	button.focus_mode = Control.FOCUS_NONE
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.pressed.connect(func():
+		tabs.current_tab = tab_index
+		_sync_inspector_tab_buttons(buttons, tab_index)
+	)
+	header.add_child(button)
+	buttons.append(button)
+
+	var scroll := ScrollContainer.new()
+	scroll.name = title
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(scroll)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", PANEL_GAP)
+	scroll.add_child(box)
+	return box
+
+func _sync_inspector_tab_buttons(buttons: Array[Button], active_index: int) -> void:
+	for i in buttons.size():
+		buttons[i].button_pressed = i == active_index
+
 func _add_label(parent: Control, text: String, size: int) -> void:
 	var lbl := Label.new()
 	lbl.text = text
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbl.add_theme_font_size_override("font_size", size)
 	parent.add_child(lbl)
 
@@ -1434,18 +2534,22 @@ func _add_line_edit(parent: Control, placeholder: String, default_val: String) -
 	var edit := LineEdit.new()
 	edit.placeholder_text = placeholder
 	edit.text = default_val
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(edit)
 	return edit
 
 func _add_spinbox(parent: Control, label: String, min_val: float, max_val: float, default_val: float) -> SpinBox:
 	var lbl := Label.new()
 	lbl.text = label
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbl.add_theme_font_size_override("font_size", _font_size_label)
 	parent.add_child(lbl)
 	var sb := SpinBox.new()
 	sb.min_value = min_val
 	sb.max_value = max_val
 	sb.value = default_val
+	sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(sb)
 	return sb
 
@@ -1516,6 +2620,8 @@ func _on_mesh_loaded(aabb: AABB) -> void:
 	_log("Mesh AABB: size=(%.2f, %.2f, %.2f)" % [aabb.size.x, aabb.size.y, aabb.size.z])
 
 func _on_preview_scale_changed(value: float) -> void:
+	if _suppress_preview_scale_changed:
+		return
 	_preview.set_preview_scale(value)
 	_update_dim_label()
 	# Revert preset display to "Custom" when spinner is edited directly.
@@ -1617,20 +2723,31 @@ func _input(event: InputEvent) -> void:
 			if _try_begin_main_entrance_drag(mouse_pos):
 				get_viewport().set_input_as_handled()
 				return
+			if _try_begin_ghost_drag(mouse_pos):
+				get_viewport().set_input_as_handled()
+				return
 			if _human_visible and _place_human_from_mouse(mouse_pos):
 				get_viewport().set_input_as_handled()
 			return
 		if _dragging_main_entrance:
 			_dragging_main_entrance = false
 			get_viewport().set_input_as_handled()
+		if _dragging_ghost:
+			_dragging_ghost = false
+			get_viewport().set_input_as_handled()
 		return
 
 	if event is InputEventMouseMotion and _dragging_main_entrance:
 		if _drag_main_entrance_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _dragging_ghost:
+		if _drag_ghost_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
 
 func _is_mouse_in_3d_area() -> bool:
 	var mouse_pos := get_viewport().get_mouse_position()
+	if _preview_view_rect and is_instance_valid(_preview_view_rect):
+		return _preview_view_rect.get_global_rect().has_point(mouse_pos)
 	var vp_size   := get_viewport().get_visible_rect().size
 	return (mouse_pos.x > PANEL_LEFT_W and
 			mouse_pos.x < vp_size.x - PANEL_RIGHT_W and
@@ -1658,6 +2775,26 @@ func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
 	if hit == null:
 		return false
 	_set_main_entrance_position(Vector3(hit.x, anchor_pos.y, hit.z), false)
+	return true
+
+func _try_begin_ghost_drag(mouse_pos: Vector2) -> bool:
+	if not _preview or not _preview.has_method("ghost_contains_world_xz"):
+		return false
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	if not _preview.ghost_contains_world_xz(hit):
+		return false
+	_dragging_ghost = true
+	_ghost_drag_offset = _preview.get_ghost_world_position() - Vector3(hit.x, 0.0, hit.z)
+	return _drag_ghost_from_mouse(mouse_pos)
+
+func _drag_ghost_from_mouse(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var target := Vector3(hit.x, 0.0, hit.z) + _ghost_drag_offset
+	_preview.set_ghost_world_position(target)
 	return true
 
 func _place_human_from_mouse(mouse_pos: Vector2) -> bool:

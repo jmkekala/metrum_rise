@@ -5,6 +5,7 @@
 extends CanvasLayer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 
 const BAR_HEIGHT := 28
 
@@ -22,6 +23,7 @@ enum ActionId {
 	FILE_NEW_WORLD = 6,
 	FILE_OPEN_WORLD = 7,
 	FILE_SAVE_AS = 8,
+	FILE_NEW_ASSET = 9,
 	VIEW_TOGGLE_ZONING = 10,
 	VIEW_OVERLAY_NONE = 11,
 	VIEW_OVERLAY_POLLUTION = 12,
@@ -44,8 +46,16 @@ var scene_kind: String = SCENE_GAMEPLAY
 
 var _scene_root: Node
 var _windows: Dictionary = {}
+var _shell: PanelContainer
+var _bar_margin: MarginContainer
+var _bar_row: HBoxContainer
+var _menu_bar: MenuBar
+var _theme_switch: CheckButton
+var _theme_mode: String = EditorTheme.MODE_DARK
+var _syncing_theme_switch: bool = false
 
 func _ready() -> void:
+	layer = 100
 	_scene_root = get_parent()
 	if scene_kind.is_empty():
 		scene_kind = _detect_scene_kind()
@@ -57,33 +67,83 @@ func _build_menu_bar() -> void:
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var shell := PanelContainer.new()
-	root.add_child(shell)
-	shell.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	shell.offset_bottom = BAR_HEIGHT
-	shell.mouse_filter = Control.MOUSE_FILTER_STOP
-	shell.add_theme_stylebox_override("panel", UIStyle.panel_style(UIStyle.BG_DARK, 0))
+	_shell = PanelContainer.new()
+	root.add_child(_shell)
+	_shell.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_shell.offset_bottom = BAR_HEIGHT
+	_shell.mouse_filter = Control.MOUSE_FILTER_STOP
 
-	var menu_bar := MenuBar.new()
-	shell.add_child(menu_bar)
-	menu_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	menu_bar.prefer_global_menu = false
-	menu_bar.flat = true
-	menu_bar.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	menu_bar.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
-	menu_bar.add_theme_color_override("font_focus_color", UIStyle.TEXT_PRIMARY)
-	menu_bar.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
-	menu_bar.add_theme_color_override("font_disabled_color", UIStyle.TEXT_DIM)
+	_bar_margin = MarginContainer.new()
+	_bar_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_bar_margin.add_theme_constant_override("margin_left", 6)
+	_bar_margin.add_theme_constant_override("margin_right", 8)
+	_bar_margin.add_theme_constant_override("margin_top", 2)
+	_bar_margin.add_theme_constant_override("margin_bottom", 2)
+	_shell.add_child(_bar_margin)
+
+	_bar_row = HBoxContainer.new()
+	_bar_row.add_theme_constant_override("separation", 6)
+	_bar_margin.add_child(_bar_row)
+
+	_menu_bar = MenuBar.new()
+	_bar_row.add_child(_menu_bar)
+	_menu_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_menu_bar.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_menu_bar.prefer_global_menu = false
+	_menu_bar.flat = true
 
 	match scene_kind:
 		SCENE_GAMEPLAY:
-			_build_gameplay_menus(menu_bar)
+			_build_gameplay_menus(_menu_bar)
 		SCENE_ASSET_EDITOR:
-			_build_asset_editor_menus(menu_bar)
+			_build_asset_editor_menus(_menu_bar)
 		SCENE_ECONOMY_EDITOR:
-			_build_economy_editor_menus(menu_bar)
+			_build_economy_editor_menus(_menu_bar)
 		SCENE_WORLD_EDITOR:
-			_build_world_editor_menus(menu_bar)
+			_build_world_editor_menus(_menu_bar)
+
+	if _scene_root and _scene_root.has_method("get_ui_theme_mode"):
+		_theme_mode = EditorTheme.normalize_mode(str(_scene_root.get_ui_theme_mode()))
+		_build_theme_switch()
+	_apply_theme()
+
+func set_editor_theme_mode(mode: String) -> void:
+	_theme_mode = EditorTheme.normalize_mode(mode)
+	_apply_theme()
+
+func _build_theme_switch() -> void:
+	_theme_switch = CheckButton.new()
+	_theme_switch.tooltip_text = "Toggle editor theme"
+	_theme_switch.focus_mode = Control.FOCUS_NONE
+	_theme_switch.custom_minimum_size.x = 96.0
+	_theme_switch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_theme_switch.toggled.connect(_on_theme_switch_toggled)
+	_bar_row.add_child(_theme_switch)
+
+func _apply_theme() -> void:
+	if _scene_root and _scene_root.has_method("get_ui_theme_mode"):
+		_theme_mode = EditorTheme.normalize_mode(str(_scene_root.get_ui_theme_mode()))
+	if _shell:
+		_shell.add_theme_stylebox_override("panel", EditorTheme.style_box(_theme_mode, "bg", 0, 0))
+	if _menu_bar:
+		EditorTheme.style_menu_bar(_menu_bar, _theme_mode)
+	for popup in find_children("*", "PopupMenu", true, false):
+		EditorTheme.style_popup_menu(popup as PopupMenu, _theme_mode)
+	if _theme_switch:
+		_syncing_theme_switch = true
+		_theme_switch.button_pressed = _theme_mode == EditorTheme.MODE_DARK
+		_theme_switch.text = "Light" if _theme_mode == EditorTheme.MODE_LIGHT else "Dark"
+		EditorTheme.style_control(_theme_switch, _theme_mode)
+		_syncing_theme_switch = false
+
+func _on_theme_switch_toggled(_enabled: bool) -> void:
+	if _syncing_theme_switch:
+		return
+	if not _scene_root or not _scene_root.has_method("menu_toggle_ui_theme"):
+		return
+	var next_mode = _scene_root.menu_toggle_ui_theme()
+	if next_mode is String:
+		set_editor_theme_mode(next_mode)
 
 func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
@@ -124,9 +184,9 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 
 func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
+	file_popup.add_item("New Asset", ActionId.FILE_NEW_ASSET)
 	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
-	file_popup.add_item("Return To Game", ActionId.FILE_RETURN_TO_GAME)
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
 	file_popup.id_pressed.connect(_on_file_menu_pressed)
 
@@ -189,6 +249,9 @@ func _on_file_menu_pressed(id: int) -> void:
 		ActionId.FILE_OPEN_WORLD:
 			if _scene_root and _scene_root.has_method("menu_open_world"):
 				_scene_root.menu_open_world()
+		ActionId.FILE_NEW_ASSET:
+			if _scene_root and _scene_root.has_method("menu_new_asset"):
+				_scene_root.menu_new_asset()
 		ActionId.FILE_SAVE:
 			if _scene_root and _scene_root.has_method("menu_save"):
 				_scene_root.menu_save()

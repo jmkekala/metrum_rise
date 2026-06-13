@@ -1251,6 +1251,7 @@ Rules:
 - occupied residential, commercial, industrial, office, service, and utility-operation buildings require `power` and `water` by default unless a documented special-case rule explicitly says otherwise
 - `sewage` is a baseline generated utility load produced automatically by occupied buildings and households
 - utility-producing and utility-processing buildings such as power plants, water plants, pump stations, or wastewater-treatment facilities should use normal asset-backed `economy_profile` definitions
+- utility-producing and utility-processing assets are explicit service buildings, not ordinary zoned-private assets; they must carry a utility `service_class` plus an `economy_profile` for the matching service
 - utility-producing and utility-processing buildings may be privately operated or city-owned
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity

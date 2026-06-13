@@ -33,8 +33,8 @@ MainMenu is the startup exception: it is a dedicated front-door surface and does
 gameplay UI or a gameplay world.
 
 The top menu in editor scenes carries a reduced item set. AssetEditor and EconomyEditor use
-File plus editor-specific menus. WorldEditor uses File plus Help, with no
-`Return To Game` action and no City / Demand / Economy launchers, which are gameplay concepts.
+File plus editor-specific menus. WorldEditor uses File plus Help. AssetEditor and WorldEditor have
+no `Return To Game` action and no City / Demand / Economy launchers, which are gameplay concepts.
 
 ---
 
@@ -109,6 +109,19 @@ Deterministic rule:
 
 - terrain and water authoring tools do not live in the WorldEditor top menu
 - WorldEditor does not expose `Return To Game`
+
+AssetEditor menu:
+
+| Menu | Items |
+|------|-------|
+| File | New Asset, Save, Quit |
+| Asset | Reload Packs, Import Mesh |
+
+Deterministic rule:
+
+- `New Asset` clears the right-side pack/asset/building fields, active preview mesh, and LOD list
+  while preserving the explicit comparison ghost
+- AssetEditor does not expose `Return To Game`
 
 ---
 

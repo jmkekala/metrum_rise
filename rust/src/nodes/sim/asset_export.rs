@@ -8,6 +8,9 @@
 use crate::assets::asset::PlacementMode;
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntimeKind, load_runtime_economy_catalog,
+};
 use crate::simulation::zoning::load_builtin_profile_registry;
 use serde::Deserialize;
 use std::path::Path;
@@ -302,8 +305,77 @@ fn non_empty_optional_string(value: &Option<String>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn non_none_service_class(value: &Option<String>) -> Option<&str> {
+    non_empty_optional_string(value).filter(|value| *value != "none")
+}
+
+fn validate_service_class(service_class: &str) -> Result<(), String> {
+    match service_class.trim() {
+        "police" | "fire" | "healthcare" | "education" | "power" | "water" | "waste"
+        | "transit" | "parks" | "government" => Ok(()),
+        other => Err(format!(
+            "unsupported service_class '{}'; expected one of police, fire, healthcare, education, power, water, waste, transit, parks, government",
+            other
+        )),
+    }
+}
+
+fn expected_utility_service_for_class(service_class: &str) -> Option<&'static str> {
+    match service_class.trim() {
+        "power" => Some("power"),
+        "water" => Some("water"),
+        "waste" => Some("sewage"),
+        _ => None,
+    }
+}
+
+fn is_utility_service_class(service_class: &str) -> bool {
+    expected_utility_service_for_class(service_class).is_some()
+}
+
+fn validate_utility_profile_matches_service(
+    economy_profile: &str,
+    service_class: &str,
+) -> Result<(), String> {
+    let Some(expected_service) = expected_utility_service_for_class(service_class) else {
+        return Ok(());
+    };
+    let catalog = load_runtime_economy_catalog()
+        .map_err(|err| format!("could not load economy catalog for utility validation: {err}"))?;
+    let profile = catalog
+        .all_profiles()
+        .iter()
+        .find(|profile| profile.id == economy_profile)
+        .ok_or_else(|| {
+            format!(
+                "utility economy_profile '{economy_profile}' is missing from the runtime catalog"
+            )
+        })?;
+    if !matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
+    ) {
+        return Err(format!(
+            "utility economy_profile '{}' must be a utility producer or processor",
+            economy_profile
+        ));
+    }
+    if profile.utility_service.as_deref() != Some(expected_service) {
+        return Err(format!(
+            "utility economy_profile '{}' does not provide the '{}' service",
+            economy_profile, expected_service
+        ));
+    }
+    Ok(())
+}
+
 fn validate_building_export_contract(params: &ExportParams) -> Result<(), String> {
     let placement_mode = parse_placement_mode(&params.placement_mode)?;
+    let service_class = non_none_service_class(&params.service_class);
+    let economy_profile = non_empty_optional_string(&params.economy_profile);
+    if let Some(service_class) = service_class {
+        validate_service_class(service_class)?;
+    }
     if params.lot_width_cells == 0 || params.lot_depth_cells == 0 {
         return Err("lot_width_cells and lot_depth_cells must be > 0".to_owned());
     }
@@ -317,6 +389,12 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                 .ok_or_else(|| "zoned_private buildings require zone_type".to_owned())?;
             let _density = non_empty_optional_string(&params.density)
                 .ok_or_else(|| "zoned_private buildings require density".to_owned())?;
+            if service_class.is_some() {
+                return Err(
+                    "zoned_private buildings must not export service_class; use explicit placement for service or utility assets"
+                        .to_owned(),
+                );
+            }
             validate_against_builtin_zoning(params)?;
             match zone_type {
                 "residential" => {
@@ -354,6 +432,16 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                 || non_empty_optional_string(&params.density).is_some()
             {
                 return Err("explicit buildings must not export zone_type or density".to_owned());
+            }
+            if let Some(service_class) = service_class {
+                if is_utility_service_class(service_class) {
+                    let Some(economy_profile) = economy_profile else {
+                        return Err(
+                            "explicit utility service buildings require economy_profile".to_owned()
+                        );
+                    };
+                    validate_utility_profile_matches_service(economy_profile, service_class)?;
+                }
             }
         }
     }
@@ -715,5 +803,178 @@ mod tests {
         )
         .unwrap();
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
+    }
+
+    #[test]
+    fn export_rejects_zoned_service_class() {
+        let dir = std::env::temp_dir().join("metrum_export_zoned_service_class");
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.residential.invalid_service",
+            "display_name": "Invalid Service",
+            "placement_mode": "zoned_private",
+            "zone_type": "residential",
+            "density": "low",
+            "lot_width_cells": 2,
+            "lot_depth_cells": 2,
+            "household_capacity": 2,
+            "service_class": "fire",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(
+            result.contains("zoned_private buildings must not export service_class"),
+            "expected service-class validation error, got: {result}"
+        );
+    }
+
+    #[test]
+    fn export_rejects_utility_without_economy_profile() {
+        let dir = std::env::temp_dir().join("metrum_export_utility_without_profile");
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.power.invalid",
+            "display_name": "Invalid Power Plant",
+            "placement_mode": "explicit",
+            "lot_width_cells": 3,
+            "lot_depth_cells": 4,
+            "worker_capacity": 4,
+            "service_class": "power",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(
+            result.contains("explicit utility service buildings require economy_profile"),
+            "expected utility profile validation error, got: {result}"
+        );
+    }
+
+    #[test]
+    fn export_rejects_invalid_service_class() {
+        let dir = std::env::temp_dir().join("metrum_export_invalid_service_class");
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.service.invalid",
+            "display_name": "Invalid Service",
+            "placement_mode": "explicit",
+            "lot_width_cells": 3,
+            "lot_depth_cells": 4,
+            "worker_capacity": 4,
+            "service_class": "sewage",
+            "economy_profile": "wastewater_treatment_basic",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(
+            result.contains("unsupported service_class 'sewage'"),
+            "expected service-class enum validation error, got: {result}"
+        );
+    }
+
+    #[test]
+    fn export_rejects_utility_profile_for_wrong_service() {
+        let dir = std::env::temp_dir().join("metrum_export_wrong_utility_profile");
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.power.wrong_profile",
+            "display_name": "Wrong Utility Profile",
+            "placement_mode": "explicit",
+            "lot_width_cells": 3,
+            "lot_depth_cells": 4,
+            "worker_capacity": 4,
+            "service_class": "power",
+            "economy_profile": "water_plant_basic",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(
+            result.contains("does not provide the 'power' service"),
+            "expected utility service mismatch error, got: {result}"
+        );
+    }
+
+    #[test]
+    fn export_writes_explicit_utility_profile() {
+        let dir = std::env::temp_dir().join("metrum_export_explicit_utility");
+        let _ = std::fs::remove_dir_all(&dir);
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.power.plant_test",
+            "display_name": "Power Plant Test",
+            "placement_mode": "explicit",
+            "lot_width_cells": 3,
+            "lot_depth_cells": 4,
+            "worker_capacity": 4,
+            "service_class": "power",
+            "economy_profile": "power_plant_basic",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(result.is_empty(), "expected success, got: {result}");
+
+        let asset_toml = std::fs::read_to_string(
+            dir.join("assets")
+                .join("building.power.plant_test")
+                .join("asset.toml"),
+        )
+        .unwrap();
+        assert!(asset_toml.contains("placement_mode = \"explicit\""));
+        assert!(asset_toml.contains("service_class = \"power\""));
+        assert!(asset_toml.contains("economy_profile = \"power_plant_basic\""));
     }
 }

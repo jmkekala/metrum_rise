@@ -1297,10 +1297,48 @@ Thumbnail generation rules:
 
 V1 inspector and viewport contract:
 
+- The editor shell uses resizable left browser, central viewport, right inspector, and bottom log
+  panes. Fixed-width side panels are not acceptable because real content packs can contain hundreds
+  of assets and long authored IDs.
+- Dense editor shells support dark and light UI themes from a top-right chrome switch. The selected
+  mode is a local editor preference and applies to editor-owned dialogs such as mesh import.
+- Resizable editor UI state is local and persistent. The asset editor stores its window size and
+  position, browser/inspector/log split sizes, and editor-owned dialog positions/sizes/splits so
+  restarts preserve the working layout. Restored dialog geometry must be clamped to the current
+  application viewport so a saved layout cannot reopen editor-owned windows outside the app.
+- The asset browser presents a searchable, deterministic hierarchy rather than one flat list. The
+  baseline grouping is pack, then asset category derived from the registered asset ID, then the
+  individual asset. Individual asset rows display the authored `display_name`; the full asset ID is
+  retained as item metadata/tooltip and remains searchable. Single click selects an asset browser
+  row; double click or keyboard activation loads it into the inspector.
+- Mesh import uses a project-native picker with folder navigation, current-folder filtering, and a
+  live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
+  preview loader uses the same import path as the final building preview so the picker cannot show
+  a materially different model from the exported asset.
 - Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
+- The building inspector groups long forms into focused equal-width sub-tabs, with persistent
+  top-level actions such as mesh import and export kept outside the tab scroll pages. Switching tabs
+  must not resize the inspector sidebar.
+- The Pack tab uses a single `Set Pack...` command plus a compact selected-pack summary instead of
+  separate free-form pack fields. The command opens a pack menu listing installed
+  `user://mods/*/pack.toml` packs and a `Create New Pack...` action. Creating a pack writes a
+  minimal `pack.toml` immediately; asset files are still added on export.
+- If an existing loaded asset is exported to a different pack, the editor must stop for an explicit
+  retarget choice: `Copy`, `Move`, or `Cancel`. `Copy` writes/updates the target pack and leaves the
+  original asset folder untouched. `Move` writes/updates the target pack, then deletes only the
+  original asset folder after the target export and file copies succeed. A failed or incomplete
+  export must never delete the original.
 - If `placement_mode = "zoned_private"`, the zoning-choice controls in building mode should load their available categories and density-band combinations from the shipped zoning-profile registry rather than from hardcoded editor-only lists.
 - If `placement_mode = "explicit"`, the zoning-choice controls are hidden and the building is authored outside the painted-zoning path.
 - Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
+- The comparison ghost is explicit, not automatic. Right-clicking an asset browser row opens an
+  asset context menu with `Use as Ghost`; that asset remains as the viewport ghost until it is
+  replaced or cleared.
+- The comparison ghost uses the selected asset's authored preview scale and source mesh transform.
+  Loading another asset into the inspector must not replace the ghost. Assets from packs with
+  different source-unit conventions must compare in exported/game-space meters.
+- The comparison ghost can be repositioned in the viewport by dragging it with the left mouse
+  button.
 - Prop mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), prop fields (`category`, `bounding_size_m`, `snap_mode`, `terrain_behavior`), and optional material paths.
 - Prop mode viewport shows ground contact, snap target, pivot, authored bounds, and orientation validation.
 - Vehicle mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), vehicle fields (`vehicle_class`, `vehicle_family`, `length_m`, `width_m`, `height_m`, `color_variants`), optional material paths, optional `wheel`/`light` anchors, and `[[lods]]`.
@@ -1578,7 +1616,8 @@ Conditional zoning fields:
 
 Optional fields:
 
-- `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`
+- `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`. Non-`none` service classes are valid only for `placement_mode = "explicit"` in baseline `v1`.
+- `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment).
 - `min_zone_width_cells`: integer, default `lot_width_cells`
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
 - `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential.
@@ -1698,8 +1737,12 @@ Building rules:
   zoning-profile registry only when `placement_mode = "zoned_private"` so content authoring stays
   aligned with the live zoning data rather than with hardcoded editor defaults.
 - `service_class = "none"` is the default for ordinary zoned private buildings.
+- `placement_mode = "zoned_private"` must not export a non-`none` `service_class`.
 - `placement_mode = "explicit"` may use `service_class = "none"` for landmarks or a non-`none`
   value for explicit service or utility buildings.
+- Explicit utility service classes (`power`, `water`, `waste`) require an `economy_profile` that
+  resolves to a utility producer or processor for the corresponding runtime utility service. The
+  `waste` asset-side service class corresponds to runtime `utility_service = "sewage"`.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
 - The `main` entrance anchor's `forward` vector defines the asset-local frontage direction used by
   building placement, rendering, and entrance-cache derivation.

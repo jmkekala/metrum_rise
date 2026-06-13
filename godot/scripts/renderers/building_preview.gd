@@ -11,6 +11,8 @@ signal mesh_loaded(aabb: AABB)
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
 const ENTRANCE_SPHERE_RADIUS_M := 0.35
+const GHOST_TINT := Color(0.16, 0.38, 0.95, 0.58)
+const GHOST_ORIGINAL_COLOR_BLEND := 0.55
 
 var _mesh_instance: MeshInstance3D
 var _lot_overlay: MeshInstance3D
@@ -20,9 +22,12 @@ var _entrance_sphere: MeshInstance3D
 var _ground_grid: MeshInstance3D
 var _human_figure: MeshInstance3D  # 1.8 m reference capsule
 
-# Ghost: previous mesh shown semi-transparent to the left for comparison.
-var _ghost_root: Node3D            # offset container for ghost mesh
-var _ghost_lot_width: float = 0.0  # width of the ghosted lot in metres
+# Ghost: explicitly selected comparison mesh shown semi-transparent.
+var _ghost_root: Node3D
+var _ghost_lot_width: float = 0.0
+var _ghost_lot_depth: float = 0.0
+var _ghost_aabb: AABB = AABB()
+var _ghost_has_mesh: bool = false
 
 var _width_cells: int = 1
 var _depth_cells: int = 1
@@ -81,10 +86,6 @@ func load_glb(native_path: String) -> void:
 		push_warning("BuildingPreview: failed to load '%s' (error %d)" % [native_path, err])
 		return
 
-	# Capture current mesh as ghost before replacing it.
-	if _mesh_instance.get_child_count() > 0:
-		_capture_ghost()
-
 	for child in _mesh_instance.get_children():
 		child.queue_free()
 
@@ -134,46 +135,101 @@ func set_show_human(visible: bool) -> void:
 func place_human_at(world_x: float, world_z: float) -> void:
 	_human_figure.position = Vector3(world_x, 0.9, world_z)
 
-## Clear the mesh, ghost, and overlays.
+## Clear the active mesh and overlays. The explicit comparison ghost remains loaded.
 func clear() -> void:
 	for child in _mesh_instance.get_children():
 		child.queue_free()
-	clear_ghost()
 	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
 	_entrance_gizmo.mesh = null
 	_entrance_sphere.mesh = null
 	_human_figure.mesh = null
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Ghost
-# ──────────────────────────────────────────────────────────────────────────────
+## Load an explicit comparison ghost without changing the active preview mesh.
+func load_ghost(native_path: String, scale_value: float, width_cells: int, depth_cells: int) -> bool:
+	var ext := native_path.get_extension().to_lower()
+	var doc: GLTFDocument
+	var state: GLTFState
+	if ext == "fbx":
+		doc = FBXDocument.new()
+		state = FBXState.new()
+	else:
+		doc = GLTFDocument.new()
+		state = GLTFState.new()
+	var err := doc.append_from_file(native_path, state)
+	if err != OK:
+		push_warning("BuildingPreview: failed to load ghost '%s' (error %d)" % [native_path, err])
+		return false
 
-func _capture_ghost() -> void:
+	var scene: Node = doc.generate_scene(state)
+	if not scene:
+		return false
 	clear_ghost()
-	_ghost_lot_width = _width_cells * CELL_M
+	_ghost_root.add_child(scene)
+	_ghost_root.scale = Vector3.ONE * maxf(0.001, scale_value)
+	_ghost_lot_width = maxi(1, width_cells) * CELL_M
+	_ghost_lot_depth = maxi(1, depth_cells) * CELL_M
+	if scene is Node3D:
+		_ghost_aabb = _compute_aabb(scene as Node3D)
+	else:
+		_ghost_aabb = AABB(
+			Vector3(-_ghost_lot_width * 0.5, 0.0, -_ghost_lot_depth * 0.5),
+			Vector3(_ghost_lot_width, CELL_M, _ghost_lot_depth)
+		)
+	if _ghost_aabb.size.length() < 0.001:
+		_ghost_aabb = AABB(
+			Vector3(-_ghost_lot_width * 0.5, 0.0, -_ghost_lot_depth * 0.5),
+			Vector3(_ghost_lot_width, CELL_M, _ghost_lot_depth)
+		)
+	_ghost_has_mesh = true
+	_apply_ghost_material(scene)
+	_position_ghost()
+	return true
 
-	# Duplicate the current scene node (first child of _mesh_instance).
-	for child in _mesh_instance.get_children():
-		var dup: Node = child.duplicate()
-		_ghost_root.add_child(dup)
-		_apply_ghost_material(dup)
+## Returns true when a world-space point on the ground plane is within the ghost footprint.
+func ghost_contains_world_xz(world_pos: Vector3) -> bool:
+	if not _ghost_has_mesh:
+		return false
+	var local := _ghost_root.to_local(world_pos)
+	var margin := 1.0
+	return (
+		local.x >= _ghost_aabb.position.x - margin
+		and local.x <= _ghost_aabb.position.x + _ghost_aabb.size.x + margin
+		and local.z >= _ghost_aabb.position.z - margin
+		and local.z <= _ghost_aabb.position.z + _ghost_aabb.size.z + margin
+	)
 
-	# Carry over the current preview scale.
-	_ghost_root.scale = _mesh_instance.scale
+## Current ghost root position in world space.
+func get_ghost_world_position() -> Vector3:
+	return _ghost_root.global_position
 
-	# Position ghost to the left: half its lot + gap + half current lot.
-	var gap := CELL_M
-	var offset_x := -(_ghost_lot_width * 0.5 + gap + _width_cells * CELL_M * 0.5)
-	_ghost_root.position = Vector3(offset_x, 0.0, 0.0)
+## Move the ghost root on the XZ plane while keeping it grounded.
+func set_ghost_world_position(world_pos: Vector3) -> void:
+	var local := to_local(world_pos)
+	_ghost_root.position = Vector3(local.x, 0.0, local.z)
 
+## Returns whether an explicit comparison ghost is loaded.
+func has_ghost() -> bool:
+	return _ghost_has_mesh
+
+## Clear the explicit comparison ghost.
 func clear_ghost() -> void:
 	for child in _ghost_root.get_children():
 		child.queue_free()
 	_ghost_lot_width = 0.0
+	_ghost_lot_depth = 0.0
+	_ghost_aabb = AABB()
+	_ghost_has_mesh = false
 
-# Walk the duplicated subtree and replace every surface material with a
-# semi-transparent blue-grey version of the original albedo.
+func _position_ghost() -> void:
+	if not _ghost_has_mesh:
+		return
+	var gap := CELL_M
+	var offset_x := -(_ghost_lot_width * 0.5 + gap + _width_cells * CELL_M * 0.5)
+	_ghost_root.position = Vector3(offset_x, 0.0, 0.0)
+
+# Walk the ghost subtree and replace every surface material with a stronger
+# blueprint tint that remains legible in both light and dark editor themes.
 func _apply_ghost_material(node: Node) -> void:
 	if node is MeshInstance3D:
 		var mi := node as MeshInstance3D
@@ -182,15 +238,15 @@ func _apply_ghost_material(node: Node) -> void:
 			var mat := StandardMaterial3D.new()
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			mat.albedo_color = Color(0.5, 0.65, 0.9, 0.35)
+			mat.albedo_color = GHOST_TINT
 			if orig is StandardMaterial3D:
 				# Tint the original albedo rather than replacing it entirely.
 				var orig_color: Color = (orig as StandardMaterial3D).albedo_color
 				mat.albedo_color = Color(
-					lerpf(orig_color.r, 0.5, 0.6),
-					lerpf(orig_color.g, 0.65, 0.6),
-					lerpf(orig_color.b, 0.9, 0.6),
-					0.4)
+					lerpf(orig_color.r, GHOST_TINT.r, GHOST_ORIGINAL_COLOR_BLEND),
+					lerpf(orig_color.g, GHOST_TINT.g, GHOST_ORIGINAL_COLOR_BLEND),
+					lerpf(orig_color.b, GHOST_TINT.b, GHOST_ORIGINAL_COLOR_BLEND),
+					GHOST_TINT.a)
 			mi.set_surface_override_material(surf, mat)
 	for child in node.get_children():
 		_apply_ghost_material(child)
