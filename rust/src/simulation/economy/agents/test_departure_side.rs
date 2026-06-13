@@ -42,6 +42,9 @@ mod tests {
                 name: "main".to_owned(),
                 position: [0.0, 0.0, 0.5],
                 forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
             }],
             building: Some(BuildingData {
                 flat_size_m2: None,

@@ -414,25 +414,27 @@ Limitation:
 
 - A true split cannot be solved automatically. If one old asset becomes several new assets, the creator must choose one canonical replacement target or leave the old ID unresolved with a warning.
 
-### Future Building Access Metadata
+### Building Site Anchors
 
-V1 keeps the generic entrance/exit system intentionally simple: it uses the required `entrance` anchor named `main`, ignores building-side contention, and does not require driveway or loading-bay capacity metadata.
+V1 keeps the generic entrance/exit runtime intentionally simple: it uses the required `entrance`
+anchor named `main` for pedestrian access and entrance-cache derivation. Building assets may also
+author site anchors for visual/site-layout intent:
 
-If a later freight or service-access system needs explicit building-side capacity, the extension point belongs on building anchors rather than in unrelated one-off building fields.
+- `driveway`: connector intent from lot interior toward the road-facing edge; requires `width_m`
+- `parking`: car stop/stand position inside the lot; requires `width_m` and `length_m`
+- `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
+- All building anchor positions must remain inside the authored lot footprint. For `driveway`,
+  `parking`, and `loading_bay`, the whole authored footprint/rectangle must remain inside the lot;
+  the anchor handle alone being inside is not enough. Driveway footprint length is derived by the
+  editor from `width_m` in v1. All anchor `forward` vectors must be finite non-zero unit vectors.
 
-Direction for a later extension:
+Runtime use in v1:
 
-- `type = "entrance"` remains the generic public/main access point.
-- `type = "service"` remains the generic freight/garage/loading-bay extension point.
-- Future per-anchor access metadata should extend `[[anchors]]`, not replace it with separate top-level building fields.
-- Candidate future per-anchor fields may include:
-  - access role such as public, service, garage, freight, or utility
-  - allowed modes such as foot-only, car-only, or both
-  - maximum concurrent users or reserved bay count
-  - queue capacity or queue-marker count
-  - optional editor-only preview helpers for driveway approach or loading-bay facing
-
-This is later-only design direction. None of those fields are part of the active v1 asset schema yet.
+- `entrance/main` remains the only anchor consumed by the live entrance/exit system.
+- Driveway, parking, and loading-bay anchors are exported and validated now, but yard-surface
+  generation, vehicle parking, and freight-side stop targeting are later runtime hooks.
+- Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
+  feature, not to baseline site-layout tooling.
 
 ### Editor Workspace
 
@@ -761,14 +763,13 @@ Rules:
 - The editor auto-generates initial render bounds and the exported asset stores explicit bounds data.
 - Selection and culling bounds may differ from the visual mesh and do not depend on exact triangle detail.
 - Shadow proxies are separate from visual bounds.
-- Anchor metadata uses one canonical `[[anchors]]` array-of-tables shape rather than a mix of one-off fields like `entrance_anchor`, `service_anchor`, `prop_socket_1`, etc.
+- Anchor metadata uses one canonical `[[anchors]]` array-of-tables shape rather than a mix of one-off fields like `entrance_anchor`, `parking_slot_1`, etc.
 - Single-anchor assets still use `[[anchors]]` with exactly one entry.
 
 Anchor requirements by asset class:
 
 - Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
-- Buildings may define optional `service` anchors for loading bays, rear access, service doors, or utility access points.
-- Buildings may define optional `prop_socket` anchors for attached props such as signs, benches, lights, or planters.
+- Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored site-layout metadata in v1; later runtime systems can consume them for generated yard surfaces, vehicle parking, and freight stop targets.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
 - Props use their exported origin as the placement point and do not require a separate anchor in v1.
 - Characters use the exported feet-center origin as the placement point and do not require additional anchors in v1.
@@ -783,17 +784,28 @@ position = [0.0, 0.0, 4.5]
 forward = [0.0, 0.0, 1.0]
 
 [[anchors]]
-type = "prop_socket"
-name = "bench_left"
-position = [2.4, 0.0, -1.1]
+type = "parking"
+position = [-2.5, 0.0, 1.0]
 forward = [0.0, 0.0, 1.0]
+width_m = 2.5
+length_m = 5.0
+vehicle_class = "car"
+
+[[anchors]]
+type = "loading_bay"
+position = [4.0, 0.0, -3.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 3.5
+length_m = 8.0
+vehicle_class = "freight"
 ```
 
 Built-in anchor types:
 
 - `entrance`
-- `service`
-- `prop_socket`
+- `driveway`
+- `parking`
+- `loading_bay`
 - `wheel`
 - `light`
 
@@ -839,6 +851,10 @@ LOD rules by asset class:
 - Buildings export one or more required `[[mesh_parts]]` entries. Each mesh part requires its
   own `LOD0` under `[[mesh_parts.lods]]`; additional farther tiers are also nested under that
   same part when they exist. Top-level `[[lods]]` is not valid for building assets.
+- Building mesh part geometry must fit inside `lot_width_cells` x `lot_depth_cells` after applying
+  its authored position, Y rotation, scale, and pivot. This is an editor/export invariant based on
+  the imported mesh bounds; the runtime manifest validator does not independently load external mesh
+  files just to recompute their bounds.
 - Vehicles export with required `LOD0`. Additional farther tiers use ordered `[[lods]]` entries when they exist.
 - Props export with required `LOD0`. Props may add `LOD1` and `LOD2`, or cull after `LOD0` or `LOD1`.
 - Characters do not use ordinary mesh `[[lods]]`. Character runtime tiers are defined separately:
@@ -1319,11 +1335,28 @@ V1 inspector and viewport contract:
   live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
   preview loader uses the same import path as the final building preview so the picker cannot show
   a materially different model from the exported asset.
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), mesh part files/transforms, optional material paths, and entrance/service/prop_socket anchors.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
 - Building mesh parts can be moved on the X/Z plane by left-dragging the part in the preview
   viewport and rotated freely around Y by right-dragging it horizontally, with a light snap when the
   rotation is close to a 90-degree cardinal angle; the clicked part becomes the selected part and
-  the inspector transform fields mirror the live manipulation.
+  the inspector transform fields mirror the live manipulation. Selected mesh parts use corner
+  handles rather than full bounding-box cages. The editor clamps the transformed X/Z footprint of
+  every mesh part to the authored lot rectangle during import, move, rotate, scale, and lot-size
+  edits, and export must reject a mesh part that still cannot fit inside the lot.
+- Dragging an empty area in the building preview draws a selection rectangle over the viewport and
+  selects all mesh parts, the required main entrance, and site anchors whose projected bounds
+  intersect it. Holding `Shift` while left-dragging forces rectangle selection even when the drag
+  begins over a mesh part or anchor. Holding `Ctrl` while clicking toggles individual mesh parts,
+  the main entrance, or site anchors into the current selection. Dragging any selected part,
+  entrance, or site anchor moves the whole selected mesh/anchor group together on the X/Z plane. The
+  main entrance can be moved but cannot be removed.
+- The Asset tab provides `Remove Mesh Part`, and the keyboard `Delete` key performs the same action
+  when mesh parts are selected and text input is not active. Removal deletes all selected mesh parts
+  from the active asset draft and preview scene.
+- The Anchors tab provides `Driveway`, `Parking`, and `Loading Bay` add actions plus a remove action
+  for the selected site anchor. Site anchors are selectable in the list or viewport, movable on the
+  X/Z plane with left-drag, and rotatable around Y with right-drag using the same light 90-degree
+  snap as mesh-part rotation. `Delete` removes the selected site anchor when text input is not active.
 - The building inspector groups long forms into focused equal-width sub-tabs, with persistent
   top-level actions such as mesh import and export kept outside the tab scroll pages. Switching tabs
   must not resize the inspector sidebar.
@@ -1338,7 +1371,11 @@ V1 inspector and viewport contract:
   export must never delete the original.
 - If `placement_mode = "zoned_private"`, the zoning-choice controls in building mode should load their available categories and density-band combinations from the shipped zoning-profile registry rather than from hardcoded editor-only lists.
 - If `placement_mode = "explicit"`, the zoning-choice controls are hidden and the building is authored outside the painted-zoning path.
-- Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
+- Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference,
+  entrance anchor gizmo, site-anchor previews, orientation validation, and footprint overflow
+  warnings. Frontage, entrance, and site anchors use theme-aware high-contrast colors plus short
+  viewport labels, dashed guide borders, and contrast halos so they remain legible in both dark and
+  light editor themes.
 - The comparison ghost is explicit, not automatic. Right-clicking an asset browser row opens an
   asset context menu with `Use as Ghost`; that asset remains as the viewport ghost until it is
   replaced or cleared.
@@ -1507,6 +1544,8 @@ Examples:
 Editor behavior:
 
 - The editor generates the initial `asset_id` from the asset class, category, and display name slug.
+  The display-name slug is lower-case ASCII; every run of spaces, punctuation, hyphens, underscores,
+  or other non-alphanumeric characters collapses to one `_`, with no leading or trailing `_`.
 - The author can edit that generated ID before first export.
 - Save and export both hard-fail on duplicate `asset_id` values inside one pack.
 - In v1, renaming an exported asset is a breaking change. Redirects are a later feature, not part of the first implementation contract.
@@ -1584,11 +1623,19 @@ Optional `[materials]` table for static-mesh assets:
 
 Optional `[[anchors]]` table:
 
-- `type`: enum, one of `entrance`, `service`, `prop_socket`, `wheel`, `light`
-- `name`: string
+- `type`: enum, one of `entrance`, `driveway`, `parking`, `loading_bay`, `wheel`, `light`
+- `name`: optional string. Building `entrance/main` requires `name = "main"`; parking and loading
+  anchors normally omit names and are shown by deterministic type/index labels in the editor.
 - `position`: `[f32, f32, f32]`
 - `forward`: `[f32, f32, f32]`; for building `main` entrance anchors this is the asset-local
-  frontage direction that the runtime aligns to the placed building's road-facing direction
+  frontage direction that the runtime aligns to the placed building's road-facing direction.
+  Manifest validation rejects non-finite, zero, or non-unit vectors.
+- `width_m`: optional positive float. Required for building `driveway`, `parking`, and
+  `loading_bay` anchors.
+- `length_m`: optional positive float. Required for building `parking` and `loading_bay` anchors.
+  `driveway` anchors derive their v1 editor footprint length from `width_m`.
+- `vehicle_class`: optional string, baseline values `car`, `freight`, or `service`. If present,
+  validation rejects any other value.
 
 Optional `[[lods]]` table for non-building mesh assets:
 
@@ -1763,8 +1810,12 @@ Building rules:
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
 - The `main` entrance anchor's `forward` vector defines the asset-local frontage direction used by
   building placement, rendering, and entrance-cache derivation.
-- Additional building-side access points for freight, garages, or utilities use `type = "service"`, not a second generic `entrance` anchor.
-- In v1, `service` anchors are authored extension points only. The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret service-anchor capacity or queue behavior yet.
+- Additional building-side site points use `type = "driveway"`, `type = "parking"`, or
+  `type = "loading_bay"`, not a second generic `entrance` anchor.
+- Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
+- In v1, driveway, parking, and loading-bay anchors are authored extension points only. The generic
+  entrance/exit runtime uses only the `main` entrance anchor and does not interpret site-anchor
+  capacity, queue behavior, yard surface, parking, or freight stop behavior yet.
 - In the normal case, `min_zone_*` equals the footprint size.
 - `min_zone_*` reserves room for future yard or setback support without changing the core format.
 - `employment_type` is not part of the v1 building schema. If job-category metadata is needed later, add it as a later extension.

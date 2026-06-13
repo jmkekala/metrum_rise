@@ -10,6 +10,10 @@
 use super::{ManifestError, is_valid_asset_id};
 use serde::Deserialize;
 
+const ZONE_CELL_M: f32 = 10.0;
+const ANCHOR_FORWARD_UNIT_EPS: f32 = 0.02;
+const ANCHOR_LOT_EPS_M: f32 = 0.001;
+
 // ── Shared sub-types ──────────────────────���────────────────────��──────────────
 
 /// One LOD tier entry inside an asset manifest.
@@ -86,12 +90,22 @@ pub struct Anchor {
     /// Role of this anchor in the simulation and editor.
     #[serde(rename = "type")]
     pub anchor_type: AnchorType,
-    /// Short identifier for this anchor within the asset (e.g. `"main"`, `"rear"`).
+    /// Optional short identifier for this anchor within the asset (e.g. `"main"`, `"rear"`).
+    #[serde(default)]
     pub name: String,
     /// Local-space position `[x, y, z]` relative to the asset's placement origin.
     pub position: [f32; 3],
     /// Local-space forward direction unit vector `[x, y, z]`.
     pub forward: [f32; 3],
+    /// Optional usable/access width in metres for entrances, driveways, parking, or loading bays.
+    #[serde(default)]
+    pub width_m: Option<f32>,
+    /// Optional usable/access length in metres for parking or loading bays.
+    #[serde(default)]
+    pub length_m: Option<f32>,
+    /// Optional vehicle class accepted by this anchor, such as `"car"` or `"freight"`.
+    #[serde(default)]
+    pub vehicle_class: Option<String>,
 }
 
 /// Recognised anchor roles.
@@ -100,10 +114,12 @@ pub struct Anchor {
 pub enum AnchorType {
     /// Main pedestrian entrance / road-facing access point on a building.
     Entrance,
-    /// Rear access, loading bay, or service door.
-    Service,
-    /// Socket for attaching a prop (sign, bench, light, planter) to this asset.
-    PropSocket,
+    /// Vehicle connector from the lot interior toward the road-facing edge.
+    Driveway,
+    /// Vehicle parking position inside a building lot.
+    Parking,
+    /// Freight or service vehicle stop position inside a building lot.
+    LoadingBay,
     /// Wheel position marker on a vehicle.
     Wheel,
     /// Light emitter position marker on a vehicle.
@@ -467,6 +483,10 @@ impl AssetManifest {
         // Enforce exactly one class section.
         let _ = self.class()?;
 
+        for anchor in &self.anchors {
+            validate_anchor_common(&self.asset_id, anchor)?;
+        }
+
         if let Some(b) = &self.building {
             if !self.lods.is_empty() {
                 return Err(ManifestError::Validation(format!(
@@ -556,17 +576,41 @@ impl AssetManifest {
 
             let mut main_entrance_count = 0usize;
             for anchor in &self.anchors {
+                validate_building_anchor_position(&self.asset_id, b, anchor)?;
                 match anchor.anchor_type {
                     AnchorType::Entrance if anchor.name == "main" => {
                         main_entrance_count += 1;
                     }
                     AnchorType::Entrance => {
                         return Err(ManifestError::Validation(format!(
-                            "asset_id '{}': additional entrance anchor '{}' is not allowed on building assets; use type = \"service\" for secondary access points",
+                            "asset_id '{}': additional entrance anchor '{}' is not allowed on building assets; use type = \"driveway\", \"parking\", or \"loading_bay\" for site access points",
                             self.asset_id, anchor.name
                         )));
                     }
-                    AnchorType::Service | AnchorType::PropSocket => {}
+                    AnchorType::Driveway => {
+                        validate_positive_anchor_field(
+                            &self.asset_id,
+                            anchor,
+                            "width_m",
+                            anchor.width_m,
+                        )?;
+                        validate_building_site_anchor_footprint(&self.asset_id, b, anchor)?;
+                    }
+                    AnchorType::Parking | AnchorType::LoadingBay => {
+                        validate_positive_anchor_field(
+                            &self.asset_id,
+                            anchor,
+                            "width_m",
+                            anchor.width_m,
+                        )?;
+                        validate_positive_anchor_field(
+                            &self.asset_id,
+                            anchor,
+                            "length_m",
+                            anchor.length_m,
+                        )?;
+                        validate_building_site_anchor_footprint(&self.asset_id, b, anchor)?;
+                    }
                     AnchorType::Wheel => {
                         return Err(ManifestError::Validation(format!(
                             "asset_id '{}': anchor '{}' uses type = \"wheel\", which is not valid for building assets",
@@ -605,6 +649,159 @@ impl AssetManifest {
 
         Ok(())
     }
+}
+
+fn validate_positive_anchor_field(
+    asset_id: &str,
+    anchor: &Anchor,
+    field_name: &str,
+    value: Option<f32>,
+) -> Result<(), ManifestError> {
+    let Some(value) = value else {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' with type = \"{:?}\" requires positive {}",
+            asset_id, anchor.name, anchor.anchor_type, field_name
+        )));
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' has invalid {} {}; expected a positive finite value",
+            asset_id, anchor.name, field_name, value
+        )));
+    }
+    Ok(())
+}
+
+fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), ManifestError> {
+    validate_finite_vec3(asset_id, anchor, "position", anchor.position)?;
+    validate_anchor_forward(asset_id, anchor)?;
+    if let Some(vehicle_class) = anchor.vehicle_class.as_deref() {
+        validate_anchor_vehicle_class(asset_id, anchor, vehicle_class)?;
+    }
+    Ok(())
+}
+
+fn validate_finite_vec3(
+    asset_id: &str,
+    anchor: &Anchor,
+    field_name: &str,
+    value: [f32; 3],
+) -> Result<(), ManifestError> {
+    if value.iter().any(|component| !component.is_finite()) {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' has invalid {} {:?}; expected finite values",
+            asset_id, anchor.name, field_name, value
+        )));
+    }
+    Ok(())
+}
+
+fn validate_anchor_forward(asset_id: &str, anchor: &Anchor) -> Result<(), ManifestError> {
+    validate_finite_vec3(asset_id, anchor, "forward", anchor.forward)?;
+    let [x, y, z] = anchor.forward;
+    let length = (x * x + y * y + z * z).sqrt();
+    if length <= ANCHOR_FORWARD_UNIT_EPS || (length - 1.0).abs() > ANCHOR_FORWARD_UNIT_EPS {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' forward {:?} must be a non-zero unit vector",
+            asset_id, anchor.name, anchor.forward
+        )));
+    }
+    Ok(())
+}
+
+fn validate_anchor_vehicle_class(
+    asset_id: &str,
+    anchor: &Anchor,
+    vehicle_class: &str,
+) -> Result<(), ManifestError> {
+    match vehicle_class.trim() {
+        "car" | "freight" | "service" => Ok(()),
+        other => Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' has invalid vehicle_class '{}'; expected car, freight, or service",
+            asset_id, anchor.name, other
+        ))),
+    }
+}
+
+fn validate_building_anchor_position(
+    asset_id: &str,
+    building: &BuildingData,
+    anchor: &Anchor,
+) -> Result<(), ManifestError> {
+    let half_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
+    let half_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
+    let [x, _, z] = anchor.position;
+    if x.abs() > half_width + ANCHOR_LOT_EPS_M || z.abs() > half_depth + ANCHOR_LOT_EPS_M {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' position [{}, {}, {}] is outside the building lot bounds +/-{}m x +/-{}m",
+            asset_id,
+            anchor.name,
+            anchor.position[0],
+            anchor.position[1],
+            anchor.position[2],
+            half_width,
+            half_depth
+        )));
+    }
+    Ok(())
+}
+
+fn validate_building_site_anchor_footprint(
+    asset_id: &str,
+    building: &BuildingData,
+    anchor: &Anchor,
+) -> Result<(), ManifestError> {
+    let (anchor_width, anchor_length) = match anchor.anchor_type {
+        AnchorType::Driveway => {
+            let width = anchor.width_m.unwrap_or(0.0);
+            (width, (width * 1.4).max(1.5))
+        }
+        AnchorType::Parking | AnchorType::LoadingBay => (
+            anchor.width_m.unwrap_or(0.0),
+            anchor.length_m.unwrap_or(0.0),
+        ),
+        _ => return Ok(()),
+    };
+    let [forward_x, _, forward_z] = anchor.forward;
+    let horizontal_len = (forward_x * forward_x + forward_z * forward_z).sqrt();
+    if horizontal_len <= ANCHOR_FORWARD_UNIT_EPS {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': anchor '{}' with type = \"{:?}\" must have a horizontal forward direction",
+            asset_id, anchor.name, anchor.anchor_type
+        )));
+    }
+    let fwd_x = forward_x / horizontal_len;
+    let fwd_z = forward_z / horizontal_len;
+    let side_x = -fwd_z;
+    let side_z = fwd_x;
+    let half_anchor_width = anchor_width * 0.5;
+    let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
+    let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
+    let offsets = [
+        (-side_x * half_anchor_width, -side_z * half_anchor_width),
+        (side_x * half_anchor_width, side_z * half_anchor_width),
+        (
+            side_x * half_anchor_width + fwd_x * anchor_length,
+            side_z * half_anchor_width + fwd_z * anchor_length,
+        ),
+        (
+            -side_x * half_anchor_width + fwd_x * anchor_length,
+            -side_z * half_anchor_width + fwd_z * anchor_length,
+        ),
+    ];
+    for (offset_x, offset_z) in offsets {
+        let x = anchor.position[0] + offset_x;
+        let z = anchor.position[2] + offset_z;
+        if x.abs() > half_lot_width + ANCHOR_LOT_EPS_M
+            || z.abs() > half_lot_depth + ANCHOR_LOT_EPS_M
+        {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': anchor '{}' site footprint for type = \"{:?}\" crosses the building lot bounds +/-{}m x +/-{}m",
+                asset_id, anchor.name, anchor.anchor_type, half_lot_width, half_lot_depth
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_building_mesh_parts(
@@ -719,6 +916,14 @@ name = "main"
 position = [0.0, 0.0, 4.5]
 forward = [0.0, 0.0, 1.0]
 
+[[anchors]]
+type = "parking"
+position = [-2.5, 0.0, 1.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 2.5
+length_m = 5.0
+vehicle_class = "car"
+
 [[mesh_parts]]
 name = "main"
 position = [0.0, 0.0, 0.0]
@@ -753,9 +958,14 @@ distance_max_m = 600.0
         assert_eq!(m.mesh_parts.len(), 1);
         assert_eq!(m.mesh_parts[0].name, "main");
         assert_eq!(m.mesh_parts[0].lods.len(), 2);
-        assert_eq!(m.anchors.len(), 1);
+        assert_eq!(m.anchors.len(), 2);
         assert_eq!(m.anchors[0].anchor_type, AnchorType::Entrance);
         assert_eq!(m.anchors[0].position, [0.0, 0.0, 4.5]);
+        assert_eq!(m.anchors[1].anchor_type, AnchorType::Parking);
+        assert_eq!(m.anchors[1].name, "");
+        assert_eq!(m.anchors[1].width_m, Some(2.5));
+        assert_eq!(m.anchors[1].length_m, Some(5.0));
+        assert_eq!(m.anchors[1].vehicle_class.as_deref(), Some("car"));
     }
 
     #[test]
@@ -875,6 +1085,100 @@ position = [0.0, 0.0, -2.0]
 forward = [0.0, 0.0, -1.0]
 "#;
         assert!(AssetManifest::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn building_rejects_anchor_outside_lot() {
+        let toml =
+            BUILDING_TOML.replace("position = [-2.5, 0.0, 1.0]", "position = [16.0, 0.0, 1.0]");
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("outside the building lot bounds"),
+            "expected outside-lot validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_site_anchor_footprint_outside_lot() {
+        let toml = BUILDING_TOML.replace(
+            "position = [-2.5, 0.0, 1.0]",
+            "position = [-2.5, 0.0, 12.0]",
+        );
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("site footprint"),
+            "expected footprint validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_driveway_footprint_outside_lot() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 9.0]
+forward = [0.0, 0.0, 1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, 9.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        let err = AssetManifest::from_str(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("site footprint"),
+            "expected driveway footprint validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_zero_anchor_forward() {
+        let toml = BUILDING_TOML.replace("forward = [0.0, 0.0, 1.0]", "forward = [0.0, 0.0, 0.0]");
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("must be a non-zero unit vector"),
+            "expected forward-vector validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_non_unit_anchor_forward() {
+        let toml = BUILDING_TOML.replace("forward = [0.0, 0.0, 1.0]", "forward = [0.0, 0.0, 2.0]");
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("must be a non-zero unit vector"),
+            "expected forward-vector validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_invalid_anchor_vehicle_class() {
+        let toml =
+            BUILDING_TOML.replace("vehicle_class = \"car\"", "vehicle_class = \"hovercraft\"");
+        let err = AssetManifest::from_str(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid vehicle_class"),
+            "expected vehicle-class validation error, got: {err}"
+        );
     }
 
     // ── Prop ────────────────────────────────────────────────────────────────

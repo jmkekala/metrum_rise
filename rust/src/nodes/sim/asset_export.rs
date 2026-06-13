@@ -5,7 +5,7 @@
 //! validation, and writes the output files. Pack TOML is only written when the file does
 //! not already exist, so re-exporting individual assets never overwrites pack metadata.
 
-use crate::assets::asset::PlacementMode;
+use crate::assets::asset::{AnchorType, PlacementMode};
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
 use crate::simulation::economy::definitions::{
@@ -32,14 +32,24 @@ pub struct LodParams {
 /// Anchor point entry sent from the building importer form.
 #[derive(Deserialize)]
 pub struct AnchorParams {
-    /// Semantic type of this anchor (e.g. `"frontage"`, `"entrance"`).
+    /// Semantic type of this anchor (e.g. `"entrance"`, `"driveway"`).
     pub anchor_type: String,
-    /// Identifier for this anchor within the asset (e.g. `"main"`).
+    /// Optional identifier for this anchor within the asset (e.g. `"main"`).
+    #[serde(default)]
     pub name: String,
     /// World-space position of the anchor relative to the asset origin.
     pub position: [f32; 3],
     /// Forward direction vector of the anchor in asset-local space.
     pub forward: [f32; 3],
+    /// Optional usable/access width in metres.
+    #[serde(default)]
+    pub width_m: Option<f32>,
+    /// Optional usable/access length in metres.
+    #[serde(default)]
+    pub length_m: Option<f32>,
+    /// Optional vehicle class accepted by this anchor.
+    #[serde(default)]
+    pub vehicle_class: Option<String>,
 }
 
 /// One renderable mesh part sent from the building importer form.
@@ -161,16 +171,39 @@ fn default_placement_mode() -> String {
 
 // ── TOML generation ───────────────────────────────────────────────────────────
 
+fn toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            ch if ch.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04X}", ch as u32);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn build_pack_toml(p: &ExportParams) -> String {
     let desc_line = format!("description = \"\"\n");
     format!(
-        "pack_id = \"{}\"\nschema_version = {}\ndisplay_name = \"{}\"\nversion = \"{}\"\nauthor = \"{}\"\nlicense = \"{}\"\n{}",
-        p.pack_id,
+        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\n{}",
+        toml_string(&p.pack_id),
         CURRENT_SCHEMA_VERSION,
-        p.pack_name,
-        p.pack_version,
-        p.pack_author,
-        p.pack_license,
+        toml_string(&p.pack_name),
+        toml_string(&p.pack_version),
+        toml_string(&p.pack_author),
+        toml_string(&p.pack_license),
         desc_line
     )
 }
@@ -178,12 +211,15 @@ fn build_pack_toml(p: &ExportParams) -> String {
 fn build_asset_toml(p: &ExportParams) -> String {
     let mut out = String::new();
 
-    out.push_str(&format!("asset_id = \"{}\"\n", p.asset_id));
-    out.push_str(&format!("display_name = \"{}\"\n", p.display_name));
+    out.push_str(&format!("asset_id = {}\n", toml_string(&p.asset_id)));
+    out.push_str(&format!(
+        "display_name = {}\n",
+        toml_string(&p.display_name)
+    ));
 
     if let Some(set) = &p.asset_set {
         if !set.is_empty() {
-            out.push_str(&format!("asset_set = \"{set}\"\n"));
+            out.push_str(&format!("asset_set = {}\n", toml_string(set)));
         }
     }
 
@@ -191,7 +227,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
         let tag_list = p
             .tags
             .iter()
-            .map(|t| format!("\"{t}\""))
+            .map(|t| toml_string(t))
             .collect::<Vec<_>>()
             .join(", ");
         out.push_str(&format!("tags = [{tag_list}]\n"));
@@ -206,9 +242,9 @@ fn build_asset_toml(p: &ExportParams) -> String {
             out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
             if placement_mode == "zoned_private" {
                 let zone = p.zone_type.as_deref().unwrap_or("residential");
-                out.push_str(&format!("zone_type = \"{zone}\"\n"));
+                out.push_str(&format!("zone_type = {}\n", toml_string(zone)));
                 let density = p.density.as_deref().unwrap_or("low");
-                out.push_str(&format!("density = \"{density}\"\n"));
+                out.push_str(&format!("density = {}\n", toml_string(density)));
             }
             out.push_str(&format!("lot_width_cells = {}\n", p.lot_width_cells));
             out.push_str(&format!("lot_depth_cells = {}\n", p.lot_depth_cells));
@@ -240,12 +276,12 @@ fn build_asset_toml(p: &ExportParams) -> String {
             }
             if let Some(sc) = &p.service_class {
                 if !sc.is_empty() && sc != "none" {
-                    out.push_str(&format!("service_class = \"{sc}\"\n"));
+                    out.push_str(&format!("service_class = {}\n", toml_string(sc)));
                 }
             }
             if let Some(ep) = &p.economy_profile {
                 if !ep.is_empty() {
-                    out.push_str(&format!("economy_profile = \"{ep}\"\n"));
+                    out.push_str(&format!("economy_profile = {}\n", toml_string(ep)));
                 }
             }
         }
@@ -257,7 +293,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
 
     for part in &p.mesh_parts {
         out.push_str("\n[[mesh_parts]]\n");
-        out.push_str(&format!("name = \"{}\"\n", part.name));
+        out.push_str(&format!("name = {}\n", toml_string(&part.name)));
         let [x, y, z] = part.position;
         out.push_str(&format!("position = [{x}, {y}, {z}]\n"));
         let [rx, ry, rz] = part.rotation_degrees;
@@ -270,7 +306,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
         }
         for lod in &part.lods {
             out.push_str("\n[[mesh_parts.lods]]\n");
-            out.push_str(&format!("file = \"{}\"\n", lod.file));
+            out.push_str(&format!("file = {}\n", toml_string(&lod.file)));
             out.push_str(&format!("distance_min_m = {}\n", lod.distance_min_m));
             if let Some(max) = lod.distance_max_m {
                 out.push_str(&format!("distance_max_m = {max}\n"));
@@ -280,12 +316,29 @@ fn build_asset_toml(p: &ExportParams) -> String {
 
     for anchor in &p.anchors {
         out.push_str("\n[[anchors]]\n");
-        out.push_str(&format!("type = \"{}\"\n", anchor.anchor_type));
-        out.push_str(&format!("name = \"{}\"\n", anchor.name));
+        out.push_str(&format!("type = {}\n", toml_string(&anchor.anchor_type)));
+        if !anchor.name.is_empty() {
+            out.push_str(&format!("name = {}\n", toml_string(&anchor.name)));
+        }
         let [x, y, z] = anchor.position;
         out.push_str(&format!("position = [{x}, {y}, {z}]\n"));
         let [fx, fy, fz] = anchor.forward;
         out.push_str(&format!("forward = [{fx}, {fy}, {fz}]\n"));
+        if let Some(width) = anchor.width_m {
+            if width > 0.0 {
+                out.push_str(&format!("width_m = {width}\n"));
+            }
+        }
+        if let Some(length) = anchor.length_m {
+            if length > 0.0 {
+                out.push_str(&format!("length_m = {length}\n"));
+            }
+        }
+        if let Some(vehicle_class) = &anchor.vehicle_class {
+            if !vehicle_class.is_empty() {
+                out.push_str(&format!("vehicle_class = {}\n", toml_string(vehicle_class)));
+            }
+        }
     }
 
     out
@@ -311,6 +364,17 @@ fn normalized_placement_mode_key(value: &str) -> &'static str {
     match value.trim() {
         "explicit" => "explicit",
         _ => "zoned_private",
+    }
+}
+
+fn anchor_type_key(anchor_type: AnchorType) -> &'static str {
+    match anchor_type {
+        AnchorType::Entrance => "entrance",
+        AnchorType::Driveway => "driveway",
+        AnchorType::Parking => "parking",
+        AnchorType::LoadingBay => "loading_bay",
+        AnchorType::Wheel => "wheel",
+        AnchorType::Light => "light",
     }
 }
 
@@ -609,10 +673,13 @@ pub fn get_asset_manifest_json_internal(
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "anchors": m.anchors.iter().map(|a| serde_json::json!({
-            "anchor_type": format!("{:?}", a.anchor_type).to_lowercase(),
+            "anchor_type": anchor_type_key(a.anchor_type),
             "name": a.name,
             "position": a.position,
             "forward": a.forward,
+            "width_m": a.width_m,
+            "length_m": a.length_m,
+            "vehicle_class": a.vehicle_class.as_deref(),
         })).collect::<Vec<_>>(),
     });
 
@@ -736,6 +803,60 @@ mod tests {
                 .join("asset.toml")
                 .exists()
         );
+    }
+
+    #[test]
+    fn export_escapes_toml_strings() {
+        let dir = std::env::temp_dir().join("metrum_export_string_escape");
+        let _ = std::fs::remove_dir_all(&dir);
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test \"Pack\"",
+            "pack_author": "Line\nAuthor",
+            "asset_class": "building",
+            "asset_id": "building.residential.escaped_house",
+            "display_name": "Quoted \"House\"",
+            "tags": ["quoted \"tag\"", "line\nbreak"],
+            "placement_mode": "zoned_private",
+            "zone_type": "residential",
+            "density": "low",
+            "lot_width_cells": 2,
+            "lot_depth_cells": 2,
+            "level": 1,
+            "household_capacity": 6,
+            "mesh_parts": one_mesh_part_json(),
+            "anchors": [
+                {
+                    "anchor_type": "entrance",
+                    "name": "main",
+                    "position": [0.0, 0.0, 2.0],
+                    "forward": [0.0, 0.0, 1.0]
+                },
+                {
+                    "anchor_type": "parking",
+                    "name": "bay \"north\"\n",
+                    "position": [0.0, 0.0, 0.0],
+                    "forward": [0.0, 0.0, 1.0],
+                    "width_m": 2.5,
+                    "length_m": 5.0,
+                    "vehicle_class": "car"
+                }
+            ]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(result.is_empty(), "expected success, got: {result}");
+
+        let asset_toml = std::fs::read_to_string(
+            dir.join("assets")
+                .join("building.residential.escaped_house")
+                .join("asset.toml"),
+        )
+        .unwrap();
+        assert!(asset_toml.contains("name = \"bay \\\"north\\\"\\n\""));
+        assert!(asset_toml.contains("vehicle_class = \"car\""));
+        AssetManifest::from_str(&asset_toml).expect("escaped TOML should round-trip");
     }
 
     #[test]

@@ -9,6 +9,7 @@ extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
 const MeshImportDialog = preload("res://scripts/editors/mesh_import_dialog.gd")
+const SelectionRectOverlay = preload("res://scripts/editors/selection_rect_overlay.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 
 const PANEL_LEFT_W  := 360
@@ -26,6 +27,17 @@ const PACK_MENU_NO_PACKS := 1000001
 const PACK_SCHEMA_VERSION := 1
 const MESH_ROTATION_DRAG_DEG_PER_PX := 0.35
 const MESH_ROTATION_CARDINAL_SNAP_DEG := 4.0
+const SELECTION_DRAG_THRESHOLD_PX := 6.0
+const SITE_ANCHOR_DRAG_RADIUS_M := 1.25
+const SITE_ANCHOR_DEFAULT_WIDTH_M := {
+	"driveway": 3.0,
+	"parking": 2.5,
+	"loading_bay": 3.5,
+}
+const SITE_ANCHOR_DEFAULT_LENGTH_M := {
+	"parking": 5.0,
+	"loading_bay": 8.0,
+}
 const PLACEMENT_MODES := [
 	{"id": "zoned_private", "label": "Zoned Private"},
 	{"id": "explicit", "label": "Explicit"},
@@ -71,6 +83,7 @@ var _main_vsplit: VSplitContainer
 var _left_split: HSplitContainer
 var _right_split: HSplitContainer
 var _preview_view_rect: Control
+var _selection_rect_overlay: Control
 var _theme_root: Control
 var _top_menu: Node
 var _layout_restoring: bool = false
@@ -120,10 +133,21 @@ var _part_scales: Array[float] = []
 var _part_pivot_offsets: Array[Vector3] = []
 var _part_aabbs: Array[AABB] = []
 var _selected_part_index: int = -1
+var _selected_part_indices: Array[int] = []
+var _updating_mesh_part_selection: bool = false
 var _frontage_lbl: Label  # shows current frontage forward vector
 var _entrance_x_spin: SpinBox
 var _entrance_y_spin: SpinBox
 var _entrance_z_spin: SpinBox
+var _site_anchor_list: ItemList
+var _site_anchor_name_edit: LineEdit
+var _site_anchor_vehicle_class_btn: OptionButton
+var _site_anchor_x_spin: SpinBox
+var _site_anchor_y_spin: SpinBox
+var _site_anchor_z_spin: SpinBox
+var _site_anchor_yaw_spin: SpinBox
+var _site_anchor_width_spin: SpinBox
+var _site_anchor_length_spin: SpinBox
 var _glb_path: String = ""
 
 # 3D preview node
@@ -172,14 +196,33 @@ var _economy_catalog_error: String = ""
 var _log_plain_lines: Array[String] = []
 var _bbcode_strip_regex: RegEx
 var _main_entrance_auto: bool = true
+var _main_entrance_selected: bool = false
 var _updating_main_entrance_fields: bool = false
 var _extra_anchors: Array[Dictionary] = []
+var _selected_site_anchor_index: int = -1
+var _selected_site_anchor_indices: Array[int] = []
+var _updating_site_anchor_controls: bool = false
+var _updating_site_anchor_list: bool = false
 var _dragging_main_entrance: bool = false
+var _dragging_site_anchor: bool = false
 var _dragging_mesh_part: bool = false
+var _selecting_mesh_parts: bool = false
+var _rotating_site_anchor: bool = false
 var _rotating_mesh_part: bool = false
-var _mesh_part_drag_offset: Vector3 = Vector3.ZERO
+var _site_anchor_drag_offset: Vector3 = Vector3.ZERO
+var _site_anchor_drag_start_hit: Vector3 = Vector3.ZERO
+var _site_anchor_drag_start_positions: Array[Vector3] = []
+var _main_entrance_drag_start_hit: Vector3 = Vector3.ZERO
+var _main_entrance_drag_start_position: Vector3 = Vector3.ZERO
+var _site_anchor_rotate_start_x: float = 0.0
+var _site_anchor_rotate_start_yaw: float = 0.0
+var _mesh_part_drag_start_hit: Vector3 = Vector3.ZERO
+var _mesh_part_drag_start_positions: Array[Vector3] = []
 var _mesh_part_rotate_start_x: float = 0.0
 var _mesh_part_rotate_start_yaw: float = 0.0
+var _selection_start_screen: Vector2 = Vector2.ZERO
+var _selection_end_screen: Vector2 = Vector2.ZERO
+var _selection_additive: bool = false
 var _dragging_ghost: bool = false
 var _ghost_drag_offset: Vector3 = Vector3.ZERO
 var _zoning_profiles: Array[Dictionary] = []
@@ -267,6 +310,8 @@ func _build_preview_node() -> void:
 	_preview = Node3D.new()
 	_preview.set_script(script)
 	add_child(_preview)
+	if _preview.has_method("set_theme_mode"):
+		_preview.set_theme_mode(_theme_mode)
 	_preview.mesh_loaded.connect(_on_mesh_loaded)
 
 	var cam_script := load("res://scripts/core/editor_camera_input.gd")
@@ -314,10 +359,15 @@ func _build_ui() -> void:
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_right_split.add_child(center)
 	_preview_view_rect = center
+	_selection_rect_overlay = SelectionRectOverlay.new()
+	_selection_rect_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_selection_rect_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(_selection_rect_overlay)
 	if _cam_input:
 		_cam_input.viewport_rect_control = center
 
 	_build_right_panel(_right_split)
+	_sync_preview_lot_size_from_fields()
 	_build_bottom_panel(_main_vsplit)
 	_apply_editor_theme(anchor)
 	call_deferred("_restore_split_layout")
@@ -447,6 +497,8 @@ func set_ui_theme_mode(mode: String) -> void:
 	_theme_mode = next_mode
 	_save_config()
 	_configure_preview_environment()
+	if _preview and _preview.has_method("set_theme_mode"):
+		_preview.set_theme_mode(_theme_mode)
 	if _theme_root:
 		_apply_editor_theme(_theme_root)
 	if _top_menu and _top_menu.has_method("set_editor_theme_mode"):
@@ -587,12 +639,17 @@ func _build_right_panel(parent: Control) -> void:
 	_lod_list = ItemList.new()
 	_lod_list.custom_minimum_size.y = 150
 	_lod_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_lod_list.select_mode = ItemList.SELECT_MULTI
 	_lod_list.item_selected.connect(_on_mesh_part_selected)
 	asset_box.add_child(_lod_list)
 	var add_lod_btn := Button.new()
 	add_lod_btn.text = "Add Mesh Part..."
 	add_lod_btn.pressed.connect(_on_add_lod_pressed)
 	asset_box.add_child(add_lod_btn)
+	var remove_lod_btn := Button.new()
+	remove_lod_btn.text = "Remove Mesh Part"
+	remove_lod_btn.pressed.connect(_on_remove_mesh_parts_pressed)
+	asset_box.add_child(remove_lod_btn)
 
 	var building_box := _add_inspector_tab(tabs, tab_header, tab_buttons, "Building")
 	_add_label(building_box, "Placement Mode", _font_size_label)
@@ -749,6 +806,61 @@ func _build_right_panel(parent: Control) -> void:
 	entrance_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	entrance_hint.add_theme_font_size_override("font_size", _font_size_label)
 	anchors_box.add_child(entrance_hint)
+
+	_add_label(anchors_box, "Site Anchors", _font_size_section)
+	_site_anchor_list = ItemList.new()
+	_site_anchor_list.custom_minimum_size.y = 130
+	_site_anchor_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_site_anchor_list.select_mode = ItemList.SELECT_MULTI
+	_site_anchor_list.item_selected.connect(_on_site_anchor_selected)
+	_site_anchor_list.multi_selected.connect(_on_site_anchor_multi_selected)
+	anchors_box.add_child(_site_anchor_list)
+
+	var site_button_row := HBoxContainer.new()
+	site_button_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	anchors_box.add_child(site_button_row)
+	for anchor_type in ["driveway", "parking", "loading_bay"]:
+		var add_anchor_btn := Button.new()
+		add_anchor_btn.text = _site_anchor_type_label(anchor_type)
+		add_anchor_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		add_anchor_btn.pressed.connect(Callable(self, "_add_site_anchor").bind(anchor_type))
+		site_button_row.add_child(add_anchor_btn)
+	var remove_anchor_btn := Button.new()
+	remove_anchor_btn.text = "Remove Anchor"
+	remove_anchor_btn.pressed.connect(_remove_selected_site_anchor)
+	anchors_box.add_child(remove_anchor_btn)
+
+	_site_anchor_name_edit = _add_line_edit(anchors_box, "Optional Name", "")
+	_site_anchor_name_edit.text_changed.connect(_on_site_anchor_text_changed)
+
+	_add_label(anchors_box, "Vehicle Class", _font_size_label)
+	_site_anchor_vehicle_class_btn = OptionButton.new()
+	for class_id in ["car", "freight", "service"]:
+		_site_anchor_vehicle_class_btn.add_item(class_id.capitalize())
+		_site_anchor_vehicle_class_btn.set_item_metadata(
+			_site_anchor_vehicle_class_btn.get_item_count() - 1,
+			class_id
+		)
+	_site_anchor_vehicle_class_btn.item_selected.connect(_on_site_anchor_vehicle_class_selected)
+	anchors_box.add_child(_site_anchor_vehicle_class_btn)
+
+	_site_anchor_x_spin = _add_spinbox(anchors_box, "Anchor X (m)", -500.0, 500.0, 0.0)
+	_site_anchor_y_spin = _add_spinbox(anchors_box, "Anchor Y (m)", -500.0, 500.0, 0.0)
+	_site_anchor_z_spin = _add_spinbox(anchors_box, "Anchor Z (m)", -500.0, 500.0, 0.0)
+	_site_anchor_yaw_spin = _add_spinbox(anchors_box, "Anchor Rotation Y", -180.0, 180.0, 0.0)
+	_site_anchor_width_spin = _add_spinbox(anchors_box, "Width (m)", 0.1, 50.0, 3.0)
+	_site_anchor_length_spin = _add_spinbox(anchors_box, "Length (m)", 0.0, 100.0, 0.0)
+	for spin in [
+		_site_anchor_x_spin,
+		_site_anchor_y_spin,
+		_site_anchor_z_spin,
+		_site_anchor_yaw_spin,
+		_site_anchor_width_spin,
+		_site_anchor_length_spin,
+	]:
+		spin.step = 0.1
+		spin.value_changed.connect(_on_site_anchor_spin_changed)
+	_refresh_site_anchor_list()
 
 	var export_btn := Button.new()
 	export_btn.text = "Export Asset"
@@ -1414,6 +1526,10 @@ func _start_new_asset() -> void:
 	_auto_suggest_asset_id()
 	_set_economy_profile_selection("")
 	_extra_anchors.clear()
+	_set_main_entrance_selected(false)
+	_selected_site_anchor_index = -1
+	_selected_site_anchor_indices.clear()
+	_refresh_site_anchor_list()
 	_glb_path = ""
 	_clear_mesh_parts()
 	_loaded_asset_pack_id = ""
@@ -1526,7 +1642,11 @@ func _populate_inspector_from(data: Dictionary) -> void:
 				main_anchor_fwd = Vector3(float(fwd[0]), float(fwd[1]), float(fwd[2]))
 			has_main_anchor = true
 			continue
-		_extra_anchors.append(anchor_dict.duplicate(true))
+		_extra_anchors.append(_sanitize_site_anchor_dict(anchor_dict))
+	_set_main_entrance_selected(false)
+	_selected_site_anchor_index = -1
+	_selected_site_anchor_indices.clear()
+	_refresh_site_anchor_list()
 
 	_set_frontage_forward(main_anchor_fwd if has_main_anchor else Vector3.FORWARD)
 	if has_main_anchor:
@@ -1725,12 +1845,19 @@ func _sync_min_zone_defaults_with_lot_change() -> void:
 
 func _on_zone_or_lot_changed(_idx) -> void:
 	_sync_min_zone_defaults_with_lot_change()
-	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
+	_sync_preview_lot_size_from_fields()
 	if _main_entrance_auto:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 	else:
 		_update_main_entrance_preview()
+	_clamp_mesh_parts_to_lot()
+	_clamp_site_anchors_to_lot()
 	_update_economy_profile_status()
+
+func _sync_preview_lot_size_from_fields() -> void:
+	if not _preview or not _width_spin or not _depth_spin:
+		return
+	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
 
 func _on_asset_id_text_changed(_t: String) -> void:
 	_asset_id_auto = false
@@ -1963,19 +2090,28 @@ func _auto_suggest_asset_id() -> void:
 		var service_class := _selected_service_class()
 		if service_class != "none":
 			prefix = service_class
-	var name_slug: String = _display_name_edit.text.strip_edges().to_lower()
-	name_slug = name_slug.replace(" ", "_")
-	var clean := ""
-	for ch in name_slug:
-		var code := ch.unicode_at(0)
-		if (code >= 97 and code <= 122) or (code >= 48 and code <= 57) or ch == "_":
-			clean += ch
-	if clean.is_empty():
-		clean = "unnamed"
+	var clean := _asset_id_slug_from_display_name(_display_name_edit.text)
 	# Set text without triggering the manual-edit flag.
 	_asset_id_edit.text_changed.disconnect(_on_asset_id_text_changed)
 	_asset_id_edit.text = "building.%s.%s" % [prefix, clean]
 	_asset_id_edit.text_changed.connect(_on_asset_id_text_changed)
+
+func _asset_id_slug_from_display_name(display_name: String) -> String:
+	var clean := ""
+	var pending_separator := false
+	for ch in display_name.strip_edges().to_lower():
+		var code := ch.unicode_at(0)
+		var valid := (code >= 97 and code <= 122) or (code >= 48 and code <= 57)
+		if valid:
+			if pending_separator and not clean.is_empty():
+				clean += "_"
+			clean += ch
+			pending_separator = false
+		elif not clean.is_empty():
+			pending_separator = true
+	if clean.is_empty():
+		return "unnamed"
+	return clean
 
 func _sync_workers_to_profile() -> void:
 	if not _workers_spin:
@@ -2034,6 +2170,9 @@ func _on_lod_file_selected(path: String) -> void:
 		_select_mesh_part(idx)
 	_log("Added mesh part '%s'." % path.get_file())
 
+func _on_remove_mesh_parts_pressed() -> void:
+	_remove_selected_mesh_parts()
+
 func _add_mesh_part_from_path(
 	path: String,
 	part_name: String,
@@ -2064,23 +2203,491 @@ func _add_mesh_part_from_path(
 	_part_pivot_offsets.append(stored_pivot)
 	_part_aabbs.append(aabb)
 	_lod_list.add_item("%s  —  %s" % [name, path.get_file()])
-	_preview.set_mesh_part_transform(idx, position, rotation_y, scale, stored_pivot)
+	_part_positions[idx] = _clamp_mesh_part_position_to_lot(idx, position)
+	_preview.set_mesh_part_transform(
+		idx,
+		_part_positions[idx],
+		rotation_y,
+		_part_scales[idx],
+		stored_pivot
+	)
 	return idx
 
-func _select_mesh_part(index: int) -> void:
+func _select_mesh_part(index: int, clear_site_anchors: bool = true) -> void:
 	if index < 0 or index >= _lod_source_paths.size():
+		_set_selected_mesh_parts([], -1)
+		if clear_site_anchors:
+			_set_selected_site_anchors([], -1)
+			_set_main_entrance_selected(false)
+		return
+	_set_selected_mesh_parts([index], index)
+	if clear_site_anchors:
+		_set_selected_site_anchors([], -1)
+		_set_main_entrance_selected(false)
+
+func _on_mesh_part_selected(index: int) -> void:
+	if _updating_mesh_part_selection:
+		return
+	_select_mesh_part(index)
+
+func _set_selected_mesh_parts(indices: Array, primary_index: int = -1) -> void:
+	var seen := {}
+	var resolved: Array[int] = []
+	for raw_index in indices:
+		var index := int(raw_index)
+		if index < 0 or index >= _lod_source_paths.size() or seen.has(index):
+			continue
+		seen[index] = true
+		resolved.append(index)
+	resolved.sort()
+	if resolved.is_empty():
 		_selected_part_index = -1
 	else:
-		_selected_part_index = index
-		if _lod_list and index < _lod_list.item_count:
-			_lod_list.select(index)
-		_mesh_aabb = _part_aabbs[index]
-		_pivot_offset = _part_pivot_offsets[index]
+		_selected_part_index = primary_index if resolved.has(primary_index) else int(resolved[0])
+	_selected_part_indices = resolved
+	_updating_mesh_part_selection = true
+	if _lod_list:
+		_lod_list.deselect_all()
+		for index in _selected_part_indices:
+			if index >= 0 and index < _lod_list.item_count:
+				_lod_list.select(index, false)
+	_updating_mesh_part_selection = false
+	if _selected_part_index >= 0:
+		_mesh_aabb = _part_aabbs[_selected_part_index]
+		_pivot_offset = _part_pivot_offsets[_selected_part_index]
+	else:
+		_mesh_aabb = AABB()
+		_pivot_offset = Vector3.ZERO
+	if _preview and _preview.has_method("set_selected_mesh_parts"):
+		_preview.set_selected_mesh_parts(_selected_part_indices, _selected_part_index)
 	_refresh_selected_part_controls()
 	_update_dim_label()
 
-func _on_mesh_part_selected(index: int) -> void:
-	_select_mesh_part(index)
+func _remove_selected_mesh_parts() -> bool:
+	var remove_indices := _selected_part_indices.duplicate()
+	if remove_indices.is_empty() and _has_selected_mesh_part():
+		remove_indices.append(_selected_part_index)
+	if remove_indices.is_empty():
+		_log("[color=yellow]No mesh part selected to remove.[/color]")
+		return false
+
+	remove_indices.sort()
+	var first_removed := int(remove_indices[0])
+	for i in range(remove_indices.size() - 1, -1, -1):
+		var index := int(remove_indices[i])
+		if index < 0 or index >= _lod_source_paths.size():
+			continue
+		_lod_source_paths.remove_at(index)
+		_part_positions.remove_at(index)
+		_part_rotation_y.remove_at(index)
+		_part_scales.remove_at(index)
+		_part_pivot_offsets.remove_at(index)
+		_part_aabbs.remove_at(index)
+		if _lod_list and index < _lod_list.item_count:
+			_lod_list.remove_item(index)
+
+	if _preview and _preview.has_method("remove_mesh_parts"):
+		_preview.remove_mesh_parts(remove_indices)
+
+	var next_index := -1
+	if not _lod_source_paths.is_empty():
+		next_index = mini(first_removed, _lod_source_paths.size() - 1)
+	_set_selected_mesh_parts([next_index] if next_index >= 0 else [], next_index)
+	_log("Removed %d mesh part(s)." % remove_indices.size())
+	return true
+
+func _site_anchor_type_label(anchor_type: String) -> String:
+	match anchor_type:
+		"driveway":
+			return "Driveway"
+		"parking":
+			return "Parking"
+		"loading_bay":
+			return "Loading Bay"
+		_:
+			return anchor_type.capitalize()
+
+func _add_site_anchor(anchor_type: String) -> void:
+	var anchor := {
+		"anchor_type": anchor_type,
+		"name": "",
+		"position": _vector3_to_array(_default_site_anchor_position(anchor_type), 0.01),
+		"forward": _vector3_to_array(_frontage_fwd, 0.001),
+		"width_m": float(SITE_ANCHOR_DEFAULT_WIDTH_M.get(anchor_type, 2.0)),
+		"vehicle_class": _default_site_anchor_vehicle_class(anchor_type),
+	}
+	if SITE_ANCHOR_DEFAULT_LENGTH_M.has(anchor_type):
+		anchor["length_m"] = float(SITE_ANCHOR_DEFAULT_LENGTH_M[anchor_type])
+	anchor["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(anchor, _anchor_position(anchor)),
+		0.01
+	)
+	_extra_anchors.append(anchor)
+	_select_site_anchor(_extra_anchors.size() - 1)
+	_log("Added %s anchor." % _site_anchor_type_label(anchor_type))
+
+func _default_site_anchor_position(anchor_type: String) -> Vector3:
+	var lot_half_w := _width_spin.value * 10.0 * 0.5
+	var lot_half_d := _depth_spin.value * 10.0 * 0.5
+	var count := _site_anchor_count(anchor_type)
+	var side_offset := float((count % 5) - 2) * 2.5
+	var depth_offset := float(count / 5) * 2.0
+	var fwd := _frontage_fwd.normalized()
+	if fwd.length_squared() < 0.001:
+		fwd = Vector3.FORWARD
+	var side := Vector3(-fwd.z, 0.0, fwd.x)
+	var edge_distance := lot_half_d if absf(fwd.z) >= absf(fwd.x) else lot_half_w
+	var inward := -fwd
+	var base := fwd * maxf(0.0, edge_distance - 2.0 - depth_offset) + side * side_offset
+	if anchor_type == "parking":
+		base += inward * 2.5
+	elif anchor_type == "loading_bay":
+		base += inward * 4.0
+	return _clamp_anchor_position_to_lot(Vector3(base.x, 0.0, base.z))
+
+func _site_anchor_count(anchor_type: String) -> int:
+	var count := 0
+	for anchor in _extra_anchors:
+		if str(anchor.get("anchor_type", "")).strip_edges() == anchor_type:
+			count += 1
+	return count
+
+func _default_site_anchor_vehicle_class(anchor_type: String) -> String:
+	return "freight" if anchor_type == "loading_bay" else "car"
+
+func _refresh_site_anchor_list() -> void:
+	if not _site_anchor_list:
+		return
+	_updating_site_anchor_list = true
+	_site_anchor_list.clear()
+	var type_counts := {}
+	for i in _extra_anchors.size():
+		var anchor := _extra_anchors[i]
+		var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+		type_counts[anchor_type] = int(type_counts.get(anchor_type, 0)) + 1
+		_site_anchor_list.add_item(_site_anchor_display_label(i, type_counts[anchor_type]))
+	for index in _selected_site_anchor_indices:
+		if index >= 0 and index < _site_anchor_list.item_count:
+			_site_anchor_list.select(index, false)
+	_updating_site_anchor_list = false
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+
+func _site_anchor_display_label(index: int, type_index: int = -1) -> String:
+	if index < 0 or index >= _extra_anchors.size():
+		return "Anchor"
+	var anchor := _extra_anchors[index]
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var name := str(anchor.get("name", "")).strip_edges()
+	if not name.is_empty():
+		return "%s - %s" % [_site_anchor_type_label(anchor_type), name]
+	if type_index < 0:
+		type_index = _site_anchor_index_among_type(index)
+	return "%s %d" % [_site_anchor_type_label(anchor_type), type_index]
+
+func _site_anchor_index_among_type(index: int) -> int:
+	if index < 0 or index >= _extra_anchors.size():
+		return 0
+	var anchor_type := str(_extra_anchors[index].get("anchor_type", "")).strip_edges()
+	var count := 0
+	for i in index + 1:
+		if str(_extra_anchors[i].get("anchor_type", "")).strip_edges() == anchor_type:
+			count += 1
+	return count
+
+func _select_site_anchor(index: int, clear_mesh_parts: bool = true) -> void:
+	if index < 0 or index >= _extra_anchors.size():
+		_set_selected_site_anchors([], -1)
+	else:
+		_set_selected_site_anchors([index], index)
+		if clear_mesh_parts:
+			_set_selected_mesh_parts([], -1)
+			_set_main_entrance_selected(false)
+
+func _set_main_entrance_selected(selected: bool) -> void:
+	_main_entrance_selected = selected
+	if _preview and _preview.has_method("set_main_entrance_selected"):
+		_preview.set_main_entrance_selected(selected)
+
+func _toggle_main_entrance_selection() -> void:
+	_set_main_entrance_selected(not _main_entrance_selected)
+
+func _set_selected_site_anchors(indices: Array, primary_index: int = -1) -> void:
+	var seen := {}
+	var resolved: Array[int] = []
+	for raw_index in indices:
+		var index := int(raw_index)
+		if index < 0 or index >= _extra_anchors.size() or seen.has(index):
+			continue
+		seen[index] = true
+		resolved.append(index)
+	resolved.sort()
+	if resolved.is_empty():
+		_selected_site_anchor_index = -1
+	else:
+		_selected_site_anchor_index = primary_index if resolved.has(primary_index) else int(resolved[0])
+	_selected_site_anchor_indices = resolved
+	_refresh_site_anchor_list()
+
+func _toggle_site_anchor_selection(index: int) -> void:
+	if index < 0 or index >= _extra_anchors.size():
+		return
+	var selected := _selected_site_anchor_indices.duplicate()
+	if selected.has(index):
+		selected.erase(index)
+		_set_selected_site_anchors(selected, -1 if selected.is_empty() else int(selected[0]))
+	else:
+		selected.append(index)
+		_set_selected_site_anchors(selected, index)
+
+func _on_site_anchor_selected(index: int) -> void:
+	if _updating_site_anchor_list:
+		return
+	var selected := _site_anchor_list.get_selected_items()
+	_set_selected_site_anchors(selected, index)
+	if not Input.is_key_pressed(KEY_CTRL):
+		_set_selected_mesh_parts([], -1)
+		_set_main_entrance_selected(false)
+
+func _on_site_anchor_multi_selected(index: int, _selected: bool) -> void:
+	if _updating_site_anchor_list:
+		return
+	var selected := _site_anchor_list.get_selected_items()
+	_set_selected_site_anchors(selected, index)
+
+func _remove_selected_site_anchor() -> bool:
+	var remove_indices := _selected_site_anchor_indices.duplicate()
+	if remove_indices.is_empty() and _selected_site_anchor_index >= 0:
+		remove_indices.append(_selected_site_anchor_index)
+	if remove_indices.is_empty():
+		_log("[color=yellow]No site anchor selected to remove.[/color]")
+		return false
+	remove_indices.sort()
+	var first_removed := int(remove_indices[0])
+	var removed_labels: Array[String] = []
+	for i in range(remove_indices.size() - 1, -1, -1):
+		var index := int(remove_indices[i])
+		if index < 0 or index >= _extra_anchors.size():
+			continue
+		var removed_type := str(_extra_anchors[index].get("anchor_type", ""))
+		removed_labels.append(_site_anchor_type_label(removed_type))
+		_extra_anchors.remove_at(index)
+	var next_index := -1
+	if not _extra_anchors.is_empty():
+		next_index = mini(first_removed, _extra_anchors.size() - 1)
+	_set_selected_site_anchors([next_index] if next_index >= 0 else [], next_index)
+	if removed_labels.size() == 1:
+		_log("Removed %s anchor." % removed_labels[0])
+	else:
+		_log("Removed %d site anchors." % removed_labels.size())
+	return true
+
+func _update_site_anchor_controls() -> void:
+	_updating_site_anchor_controls = true
+	var has_anchor := _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _extra_anchors.size()
+	var anchor := _extra_anchors[_selected_site_anchor_index] if has_anchor else {}
+	var pos := _anchor_position(anchor)
+	var yaw := _yaw_from_forward(_anchor_forward(anchor))
+	_site_anchor_name_edit.text = str(anchor.get("name", "")) if has_anchor else ""
+	_set_option_by_metadata(_site_anchor_vehicle_class_btn, _anchor_text(anchor, "vehicle_class", "car"))
+	_site_anchor_x_spin.value = pos.x
+	_site_anchor_y_spin.value = pos.y
+	_site_anchor_z_spin.value = pos.z
+	_site_anchor_yaw_spin.value = yaw
+	_site_anchor_width_spin.value = _anchor_number(anchor, "width_m", 3.0) if has_anchor else 3.0
+	_site_anchor_length_spin.value = _anchor_number(anchor, "length_m", 0.0) if has_anchor else 0.0
+	for control in [
+		_site_anchor_name_edit,
+		_site_anchor_vehicle_class_btn,
+		_site_anchor_x_spin,
+		_site_anchor_y_spin,
+		_site_anchor_z_spin,
+		_site_anchor_yaw_spin,
+		_site_anchor_width_spin,
+		_site_anchor_length_spin,
+	]:
+		if control is LineEdit:
+			(control as LineEdit).editable = has_anchor
+		elif control is SpinBox:
+			(control as SpinBox).editable = has_anchor
+		elif control is OptionButton:
+			(control as OptionButton).disabled = not has_anchor
+	_updating_site_anchor_controls = false
+
+func _on_site_anchor_text_changed(_value: String) -> void:
+	if _updating_site_anchor_controls:
+		return
+	_apply_site_anchor_controls()
+
+func _on_site_anchor_vehicle_class_selected(_index: int) -> void:
+	if _updating_site_anchor_controls:
+		return
+	_apply_site_anchor_controls()
+
+func _on_site_anchor_spin_changed(_value: float) -> void:
+	if _updating_site_anchor_controls:
+		return
+	_apply_site_anchor_controls()
+
+func _apply_site_anchor_controls() -> void:
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _extra_anchors.size():
+		return
+	var anchor := _extra_anchors[_selected_site_anchor_index]
+	anchor["name"] = _site_anchor_name_edit.text.strip_edges()
+	anchor["vehicle_class"] = _selected_option_metadata(_site_anchor_vehicle_class_btn, "car")
+	anchor["forward"] = _vector3_to_array(
+		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(_site_anchor_yaw_spin.value)),
+		0.001
+	)
+	anchor["width_m"] = snappedf(maxf(0.1, float(_site_anchor_width_spin.value)), 0.01)
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	if anchor_type == "parking" or anchor_type == "loading_bay":
+		anchor["length_m"] = snappedf(maxf(0.1, float(_site_anchor_length_spin.value)), 0.01)
+	elif anchor.has("length_m"):
+		anchor.erase("length_m")
+	anchor["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(anchor, Vector3(
+			_site_anchor_x_spin.value,
+			_site_anchor_y_spin.value,
+			_site_anchor_z_spin.value
+		)),
+		0.01
+	)
+	_refresh_site_anchor_list()
+
+func _update_site_anchor_preview() -> void:
+	if _preview and _preview.has_method("set_site_anchors"):
+		_preview.set_site_anchors(
+			_extra_anchors,
+			_selected_site_anchor_indices,
+			_selected_site_anchor_index
+		)
+
+func _anchor_position(anchor: Dictionary) -> Vector3:
+	var pos = anchor.get("position", [])
+	if pos is Array and pos.size() == 3:
+		return Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
+	return Vector3.ZERO
+
+func _anchor_forward(anchor: Dictionary) -> Vector3:
+	var fwd = anchor.get("forward", [])
+	if fwd is Array and fwd.size() == 3:
+		var resolved := Vector3(float(fwd[0]), float(fwd[1]), float(fwd[2]))
+		if resolved.length_squared() > 0.001:
+			return resolved.normalized()
+	return Vector3.FORWARD
+
+func _sanitize_site_anchor_dict(anchor: Dictionary) -> Dictionary:
+	var clean := anchor.duplicate(true)
+	clean.erase("purpose")
+	for key in ["name", "vehicle_class"]:
+		if clean.get(key, null) == null:
+			clean.erase(key)
+	for key in ["width_m", "length_m"]:
+		var value = clean.get(key, null)
+		if _anchor_value_is_number(value):
+			clean[key] = float(value)
+		elif value is String and (value as String).strip_edges().is_valid_float():
+			clean[key] = (value as String).strip_edges().to_float()
+		else:
+			clean.erase(key)
+	return clean
+
+func _anchor_number(anchor: Dictionary, key: String, fallback: float) -> float:
+	var value = anchor.get(key, null)
+	if value == null:
+		return fallback
+	if _anchor_value_is_number(value):
+		return float(value)
+	if value is String:
+		var text := (value as String).strip_edges()
+		if text.is_valid_float():
+			return text.to_float()
+	return fallback
+
+func _anchor_value_is_number(value) -> bool:
+	var value_type := typeof(value)
+	return value_type == TYPE_FLOAT or value_type == TYPE_INT
+
+func _anchor_text(anchor: Dictionary, key: String, fallback: String) -> String:
+	var value = anchor.get(key, null)
+	if value == null:
+		return fallback
+	return str(value).strip_edges()
+
+func _set_site_anchor_position(index: int, pos: Vector3) -> void:
+	if index < 0 or index >= _extra_anchors.size():
+		return
+	_extra_anchors[index]["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(_extra_anchors[index], pos),
+		0.01
+	)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+
+func _set_site_anchor_yaw(index: int, yaw_degrees: float) -> void:
+	if index < 0 or index >= _extra_anchors.size():
+		return
+	_extra_anchors[index]["forward"] = _vector3_to_array(
+		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(yaw_degrees)),
+		0.001
+	)
+	_extra_anchors[index]["position"] = _vector3_to_array(
+		_clamp_site_anchor_position_to_lot(_extra_anchors[index], _anchor_position(_extra_anchors[index])),
+		0.01
+	)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+
+func _vector3_to_array(value: Vector3, snap: float) -> Array:
+	return [snappedf(value.x, snap), snappedf(value.y, snap), snappedf(value.z, snap)]
+
+func _forward_from_yaw(yaw_degrees: float) -> Vector3:
+	var yaw := deg_to_rad(yaw_degrees)
+	return Vector3(sin(yaw), 0.0, cos(yaw)).normalized()
+
+func _yaw_from_forward(forward: Vector3) -> float:
+	var flat := Vector3(forward.x, 0.0, forward.z)
+	if flat.length_squared() < 0.001:
+		return 0.0
+	flat = flat.normalized()
+	return _normalize_degrees(rad_to_deg(atan2(flat.x, flat.z)))
+
+func _set_option_by_metadata(button: OptionButton, metadata_value: String) -> void:
+	if not button:
+		return
+	for i in button.item_count:
+		if str(button.get_item_metadata(i)) == metadata_value:
+			button.select(i)
+			return
+	if button.item_count > 0:
+		button.select(0)
+
+func _selected_option_metadata(button: OptionButton, fallback: String) -> String:
+	if not button or button.selected < 0:
+		return fallback
+	var value = button.get_item_metadata(button.selected)
+	if value == null:
+		return fallback
+	return str(value)
+
+func _export_site_anchor(anchor: Dictionary) -> Dictionary:
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var pos := _anchor_position(anchor)
+	var fwd := _anchor_forward(anchor)
+	var exported := {
+		"anchor_type": anchor_type,
+		"name": str(anchor.get("name", "")).strip_edges(),
+		"position": _vector3_to_array(pos, 0.01),
+		"forward": _vector3_to_array(fwd, 0.001),
+		"width_m": snappedf(maxf(0.1, _anchor_number(anchor, "width_m", 2.0)), 0.01),
+	}
+	var vehicle_class := _anchor_text(anchor, "vehicle_class", "")
+	if not vehicle_class.is_empty():
+		exported["vehicle_class"] = vehicle_class
+	if anchor_type == "parking" or anchor_type == "loading_bay":
+		exported["length_m"] = snappedf(maxf(0.1, _anchor_number(anchor, "length_m", 5.0)), 0.01)
+	return exported
 
 func _refresh_selected_part_controls() -> void:
 	_suppress_part_transform_changed = true
@@ -2109,9 +2716,14 @@ func _apply_selected_part_transform() -> void:
 	_part_positions[_selected_part_index] = pos
 	_part_rotation_y[_selected_part_index] = rot_y
 	_part_scales[_selected_part_index] = scale
+	_part_positions[_selected_part_index] = _clamp_mesh_part_position_to_lot(
+		_selected_part_index,
+		_part_positions[_selected_part_index]
+	)
+	_sync_selected_mesh_part_controls()
 	_preview.set_mesh_part_transform(
 		_selected_part_index,
-		pos,
+		_part_positions[_selected_part_index],
 		rot_y,
 		scale,
 		_part_pivot_offsets[_selected_part_index]
@@ -2126,6 +2738,7 @@ func _clear_mesh_parts() -> void:
 	_part_pivot_offsets.clear()
 	_part_aabbs.clear()
 	_selected_part_index = -1
+	_selected_part_indices.clear()
 	if _lod_list:
 		_lod_list.clear()
 	if _preview and _preview.has_method("clear_mesh_parts"):
@@ -2261,6 +2874,11 @@ func _export_asset(move_original_after_export: bool) -> void:
 	if _lod_source_paths.is_empty():
 		_log("[color=red]At least one mesh part is required.[/color]")
 		return
+	_clamp_mesh_parts_to_lot()
+	var mesh_fit_error := _mesh_parts_lot_fit_error()
+	if not mesh_fit_error.is_empty():
+		_log("[color=red]%s[/color]" % mesh_fit_error)
+		return
 
 	var mesh_parts := []
 	for i in _lod_source_paths.size():
@@ -2295,7 +2913,7 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"forward": [snappedf(fwd.x, 0.001), 0.0, snappedf(fwd.z, 0.001)],
 	}]
 	for anchor in _extra_anchors:
-		anchors.append(anchor.duplicate(true))
+		anchors.append(_export_site_anchor(anchor))
 
 	var tags_raw: String = _tags_edit.text.strip_edges()
 	var tags: Array = []
@@ -2725,17 +3343,234 @@ func _default_main_entrance_position() -> Vector3:
 
 func _set_main_entrance_position(pos: Vector3, auto_anchor: bool) -> void:
 	_main_entrance_auto = auto_anchor
+	var clamped := _clamp_anchor_position_to_lot(pos)
 	_updating_main_entrance_fields = true
-	_entrance_x_spin.value = pos.x
-	_entrance_y_spin.value = pos.y
-	_entrance_z_spin.value = pos.z
+	_entrance_x_spin.value = clamped.x
+	_entrance_y_spin.value = clamped.y
+	_entrance_z_spin.value = clamped.z
 	_updating_main_entrance_fields = false
 	_update_main_entrance_preview()
 
 func _update_main_entrance_preview() -> void:
 	if not _preview or not _entrance_x_spin or not _entrance_y_spin or not _entrance_z_spin:
 		return
-	_preview.set_entrance_anchor(_get_main_entrance_position(), _frontage_fwd)
+	var clamped := _clamp_anchor_position_to_lot(_get_main_entrance_position())
+	if clamped.distance_squared_to(_get_main_entrance_position()) > 0.0001:
+		_updating_main_entrance_fields = true
+		_entrance_x_spin.value = clamped.x
+		_entrance_y_spin.value = clamped.y
+		_entrance_z_spin.value = clamped.z
+		_updating_main_entrance_fields = false
+	_preview.set_entrance_anchor(clamped, _frontage_fwd)
+	if _preview.has_method("set_main_entrance_selected"):
+		_preview.set_main_entrance_selected(_main_entrance_selected)
+
+func _clamp_anchor_position_to_lot(pos: Vector3) -> Vector3:
+	if not _width_spin or not _depth_spin:
+		return pos
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	return Vector3(
+		clampf(pos.x, -lot_half_w, lot_half_w),
+		pos.y,
+		clampf(pos.z, -lot_half_d, lot_half_d)
+	)
+
+func _clamp_site_anchor_position_to_lot(anchor: Dictionary, pos: Vector3) -> Vector3:
+	if not _width_spin or not _depth_spin:
+		return pos
+	var offsets := _site_anchor_footprint_offsets(anchor)
+	if offsets.is_empty():
+		return _clamp_anchor_position_to_lot(pos)
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	var min_offset_x := 0.0
+	var max_offset_x := 0.0
+	var min_offset_z := 0.0
+	var max_offset_z := 0.0
+	var first := true
+	for raw_offset in offsets:
+		if not (raw_offset is Vector3):
+			continue
+		var offset := raw_offset as Vector3
+		if first:
+			min_offset_x = offset.x
+			max_offset_x = offset.x
+			min_offset_z = offset.z
+			max_offset_z = offset.z
+			first = false
+		else:
+			min_offset_x = minf(min_offset_x, offset.x)
+			max_offset_x = maxf(max_offset_x, offset.x)
+			min_offset_z = minf(min_offset_z, offset.z)
+			max_offset_z = maxf(max_offset_z, offset.z)
+	if first:
+		return _clamp_anchor_position_to_lot(pos)
+	return Vector3(
+		_clamp_to_possible_interval(pos.x, -lot_half_w - min_offset_x, lot_half_w - max_offset_x),
+		pos.y,
+		_clamp_to_possible_interval(pos.z, -lot_half_d - min_offset_z, lot_half_d - max_offset_z)
+	)
+
+func _site_anchor_footprint_offsets(anchor: Dictionary) -> Array:
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var forward := _anchor_forward(anchor)
+	var side := Vector3(-forward.z, 0.0, forward.x)
+	if side.length_squared() < 0.001:
+		return []
+	side = side.normalized()
+	forward = Vector3(forward.x, 0.0, forward.z).normalized()
+	var width := maxf(0.1, _anchor_number(anchor, "width_m", SITE_ANCHOR_DRAG_RADIUS_M))
+	var half_w := width * 0.5
+	var length := 0.0
+	if anchor_type == "parking" or anchor_type == "loading_bay":
+		length = maxf(0.1, _anchor_number(anchor, "length_m", width))
+	elif anchor_type == "driveway":
+		length = maxf(1.5, width * 1.4)
+	else:
+		return []
+	return [
+		-side * half_w,
+		side * half_w,
+		side * half_w + forward * length,
+		-side * half_w + forward * length,
+	]
+
+func _clamp_to_possible_interval(value: float, min_value: float, max_value: float) -> float:
+	if min_value <= max_value:
+		return clampf(value, min_value, max_value)
+	return (min_value + max_value) * 0.5
+
+func _clamp_site_anchors_to_lot() -> void:
+	var changed := false
+	for i in _extra_anchors.size():
+		var pos := _anchor_position(_extra_anchors[i])
+		var clamped := _clamp_site_anchor_position_to_lot(_extra_anchors[i], pos)
+		if clamped.distance_squared_to(pos) > 0.0001:
+			_extra_anchors[i]["position"] = _vector3_to_array(clamped, 0.01)
+			changed = true
+	if changed:
+		_refresh_site_anchor_list()
+	else:
+		_update_site_anchor_preview()
+
+func _clamp_mesh_part_position_to_lot(part_index: int, pos: Vector3) -> Vector3:
+	if not _width_spin or not _depth_spin:
+		return pos
+	var bounds := _mesh_part_footprint_bounds(part_index, pos)
+	if bounds.is_empty():
+		return _clamp_anchor_position_to_lot(pos)
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	return Vector3(
+		_clamp_to_possible_interval(
+			pos.x,
+			pos.x - lot_half_w - float(bounds["min_x"]),
+			pos.x + lot_half_w - float(bounds["max_x"])
+		),
+		pos.y,
+		_clamp_to_possible_interval(
+			pos.z,
+			pos.z - lot_half_d - float(bounds["min_z"]),
+			pos.z + lot_half_d - float(bounds["max_z"])
+		)
+	)
+
+func _clamp_mesh_parts_to_lot() -> void:
+	var changed := false
+	for i in _part_positions.size():
+		var pos := _part_positions[i]
+		var clamped := _clamp_mesh_part_position_to_lot(i, pos)
+		if clamped.distance_squared_to(pos) > 0.0001:
+			_part_positions[i] = clamped
+			_apply_mesh_part_transform_from_state(i)
+			changed = true
+	if changed:
+		_sync_selected_mesh_part_controls()
+		_update_dim_label()
+
+func _mesh_parts_lot_fit_error() -> String:
+	for i in _part_positions.size():
+		if not _mesh_part_fits_in_lot(i):
+			return (
+				"Mesh part '%s' footprint crosses the lot/plot bounds. "
+				+ "Move, rotate, scale it down, or enlarge the lot before exporting."
+			) % _part_name_for_index(i)
+	return ""
+
+func _mesh_part_fits_in_lot(part_index: int) -> bool:
+	var bounds := _mesh_part_footprint_bounds(part_index, _part_positions[part_index])
+	if bounds.is_empty() or not _width_spin or not _depth_spin:
+		return true
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	var eps := 0.01
+	return (
+		float(bounds["min_x"]) >= -lot_half_w - eps
+		and float(bounds["max_x"]) <= lot_half_w + eps
+		and float(bounds["min_z"]) >= -lot_half_d - eps
+		and float(bounds["max_z"]) <= lot_half_d + eps
+	)
+
+func _mesh_part_footprint_bounds(part_index: int, pos: Vector3) -> Dictionary:
+	var result := {}
+	if (
+		part_index < 0
+		or part_index >= _part_aabbs.size()
+		or part_index >= _part_scales.size()
+		or part_index >= _part_rotation_y.size()
+		or part_index >= _part_pivot_offsets.size()
+	):
+		return result
+	var aabb := _part_aabbs[part_index]
+	if aabb.size.x < 0.001 or aabb.size.z < 0.001:
+		return result
+	var yaw_basis := Basis(Vector3.UP, deg_to_rad(_part_rotation_y[part_index]))
+	var scale := maxf(0.001, _part_scales[part_index])
+	var pivot := _part_pivot_offsets[part_index]
+	var first := true
+	var min_x := 0.0
+	var max_x := 0.0
+	var min_z := 0.0
+	var max_z := 0.0
+	for local_corner in _aabb_corners(aabb):
+		var corner := local_corner as Vector3
+		var world_offset: Vector3 = yaw_basis * ((pivot + corner) * scale)
+		var x := pos.x + world_offset.x
+		var z := pos.z + world_offset.z
+		if first:
+			min_x = x
+			max_x = x
+			min_z = z
+			max_z = z
+			first = false
+		else:
+			min_x = minf(min_x, x)
+			max_x = maxf(max_x, x)
+			min_z = minf(min_z, z)
+			max_z = maxf(max_z, z)
+	if first:
+		return {}
+	return {
+		"min_x": min_x,
+		"max_x": max_x,
+		"min_z": min_z,
+		"max_z": max_z,
+	}
+
+func _aabb_corners(aabb: AABB) -> Array:
+	var p := aabb.position
+	var s := aabb.size
+	return [
+		Vector3(p.x, p.y, p.z),
+		Vector3(p.x + s.x, p.y, p.z),
+		Vector3(p.x, p.y + s.y, p.z),
+		Vector3(p.x + s.x, p.y + s.y, p.z),
+		Vector3(p.x, p.y, p.z + s.z),
+		Vector3(p.x + s.x, p.y, p.z + s.z),
+		Vector3(p.x, p.y + s.y, p.z + s.z),
+		Vector3(p.x + s.x, p.y + s.y, p.z + s.z),
+	]
 
 func _on_mesh_loaded(aabb: AABB) -> void:
 	_mesh_aabb = aabb
@@ -2748,6 +3583,12 @@ func _on_mesh_loaded(aabb: AABB) -> void:
 	if _selected_part_index >= 0 and _selected_part_index < _part_aabbs.size():
 		_part_aabbs[_selected_part_index] = aabb
 		_part_pivot_offsets[_selected_part_index] = _pivot_offset
+		_part_positions[_selected_part_index] = _clamp_mesh_part_position_to_lot(
+			_selected_part_index,
+			_part_positions[_selected_part_index]
+		)
+		_sync_selected_mesh_part_controls()
+		_apply_selected_part_transform_from_state()
 	if _autofit_on_load:
 		_autofit_on_load = false
 		_on_autofit_pressed()
@@ -2855,6 +3696,23 @@ func _on_clear_ghost_pressed() -> void:
 	_preview.clear_ghost()
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var key := event as InputEventKey
+		if (
+			key.pressed
+			and not key.echo
+			and key.keycode == KEY_DELETE
+			and not _ui_captures_editor_text_input()
+		):
+			var removed := false
+			if not _selected_site_anchor_indices.is_empty():
+				removed = _remove_selected_site_anchor()
+			if not _selected_part_indices.is_empty():
+				removed = _remove_selected_mesh_parts() or removed
+			if removed:
+				get_viewport().set_input_as_handled()
+		return
+
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index != MOUSE_BUTTON_LEFT and mb.button_index != MOUSE_BUTTON_RIGHT:
@@ -2864,6 +3722,20 @@ func _input(event: InputEvent) -> void:
 				return
 			var mouse_pos := get_viewport().get_mouse_position()
 			if mb.button_index == MOUSE_BUTTON_LEFT:
+				if Input.is_key_pressed(KEY_SHIFT):
+					_begin_box_selection(mouse_pos, Input.is_key_pressed(KEY_CTRL))
+					get_viewport().set_input_as_handled()
+					return
+				if Input.is_key_pressed(KEY_CTRL):
+					if _toggle_selection_at_mouse(mouse_pos):
+						get_viewport().set_input_as_handled()
+						return
+					_begin_box_selection(mouse_pos, true)
+					get_viewport().set_input_as_handled()
+					return
+				if _try_begin_site_anchor_drag(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
 				if _try_begin_main_entrance_drag(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
@@ -2873,20 +3745,39 @@ func _input(event: InputEvent) -> void:
 				if _try_begin_ghost_drag(mouse_pos):
 					get_viewport().set_input_as_handled()
 					return
-				if _human_visible and _place_human_from_mouse(mouse_pos):
-					get_viewport().set_input_as_handled()
-				return
-			if mb.button_index == MOUSE_BUTTON_RIGHT and _try_begin_mesh_part_rotation(mouse_pos):
+				_begin_box_selection(mouse_pos, false)
 				get_viewport().set_input_as_handled()
+				return
+			if mb.button_index == MOUSE_BUTTON_RIGHT:
+				if _try_begin_site_anchor_rotation(mouse_pos):
+					get_viewport().set_input_as_handled()
+					return
+				if _try_begin_mesh_part_rotation(mouse_pos):
+					get_viewport().set_input_as_handled()
 			return
 		if _dragging_main_entrance:
 			_dragging_main_entrance = false
+			_site_anchor_drag_start_positions.clear()
+			_mesh_part_drag_start_positions.clear()
+			get_viewport().set_input_as_handled()
+		if _dragging_site_anchor:
+			_dragging_site_anchor = false
+			_site_anchor_drag_start_positions.clear()
+			_mesh_part_drag_start_positions.clear()
 			get_viewport().set_input_as_handled()
 		if _dragging_mesh_part:
 			_dragging_mesh_part = false
+			_mesh_part_drag_start_positions.clear()
+			_site_anchor_drag_start_positions.clear()
+			get_viewport().set_input_as_handled()
+		if _selecting_mesh_parts:
+			_finish_mesh_part_box_selection(get_viewport().get_mouse_position())
 			get_viewport().set_input_as_handled()
 		if _rotating_mesh_part:
 			_rotating_mesh_part = false
+			get_viewport().set_input_as_handled()
+		if _rotating_site_anchor:
+			_rotating_site_anchor = false
 			get_viewport().set_input_as_handled()
 		if _dragging_ghost:
 			_dragging_ghost = false
@@ -2896,11 +3787,20 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and _dragging_main_entrance:
 		if _drag_main_entrance_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _dragging_site_anchor:
+		if _drag_site_anchor_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _dragging_mesh_part:
 		if _drag_mesh_part_from_mouse(get_viewport().get_mouse_position()):
 			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _selecting_mesh_parts:
+		_update_mesh_part_box_selection(get_viewport().get_mouse_position())
+		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _rotating_mesh_part:
 		_rotate_mesh_part_from_mouse(get_viewport().get_mouse_position())
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and _rotating_site_anchor:
+		_rotate_site_anchor_from_mouse(get_viewport().get_mouse_position())
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion and _dragging_ghost:
 		if _drag_ghost_from_mouse(get_viewport().get_mouse_position()):
@@ -2915,6 +3815,15 @@ func _is_mouse_in_3d_area() -> bool:
 			mouse_pos.x < vp_size.x - PANEL_RIGHT_W and
 			mouse_pos.y < vp_size.y - PANEL_BOT_H)
 
+func _ui_captures_editor_text_input() -> bool:
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	return (
+		focus_owner is LineEdit
+		or focus_owner is TextEdit
+		or focus_owner is CodeEdit
+		or focus_owner is SpinBox
+	)
+
 func _try_begin_main_entrance_drag(mouse_pos: Vector2) -> bool:
 	if not _preview:
 		return false
@@ -2927,17 +3836,177 @@ func _try_begin_main_entrance_drag(mouse_pos: Vector2) -> bool:
 	var anchor_screen: Vector2 = cam.unproject_position(anchor_world)
 	if anchor_screen.distance_to(mouse_pos) > MAIN_ENTRANCE_PICK_RADIUS_PX:
 		return false
-	_dragging_main_entrance = true
-	_main_entrance_auto = false
-	return _drag_main_entrance_from_mouse(mouse_pos)
-
-func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
+	if not _main_entrance_selected:
+		_set_main_entrance_selected(true)
+		_set_selected_site_anchors([], -1)
+		_set_selected_mesh_parts([], -1)
 	var anchor_pos := _get_main_entrance_position()
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, anchor_pos.y)
 	if hit == null:
 		return false
-	_set_main_entrance_position(Vector3(hit.x, anchor_pos.y, hit.z), false)
+	_main_entrance_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
+	_main_entrance_drag_start_position = anchor_pos
+	_site_anchor_drag_start_hit = _main_entrance_drag_start_hit
+	_site_anchor_drag_start_positions.clear()
+	for index in _site_anchor_drag_indices():
+		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
+	_mesh_part_drag_start_hit = _main_entrance_drag_start_hit
+	_mesh_part_drag_start_positions.clear()
+	for index in _mesh_part_drag_indices():
+		_mesh_part_drag_start_positions.append(_part_positions[index])
+	_dragging_main_entrance = true
+	_main_entrance_auto = false
 	return true
+
+func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, _main_entrance_drag_start_position.y)
+	if hit == null:
+		return false
+	var delta := Vector3(hit.x, 0.0, hit.z) - _main_entrance_drag_start_hit
+	if _main_entrance_selected:
+		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
+	var anchor_indices := _site_anchor_drag_indices()
+	for i in anchor_indices.size():
+		var index := anchor_indices[i]
+		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
+			continue
+		var start_pos := _site_anchor_drag_start_positions[i]
+		_extra_anchors[index]["position"] = _vector3_to_array(
+			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
+			0.01
+		)
+	var mesh_indices := _mesh_part_drag_indices()
+	for i in mesh_indices.size():
+		var index := mesh_indices[i]
+		if index < 0 or index >= _part_positions.size() or i >= _mesh_part_drag_start_positions.size():
+			continue
+		_part_positions[index] = _clamp_mesh_part_position_to_lot(
+			index,
+			_mesh_part_drag_start_positions[i] + delta
+		)
+		_apply_mesh_part_transform_from_state(index)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+	_sync_selected_mesh_part_controls()
+	_update_dim_label()
+	return true
+
+func _try_begin_site_anchor_drag(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var anchor_index := _site_anchor_index_at_world_xz(hit)
+	if anchor_index < 0:
+		return false
+	if not _selected_site_anchor_indices.has(anchor_index):
+		_select_site_anchor(anchor_index)
+	else:
+		_set_selected_site_anchors(_selected_site_anchor_indices, anchor_index)
+	var pos := _anchor_position(_extra_anchors[anchor_index])
+	_site_anchor_drag_offset = pos - Vector3(hit.x, pos.y, hit.z)
+	_site_anchor_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
+	_site_anchor_drag_start_positions.clear()
+	for index in _site_anchor_drag_indices():
+		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
+	_mesh_part_drag_start_hit = _site_anchor_drag_start_hit
+	_mesh_part_drag_start_positions.clear()
+	for index in _mesh_part_drag_indices():
+		_mesh_part_drag_start_positions.append(_part_positions[index])
+	_main_entrance_drag_start_hit = _site_anchor_drag_start_hit
+	_main_entrance_drag_start_position = _get_main_entrance_position()
+	_dragging_site_anchor = true
+	return true
+
+func _drag_site_anchor_from_mouse(mouse_pos: Vector2) -> bool:
+	var anchor_indices := _site_anchor_drag_indices()
+	var mesh_indices := _mesh_part_drag_indices()
+	if anchor_indices.is_empty() and mesh_indices.is_empty():
+		return false
+	var plane_y := 0.0
+	if not anchor_indices.is_empty():
+		plane_y = _anchor_position(_extra_anchors[anchor_indices[0]]).y
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, plane_y)
+	if hit == null:
+		return false
+	var delta := Vector3(hit.x, 0.0, hit.z) - _site_anchor_drag_start_hit
+	if _main_entrance_selected:
+		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
+	for i in anchor_indices.size():
+		var index := anchor_indices[i]
+		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
+			continue
+		var start_pos := _site_anchor_drag_start_positions[i]
+		_extra_anchors[index]["position"] = _vector3_to_array(
+			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
+			0.01
+		)
+	for i in mesh_indices.size():
+		var index := mesh_indices[i]
+		if index < 0 or index >= _part_positions.size() or i >= _mesh_part_drag_start_positions.size():
+			continue
+		_part_positions[index] = _clamp_mesh_part_position_to_lot(
+			index,
+			_mesh_part_drag_start_positions[i] + delta
+		)
+		_apply_mesh_part_transform_from_state(index)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+	_sync_selected_mesh_part_controls()
+	_update_dim_label()
+	return true
+
+func _try_begin_site_anchor_rotation(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var anchor_index := _site_anchor_index_at_world_xz(hit)
+	if anchor_index < 0:
+		return false
+	_select_site_anchor(anchor_index)
+	_site_anchor_rotate_start_x = mouse_pos.x
+	_site_anchor_rotate_start_yaw = _yaw_from_forward(_anchor_forward(_extra_anchors[anchor_index]))
+	_rotating_site_anchor = true
+	return true
+
+func _rotate_site_anchor_from_mouse(mouse_pos: Vector2) -> void:
+	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _extra_anchors.size():
+		return
+	var delta_px := mouse_pos.x - _site_anchor_rotate_start_x
+	var raw_rotation := _site_anchor_rotate_start_yaw + delta_px * MESH_ROTATION_DRAG_DEG_PER_PX
+	_set_site_anchor_yaw(_selected_site_anchor_index, raw_rotation)
+
+func _site_anchor_index_at_world_xz(world_pos: Vector3) -> int:
+	for i in range(_extra_anchors.size() - 1, -1, -1):
+		if _site_anchor_contains_world_xz(i, world_pos):
+			return i
+	return -1
+
+func _site_anchor_contains_world_xz(index: int, world_pos: Vector3) -> bool:
+	if index < 0 or index >= _extra_anchors.size():
+		return false
+	var anchor := _extra_anchors[index]
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var pos := _anchor_position(anchor)
+	var forward := _anchor_forward(anchor)
+	var side := Vector3(-forward.z, 0.0, forward.x)
+	var rel := Vector3(world_pos.x - pos.x, 0.0, world_pos.z - pos.z)
+	var local_x := rel.dot(side)
+	var local_z := rel.dot(forward)
+	var width := maxf(0.1, _anchor_number(anchor, "width_m", SITE_ANCHOR_DRAG_RADIUS_M))
+	if anchor_type == "parking" or anchor_type == "loading_bay":
+		var length := maxf(0.1, _anchor_number(anchor, "length_m", width))
+		return (
+			absf(local_x) <= width * 0.5 + 0.5
+			and local_z >= -0.5
+			and local_z <= length + 0.5
+		)
+	if anchor_type == "driveway":
+		return (
+			absf(local_x) <= width * 0.5 + 0.5
+			and local_z >= -0.75
+			and local_z <= width + 0.75
+		)
+	return rel.length() <= SITE_ANCHOR_DRAG_RADIUS_M
 
 func _try_begin_mesh_part_drag(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
@@ -2946,22 +4015,279 @@ func _try_begin_mesh_part_drag(mouse_pos: Vector2) -> bool:
 	var part_index := _mesh_part_index_at_world_xz(hit)
 	if part_index < 0:
 		return false
-	_select_mesh_part(part_index)
-	var current_pos := _part_positions[_selected_part_index]
-	_mesh_part_drag_offset = current_pos - Vector3(hit.x, current_pos.y, hit.z)
+	if not _selected_part_indices.has(part_index):
+		_select_mesh_part(part_index)
+	else:
+		_set_selected_mesh_parts(_selected_part_indices, part_index)
+	var selected_indices := _mesh_part_drag_indices()
+	if selected_indices.is_empty():
+		return false
+	_mesh_part_drag_start_hit = Vector3(hit.x, 0.0, hit.z)
+	_mesh_part_drag_start_positions.clear()
+	for index in selected_indices:
+		_mesh_part_drag_start_positions.append(_part_positions[index])
+	_site_anchor_drag_start_hit = _mesh_part_drag_start_hit
+	_site_anchor_drag_start_positions.clear()
+	for index in _site_anchor_drag_indices():
+		_site_anchor_drag_start_positions.append(_anchor_position(_extra_anchors[index]))
+	_main_entrance_drag_start_hit = _mesh_part_drag_start_hit
+	_main_entrance_drag_start_position = _get_main_entrance_position()
 	_dragging_mesh_part = true
-	return _drag_mesh_part_from_mouse(mouse_pos)
+	return true
 
 func _drag_mesh_part_from_mouse(mouse_pos: Vector2) -> bool:
-	if not _has_selected_mesh_part():
+	var selected_indices := _mesh_part_drag_indices()
+	var anchor_indices := _site_anchor_drag_indices()
+	if selected_indices.is_empty() and anchor_indices.is_empty():
 		return false
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
 	if hit == null:
 		return false
-	var current_pos := _part_positions[_selected_part_index]
-	var target := Vector3(hit.x, current_pos.y, hit.z) + _mesh_part_drag_offset
-	_set_selected_mesh_part_position(target)
+	var delta := Vector3(hit.x, 0.0, hit.z) - _mesh_part_drag_start_hit
+	if _main_entrance_selected:
+		_set_main_entrance_position(_main_entrance_drag_start_position + delta, false)
+	for i in selected_indices.size():
+		var index := selected_indices[i]
+		if index < 0 or index >= _part_positions.size() or i >= _mesh_part_drag_start_positions.size():
+			continue
+		_part_positions[index] = _clamp_mesh_part_position_to_lot(
+			index,
+			_mesh_part_drag_start_positions[i] + delta
+		)
+		_apply_mesh_part_transform_from_state(index)
+	for i in anchor_indices.size():
+		var index := anchor_indices[i]
+		if index < 0 or index >= _extra_anchors.size() or i >= _site_anchor_drag_start_positions.size():
+			continue
+		var start_pos := _site_anchor_drag_start_positions[i]
+		_extra_anchors[index]["position"] = _vector3_to_array(
+			_clamp_site_anchor_position_to_lot(_extra_anchors[index], start_pos + delta),
+			0.01
+		)
+	_update_site_anchor_controls()
+	_update_site_anchor_preview()
+	_sync_selected_mesh_part_controls()
+	_update_dim_label()
 	return true
+
+func _mesh_part_drag_indices() -> Array[int]:
+	if not _selected_part_indices.is_empty():
+		return _selected_part_indices
+	if _has_selected_mesh_part():
+		return [_selected_part_index]
+	return []
+
+func _site_anchor_drag_indices() -> Array[int]:
+	if not _selected_site_anchor_indices.is_empty():
+		return _selected_site_anchor_indices
+	if _selected_site_anchor_index >= 0 and _selected_site_anchor_index < _extra_anchors.size():
+		return [_selected_site_anchor_index]
+	return []
+
+func _begin_box_selection(mouse_pos: Vector2, additive: bool) -> void:
+	_selecting_mesh_parts = true
+	_selection_additive = additive
+	_selection_start_screen = mouse_pos
+	_selection_end_screen = mouse_pos
+	if _selection_rect_overlay and _selection_rect_overlay.has_method("clear"):
+		_selection_rect_overlay.clear()
+
+func _update_mesh_part_box_selection(mouse_pos: Vector2) -> void:
+	_selection_end_screen = mouse_pos
+	if _selection_start_screen.distance_to(_selection_end_screen) < SELECTION_DRAG_THRESHOLD_PX:
+		if _selection_rect_overlay and _selection_rect_overlay.has_method("clear"):
+			_selection_rect_overlay.clear()
+		return
+	if _selection_rect_overlay and _selection_rect_overlay.has_method("set_rect_global"):
+		_selection_rect_overlay.set_rect_global(_selection_start_screen, _selection_end_screen, true)
+
+func _finish_mesh_part_box_selection(mouse_pos: Vector2) -> void:
+	_selecting_mesh_parts = false
+	_selection_end_screen = mouse_pos
+	if _selection_rect_overlay and _selection_rect_overlay.has_method("clear"):
+		_selection_rect_overlay.clear()
+	if _selection_start_screen.distance_to(_selection_end_screen) < SELECTION_DRAG_THRESHOLD_PX:
+		if not _selection_additive and _human_visible and _place_human_from_mouse(mouse_pos):
+			_selection_additive = false
+			return
+		if not _selection_additive:
+			_set_selected_site_anchors([], -1)
+			_set_selected_mesh_parts([], -1)
+			_set_main_entrance_selected(false)
+		_selection_additive = false
+		return
+	var selection_rect := _selection_screen_rect()
+	var selected_meshes := _mesh_parts_in_screen_rect(selection_rect)
+	var selected_anchors := _site_anchors_in_screen_rect(selection_rect)
+	var selected_entrance := _main_entrance_in_screen_rect(selection_rect)
+	if _selection_additive:
+		selected_meshes = _merged_indices(_selected_part_indices, selected_meshes)
+		selected_anchors = _merged_indices(_selected_site_anchor_indices, selected_anchors)
+		selected_entrance = selected_entrance or _main_entrance_selected
+	_set_selected_mesh_parts(
+		selected_meshes,
+		int(selected_meshes[0]) if not selected_meshes.is_empty() else -1
+	)
+	_set_selected_site_anchors(
+		selected_anchors,
+		int(selected_anchors[0]) if not selected_anchors.is_empty() else -1
+	)
+	_set_main_entrance_selected(selected_entrance)
+	_selection_additive = false
+
+func _selection_screen_rect() -> Rect2:
+	var top_left := Vector2(
+		minf(_selection_start_screen.x, _selection_end_screen.x),
+		minf(_selection_start_screen.y, _selection_end_screen.y)
+	)
+	var size := Vector2(
+		absf(_selection_start_screen.x - _selection_end_screen.x),
+		absf(_selection_start_screen.y - _selection_end_screen.y)
+	)
+	return Rect2(top_left, size)
+
+func _mesh_parts_in_screen_rect(selection_rect: Rect2) -> Array[int]:
+	var cam := get_viewport().get_camera_3d()
+	if not cam or not _preview or not _preview.has_method("mesh_part_world_corners"):
+		return []
+	var selected: Array[int] = []
+	for index in _lod_source_paths.size():
+		var part_rect = _mesh_part_screen_rect(index, cam)
+		if part_rect != null and selection_rect.intersects(part_rect, true):
+			selected.append(index)
+	return selected
+
+func _site_anchors_in_screen_rect(selection_rect: Rect2) -> Array[int]:
+	var cam := get_viewport().get_camera_3d()
+	if not cam:
+		return []
+	var selected: Array[int] = []
+	for index in _extra_anchors.size():
+		var anchor_rect = _site_anchor_screen_rect(index, cam)
+		if anchor_rect != null and selection_rect.intersects(anchor_rect, true):
+			selected.append(index)
+	return selected
+
+func _main_entrance_in_screen_rect(selection_rect: Rect2) -> bool:
+	var cam := get_viewport().get_camera_3d()
+	if not cam:
+		return false
+	var entrance_rect = _main_entrance_screen_rect(cam)
+	return entrance_rect != null and selection_rect.intersects(entrance_rect, true)
+
+func _main_entrance_screen_rect(cam: Camera3D):
+	if not _preview or not _preview.has_method("get_entrance_anchor_world_position"):
+		return null
+	var world_pos: Vector3 = _preview.get_entrance_anchor_world_position()
+	if cam.is_position_behind(world_pos):
+		return null
+	var screen_pos := cam.unproject_position(world_pos)
+	var radius := MAIN_ENTRANCE_PICK_RADIUS_PX
+	return Rect2(screen_pos - Vector2(radius, radius), Vector2(radius * 2.0, radius * 2.0))
+
+func _site_anchor_screen_rect(index: int, cam: Camera3D):
+	if index < 0 or index >= _extra_anchors.size():
+		return null
+	var anchor := _extra_anchors[index]
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	var pos := _anchor_position(anchor)
+	var forward := _anchor_forward(anchor)
+	var side := Vector3(-forward.z, 0.0, forward.x)
+	var width := maxf(0.1, _anchor_number(anchor, "width_m", SITE_ANCHOR_DRAG_RADIUS_M))
+	var points: Array = []
+	if anchor_type == "parking" or anchor_type == "loading_bay":
+		var half_w := width * 0.5
+		var length := maxf(0.1, _anchor_number(anchor, "length_m", width))
+		points = [
+			pos - side * half_w,
+			pos + side * half_w,
+			pos + side * half_w + forward * length,
+			pos - side * half_w + forward * length,
+		]
+	elif anchor_type == "driveway":
+		var half_w := width * 0.5
+		var length_m := maxf(1.5, width * 1.4)
+		points = [
+			pos - side * half_w,
+			pos + side * half_w,
+			pos + side * half_w + forward * length_m,
+			pos - side * half_w + forward * length_m,
+		]
+	else:
+		points = [pos]
+	return _screen_rect_for_world_points(points, cam)
+
+func _mesh_part_screen_rect(part_index: int, cam: Camera3D):
+	var corners: Array = _preview.mesh_part_world_corners(part_index)
+	return _screen_rect_for_world_points(corners, cam)
+
+func _screen_rect_for_world_points(points: Array, cam: Camera3D):
+	var has_point := false
+	var min_pos := Vector2.ZERO
+	var max_pos := Vector2.ZERO
+	for point in points:
+		if not (point is Vector3):
+			continue
+		var world_pos := point as Vector3
+		if cam.is_position_behind(world_pos):
+			continue
+		var screen_pos := cam.unproject_position(world_pos)
+		if not has_point:
+			min_pos = screen_pos
+			max_pos = screen_pos
+			has_point = true
+		else:
+			min_pos.x = minf(min_pos.x, screen_pos.x)
+			min_pos.y = minf(min_pos.y, screen_pos.y)
+			max_pos.x = maxf(max_pos.x, screen_pos.x)
+			max_pos.y = maxf(max_pos.y, screen_pos.y)
+	if not has_point:
+		return null
+	return Rect2(min_pos, max_pos - min_pos)
+
+func _merged_indices(existing: Array, incoming: Array) -> Array[int]:
+	var seen := {}
+	var result: Array[int] = []
+	for source in [existing, incoming]:
+		for raw_index in source:
+			var index := int(raw_index)
+			if seen.has(index):
+				continue
+			seen[index] = true
+			result.append(index)
+	result.sort()
+	return result
+
+func _toggle_selection_at_mouse(mouse_pos: Vector2) -> bool:
+	var cam := get_viewport().get_camera_3d()
+	if cam:
+		var entrance_rect = _main_entrance_screen_rect(cam)
+		if entrance_rect != null and entrance_rect.has_point(mouse_pos):
+			_toggle_main_entrance_selection()
+			return true
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
+	var anchor_index := _site_anchor_index_at_world_xz(hit)
+	if anchor_index >= 0:
+		_toggle_site_anchor_selection(anchor_index)
+		return true
+	var part_index := _mesh_part_index_at_world_xz(hit)
+	if part_index >= 0:
+		_toggle_mesh_part_selection(part_index)
+		return true
+	return false
+
+func _toggle_mesh_part_selection(index: int) -> void:
+	if index < 0 or index >= _lod_source_paths.size():
+		return
+	var selected := _selected_part_indices.duplicate()
+	if selected.has(index):
+		selected.erase(index)
+		_set_selected_mesh_parts(selected, -1 if selected.is_empty() else int(selected[0]))
+	else:
+		selected.append(index)
+		_set_selected_mesh_parts(selected, index)
 
 func _try_begin_mesh_part_rotation(mouse_pos: Vector2) -> bool:
 	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
@@ -3012,7 +4338,10 @@ func _mesh_part_contains_world_xz(part_index: int, world_pos: Vector3) -> bool:
 func _set_selected_mesh_part_position(position: Vector3) -> void:
 	if not _has_selected_mesh_part():
 		return
-	_part_positions[_selected_part_index] = position
+	_part_positions[_selected_part_index] = _clamp_mesh_part_position_to_lot(
+		_selected_part_index,
+		position
+	)
 	_sync_selected_mesh_part_controls()
 	_apply_selected_part_transform_from_state()
 
@@ -3020,6 +4349,10 @@ func _set_selected_mesh_part_rotation_y(rotation_y: float) -> void:
 	if not _has_selected_mesh_part():
 		return
 	_part_rotation_y[_selected_part_index] = rotation_y
+	_part_positions[_selected_part_index] = _clamp_mesh_part_position_to_lot(
+		_selected_part_index,
+		_part_positions[_selected_part_index]
+	)
 	_sync_selected_mesh_part_controls()
 	_apply_selected_part_transform_from_state()
 
@@ -3037,12 +4370,17 @@ func _sync_selected_mesh_part_controls() -> void:
 func _apply_selected_part_transform_from_state() -> void:
 	if not _has_selected_mesh_part():
 		return
+	_apply_mesh_part_transform_from_state(_selected_part_index)
+
+func _apply_mesh_part_transform_from_state(index: int) -> void:
+	if index < 0 or index >= _lod_source_paths.size():
+		return
 	_preview.set_mesh_part_transform(
-		_selected_part_index,
-		_part_positions[_selected_part_index],
-		_part_rotation_y[_selected_part_index],
-		_part_scales[_selected_part_index],
-		_part_pivot_offsets[_selected_part_index]
+		index,
+		_part_positions[index],
+		_part_rotation_y[index],
+		_part_scales[index],
+		_part_pivot_offsets[index]
 	)
 
 func _normalize_degrees(value: float) -> float:

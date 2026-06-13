@@ -20,6 +20,9 @@ pub fn load_asset_packs(
     };
 
     let result = scan_pack_dir(Path::new(&dir_path.to_string()));
+    // Treat every load as an authoritative registry refresh. Asset editor moves,
+    // pack disables, and deleted folders must remove stale qualified IDs too.
+    core.allocator.registry.clear();
     for pack in result.packs {
         if !filter.is_empty() && !filter.contains(&pack.pack.pack_id.as_str()) {
             continue;
