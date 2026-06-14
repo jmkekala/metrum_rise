@@ -1763,6 +1763,8 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_update_dim_label()
 	else:
 		_preview.clear_mesh_parts()
+	# Mesh and lot loading rebuild preview overlays; apply the manifest frontage last.
+	_set_frontage_forward(_anchor_forward(entrance_anchor))
 
 func _array_to_vector3(value, fallback: Vector3) -> Vector3:
 	if value is Array and value.size() == 3:
@@ -3157,8 +3159,9 @@ func _on_set_front_from_view() -> void:
 		_log("[color=yellow]Camera is directly above — frontage unchanged.[/color]")
 		return
 	_set_frontage_forward(_snap_xz_to_cardinal(horizontal))
+	# The manifest has no separate frontage field; entrance/main.forward is the stored frontage.
+	_set_main_entrance_forward(_frontage_fwd)
 	if _main_entrance_auto:
-		_set_main_entrance_forward(_frontage_fwd)
 		_set_main_entrance_position(_default_main_entrance_position(), true)
 	_log("Frontage set: front face points toward camera.")
 
