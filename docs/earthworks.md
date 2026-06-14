@@ -73,6 +73,8 @@ Each engineered-ground client owns one authoritative support surface for its foo
 Current and planned clients include:
 
 - roads, using the compiled roadbed
+- future building site surfaces, using the placed building's fixed support plane and authored
+  `[[site_surfaces]]` polygons once `EARTH-02` is implemented
 - future zoning / building pads, using a flat foundation pad
 - future parking platforms, rail beds, retaining structures, or other built ground
 
@@ -310,13 +312,17 @@ more capable than the terrain heightfield alone.
 
 ## Current Runtime
 
-### 1. Roads Are The First Live Client
+### 1. Roads Are The Live Client
 
-The current runtime ships roads as the first engineered-ground client.
+The current runtime ships roads as the only live engineered-ground client.
 
 That means:
 
 - `RoadSurfaceSystem` owns the roadbed support surface
+- placed buildings capture a fixed support height at placement for building meshes and entrance
+  derivation, but authored `[[site_surfaces]]` polygons remain editor metadata only
+- authored building site surfaces do not currently clip visual terrain or participate in
+  world-surface height/raycast queries
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
 - bridge earthworks remain abutment-only and use class-owned endpoint ranges rather than ordinary
@@ -370,8 +376,9 @@ Current compatibility gap:
   terrain
 - structural visual terrain is then rebuilt from that moved roadbed, so the road can shift instead
   of the terrain alone reshaping around it
-- future building pads and foundations are not live yet, so their fixed-surface semantics are
-  still a shared-target rule rather than a shipped behavior
+- full building-pad foundations, authored site surfaces, and perimeter grading are not live yet, so
+  their broader fixed-surface semantics are still a shared-target rule rather than a shipped
+  behavior
 
 ### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
@@ -477,8 +484,8 @@ Required first variant:
 - node top-surface ownership must compile to explicit band-owned regions whose seam constraints and
   height owners are preserved through clipping and triangulation; it must not rely on one
   annulus-style ring carrier or a post-overlay nearest-height sampler
-- future building pads follow the same owner model, but with a perimeter tie-in ring instead of
-  two longitudinal side runs
+- building site surfaces follow the same owner model, but with authored area loops instead of two
+  longitudinal side runs; future full building pads extend this with a perimeter tie-in ring
 
 Required seam acceptance checks:
 
@@ -671,14 +678,14 @@ The following items remain intentionally open as later extensions of the same su
 
 ### 1. When Do Buildings Become Live Engineered-Ground Clients?
 
-Future flat building pads and foundations are already part of the shared target, but they are not
-yet implemented as first-class engineered-ground clients.
+Future flat building pads, foundations, and authored `[[site_surfaces]]` polygons are already part
+of the shared target, but they are not yet implemented as first-class engineered-ground clients.
 
 Open decision:
 
-- how building-pad support surfaces, footprint ownership, tie-in boundaries, and future retaining
-  behavior integrate with allocator / zoning placement without inventing a second terrain-override
-  model separate from roads
+- how building-pad and site-surface support surfaces, footprint ownership, tie-in boundaries, and
+  future retaining behavior integrate with allocator / zoning placement without inventing a second
+  terrain-override model separate from roads
 
 ### 2. When Do Later Geometry Variants Replace The First Closed Slope / Closure Mesh?
 

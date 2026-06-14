@@ -105,6 +105,7 @@ mod tests {
         Building {
             center_x: 0.0,
             center_y: 0.0,
+            support_height_m: 0.0,
             width_cells: 1,
             depth_cells: 1,
             zone_profile_runtime_id: 0,

@@ -8,12 +8,17 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::types::VehicleFrontageAccess;
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
 use rand::SeedableRng;
 
 fn zone_bucket(zone: ZoneType) -> usize {
     baseline_private_zone_slot(zone).expect("tests should only query baseline private zones")
+}
+
+fn flat_test_terrain() -> TerrainSystem {
+    TerrainSystem::new(32, 32)
 }
 
 fn paint_zone_rect(
@@ -232,6 +237,7 @@ fn execute_startup_demand_building_pass(
             logistics,
             graph,
             &network.lane_system,
+            &flat_test_terrain(),
             demand.runtime_catalog(),
             demand.runtime_tuning(),
         );
@@ -326,6 +332,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &mut logistics,
         &graph,
         &network.lane_system,
+        &flat_test_terrain(),
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -355,6 +362,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         allocator.buildings.push(Building {
             center_x: center.x,
             center_y: center.y,
+            support_height_m: 0.0,
             width_cells: 1,
             depth_cells: 1,
             zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
@@ -435,6 +443,7 @@ fn test_zone_index_consistency() {
         allocator.buildings.push(Building {
             center_x: i as f32,
             center_y: 0.0,
+            support_height_m: 0.0,
             width_cells: 3,
             depth_cells: 3,
             zone_profile_runtime_id: 0,
@@ -530,6 +539,7 @@ fn test_vacancy_index_consistency() {
         allocator.buildings.push(Building {
             center_x: i as f32,
             center_y: 0.0,
+            support_height_m: 0.0,
             width_cells: 3,
             depth_cells: 3,
             zone_profile_runtime_id: 0,
@@ -637,6 +647,7 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 3,
         depth_cells: 3,
         zone_profile_runtime_id: 0,
@@ -1160,6 +1171,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
     allocator.buildings.push(Building {
         center_x: 10.0,
         center_y: -10.0,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
@@ -1284,6 +1296,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
     allocator.buildings.push(Building {
         center_x: 10.0,
         center_y: -10.0,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
@@ -1408,6 +1421,7 @@ fn test_building_removal_clears_zoning_occupancy() {
     allocator.buildings.push(Building {
         center_x: center.x,
         center_y: center.y,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
@@ -1554,6 +1568,7 @@ fn test_immigration_claims_vacant_home() {
     allocator.buildings.push(Building {
         center_x: center.x,
         center_y: center.y,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
@@ -1700,6 +1715,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     allocator.buildings.push(Building {
         center_x: 10.0,
         center_y: 10.0,
+        support_height_m: 0.0,
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,
@@ -1741,6 +1757,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     allocator.buildings.push(Building {
         center_x: 40.0,
         center_y: 10.0,
+        support_height_m: 0.0,
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,
@@ -1879,6 +1896,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &mut logistics,
         &graph,
         &network.lane_system,
+        &flat_test_terrain(),
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -1946,6 +1964,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
@@ -1987,6 +2006,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
@@ -2028,6 +2048,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
@@ -2138,6 +2159,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut logistics,
         &graph,
         &network.lane_system,
+        &flat_test_terrain(),
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -2241,6 +2263,7 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
         &mut logistics,
         &graph,
         &network.lane_system,
+        &flat_test_terrain(),
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );

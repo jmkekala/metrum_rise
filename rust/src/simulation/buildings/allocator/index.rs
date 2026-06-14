@@ -17,12 +17,17 @@ impl BuildingAllocator {
         self.vacancy_pos.clear();
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
         self.building_chunks.clear();
+        self.max_lot_radius_cells = 0.0;
 
         for (idx, b) in self.buildings.iter().enumerate() {
             if b.edge_idx != usize::MAX {
                 let chunk =
                     RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
                 self.building_chunks.entry(chunk).or_default().push(idx);
+                let half_width = b.width_cells as f32 * 0.5;
+                let half_depth = b.depth_cells as f32 * 0.5;
+                self.max_lot_radius_cells =
+                    self.max_lot_radius_cells.max(half_width.hypot(half_depth));
             }
             if b.is_under_construction() {
                 continue;

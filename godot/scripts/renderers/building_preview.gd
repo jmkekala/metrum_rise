@@ -7,6 +7,8 @@ extends Node3D
 ## `aabb` is the model-space AABB of the imported scene root.
 signal mesh_loaded(aabb: AABB)
 
+const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
+
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
 const GHOST_TINT := Color(0.16, 0.38, 0.95, 0.58)
@@ -19,8 +21,6 @@ const LABEL_PIXEL_SIZE := 0.025
 const LABEL_HEIGHT_M := 1.15
 const ANCHOR_FILL_ALPHA := 0.30
 const SELECTED_ANCHOR_FILL_ALPHA := 0.42
-const SITE_SURFACE_FILL_ALPHA := 0.70
-const SELECTED_SITE_SURFACE_FILL_ALPHA := 0.82
 const LOT_BORDER_WIDTH_M := 0.14
 const ANCHOR_BORDER_WIDTH_M := 0.14
 const GUIDE_ARROW_WIDTH_M := 0.16
@@ -32,11 +32,14 @@ const GUIDE_DASH_M := 1.20
 const GUIDE_GAP_M := 0.65
 const ANCHOR_DASH_M := 0.55
 const ANCHOR_GAP_M := 0.32
+const SITE_SURFACE_FILL_Y := 0.09
+const SITE_SURFACE_GUIDE_Y := 0.105
 const GUIDE_HALO_ALPHA := 0.34
 const GUIDE_HALO_WIDTH_MULT := 2.35
 
 var _mesh_instance: Node3D
 var _selection_overlay: MeshInstance3D
+var _site_surface_fill: MeshInstance3D
 var _site_surface_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
@@ -86,6 +89,10 @@ func _ready() -> void:
 
 	_selection_overlay = MeshInstance3D.new()
 	add_child(_selection_overlay)
+
+	_site_surface_fill = MeshInstance3D.new()
+	_site_surface_fill.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_site_surface_fill)
 
 	_site_surface_overlay = MeshInstance3D.new()
 	add_child(_site_surface_overlay)
@@ -506,10 +513,6 @@ func _site_surface_color(material: String) -> Color:
 			return Color(0.25, 0.26, 0.24, 1.0) if _is_light_theme() else Color(0.34, 0.35, 0.32, 1.0)
 		"concrete":
 			return Color(0.58, 0.59, 0.56, 1.0) if _is_light_theme() else Color(0.62, 0.63, 0.60, 1.0)
-		"gravel":
-			return Color(0.43, 0.40, 0.34, 1.0) if _is_light_theme() else Color(0.50, 0.46, 0.38, 1.0)
-		"paving":
-			return Color(0.50, 0.46, 0.40, 1.0) if _is_light_theme() else Color(0.58, 0.52, 0.45, 1.0)
 		_:
 			return Color(0.45, 0.45, 0.42, 1.0)
 
@@ -641,8 +644,12 @@ func _build_site_surface_overlay() -> void:
 		return
 	_clear_site_surface_labels()
 	if _site_surfaces.is_empty():
+		if _site_surface_fill:
+			_site_surface_fill.mesh = null
 		_site_surface_overlay.mesh = null
 		return
+
+	_build_site_surface_fill()
 
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -651,13 +658,11 @@ func _build_site_surface_overlay() -> void:
 		var surface := _site_surfaces[index]
 		var material := str(surface.get("material", "asphalt"))
 		material_counts[material] = int(material_counts.get(material, 0)) + 1
-		var vertices := _site_surface_vertices(surface, 0.055)
+		var vertices := _site_surface_vertices(surface, SITE_SURFACE_GUIDE_Y)
 		if vertices.size() < 3:
 			continue
 		var selected := index == _selected_site_surface_index
 		var color := _selected_anchor_color() if selected else _site_surface_color(material)
-		var fill_alpha := SELECTED_SITE_SURFACE_FILL_ALPHA if selected else SITE_SURFACE_FILL_ALPHA
-		_draw_polygon_fill(im, vertices, Color(color.r, color.g, color.b, fill_alpha))
 		for edge in vertices.size():
 			if selected:
 				_draw_editor_line(im, vertices[edge], vertices[(edge + 1) % vertices.size()], color, ANCHOR_BORDER_WIDTH_M)
@@ -683,6 +688,123 @@ func _build_site_surface_overlay() -> void:
 
 	im.surface_set_material(0, _new_overlay_material())
 	_site_surface_overlay.mesh = im
+
+func _build_site_surface_fill() -> void:
+	if not _site_surface_fill:
+		return
+
+	var triangles_by_material := {
+		WorldMaterials.MATERIAL_ASPHALT: PackedVector3Array(),
+		WorldMaterials.MATERIAL_CONCRETE: PackedVector3Array(),
+	}
+
+	for surface in _site_surfaces:
+		var material := str(surface.get("material", WorldMaterials.MATERIAL_ASPHALT))
+		if not triangles_by_material.has(material):
+			material = WorldMaterials.MATERIAL_ASPHALT
+		var vertices := _site_surface_vertices(surface, SITE_SURFACE_FILL_Y)
+		if vertices.size() < 3:
+			continue
+		var material_triangles: PackedVector3Array = triangles_by_material[material]
+		_append_polygon_triangles(material_triangles, vertices)
+		triangles_by_material[material] = material_triangles
+
+	var mesh := ArrayMesh.new()
+	for material in [WorldMaterials.MATERIAL_ASPHALT, WorldMaterials.MATERIAL_CONCRETE]:
+		var vertices: PackedVector3Array = triangles_by_material[material]
+		if vertices.is_empty():
+			continue
+		var normals := PackedVector3Array()
+		normals.resize(vertices.size())
+		for i in normals.size():
+			normals[i] = Vector3.UP
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1, WorldMaterials.site_surface_material(material))
+
+	_site_surface_fill.mesh = mesh if mesh.get_surface_count() > 0 else null
+
+func _append_polygon_triangles(out: PackedVector3Array, vertices: Array) -> void:
+	if vertices.size() < 3:
+		return
+
+	var indices := []
+	for i in vertices.size():
+		indices.append(i)
+	if _site_surface_signed_area(vertices) < 0.0:
+		indices.reverse()
+
+	var guard := 0
+	while indices.size() > 3 and guard < vertices.size() * vertices.size():
+		guard += 1
+		var clipped := false
+		for i in indices.size():
+			var prev_idx := int(indices[(i + indices.size() - 1) % indices.size()])
+			var current_idx := int(indices[i])
+			var next_idx := int(indices[(i + 1) % indices.size()])
+			var prev: Vector3 = vertices[prev_idx]
+			var current: Vector3 = vertices[current_idx]
+			var next: Vector3 = vertices[next_idx]
+			if _site_surface_orientation(prev, current, next) <= 0.0001:
+				continue
+
+			var contains_vertex := false
+			for candidate_raw in indices:
+				var candidate_idx := int(candidate_raw)
+				if candidate_idx == prev_idx or candidate_idx == current_idx or candidate_idx == next_idx:
+					continue
+				var candidate: Vector3 = vertices[candidate_idx]
+				if _site_surface_point_in_triangle(candidate, prev, current, next):
+					contains_vertex = true
+					break
+			if contains_vertex:
+				continue
+
+			_append_site_surface_triangle(out, prev, current, next)
+			indices.remove_at(i)
+			clipped = true
+			break
+		if not clipped:
+			_append_polygon_fan_triangles(out, vertices)
+			return
+
+	if indices.size() == 3:
+		_append_site_surface_triangle(
+			out,
+			vertices[int(indices[0])],
+			vertices[int(indices[1])],
+			vertices[int(indices[2])]
+		)
+
+func _append_polygon_fan_triangles(out: PackedVector3Array, vertices: Array) -> void:
+	for i in range(1, vertices.size() - 1):
+		_append_site_surface_triangle(out, vertices[0], vertices[i], vertices[i + 1])
+
+func _append_site_surface_triangle(out: PackedVector3Array, a: Vector3, b: Vector3, c: Vector3) -> void:
+	out.append(a)
+	out.append(c)
+	out.append(b)
+
+func _site_surface_signed_area(vertices: Array) -> float:
+	var area := 0.0
+	for i in vertices.size():
+		var a: Vector3 = vertices[i]
+		var b: Vector3 = vertices[(i + 1) % vertices.size()]
+		area += a.x * b.z - b.x * a.z
+	return area * 0.5
+
+func _site_surface_orientation(a: Vector3, b: Vector3, c: Vector3) -> float:
+	return (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
+
+func _site_surface_point_in_triangle(p: Vector3, a: Vector3, b: Vector3, c: Vector3) -> bool:
+	const EPS := 0.0001
+	var ab := _site_surface_orientation(a, b, p)
+	var bc := _site_surface_orientation(b, c, p)
+	var ca := _site_surface_orientation(c, a, p)
+	return ab >= -EPS and bc >= -EPS and ca >= -EPS
 
 func _site_surface_vertices(surface: Dictionary, y: float) -> Array:
 	var result := []
@@ -715,10 +837,6 @@ func _site_surface_label_prefix(material: String) -> String:
 			return "Asphalt"
 		"concrete":
 			return "Concrete"
-		"gravel":
-			return "Gravel"
-		"paving":
-			return "Paving"
 		_:
 			return "Surface"
 

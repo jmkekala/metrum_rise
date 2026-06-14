@@ -57,6 +57,7 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
     Building {
         center_x,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,

@@ -2,7 +2,7 @@
 //!
 //! Handles building instance transform generation and plot/construction-site visuals.
 
-use crate::assets::{AnchorType, AssetEntry, MeshPart, SiteSurface, SiteSurfaceMaterial};
+use crate::assets::{AnchorType, AssetEntry, MeshPart};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::zoning::ZoneType;
@@ -14,11 +14,6 @@ const SITE_PAD_HEIGHT_M: f32 = 0.08;
 const FOUNDATION_PAD_HEIGHT_M: f32 = 0.18;
 const SCAFFOLD_POST_THICKNESS_M: f32 = 0.28;
 const SCAFFOLD_RAIL_THICKNESS_M: f32 = 0.22;
-const SITE_SURFACE_ASPHALT: u8 = 1;
-const SITE_SURFACE_CONCRETE: u8 = 2;
-const SITE_SURFACE_GRAVEL: u8 = 3;
-const SITE_SURFACE_PAVING: u8 = 4;
-const SITE_SURFACE_GROUND_OFFSET_M: f32 = 0.02;
 
 impl SimCore {
     // ── Building Renderer ──
@@ -49,9 +44,7 @@ impl SimCore {
                 }
             }
 
-            let world_x = b.center_x;
-            let world_z = b.center_y;
-            let mut world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
+            let mut world_y = b.support_height_m;
             if b.is_under_construction() {
                 let progress = construction_visual_progress(b, self.operational_hour_fraction());
                 world_y -= construction_rise_offset_m(b, progress);
@@ -89,9 +82,7 @@ impl SimCore {
                 continue;
             }
 
-            let world_x = b.center_x;
-            let world_z = b.center_y;
-            let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
+            let world_y = b.support_height_m;
             push_building_part_transform(&mut buffer, b, entry, part, world_y);
         }
 
@@ -117,7 +108,7 @@ impl SimCore {
             if b.zone_type == target_zone {
                 let world_x = b.center_x;
                 let world_z = b.center_y;
-                let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0 + 0.02; // Slightly above terrain
+                let world_y = b.support_height_m + 0.02; // Slightly above terrain
 
                 let fd = b.facing_dir.normalized();
                 let b_zx = fd.x;
@@ -174,7 +165,7 @@ impl SimCore {
                 continue;
             }
 
-            let ground_y = self.heightmap.sample_height_world(b.center_x, b.center_y) * 20.0;
+            let ground_y = b.support_height_m;
             let (right, front) = building_lot_basis(b);
             let (lot_width, lot_depth) = building_lot_size_m(self.config.zone_cell_m, b);
             let width = lot_width * SITE_INSET_SCALE;
@@ -220,7 +211,7 @@ impl SimCore {
                 continue;
             }
 
-            let ground_y = self.heightmap.sample_height_world(b.center_x, b.center_y) * 20.0;
+            let ground_y = b.support_height_m;
             let (right, front) = building_lot_basis(b);
             let (lot_width, lot_depth) = building_lot_size_m(self.config.zone_cell_m, b);
             let width = lot_width * FOUNDATION_INSET_SCALE;
@@ -266,7 +257,7 @@ impl SimCore {
                 continue;
             }
 
-            let ground_y = self.heightmap.sample_height_world(b.center_x, b.center_y) * 20.0;
+            let ground_y = b.support_height_m;
             let (right, front) = building_lot_basis(b);
             let (lot_width, lot_depth) = building_lot_size_m(self.config.zone_cell_m, b);
             let width = lot_width * 0.82;
@@ -283,43 +274,6 @@ impl SimCore {
                 width,
                 depth,
                 height,
-            );
-        }
-
-        PackedFloat32Array::from_iter(buffer)
-    }
-
-    /// Returns render-only authored building-site surface triangle vertices.
-    ///
-    /// The surface type is `1 = asphalt`, `2 = concrete`, `3 = gravel`, and
-    /// `4 = paving`. These surfaces are visual yard/layout hints only; they do not
-    /// participate in trip planning, parking, freight, queues, or terrain ownership.
-    pub fn get_building_site_surface_mesh_internal(&self, surface_type: u8) -> PackedFloat32Array {
-        if !matches!(
-            surface_type,
-            SITE_SURFACE_ASPHALT
-                | SITE_SURFACE_CONCRETE
-                | SITE_SURFACE_GRAVEL
-                | SITE_SURFACE_PAVING
-        ) {
-            return PackedFloat32Array::new();
-        }
-
-        let mut buffer = Vec::new();
-
-        for b in &self.allocator.buildings {
-            if b.broken || b.is_under_construction() {
-                continue;
-            }
-            let Some(entry) = self.allocator.registry.get(&b.asset_id) else {
-                continue;
-            };
-            push_building_site_surface_mesh(
-                &mut buffer,
-                b,
-                entry,
-                self.heightmap.sample_height_world(b.center_x, b.center_y) * 20.0,
-                surface_type,
             );
         }
 
@@ -406,146 +360,6 @@ fn push_broken_building_transform(buffer: &mut Vec<f32>, building: &Building, wo
     buffer.push(0.0);
     buffer.push(front.y * s);
     buffer.push(building.center_y);
-}
-
-fn push_building_site_surface_mesh(
-    buffer: &mut Vec<f32>,
-    building: &Building,
-    entry: &AssetEntry,
-    ground_y: f32,
-    surface_type: u8,
-) {
-    let anchor_forward = main_anchor_forward(Some(entry));
-    let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, anchor_forward);
-    let surface_y = ground_y + SITE_SURFACE_GROUND_OFFSET_M;
-
-    for surface in &entry.manifest.site_surfaces {
-        if site_surface_type(surface.material) != surface_type {
-            continue;
-        }
-        push_authored_site_surface_mesh(buffer, building, surface, basis_x, basis_z, surface_y);
-    }
-}
-
-fn site_surface_type(material: SiteSurfaceMaterial) -> u8 {
-    match material {
-        SiteSurfaceMaterial::Asphalt => SITE_SURFACE_ASPHALT,
-        SiteSurfaceMaterial::Concrete => SITE_SURFACE_CONCRETE,
-        SiteSurfaceMaterial::Gravel => SITE_SURFACE_GRAVEL,
-        SiteSurfaceMaterial::Paving => SITE_SURFACE_PAVING,
-    }
-}
-
-fn push_authored_site_surface_mesh(
-    buffer: &mut Vec<f32>,
-    building: &Building,
-    surface: &SiteSurface,
-    basis_x: Vector2,
-    basis_z: Vector2,
-    surface_y: f32,
-) {
-    let triangles = triangulate_site_surface(&surface.vertices);
-    let y = surface_y + surface.y_m;
-    for [a, b, c] in triangles {
-        for vertex_index in [a, b, c] {
-            let vertex = surface.vertices[vertex_index];
-            let world = building_local_point_to_world(
-                building,
-                basis_x,
-                basis_z,
-                Vector2::new(vertex[0], vertex[1]),
-            );
-            buffer.push(world.x);
-            buffer.push(y);
-            buffer.push(world.y);
-        }
-    }
-}
-
-fn triangulate_site_surface(vertices: &[[f32; 2]]) -> Vec<[usize; 3]> {
-    if vertices.len() < 3 {
-        return Vec::new();
-    }
-
-    let mut indices: Vec<usize> = (0..vertices.len()).collect();
-    if site_surface_signed_area(vertices) < 0.0 {
-        indices.reverse();
-    }
-
-    let mut triangles = Vec::with_capacity(vertices.len().saturating_sub(2));
-    let mut guard = 0;
-    while indices.len() > 3 && guard < vertices.len() * vertices.len() {
-        guard += 1;
-        let mut clipped = false;
-        for i in 0..indices.len() {
-            let prev = indices[(i + indices.len() - 1) % indices.len()];
-            let current = indices[i];
-            let next = indices[(i + 1) % indices.len()];
-            if site_surface_orientation(vertices[prev], vertices[current], vertices[next]) <= 0.0001
-            {
-                continue;
-            }
-            if indices.iter().copied().any(|candidate| {
-                candidate != prev
-                    && candidate != current
-                    && candidate != next
-                    && site_surface_point_in_triangle(
-                        vertices[candidate],
-                        vertices[prev],
-                        vertices[current],
-                        vertices[next],
-                    )
-            }) {
-                continue;
-            }
-            triangles.push([prev, current, next]);
-            indices.remove(i);
-            clipped = true;
-            break;
-        }
-        if !clipped {
-            return Vec::new();
-        }
-    }
-
-    if indices.len() == 3 {
-        triangles.push([indices[0], indices[1], indices[2]]);
-    }
-    triangles
-}
-
-fn site_surface_signed_area(vertices: &[[f32; 2]]) -> f32 {
-    let mut twice_area = 0.0;
-    for i in 0..vertices.len() {
-        let a = vertices[i];
-        let b = vertices[(i + 1) % vertices.len()];
-        twice_area += a[0] * b[1] - b[0] * a[1];
-    }
-    twice_area * 0.5
-}
-
-fn site_surface_orientation(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-}
-
-fn site_surface_point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
-    const EPS: f32 = 0.0001;
-    let ab = site_surface_orientation(a, b, p);
-    let bc = site_surface_orientation(b, c, p);
-    let ca = site_surface_orientation(c, a, p);
-    ab >= -EPS && bc >= -EPS && ca >= -EPS
-}
-
-fn building_local_point_to_world(
-    building: &Building,
-    basis_x: Vector2,
-    basis_z: Vector2,
-    local: Vector2,
-) -> Vector2 {
-    Vector2::new(
-        building.center_x + basis_x.x * local.x + basis_z.x * local.y,
-        building.center_y + basis_x.y * local.x + basis_z.y * local.y,
-    )
 }
 
 fn push_scaffold_transforms(

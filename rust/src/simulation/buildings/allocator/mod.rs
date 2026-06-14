@@ -51,6 +51,10 @@ pub struct Building {
     pub center_x: f32,
     /// World-space Z centre of the building footprint (metres, ground-plane Z axis).
     pub center_y: f32,
+    /// Fixed support-surface height captured when the building was placed.
+    ///
+    /// Rendered building parts use this instead of re-sampling terrain after placement.
+    pub support_height_m: f32,
     /// Width of the footprint in zoning cells.
     pub width_cells: u16,
     /// Depth of the footprint in zoning cells.
@@ -208,6 +212,8 @@ pub struct BuildingAllocator {
     pub vacancy_pos: Vec<usize>,
     /// Coarse 512 m chunk index of building centers for bounded nearby-economy queries.
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
+    /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
+    pub(crate) max_lot_radius_cells: f32,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
     /// Per-family dirty flags in [`BASELINE_PRIVATE_ZONES`] order.
@@ -432,6 +438,7 @@ impl BuildingAllocator {
             vacancy_index: [const { Vec::new() }; 3],
             vacancy_pos: Vec::new(),
             building_chunks: HashMap::new(),
+            max_lot_radius_cells: 0.0,
             dirty_index: true,
             dirty_zones: [false; 3],
             entrances_dirty: false,
@@ -566,6 +573,7 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.building_chunks.clear();
+        self.max_lot_radius_cells = 0.0;
         self.dirty = false;
         self.dirty_index = false;
         self.entrances.clear();

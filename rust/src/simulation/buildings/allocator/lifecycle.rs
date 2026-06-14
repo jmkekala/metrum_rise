@@ -20,6 +20,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
@@ -264,6 +265,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
+        terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> DemandBuildingActionExecution {
@@ -325,8 +327,8 @@ impl BuildingAllocator {
             }
 
             for action in &use_plan.spawns {
-                if let Some(building_idx) =
-                    self.execute_demand_spawn_action(action, zoning, graph, catalog, tuning)
+                if let Some(building_idx) = self
+                    .execute_demand_spawn_action(action, zoning, graph, terrain, catalog, tuning)
                 {
                     let property_tax = construction_property_tax(
                         self.buildings[building_idx].zone_type,

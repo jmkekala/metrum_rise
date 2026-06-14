@@ -194,6 +194,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 3,
         depth_cells: 3,
         zone_profile_runtime_id: residential_profile,

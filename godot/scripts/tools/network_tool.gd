@@ -9,6 +9,8 @@
 extends Node3D
 class_name NetworkTool
 
+const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
+
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
 
@@ -246,31 +248,8 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 		immediate.surface_add_vertex(point)
 	immediate.surface_end()
 
-static var _texture_cache = {}
-
-# Helper to load textures even if they haven't been imported yet by the editor
-func _load_texture(path: String) -> Texture2D:
-	if _texture_cache.has(path):
-		return _texture_cache[path]
-		
-	var tex: Texture2D = null
-	if ResourceLoader.exists(path):
-		tex = load(path)
-	else:
-		# Fallback for non-imported files
-		var abs_path = ProjectSettings.globalize_path(path)
-		var image = Image.load_from_file(abs_path)
-		if image:
-			image.generate_mipmaps()
-			tex = ImageTexture.create_from_image(image)
-	
-	_texture_cache[path] = tex
-	return tex
-
-static var _road_mat: ShaderMaterial = null
 static var _curb_mat: StandardMaterial3D = null
 static var _raised_step_mat: StandardMaterial3D = null
-static var _concrete_mat: ShaderMaterial = null
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
 
@@ -285,14 +264,8 @@ func update_main_mesh():
 	mark_network_nodes_dirty()
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
-	
-	if _road_mat == null:
-		_road_mat = ShaderMaterial.new()
-		_road_mat.shader = load("res://assets/materials/road.gdshader")
-		_road_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"))
-		_road_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"))
-		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
-		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
+	var road_mat := WorldMaterials.road_asphalt_material()
+	var concrete_mat := WorldMaterials.road_concrete_material()
 
 	if _curb_mat == null:
 		_curb_mat = StandardMaterial3D.new()
@@ -317,14 +290,6 @@ func update_main_mesh():
 		_marking_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		_marking_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.35)
 		_marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	if _concrete_mat == null:
-		_concrete_mat = ShaderMaterial.new()
-		_concrete_mat.shader = load("res://assets/materials/concrete.gdshader")
-		_concrete_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_diff_4k.jpg"))
-		_concrete_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"))
-		_concrete_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"))
-		_concrete_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"))
 
 	if _earthwork_mat == null:
 		_earthwork_mat = StandardMaterial3D.new()
@@ -378,7 +343,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.sidewalk_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.sidewalk_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_road_mat)
+		surface_map.push_back(road_mat)
 
 	# Asphalt & Junctions
 	if data.has("road_vertices") and data.road_vertices.size() > 0:
@@ -389,7 +354,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.road_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.road_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_road_mat)
+		surface_map.push_back(road_mat)
 
 	# Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
 	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
@@ -411,7 +376,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.concrete_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.concrete_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_concrete_mat)
+		surface_map.push_back(concrete_mat)
 	
 	mesh_instance.mesh = arr_mesh
 	

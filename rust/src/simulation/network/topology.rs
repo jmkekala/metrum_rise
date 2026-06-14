@@ -1048,6 +1048,7 @@ mod tests {
             .push(crate::simulation::buildings::allocator::Building {
                 center_x: 80.0,
                 center_y: 10.0,
+                support_height_m: 0.0,
                 width_cells: 3,
                 depth_cells: 3,
                 zone_profile_runtime_id: 0,

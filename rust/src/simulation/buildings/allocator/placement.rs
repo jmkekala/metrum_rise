@@ -12,6 +12,7 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -298,6 +299,7 @@ impl BuildingAllocator {
             width_cells: params.width_cells,
             depth_cells: params.depth_cells,
             center_2d,
+            support_height_m: 0.0,
             facing_dir: parcel.normal() * -1.0,
             frontage_t: parcel.frontage_center_t(),
             edge_width,
@@ -341,6 +343,7 @@ impl BuildingAllocator {
         action: &DemandSpawnAction,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
+        terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> Option<usize> {
@@ -350,10 +353,14 @@ impl BuildingAllocator {
         let Some(parcel) = zoning.parcel_by_raw_id(action.parcel_id) else {
             return None;
         };
-        let Some(resolved) = self.resolve_slot(&action.asset_id, &params, parcel, zoning, graph)
+        let Some(mut resolved) =
+            self.resolve_slot(&action.asset_id, &params, parcel, zoning, graph)
         else {
             return None;
         };
+        resolved.support_height_m = terrain
+            .sample_height_world(resolved.center_2d.x, resolved.center_2d.y)
+            * crate::config::HEIGHT_SCALE;
         Some(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
@@ -458,6 +465,7 @@ impl BuildingAllocator {
             side_offset: placement.edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
             center_x: placement.center_2d.x,
             center_y: placement.center_2d.y,
+            support_height_m: placement.support_height_m,
             edge_idx: placement.edge_idx,
             side: placement.side,
             cell_x: placement.cell_x,
@@ -596,6 +604,7 @@ struct ResolvedPlacement {
     width_cells: usize,
     depth_cells: usize,
     center_2d: Vector2,
+    support_height_m: f32,
     facing_dir: Vector2,
     frontage_t: f32,
     edge_width: f32,

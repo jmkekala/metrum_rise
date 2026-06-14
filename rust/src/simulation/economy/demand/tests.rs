@@ -164,6 +164,7 @@ fn building(
     Building {
         center_x: 0.0,
         center_y: 0.0,
+        support_height_m: 0.0,
         width_cells: 2,
         depth_cells: 2,
         zone_profile_runtime_id: 0,

@@ -137,10 +137,6 @@ pub enum SiteSurfaceMaterial {
     Asphalt,
     /// Light hard surface, commonly used for walkways and service pads.
     Concrete,
-    /// Loose aggregate yard treatment.
-    Gravel,
-    /// Decorative paver or tile surface.
-    Paving,
 }
 
 /// One authored polygon ground-treatment surface inside a building lot.

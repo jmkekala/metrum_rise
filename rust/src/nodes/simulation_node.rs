@@ -4182,13 +4182,6 @@ impl SimulationNode {
             .get_construction_scaffold_transforms_internal(zone_type_int)
     }
 
-    /// Returns packed triangle vertices for render-only authored building-site surfaces.
-    #[func]
-    pub fn get_building_site_surface_mesh(&self, surface_type: u8) -> PackedFloat32Array {
-        self.lock_core()
-            .get_building_site_surface_mesh_internal(surface_type)
-    }
-
     /// Returns a Dictionary of live stats for the building whose centre is closest to
     /// (`world_x`, `world_z`) within a 30 m pick radius.
     ///
@@ -6058,7 +6051,7 @@ impl SimCore {
         self.transit_network
             .road_surface
             .compile_dirty(&self.region_graph, &self.heightmap);
-        let road_locked_key_vec = self
+        let mut road_locked_key_vec = self
             .transit_network
             .road_surface
             .terrain_render_patch_keys_with_visible_road_margin(
@@ -6066,6 +6059,8 @@ impl SimCore {
                 &self.heightmap,
                 road_locked_margin_m,
             );
+        road_locked_key_vec.sort_unstable();
+        road_locked_key_vec.dedup();
         let road_locked_keys: HashSet<(usize, usize)> =
             road_locked_key_vec.iter().copied().collect();
         self.road_locked_terrain_patch_keys = road_locked_key_vec;

@@ -1410,6 +1410,7 @@ impl SimCore {
             &mut self.logistics,
             &self.region_graph,
             &self.transit_network.lane_system,
+            &self.heightmap,
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
         );

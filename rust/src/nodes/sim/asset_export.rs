@@ -422,8 +422,6 @@ fn site_surface_material_key(material: SiteSurfaceMaterial) -> &'static str {
     match material {
         SiteSurfaceMaterial::Asphalt => "asphalt",
         SiteSurfaceMaterial::Concrete => "concrete",
-        SiteSurfaceMaterial::Gravel => "gravel",
-        SiteSurfaceMaterial::Paving => "paving",
     }
 }
 

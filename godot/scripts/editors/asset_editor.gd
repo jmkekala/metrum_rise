@@ -45,14 +45,10 @@ const SITE_ANCHOR_DEFAULT_LENGTH_M := {
 const SITE_SURFACE_MATERIALS := [
 	{"id": "asphalt", "label": "Asphalt"},
 	{"id": "concrete", "label": "Concrete"},
-	{"id": "gravel", "label": "Gravel"},
-	{"id": "paving", "label": "Paving"},
 ]
 const SITE_SURFACE_DEFAULT_SIZE_M := {
 	"asphalt": Vector2(5.0, 7.0),
 	"concrete": Vector2(1.4, 6.0),
-	"gravel": Vector2(5.0, 7.0),
-	"paving": Vector2(2.0, 4.0),
 }
 const PLACEMENT_MODES := [
 	{"id": "zoned_private", "label": "Zoned Private"},
@@ -2381,10 +2377,6 @@ func _site_surface_material_label(material: String) -> String:
 			return "Asphalt"
 		"concrete":
 			return "Concrete"
-		"gravel":
-			return "Gravel"
-		"paving":
-			return "Paving"
 		_:
 			return material.capitalize()
 

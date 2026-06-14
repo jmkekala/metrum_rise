@@ -436,17 +436,18 @@ Runtime use in v1:
 - `driveway`, `parking`, and `loading_bay` anchors are semantic site-layout metadata only. They do
   not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
-- Building yard visuals are authored explicitly through `[[site_surfaces]]`. The live renderer
-  draws those surfaces exactly as exported by the asset editor.
-- Site surfaces are render-only. They do not affect trip planning, vehicle parking,
-  freight stop targeting, queueing, capacity, terrain grading, or road ownership in v1.
+- Building yard polygons are authored explicitly through `[[site_surfaces]]`, but they are editor
+  preview and asset metadata only in v1. Live gameplay does not render, clip terrain with, or query
+  these surfaces until `EARTH-02` implements them as first-class engineered ground.
+- Site surfaces do not rewrite source terrain, and they do not imply trip planning, vehicle
+  parking, freight stop targeting, queueing, or capacity in v1.
 - Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
   feature, not to baseline site-layout tooling.
 
 ### Building Site Surfaces
 
 V1 yard visuals are authored, not inferred. The asset editor is the source of truth for asphalt,
-concrete, gravel, paving, walkways, parking pads, service pads, and driveway aprons.
+concrete, walkways, parking pads, service pads, and driveway aprons.
 
 Rules:
 
@@ -458,10 +459,13 @@ Rules:
   polygon `vertices = [[x, z], ...]` in winding order.
 - Site surfaces must fit fully inside the authored lot rectangle.
 - Site surface polygons must have at least three vertices, non-zero area, and no self-intersection.
-- Site surfaces are visual only. They do not imply access, parking capacity, freight capacity,
-  service eligibility, pedestrian paths, or vehicle routing.
+- Site surfaces are authored visual-ground metadata and editor-preview geometry only in v1. Live
+  gameplay ignores them until the parked `EARTH-02` engineered-ground work lands.
+- Site surfaces do not imply access, parking capacity, freight capacity, service eligibility,
+  pedestrian paths, or vehicle routing.
 - Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
-- If an asset exports no site surfaces, the runtime renders no additional yard treatment.
+- If an asset exports no site surfaces, the editor previews no yard treatment. Live runtime behavior
+  is currently the same whether site surfaces are present or absent.
 - The editor can create rectangular starting surfaces, then authors can move the whole polygon,
   drag vertices, right-click an edge to add a vertex, and right-click an existing vertex to delete it
   while preserving the minimum three-vertex polygon.
@@ -803,9 +807,8 @@ Anchor requirements by asset class:
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
   site-layout metadata in v1. They do not generate visual yard surfaces; vehicle parking and
   freight stop behavior remain later runtime hooks.
-- Buildings may define optional `[[site_surfaces]]` polygons for visual yard materials such as
-  asphalt, concrete, gravel, and paving. Site surfaces are the only v1 way for an asset to add
-  driveways, walkways, service yards, parking pads, or other ground treatment visuals.
+- Buildings may define optional `[[site_surfaces]]` polygons for editor-preview yard materials:
+  asphalt and concrete. Live gameplay ignores these polygons in v1.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
 - Props use their exported origin as the placement point and do not require a separate anchor in v1.
 - Characters use the exported feet-center origin as the placement point and do not require additional anchors in v1.
@@ -863,8 +866,6 @@ Built-in site surface materials:
 
 - `asphalt`
 - `concrete`
-- `gravel`
-- `paving`
 
 ## LOD Strategy
 
@@ -1694,7 +1695,7 @@ Optional `[[anchors]]` table:
 
 Optional `[[site_surfaces]]` table for building visual yard polygons:
 
-- `material`: enum, one of `asphalt`, `concrete`, `gravel`, or `paving`
+- `material`: enum, one of `asphalt` or `concrete`
 - `name`: optional editor label
 - `y_m`: optional finite vertical offset in asset-local metres, default `0.0`
 - `vertices`: at least three `[x, z]` pairs in asset-local metres, in winding order
@@ -1877,8 +1878,8 @@ Building rules:
   `type = "loading_bay"`, not a second generic `entrance` anchor.
 - Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
 - In v1, driveway, parking, and loading-bay anchors are not rendered as ground treatment. Authored
-  `[[site_surfaces]]` polygons own asphalt, concrete, gravel, paving, walkways, parking pads,
-  loading pads, and driveway-apron visuals.
+  `[[site_surfaces]]` polygons own asphalt, concrete, walkways, parking pads, loading pads, and
+  driveway-apron visuals only in the asset editor preview.
 - The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret
   site-anchor capacity, queue behavior, parking, or freight stop behavior yet.
 - Every `[[site_surfaces]]` polygon must fit fully inside the authored lot rectangle.
