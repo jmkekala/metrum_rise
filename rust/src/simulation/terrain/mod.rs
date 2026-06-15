@@ -661,6 +661,22 @@ impl TerrainSystem {
         keys
     }
 
+    /// Marks all render patches overlapping a world-space rectangle as dirty.
+    pub(crate) fn mark_render_patches_for_world_bounds(
+        &mut self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) {
+        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
+            self.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
+        else {
+            return;
+        };
+        self.mark_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
+    }
+
     /// Returns the terrain grid dimensions in samples.
     pub(crate) fn grid_dimensions(&self) -> (usize, usize) {
         (self.width, self.height)

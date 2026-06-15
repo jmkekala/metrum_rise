@@ -1006,6 +1006,24 @@ are the first place to check when a visible RCI pressure does not become a build
 - the matching `upgrade_*`, `downgrade_*`, and `despawn_*` fields expose the same candidate,
   normalized-pressure, budget, credit, planned, and selected counts for existing-building actions
 
+Allocator execution emits a separate `building action execution` line when selected spawn actions
+are submitted to final placement. This line is the first place to check when `spawn_selected` is
+positive but no building appears:
+
+- `spawn_attempted` is the selected spawn count submitted to allocator placement
+- `spawn_placed` is the count that committed a building and paid construction property tax
+- `spawn_failed` is the total final placement rejection count
+- `spawn_failed_geometry` counts geometry/world-surface rejections rather than stale asset or
+  parcel references
+- `fail_driveway_surface`, `fail_driveway_height`, `fail_driveway_connection`,
+  `fail_frontage_surface`, and `fail_neighbor_height` identify the flat-site/road-surface reason
+  for geometry failures
+- `fail_asset`, `fail_parcel`, and `fail_slot` identify stale selected candidates whose authored
+  asset, zoning parcel, or legal placement slot no longer exists by execution time
+
+The hourly summary line uses `planned_spawns=(R/C/I)` for demand-selected spawn actions and
+`placed_spawns=(R/C/I)` for the buildings actually committed by allocator placement.
+
 Deterministic budget rule for building actions:
 
 For each use family `use` and action type `action`, demand first builds the eligible candidate list

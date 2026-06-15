@@ -267,6 +267,11 @@ pub(crate) enum TerrainCdtRoadBoundarySource {
         owner_index_b: u32,
         boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
     },
+    BuildingSiteBoundary {
+        building_idx: u64,
+        local_loop_index: u32,
+        local_edge_index: u32,
+    },
     SyntheticTestBoundary {
         stable_piece_id: u64,
         local_loop_index: u32,
@@ -280,7 +285,8 @@ impl TerrainCdtRoadBoundarySource {
             Self::SpanSupportBoundary { .. } => 0,
             Self::NodeFootprintBoundary { .. } => 1,
             Self::NodeSameMaterialBoundaryHandoff { .. } => 2,
-            Self::SyntheticTestBoundary { .. } => 3,
+            Self::BuildingSiteBoundary { .. } => 3,
+            Self::SyntheticTestBoundary { .. } => 4,
         }
     }
 
@@ -289,6 +295,7 @@ impl TerrainCdtRoadBoundarySource {
             Self::SpanSupportBoundary { edge_idx, .. } => clamp_u64_to_i32(edge_idx),
             Self::NodeFootprintBoundary { node_id, .. } => clamp_u32_to_i32(node_id),
             Self::NodeSameMaterialBoundaryHandoff { node_id, .. } => clamp_u32_to_i32(node_id),
+            Self::BuildingSiteBoundary { building_idx, .. } => clamp_u64_to_i32(building_idx),
             Self::SyntheticTestBoundary {
                 stable_piece_id, ..
             } => clamp_u64_to_i32(stable_piece_id),
@@ -334,6 +341,7 @@ impl TerrainCdtRoadBoundarySource {
             Self::NodeSameMaterialBoundaryHandoff { owner_kind, .. } => {
                 i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
             }
+            Self::BuildingSiteBoundary { .. } => -1,
             Self::SyntheticTestBoundary { .. } => -1,
         }
     }
@@ -347,6 +355,9 @@ impl TerrainCdtRoadBoundarySource {
             Self::NodeSameMaterialBoundaryHandoff { owner_index_a, .. } => {
                 clamp_u32_to_i32(owner_index_a)
             }
+            Self::BuildingSiteBoundary {
+                local_loop_index, ..
+            } => clamp_u32_to_i32(local_loop_index),
             Self::SyntheticTestBoundary { .. } => -1,
         }
     }
@@ -438,6 +449,14 @@ impl TerrainCdtRoadBoundarySource {
                 owner_index_a,
                 owner_index_b,
                 boundary_source
+            ),
+            Self::BuildingSiteBoundary {
+                building_idx,
+                local_loop_index,
+                local_edge_index,
+            } => format!(
+                "building_site building={} loop={} edge={}",
+                building_idx, local_loop_index, local_edge_index
             ),
             Self::SyntheticTestBoundary {
                 stable_piece_id,
@@ -1465,6 +1484,24 @@ fn mergeable_terrain_cdt_seam_source(
             && boundary_source_a == boundary_source_b =>
         {
             Some(first)
+        }
+        (
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: building_idx_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a,
+            },
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: building_idx_b,
+                local_loop_index: local_loop_index_b,
+                local_edge_index: local_edge_index_b,
+            },
+        ) if building_idx_a == building_idx_b && local_loop_index_a == local_loop_index_b => {
+            Some(TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: building_idx_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a.min(local_edge_index_b),
+            })
         }
         (
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
@@ -2515,6 +2552,7 @@ fn terrain_cdt_boundary_source_allows_retaining_wall(source: TerrainCdtRoadBound
         }
         TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
         | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. } => false,
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. } => false,
         TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
     }
 }
@@ -2986,6 +3024,21 @@ fn terrain_cdt_boundary_source_cmp(
             .then(owner_index_b_a.cmp(&owner_index_b_b))
             .then(boundary_source_a.cmp(&boundary_source_b)),
         (
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: building_idx_a,
+                local_loop_index: local_loop_index_a,
+                local_edge_index: local_edge_index_a,
+            },
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: building_idx_b,
+                local_loop_index: local_loop_index_b,
+                local_edge_index: local_edge_index_b,
+            },
+        ) => building_idx_a
+            .cmp(&building_idx_b)
+            .then(local_loop_index_a.cmp(&local_loop_index_b))
+            .then(local_edge_index_a.cmp(&local_edge_index_b)),
+        (
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
                 stable_piece_id: stable_piece_id_a,
                 local_loop_index: local_loop_index_a,
@@ -3014,6 +3067,10 @@ fn terrain_cdt_boundary_source_cmp(
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
         ) => std::cmp::Ordering::Less,
         (
+            TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. },
+        ) => std::cmp::Ordering::Less,
+        (
             TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
             TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
             | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. },
@@ -3022,6 +3079,24 @@ fn terrain_cdt_boundary_source_cmp(
             TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
         ) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. },
+        ) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. },
+            TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
+            | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
+            | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. },
+        ) => std::cmp::Ordering::Greater,
+        (
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. },
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
+        ) => std::cmp::Ordering::Less,
+        (
+            TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. },
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. },
+        ) => std::cmp::Ordering::Greater,
         (TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. }, _) => {
             std::cmp::Ordering::Greater
         }
@@ -4956,6 +5031,32 @@ mod tests {
                 );
                 assert!(owner_index_b >= owner_index_a);
                 assert!(boundary_source.is_some());
+                assert_eq!(source.support_policy_code(), -1);
+                assert_eq!(source.role_code(), -1);
+                assert_eq!(source.section_range_codes(), [-1, -1]);
+                assert_eq!(source.s_range_values(), [-1.0, -1.0]);
+            }
+            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx,
+                local_loop_index,
+                ..
+            } => {
+                assert_eq!(
+                    source.source_kind_code(),
+                    3,
+                    "{case_name}: building-site source kind code changed"
+                );
+                assert_eq!(
+                    source.primary_id_code(),
+                    i32::try_from(building_idx).unwrap_or(i32::MAX)
+                );
+                assert_eq!(
+                    source.owner_index_code(),
+                    i32::try_from(local_loop_index).unwrap_or(i32::MAX)
+                );
+                assert_eq!(source.node_kind_code(), -1);
+                assert_eq!(source.edge_class_code(), -1);
+                assert_eq!(source.owner_kind_code(), -1);
                 assert_eq!(source.support_policy_code(), -1);
                 assert_eq!(source.role_code(), -1);
                 assert_eq!(source.section_range_codes(), [-1, -1]);

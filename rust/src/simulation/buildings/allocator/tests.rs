@@ -7,6 +7,7 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::types::VehicleFrontageAccess;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
@@ -19,6 +20,12 @@ fn zone_bucket(zone: ZoneType) -> usize {
 
 fn flat_test_terrain() -> TerrainSystem {
     TerrainSystem::new(32, 32)
+}
+
+fn compiled_flat_test_terrain(network: &mut TransitNetwork, graph: &RegionGraph) -> TerrainSystem {
+    let terrain = flat_test_terrain();
+    network.road_surface.compile_dirty(graph, &terrain);
+    terrain
 }
 
 fn paint_zone_rect(
@@ -220,12 +227,13 @@ fn execute_startup_demand_building_pass(
     agents: &mut AgentSystem,
     households: &mut HouseholdSystem,
     logistics: &mut ShipmentSystem,
-    network: &crate::simulation::network::TransitNetwork,
+    network: &mut TransitNetwork,
     graph: &RegionGraph,
 ) {
     use crate::simulation::economy::demand::DemandSystem;
 
     let mut demand = DemandSystem::new();
+    let terrain = compiled_flat_test_terrain(network, graph);
     for _ in 0..24 {
         let building_count_before = allocator.buildings.len();
         demand.run_hourly_pass(allocator, households, graph, zoning, 1_000.0);
@@ -237,7 +245,8 @@ fn execute_startup_demand_building_pass(
             logistics,
             graph,
             &network.lane_system,
-            &flat_test_terrain(),
+            &network.road_surface,
+            &terrain,
             demand.runtime_catalog(),
             demand.runtime_tuning(),
         );
@@ -324,6 +333,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     if let Some(action) = demand.building_actions.commercial.spawns.first() {
         startup_plan.commercial.spawns.push(action.clone());
     }
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
     allocator.execute_demand_building_actions(
         &startup_plan,
         &mut zoning,
@@ -332,7 +342,8 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &mut logistics,
         &graph,
         &network.lane_system,
-        &flat_test_terrain(),
+        &network.road_surface,
+        &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -905,7 +916,7 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         &mut agents,
         &mut households,
         &mut logistics,
-        &network,
+        &mut network,
         &graph,
     );
 
@@ -994,7 +1005,7 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         &mut agents,
         &mut households,
         &mut logistics,
-        &network,
+        &mut network,
         &graph,
     );
 
@@ -1888,6 +1899,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         "pioneer demand and legal zoning should produce at least one residential spawn action across hourly demand credit"
     );
 
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
     allocator.execute_demand_building_actions(
         &demand.building_actions,
         &mut zoning,
@@ -1896,7 +1908,8 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &mut logistics,
         &graph,
         &network.lane_system,
-        &flat_test_terrain(),
+        &network.road_surface,
+        &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -1960,6 +1973,24 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         40.0,
         ZoneType::Residential,
     );
+    let occupied_parcels = {
+        let mut parcels = zoning
+            .parcels()
+            .iter()
+            .filter(|parcel| {
+                parcel.edge_idx() == 0
+                    && parcel.side() == 1
+                    && parcel.is_available()
+                    && zoning
+                        .profiles
+                        .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
+                        == ZoneType::Residential
+            })
+            .map(|parcel| (parcel.frontage_center_t(), parcel.id().raw()))
+            .collect::<Vec<_>>();
+        parcels.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+        [parcels[0].1, parcels[2].1, parcels[4].1]
+    };
 
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -1968,7 +1999,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
-        parcel_id: 0,
+        parcel_id: occupied_parcels[0],
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -2010,7 +2041,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
-        parcel_id: 0,
+        parcel_id: occupied_parcels[1],
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -2019,7 +2050,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         budget_distress: false,
         edge_idx: 0,
         side: 1,
-        cell_x: 2,
+        cell_x: 0,
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
@@ -2052,7 +2083,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         width_cells: 1,
         depth_cells: 1,
         zone_profile_runtime_id: 0,
-        parcel_id: 0,
+        parcel_id: occupied_parcels[2],
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -2061,7 +2092,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         budget_distress: false,
         edge_idx: 0,
         side: 1,
-        cell_x: 4,
+        cell_x: 0,
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
@@ -2087,6 +2118,9 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
+    for (building_idx, &parcel_id) in occupied_parcels.iter().enumerate() {
+        zoning.occupy_parcel(parcel_id, building_idx);
+    }
     allocator
         .recompute_derived_transforms(&graph, &zoning)
         .expect("building transforms should rebuild for test fixtures");
@@ -2110,10 +2144,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
 
     let mut plan = DemandBuildingActionPlan::default();
     plan.residential.despawns.push(DemandBuildingActionKey {
-        parcel_id: 0,
+        parcel_id: occupied_parcels[2],
         edge_idx: 0,
         side: 1,
-        cell_x: 4,
+        cell_x: 0,
         width_cells: 1,
         depth_cells: 1,
         level: 1,
@@ -2121,10 +2155,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
     plan.residential.downgrades.push(DemandLevelChangeAction {
         building: DemandBuildingActionKey {
-            parcel_id: 0,
+            parcel_id: occupied_parcels[1],
             edge_idx: 0,
             side: 1,
-            cell_x: 2,
+            cell_x: 0,
             width_cells: 1,
             depth_cells: 1,
             level: 2,
@@ -2134,7 +2168,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
     plan.residential.upgrades.push(DemandLevelChangeAction {
         building: DemandBuildingActionKey {
-            parcel_id: 0,
+            parcel_id: occupied_parcels[0],
             edge_idx: 0,
             side: 1,
             cell_x: 0,
@@ -2151,6 +2185,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
 
     let demand = DemandSystem::new();
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
     let execution = allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
@@ -2159,7 +2194,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut logistics,
         &graph,
         &network.lane_system,
-        &flat_test_terrain(),
+        &network.road_surface,
+        &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );
@@ -2169,18 +2205,34 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         1,
         &demand.runtime_tuning().fiscal,
     );
-    assert!((execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON);
+    let spawned_exists = allocator
+        .buildings
+        .iter()
+        .any(|building| building.parcel_id == spawn_parcel_id);
+    assert!(
+        (execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON,
+        "property tax paid {} should match expected {}; building_count={} spawn_parcel={} spawned_exists={}",
+        execution.property_tax_paid,
+        expected_property_tax,
+        allocator.buildings.len(),
+        spawn_parcel_id,
+        spawned_exists
+    );
 
     assert_eq!(allocator.buildings.len(), 3);
     assert!(
         allocator.buildings.iter().any(|building| {
-            building.cell_x == 0 && building.asset_id == residential_level_2 && building.level == 2
+            building.parcel_id == occupied_parcels[0]
+                && building.asset_id == residential_level_2
+                && building.level == 2
         }),
         "upgrade action should replace the first building with the next family level"
     );
     assert!(
         allocator.buildings.iter().any(|building| {
-            building.cell_x == 2 && building.asset_id == residential_level_1 && building.level == 1
+            building.parcel_id == occupied_parcels[1]
+                && building.asset_id == residential_level_1
+                && building.level == 1
         }),
         "downgrade action should replace the second building with the previous family level"
     );
@@ -2188,7 +2240,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         allocator
             .buildings
             .iter()
-            .all(|building| building.cell_x != 4),
+            .all(|building| building.parcel_id != occupied_parcels[2]),
         "despawn action should remove the empty third building"
     );
     let spawned = allocator
@@ -2255,6 +2307,7 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
     });
 
     let demand = DemandSystem::new();
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
     let execution = allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
@@ -2263,7 +2316,8 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
         &mut logistics,
         &graph,
         &network.lane_system,
-        &flat_test_terrain(),
+        &network.road_surface,
+        &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
     );

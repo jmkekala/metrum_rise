@@ -876,16 +876,29 @@ impl SimulationNode {
             .road_surface
             .terrain_cdt_road_loops_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z)
         {
-            Ok((cdt_road_loops, source_count)) => RoadClipLoopQuery {
-                cdt_road_loops,
-                source_count,
-                clip_error_label: None,
-            },
-            Err(err) => RoadClipLoopQuery {
-                cdt_road_loops: Vec::new(),
-                source_count: 1,
-                clip_error_label: Some(err.debug_label()),
-            },
+            Ok((mut cdt_road_loops, source_count)) => {
+                let site_loops = core
+                    .allocator
+                    .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
+                let site_source_count = site_loops.len();
+                cdt_road_loops.extend(site_loops);
+                RoadClipLoopQuery {
+                    cdt_road_loops,
+                    source_count: source_count + site_source_count,
+                    clip_error_label: None,
+                }
+            }
+            Err(err) => {
+                let site_loops = core
+                    .allocator
+                    .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
+                let source_count = site_loops.len();
+                RoadClipLoopQuery {
+                    cdt_road_loops: site_loops,
+                    source_count,
+                    clip_error_label: Some(err.debug_label()),
+                }
+            }
         }
     }
 
@@ -2007,6 +2020,7 @@ impl SimulationNode {
             }
             TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
             | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. }
+            | TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. }
             | TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
         }
     }
@@ -4182,6 +4196,18 @@ impl SimulationNode {
             .get_construction_scaffold_transforms_internal(zone_type_int)
     }
 
+    /// Returns the live building-site mesh revision.
+    #[func]
+    pub fn get_building_site_revision(&self) -> i64 {
+        i64::try_from(self.lock_core().get_building_site_revision_internal()).unwrap_or(i64::MAX)
+    }
+
+    /// Returns world-space triangle buffers for flat building-site top surfaces.
+    #[func]
+    pub fn get_building_site_mesh_data(&self) -> VarDictionary {
+        self.lock_core().get_building_site_mesh_data_internal()
+    }
+
     /// Returns a Dictionary of live stats for the building whose centre is closest to
     /// (`world_x`, `world_z`) within a 30 m pick radius.
     ///
@@ -6059,6 +6085,13 @@ impl SimCore {
                 &self.heightmap,
                 road_locked_margin_m,
             );
+        road_locked_key_vec.extend(
+            self.allocator
+                .terrain_render_patch_keys_with_building_site_margin(
+                    &self.heightmap,
+                    road_locked_margin_m,
+                ),
+        );
         road_locked_key_vec.sort_unstable();
         road_locked_key_vec.dedup();
         let road_locked_keys: HashSet<(usize, usize)> =

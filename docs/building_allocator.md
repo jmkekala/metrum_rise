@@ -81,9 +81,8 @@ need the baseline residential/commercial/industrial family. Later systems such a
 planning, economy, and rendering consume these fields rather than inventing their own separate
 placement truth.
 
-`support_height_m` is the fixed placement support plane consumed by building rendering and entrance
-derivation. Under the future `EARTH-02` flat-site target, allocator placement also passes this
-height to the engineered-ground client that owns the whole lot surface.
+`support_height_m` is the fixed placement support plane consumed by building rendering, entrance
+derivation, and the engineered-ground building-site client that owns the whole lot surface.
 
 `facing_dir` is the road-facing frontage direction: the direction the building's authored front
 points in world space. It is the negative of the zoning parcel `normal`, because parcel `normal`
@@ -159,9 +158,9 @@ The committed building center is still `front_center + parcel.normal * depth / 2
 frontage orientation flips: `Building::facing_dir = -parcel.normal`. Runtime render and entrance
 transforms then align the asset's authored `main` entrance `forward` vector to `facing_dir`.
 
-### `EARTH-02` flat-site handoff target
+### Flat Building-Site Handoff
 
-When live building sites become engineered-ground clients, the allocator remains the placement
+Live building sites are engineered-ground clients, and the allocator remains the placement
 authority:
 
 - zoning parcels remain legal intent only and do not alter terrain

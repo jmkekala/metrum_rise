@@ -12,6 +12,7 @@ mod geometry;
 mod index;
 mod lifecycle;
 mod placement;
+mod site;
 
 #[cfg(test)]
 mod tests;
@@ -42,6 +43,27 @@ pub(crate) fn baseline_private_zone_slot(zone: ZoneType) -> Option<usize> {
         ZoneType::Industrial => Some(2),
         ZoneType::None | ZoneType::Office | ZoneType::Mixed => None,
     }
+}
+
+/// Final allocator-side reason a selected demand spawn could not be committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DemandSpawnPlacementRejection {
+    /// The selected asset no longer resolves to valid placement parameters.
+    AssetUnavailable,
+    /// The selected parcel no longer exists in the zoning system.
+    ParcelUnavailable,
+    /// The parcel exists, but its current geometry or occupancy no longer accepts the asset.
+    SlotUnavailable,
+    /// A driveway anchor could not resolve an adjacent road surface height.
+    DrivewayRoadSurfaceMissing,
+    /// Multiple driveway anchors required incompatible flat-site heights.
+    DrivewayHeightConflict,
+    /// The asset has driveway anchors, but none touch the claimed road edge.
+    DrivewayConnectionMissing,
+    /// The frontage fallback could not resolve an adjacent road surface height.
+    FrontageRoadSurfaceMissing,
+    /// The selected flat-site height conflicts with an already placed neighboring site.
+    NeighborSiteHeightConflict,
 }
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
@@ -214,6 +236,8 @@ pub struct BuildingAllocator {
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
+    /// Maximum world-space half-diagonal of derived building-site footprints.
+    pub(crate) max_site_radius_m: f32,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
     /// Per-family dirty flags in [`BASELINE_PRIVATE_ZONES`] order.
@@ -224,11 +248,17 @@ pub struct BuildingAllocator {
     pub(crate) building_ref_revision: u64,
     /// Revision bumped whenever derived building entrance/access data changes.
     pub(crate) entrance_ref_revision: u64,
-    /// Registry of all loaded pack assets.
-    pub registry: AssetRegistry,
     /// Derived building entrance/access cache keyed by building index.
     pub(crate) entrances: Vec<BuildingEntrance>,
+    /// Derived flat building-site clients keyed by building index.
+    pub(crate) building_sites: Vec<BuildingSiteClient>,
+    /// Building-site terrain bounds dirtied by allocator-owned cleanup.
+    pub(crate) building_site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    /// Registry of all loaded pack assets.
+    pub registry: AssetRegistry,
 }
+
+use site::BuildingSiteClient;
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]
@@ -439,13 +469,16 @@ impl BuildingAllocator {
             vacancy_pos: Vec::new(),
             building_chunks: HashMap::new(),
             max_lot_radius_cells: 0.0,
+            max_site_radius_m: 0.0,
             dirty_index: true,
             dirty_zones: [false; 3],
             entrances_dirty: false,
             building_ref_revision: 0,
             entrance_ref_revision: 0,
-            registry: AssetRegistry::new(),
             entrances: Vec::new(),
+            building_sites: Vec::new(),
+            building_site_dirty_bounds: None,
+            registry: AssetRegistry::new(),
         }
     }
 
@@ -473,6 +506,9 @@ impl BuildingAllocator {
 
         if self.entrances_dirty || self.entrances.len() != self.buildings.len() {
             self.rebuild_entrance_cache(graph, &network.lane_system);
+        }
+        if self.building_sites.len() != self.buildings.len() {
+            self.rebuild_building_site_clients(zoning.config.zone_cell_m);
         }
 
         if self.dirty_index {
@@ -541,7 +577,32 @@ impl BuildingAllocator {
                 b.edge_idx = usize::MAX;
             }
         }
-        self.buildings.retain(|b| b.edge_idx != usize::MAX);
+        let mut removed_site_bounds = None;
+        if self.building_sites.len() == self.buildings.len() {
+            let mut kept_buildings = Vec::with_capacity(self.buildings.len());
+            let mut kept_sites = Vec::with_capacity(self.building_sites.len());
+            for (building, site) in self.buildings.drain(..).zip(self.building_sites.drain(..)) {
+                if building.edge_idx != usize::MAX {
+                    kept_buildings.push(building);
+                    kept_sites.push(site);
+                } else {
+                    accumulate_site_bounds(&mut removed_site_bounds, Some(site.bounds()));
+                }
+            }
+            self.buildings = kept_buildings;
+            self.building_sites = kept_sites;
+            self.recompute_max_site_radius_m();
+        } else {
+            for idx in 0..self.buildings.len() {
+                if self.buildings[idx].edge_idx == usize::MAX {
+                    accumulate_site_bounds(&mut removed_site_bounds, self.site_world_bounds(idx));
+                }
+            }
+            self.buildings.retain(|b| b.edge_idx != usize::MAX);
+            self.building_sites.clear();
+            self.max_site_radius_m = 0.0;
+        }
+        self.accumulate_pending_site_dirty_bounds(removed_site_bounds);
         if self.buildings.len() != old_len {
             self.dirty = true;
             self.dirty_index = true;
@@ -563,7 +624,9 @@ impl BuildingAllocator {
     pub fn clear(&mut self) {
         let had_buildings = !self.buildings.is_empty();
         let had_entrances = !self.entrances.is_empty();
+        let had_sites = !self.building_sites.is_empty();
         self.buildings.clear();
+        self.building_sites.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
             list.clear();
@@ -574,11 +637,13 @@ impl BuildingAllocator {
         self.vacancy_pos.clear();
         self.building_chunks.clear();
         self.max_lot_radius_cells = 0.0;
+        self.max_site_radius_m = 0.0;
+        self.building_site_dirty_bounds = None;
         self.dirty = false;
         self.dirty_index = false;
         self.entrances.clear();
         self.entrances_dirty = false;
-        if had_buildings {
+        if had_buildings || had_sites {
             self.bump_building_ref_revision();
         }
         if had_entrances {
@@ -662,10 +727,10 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
     ) -> Option<u32> {
         if let Some(profile_id) = self.registry.economy_profile(asset_id) {
-            if let Some(profile) = catalog.profile_for_id(profile_id)
-                && profile.runtime_supported
-            {
-                return Some(profile.worker_capacity);
+            if let Some(profile) = catalog.profile_for_id(profile_id) {
+                if profile.runtime_supported {
+                    return Some(profile.worker_capacity);
+                }
             }
             return None;
         }
@@ -794,4 +859,21 @@ fn squared_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
     let dx = building.center_x - origin_x;
     let dy = building.center_y - origin_y;
     dx * dx + dy * dy
+}
+
+fn accumulate_site_bounds(
+    target: &mut Option<(f32, f32, f32, f32)>,
+    bounds: Option<(f32, f32, f32, f32)>,
+) {
+    let Some(bounds) = bounds else {
+        return;
+    };
+    if let Some(existing) = target {
+        existing.0 = existing.0.min(bounds.0);
+        existing.1 = existing.1.min(bounds.1);
+        existing.2 = existing.2.max(bounds.2);
+        existing.3 = existing.3.max(bounds.3);
+    } else {
+        *target = Some(bounds);
+    }
 }

@@ -1,8 +1,11 @@
 //! Demand-driven building placement candidate discovery and frontage-slot resolution.
 
+use crate::assets::AnchorType;
+use crate::assets::asset::PlacementMode;
+use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, baseline_private_zone_slot,
+    Building, BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
     zone_type_to_zone_class,
 };
@@ -12,6 +15,8 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::Vector2;
@@ -298,6 +303,7 @@ impl BuildingAllocator {
             cell_x: 0,
             width_cells: params.width_cells,
             depth_cells: params.depth_cells,
+            zone_cell_m,
             center_2d,
             support_height_m: 0.0,
             facing_dir: parcel.normal() * -1.0,
@@ -325,7 +331,7 @@ impl BuildingAllocator {
         }
         debug_log!(
             "economy",
-            "demand placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
+            "demand placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1}) support_height_m={:.2} site_surfaces={}",
             building_idx,
             self.buildings[building_idx].asset_id,
             self.buildings[building_idx].zone_type,
@@ -333,7 +339,9 @@ impl BuildingAllocator {
             self.buildings[building_idx].cell_x,
             self.buildings[building_idx].cell_y,
             self.buildings[building_idx].center_x,
-            self.buildings[building_idx].center_y
+            self.buildings[building_idx].center_y,
+            self.buildings[building_idx].support_height_m,
+            self.building_sites[building_idx].surface_debug_summary(),
         );
         building_idx
     }
@@ -343,25 +351,355 @@ impl BuildingAllocator {
         action: &DemandSpawnAction,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-    ) -> Option<usize> {
+    ) -> Result<usize, DemandSpawnPlacementRejection> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
-            return None;
+            return Err(DemandSpawnPlacementRejection::AssetUnavailable);
         };
         let Some(parcel) = zoning.parcel_by_raw_id(action.parcel_id) else {
-            return None;
+            return Err(DemandSpawnPlacementRejection::ParcelUnavailable);
         };
         let Some(mut resolved) =
             self.resolve_slot(&action.asset_id, &params, parcel, zoning, graph)
         else {
-            return None;
+            return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
-        resolved.support_height_m = terrain
-            .sample_height_world(resolved.center_2d.x, resolved.center_2d.y)
-            * crate::config::HEIGHT_SCALE;
-        Some(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
+        resolved.support_height_m =
+            self.resolve_site_support_height(&resolved, graph, road_surface, terrain)?;
+        Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
+    }
+
+    fn resolve_site_support_height(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Result<f32, DemandSpawnPlacementRejection> {
+        let driveway_candidates =
+            self.driveway_connection_candidates(placement, graph, road_surface, terrain);
+        if !driveway_candidates.is_empty() {
+            if let Some(missing) = driveway_candidates
+                .iter()
+                .find(|candidate| candidate.height_m.is_none())
+            {
+                debug_log!(
+                    "economy",
+                    "building placement rejected: asset={} parcel={} driveway '{}' connection on claimed edge {} could not resolve a road surface",
+                    placement.asset_id,
+                    placement.parcel_id,
+                    missing.name,
+                    placement.edge_idx,
+                );
+                return Err(DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing);
+            }
+
+            let primary = &driveway_candidates[0];
+            let Some(primary_height) = primary.height_m else {
+                return Err(DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing);
+            };
+            for candidate in driveway_candidates.iter().skip(1) {
+                let Some(height_m) = candidate.height_m else {
+                    return Err(DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing);
+                };
+                if (height_m - primary_height).abs() > BUILDING_SITE_DRIVEWAY_HEIGHT_CONFLICT_EPS_M
+                {
+                    debug_log!(
+                        "economy",
+                        "building placement rejected: asset={} parcel={} driveway '{}' height {:.2} conflicts with '{}' height {:.2}",
+                        placement.asset_id,
+                        placement.parcel_id,
+                        candidate.name,
+                        height_m,
+                        primary.name,
+                        primary_height,
+                    );
+                    return Err(DemandSpawnPlacementRejection::DrivewayHeightConflict);
+                }
+            }
+            return self.validate_neighbor_site_height(placement, primary_height);
+        }
+
+        if self.driveway_anchor_count(placement) > 0 {
+            debug_log!(
+                "economy",
+                "building placement rejected: asset={} parcel={} has driveway anchors but no valid claimed-edge driveway connection",
+                placement.asset_id,
+                placement.parcel_id,
+            );
+            return Err(DemandSpawnPlacementRejection::DrivewayConnectionMissing);
+        }
+
+        if let Some(frontage_height) =
+            self.frontage_connection_height(placement, graph, road_surface, terrain)
+        {
+            return self.validate_neighbor_site_height(placement, frontage_height);
+        }
+
+        if self.asset_allows_source_terrain_site_fallback(&placement.asset_id) {
+            let terrain_height = terrain
+                .sample_height_world(placement.center_2d.x, placement.center_2d.y)
+                * crate::config::HEIGHT_SCALE;
+            return self.validate_neighbor_site_height(placement, terrain_height);
+        }
+
+        debug_log!(
+            "economy",
+            "building placement rejected: asset={} parcel={} frontage connection on claimed edge {} could not resolve a road surface",
+            placement.asset_id,
+            placement.parcel_id,
+            placement.edge_idx,
+        );
+        Err(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing)
+    }
+
+    fn driveway_anchor_count(&self, placement: &ResolvedPlacement) -> usize {
+        self.registry
+            .get(&placement.asset_id)
+            .map(|entry| {
+                entry
+                    .manifest
+                    .anchors
+                    .iter()
+                    .filter(|anchor| anchor.anchor_type == AnchorType::Driveway)
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn driveway_connection_candidates(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Vec<DrivewayConnectionCandidate> {
+        let Some(entry) = self.registry.get(&placement.asset_id) else {
+            return Vec::new();
+        };
+        let Some(edge) = graph.get_edge(placement.edge_idx) else {
+            return Vec::new();
+        };
+        if edge.deleted || edge.physical_length <= 1e-6 || edge.physical_geometry.len() < 2 {
+            return Vec::new();
+        };
+        let Some(main_anchor) =
+            crate::simulation::buildings::allocator::entrance::main_entrance_anchor(
+                &entry.manifest.anchors,
+            )
+        else {
+            return Vec::new();
+        };
+        let (basis_x, basis_z) =
+            crate::simulation::buildings::allocator::entrance::building_local_xz_basis(
+                placement.facing_dir,
+                main_anchor.forward,
+            );
+        let frontage_center = placement.center_2d
+            + placement.facing_dir * (placement.depth_cells as f32 * placement.zone_cell_m * 0.5);
+        let inward_dir = if placement.facing_dir.length_squared() > 1e-12 {
+            -placement.facing_dir.normalized()
+        } else {
+            Vector2::new(0.0, 1.0)
+        };
+        let mut driveways = entry
+            .manifest
+            .anchors
+            .iter()
+            .enumerate()
+            .filter_map(|(authored_order, anchor)| {
+                if anchor.anchor_type != AnchorType::Driveway {
+                    return None;
+                }
+                let pos = placement.center_2d
+                    + basis_x * anchor.position[0]
+                    + basis_z * anchor.position[2];
+                let edge_s_m = Self::project_point_to_polyline_s(&edge.physical_geometry, pos);
+                let edge_t = edge_s_m / edge.physical_length;
+                let connection_pos = Self::claimed_road_side_connection_pos(
+                    graph,
+                    placement.edge_idx,
+                    placement.side,
+                    edge_t,
+                )?;
+                let height_m = road_surface.sample_visible_surface_height(
+                    graph,
+                    terrain,
+                    connection_pos.x,
+                    connection_pos.y,
+                );
+                Some(DrivewayConnectionCandidate {
+                    name: anchor.name.clone(),
+                    authored_order,
+                    distance_to_frontage_m: (pos - frontage_center).dot(inward_dir).abs(),
+                    height_m,
+                })
+            })
+            .collect::<Vec<_>>();
+        sort_driveway_connection_candidates(&mut driveways);
+        driveways
+    }
+
+    fn frontage_connection_height(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Option<f32> {
+        let pos = Self::claimed_road_side_connection_pos(
+            graph,
+            placement.edge_idx,
+            placement.side,
+            placement.frontage_t,
+        )?;
+        road_surface.sample_visible_surface_height(graph, terrain, pos.x, pos.y)
+    }
+
+    fn claimed_road_side_connection_pos(
+        graph: &RegionGraph,
+        edge_idx: usize,
+        side: i8,
+        edge_t: f32,
+    ) -> Option<Vector2> {
+        let edge = graph.get_edge(edge_idx)?;
+        if edge.deleted || edge.physical_length <= 1e-6 || edge.physical_geometry.len() < 2 {
+            return None;
+        }
+        let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);
+        let tangent = Self::sample_tangent_on_edge(graph, edge_idx, edge_t);
+        if tangent.length_squared() <= 1e-12 {
+            return None;
+        }
+        let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
+        Some(center + normal * road_connection_lateral_offset_m(edge))
+    }
+
+    fn asset_allows_source_terrain_site_fallback(&self, asset_id: &str) -> bool {
+        self.registry
+            .get(asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .is_some_and(|building| building.placement_mode == PlacementMode::Explicit)
+    }
+
+    fn validate_neighbor_site_height(
+        &self,
+        placement: &ResolvedPlacement,
+        support_height_m: f32,
+    ) -> Result<f32, DemandSpawnPlacementRejection> {
+        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
+        let candidate_indices =
+            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z);
+        for building_idx in candidate_indices {
+            let Some(site) = self.building_sites.get(building_idx) else {
+                continue;
+            };
+            let Some((site_min_x, site_min_z, site_max_x, site_max_z)) =
+                self.site_world_bounds(building_idx)
+            else {
+                continue;
+            };
+            if site_min_x > max_x + BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_max_x < min_x - BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_min_z > max_z + BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_max_z < min_z - BUILDING_SITE_NEIGHBOR_EPS_M
+            {
+                continue;
+            }
+            if (site.support_height_m - support_height_m).abs()
+                > BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M
+            {
+                debug_log!(
+                    "economy",
+                    "building placement rejected: asset={} parcel={} site height {:.2} conflicts with neighboring building {} height {:.2}",
+                    placement.asset_id,
+                    placement.parcel_id,
+                    support_height_m,
+                    building_idx,
+                    site.support_height_m,
+                );
+                return Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict);
+            }
+        }
+        Ok(support_height_m)
+    }
+
+    fn neighbor_site_candidate_indices(
+        &self,
+        placement: &ResolvedPlacement,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<usize> {
+        if self.dirty_index
+            || self.building_sites.len() != self.buildings.len()
+            || self.building_chunks.is_empty()
+        {
+            return (0..self.building_sites.len()).collect();
+        }
+
+        let margin_m = self.max_lot_radius_cells * placement.zone_cell_m
+            + BUILDING_SITE_NEIGHBOR_EPS_M.max(0.0);
+        let chunk_size = RegionGraph::CHUNK_SIZE;
+        let min_chunk_x = ((min_x - margin_m) / chunk_size).floor() as i32;
+        let max_chunk_x = ((max_x + margin_m) / chunk_size).floor() as i32;
+        let min_chunk_z = ((min_z - margin_m) / chunk_size).floor() as i32;
+        let max_chunk_z = ((max_z + margin_m) / chunk_size).floor() as i32;
+
+        let mut candidates = Vec::new();
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                candidates.extend(indices.iter().copied());
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates.retain(|&idx| idx < self.building_sites.len());
+        candidates
+    }
+
+    fn placement_site_bounds(&self, placement: &ResolvedPlacement) -> (f32, f32, f32, f32) {
+        let anchor_forward = self
+            .registry
+            .get(&placement.asset_id)
+            .and_then(|entry| {
+                crate::simulation::buildings::allocator::entrance::main_entrance_anchor(
+                    &entry.manifest.anchors,
+                )
+            })
+            .map(|anchor| anchor.forward)
+            .unwrap_or([0.0, 0.0, 1.0]);
+        let (basis_x, basis_z) =
+            crate::simulation::buildings::allocator::entrance::building_local_xz_basis(
+                placement.facing_dir,
+                anchor_forward,
+            );
+        let half_width = placement.width_cells as f32 * placement.zone_cell_m * 0.5;
+        let half_depth = placement.depth_cells as f32 * placement.zone_cell_m * 0.5;
+        let points = [
+            placement.center_2d + basis_x * -half_width + basis_z * -half_depth,
+            placement.center_2d + basis_x * -half_width + basis_z * half_depth,
+            placement.center_2d + basis_x * half_width + basis_z * half_depth,
+            placement.center_2d + basis_x * half_width + basis_z * -half_depth,
+        ];
+        let mut min_x = f32::INFINITY;
+        let mut min_z = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_z = f32::NEG_INFINITY;
+        for point in points {
+            min_x = min_x.min(point.x);
+            min_z = min_z.min(point.y);
+            max_x = max_x.max(point.x);
+            max_z = max_z.max(point.y);
+        }
+        (min_x, min_z, max_x, max_z)
     }
 
     fn place_building_instance(
@@ -381,16 +719,16 @@ impl BuildingAllocator {
         // This lets stores open with stock already on shelves before the first freight
         // delivery arrives, which is critical during the startup phase.
         let mut resource_inventory = vec![0.0f32; resource_count];
-        if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id)
-            && profile.starting_inventory_days > 0.0
-        {
-            for output in &profile.outputs {
-                let cap = profile.output_buffer_capacity_units_for(output);
-                let seed = (output.units_per_day * profile.starting_inventory_days).min(cap);
-                // resource_inventory is 0-indexed; runtime_id is 1-based.
-                let slot = output.resource_runtime_id as usize;
-                if slot > 0 && slot <= resource_count {
-                    resource_inventory[slot - 1] = seed;
+        if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id) {
+            if profile.starting_inventory_days > 0.0 {
+                for output in &profile.outputs {
+                    let cap = profile.output_buffer_capacity_units_for(output);
+                    let seed = (output.units_per_day * profile.starting_inventory_days).min(cap);
+                    // resource_inventory is 0-indexed; runtime_id is 1-based.
+                    let slot = output.resource_runtime_id as usize;
+                    if slot > 0 && slot <= resource_count {
+                        resource_inventory[slot - 1] = seed;
+                    }
                 }
             }
         }
@@ -455,6 +793,7 @@ impl BuildingAllocator {
 
         let construction_duration_hours =
             construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
+        let zone_cell_m = placement.zone_cell_m;
 
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
@@ -497,7 +836,9 @@ impl BuildingAllocator {
             is_deserted: false,
             budget_distress: false,
         });
-        self.buildings.len() - 1
+        let building_idx = self.buildings.len() - 1;
+        self.push_building_site_client(building_idx, zone_cell_m);
+        building_idx
     }
 }
 
@@ -514,6 +855,37 @@ fn construction_duration_hours(
     };
     let idx = usize::from(level.saturating_sub(1)).min(levels.len().saturating_sub(1));
     levels.get(idx).copied().unwrap_or(0)
+}
+
+const BUILDING_SITE_DRIVEWAY_HEIGHT_CONFLICT_EPS_M: f32 = 0.35;
+const BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M: f32 = 0.10;
+const BUILDING_SITE_NEIGHBOR_EPS_M: f32 = 0.05;
+const BUILDING_SITE_ROAD_SAMPLE_INSET_M: f32 = 0.05;
+
+struct DrivewayConnectionCandidate {
+    name: String,
+    authored_order: usize,
+    distance_to_frontage_m: f32,
+    height_m: Option<f32>,
+}
+
+fn sort_driveway_connection_candidates(candidates: &mut [DrivewayConnectionCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.distance_to_frontage_m
+            .total_cmp(&right.distance_to_frontage_m)
+            .then(left.authored_order.cmp(&right.authored_order))
+    });
+}
+
+fn road_connection_lateral_offset_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
+    let sidewalk_m = if edge.primary_type == TransitType::Foot
+        || (edge.allowed_types & TransitFlags::FOOT) == 0
+    {
+        0.0
+    } else {
+        SIDEWALK_WIDTH
+    };
+    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SAMPLE_INSET_M).max(0.0)
 }
 
 fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {
@@ -603,6 +975,7 @@ struct ResolvedPlacement {
     cell_x: usize,
     width_cells: usize,
     depth_cells: usize,
+    zone_cell_m: f32,
     center_2d: Vector2,
     support_height_m: f32,
     facing_dir: Vector2,
@@ -766,5 +1139,37 @@ mod tests {
             .collect();
 
         assert_eq!(parcel_ids, vec![40, 30, 20, 10]);
+    }
+
+    #[test]
+    fn driveway_candidates_sort_by_frontage_distance_then_authored_order() {
+        let mut candidates = vec![
+            DrivewayConnectionCandidate {
+                name: "z_far".to_owned(),
+                authored_order: 1,
+                distance_to_frontage_m: 4.0,
+                height_m: Some(0.0),
+            },
+            DrivewayConnectionCandidate {
+                name: "b_near_second".to_owned(),
+                authored_order: 3,
+                distance_to_frontage_m: 1.0,
+                height_m: Some(0.0),
+            },
+            DrivewayConnectionCandidate {
+                name: "a_near_first".to_owned(),
+                authored_order: 2,
+                distance_to_frontage_m: 1.0,
+                height_m: Some(0.0),
+            },
+        ];
+
+        sort_driveway_connection_candidates(&mut candidates);
+
+        let names = candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["a_near_first", "b_near_second", "z_far"]);
     }
 }

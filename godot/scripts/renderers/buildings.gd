@@ -11,6 +11,8 @@
 ##   get_construction_site_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_foundation_transforms(zone_id: int) -> PackedFloat32Array
 ##   get_construction_scaffold_transforms(zone_id: int) -> PackedFloat32Array
+##   get_building_site_revision() -> int
+##   get_building_site_mesh_data() -> Dictionary
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
 ## passes each enabled pack's native path to Rust for manifest scanning. Packs not
@@ -22,6 +24,7 @@ extends Node3D
 
 const CFG_PATH := "user://active_packs.cfg"
 const PART_KEY_SEP := "|part:"
+const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
@@ -42,6 +45,9 @@ var construction_site_multimeshes: Dictionary = {}
 var construction_foundation_multimeshes: Dictionary = {}
 ## construction_scaffold_multimeshes[zone_id] = MultiMeshInstance3D
 var construction_scaffold_multimeshes: Dictionary = {}
+var building_site_ground_instance: MeshInstance3D
+var building_site_surface_instance: MeshInstance3D
+var building_site_revision: int = -1
 
 var show_foundations := false
 
@@ -50,6 +56,8 @@ const ZONE_IDS = [1, 2, 3, 4, 5]
 func reload_asset_packs() -> void:
 	_load_enabled_packs()
 	_rebuild_multimeshes()
+	building_site_revision = -1
+	_update_building_sites()
 
 func _load_enabled_packs() -> void:
 	var cfg := ConfigFile.new()
@@ -77,9 +85,11 @@ func _ready() -> void:
 		_setup_construction_site(zone_id)
 		_setup_construction_foundation(zone_id)
 		_setup_construction_scaffold(zone_id)
+	_setup_building_site_surfaces()
 
 	# Build one MultiMeshInstance3D for each registered building asset.
 	_rebuild_multimeshes()
+	_update_building_sites(true)
 
 func update_all_buildings() -> void:
 	_rebuild_multimeshes()
@@ -92,6 +102,7 @@ func update_all_buildings() -> void:
 		_update_construction_site(zone_id)
 		_update_construction_foundation(zone_id)
 		_update_construction_scaffold(zone_id)
+	_update_building_sites(true)
 
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
@@ -332,6 +343,16 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 	add_child(mmi)
 	construction_scaffold_multimeshes[zone_id] = mmi
 
+func _setup_building_site_surfaces() -> void:
+	building_site_ground_instance = MeshInstance3D.new()
+	building_site_ground_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	building_site_ground_instance.material_override = WorldMaterials.site_ground_material()
+	add_child(building_site_ground_instance)
+
+	building_site_surface_instance = MeshInstance3D.new()
+	building_site_surface_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(building_site_surface_instance)
+
 func _process(_delta: float) -> void:
 	if Engine.get_frames_drawn() % 30 == 0:
 		_rebuild_multimeshes()
@@ -345,6 +366,7 @@ func _process(_delta: float) -> void:
 			_update_construction_site(zone_id)
 			_update_construction_foundation(zone_id)
 			_update_construction_scaffold(zone_id)
+		_update_building_sites()
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -416,3 +438,50 @@ func _update_construction_scaffold(zone_id: int) -> void:
 	mmi.multimesh.instance_count = count
 	if count > 0:
 		mmi.multimesh.buffer = buffer
+
+func _update_building_sites(force: bool = false) -> void:
+	if not building_site_ground_instance or not building_site_surface_instance:
+		return
+	var revision := int(simulation_node.get_building_site_revision())
+	if not force and revision == building_site_revision:
+		return
+	var data: Dictionary = simulation_node.get_building_site_mesh_data()
+	building_site_revision = int(data.get("revision", revision))
+	building_site_ground_instance.mesh = _building_site_mesh_from_vertices(
+		data.get("ground_vertices", PackedVector3Array()) as PackedVector3Array,
+		WorldMaterials.site_ground_material()
+	)
+	building_site_surface_instance.mesh = _building_site_surface_mesh(data)
+
+func _building_site_surface_mesh(data: Dictionary):
+	var mesh := ArrayMesh.new()
+	_add_building_site_surface(
+		mesh,
+		data.get("asphalt_vertices", PackedVector3Array()) as PackedVector3Array,
+		WorldMaterials.site_surface_material(WorldMaterials.MATERIAL_ASPHALT)
+	)
+	_add_building_site_surface(
+		mesh,
+		data.get("concrete_vertices", PackedVector3Array()) as PackedVector3Array,
+		WorldMaterials.site_surface_material(WorldMaterials.MATERIAL_CONCRETE)
+	)
+	return mesh if mesh.get_surface_count() > 0 else null
+
+func _building_site_mesh_from_vertices(vertices: PackedVector3Array, material: Material):
+	var mesh := ArrayMesh.new()
+	_add_building_site_surface(mesh, vertices, material)
+	return mesh if mesh.get_surface_count() > 0 else null
+
+func _add_building_site_surface(mesh: ArrayMesh, vertices: PackedVector3Array, material: Material) -> void:
+	if vertices.size() < 3:
+		return
+	var normals := PackedVector3Array()
+	normals.resize(vertices.size())
+	for i in normals.size():
+		normals[i] = Vector3.UP
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(mesh.get_surface_count() - 1, material)

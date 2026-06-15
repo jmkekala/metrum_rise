@@ -2,7 +2,7 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, baseline_private_zone_slot,
+    BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::AgentSystem;
@@ -19,6 +19,7 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
@@ -31,6 +32,97 @@ const REZONE_GRACE_DAYS: u8 = 3;
 pub(crate) struct DemandBuildingActionExecution {
     /// Property tax debited from fresh private building budgets during this pass.
     pub(crate) property_tax_paid: f32,
+    /// World-space bounds of building-site terrain patches dirtied by this action pass.
+    pub(crate) site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    /// Residential spawn execution and final placement rejection counters.
+    pub(crate) residential: DemandUseBuildingActionExecution,
+    /// Commercial spawn execution and final placement rejection counters.
+    pub(crate) commercial: DemandUseBuildingActionExecution,
+    /// Industrial spawn execution and final placement rejection counters.
+    pub(crate) industrial: DemandUseBuildingActionExecution,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DemandUseBuildingActionExecution {
+    /// Selected spawn actions submitted to allocator placement.
+    pub(crate) spawn_attempted: usize,
+    /// Selected spawn actions that committed a building.
+    pub(crate) spawn_executed: usize,
+    /// Selected spawn actions rejected by final allocator placement validation.
+    pub(crate) spawn_rejections: DemandSpawnPlacementRejectionCounts,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DemandSpawnPlacementRejectionCounts {
+    /// The selected asset no longer resolved to valid placement parameters.
+    pub(crate) asset_unavailable: usize,
+    /// The selected parcel no longer existed in the zoning system.
+    pub(crate) parcel_unavailable: usize,
+    /// The parcel geometry or occupancy no longer accepted the selected asset.
+    pub(crate) slot_unavailable: usize,
+    /// A driveway anchor could not resolve an adjacent road surface height.
+    pub(crate) driveway_road_surface_missing: usize,
+    /// Multiple driveway anchors required incompatible flat-site heights.
+    pub(crate) driveway_height_conflict: usize,
+    /// The asset has driveway anchors, but none touch the claimed road edge.
+    pub(crate) driveway_connection_missing: usize,
+    /// The frontage fallback could not resolve an adjacent road surface height.
+    pub(crate) frontage_road_surface_missing: usize,
+    /// The selected flat-site height conflicted with an existing neighboring site.
+    pub(crate) neighbor_site_height_conflict: usize,
+}
+
+impl DemandBuildingActionExecution {
+    fn use_mut(&mut self, zone_type: ZoneType) -> &mut DemandUseBuildingActionExecution {
+        match zone_type {
+            ZoneType::Residential => &mut self.residential,
+            ZoneType::Commercial => &mut self.commercial,
+            ZoneType::Industrial => &mut self.industrial,
+            _ => unreachable!("demand building execution only tracks baseline private zones"),
+        }
+    }
+}
+
+impl DemandSpawnPlacementRejectionCounts {
+    fn record(&mut self, reason: DemandSpawnPlacementRejection) {
+        match reason {
+            DemandSpawnPlacementRejection::AssetUnavailable => self.asset_unavailable += 1,
+            DemandSpawnPlacementRejection::ParcelUnavailable => self.parcel_unavailable += 1,
+            DemandSpawnPlacementRejection::SlotUnavailable => self.slot_unavailable += 1,
+            DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing => {
+                self.driveway_road_surface_missing += 1;
+            }
+            DemandSpawnPlacementRejection::DrivewayHeightConflict => {
+                self.driveway_height_conflict += 1;
+            }
+            DemandSpawnPlacementRejection::DrivewayConnectionMissing => {
+                self.driveway_connection_missing += 1;
+            }
+            DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing => {
+                self.frontage_road_surface_missing += 1;
+            }
+            DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
+                self.neighbor_site_height_conflict += 1;
+            }
+        }
+    }
+
+    pub(crate) fn total(self) -> usize {
+        self.asset_unavailable
+            + self.parcel_unavailable
+            + self.slot_unavailable
+            + self.driveway_road_surface_missing
+            + self.driveway_height_conflict
+            + self.driveway_connection_missing
+            + self.frontage_road_surface_missing
+            + self.neighbor_site_height_conflict
+    }
+
+    pub(crate) fn geometry_total(self) -> usize {
+        self.total()
+            .saturating_sub(self.asset_unavailable)
+            .saturating_sub(self.parcel_unavailable)
+    }
 }
 
 impl BuildingAllocator {
@@ -122,6 +214,7 @@ impl BuildingAllocator {
                 let b = &self.buildings[i];
                 let b_parcel_id = b.parcel_id;
                 let b_zone = b.zone_type;
+                let removed_site_bounds = self.site_world_bounds(i);
                 if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
                     self.dirty_zones[zone_idx] = true;
                 }
@@ -146,6 +239,22 @@ impl BuildingAllocator {
                 }
 
                 self.buildings.swap_remove(i);
+                if self.building_sites.len() > i {
+                    self.building_sites.swap_remove(i);
+                    self.recompute_max_site_radius_m();
+                }
+                if let Some(bounds) = removed_site_bounds {
+                    self.accumulate_pending_site_dirty_bounds(Some(bounds));
+                    debug_log!(
+                        "economy",
+                        "building site removed by cleanup: building_idx={} bounds=({:.1},{:.1})-({:.1},{:.1})",
+                        i,
+                        bounds.0,
+                        bounds.1,
+                        bounds.2,
+                        bounds.3
+                    );
+                }
                 self.dirty_index = true;
                 self.entrances_dirty = true;
                 removed_any = true;
@@ -265,6 +374,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
+        road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -278,9 +388,17 @@ impl BuildingAllocator {
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution {
             property_tax_paid: 0.0,
+            site_dirty_bounds: None,
+            residential: DemandUseBuildingActionExecution::default(),
+            commercial: DemandUseBuildingActionExecution::default(),
+            industrial: DemandUseBuildingActionExecution::default(),
         };
 
-        for use_plan in [&plan.residential, &plan.commercial, &plan.industrial] {
+        for (zone_type, use_plan) in [
+            (ZoneType::Residential, &plan.residential),
+            (ZoneType::Commercial, &plan.commercial),
+            (ZoneType::Industrial, &plan.industrial),
+        ] {
             for action in &use_plan.despawns {
                 let Some(building_idx) = action_lookup.remove(action) else {
                     continue;
@@ -288,6 +406,10 @@ impl BuildingAllocator {
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
+                accumulate_site_dirty_bounds(
+                    &mut execution.site_dirty_bounds,
+                    self.site_world_bounds(building_idx),
+                );
                 if let Some((moved_key, moved_idx)) = self.remove_building_at_index(
                     building_idx,
                     zoning,
@@ -304,9 +426,16 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
-                if let Some(updated_key) =
-                    self.apply_level_change_action(building_idx, action, catalog)
-                {
+                if let Some(updated_key) = self.apply_level_change_action(
+                    building_idx,
+                    action,
+                    catalog,
+                    zoning.config.zone_cell_m,
+                ) {
+                    accumulate_site_dirty_bounds(
+                        &mut execution.site_dirty_bounds,
+                        self.site_world_bounds(building_idx),
+                    );
                     action_lookup.remove(&action.building);
                     action_lookup.insert(updated_key, building_idx);
                     mutated_any = true;
@@ -317,9 +446,16 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
-                if let Some(updated_key) =
-                    self.apply_level_change_action(building_idx, action, catalog)
-                {
+                if let Some(updated_key) = self.apply_level_change_action(
+                    building_idx,
+                    action,
+                    catalog,
+                    zoning.config.zone_cell_m,
+                ) {
+                    accumulate_site_dirty_bounds(
+                        &mut execution.site_dirty_bounds,
+                        self.site_world_bounds(building_idx),
+                    );
                     action_lookup.remove(&action.building);
                     action_lookup.insert(updated_key, building_idx);
                     mutated_any = true;
@@ -327,21 +463,38 @@ impl BuildingAllocator {
             }
 
             for action in &use_plan.spawns {
-                if let Some(building_idx) = self
-                    .execute_demand_spawn_action(action, zoning, graph, terrain, catalog, tuning)
-                {
-                    let property_tax = construction_property_tax(
-                        self.buildings[building_idx].zone_type,
-                        self.buildings[building_idx].level,
-                        &tuning.fiscal,
-                    );
-                    if property_tax > 0.0 {
-                        self.buildings[building_idx].operating_budget -= property_tax;
-                        execution.property_tax_paid += property_tax;
+                execution.use_mut(zone_type).spawn_attempted += 1;
+                match self.execute_demand_spawn_action(
+                    action,
+                    zoning,
+                    graph,
+                    road_surface,
+                    terrain,
+                    catalog,
+                    tuning,
+                ) {
+                    Ok(building_idx) => {
+                        execution.use_mut(zone_type).spawn_executed += 1;
+                        let property_tax = construction_property_tax(
+                            self.buildings[building_idx].zone_type,
+                            self.buildings[building_idx].level,
+                            &tuning.fiscal,
+                        );
+                        if property_tax > 0.0 {
+                            self.buildings[building_idx].operating_budget -= property_tax;
+                            execution.property_tax_paid += property_tax;
+                        }
+                        self.buildings[building_idx].profit_tax_budget_baseline =
+                            self.buildings[building_idx].operating_budget;
+                        accumulate_site_dirty_bounds(
+                            &mut execution.site_dirty_bounds,
+                            self.site_world_bounds(building_idx),
+                        );
+                        mutated_any = true;
                     }
-                    self.buildings[building_idx].profit_tax_budget_baseline =
-                        self.buildings[building_idx].operating_budget;
-                    mutated_any = true;
+                    Err(reason) => {
+                        execution.use_mut(zone_type).spawn_rejections.record(reason);
+                    }
                 }
             }
         }
@@ -417,6 +570,8 @@ impl BuildingAllocator {
         }
 
         self.dirty = true;
+        self.rebuild_building_site_clients(zoning.config.zone_cell_m);
+        self.bump_building_ref_revision();
         Ok(())
     }
 }
@@ -475,6 +630,7 @@ impl BuildingAllocator {
         building_idx: usize,
         action: &DemandLevelChangeAction,
         catalog: &RuntimeEconomyCatalog,
+        zone_cell_m: f32,
     ) -> Option<DemandBuildingActionKey> {
         let building = self.buildings.get(building_idx)?;
         if building.broken || building.pending_redevelopment {
@@ -527,13 +683,18 @@ impl BuildingAllocator {
         building.retain_inventory_for_profile(profile, catalog.resource_count());
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
+        let zone_type = building.zone_type;
+        let updated_key = demand_building_action_key(building);
+        let _ = building;
+        self.rebuild_building_site_client(building_idx, zone_cell_m);
+        self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
-        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+        if let Some(zone_idx) = baseline_private_zone_slot(zone_type) {
             self.dirty_zones[zone_idx] = true;
         }
-        Some(demand_building_action_key(building))
+        Some(updated_key)
     }
 
     fn remove_building_at_index(
@@ -573,10 +734,31 @@ impl BuildingAllocator {
         };
 
         self.buildings.swap_remove(building_idx);
+        if self.building_sites.len() > building_idx {
+            self.building_sites.swap_remove(building_idx);
+            self.recompute_max_site_radius_m();
+        }
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
         moved_key
+    }
+}
+
+fn accumulate_site_dirty_bounds(
+    target: &mut Option<(f32, f32, f32, f32)>,
+    bounds: Option<(f32, f32, f32, f32)>,
+) {
+    let Some(bounds) = bounds else {
+        return;
+    };
+    if let Some(existing) = target {
+        existing.0 = existing.0.min(bounds.0);
+        existing.1 = existing.1.min(bounds.1);
+        existing.2 = existing.2.max(bounds.2);
+        existing.3 = existing.3.max(bounds.3);
+    } else {
+        *target = Some(bounds);
     }
 }

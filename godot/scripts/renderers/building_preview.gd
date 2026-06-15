@@ -1,6 +1,6 @@
 ## Manages the 3D preview for the building importer.
-## Handles the imported GLB mesh, lot rectangle wireframe, frontage arrow,
-## authored site surfaces, site anchors, ground grid, human-scale reference figure, and ghost comparison mesh.
+## Handles the imported GLB mesh, flat lot plane, frontage arrow, authored site surfaces,
+## site anchors, lot cell guides, human-scale reference figure, and ghost comparison mesh.
 extends Node3D
 
 ## Emitted after a GLB mesh is successfully loaded.
@@ -34,11 +34,14 @@ const ANCHOR_DASH_M := 0.55
 const ANCHOR_GAP_M := 0.32
 const SITE_SURFACE_FILL_Y := 0.09
 const SITE_SURFACE_GUIDE_Y := 0.105
+const LOT_PLANE_Y := -0.025
+const LOT_GRID_Y := 0.012
 const GUIDE_HALO_ALPHA := 0.34
 const GUIDE_HALO_WIDTH_MULT := 2.35
 
 var _mesh_instance: Node3D
 var _selection_overlay: MeshInstance3D
+var _lot_plane: MeshInstance3D
 var _site_surface_fill: MeshInstance3D
 var _site_surface_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
@@ -77,9 +80,13 @@ var _show_human: bool = false
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	_lot_plane = MeshInstance3D.new()
+	_lot_plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_lot_plane)
+
 	_ground_grid = MeshInstance3D.new()
+	_ground_grid.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_ground_grid)
-	_build_ground_grid()
 
 	_ghost_root = Node3D.new()
 	add_child(_ghost_root)
@@ -117,6 +124,8 @@ func _ready() -> void:
 
 	_site_anchor_label_root = Node3D.new()
 	add_child(_site_anchor_label_root)
+
+	_rebuild_overlays()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
@@ -286,7 +295,6 @@ func clear() -> void:
 	clear_mesh_parts()
 	clear_site_surfaces()
 	clear_site_anchors()
-	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
 	_human_figure.mesh = null
 	_frontage_label.visible = false
@@ -306,9 +314,11 @@ func clear_mesh_parts() -> void:
 func clear_site_surfaces() -> void:
 	_site_surfaces.clear()
 	_selected_site_surface_index = -1
+	if _site_surface_fill:
+		_site_surface_fill.mesh = null
 	if _site_surface_overlay:
 		_site_surface_overlay.mesh = null
-		_clear_site_surface_labels()
+	_clear_site_surface_labels()
 
 ## Clear only editor-only site anchors and their overlay.
 func clear_site_anchors() -> void:
@@ -474,6 +484,7 @@ func _place_human_figure() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _rebuild_overlays() -> void:
+	_build_lot_plane()
 	_build_ground_grid()
 	_build_lot_wireframe()
 	_build_frontage_arrow()
@@ -484,7 +495,10 @@ func _is_light_theme() -> bool:
 	return theme_mode == THEME_LIGHT
 
 func _grid_color() -> Color:
-	return Color(0.46, 0.49, 0.53, 0.88) if _is_light_theme() else Color(0.38, 0.40, 0.44, 0.9)
+	return Color(0.43, 0.47, 0.51, 0.42) if _is_light_theme() else Color(0.56, 0.60, 0.66, 0.34)
+
+func _lot_plane_color() -> Color:
+	return Color(0.82, 0.86, 0.88, 0.96) if _is_light_theme() else Color(0.12, 0.14, 0.15, 0.98)
 
 func _lot_color() -> Color:
 	return Color(0.00, 0.48, 0.20, 1.0) if _is_light_theme() else Color(0.45, 1.0, 0.55, 1.0)
@@ -552,41 +566,71 @@ func _style_overlay_label(label: Label3D, text: String, color: Color, position: 
 	label.position = position
 	label.visible = true
 
+func _build_lot_plane() -> void:
+	if not _lot_plane:
+		return
+	var w := _width_cells * CELL_M
+	var d := _depth_cells * CELL_M
+	var vertices := PackedVector3Array([
+		Vector3(-w * 0.5, LOT_PLANE_Y, -d * 0.5),
+		Vector3(w * 0.5, LOT_PLANE_Y, -d * 0.5),
+		Vector3(w * 0.5, LOT_PLANE_Y, d * 0.5),
+		Vector3(-w * 0.5, LOT_PLANE_Y, -d * 0.5),
+		Vector3(w * 0.5, LOT_PLANE_Y, d * 0.5),
+		Vector3(-w * 0.5, LOT_PLANE_Y, d * 0.5),
+	])
+	var normals := PackedVector3Array()
+	normals.resize(vertices.size())
+	for i in normals.size():
+		normals[i] = Vector3.UP
+	var colors := PackedColorArray()
+	colors.resize(vertices.size())
+	var color := _lot_plane_color()
+	for i in colors.size():
+		colors[i] = color
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.surface_set_material(0, mat)
+	_lot_plane.mesh = mesh
+
 func _build_ground_grid() -> void:
 	var lot_half_w := _width_cells * CELL_M * 0.5
 	var lot_half_d := _depth_cells * CELL_M * 0.5
-	var offset_x   := (_width_cells  % 2) * CELL_M * 0.5
-	var offset_z   := (_depth_cells  % 2) * CELL_M * 0.5
-	const MIN_CELLS := 5
-	var cells_x := maxi(ceili(lot_half_w / CELL_M) + 1, MIN_CELLS)
-	var cells_z := maxi(ceili(lot_half_d / CELL_M) + 1, MIN_CELLS)
-	var start_x := offset_x - cells_x * CELL_M
-	var start_z := offset_z - cells_z * CELL_M
-	var end_x   := offset_x + cells_x * CELL_M
-	var end_z   := offset_z + cells_z * CELL_M
-	var n_x     := cells_x * 2 + 1
-	var n_z     := cells_z * 2 + 1
-	const Y := -0.01
+	var start_x := -lot_half_w
+	var start_z := -lot_half_d
+	var end_x := lot_half_w
+	var end_z := lot_half_d
 
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
 	var color := _grid_color()
-	for ix in n_x:
-		var x := start_x + ix * CELL_M
+	for ix in range(_width_cells + 1):
+		var x := start_x + float(ix) * CELL_M
 		im.surface_set_color(color)
-		im.surface_add_vertex(Vector3(x, Y, start_z))
+		im.surface_add_vertex(Vector3(x, LOT_GRID_Y, start_z))
 		im.surface_set_color(color)
-		im.surface_add_vertex(Vector3(x, Y, end_z))
-	for iz in n_z:
-		var z := start_z + iz * CELL_M
+		im.surface_add_vertex(Vector3(x, LOT_GRID_Y, end_z))
+	for iz in range(_depth_cells + 1):
+		var z := start_z + float(iz) * CELL_M
 		im.surface_set_color(color)
-		im.surface_add_vertex(Vector3(start_x, Y, z))
+		im.surface_add_vertex(Vector3(start_x, LOT_GRID_Y, z))
 		im.surface_set_color(color)
-		im.surface_add_vertex(Vector3(end_x,   Y, z))
+		im.surface_add_vertex(Vector3(end_x, LOT_GRID_Y, z))
 	im.surface_end()
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	im.surface_set_material(0, mat)
 	_ground_grid.mesh = im
 

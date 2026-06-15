@@ -129,7 +129,7 @@ pub enum AnchorType {
     Light,
 }
 
-/// Editor-preview and future `EARTH-02` material for an authored building yard surface.
+/// Material for an authored building yard surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SiteSurfaceMaterial {
@@ -141,12 +141,12 @@ pub enum SiteSurfaceMaterial {
 
 /// One authored polygon ground-treatment surface inside a building lot.
 ///
-/// This is asset-editor metadata until `EARTH-02` promotes building sites to live
-/// engineered-ground clients. Gameplay must not render it as a loose terrain overlay.
+/// Runtime treats this as a material/layout region on the flat whole-lot building site.
+/// Gameplay must not render it as a loose terrain overlay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteSurface {
-    /// Visual material used by the asset-editor preview and future site client.
+    /// Visual material used by the asset-editor preview and live site client.
     pub material: SiteSurfaceMaterial,
     /// Optional editor label for this surface.
     #[serde(default)]

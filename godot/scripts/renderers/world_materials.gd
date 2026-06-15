@@ -1,8 +1,7 @@
 ## Shared world/editor material factory and texture cache.
 ## Rendering tools should request common asphalt/concrete materials here instead
 ## of rebuilding shader materials or reloading texture sets locally.
-## Site-surface materials are asset-editor preview materials until EARTH-02
-## promotes building sites to live engineered-ground clients.
+## Site-surface materials are shared by the asset editor and live building-site clients.
 extends RefCounted
 class_name WorldMaterials
 
@@ -27,6 +26,7 @@ static var _texture_cache = {}
 static var _shader_cache = {}
 static var _road_asphalt_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
+static var _site_ground_material: StandardMaterial3D
 static var _site_asphalt_material: ShaderMaterial
 static var _site_concrete_material: ShaderMaterial
 
@@ -54,6 +54,15 @@ static func site_surface_material(material: String) -> ShaderMaterial:
 			return site_concrete_material()
 		_:
 			return site_asphalt_material()
+
+static func site_ground_material() -> StandardMaterial3D:
+	if _site_ground_material == null:
+		_site_ground_material = StandardMaterial3D.new()
+		_site_ground_material.albedo_color = Color(0.35, 0.48, 0.29, 1.0)
+		_site_ground_material.roughness = 0.95
+		_site_ground_material.metallic = 0.0
+		_site_ground_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return _site_ground_material
 
 static func site_asphalt_material() -> ShaderMaterial:
 	if _site_asphalt_material == null:

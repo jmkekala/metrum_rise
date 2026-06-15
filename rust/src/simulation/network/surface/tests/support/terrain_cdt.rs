@@ -259,6 +259,11 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_cdt_boundar
             assert_eq!(source.section_range_codes(), [-1, -1]);
             assert_eq!(source.s_range_values(), [-1.0, -1.0]);
         }
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. } => {
+            panic!(
+                "{case_name}: road-surface terrain CDT export must not use building-site sources"
+            )
+        }
         TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => {
             panic!("{case_name}: production terrain CDT export must not use synthetic sources")
         }

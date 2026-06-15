@@ -120,32 +120,32 @@ impl RoadSurfaceSystem {
         ray_origin: Vector3,
         ray_dir: Vector3,
     ) -> Option<Vector3> {
+        let road_hit = self.raycast_road_visible_surface(graph, terrain, ray_origin, ray_dir);
+        let terrain_hit = terrain.raycast_visual_terrain(ray_origin, ray_dir);
+        closest_ray_hit(ray_origin, ray_dir, road_hit, terrain_hit)
+    }
+
+    pub(crate) fn raycast_road_visible_surface(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+    ) -> Option<Vector3> {
         if ray_dir.length_squared() <= f32::EPSILON {
             return None;
         }
 
         let ray_origin_road = godot_vec3_to_road(ray_origin);
         let ray_dir_road = godot_vec3_to_road(ray_dir);
-        let terrain_hit = terrain.raycast_visual_terrain(ray_origin, ray_dir);
-        let terrain_hit_road = terrain_hit.map(godot_vec3_to_road);
-        let terrain_t = terrain_hit_road.map(|terrain_hit| {
-            (terrain_hit - ray_origin_road).dot(ray_dir_road)
-                / ray_dir_road.length_squared().max(f64::EPSILON)
-        });
-        let Some((min_chunk, max_chunk)) = self.raycast_visible_query_chunk_bounds(
-            terrain,
-            ray_origin_road,
-            ray_dir_road,
-            terrain_hit_road,
-        ) else {
-            return terrain_hit;
+        let Some((min_chunk, max_chunk)) =
+            self.raycast_visible_query_chunk_bounds(terrain, ray_origin_road, ray_dir_road, None)
+        else {
+            return None;
         };
         let (edge_indices, node_ids) = self.collect_query_contributors(min_chunk, max_chunk);
 
-        let mut best_t = match terrain_t {
-            Some(t) => t,
-            None => f64::INFINITY,
-        };
+        let mut best_t = f64::INFINITY;
         let mut best_hit = None;
 
         self.visit_visible_top_surface_query_triangles(
@@ -179,9 +179,7 @@ impl RoadSurfaceSystem {
             },
         );
 
-        best_hit
-            .map(|hit| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
-            .or(terrain_hit)
+        best_hit.map(|hit| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
     }
 
     pub(crate) fn visible_section_ranges_for_edge(
@@ -353,6 +351,28 @@ fn update_closest_ray_hit(
     if t >= 0.0 && t <= *best_t {
         *best_t = t;
         *best_hit = Some(ray_origin + ray_dir * t);
+    }
+}
+
+fn closest_ray_hit(
+    ray_origin: Vector3,
+    ray_dir: Vector3,
+    left: Option<Vector3>,
+    right: Option<Vector3>,
+) -> Option<Vector3> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let denom = ray_dir.length_squared().max(f32::EPSILON);
+            let left_t = (left - ray_origin).dot(ray_dir) / denom;
+            let right_t = (right - ray_origin).dot(ray_dir) / denom;
+            if right_t < left_t {
+                Some(right)
+            } else {
+                Some(left)
+            }
+        }
+        (Some(hit), None) | (None, Some(hit)) => Some(hit),
+        (None, None) => None,
     }
 }
 

@@ -1284,6 +1284,9 @@ impl SimCore {
             &mut self.transit_network,
             &mut self.region_graph,
         );
+        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
             use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
@@ -1348,7 +1351,7 @@ impl SimCore {
         self.allocator.reset_daily_input_accumulators();
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} planned_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -1402,6 +1405,9 @@ impl SimCore {
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
         let building_action_execution = self.allocator.execute_demand_building_actions(
             &self.demand.building_actions,
             &mut self.zoning,
@@ -1410,19 +1416,56 @@ impl SimCore {
             &mut self.logistics,
             &self.region_graph,
             &self.transit_network.lane_system,
+            &self.transit_network.road_surface,
             &self.heightmap,
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
         );
         self.treasury
             .collect_property_tax(building_action_execution.property_tax_paid as f64);
+        if let Some(bounds) = building_action_execution.site_dirty_bounds {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         self.demand
             .log_hourly_building_action_diagnostics(day_index, minute_of_day);
+        for (use_label, execution) in [
+            ("Residential", &building_action_execution.residential),
+            ("Commercial", &building_action_execution.commercial),
+            ("Industrial", &building_action_execution.industrial),
+        ] {
+            let rejections = execution.spawn_rejections;
+            if execution.spawn_attempted == 0 && rejections.total() == 0 {
+                continue;
+            }
+            debug_log!(
+                "economy",
+                "building action execution: day={} minute={} use={} \
+                 spawn_attempted={} spawn_placed={} spawn_failed={} \
+                 spawn_failed_geometry={} fail_asset={} fail_parcel={} fail_slot={} \
+                 fail_driveway_surface={} fail_driveway_height={} fail_driveway_connection={} \
+                 fail_frontage_surface={} fail_neighbor_height={}",
+                day_index,
+                minute_of_day,
+                use_label,
+                execution.spawn_attempted,
+                execution.spawn_executed,
+                rejections.total(),
+                rejections.geometry_total(),
+                rejections.asset_unavailable,
+                rejections.parcel_unavailable,
+                rejections.slot_unavailable,
+                rejections.driveway_road_surface_missing,
+                rejections.driveway_height_conflict,
+                rejections.driveway_connection_missing,
+                rejections.frontage_road_surface_missing,
+                rejections.neighbor_site_height_conflict,
+            );
+        }
         debug_log!(
             "economy",
-            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} planned_spawns=({}/{}/{}) placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
             day_index,
             minute_of_day,
             self.demand.net_residential_pressure() * 100.0,
@@ -1432,6 +1475,9 @@ impl SimCore {
             self.demand.building_actions.residential.spawns.len(),
             self.demand.building_actions.commercial.spawns.len(),
             self.demand.building_actions.industrial.spawns.len(),
+            building_action_execution.residential.spawn_executed,
+            building_action_execution.commercial.spawn_executed,
+            building_action_execution.industrial.spawn_executed,
             self.demand.building_actions.residential.upgrades.len(),
             self.demand.building_actions.commercial.upgrades.len(),
             self.demand.building_actions.industrial.upgrades.len(),
@@ -1442,6 +1488,26 @@ impl SimCore {
             self.demand.building_actions.commercial.despawns.len(),
             self.demand.building_actions.industrial.despawns.len(),
         );
+    }
+
+    fn mark_building_site_terrain_dirty_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
+        let margin_m =
+            terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        self.allocator.mark_building_site_terrain_bounds_dirty(
+            &mut self.heightmap,
+            bounds,
+            margin_m,
+        );
+        let (min_x, min_z, max_x, max_z) = bounds;
+        let dirty_patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
+            min_x - margin_m,
+            min_z - margin_m,
+            max_x + margin_m,
+            max_z + margin_m,
+        );
+        self.refined_terrain_patch_cache
+            .retain(|key, _| !dirty_patch_keys.contains(&(key.patch_x, key.patch_z)));
+        self.terrain_dirty = true;
     }
 
     fn collect_fiscal_revenue(&mut self, revenue: FiscalRevenue) {

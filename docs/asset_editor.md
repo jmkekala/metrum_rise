@@ -436,13 +436,11 @@ Runtime use in v1:
 - `driveway`, `parking`, and `loading_bay` anchors are semantic site-layout metadata only. They do
   not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
-- Building yard polygons are authored explicitly through `[[site_surfaces]]`, but they are editor
-  preview and asset metadata only in v1. Live gameplay does not render, clip terrain with, or query
-  these surfaces until `EARTH-02` implements them as first-class engineered ground.
-- For the `EARTH-02` target, driveway anchors become the preferred runtime connection points used
-  to choose a single flat site height from the road/world surface. They still do not create
-  surfaces by themselves; authored `[[site_surfaces]]` polygons provide the local material/layout
-  regions on the flat lot.
+- Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
+  them as material/layout regions on the flat whole-lot building-site client.
+- Driveway anchors are the preferred runtime connection points used to choose a single flat site
+  height from the road/world surface. They still do not create surfaces by themselves; authored
+  `[[site_surfaces]]` polygons provide the local material/layout regions on the flat lot.
 - Site surfaces do not rewrite source terrain, and they do not imply trip planning, vehicle
   parking, freight stop targeting, queueing, or capacity in v1.
 - Do not add prop sockets in v1. Decorative attachment points belong to a later visual-variation
@@ -463,31 +461,31 @@ Rules:
   polygon `vertices = [[x, z], ...]` in winding order.
 - Site surfaces must fit fully inside the authored lot rectangle.
 - Site surface polygons must have at least three vertices, non-zero area, and no self-intersection.
-- Site surfaces are authored visual-ground metadata and editor-preview geometry only in v1. Live
-  gameplay ignores them until the parked `EARTH-02` engineered-ground work lands.
-- In the `EARTH-02` target, the runtime terrain-ownership footprint is still the whole occupied lot
-  rectangle. `[[site_surfaces]]` polygons are material/layout regions on top of that flat lot, not
-  independent terrain-cut footprints.
+- Site surfaces are authored visual-ground metadata. Live gameplay renders them on the flat
+  building-site client and queries their authored `y_m` offset, but they never become independent
+  terrain-cut footprints.
+- The runtime terrain-ownership footprint is still the whole occupied lot rectangle.
+  `[[site_surfaces]]` polygons are material/layout regions on top of that flat lot.
 - Site surfaces do not imply access, parking capacity, freight capacity, service eligibility,
   pedestrian paths, or vehicle routing.
 - Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
-- If an asset exports no site surfaces, the editor previews no yard treatment. Live runtime behavior
-  is currently the same whether site surfaces are present or absent.
+- If an asset exports no site surfaces, the live site still has a flat whole-lot ground plane, but
+  no authored asphalt/concrete material regions.
 - The editor can create rectangular starting surfaces, then authors can move the whole polygon,
   drag vertices, right-click an edge to add a vertex, and right-click an existing vertex to delete it
   while preserving the minimum three-vertex polygon.
 - Painted decals, curbs, markings, and per-material texture selection are later extensions.
 
-### Future Flat-Site Authoring Target
+### Flat-Site Authoring
 
-The `EARTH-02` authoring target is WYSIWYG for the local flat lot:
+The building authoring view is WYSIWYG for the local flat lot:
 
-- The editor preview should show a flat lot plane with the authored `lot_width_cells` and
+- The editor preview shows a flat lot plane with the authored `lot_width_cells` and
   `lot_depth_cells`, not an abstract infinite grid as the main authoring reference.
-- The lot boundary is the future runtime site footprint.
+- The lot boundary is the runtime site footprint.
 - Mesh parts, anchors, and `[[site_surfaces]]` share the same local coordinate system.
-- Authored site-surface materials preview on the flat lot exactly as they should appear once the
-  runtime site client exists.
+- Authored site-surface materials preview on the flat lot as the runtime site client will render
+  them.
 - The editor does not choose the world height of the lot. Runtime placement chooses the height from
   road/driveway connection, neighboring fixed sites, or explicit-site fallback according to
   [`earthworks.md`](earthworks.md).
@@ -830,9 +828,9 @@ Anchor requirements by asset class:
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
   site-layout metadata in v1. They do not generate visual yard surfaces; vehicle parking and
   freight stop behavior remain later runtime hooks.
-- Buildings may define optional `[[site_surfaces]]` polygons for editor-preview yard materials:
-  asphalt and concrete. Live gameplay ignores these polygons in v1. In the `EARTH-02` target, these
-  polygons become material/layout regions on the flat whole-lot building site.
+- Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
+  and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
+  whole-lot building site.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
 - Props use their exported origin as the placement point and do not require a separate anchor in v1.
 - Characters use the exported feet-center origin as the placement point and do not require additional anchors in v1.
@@ -1903,7 +1901,7 @@ Building rules:
 - Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
 - In v1, driveway, parking, and loading-bay anchors are not rendered as ground treatment. Authored
   `[[site_surfaces]]` polygons own asphalt, concrete, walkways, parking pads, loading pads, and
-  driveway-apron visuals only in the asset editor preview.
+  driveway-apron visuals in both the asset editor preview and live gameplay.
 - The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret
   site-anchor capacity, queue behavior, parking, or freight stop behavior yet.
 - Every `[[site_surfaces]]` polygon must fit fully inside the authored lot rectangle.

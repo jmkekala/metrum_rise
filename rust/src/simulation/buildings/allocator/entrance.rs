@@ -187,7 +187,9 @@ impl BuildingAllocator {
     }
 }
 
-fn main_entrance_anchor(anchors: &[crate::assets::Anchor]) -> Option<&crate::assets::Anchor> {
+pub(crate) fn main_entrance_anchor(
+    anchors: &[crate::assets::Anchor],
+) -> Option<&crate::assets::Anchor> {
     let mut match_idx = None;
     for (idx, anchor) in anchors.iter().enumerate() {
         if anchor.anchor_type == AnchorType::Entrance && anchor.name == "main" {
@@ -205,6 +207,14 @@ fn world_door_pos(
     anchor_position: [f32; 3],
     anchor_forward: [f32; 3],
 ) -> Vector2 {
+    building_local_xz_pos(building, anchor_position, anchor_forward)
+}
+
+pub(crate) fn building_local_xz_pos(
+    building: &Building,
+    anchor_position: [f32; 3],
+    anchor_forward: [f32; 3],
+) -> Vector2 {
     let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, anchor_forward);
     let local_x = anchor_position[0];
     let local_z = anchor_position[2];
@@ -212,7 +222,10 @@ fn world_door_pos(
     Vector2::new(building.center_x, building.center_y) + basis_x * local_x + basis_z * local_z
 }
 
-fn building_local_xz_basis(facing_dir: Vector2, anchor_forward: [f32; 3]) -> (Vector2, Vector2) {
+pub(crate) fn building_local_xz_basis(
+    facing_dir: Vector2,
+    anchor_forward: [f32; 3],
+) -> (Vector2, Vector2) {
     let world_front = if facing_dir.length_squared() > 1e-12 {
         facing_dir.normalized()
     } else {

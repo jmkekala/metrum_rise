@@ -73,9 +73,8 @@ Each engineered-ground client owns one authoritative support surface for its foo
 Current and planned clients include:
 
 - roads, using the compiled roadbed
-- future building sites, using the placed building's fixed flat lot plane; authored
-  `[[site_surfaces]]` polygons are material/layout regions on top of that plane once `EARTH-02` is
-  implemented
+- building sites, using the placed building's fixed flat lot plane; authored
+  `[[site_surfaces]]` polygons are material/layout regions on top of that plane
 - future parking platforms, rail beds, retaining structures, or other built ground
 
 The support surface must not be inferred from the terrain heightfield after the fact.
@@ -314,17 +313,16 @@ more capable than the terrain heightfield alone.
 
 ### 1. Roads Are The Live Client
 
-The current runtime ships roads as the only live engineered-ground client.
+The current runtime ships roads and flat building sites as live engineered-ground clients.
 
 That means:
 
 - `RoadSurfaceSystem` owns the roadbed support surface
-- placed buildings capture a fixed support height at placement for building meshes and entrance
-  derivation, but authored `[[site_surfaces]]` polygons remain editor metadata only
+- `BuildingAllocator` owns flat whole-lot building-site clients registered at construction start
+- authored `[[site_surfaces]]` polygons render/query as material regions on top of the flat site
+  plane, but do not define separate terrain ownership footprints
 - live gameplay must not render authored yard surfaces as loose decal / overlay meshes over terrain;
-  until `EARTH-02` lands, those surfaces stay asset-editor metadata
-- authored building site surfaces do not currently clip visual terrain or participate in
-  world-surface height/raycast queries
+  they must be emitted from the runtime site client after the terrain footprint is clipped
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
 - bridge earthworks remain abutment-only and use class-owned endpoint ranges rather than ordinary
@@ -378,9 +376,8 @@ Current compatibility gap:
   terrain
 - structural visual terrain is then rebuilt from that moved roadbed, so the road can shift instead
   of the terrain alone reshaping around it
-- full building-pad foundations, authored site surfaces, and perimeter grading are not live yet, so
-  their broader fixed-surface semantics are still a shared-target rule rather than a shipped
-  behavior
+- building-site clients now ship as fixed flat whole-lot surfaces; detailed perimeter grading and
+  richer foundation meshes remain later work
 
 ### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
@@ -676,9 +673,9 @@ area clients; it is not a substitute for the road-to-terrain boundary that alrea
 
 ## Building-Site Target (`EARTH-02`)
 
-`EARTH-02` is the required target for live building yards, pads, and authored site surfaces. It is
-not live yet. The current runtime must keep authored site surfaces editor-only until this ownership
-model exists.
+`EARTH-02` is the live first-pass target for building yards, pads, and authored site surfaces.
+Buildings register a flat whole-lot site client at construction start, and visual terrain is clipped
+through the same terrain-patch / CDT ownership model used by grounded roads.
 
 ### 1. The Runtime Site Footprint Is The Whole Lot
 
@@ -701,10 +698,10 @@ Zoning is not an engineered-ground client:
 
 ### 2. Asset Editor Is WYSIWYG For The Flat Lot
 
-The asset editor should preview the asset on a flat local lot with the authored lot dimensions, not
+The asset editor previews the asset on a flat local lot with the authored lot dimensions, not
 on an abstract infinite grid. The authoring view should show:
 
-- the lot boundary as the future runtime site footprint
+- the lot boundary as the runtime site footprint
 - the building mesh parts on that flat plane
 - `entrance`, `driveway`, `parking`, and `loading_bay` anchors in the same local coordinate space
 - authored `[[site_surfaces]]` polygons as material regions on top of the flat lot
@@ -776,6 +773,8 @@ Required runtime behavior:
   terrain-patch / CDT ownership model used by grounded roads
 - boundary vertices at the site seam reuse the site plane height, not resampled source terrain
   heights
+- visible-world height and ray queries see road surfaces first, building-site top surfaces second,
+  and source/visual terrain after those owned surfaces
 - no shader mask, z-bias, loose overlay mesh, terrain alpha, or hidden second support plane may hide
   missing topology
 
@@ -802,6 +801,7 @@ The building-site implementation must reuse existing ownership and indexing syst
 - terrain patch / CDT clipping infrastructure already used by grounded roads
 - building chunk indices for nearby fixed-site adjacency checks
 - asset `[[anchors]]` and `[[site_surfaces]]` schemas for local layout metadata
+- building-site render buffers are rebuilt from allocator revisions, not every frame
 
 Deterministic ordering rules:
 

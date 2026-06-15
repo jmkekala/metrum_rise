@@ -2,7 +2,7 @@
 //!
 //! Handles building instance transform generation and plot/construction-site visuals.
 
-use crate::assets::{AnchorType, AssetEntry, MeshPart};
+use crate::assets::{AnchorType, AssetEntry, MeshPart, SiteSurfaceMaterial};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::zoning::ZoneType;
@@ -87,6 +87,52 @@ impl SimCore {
         }
 
         PackedFloat32Array::from_iter(buffer)
+    }
+
+    /// Returns the revision used by Godot to decide whether site meshes need rebuilding.
+    pub fn get_building_site_revision_internal(&self) -> u64 {
+        self.allocator.building_ref_revision()
+    }
+
+    /// Returns world-space triangle buffers for live flat building-site top surfaces.
+    pub fn get_building_site_mesh_data_internal(&self) -> VarDictionary {
+        let mut ground_vertices = Vec::with_capacity(self.allocator.building_sites.len() * 6);
+        let mut asphalt_vertices = Vec::new();
+        let mut concrete_vertices = Vec::new();
+
+        for site in &self.allocator.building_sites {
+            push_site_quad_triangles(
+                &mut ground_vertices,
+                site.footprint_world,
+                site.support_height_m,
+            );
+            for surface in &site.surfaces {
+                let target = match surface.material {
+                    SiteSurfaceMaterial::Asphalt => &mut asphalt_vertices,
+                    SiteSurfaceMaterial::Concrete => &mut concrete_vertices,
+                };
+                append_site_polygon_triangles(target, &surface.vertices_world, surface.height_m);
+            }
+        }
+
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "revision",
+            i64::try_from(self.allocator.building_ref_revision()).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "ground_vertices",
+            PackedVector3Array::from_iter(ground_vertices),
+        );
+        dict.set(
+            "asphalt_vertices",
+            PackedVector3Array::from_iter(asphalt_vertices),
+        );
+        dict.set(
+            "concrete_vertices",
+            PackedVector3Array::from_iter(concrete_vertices),
+        );
+        dict
     }
 
     /// Returns the 12-float transforms for building plot/foundation MultiMeshes (visualizing item 53).
@@ -461,6 +507,114 @@ fn push_oriented_box_transform(
     buffer.push(0.0);
     buffer.push(front.y * scale_z);
     buffer.push(center_z);
+}
+
+fn push_site_quad_triangles(buffer: &mut Vec<Vector3>, footprint: [Vector2; 4], y: f32) {
+    let corners = [
+        Vector3::new(footprint[0].x, y, footprint[0].y),
+        Vector3::new(footprint[1].x, y, footprint[1].y),
+        Vector3::new(footprint[2].x, y, footprint[2].y),
+        Vector3::new(footprint[3].x, y, footprint[3].y),
+    ];
+    buffer.extend_from_slice(&[
+        corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
+    ]);
+}
+
+fn append_site_polygon_triangles(buffer: &mut Vec<Vector3>, vertices: &[Vector2], y: f32) {
+    if vertices.len() < 3 {
+        return;
+    }
+    let mut indices = (0..vertices.len()).collect::<Vec<_>>();
+    if polygon_signed_area(vertices) < 0.0 {
+        indices.reverse();
+    }
+
+    let mut guard = 0usize;
+    while indices.len() > 3 && guard < vertices.len() * vertices.len() {
+        guard += 1;
+        let mut clipped = false;
+        for cursor in 0..indices.len() {
+            let prev_idx = indices[(cursor + indices.len() - 1) % indices.len()];
+            let current_idx = indices[cursor];
+            let next_idx = indices[(cursor + 1) % indices.len()];
+            let prev = vertices[prev_idx];
+            let current = vertices[current_idx];
+            let next = vertices[next_idx];
+            if site_orientation(prev, current, next) <= 0.0001 {
+                continue;
+            }
+
+            let mut contains_other = false;
+            for &candidate_idx in &indices {
+                if candidate_idx == prev_idx
+                    || candidate_idx == current_idx
+                    || candidate_idx == next_idx
+                {
+                    continue;
+                }
+                if site_point_in_triangle(vertices[candidate_idx], prev, current, next) {
+                    contains_other = true;
+                    break;
+                }
+            }
+            if contains_other {
+                continue;
+            }
+
+            push_site_triangle(buffer, prev, current, next, y);
+            indices.remove(cursor);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            append_site_polygon_fan_triangles(buffer, vertices, y);
+            return;
+        }
+    }
+
+    if indices.len() == 3 {
+        push_site_triangle(
+            buffer,
+            vertices[indices[0]],
+            vertices[indices[1]],
+            vertices[indices[2]],
+            y,
+        );
+    }
+}
+
+fn append_site_polygon_fan_triangles(buffer: &mut Vec<Vector3>, vertices: &[Vector2], y: f32) {
+    for i in 1..vertices.len() - 1 {
+        push_site_triangle(buffer, vertices[0], vertices[i], vertices[i + 1], y);
+    }
+}
+
+fn push_site_triangle(buffer: &mut Vec<Vector3>, a: Vector2, b: Vector2, c: Vector2, y: f32) {
+    buffer.push(Vector3::new(a.x, y, a.y));
+    buffer.push(Vector3::new(b.x, y, b.y));
+    buffer.push(Vector3::new(c.x, y, c.y));
+}
+
+fn polygon_signed_area(vertices: &[Vector2]) -> f32 {
+    let mut area = 0.0;
+    for i in 0..vertices.len() {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.len()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    area * 0.5
+}
+
+fn site_orientation(a: Vector2, b: Vector2, c: Vector2) -> f32 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+fn site_point_in_triangle(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool {
+    let ab = site_orientation(a, b, p);
+    let bc = site_orientation(b, c, p);
+    let ca = site_orientation(c, a, p);
+    ab >= -0.0001 && bc >= -0.0001 && ca >= -0.0001
 }
 
 fn offset_point(
