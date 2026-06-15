@@ -24,6 +24,8 @@ This document owns the allocator-side contracts. It does not own:
 - exact entrance or trip movement behavior in [`entrance_and_exit.md`](entrance_and_exit.md)
 - asset-authoring UI behavior in [`asset_editor.md`](asset_editor.md)
 - building economy behavior in [`economy.md`](economy.md)
+- terrain clipping, fixed-site support surfaces, or engineered-ground ownership in
+  [`earthworks.md`](earthworks.md)
 
 ## Current Tick Order
 
@@ -65,6 +67,7 @@ The authoritative placement-side fields on each building are:
 - `width_cells`
 - `depth_cells`
 - `center_x`, `center_y`
+- `support_height_m`
 - `facing_dir`
 - `frontage_t`
 - `asset_id`
@@ -77,6 +80,10 @@ broad-family cache because allocator indices, vacancy tracking, and several hot-
 need the baseline residential/commercial/industrial family. Later systems such as entrance
 planning, economy, and rendering consume these fields rather than inventing their own separate
 placement truth.
+
+`support_height_m` is the fixed placement support plane consumed by building rendering and entrance
+derivation. Under the future `EARTH-02` flat-site target, allocator placement also passes this
+height to the engineered-ground client that owns the whole lot surface.
 
 `facing_dir` is the road-facing frontage direction: the direction the building's authored front
 points in world space. It is the negative of the zoning parcel `normal`, because parcel `normal`
@@ -151,6 +158,30 @@ If all checks pass, the allocator commits placement by:
 The committed building center is still `front_center + parcel.normal * depth / 2`. Only the
 frontage orientation flips: `Building::facing_dir = -parcel.normal`. Runtime render and entrance
 transforms then align the asset's authored `main` entrance `forward` vector to `facing_dir`.
+
+### `EARTH-02` flat-site handoff target
+
+When live building sites become engineered-ground clients, the allocator remains the placement
+authority:
+
+- zoning parcels remain legal intent only and do not alter terrain
+- allocator placement chooses/validates one flat `support_height_m` for the whole occupied lot
+- allocator registers the site client at construction start, not after the construction animation
+  finishes
+- terrain clipping, CDT stitching, material-region rendering, and chunk-local patch rebuilds remain
+  owned by the earthworks / terrain path
+
+Roadside height selection must use the deterministic rule in [`earthworks.md`](earthworks.md):
+driveway anchors first, parcel frontage midpoint as the no-driveway fallback, and source-terrain
+center fallback only for explicit non-road assets that intentionally do not attach to roads.
+
+The allocator must reject placement instead of repairing geometry when:
+
+- the selected road/driveway connection cannot be resolved
+- another driveway on the same asset differs from the chosen support plane by more than `0.35 m`
+- a touching placed building site differs from the chosen support plane by more than `0.10 m`
+
+Existing placed sites are fixed clients. A new placement must not average, move, or regrade them.
 
 ## Removal And Synchronization
 

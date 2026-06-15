@@ -13,6 +13,8 @@ Zoning authority is Rust-owned road-aligned parcels.
 - Rust owns parcel geometry, road attachment, overlap checks, stable parcel ids, save/load, and
   building occupancy.
 - There is no map-wide zoning paint surface; render resources are derived display only.
+- Zoning is not an engineered-ground client. Creating, previewing, resizing, dragging, or rezoning
+  parcels must not alter source terrain, visual terrain, road surfaces, or building-site surfaces.
 - Parcel geometry is stored in metres, with parcel dimensions authored in zoning cells converted
   through `WorldConfig::zone_cell_m`.
 - The default tool parcel is `2 x 2` zoning cells (`20 m x 20 m` with the default `10 m` cell).
@@ -119,6 +121,9 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap existing parcels.
 - The parcel must not overlap another road-owned corridor.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
+- Successful parcel placement records only zoning/legal intent. Terrain integration is deferred
+  until `BuildingAllocator` accepts an actual building placement and the `EARTH-02` building-site
+  client is registered.
 
 Drag-run placement projects bounded deterministic same-road candidate layouts across the current
 drag span, then keeps the best legal layout. Rust may re-layout the candidate phase as the span
@@ -223,7 +228,8 @@ The building allocator consumes parcels as private-building candidate authority.
 - Buildings save their claimed parcel id.
 
 Zoning owns parcel legality and occupancy bookkeeping. The allocator owns asset selection,
-building lifecycle, entrance cache, and zone-family demand indices.
+building lifecycle, entrance cache, building-site support height selection, and zone-family demand
+indices.
 
 ---
 

@@ -73,9 +73,9 @@ Each engineered-ground client owns one authoritative support surface for its foo
 Current and planned clients include:
 
 - roads, using the compiled roadbed
-- future building site surfaces, using the placed building's fixed support plane and authored
-  `[[site_surfaces]]` polygons once `EARTH-02` is implemented
-- future zoning / building pads, using a flat foundation pad
+- future building sites, using the placed building's fixed flat lot plane; authored
+  `[[site_surfaces]]` polygons are material/layout regions on top of that plane once `EARTH-02` is
+  implemented
 - future parking platforms, rail beds, retaining structures, or other built ground
 
 The support surface must not be inferred from the terrain heightfield after the fact.
@@ -321,6 +321,8 @@ That means:
 - `RoadSurfaceSystem` owns the roadbed support surface
 - placed buildings capture a fixed support height at placement for building meshes and entrance
   derivation, but authored `[[site_surfaces]]` polygons remain editor metadata only
+- live gameplay must not render authored yard surfaces as loose decal / overlay meshes over terrain;
+  until `EARTH-02` lands, those surfaces stay asset-editor metadata
 - authored building site surfaces do not currently clip visual terrain or participate in
   world-surface height/raycast queries
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
@@ -669,25 +671,150 @@ The following are current hardcut implementation rules:
   variant beyond the structural retaining-wall path should be tracked as a new explicit earthworks
   item
 
-That means the remaining items below are later additions after the clipped terrain boundary itself;
-they are not a substitute for closing the road-to-terrain boundary.
+That means the building-site target below extends the same clipped-topology ownership model to
+area clients; it is not a substitute for the road-to-terrain boundary that already ships.
+
+## Building-Site Target (`EARTH-02`)
+
+`EARTH-02` is the required target for live building yards, pads, and authored site surfaces. It is
+not live yet. The current runtime must keep authored site surfaces editor-only until this ownership
+model exists.
+
+### 1. The Runtime Site Footprint Is The Whole Lot
+
+The v1 runtime building-site footprint is the whole occupied lot rectangle:
+
+- for zoned private buildings, the claimed zoning parcel area occupied by the asset's
+  `lot_width_cells` and `lot_depth_cells`
+- for explicit buildings, the explicit placement footprint defined by the asset and allocator
+
+The whole footprint becomes one flat engineered-ground client when a building is actually placed or
+construction starts. Authored `[[site_surfaces]]` polygons do not define the terrain-ownership
+footprint. They define visible/material regions on the already flat lot plane, such as asphalt,
+concrete, paved yards, or walkways.
+
+Zoning is not an engineered-ground client:
+
+- creating, previewing, dragging, resizing, or rezoning parcels must not alter source terrain,
+  visual terrain, road surfaces, or site surfaces
+- terrain integration begins only when allocator placement accepts a building on a parcel
+
+### 2. Asset Editor Is WYSIWYG For The Flat Lot
+
+The asset editor should preview the asset on a flat local lot with the authored lot dimensions, not
+on an abstract infinite grid. The authoring view should show:
+
+- the lot boundary as the future runtime site footprint
+- the building mesh parts on that flat plane
+- `entrance`, `driveway`, `parking`, and `loading_bay` anchors in the same local coordinate space
+- authored `[[site_surfaces]]` polygons as material regions on top of the flat lot
+
+This editor view is WYSIWYG for local layout and materials. It is not responsible for choosing the
+world height of the site; runtime placement still chooses that height from road / driveway /
+neighbor context.
+
+### 3. Placement Chooses One Flat Site Height
+
+Every accepted building site has exactly one support height:
+
+```text
+building.support_height_m = site_plane_y
+```
+
+For normal roadside buildings, height selection is deterministic:
+
+1. Build candidate connection points from authored `driveway` anchors.
+2. Convert anchors to world space using the accepted building transform.
+3. Project/query each candidate against the claimed road edge and side.
+4. Sort valid candidates by distance to the frontage edge, then by authored anchor order.
+5. Select the first valid driveway as the primary driveway.
+6. Sample the existing visible road/world surface at that connection.
+7. Use that height as the flat site plane.
+8. Validate remaining driveway anchors against the chosen site height.
+9. Validate touching neighboring building sites against the chosen site height.
+
+If an asset has no driveway anchors, the fallback connection is the parcel frontage midpoint on the
+claimed road side. If an explicit non-road service asset has no road connection by design, it may
+fall back to source terrain at the placement center. If no valid connection exists for a road-bound
+building, placement is rejected with a diagnostic.
+
+The `main` entrance does not choose the site height. It sits on the flat site plane chosen from the
+road / driveway / explicit-site rule above.
+
+### 4. Multiple Driveways And Neighbor Sites Are Validation Inputs
+
+Multiple driveways are allowed, but they do not create multiple site heights.
+
+Required rule:
+
+- primary driveway: closest valid driveway to the frontage edge; tie-break by authored anchor order
+- secondary driveways: must be compatible with the chosen flat site height
+- v1 rejection threshold: any secondary driveway whose sampled connection height differs by more
+  than `0.35 m` rejects placement
+
+Neighboring placed sites are fixed clients:
+
+- existing neighboring site heights must not be moved, averaged, or repaired by a new placement
+- if a new site touches an existing site and their heights differ by more than `0.10 m`, reject the
+  new placement in v1
+- if the height difference is `0.10 m` or less, the future implementation may merge/clean the shared
+  seam deterministically without changing either committed height
+
+When the selected road connection height conflicts with a neighboring fixed site, the placement is
+rejected. The runtime must not average road and neighbor heights.
+
+### 5. Terrain Integration Uses The Same Topology Ownership As Roads
+
+The placed building site replaces visible terrain inside the whole lot footprint.
+
+Required runtime behavior:
+
+- source terrain remains unchanged
+- the site footprint is clipped out of visual terrain topology
+- site top surfaces render on the flat support plane
+- terrain outside the footprint stitches to the site boundary through the same Rust-owned
+  terrain-patch / CDT ownership model used by grounded roads
+- boundary vertices at the site seam reuse the site plane height, not resampled source terrain
+  heights
+- no shader mask, z-bias, loose overlay mesh, terrain alpha, or hidden second support plane may hide
+  missing topology
+
+Removal rule:
+
+- removing a building removes its site client
+- visual terrain rebuilds from source terrain plus remaining roads and building sites
+- v1 does not leave persistent foundation, asphalt, or yard remnants after removal
+
+Construction rule:
+
+- the flat site client is registered at construction start, before the rising building animation
+  finishes
+- later construction visuals are drawn on the already committed site plane
+
+### 6. Determinism And Performance
+
+The building-site implementation must reuse existing ownership and indexing systems:
+
+- `BuildingAllocator` placement lifecycle and parcel claims
+- zoning parcel geometry for lot footprints
+- `Building.support_height_m` for the chosen flat support plane
+- `RoadSurfaceSystem` / visible-world queries for road connection height
+- terrain patch / CDT clipping infrastructure already used by grounded roads
+- building chunk indices for nearby fixed-site adjacency checks
+- asset `[[anchors]]` and `[[site_surfaces]]` schemas for local layout metadata
+
+Deterministic ordering rules:
+
+- driveway candidates sort by distance to frontage edge, then authored anchor order
+- neighboring sites sort by stable building index / parcel id before validation or merge handling
+- dirty terrain/site patch rebuilds run in canonical chunk order
+- no unordered hash iteration may decide accepted height, rejected height, or emitted seam topology
 
 ## Later Additions
 
 The following items remain intentionally open as later extensions of the same subsystem.
 
-### 1. When Do Buildings Become Live Engineered-Ground Clients?
-
-Future flat building pads, foundations, and authored `[[site_surfaces]]` polygons are already part
-of the shared target, but they are not yet implemented as first-class engineered-ground clients.
-
-Open decision:
-
-- how building-pad and site-surface support surfaces, footprint ownership, tie-in boundaries, and
-  future retaining behavior integrate with allocator / zoning placement without inventing a second
-  terrain-override model separate from roads
-
-### 2. When Do Later Geometry Variants Replace The First Closed Slope / Closure Mesh?
+### 1. When Do Later Geometry Variants Replace The First Closed Slope / Closure Mesh?
 
 The first shipped geometry variant is intentionally only the closed slope / closure mesh.
 

@@ -1,6 +1,8 @@
-## Shared world-rendering material factory and texture cache.
+## Shared world/editor material factory and texture cache.
 ## Rendering tools should request common asphalt/concrete materials here instead
 ## of rebuilding shader materials or reloading texture sets locally.
+## Site-surface materials are asset-editor preview materials until EARTH-02
+## promotes building sites to live engineered-ground clients.
 extends RefCounted
 class_name WorldMaterials
 

@@ -129,21 +129,24 @@ pub enum AnchorType {
     Light,
 }
 
-/// Visual ground-treatment material for an authored building yard surface.
+/// Editor-preview and future `EARTH-02` material for an authored building yard surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SiteSurfaceMaterial {
-    /// Dark paved surface, commonly used for vehicle aprons and parking pads.
+    /// Dark paved surface, commonly used for authored vehicle aprons and parking pads.
     Asphalt,
-    /// Light hard surface, commonly used for walkways and service pads.
+    /// Light hard surface, commonly used for authored walkways and service pads.
     Concrete,
 }
 
 /// One authored polygon ground-treatment surface inside a building lot.
+///
+/// This is asset-editor metadata until `EARTH-02` promotes building sites to live
+/// engineered-ground clients. Gameplay must not render it as a loose terrain overlay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteSurface {
-    /// Visual material used by the live renderer.
+    /// Visual material used by the asset-editor preview and future site client.
     pub material: SiteSurfaceMaterial,
     /// Optional editor label for this surface.
     #[serde(default)]
