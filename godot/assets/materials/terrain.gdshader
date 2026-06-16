@@ -4,6 +4,8 @@ render_mode cull_disabled, unshaded;
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
 uniform sampler2D watermap : repeat_disable, filter_linear;
+uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform bool height_is_baked = false;
@@ -20,6 +22,16 @@ uniform float hillshade_contrast = 1.15;
 uniform vec3 hillshade_shadow_tint : source_color = vec3(0.62, 0.71, 0.77);
 uniform vec3 hillshade_light_tint : source_color = vec3(0.97, 0.99, 0.95);
 uniform float terrain_macro_variation_strength = 0.10;
+uniform vec3 terrain_grass_tint : source_color = vec3(0.22, 0.42, 0.16);
+uniform float terrain_grass_tint_strength = 0.0;
+uniform float terrain_natural_variation_strength = 0.18;
+uniform float terrain_meadow_mottle_strength = 0.08;
+uniform float terrain_baked_normal_blend = 0.75;
+uniform float terrain_grass_detail_scale = 0.12;
+uniform float terrain_grass_detail_strength = 0.26;
+uniform float terrain_grass_height_detail_strength = 0.10;
+uniform float terrain_grass_detail_fade_start = 0.035;
+uniform float terrain_grass_detail_fade_end = 0.18;
 uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
 uniform float terrain_relief_sample_radius_texels = 3.0;
@@ -54,6 +66,7 @@ uniform float contour_flat_relief_end_m = 1.25;
 varying float h;
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
+varying vec3 var_mesh_normal;
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -78,6 +91,41 @@ float macro_variation(vec2 world_xz) {
 	return clamp(a * 0.7 + b * 0.3, 0.0, 1.0);
 }
 
+float warped_noise(vec2 world_xz, float scale, vec2 offset) {
+	vec2 warp = vec2(
+		noise2d(world_xz * 0.0007 + offset),
+		noise2d(world_xz * 0.0007 + offset + vec2(37.0, 19.0))
+	) - vec2(0.5);
+	return noise2d((world_xz + warp * 180.0) * scale + offset * 0.37);
+}
+
+vec3 apply_natural_land_variation(
+	vec3 color,
+	vec2 world_xz,
+	float slope,
+	float ruggedness,
+	float rock_mask,
+	float cliff_face,
+	float shore_mask
+) {
+	float broad = warped_noise(world_xz, 0.0010, vec2(5.0, 71.0));
+	float mid = warped_noise(world_xz, 0.0036, vec2(23.0, 11.0));
+	float mottle = noise2d(world_xz * 0.018 + vec2(59.0, 7.0));
+	float land_mask = clamp((1.0 - rock_mask) * (1.0 - cliff_face) * (1.0 - shore_mask * 0.65), 0.0, 1.0);
+	float open_mask = smoothstep(0.54, 0.86, broad) * (1.0 - ruggedness * 0.45);
+	float cool_mask = smoothstep(0.18, 0.72, 1.0 - broad) * smoothstep(0.32, 0.78, mid);
+	float scrub_mask = smoothstep(0.45, 0.90, mid) * smoothstep(0.02, 0.22, slope + ruggedness * 0.25);
+	vec3 dry_open_tint = vec3(1.08, 1.05, 0.90);
+	vec3 cool_meadow_tint = vec3(0.84, 1.04, 0.86);
+	vec3 scrub_tint = vec3(0.88, 0.96, 0.78);
+	float strength = clamp(terrain_natural_variation_strength, 0.0, 1.0) * land_mask;
+	color = mix(color, color * dry_open_tint, open_mask * strength);
+	color = mix(color, color * cool_meadow_tint, cool_mask * strength * 0.85);
+	color = mix(color, color * scrub_tint, scrub_mask * strength * 0.70);
+	color *= mix(1.0, mix(0.94, 1.06, mottle), clamp(terrain_meadow_mottle_strength, 0.0, 1.0) * land_mask);
+	return color;
+}
+
 vec3 terrain_surface_color(float world_elevation, float macro_mask, float ruggedness) {
 	vec3 dry_lowland = mix(vec3(0.36, 0.49, 0.29), vec3(0.28, 0.41, 0.24), macro_mask);
 	vec3 inland_base = mix(vec3(0.23, 0.38, 0.18), vec3(0.18, 0.32, 0.15), macro_mask);
@@ -99,6 +147,12 @@ vec3 terrain_surface_color(float world_elevation, float macro_mask, float rugged
 	color = mix(color, snow, alpine_bias);
 	vec3 macro_tint = mix(vec3(1.03, 1.01, 0.97), vec3(0.92, 1.01, 0.95), macro_mask);
 	color *= mix(vec3(1.0), macro_tint, terrain_macro_variation_strength);
+	float grass_tint_mask = 1.0 - alpine_bias;
+	color = mix(
+		color,
+		terrain_grass_tint,
+		clamp(terrain_grass_tint_strength, 0.0, 1.0) * grass_tint_mask
+	);
 	return color;
 }
 
@@ -123,6 +177,44 @@ vec2 sample_height_gradient(vec2 uv) {
 vec3 sample_world_normal(vec2 uv) {
 	vec2 gradient = sample_height_gradient(uv);
 	return normalize(vec3(-gradient.x, 1.0, -gradient.y));
+}
+
+vec3 terrain_display_normal(vec2 uv) {
+	vec3 height_normal = sample_world_normal(uv);
+	if (!height_is_baked) {
+		return height_normal;
+	}
+	return normalize(mix(
+		height_normal,
+		normalize(var_mesh_normal),
+		clamp(terrain_baked_normal_blend, 0.0, 1.0)
+	));
+}
+
+vec3 apply_grass_detail(vec3 color, vec3 world_pos, float grass_mask) {
+	vec2 detail_uv = world_pos.xz * terrain_grass_detail_scale;
+	vec2 cross_uv = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80))
+		* world_pos.xz
+		* (terrain_grass_detail_scale * 0.73)
+		+ vec2(31.7, 11.3);
+	vec3 grass_albedo = texture(terrain_grass_albedo, detail_uv).rgb;
+	vec3 cross_albedo = texture(terrain_grass_albedo, cross_uv).rgb;
+	float albedo_luma = mix(
+		dot(grass_albedo, vec3(0.299, 0.587, 0.114)),
+		dot(cross_albedo, vec3(0.299, 0.587, 0.114)),
+		0.35
+	);
+	float albedo_detail = clamp((albedo_luma - 0.5) * 1.75 + 0.5, 0.0, 1.0);
+	float height_detail = texture(terrain_grass_height, detail_uv).r;
+	float footprint = max(length(fwidth(detail_uv)), length(fwidth(cross_uv)));
+	float fade_start = max(terrain_grass_detail_fade_start, 0.0);
+	float fade_end = max(terrain_grass_detail_fade_end, fade_start + 0.001);
+	float screen_fade = 1.0 - smoothstep(fade_start, fade_end, footprint);
+	float brightness = 1.0;
+	brightness += (albedo_detail - 0.5) * terrain_grass_detail_strength * 0.68;
+	brightness += (height_detail - 0.5) * terrain_grass_height_detail_strength * 2.0;
+	brightness = max(brightness, 0.35);
+	return color * mix(1.0, brightness, grass_mask * screen_fade);
 }
 
 float sample_local_relief(vec2 uv) {
@@ -157,8 +249,7 @@ float shoreline_mask(vec2 uv) {
 	return smoothstep(0.02, 0.22, nearby);
 }
 
-float hillshade_mask(vec2 uv) {
-	vec3 normal = sample_world_normal(uv);
+float hillshade_mask(vec3 normal) {
 	float azimuth = radians(hillshade_azimuth_deg);
 	float altitude = radians(hillshade_altitude_deg);
 	vec3 light_dir = normalize(vec3(
@@ -233,13 +324,14 @@ void vertex() {
 		VERTEX.y += h * height_scale;
 	}
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	var_mesh_normal = normalize(NORMAL);
 }
 
 void fragment() {
 	float world_elevation = h * height_scale;
 	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);
-	vec3 normal = sample_world_normal(var_centered_uv);
+	vec3 normal = terrain_display_normal(var_centered_uv);
 	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
 	float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
 	ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
@@ -257,8 +349,20 @@ void fragment() {
 	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
 	vec3 shore_color = mix(vec3(0.34, 0.33, 0.24), vec3(0.18, 0.28, 0.16), ruggedness);
 	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
+	color = apply_natural_land_variation(
+		color,
+		var_world_pos.xz,
+		slope,
+		ruggedness,
+		rock_mask,
+		cliff_face,
+		shore_mask * shore_flatness
+	);
+	float grass_detail_mask = (1.0 - rock_mask) * (1.0 - cliff_face * 0.80);
+	grass_detail_mask *= 1.0 - shore_mask * shore_flatness * terrain_shore_blend_strength;
+	color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
 	color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
-	float hillshade = hillshade_mask(var_centered_uv);
+	float hillshade = hillshade_mask(normal);
 	vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
 	color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
 	

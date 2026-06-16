@@ -8,15 +8,27 @@
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
+const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass01_2K_BaseColor.png"
+const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass01_2K_Height.png"
 const HEIGHT_SCALE := 20.0
 const HILLSHADE_AZIMUTH_DEG := 315.0
 const HILLSHADE_ALTITUDE_DEG := 38.0
-const HILLSHADE_STRENGTH := 0.58
-const HILLSHADE_AMBIENT := 0.24
-const HILLSHADE_CONTRAST := 1.35
+const HILLSHADE_STRENGTH := 0.70
+const HILLSHADE_AMBIENT := 0.20
+const HILLSHADE_CONTRAST := 1.55
 const HILLSHADE_SHADOW_TINT := Color(0.62, 0.71, 0.77)
 const HILLSHADE_LIGHT_TINT := Color(0.97, 0.99, 0.95)
 const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
+const TERRAIN_GRASS_TINT := Color(0.22, 0.42, 0.16)
+const TERRAIN_GRASS_TINT_STRENGTH := 0.12
+const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
+const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
+const TERRAIN_BAKED_NORMAL_BLEND := 0.75
+const TERRAIN_GRASS_DETAIL_SCALE := 0.38
+const TERRAIN_GRASS_DETAIL_STRENGTH := 0.09
+const TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH := 0.03
+const TERRAIN_GRASS_DETAIL_FADE_START := 0.035
+const TERRAIN_GRASS_DETAIL_FADE_END := 0.18
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
@@ -86,6 +98,8 @@ var patch_span_m: float = 1.0
 var overlay_texture: ImageTexture
 var overlay_image: Image
 var empty_water_texture: ImageTexture
+var grass_albedo_texture: Texture2D
+var grass_height_texture: Texture2D
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
@@ -149,6 +163,7 @@ func rebuild_from_simulation_state() -> void:
 	_resident_patch_bounds_valid = false
 	_ensure_overlay_texture()
 	_ensure_empty_water_texture()
+	_ensure_grass_textures()
 	_ensure_border_visuals()
 	_refresh_road_locked_patch_lookup()
 	_sync_patch_residency(true)
@@ -460,6 +475,8 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("watermap", empty_water_texture)
+	material.set_shader_parameter("terrain_grass_albedo", grass_albedo_texture)
+	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
@@ -476,6 +493,19 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("hillshade_shadow_tint", HILLSHADE_SHADOW_TINT)
 	material.set_shader_parameter("hillshade_light_tint", HILLSHADE_LIGHT_TINT)
 	material.set_shader_parameter("terrain_macro_variation_strength", TERRAIN_MACRO_VARIATION_STRENGTH)
+	material.set_shader_parameter("terrain_grass_tint", TERRAIN_GRASS_TINT)
+	material.set_shader_parameter("terrain_grass_tint_strength", TERRAIN_GRASS_TINT_STRENGTH)
+	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
+	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
+	material.set_shader_parameter("terrain_baked_normal_blend", TERRAIN_BAKED_NORMAL_BLEND)
+	material.set_shader_parameter("terrain_grass_detail_scale", TERRAIN_GRASS_DETAIL_SCALE)
+	material.set_shader_parameter("terrain_grass_detail_strength", TERRAIN_GRASS_DETAIL_STRENGTH)
+	material.set_shader_parameter(
+		"terrain_grass_height_detail_strength",
+		TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH
+	)
+	material.set_shader_parameter("terrain_grass_detail_fade_start", TERRAIN_GRASS_DETAIL_FADE_START)
+	material.set_shader_parameter("terrain_grass_detail_fade_end", TERRAIN_GRASS_DETAIL_FADE_END)
 	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
 	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
 	material.set_shader_parameter("terrain_relief_sample_radius_texels", TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS)
@@ -1307,6 +1337,28 @@ func _ensure_empty_water_texture() -> void:
 	var image := Image.create(2, 2, false, Image.FORMAT_RF)
 	image.fill(Color.BLACK)
 	empty_water_texture = ImageTexture.create_from_image(image)
+
+func _ensure_grass_textures() -> void:
+	if grass_albedo_texture == null:
+		grass_albedo_texture = _load_texture_or_solid(TERRAIN_GRASS_ALBEDO_PATH, Color(0.5, 0.5, 0.5, 1.0))
+	if grass_height_texture == null:
+		grass_height_texture = _load_texture_or_solid(TERRAIN_GRASS_HEIGHT_PATH, Color(0.5, 0.5, 0.5, 1.0))
+
+func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
+	var texture: Texture2D = null
+	if ResourceLoader.exists(path):
+		texture = load(path) as Texture2D
+	if texture != null:
+		return texture
+
+	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
+	if image:
+		image.generate_mipmaps()
+		return ImageTexture.create_from_image(image)
+
+	var fallback_image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	fallback_image.fill(fallback_color)
+	return ImageTexture.create_from_image(fallback_image)
 
 func _sync_water_patch_textures() -> void:
 	var water_node: Node = get_node_or_null("../Water")

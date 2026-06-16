@@ -214,6 +214,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
 			if road_tool:
+				if not enabled:
+					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
 					road_tool.fwd_lanes = 1
@@ -223,6 +225,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool._rebuild_ghost_lines()
 		Tool.WALKWAY: 
 			if road_tool: 
+				if not enabled:
+					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
 					road_tool.fwd_lanes = 0

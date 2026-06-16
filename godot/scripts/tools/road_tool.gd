@@ -489,8 +489,8 @@ func _try_resume_pending_commit(points: PackedVector3Array, preview: Dictionary)
 
 func cancel_road():
 	current_state = State.IDLE
+	_clear_preview_visual()
 	if current_path:
-		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
 	_preview_update_pending = false
