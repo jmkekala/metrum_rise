@@ -171,6 +171,12 @@ pub(crate) struct TerrainCdtTieInGuideSample {
     pub(crate) vertex: TerrainCdtVertex,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtTieInGuideConstraint {
+    pub(crate) start: TerrainCdtVertex,
+    pub(crate) end: TerrainCdtVertex,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TerrainCdtEdgeClass {
     Standard,
@@ -484,6 +490,7 @@ pub(crate) struct TerrainCdtInput {
     pub(crate) road_loops: Vec<TerrainCdtRoadLoop>,
     pub(crate) source_samples: Vec<TerrainCdtVertex>,
     pub(crate) tie_in_guide_samples: Vec<TerrainCdtTieInGuideSample>,
+    pub(crate) tie_in_guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
 }
 
 impl TerrainCdtInput {
@@ -497,6 +504,7 @@ impl TerrainCdtInput {
             road_loops,
             source_samples,
             tie_in_guide_samples: Vec::new(),
+            tie_in_guide_constraints: Vec::new(),
         }
     }
 
@@ -505,6 +513,14 @@ impl TerrainCdtInput {
         tie_in_guide_samples: Vec<TerrainCdtTieInGuideSample>,
     ) -> Self {
         self.tie_in_guide_samples = tie_in_guide_samples;
+        self
+    }
+
+    pub(crate) fn with_tie_in_guide_constraints(
+        mut self,
+        tie_in_guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
+    ) -> Self {
+        self.tie_in_guide_constraints = tie_in_guide_constraints;
         self
     }
 }
@@ -962,16 +978,32 @@ fn canonicalize_input(
     });
     for sample in input.tie_in_guide_samples {
         let vertex = sample.vertex;
-        if !patch_contains(vertex, input.patch) {
-            continue;
-        }
-        if point_inside_any_road_footprint(vertex, &road_loops) {
-            continue;
-        }
-        if widening_tie_in_sample_against_any_road_loop(vertex, &road_loops).is_some() {
+        if !tie_in_guide_vertex_is_valid(vertex, input.patch, &road_loops) {
             continue;
         }
         insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+    }
+
+    input.tie_in_guide_constraints.sort_by_key(|constraint| {
+        (
+            quantized_coord(constraint.start.x),
+            quantized_coord(constraint.start.z),
+            quantized_coord(f64::from(constraint.start.height_m)),
+            quantized_coord(constraint.end.x),
+            quantized_coord(constraint.end.z),
+            quantized_coord(f64::from(constraint.end.height_m)),
+        )
+    });
+    for constraint in input.tie_in_guide_constraints {
+        if !tie_in_guide_vertex_is_valid(constraint.start, input.patch, &road_loops)
+            || !tie_in_guide_vertex_is_valid(constraint.end, input.patch, &road_loops)
+            || same_xz(constraint.start, constraint.end)
+        {
+            continue;
+        }
+        let start = insert_vertex(constraint.start, &mut vertices, &mut vertex_lookup);
+        let end = insert_vertex(constraint.end, &mut vertices, &mut vertex_lookup);
+        insert_constraint([start, end], &mut constraint_set);
     }
 
     input.source_samples.sort_by_key(|sample| {
@@ -1050,6 +1082,16 @@ fn canonicalize_input(
         tie_in_widened_max_slope_ratio,
         tie_in_widened_samples,
     })
+}
+
+fn tie_in_guide_vertex_is_valid(
+    vertex: TerrainCdtVertex,
+    patch: TerrainCdtPatch,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    patch_contains(vertex, patch)
+        && !point_inside_any_road_footprint(vertex, road_loops)
+        && widening_tie_in_sample_against_any_road_loop(vertex, road_loops).is_none()
 }
 
 fn insert_vertex(

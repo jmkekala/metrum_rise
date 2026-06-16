@@ -112,8 +112,9 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
     MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass,
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
-    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtTieInGuideSample,
-    TerrainCdtVertex, build_road_touched_terrain_patch,
+    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats,
+    TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample, TerrainCdtVertex,
+    build_road_touched_terrain_patch,
 };
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
@@ -1563,6 +1564,7 @@ impl SimulationNode {
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
         let mut tie_in_guide_samples = Vec::new();
+        let mut tie_in_guide_constraints = Vec::new();
         let mut sample_keys = BTreeMap::new();
         let grid_step_m =
             Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
@@ -1571,6 +1573,7 @@ impl SimulationNode {
             road_loops,
             safe_render_step_m,
             &mut tie_in_guide_samples,
+            &mut tie_in_guide_constraints,
             &mut sample_keys,
         );
         Self::append_terrain_cdt_grid_samples(
@@ -1597,6 +1600,7 @@ impl SimulationNode {
 
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
             .with_tie_in_guide_samples(tie_in_guide_samples)
+            .with_tie_in_guide_constraints(tie_in_guide_constraints)
     }
 
     fn terrain_cdt_window_build_inputs(
@@ -1714,6 +1718,7 @@ impl SimulationNode {
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
         let mut tie_in_guide_samples = Vec::new();
+        let mut tie_in_guide_constraints = Vec::new();
         let mut sample_keys = BTreeMap::new();
         let grid_step_m =
             Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
@@ -1722,6 +1727,7 @@ impl SimulationNode {
             road_loops,
             safe_render_step_m,
             &mut tie_in_guide_samples,
+            &mut tie_in_guide_constraints,
             &mut sample_keys,
         );
         Self::append_terrain_cdt_grid_samples(
@@ -1747,6 +1753,7 @@ impl SimulationNode {
         );
         TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
             .with_tie_in_guide_samples(tie_in_guide_samples)
+            .with_tie_in_guide_constraints(tie_in_guide_constraints)
     }
 
     fn terrain_cdt_grid_sample_step_m(
@@ -1809,6 +1816,21 @@ impl SimulationNode {
             Self::hash_i64(
                 &mut hash,
                 (f64::from(sample.vertex.height_m) * 1000.0).round() as i64,
+            );
+        }
+        Self::hash_u64(&mut hash, input.tie_in_guide_constraints.len() as u64);
+        for constraint in &input.tie_in_guide_constraints {
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(constraint.start.x));
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(constraint.start.z));
+            Self::hash_i64(
+                &mut hash,
+                (f64::from(constraint.start.height_m) * 1000.0).round() as i64,
+            );
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(constraint.end.x));
+            Self::hash_i64(&mut hash, Self::quantize_cdt_coord_mm(constraint.end.z));
+            Self::hash_i64(
+                &mut hash,
+                (f64::from(constraint.end.height_m) * 1000.0).round() as i64,
             );
         }
         Self::hash_u64(&mut hash, input.source_samples.len() as u64);
@@ -1965,6 +1987,7 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+        tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
         sample_keys: &mut BTreeMap<(i64, i64), ()>,
     ) {
         let safe_step_m = render_step_m.max(f32::EPSILON);
@@ -1982,6 +2005,8 @@ impl SimulationNode {
             }
             let loop_is_ccw = signed_area > 0.0;
             let mut edge_outward_directions = Vec::with_capacity(road_loop.vertices.len());
+            let mut edge_start_ring_vertices = Vec::with_capacity(road_loop.vertices.len());
+            let mut edge_end_ring_vertices = Vec::with_capacity(road_loop.vertices.len());
             for index in 0..road_loop.vertices.len() {
                 let start = road_loop.vertices[index];
                 let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
@@ -1995,12 +2020,15 @@ impl SimulationNode {
                 let outward_z = if loop_is_ccw { -dx } else { dx } / length_m;
                 edge_outward_directions.push((outward_x, outward_z));
                 let sample_count = ((length_m as f32 / safe_step_m).ceil() as u32).max(1);
+                let mut previous_ring_vertices = Vec::new();
+                let mut first_ring_vertices = Vec::new();
+                let mut last_ring_vertices = Vec::new();
                 for sample_index in 0..=sample_count {
                     let t = f64::from(sample_index) / f64::from(sample_count);
                     let seam_x = start.x + dx * t;
                     let seam_z = start.z + dz * t;
                     let seam_height_m = start.height_m + (end.height_m - start.height_m) * t as f32;
-                    Self::append_terrain_cdt_tie_in_guide_ring_samples(
+                    let ring_vertices = Self::terrain_cdt_tie_in_guide_ring_vertices(
                         terrain,
                         seam_x,
                         seam_z,
@@ -2009,10 +2037,31 @@ impl SimulationNode {
                         outward_z,
                         safe_step_m,
                         max_distance_m,
-                        tie_in_guide_samples,
-                        sample_keys,
                     );
+                    for vertex in &ring_vertices {
+                        Self::push_terrain_cdt_tie_in_guide_sample(
+                            *vertex,
+                            tie_in_guide_samples,
+                            sample_keys,
+                        );
+                    }
+                    for (previous, current) in
+                        previous_ring_vertices.iter().zip(ring_vertices.iter())
+                    {
+                        Self::push_terrain_cdt_tie_in_guide_constraint(
+                            *previous,
+                            *current,
+                            tie_in_guide_constraints,
+                        );
+                    }
+                    if sample_index == 0 {
+                        first_ring_vertices = ring_vertices.clone();
+                    }
+                    last_ring_vertices = ring_vertices.clone();
+                    previous_ring_vertices = ring_vertices;
                 }
+                edge_start_ring_vertices.push(first_ring_vertices);
+                edge_end_ring_vertices.push(last_ring_vertices);
             }
             if edge_outward_directions.len() != road_loop.vertices.len() {
                 continue;
@@ -2028,7 +2077,7 @@ impl SimulationNode {
                     continue;
                 }
                 let vertex = road_loop.vertices[index];
-                Self::append_terrain_cdt_tie_in_guide_ring_samples(
+                let ring_vertices = Self::terrain_cdt_tie_in_guide_ring_vertices(
                     terrain,
                     vertex.x,
                     vertex.z,
@@ -2037,14 +2086,40 @@ impl SimulationNode {
                     bisector_z / bisector_length_m,
                     safe_step_m,
                     max_distance_m,
-                    tie_in_guide_samples,
-                    sample_keys,
                 );
+                for guide_vertex in &ring_vertices {
+                    Self::push_terrain_cdt_tie_in_guide_sample(
+                        *guide_vertex,
+                        tie_in_guide_samples,
+                        sample_keys,
+                    );
+                }
+                let previous_edge_index =
+                    (index + road_loop.vertices.len() - 1) % road_loop.vertices.len();
+                let previous_edge_vertices = &edge_end_ring_vertices[previous_edge_index];
+                let next_edge_vertices = &edge_start_ring_vertices[index];
+                for ring_index in 0..ring_vertices.len() {
+                    let corner = ring_vertices[ring_index];
+                    if let Some(previous) = previous_edge_vertices.get(ring_index) {
+                        Self::push_terrain_cdt_tie_in_guide_constraint(
+                            *previous,
+                            corner,
+                            tie_in_guide_constraints,
+                        );
+                    }
+                    if let Some(next) = next_edge_vertices.get(ring_index) {
+                        Self::push_terrain_cdt_tie_in_guide_constraint(
+                            corner,
+                            *next,
+                            tie_in_guide_constraints,
+                        );
+                    }
+                }
             }
         }
     }
 
-    fn append_terrain_cdt_tie_in_guide_ring_samples(
+    fn terrain_cdt_tie_in_guide_ring_vertices(
         terrain: &TerrainSystem,
         seam_x: f64,
         seam_z: f64,
@@ -2053,9 +2128,8 @@ impl SimulationNode {
         direction_z: f64,
         safe_step_m: f32,
         max_distance_m: f32,
-        tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
-    ) {
+    ) -> Vec<TerrainCdtVertex> {
+        let mut vertices = Vec::new();
         let mut previous_distance_m = 0.0_f32;
         for multiplier in TERRAIN_CDT_TIE_IN_GUIDE_RING_MULTIPLIERS {
             let distance_m = (safe_step_m * multiplier).min(max_distance_m);
@@ -2073,14 +2147,9 @@ impl SimulationNode {
                 terrain_height_m,
                 distance_m,
             );
-            Self::push_terrain_cdt_tie_in_guide_sample(
-                world_x,
-                guide_height_m,
-                world_z,
-                tie_in_guide_samples,
-                sample_keys,
-            );
+            vertices.push(TerrainCdtVertex::new(world_x, guide_height_m, world_z));
         }
+        vertices
     }
 
     fn road_loop_uses_clean_grounded_tie_in(road_loop: &TerrainCdtRoadLoop) -> bool {
@@ -2133,25 +2202,49 @@ impl SimulationNode {
     }
 
     fn push_terrain_cdt_tie_in_guide_sample(
-        world_x: f64,
-        height_m: f32,
-        world_z: f64,
+        vertex: TerrainCdtVertex,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
         sample_keys: &mut BTreeMap<(i64, i64), ()>,
     ) {
-        if !world_x.is_finite() || !world_z.is_finite() || !height_m.is_finite() {
+        if !vertex.x.is_finite() || !vertex.z.is_finite() || !vertex.height_m.is_finite() {
             return;
         }
         let key = (
-            (world_x * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-            (world_z * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+            (vertex.x * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+            (vertex.z * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
         );
         if sample_keys.insert(key, ()).is_some() {
             return;
         }
-        tie_in_guide_samples.push(TerrainCdtTieInGuideSample {
-            vertex: TerrainCdtVertex::new(world_x, height_m, world_z),
-        });
+        tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });
+    }
+
+    fn push_terrain_cdt_tie_in_guide_constraint(
+        start: TerrainCdtVertex,
+        end: TerrainCdtVertex,
+        tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+    ) {
+        if !start.x.is_finite()
+            || !start.z.is_finite()
+            || !start.height_m.is_finite()
+            || !end.x.is_finite()
+            || !end.z.is_finite()
+            || !end.height_m.is_finite()
+        {
+            return;
+        }
+        let start_key = (
+            (start.x * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+            (start.z * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+        );
+        let end_key = (
+            (end.x * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+            (end.z * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+        );
+        if start_key == end_key {
+            return;
+        }
+        tie_in_guide_constraints.push(TerrainCdtTieInGuideConstraint { start, end });
     }
 
     fn terrain_cdt_axis_samples(min: f32, max: f32, step_m: f32) -> Vec<f32> {
@@ -6711,6 +6804,15 @@ mod tests {
                     && (sample.vertex.height_m - 2.0).abs() <= 0.001
             }),
             "grounded Standard road corners should get diagonal tie-in guides"
+        );
+        assert!(
+            input.tie_in_guide_constraints.iter().any(|constraint| {
+                (constraint.start.x - 10.0).abs() <= 0.001
+                    && (constraint.start.z - 8.0).abs() <= 0.001
+                    && (constraint.end.x - 12.0).abs() <= 0.001
+                    && (constraint.end.z - 8.0).abs() <= 0.001
+            }),
+            "grounded Standard road guide rings should emit constrained tie-in rails"
         );
 
         let mesh = build_road_touched_terrain_patch(input)
