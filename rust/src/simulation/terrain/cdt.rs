@@ -968,6 +968,9 @@ fn canonicalize_input(
         if point_inside_any_road_footprint(vertex, &road_loops) {
             continue;
         }
+        if widening_tie_in_sample_against_any_road_loop(vertex, &road_loops).is_some() {
+            continue;
+        }
         insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
     }
 
@@ -3318,6 +3321,58 @@ mod tests {
         assert!(
             mesh.road_seam_face_samples[0].max_slope_ratio
                 >= mesh.stats.road_seam_max_slope_ratio - 0.0001
+        );
+    }
+
+    #[test]
+    fn cdt_omits_tie_in_guides_that_are_illegal_near_another_road_loop() {
+        let source_a = test_node_boundary_source(51, TerrainCdtRoadBandKind::Sidewalk, 1);
+        let source_b = test_node_boundary_source(52, TerrainCdtRoadBandKind::Sidewalk, 1);
+        let road_a = vec![
+            TerrainCdtVertex::new(0.0, 0.0, 3.0),
+            TerrainCdtVertex::new(2.0, 0.0, 3.0),
+            TerrainCdtVertex::new(2.0, 0.0, 7.0),
+            TerrainCdtVertex::new(0.0, 0.0, 7.0),
+        ];
+        let road_b = vec![
+            TerrainCdtVertex::new(12.0, 4.0, 3.0),
+            TerrainCdtVertex::new(14.0, 4.0, 3.0),
+            TerrainCdtVertex::new(14.0, 4.0, 7.0),
+            TerrainCdtVertex::new(12.0, 4.0, 7.0),
+        ];
+        let legal_between_roads = TerrainCdtVertex::new(7.0, 2.0, 5.0);
+        let illegal_near_b = TerrainCdtVertex::new(11.99, 0.0, 5.0);
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 16.0, 10.0, [0.0; 4]),
+            vec![
+                sourced_road_loop(51, 0, road_a, source_a),
+                sourced_road_loop(52, 0, road_b, source_b),
+            ],
+            Vec::new(),
+        )
+        .with_tie_in_guide_samples(vec![
+            TerrainCdtTieInGuideSample {
+                vertex: legal_between_roads,
+            },
+            TerrainCdtTieInGuideSample {
+                vertex: illegal_near_b,
+            },
+        ]);
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("multi-loop guide filtering should triangulate");
+
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| same_xz(*vertex, legal_between_roads)),
+            "legal guide between road loops should remain available to the CDT"
+        );
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| !same_xz(*vertex, illegal_near_b)),
+            "guide samples that exceed another road seam's tie-in budget must be omitted"
         );
     }
 
