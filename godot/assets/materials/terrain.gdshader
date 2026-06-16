@@ -27,6 +27,7 @@ uniform float terrain_grass_tint_strength = 0.0;
 uniform float terrain_natural_variation_strength = 0.18;
 uniform float terrain_meadow_mottle_strength = 0.08;
 uniform float terrain_baked_normal_blend = 0.75;
+uniform float terrain_baked_readability_strength = 0.12;
 uniform float terrain_grass_detail_scale = 0.12;
 uniform float terrain_grass_detail_strength = 0.26;
 uniform float terrain_grass_height_detail_strength = 0.10;
@@ -59,6 +60,7 @@ uniform vec3 contour_minor_color : source_color = vec3(0.13, 0.19, 0.16);
 uniform vec3 contour_major_color : source_color = vec3(0.10, 0.16, 0.14);
 uniform float contour_minor_strength = 0.14;
 uniform float contour_major_strength = 0.34;
+uniform float contour_relief_minor_boost_strength = 0.10;
 uniform float contour_zero_elevation_fade_m = 0.75;
 uniform float contour_flat_relief_start_m = 0.10;
 uniform float contour_flat_relief_end_m = 1.25;
@@ -263,6 +265,26 @@ float hillshade_mask(vec3 normal) {
 	return clamp(mix(hillshade_ambient, 1.0, shaped), 0.0, 1.0);
 }
 
+vec3 apply_baked_terrain_readability(
+	vec3 color,
+	float hillshade,
+	float slope,
+	float local_relief,
+	float cliff_face,
+	float shore_mask
+) {
+	if (!height_is_baked) {
+		return color;
+	}
+	float slope_mask = smoothstep(0.004, 0.055, slope);
+	float relief_mask = smoothstep(0.25, 3.50, local_relief);
+	float feature_mask = max(slope_mask, relief_mask * 0.55);
+	feature_mask *= clamp(1.0 - cliff_face * 0.80 - shore_mask * 0.35, 0.0, 1.0);
+	float signed_shade = hillshade * 2.0 - 1.0;
+	float shade = 1.0 + signed_shade * clamp(terrain_baked_readability_strength, 0.0, 0.30) * feature_mask;
+	return color * clamp(shade, 0.86, 1.12);
+}
+
 float contour_mask(float world_elevation, float interval_m, float thickness) {
 	float safe_interval = max(interval_m, 0.001);
 	float scaled = world_elevation / safe_interval;
@@ -361,8 +383,16 @@ void fragment() {
 	float grass_detail_mask = (1.0 - rock_mask) * (1.0 - cliff_face * 0.80);
 	grass_detail_mask *= 1.0 - shore_mask * shore_flatness * terrain_shore_blend_strength;
 	color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
-	color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 	float hillshade = hillshade_mask(normal);
+	color = apply_baked_terrain_readability(
+		color,
+		hillshade,
+		slope,
+		local_relief,
+		cliff_face,
+		shore_mask * shore_flatness
+	);
+	color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 	vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
 	color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
 	
@@ -404,7 +434,12 @@ void fragment() {
 	);
 	float flat_zero_contour_visibility = mix(1.0, flat_relief_mask, zero_elevation_mask);
 	float contour_visibility = (1.0 - (cliff_face * cliff_contour_fade)) * flat_zero_contour_visibility;
-	color = mix(color, contour_minor_color, minor_contour * contour_minor_strength * contour_visibility);
+	float contour_relief_boost = max(
+		smoothstep(0.30, 2.80, local_relief),
+		smoothstep(0.010, 0.075, slope) * 0.70
+	);
+	float minor_strength = contour_minor_strength + contour_relief_minor_boost_strength * contour_relief_boost;
+	color = mix(color, contour_minor_color, minor_contour * minor_strength * contour_visibility);
 	color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
 	color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
 	color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);

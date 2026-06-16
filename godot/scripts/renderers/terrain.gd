@@ -24,6 +24,7 @@ const TERRAIN_GRASS_TINT_STRENGTH := 0.12
 const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
 const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
 const TERRAIN_BAKED_NORMAL_BLEND := 0.75
+const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
 const TERRAIN_GRASS_DETAIL_SCALE := 0.38
 const TERRAIN_GRASS_DETAIL_STRENGTH := 0.09
 const TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH := 0.03
@@ -54,6 +55,7 @@ const CONTOUR_MINOR_THICKNESS := 0.95
 const CONTOUR_MAJOR_THICKNESS := 1.25
 const CONTOUR_MINOR_STRENGTH := 0.14
 const CONTOUR_MAJOR_STRENGTH := 0.34
+const CONTOUR_RELIEF_MINOR_BOOST_STRENGTH := 0.10
 const CONTOUR_ZERO_ELEVATION_FADE_M := 0.75
 const CONTOUR_FLAT_RELIEF_START_M := 0.10
 const CONTOUR_FLAT_RELIEF_END_M := 1.25
@@ -498,6 +500,10 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
 	material.set_shader_parameter("terrain_baked_normal_blend", TERRAIN_BAKED_NORMAL_BLEND)
+	material.set_shader_parameter(
+		"terrain_baked_readability_strength",
+		TERRAIN_BAKED_READABILITY_STRENGTH
+	)
 	material.set_shader_parameter("terrain_grass_detail_scale", TERRAIN_GRASS_DETAIL_SCALE)
 	material.set_shader_parameter("terrain_grass_detail_strength", TERRAIN_GRASS_DETAIL_STRENGTH)
 	material.set_shader_parameter(
@@ -531,6 +537,10 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("contour_major_thickness", CONTOUR_MAJOR_THICKNESS)
 	material.set_shader_parameter("contour_minor_strength", CONTOUR_MINOR_STRENGTH)
 	material.set_shader_parameter("contour_major_strength", CONTOUR_MAJOR_STRENGTH)
+	material.set_shader_parameter(
+		"contour_relief_minor_boost_strength",
+		CONTOUR_RELIEF_MINOR_BOOST_STRENGTH
+	)
 	material.set_shader_parameter("contour_zero_elevation_fade_m", CONTOUR_ZERO_ELEVATION_FADE_M)
 	material.set_shader_parameter("contour_flat_relief_start_m", CONTOUR_FLAT_RELIEF_START_M)
 	material.set_shader_parameter("contour_flat_relief_end_m", CONTOUR_FLAT_RELIEF_END_M)
