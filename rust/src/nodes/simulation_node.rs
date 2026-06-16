@@ -111,9 +111,9 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
     MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass,
-    TerrainCdtError, TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadBoundarySource,
-    TerrainCdtRoadLoop, TerrainCdtTieInGuideSample, TerrainCdtVertex,
-    build_road_touched_terrain_patch,
+    TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
+    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtTieInGuideSample,
+    TerrainCdtVertex, build_road_touched_terrain_patch,
 };
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
@@ -134,7 +134,7 @@ const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
-const TERRAIN_CDT_TIE_IN_GUIDE_RING_MULTIPLIERS: [f32; 3] = [1.0, 2.0, 4.0];
+const TERRAIN_CDT_TIE_IN_GUIDE_RING_MULTIPLIERS: [f32; 4] = [1.0, 2.0, 4.0, 8.0];
 
 #[derive(Default)]
 struct TerrainCdtSourceExport {
@@ -646,66 +646,7 @@ impl SimulationNode {
         if include_debug {
             Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
         }
-        dict.set(
-            "terrain_cdt_input_vertices",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.input_vertices)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
-        dict.set(
-            "terrain_cdt_constraint_edges",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.constraint_edges)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
-        dict.set(
-            "terrain_cdt_road_constraint_edges",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.road_constraint_edges)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
-        dict.set(
-            "terrain_cdt_accepted_faces",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.accepted_faces)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
-        dict.set(
-            "terrain_cdt_rejected_road_faces",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.rejected_road_faces)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
-        dict.set(
-            "terrain_cdt_invalid_constraints",
-            i64::try_from(
-                successful_windows
-                    .iter()
-                    .map(|(_, mesh)| mesh.stats.invalid_constraint_edges)
-                    .sum::<usize>(),
-            )
-            .unwrap_or(0),
-        );
+        Self::append_cdt_stats(dict, Self::aggregate_cdt_window_stats(&successful_windows));
         Self::append_cdt_window_mesh_buffers(
             dict,
             &cached.patch,
@@ -713,6 +654,188 @@ impl SimulationNode {
             (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
             include_debug,
         );
+    }
+
+    fn append_cdt_stats(dict: &mut VarDictionary, stats: TerrainCdtStats) {
+        dict.set(
+            "terrain_cdt_input_vertices",
+            i64::try_from(stats.input_vertices).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_constraint_edges",
+            i64::try_from(stats.constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_road_constraint_edges",
+            i64::try_from(stats.road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_accepted_faces",
+            i64::try_from(stats.accepted_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_rejected_road_faces",
+            i64::try_from(stats.rejected_road_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_preserved_road_constraint_edges",
+            i64::try_from(stats.preserved_road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraints",
+            i64::try_from(stats.invalid_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_max_face_y_delta_m",
+            f64::from(stats.max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_max_face_slope_ratio",
+            f64::from(stats.max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_faces",
+            i64::try_from(stats.road_seam_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_max_y_delta_m",
+            f64::from(stats.road_seam_max_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_max_slope_ratio",
+            f64::from(stats.road_seam_max_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_faces",
+            i64::try_from(stats.retaining_wall_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_max_y_delta_m",
+            f64::from(stats.retaining_wall_max_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_max_slope_ratio",
+            f64::from(stats.retaining_wall_max_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_accepted_seam_edges",
+            i64::try_from(stats.accepted_seam_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_merged_subbudget_seam_edges",
+            i64::try_from(stats.merged_subbudget_seam_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_omitted_near_seam_source_samples",
+            i64::try_from(stats.omitted_near_seam_source_samples).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_required_seam_edges",
+            i64::try_from(stats.retaining_wall_required_seam_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_required_seam_faces",
+            i64::try_from(stats.retaining_wall_required_seam_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_blocking_degenerate_seam_edges",
+            i64::try_from(stats.blocking_degenerate_seam_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_source_samples",
+            i64::try_from(stats.tie_in_widened_source_samples).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_max_y_delta_m",
+            f64::from(stats.tie_in_widened_max_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_tie_in_widened_max_slope_ratio",
+            f64::from(stats.tie_in_widened_max_slope_ratio),
+        );
+    }
+
+    fn aggregate_cdt_window_stats(
+        windows: &[(&CachedRefinedTerrainCdtWindow, &TerrainCdtMesh)],
+    ) -> TerrainCdtStats {
+        let mut aggregate = TerrainCdtStats {
+            input_vertices: 0,
+            constraint_edges: 0,
+            road_constraint_edges: 0,
+            accepted_faces: 0,
+            rejected_road_faces: 0,
+            preserved_road_constraint_edges: 0,
+            spade_missing_road_constraint_edges: 0,
+            rejected_road_constraint_edges: 0,
+            internal_road_constraint_edges: 0,
+            invalid_constraint_edges: 0,
+            max_face_y_delta_m: 0.0,
+            max_face_slope_ratio: 0.0,
+            road_seam_faces: 0,
+            road_seam_max_y_delta_m: 0.0,
+            road_seam_max_slope_ratio: 0.0,
+            retaining_wall_faces: 0,
+            retaining_wall_max_y_delta_m: 0.0,
+            retaining_wall_max_slope_ratio: 0.0,
+            accepted_seam_edges: 0,
+            merged_subbudget_seam_edges: 0,
+            omitted_near_seam_source_samples: 0,
+            retaining_wall_required_seam_edges: 0,
+            retaining_wall_required_seam_faces: 0,
+            blocking_degenerate_seam_edges: 0,
+            tie_in_widened_source_samples: 0,
+            tie_in_widened_max_y_delta_m: 0.0,
+            tie_in_widened_max_slope_ratio: 0.0,
+        };
+        for (_, mesh) in windows {
+            let stats = mesh.stats;
+            aggregate.input_vertices += stats.input_vertices;
+            aggregate.constraint_edges += stats.constraint_edges;
+            aggregate.road_constraint_edges += stats.road_constraint_edges;
+            aggregate.accepted_faces += stats.accepted_faces;
+            aggregate.rejected_road_faces += stats.rejected_road_faces;
+            aggregate.preserved_road_constraint_edges += stats.preserved_road_constraint_edges;
+            aggregate.spade_missing_road_constraint_edges +=
+                stats.spade_missing_road_constraint_edges;
+            aggregate.rejected_road_constraint_edges += stats.rejected_road_constraint_edges;
+            aggregate.internal_road_constraint_edges += stats.internal_road_constraint_edges;
+            aggregate.invalid_constraint_edges += stats.invalid_constraint_edges;
+            aggregate.max_face_y_delta_m =
+                aggregate.max_face_y_delta_m.max(stats.max_face_y_delta_m);
+            aggregate.max_face_slope_ratio = aggregate
+                .max_face_slope_ratio
+                .max(stats.max_face_slope_ratio);
+            aggregate.road_seam_faces += stats.road_seam_faces;
+            aggregate.road_seam_max_y_delta_m = aggregate
+                .road_seam_max_y_delta_m
+                .max(stats.road_seam_max_y_delta_m);
+            aggregate.road_seam_max_slope_ratio = aggregate
+                .road_seam_max_slope_ratio
+                .max(stats.road_seam_max_slope_ratio);
+            aggregate.retaining_wall_faces += stats.retaining_wall_faces;
+            aggregate.retaining_wall_max_y_delta_m = aggregate
+                .retaining_wall_max_y_delta_m
+                .max(stats.retaining_wall_max_y_delta_m);
+            aggregate.retaining_wall_max_slope_ratio = aggregate
+                .retaining_wall_max_slope_ratio
+                .max(stats.retaining_wall_max_slope_ratio);
+            aggregate.accepted_seam_edges += stats.accepted_seam_edges;
+            aggregate.merged_subbudget_seam_edges += stats.merged_subbudget_seam_edges;
+            aggregate.omitted_near_seam_source_samples += stats.omitted_near_seam_source_samples;
+            aggregate.retaining_wall_required_seam_edges +=
+                stats.retaining_wall_required_seam_edges;
+            aggregate.retaining_wall_required_seam_faces +=
+                stats.retaining_wall_required_seam_faces;
+            aggregate.blocking_degenerate_seam_edges += stats.blocking_degenerate_seam_edges;
+            aggregate.tie_in_widened_source_samples += stats.tie_in_widened_source_samples;
+            aggregate.tie_in_widened_max_y_delta_m = aggregate
+                .tie_in_widened_max_y_delta_m
+                .max(stats.tie_in_widened_max_y_delta_m);
+            aggregate.tie_in_widened_max_slope_ratio = aggregate
+                .tie_in_widened_max_slope_ratio
+                .max(stats.tie_in_widened_max_slope_ratio);
+        }
+        aggregate
     }
 
     fn append_cdt_window_mesh_buffers(
@@ -1077,102 +1200,7 @@ impl SimulationNode {
                 if include_debug {
                     Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
                 }
-                dict.set(
-                    "terrain_cdt_input_vertices",
-                    i64::try_from(mesh.stats.input_vertices).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_constraint_edges",
-                    i64::try_from(mesh.stats.constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_road_constraint_edges",
-                    i64::try_from(mesh.stats.road_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_accepted_faces",
-                    i64::try_from(mesh.stats.accepted_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_rejected_road_faces",
-                    i64::try_from(mesh.stats.rejected_road_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_preserved_road_constraint_edges",
-                    i64::try_from(mesh.stats.preserved_road_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_invalid_constraints",
-                    i64::try_from(mesh.stats.invalid_constraint_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_max_face_y_delta_m",
-                    f64::from(mesh.stats.max_face_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_max_face_slope_ratio",
-                    f64::from(mesh.stats.max_face_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_faces",
-                    i64::try_from(mesh.stats.road_seam_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_max_y_delta_m",
-                    f64::from(mesh.stats.road_seam_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_max_slope_ratio",
-                    f64::from(mesh.stats.road_seam_max_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_faces",
-                    i64::try_from(mesh.stats.retaining_wall_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_max_y_delta_m",
-                    f64::from(mesh.stats.retaining_wall_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_max_slope_ratio",
-                    f64::from(mesh.stats.retaining_wall_max_slope_ratio),
-                );
-                dict.set(
-                    "terrain_cdt_accepted_seam_edges",
-                    i64::try_from(mesh.stats.accepted_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_merged_subbudget_seam_edges",
-                    i64::try_from(mesh.stats.merged_subbudget_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_omitted_near_seam_source_samples",
-                    i64::try_from(mesh.stats.omitted_near_seam_source_samples).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_required_seam_edges",
-                    i64::try_from(mesh.stats.retaining_wall_required_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_retaining_wall_required_seam_faces",
-                    i64::try_from(mesh.stats.retaining_wall_required_seam_faces).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_blocking_degenerate_seam_edges",
-                    i64::try_from(mesh.stats.blocking_degenerate_seam_edges).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_source_samples",
-                    i64::try_from(mesh.stats.tie_in_widened_source_samples).unwrap_or(0),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_max_y_delta_m",
-                    f64::from(mesh.stats.tie_in_widened_max_y_delta_m),
-                );
-                dict.set(
-                    "terrain_cdt_tie_in_widened_max_slope_ratio",
-                    f64::from(mesh.stats.tie_in_widened_max_slope_ratio),
-                );
+                Self::append_cdt_stats(dict, mesh.stats);
                 let metadata_ms = metadata_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
@@ -1953,6 +1981,7 @@ impl SimulationNode {
                 continue;
             }
             let loop_is_ccw = signed_area > 0.0;
+            let mut edge_outward_directions = Vec::with_capacity(road_loop.vertices.len());
             for index in 0..road_loop.vertices.len() {
                 let start = road_loop.vertices[index];
                 let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
@@ -1964,39 +1993,93 @@ impl SimulationNode {
                 }
                 let outward_x = if loop_is_ccw { dz } else { -dz } / length_m;
                 let outward_z = if loop_is_ccw { -dx } else { dx } / length_m;
+                edge_outward_directions.push((outward_x, outward_z));
                 let sample_count = ((length_m as f32 / safe_step_m).ceil() as u32).max(1);
                 for sample_index in 0..=sample_count {
                     let t = f64::from(sample_index) / f64::from(sample_count);
                     let seam_x = start.x + dx * t;
                     let seam_z = start.z + dz * t;
                     let seam_height_m = start.height_m + (end.height_m - start.height_m) * t as f32;
-                    let mut previous_distance_m = 0.0_f32;
-                    for multiplier in TERRAIN_CDT_TIE_IN_GUIDE_RING_MULTIPLIERS {
-                        let distance_m = (safe_step_m * multiplier).min(max_distance_m);
-                        if distance_m <= previous_distance_m + f32::EPSILON {
-                            continue;
-                        }
-                        previous_distance_m = distance_m;
-                        let world_x = seam_x + outward_x * f64::from(distance_m);
-                        let world_z = seam_z + outward_z * f64::from(distance_m);
-                        let terrain_height_m = terrain
-                            .sample_visual_height_world(world_x as f32, world_z as f32)
-                            * crate::config::HEIGHT_SCALE;
-                        let guide_height_m = Self::terrain_cdt_grade_limited_tie_in_height(
-                            seam_height_m,
-                            terrain_height_m,
-                            distance_m,
-                        );
-                        Self::push_terrain_cdt_tie_in_guide_sample(
-                            world_x,
-                            guide_height_m,
-                            world_z,
-                            tie_in_guide_samples,
-                            sample_keys,
-                        );
-                    }
+                    Self::append_terrain_cdt_tie_in_guide_ring_samples(
+                        terrain,
+                        seam_x,
+                        seam_z,
+                        seam_height_m,
+                        outward_x,
+                        outward_z,
+                        safe_step_m,
+                        max_distance_m,
+                        tie_in_guide_samples,
+                        sample_keys,
+                    );
                 }
             }
+            if edge_outward_directions.len() != road_loop.vertices.len() {
+                continue;
+            }
+            for index in 0..road_loop.vertices.len() {
+                let (previous_outward_x, previous_outward_z) = edge_outward_directions
+                    [(index + road_loop.vertices.len() - 1) % road_loop.vertices.len()];
+                let (next_outward_x, next_outward_z) = edge_outward_directions[index];
+                let bisector_x = previous_outward_x + next_outward_x;
+                let bisector_z = previous_outward_z + next_outward_z;
+                let bisector_length_m = bisector_x.hypot(bisector_z);
+                if bisector_length_m <= f64::EPSILON {
+                    continue;
+                }
+                let vertex = road_loop.vertices[index];
+                Self::append_terrain_cdt_tie_in_guide_ring_samples(
+                    terrain,
+                    vertex.x,
+                    vertex.z,
+                    vertex.height_m,
+                    bisector_x / bisector_length_m,
+                    bisector_z / bisector_length_m,
+                    safe_step_m,
+                    max_distance_m,
+                    tie_in_guide_samples,
+                    sample_keys,
+                );
+            }
+        }
+    }
+
+    fn append_terrain_cdt_tie_in_guide_ring_samples(
+        terrain: &TerrainSystem,
+        seam_x: f64,
+        seam_z: f64,
+        seam_height_m: f32,
+        direction_x: f64,
+        direction_z: f64,
+        safe_step_m: f32,
+        max_distance_m: f32,
+        tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    ) {
+        let mut previous_distance_m = 0.0_f32;
+        for multiplier in TERRAIN_CDT_TIE_IN_GUIDE_RING_MULTIPLIERS {
+            let distance_m = (safe_step_m * multiplier).min(max_distance_m);
+            if distance_m <= previous_distance_m + f32::EPSILON {
+                continue;
+            }
+            previous_distance_m = distance_m;
+            let world_x = seam_x + direction_x * f64::from(distance_m);
+            let world_z = seam_z + direction_z * f64::from(distance_m);
+            let terrain_height_m = terrain
+                .sample_visual_height_world(world_x as f32, world_z as f32)
+                * crate::config::HEIGHT_SCALE;
+            let guide_height_m = Self::terrain_cdt_grade_limited_tie_in_height(
+                seam_height_m,
+                terrain_height_m,
+                distance_m,
+            );
+            Self::push_terrain_cdt_tie_in_guide_sample(
+                world_x,
+                guide_height_m,
+                world_z,
+                tie_in_guide_samples,
+                sample_keys,
+            );
         }
     }
 
@@ -6611,6 +6694,23 @@ mod tests {
                     && (sample.vertex.height_m - 2.0).abs() <= 0.001
             }),
             "grounded Standard road tie-ins should add explicit guide vertices at the slope budget"
+        );
+        assert!(
+            input.tie_in_guide_samples.iter().any(|sample| {
+                (sample.vertex.x - 10.0).abs() <= 0.001
+                    && (sample.vertex.z - 36.0).abs() <= 0.001
+                    && sample.vertex.height_m.abs() <= 0.001
+            }),
+            "steep grounded Standard road cuts should get a wider legal tie-in ring"
+        );
+        let corner_offset = 2.0_f64 / 2.0_f64.sqrt();
+        assert!(
+            input.tie_in_guide_samples.iter().any(|sample| {
+                (sample.vertex.x - (10.0 - corner_offset)).abs() <= 0.001
+                    && (sample.vertex.z - (10.0 - corner_offset)).abs() <= 0.001
+                    && (sample.vertex.height_m - 2.0).abs() <= 0.001
+            }),
+            "grounded Standard road corners should get diagonal tie-in guides"
         );
 
         let mesh = build_road_touched_terrain_patch(input)
