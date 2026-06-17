@@ -129,6 +129,90 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
 }
 
 #[test]
+fn elevated_junction_endpoint_profile_limits_mouth_grade() {
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 0.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    let raw_grade = 0.24;
+    for endpoint_pos in [
+        Vector3::new(10.0, 10.0 * raw_grade, 0.0),
+        Vector3::new(-10.0, -10.0 * raw_grade, 0.0),
+        Vector3::new(0.0, 0.0, 10.0),
+    ] {
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        graph.add_edge(test_edge(
+            center,
+            endpoint,
+            vec![center_pos, endpoint_pos],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+
+    let plane = graph
+        .junction_endpoint_profile_plane(center)
+        .expect("steep but finite junction must expose a grade-limited endpoint plane");
+    let origin_height_m = plane.height_at_xz(center_pos.x, center_pos.z);
+    let grade_x = plane.height_at_xz(center_pos.x + 1.0, center_pos.z) - origin_height_m;
+    let grade_z = plane.height_at_xz(center_pos.x, center_pos.z + 1.0) - origin_height_m;
+    let limited_grade = grade_x.hypot(grade_z);
+
+    assert!(
+        limited_grade <= 0.161,
+        "junction mouth profile grade must be capped before roadbed/node compilation; grade={limited_grade:.5}"
+    );
+    assert!(
+        limited_grade >= 0.159,
+        "test setup should exercise the cap instead of a naturally shallow plane; grade={limited_grade:.5}"
+    );
+}
+
+#[test]
+fn elevated_junction_endpoint_profile_preserves_source_grade_when_cap_would_move_samples_too_far() {
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 0.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    let raw_grade = 0.24;
+    for endpoint_pos in [
+        Vector3::new(60.0, 60.0 * raw_grade, 0.0),
+        Vector3::new(-60.0, -60.0 * raw_grade, 0.0),
+        Vector3::new(0.0, 0.0, 60.0),
+    ] {
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        graph.add_edge(test_edge(
+            center,
+            endpoint,
+            vec![center_pos, endpoint_pos],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+
+    let plane = graph
+        .junction_endpoint_profile_plane(center)
+        .expect("finite source-supported junction must expose an endpoint plane");
+    let origin_height_m = plane.height_at_xz(center_pos.x, center_pos.z);
+    let grade_x = plane.height_at_xz(center_pos.x + 1.0, center_pos.z) - origin_height_m;
+    let grade_z = plane.height_at_xz(center_pos.x, center_pos.z + 1.0) - origin_height_m;
+    let preserved_grade = grade_x.hypot(grade_z);
+
+    assert!(
+        preserved_grade >= 0.239,
+        "profile cap must not move long incident source samples far enough to break ownership; grade={preserved_grade:.5}"
+    );
+    assert!(
+        preserved_grade <= 0.241,
+        "test setup should preserve the original source grade; grade={preserved_grade:.5}"
+    );
+}
+
+#[test]
 fn elevated_three_way_junction_compiles_after_endpoint_profile_solve() {
     let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
     let mut graph = RegionGraph::new();

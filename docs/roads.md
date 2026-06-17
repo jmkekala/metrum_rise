@@ -144,6 +144,12 @@ The final node output is a canonical arrangement:
 - missing, ambiguous, or conflicting owner / height support is a hard diagnostic, not a repair path
 - Spade CDT triangulates already-owned material regions; CDT does not decide ownership
 
+Incident `Bend` / `JunctionN` mouth rails use a shared graph endpoint profile plane before section,
+span, and node compilation. That plane may be grade-limited at the source solve only when limiting
+stays close to the incident road samples; otherwise the original source-supported plane is preserved.
+The same plane is consumed by both the span mouth section and node mouth ownership, so the roadbed
+mouth remains exact without allowing a safe local smoothing pass to hide missing source support.
+
 ### `ROAD-04` Node Top-Surface Quality
 
 `ROAD-04` is shipped for the current `Bend` / `JunctionN` road-owned top-surface path. It hardens

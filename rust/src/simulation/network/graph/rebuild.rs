@@ -12,7 +12,9 @@ const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
 const JUNCTION_PROFILE_HARD_ZONE_M: f32 = 12.0;
 const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 16.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
-const JUNCTION_PROFILE_MAX_GRADE: f32 = 0.5;
+const JUNCTION_PROFILE_MOUTH_MAX_GRADE: f32 = 0.16;
+const JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M: f32 = 0.5;
+const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 
 #[derive(Clone, Copy)]
@@ -49,6 +51,40 @@ impl JunctionEndpointProfilePlane {
     /// Evaluates the solved endpoint profile height at an arbitrary world XZ coordinate.
     pub(crate) fn height_at_xz(&self, x: f32, z: f32) -> f32 {
         self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
+    }
+
+    fn grade_limited(
+        origin: Vector3,
+        grade_x: f32,
+        grade_z: f32,
+        sample_offsets: &[(f32, f32)],
+    ) -> Option<Self> {
+        let grade = grade_x.hypot(grade_z);
+        if !grade.is_finite() || grade > JUNCTION_PROFILE_REJECT_MAX_GRADE {
+            return None;
+        }
+        let mut limited_grade_x = grade_x;
+        let mut limited_grade_z = grade_z;
+        if grade > JUNCTION_PROFILE_MOUTH_MAX_GRADE {
+            let scale = JUNCTION_PROFILE_MOUTH_MAX_GRADE / grade;
+            let candidate_grade_x = grade_x * scale;
+            let candidate_grade_z = grade_z * scale;
+            let max_sample_delta_m = sample_offsets
+                .iter()
+                .map(|&(dx, dz)| {
+                    ((grade_x - candidate_grade_x) * dx + (grade_z - candidate_grade_z) * dz).abs()
+                })
+                .fold(0.0_f32, f32::max);
+            if max_sample_delta_m <= JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M {
+                limited_grade_x = candidate_grade_x;
+                limited_grade_z = candidate_grade_z;
+            }
+        };
+        Some(Self {
+            origin,
+            grade_x: limited_grade_x,
+            grade_z: limited_grade_z,
+        })
     }
 }
 
@@ -527,6 +563,7 @@ impl RegionGraph {
         let mut xy = 0.0;
         let mut zy = 0.0;
         let mut sample_count = 0;
+        let mut sample_offsets = Vec::with_capacity(incidents.len());
 
         for incident in incidents {
             let edge = self.edges.get(incident.edge_idx)?;
@@ -557,6 +594,7 @@ impl RegionGraph {
             xy += dx * dy;
             zy += dz * dy;
             sample_count += 1;
+            sample_offsets.push((dx, dz));
         }
 
         if sample_count < 2 {
@@ -569,15 +607,7 @@ impl RegionGraph {
 
         let grade_x = (xy * zz - zy * xz) / det;
         let grade_z = (xx * zy - xz * xy) / det;
-        if grade_x.hypot(grade_z) > JUNCTION_PROFILE_MAX_GRADE {
-            return None;
-        }
-
-        Some(JunctionEndpointProfilePlane {
-            origin,
-            grade_x,
-            grade_z,
-        })
+        JunctionEndpointProfilePlane::grade_limited(origin, grade_x, grade_z, &sample_offsets)
     }
 
     fn apply_junction_profile_plane_to_edge(
