@@ -149,10 +149,23 @@ The final node output is a canonical arrangement:
 - Spade CDT triangulates already-owned material regions; CDT does not decide ownership
 
 Incident `Bend` / `JunctionN` mouth rails use a shared graph endpoint profile plane before section,
-span, and node compilation. That plane may be grade-limited at the source solve only when limiting
-stays close to the incident road samples; otherwise the original source-supported plane is preserved.
-The same plane is consumed by both the span mouth section and node mouth ownership, so the roadbed
-mouth remains exact without allowing a safe local smoothing pass to hide missing source support.
+span, and node compilation. Profile distances are measured in horizontal XZ metres because the cap
+is a road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only
+when limiting stays close to the incident road samples; otherwise the original source-supported
+plane is preserved. The same plane is consumed by both the span mouth section and node mouth
+ownership, so the roadbed mouth remains exact without allowing a safe local smoothing pass to hide
+missing source support.
+
+Road-edit rebuilds preserve that conservative solve for the edited edge set, then use the stronger
+profile path only when an affected `Bend` / `JunctionN` still solves to an over-limit platform.
+When triggered, every road edge incident to that node may be regraded together, the node platform is
+capped to the mouth-grade limit, and a small width-scaled hard mouth pin (`~1..2 m` for current
+standard roads) is blended back to source grade over a bounded transition. The 12 m profile sample is
+only a stable solve/control sample, not a hard platform extent. Support vertices are materialized at
+the solve sample and sparsely through the outer transition so later section sampling reads a gradual
+source-grade transition instead of one large planar ramp back to raw terrain. Section sampling must
+also suppress sub-decimetre protected-handoff slivers so a support point cannot create a visible
+near-vertical roadbed face immediately outside node ownership.
 
 ### `ROAD-04` Node Top-Surface Quality
 
@@ -169,6 +182,16 @@ The implemented contract:
   vertices before Spade CDT input; guides are inserted only inside the final road-owned region,
   require a verified road-owned grade plane from the region boundary, and carry canonical key /
   owner / height-field / grade authority
+- road-edit junction profile solving first applies the conservative edited-edge fit, then may change
+  all incident Standard road edge mouth geometry around an affected over-limit `Bend` / `JunctionN`;
+  this is the source grade solution, not a render-time repair, it must use horizontal profile
+  distances, keep the hard mouth pin small, materialize the solve/control sample plus sparse outer
+  vertical-curve support points, and update changed edge cost / length data before lane rebuild
+- exposed final-footprint boundary endpoints may resolve a collapsed raised-step corner only when
+  exact endpoint source edges prove an adjacent lower / raised material pair at that key; direct
+  asphalt / sidewalk height conflicts remain blocking unless explicit step authority exists or both
+  exact final-boundary endpoints carry source-intersection provenance for a collapsed generated
+  mouth corner
 - guide insertion never subdivides or moves final footprint boundaries, so terrain clip loops and
   earthwork provenance continue to consume the same road-owned footprint
 - triangle numeric-area filtering uses actual triangle area, not double-area, against the shared

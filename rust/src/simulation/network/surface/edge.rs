@@ -10,6 +10,7 @@ mod profile;
 mod sections;
 
 pub use preview::PreviewRoadSurfaceResult;
+use profile::EdgeProfilePlaneBlend;
 
 #[cfg(test)]
 pub(super) const CURB_STEP_HEIGHT_M: f32 = profile::CURB_STEP_HEIGHT_M;

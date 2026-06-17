@@ -13,6 +13,34 @@ const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 pub(in crate::simulation::network::surface::edge) const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
 #[derive(Clone, Copy)]
+pub(in crate::simulation::network::surface::edge) struct EdgeProfilePlaneBlend {
+    plane: JunctionEndpointProfilePlane,
+    pub(in crate::simulation::network::surface::edge) weight: f32,
+}
+
+impl EdgeProfilePlaneBlend {
+    pub(in crate::simulation::network::surface::edge) fn new(
+        plane: JunctionEndpointProfilePlane,
+        weight: f32,
+    ) -> Option<Self> {
+        (weight > 0.0).then_some(Self {
+            plane,
+            weight: weight.clamp(0.0, 1.0),
+        })
+    }
+
+    pub(in crate::simulation::network::surface::edge) fn height_at_xz(
+        &self,
+        x: f32,
+        z: f32,
+        fallback_height_m: f32,
+    ) -> f32 {
+        let plane_height_m = self.plane.height_at_xz(x, z);
+        fallback_height_m * (1.0 - self.weight) + plane_height_m * self.weight
+    }
+}
+
+#[derive(Clone, Copy)]
 struct EdgeLateralBandSpec {
     kind: RoadSurfaceBandKind,
     lateral_start_m: f32,
@@ -27,13 +55,15 @@ impl RoadSurfaceSystem {
         edge: &Edge,
         center: RoadVec3,
         lateral_xz: RoadVec2,
-        profile_plane: Option<JunctionEndpointProfilePlane>,
+        profile_blend: Option<EdgeProfilePlaneBlend>,
     ) -> Vec<RoadSurfaceBand> {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
-            let base_height_m = profile_plane.map_or(center.y as f32, |plane| {
-                plane.height_at_xz(
+            let flat_height_m = center.y as f32;
+            let base_height_m = profile_blend.map_or(flat_height_m, |blend| {
+                blend.height_at_xz(
                     (center.x + lateral_xz.x * f64::from(lateral_m)) as f32,
                     (center.z + lateral_xz.y * f64::from(lateral_m)) as f32,
+                    flat_height_m,
                 )
             });
             base_height_m + offset_m

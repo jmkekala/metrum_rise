@@ -1,5 +1,8 @@
 //! Boundary height candidate lookup and conflict reporting.
 
+use super::super::super::{
+    ownership::NodeCarrierProvenanceOrigin, rails::NodeGeneratedContourClaimPriority,
+};
 #[cfg(test)]
 use super::raised_steps::raised_step_footprint_height_candidate;
 use super::raised_steps::raised_step_footprint_height_mm;
@@ -152,6 +155,13 @@ impl NodeFootprintBoundaryExportSources {
         ) {
             return Ok(Some(height_mm));
         }
+        if let Some(candidate) = self.source_intersection_final_endpoint_rank_gap_candidate(
+            key,
+            &final_candidates,
+            &heights,
+        ) {
+            return Ok(Some(candidate.height_mm));
+        }
         if allow_final_context_raised_step
             && let Some(height_mm) =
                 final_context_raised_step_footprint_height_mm(&final_candidates, &heights)
@@ -189,6 +199,13 @@ impl NodeFootprintBoundaryExportSources {
             &self.source_edges,
         ) {
             return Ok(Some(height_mm));
+        }
+        if let Some(candidate) = self.source_intersection_final_endpoint_rank_gap_candidate(
+            key,
+            &exact_candidates,
+            &heights,
+        ) {
+            return Ok(Some(candidate.height_mm));
         }
         if let Some(candidate) =
             self.canonical_distinct_source_provenance_candidate(&exact_candidates, &heights)
@@ -286,6 +303,13 @@ impl NodeFootprintBoundaryExportSources {
                 &heights,
                 &self.explicit_vertical_step_segments,
                 &self.source_edges,
+            ) {
+                return Ok(Some(candidate));
+            }
+            if let Some(candidate) = self.source_intersection_final_endpoint_rank_gap_candidate(
+                key,
+                &candidates,
+                &heights,
             ) {
                 return Ok(Some(candidate));
             }
@@ -707,6 +731,68 @@ impl NodeFootprintBoundaryExportSources {
         candidates_by_provenance.into_values().next()
     }
 
+    fn source_intersection_final_endpoint_rank_gap_candidate(
+        &self,
+        key: arrangement::NodeArrangementKey,
+        candidates: &[NodeFootprintBoundaryHeightCandidate],
+        heights: &[i64],
+    ) -> Option<NodeFootprintBoundaryHeightCandidate> {
+        let [lower_height_mm, raised_height_mm] = heights else {
+            return None;
+        };
+        let mut ranked_candidates = Vec::new();
+        for candidate in candidates.iter().copied() {
+            if !self.candidate_has_exact_final_boundary_endpoint_support(candidate, key) {
+                return None;
+            }
+            let provenance = self.boundary_vertex_source_provenance(candidate.source.source)?;
+            if provenance.owner.kind() != candidate.source.owner_kind
+                || provenance.owner.owner_index() != candidate.source.owner_index
+                || provenance.source_kind != candidate.source.owner_kind
+                || provenance.claim_priority != NodeGeneratedContourClaimPriority::MouthBand
+                || !matches!(
+                    provenance.origin,
+                    NodeCarrierProvenanceOrigin::SourceIntersection { peer_count } if peer_count > 0
+                )
+            {
+                return None;
+            }
+            ranked_candidates.push((
+                raised_step_band_rank(candidate.source.owner_kind)?,
+                candidate,
+            ));
+        }
+        if ranked_candidates.len() < 2 {
+            return None;
+        }
+        let min_rank = ranked_candidates.iter().map(|(rank, _)| *rank).min()?;
+        let max_rank = ranked_candidates.iter().map(|(rank, _)| *rank).max()?;
+        if max_rank <= min_rank + 1 {
+            return None;
+        }
+        if ranked_candidates.iter().any(|(rank, candidate)| {
+            (candidate.height_mm == *lower_height_mm && *rank != min_rank)
+                || (candidate.height_mm == *raised_height_mm && *rank != max_rank)
+                || (candidate.height_mm != *lower_height_mm
+                    && candidate.height_mm != *raised_height_mm)
+        }) {
+            return None;
+        }
+        let mut raised_candidates = ranked_candidates
+            .into_iter()
+            .filter_map(|(_, candidate)| {
+                (candidate.height_mm == *raised_height_mm).then_some(candidate)
+            })
+            .collect::<Vec<_>>();
+        raised_candidates.sort_by(|a, b| a.source.source.cmp(&b.source.source));
+        raised_candidates
+            .dedup_by(|a, b| node_footprint_height_candidates_share_source_identity(*a, *b));
+        let [raised_candidate] = raised_candidates.as_slice() else {
+            return None;
+        };
+        Some(*raised_candidate)
+    }
+
     fn boundary_vertex_source_provenance(
         &self,
         source: NodeFootprintBoundaryVertexSource,
@@ -784,6 +870,21 @@ impl NodeFootprintBoundaryExportSources {
             source_edge.owner_kind == candidate.source.owner_kind
                 && source_edge.owner_index == candidate.source.owner_index
                 && final_height_edge_supports_key_exactly(source_edge, key)
+        })
+    }
+
+    fn candidate_has_exact_final_boundary_endpoint_support(
+        &self,
+        candidate: NodeFootprintBoundaryHeightCandidate,
+        key: arrangement::NodeArrangementKey,
+    ) -> bool {
+        self.final_height_edges.iter().any(|source_edge| {
+            source_edge.owner_kind == candidate.source.owner_kind
+                && source_edge.owner_index == candidate.source.owner_index
+                && ((source_edge.start_point_key.xz_key() == key
+                    && source_edge.start_point_key.y_mm == candidate.height_mm)
+                    || (source_edge.end_point_key.xz_key() == key
+                        && source_edge.end_point_key.y_mm == candidate.height_mm))
         })
     }
 

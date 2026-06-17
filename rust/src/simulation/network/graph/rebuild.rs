@@ -9,13 +9,17 @@ const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const CLIP_MIN_SIN: f32 = 0.0001;
 const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
 const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
-const JUNCTION_PROFILE_HARD_ZONE_M: f32 = 12.0;
-const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 16.0;
+const JUNCTION_PROFILE_HARD_ZONE_MIN_M: f32 = 1.0;
+const JUNCTION_PROFILE_HARD_ZONE_MAX_M: f32 = 2.0;
+const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 32.0;
+const JUNCTION_PROFILE_SOLVE_SAMPLE_M: f32 = 12.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
 const JUNCTION_PROFILE_MOUTH_MAX_GRADE: f32 = 0.16;
 const JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M: f32 = 0.5;
 const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
+const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
+const JUNCTION_PROFILE_SUPPORT_STEP_M: f32 = 4.0;
 
 #[derive(Clone, Copy)]
 struct ClipIncident {
@@ -39,6 +43,12 @@ struct JunctionProfileIncident {
     at_start: bool,
 }
 
+#[derive(Clone, Copy)]
+enum JunctionProfileLimitMode {
+    ConservativeSourceFit,
+    RegradePlatform,
+}
+
 /// Node-local profile plane used to make incident Bend/JunctionN mouth rails height-compatible.
 #[derive(Clone, Copy)]
 pub(crate) struct JunctionEndpointProfilePlane {
@@ -53,14 +63,22 @@ impl JunctionEndpointProfilePlane {
         self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
     }
 
+    fn grade(&self) -> f32 {
+        self.grade_x.hypot(self.grade_z)
+    }
+
     fn grade_limited(
         origin: Vector3,
         grade_x: f32,
         grade_z: f32,
         sample_offsets: &[(f32, f32)],
+        limit_mode: JunctionProfileLimitMode,
     ) -> Option<Self> {
         let grade = grade_x.hypot(grade_z);
-        if !grade.is_finite() || grade > JUNCTION_PROFILE_REJECT_MAX_GRADE {
+        if !grade.is_finite()
+            || matches!(limit_mode, JunctionProfileLimitMode::ConservativeSourceFit)
+                && grade > JUNCTION_PROFILE_REJECT_MAX_GRADE
+        {
             return None;
         }
         let mut limited_grade_x = grade_x;
@@ -69,15 +87,25 @@ impl JunctionEndpointProfilePlane {
             let scale = JUNCTION_PROFILE_MOUTH_MAX_GRADE / grade;
             let candidate_grade_x = grade_x * scale;
             let candidate_grade_z = grade_z * scale;
-            let max_sample_delta_m = sample_offsets
-                .iter()
-                .map(|&(dx, dz)| {
-                    ((grade_x - candidate_grade_x) * dx + (grade_z - candidate_grade_z) * dz).abs()
-                })
-                .fold(0.0_f32, f32::max);
-            if max_sample_delta_m <= JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M {
-                limited_grade_x = candidate_grade_x;
-                limited_grade_z = candidate_grade_z;
+            match limit_mode {
+                JunctionProfileLimitMode::ConservativeSourceFit => {
+                    let max_sample_delta_m = sample_offsets
+                        .iter()
+                        .map(|&(dx, dz)| {
+                            ((grade_x - candidate_grade_x) * dx
+                                + (grade_z - candidate_grade_z) * dz)
+                                .abs()
+                        })
+                        .fold(0.0_f32, f32::max);
+                    if max_sample_delta_m <= JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M {
+                        limited_grade_x = candidate_grade_x;
+                        limited_grade_z = candidate_grade_z;
+                    }
+                }
+                JunctionProfileLimitMode::RegradePlatform => {
+                    limited_grade_x = candidate_grade_x;
+                    limited_grade_z = candidate_grade_z;
+                }
             }
         };
         Some(Self {
@@ -403,9 +431,9 @@ impl RegionGraph {
         &mut self,
         affected_nodes: &HashSet<u32>,
         adaptable_edges: &HashSet<usize>,
-    ) {
+    ) -> HashSet<usize> {
         if affected_nodes.is_empty() || adaptable_edges.is_empty() {
-            return;
+            return HashSet::new();
         }
 
         let valid_node_ids: Vec<u32> = (0..self.nodes.len())
@@ -422,11 +450,101 @@ impl RegionGraph {
             self.remove_from_spatial_index(edge_idx);
         }
 
-        self.solve_junction_endpoint_profiles(&valid_node_ids, affected_nodes, adaptable_edges);
+        let changed_edges = self.solve_junction_endpoint_profiles(
+            &valid_node_ids,
+            affected_nodes,
+            adaptable_edges,
+            JunctionProfileLimitMode::ConservativeSourceFit,
+        );
 
         for edge_idx in reindex_ids {
             self.add_to_spatial_index(edge_idx);
         }
+        changed_edges
+    }
+
+    /// Regrades every road edge incident to affected over-limit Bend/JunctionN nodes.
+    ///
+    /// This is the stronger road-edit path: only nodes whose conservative profile still exceeds
+    /// the grade cap are selected, then all touching edge mouths receive real support vertices so
+    /// later section compiles sample that platform.
+    pub(in crate::simulation::network) fn regrade_junction_endpoint_profiles_for_nodes(
+        &mut self,
+        affected_nodes: &HashSet<u32>,
+    ) -> HashSet<usize> {
+        if affected_nodes.is_empty() {
+            return HashSet::new();
+        }
+
+        let valid_node_ids: Vec<u32> = (0..self.nodes.len())
+            .map(|i| self.get_valid_node(i as u32))
+            .collect();
+        let regrade_nodes = self.junction_profile_regrade_nodes(&valid_node_ids, affected_nodes);
+        if regrade_nodes.is_empty() {
+            return HashSet::new();
+        }
+
+        let mut reindex_ids = self.surface_edges_touching_nodes(&valid_node_ids, &regrade_nodes);
+        reindex_ids.sort_unstable();
+        reindex_ids.dedup();
+        if reindex_ids.is_empty() {
+            return HashSet::new();
+        }
+
+        for &edge_idx in &reindex_ids {
+            self.remove_from_spatial_index(edge_idx);
+        }
+
+        let adaptable_edges = reindex_ids.iter().copied().collect::<HashSet<_>>();
+        let changed_edges = self.solve_junction_endpoint_profiles(
+            &valid_node_ids,
+            &regrade_nodes,
+            &adaptable_edges,
+            JunctionProfileLimitMode::RegradePlatform,
+        );
+
+        for edge_idx in reindex_ids {
+            self.add_to_spatial_index(edge_idx);
+        }
+        changed_edges
+    }
+
+    fn junction_profile_regrade_nodes(
+        &self,
+        valid_node_ids: &[u32],
+        affected_nodes: &HashSet<u32>,
+    ) -> HashSet<u32> {
+        let incidents_by_node =
+            self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
+        incidents_by_node
+            .iter()
+            .filter_map(|(&node_id, incidents)| {
+                if incidents.len() < 2 {
+                    return None;
+                }
+
+                let conservative = self.solve_junction_profile_plane(
+                    node_id,
+                    incidents,
+                    JunctionProfileLimitMode::ConservativeSourceFit,
+                );
+                if conservative
+                    .is_some_and(|plane| plane.grade() > JUNCTION_PROFILE_MOUTH_MAX_GRADE + 1.0e-4)
+                    || conservative.is_none()
+                        && self
+                            .solve_junction_profile_plane(
+                                node_id,
+                                incidents,
+                                JunctionProfileLimitMode::RegradePlatform,
+                            )
+                            .is_some()
+                {
+                    Some(node_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn solve_junction_endpoint_profiles(
@@ -434,7 +552,8 @@ impl RegionGraph {
         valid_node_ids: &[u32],
         affected_nodes: &HashSet<u32>,
         adaptable_edges: &HashSet<usize>,
-    ) {
+        limit_mode: JunctionProfileLimitMode,
+    ) -> HashSet<usize> {
         let incidents_by_node =
             self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
         let mut edge_solves: Vec<(usize, bool, JunctionEndpointProfilePlane)> = Vec::new();
@@ -452,10 +571,10 @@ impl RegionGraph {
                 .filter(|incident| !adaptable_edges.contains(&incident.edge_idx))
                 .collect::<Vec<_>>();
             let plane = if stable_incidents.len() >= 2 {
-                self.solve_junction_profile_plane(node_id, &stable_incidents)
-                    .or_else(|| self.solve_junction_profile_plane(node_id, incidents))
+                self.solve_junction_profile_plane(node_id, &stable_incidents, limit_mode)
+                    .or_else(|| self.solve_junction_profile_plane(node_id, incidents, limit_mode))
             } else {
-                self.solve_junction_profile_plane(node_id, incidents)
+                self.solve_junction_profile_plane(node_id, incidents, limit_mode)
             };
             let Some(plane) = plane else {
                 continue;
@@ -474,18 +593,24 @@ impl RegionGraph {
             if edge_idx >= self.edges.len() || self.edges[edge_idx].deleted {
                 continue;
             }
-            Self::apply_junction_profile_plane_to_edge(&mut self.edges[edge_idx], at_start, plane);
+            Self::apply_junction_profile_plane_to_edge(
+                &mut self.edges[edge_idx],
+                at_start,
+                plane,
+                matches!(limit_mode, JunctionProfileLimitMode::RegradePlatform),
+            );
             changed_edges.push(edge_idx);
         }
         changed_edges.sort_unstable();
         changed_edges.dedup();
-        for edge_idx in changed_edges {
+        for &edge_idx in &changed_edges {
             let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
                 &self.edges[edge_idx],
             );
             self.edges[edge_idx].base_cost = cost;
             self.edges[edge_idx].physical_length = length;
         }
+        changed_edges.into_iter().collect()
     }
 
     fn build_junction_profile_incidents(
@@ -521,14 +646,40 @@ impl RegionGraph {
             }
         }
 
-        for incidents in incidents_by_node.values_mut() {
+        for (&node_id, incidents) in incidents_by_node.iter_mut() {
             incidents.sort_by(|a, b| {
-                a.edge_idx
-                    .cmp(&b.edge_idx)
+                self.junction_profile_incident_angle(node_id, *a)
+                    .total_cmp(&self.junction_profile_incident_angle(node_id, *b))
+                    .then(a.edge_idx.cmp(&b.edge_idx))
                     .then(a.at_start.cmp(&b.at_start))
             });
         }
         incidents_by_node
+    }
+
+    fn junction_profile_incident_angle(
+        &self,
+        node_id: u32,
+        incident: JunctionProfileIncident,
+    ) -> f32 {
+        let Some(edge) = self.edges.get(incident.edge_idx) else {
+            return 0.0;
+        };
+        let Some(origin) = self.nodes.get(node_id as usize).map(|node| node.pos) else {
+            return 0.0;
+        };
+        let away = if incident.at_start {
+            edge.geometry.get(1).copied()
+        } else {
+            edge.geometry
+                .len()
+                .checked_sub(2)
+                .and_then(|index| edge.geometry.get(index).copied())
+        };
+        let Some(away) = away else {
+            return 0.0;
+        };
+        (away.z - origin.z).atan2(away.x - origin.x)
     }
 
     /// Builds the canonical endpoint profile plane for a Bend/JunctionN node from incident edge mouths.
@@ -547,7 +698,13 @@ impl RegionGraph {
             self.build_junction_profile_incidents(&valid_node_ids, Some(&affected_nodes));
         let incidents = incidents_by_node.get(&node_id)?;
         (incidents.len() >= 2)
-            .then(|| self.solve_junction_profile_plane(node_id, incidents))
+            .then(|| {
+                self.solve_junction_profile_plane(
+                    node_id,
+                    incidents,
+                    JunctionProfileLimitMode::ConservativeSourceFit,
+                )
+            })
             .flatten()
     }
 
@@ -555,6 +712,7 @@ impl RegionGraph {
         &self,
         node_id: u32,
         incidents: &[JunctionProfileIncident],
+        limit_mode: JunctionProfileLimitMode,
     ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
         let mut xx = 0.0;
@@ -567,11 +725,11 @@ impl RegionGraph {
 
         for incident in incidents {
             let edge = self.edges.get(incident.edge_idx)?;
-            let total_length_m = Self::edge_geometry_length_m(edge);
+            let total_length_m = Self::edge_profile_length_m(edge);
             if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
                 continue;
             }
-            let sample_distance_m = JUNCTION_PROFILE_HARD_ZONE_M.min(total_length_m * 0.5);
+            let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
             if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
                 continue;
             }
@@ -607,25 +765,37 @@ impl RegionGraph {
 
         let grade_x = (xy * zz - zy * xz) / det;
         let grade_z = (xx * zy - xz * xy) / det;
-        JunctionEndpointProfilePlane::grade_limited(origin, grade_x, grade_z, &sample_offsets)
+        JunctionEndpointProfilePlane::grade_limited(
+            origin,
+            grade_x,
+            grade_z,
+            &sample_offsets,
+            limit_mode,
+        )
     }
 
     fn apply_junction_profile_plane_to_edge(
         edge: &mut super::data::Edge,
         at_start: bool,
         plane: JunctionEndpointProfilePlane,
+        materialize_supports: bool,
     ) {
-        let total_length_m = Self::edge_geometry_length_m(edge);
+        let total_length_m = Self::edge_profile_length_m(edge);
         if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
             return;
         }
-        let hard_zone_m = JUNCTION_PROFILE_HARD_ZONE_M.min(total_length_m * 0.5);
+        let hard_zone_m = Self::junction_profile_hard_zone_m(edge, total_length_m);
         let blend_end_m =
             (hard_zone_m + JUNCTION_PROFILE_BLEND_ZONE_M).min(total_length_m.max(hard_zone_m));
         if hard_zone_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
             return;
         }
+        if materialize_supports {
+            Self::materialize_edge_endpoint_profile_supports(edge, at_start, blend_end_m);
+        }
 
+        let solve_sample_m =
+            materialize_supports.then_some(JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m));
         let distances = Self::edge_endpoint_distances(edge, at_start);
         for (point, distance_m) in edge.geometry.iter_mut().zip(distances.iter().copied()) {
             if distance_m > blend_end_m {
@@ -634,15 +804,106 @@ impl RegionGraph {
             let target_y = plane.origin.y
                 + plane.grade_x * (point.x - plane.origin.x)
                 + plane.grade_z * (point.z - plane.origin.z);
-            let weight = if distance_m <= hard_zone_m || blend_end_m <= hard_zone_m {
+            let weight = if distance_m <= hard_zone_m
+                || solve_sample_m.is_some_and(|sample_m| {
+                    (distance_m - sample_m).abs() <= JUNCTION_PROFILE_SUPPORT_EPS_M
+                })
+                || blend_end_m <= hard_zone_m
+            {
                 1.0
             } else {
                 let t = ((distance_m - hard_zone_m) / (blend_end_m - hard_zone_m)).clamp(0.0, 1.0);
-                1.0 - t * t * (3.0 - 2.0 * t)
+                1.0 - Self::smootherstep(t)
             };
             point.y = point.y * (1.0 - weight) + target_y * weight;
         }
         edge.physical_geometry = edge.geometry.clone();
+    }
+
+    fn materialize_edge_endpoint_profile_supports(
+        edge: &mut super::data::Edge,
+        at_start: bool,
+        blend_end_m: f32,
+    ) {
+        let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m);
+        Self::ensure_edge_endpoint_profile_support(edge, at_start, solve_sample_m);
+
+        let mut distance_m = solve_sample_m + JUNCTION_PROFILE_SUPPORT_STEP_M;
+        while distance_m < blend_end_m - JUNCTION_PROFILE_SUPPORT_EPS_M {
+            Self::ensure_edge_endpoint_profile_support(edge, at_start, distance_m);
+            distance_m += JUNCTION_PROFILE_SUPPORT_STEP_M;
+        }
+        Self::ensure_edge_endpoint_profile_support(edge, at_start, blend_end_m);
+    }
+
+    fn junction_profile_hard_zone_m(edge: &super::data::Edge, total_length_m: f32) -> f32 {
+        (edge.width * 0.25)
+            .max(JUNCTION_PROFILE_HARD_ZONE_MIN_M)
+            .min(JUNCTION_PROFILE_HARD_ZONE_MAX_M)
+            .min(total_length_m * 0.25)
+    }
+
+    fn smootherstep(t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+    }
+
+    fn ensure_edge_endpoint_profile_support(
+        edge: &mut super::data::Edge,
+        at_start: bool,
+        distance_m: f32,
+    ) {
+        if !distance_m.is_finite() || distance_m <= JUNCTION_PROFILE_SUPPORT_EPS_M {
+            return;
+        }
+        if edge.geometry.len() < 2 {
+            return;
+        }
+        let distances = Self::edge_endpoint_distances(edge, at_start);
+        let Some(&total_length_m) = distances.iter().max_by(|a, b| a.total_cmp(b)) else {
+            return;
+        };
+        if distance_m >= total_length_m - JUNCTION_PROFILE_SUPPORT_EPS_M {
+            return;
+        }
+        if distances
+            .iter()
+            .any(|existing| (*existing - distance_m).abs() <= JUNCTION_PROFILE_SUPPORT_EPS_M)
+        {
+            return;
+        }
+
+        if at_start {
+            for index in 0..edge.geometry.len() - 1 {
+                let start_d = distances[index];
+                let end_d = distances[index + 1];
+                if distance_m < start_d - JUNCTION_PROFILE_SUPPORT_EPS_M
+                    || distance_m > end_d + JUNCTION_PROFILE_SUPPORT_EPS_M
+                {
+                    continue;
+                }
+                let segment_m = (end_d - start_d).max(f32::EPSILON);
+                let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
+                let point = edge.geometry[index].lerp(edge.geometry[index + 1], t);
+                edge.geometry.insert(index + 1, point);
+                return;
+            }
+        } else {
+            for index in (1..edge.geometry.len()).rev() {
+                let start_d = distances[index];
+                let end_d = distances[index - 1];
+                if distance_m < start_d - JUNCTION_PROFILE_SUPPORT_EPS_M
+                    || distance_m > end_d + JUNCTION_PROFILE_SUPPORT_EPS_M
+                {
+                    continue;
+                }
+                let segment_m = (end_d - start_d).max(f32::EPSILON);
+                let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
+                let point = edge.geometry[index].lerp(edge.geometry[index - 1], t);
+                edge.geometry.insert(index, point);
+                return;
+            }
+        }
     }
 
     fn sample_edge_geometry_from_endpoint(
@@ -699,12 +960,18 @@ impl RegionGraph {
         if at_start {
             for index in 1..edge.geometry.len() {
                 distances[index] = distances[index - 1]
-                    + edge.geometry[index - 1].distance_to(edge.geometry[index]);
+                    + Self::edge_profile_point_distance_m(
+                        edge.geometry[index - 1],
+                        edge.geometry[index],
+                    );
             }
         } else {
             for index in (0..edge.geometry.len() - 1).rev() {
                 distances[index] = distances[index + 1]
-                    + edge.geometry[index + 1].distance_to(edge.geometry[index]);
+                    + Self::edge_profile_point_distance_m(
+                        edge.geometry[index + 1],
+                        edge.geometry[index],
+                    );
             }
         }
         distances
@@ -959,6 +1226,17 @@ impl RegionGraph {
             .sum()
     }
 
+    fn edge_profile_length_m(edge: &super::data::Edge) -> f32 {
+        edge.geometry
+            .windows(2)
+            .map(|window| Self::edge_profile_point_distance_m(window[0], window[1]))
+            .sum()
+    }
+
+    fn edge_profile_point_distance_m(a: Vector3, b: Vector3) -> f32 {
+        (a.x - b.x).hypot(a.z - b.z)
+    }
+
     fn fit_clips_to_edge_length(
         start_clip_m: f32,
         end_clip_m: f32,
@@ -1014,5 +1292,66 @@ mod tests {
         assert!((sample.x - 15.0).abs() <= f32::EPSILON);
         assert!((sample.y - 0.0).abs() <= f32::EPSILON);
         assert!((sample.z - 0.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn regrade_junction_profile_caps_steep_platform_and_materializes_supports() {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let east = graph.add_node(Vector3::new(48.0, 24.0, 0.0), NodeType::Junction);
+        let north = graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
+
+        let mut east_edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(48.0, 24.0, 0.0)]);
+        east_edge.start_node = center;
+        east_edge.end_node = east;
+        graph.add_edge(east_edge);
+
+        let mut north_edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 48.0)]);
+        north_edge.start_node = center;
+        north_edge.end_node = north;
+        graph.add_edge(north_edge);
+
+        graph.rebuild_adjacency_list();
+        let changed_edges =
+            graph.regrade_junction_endpoint_profiles_for_nodes(&HashSet::from([center]));
+
+        assert_eq!(changed_edges.len(), 2);
+        let plane = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("regraded support vertices should define a readable platform plane");
+        let grade = plane.grade_x.hypot(plane.grade_z);
+        assert!(
+            grade <= JUNCTION_PROFILE_MOUTH_MAX_GRADE + 1.0e-4,
+            "platform grade should be capped after regrade, got {grade:.3}"
+        );
+
+        let east_geometry = &graph.edge(0).geometry;
+        assert!(
+            east_geometry.len() >= 8,
+            "regrade should insert vertical-curve support vertices outside the protected mouth"
+        );
+        let solve_sample_m =
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(graph.edge(0).physical_length * 0.5);
+        let solve_sample =
+            RegionGraph::sample_edge_geometry_from_endpoint(graph.edge(0), true, solve_sample_m)
+                .expect("solve-distance support sample should exist");
+        let expected_y = plane.height_at_xz(solve_sample.x, solve_sample.z);
+        let solve_sample_delta_m = (solve_sample.y - expected_y).abs();
+        assert!(
+            solve_sample_delta_m <= 0.05,
+            "solve-distance support should sit on the capped profile plane: delta={solve_sample_delta_m:.6} sample={solve_sample:?} expected_y={expected_y:.6}"
+        );
+
+        let transition_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            graph.edge(0),
+            true,
+            solve_sample_m + JUNCTION_PROFILE_SUPPORT_STEP_M * 2.0,
+        )
+        .expect("vertical-curve transition sample should exist");
+        let transition_plane_y = plane.height_at_xz(transition_sample.x, transition_sample.z);
+        assert!(
+            (transition_sample.y - transition_plane_y).abs() > 0.05,
+            "post-hard-zone sample should have started easing away from the platform plane"
+        );
     }
 }
