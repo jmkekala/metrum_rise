@@ -1992,6 +1992,16 @@ impl SimulationNode {
     ) {
         let safe_step_m = render_step_m.max(f32::EPSILON);
         let max_distance_m = terrain_cdt_local_sample_margin_m(terrain, safe_step_m);
+        let constrained_guide_rails = road_loops
+            .iter()
+            .filter(|road_loop| {
+                !road_loop.is_hole
+                    && road_loop.vertices.len() >= 2
+                    && Self::road_loop_uses_clean_grounded_tie_in(road_loop)
+                    && Self::terrain_cdt_road_loop_signed_area_xz(road_loop).abs() > f64::EPSILON
+            })
+            .count()
+            <= 1;
         for road_loop in road_loops {
             if road_loop.is_hole
                 || road_loop.vertices.len() < 2
@@ -2005,8 +2015,6 @@ impl SimulationNode {
             }
             let loop_is_ccw = signed_area > 0.0;
             let mut edge_outward_directions = Vec::with_capacity(road_loop.vertices.len());
-            let mut edge_start_ring_vertices = Vec::with_capacity(road_loop.vertices.len());
-            let mut edge_end_ring_vertices = Vec::with_capacity(road_loop.vertices.len());
             for index in 0..road_loop.vertices.len() {
                 let start = road_loop.vertices[index];
                 let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
@@ -2021,8 +2029,6 @@ impl SimulationNode {
                 edge_outward_directions.push((outward_x, outward_z));
                 let sample_count = ((length_m as f32 / safe_step_m).ceil() as u32).max(1);
                 let mut previous_ring_vertices = Vec::new();
-                let mut first_ring_vertices = Vec::new();
-                let mut last_ring_vertices = Vec::new();
                 for sample_index in 0..=sample_count {
                     let t = f64::from(sample_index) / f64::from(sample_count);
                     let seam_x = start.x + dx * t;
@@ -2048,20 +2054,16 @@ impl SimulationNode {
                     for (previous, current) in
                         previous_ring_vertices.iter().zip(ring_vertices.iter())
                     {
-                        Self::push_terrain_cdt_tie_in_guide_constraint(
-                            *previous,
-                            *current,
-                            tie_in_guide_constraints,
-                        );
+                        if constrained_guide_rails {
+                            Self::push_terrain_cdt_tie_in_guide_constraint(
+                                *previous,
+                                *current,
+                                tie_in_guide_constraints,
+                            );
+                        }
                     }
-                    if sample_index == 0 {
-                        first_ring_vertices = ring_vertices.clone();
-                    }
-                    last_ring_vertices = ring_vertices.clone();
                     previous_ring_vertices = ring_vertices;
                 }
-                edge_start_ring_vertices.push(first_ring_vertices);
-                edge_end_ring_vertices.push(last_ring_vertices);
             }
             if edge_outward_directions.len() != road_loop.vertices.len() {
                 continue;
@@ -2093,27 +2095,6 @@ impl SimulationNode {
                         tie_in_guide_samples,
                         sample_keys,
                     );
-                }
-                let previous_edge_index =
-                    (index + road_loop.vertices.len() - 1) % road_loop.vertices.len();
-                let previous_edge_vertices = &edge_end_ring_vertices[previous_edge_index];
-                let next_edge_vertices = &edge_start_ring_vertices[index];
-                for ring_index in 0..ring_vertices.len() {
-                    let corner = ring_vertices[ring_index];
-                    if let Some(previous) = previous_edge_vertices.get(ring_index) {
-                        Self::push_terrain_cdt_tie_in_guide_constraint(
-                            *previous,
-                            corner,
-                            tie_in_guide_constraints,
-                        );
-                    }
-                    if let Some(next) = next_edge_vertices.get(ring_index) {
-                        Self::push_terrain_cdt_tie_in_guide_constraint(
-                            corner,
-                            *next,
-                            tie_in_guide_constraints,
-                        );
-                    }
                 }
             }
         }
@@ -6819,6 +6800,79 @@ mod tests {
             .expect("grade-limited grounded road tie-in should triangulate");
         assert_eq!(mesh.stats.retaining_wall_faces, 0);
         assert!(mesh.retaining_wall_triangles.is_empty());
+    }
+
+    #[test]
+    fn terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained() {
+        let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
+        let patch = TerrainPatchSnapshot {
+            patch_x: 0,
+            patch_z: 0,
+            sample_width: 5,
+            sample_height: 5,
+            texture_width: 5,
+            texture_height: 5,
+            inner_offset_x: 0,
+            inner_offset_z: 0,
+            world_origin_x: 0.0,
+            world_origin_z: 0.0,
+            world_size_x: 60.0,
+            world_size_z: 60.0,
+            height_data: vec![0.0; 25],
+        };
+        let source = standard_span_source();
+        let road_loops = [
+            vec![
+                TerrainCdtVertex::new(10.0, 3.0, 10.0),
+                TerrainCdtVertex::new(24.0, 3.0, 10.0),
+                TerrainCdtVertex::new(24.0, 3.0, 18.0),
+                TerrainCdtVertex::new(10.0, 3.0, 18.0),
+            ],
+            vec![
+                TerrainCdtVertex::new(32.0, 3.0, 32.0),
+                TerrainCdtVertex::new(46.0, 3.0, 32.0),
+                TerrainCdtVertex::new(46.0, 3.0, 40.0),
+                TerrainCdtVertex::new(32.0, 3.0, 40.0),
+            ],
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(loop_index, road)| {
+            let source_edges = road
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                    start,
+                    end: road[(index + 1) % road.len()],
+                    source,
+                })
+                .collect();
+            TerrainCdtRoadLoop::new_with_source_edges(
+                123 + loop_index as u64,
+                0,
+                road,
+                source_edges,
+            )
+        })
+        .collect::<Vec<_>>();
+
+        let input = SimulationNode::terrain_cdt_input_for_bounds(
+            &terrain,
+            &patch,
+            &road_loops,
+            2.0,
+            (0.0, 0.0, 60.0, 60.0),
+        );
+
+        assert!(
+            !input.tie_in_guide_samples.is_empty(),
+            "multi-loop patches should still get soft guide vertices"
+        );
+        assert!(
+            input.tie_in_guide_constraints.is_empty(),
+            "multi-loop patches should not emit hard guide rails that can cross another roadbed loop"
+        );
     }
 
     #[test]

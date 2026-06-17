@@ -116,6 +116,24 @@ pub(super) fn push_triangle(
     push_triangle_preserving_winding(mesh, layer, vertices, uvs, color);
 }
 
+pub(super) fn push_triangle_with_normal(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    mut vertices: [Vector3; 3],
+    mut uvs: [Vector2; 3],
+    color: Color,
+    normal: Vector3,
+) {
+    let projected_winding = (vertices[1].x - vertices[0].x) * (vertices[2].z - vertices[0].z)
+        - (vertices[1].z - vertices[0].z) * (vertices[2].x - vertices[0].x);
+    if projected_winding < 0.0 {
+        vertices.swap(1, 2);
+        uvs.swap(1, 2);
+    }
+
+    push_triangle_preserving_winding_with_normal(mesh, layer, vertices, uvs, color, normal);
+}
+
 pub(super) fn push_triangle_preserving_winding(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
@@ -133,6 +151,37 @@ pub(super) fn push_triangle_preserving_winding(
         normal = normal.normalized();
     }
 
+    push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
+}
+
+pub(super) fn push_triangle_preserving_winding_with_normal(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+    mut normal: Vector3,
+) {
+    if normal.length_squared() <= 1e-8 {
+        normal = Vector3::UP;
+    } else {
+        if normal.y < 0.0 {
+            normal = -normal;
+        }
+        normal = normal.normalized();
+    }
+
+    push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
+}
+
+fn push_triangle_to_layer(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+    normal: Vector3,
+) {
     let target = match layer {
         MeshLayer::Earthwork => (
             &mut mesh.earthwork_vertices,

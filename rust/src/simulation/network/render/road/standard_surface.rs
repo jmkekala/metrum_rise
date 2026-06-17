@@ -107,18 +107,27 @@ pub(super) fn emit_compiled_surface_mesh(
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
-        for polygon in &piece.curb_surface_polygons {
-            emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
-        }
+        emit_node_top_surface_polygons(
+            mesh,
+            MeshLayer::Curb,
+            &piece.curb_surface_polygons,
+            curb_color(),
+        );
         for polygon in &piece.raised_step_face_polygons {
             emit_vertical_surface_polygon(mesh, polygon, curb_color());
         }
-        for polygon in &piece.sidewalk_surface_polygons {
-            emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
-        }
-        for polygon in &piece.road_surface_polygons {
-            emit_surface_polygon(mesh, MeshLayer::Road, polygon, road_color());
-        }
+        emit_node_top_surface_polygons(
+            mesh,
+            MeshLayer::Sidewalk,
+            &piece.sidewalk_surface_polygons,
+            sidewalk_color(),
+        );
+        emit_node_top_surface_polygons(
+            mesh,
+            MeshLayer::Road,
+            &piece.road_surface_polygons,
+            road_color(),
+        );
     }
 }
 
@@ -446,6 +455,28 @@ fn emit_surface_polygon(
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
+    emit_surface_polygon_with_group_normal(mesh, layer, polygon, color, None);
+}
+
+fn emit_node_top_surface_polygons(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    polygons: &[RoadSurfaceVisualPolygon],
+    color: Color,
+) {
+    let group_normal = stable_surface_group_normal(polygons);
+    for polygon in polygons {
+        emit_surface_polygon_with_group_normal(mesh, layer, polygon, color, group_normal);
+    }
+}
+
+fn emit_surface_polygon_with_group_normal(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    polygon: &RoadSurfaceVisualPolygon,
+    color: Color,
+    group_normal: Option<Vector3>,
+) {
     if polygon.triangles_world.is_empty() {
         return;
     }
@@ -455,17 +486,24 @@ fn emit_surface_polygon(
         if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
             continue;
         }
-        super::push_triangle(
-            mesh,
-            layer,
-            triangle,
-            [
-                Vector2::ZERO,
-                Vector2::new(1.0, 0.0),
-                Vector2::new(1.0, 1.0),
-            ],
-            color,
-        );
+        if let Some(normal) = group_normal {
+            super::push_triangle_with_normal(
+                mesh,
+                layer,
+                triangle,
+                world_xz_uvs_for_triangle(triangle),
+                color,
+                normal,
+            );
+        } else {
+            super::push_triangle(
+                mesh,
+                layer,
+                triangle,
+                world_xz_uvs_for_triangle(triangle),
+                color,
+            );
+        }
     }
 }
 
@@ -564,9 +602,36 @@ fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {
     double_area_squared <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2 * MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
 }
 
+fn stable_surface_group_normal(polygons: &[RoadSurfaceVisualPolygon]) -> Option<Vector3> {
+    let mut normal = Vector3::ZERO;
+    for polygon in polygons {
+        for triangle in &polygon.triangles_world {
+            let triangle = road_triangle_to_render(*triangle);
+            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+                continue;
+            }
+            let mut triangle_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
+            if triangle_normal.y < 0.0 {
+                triangle_normal = -triangle_normal;
+            }
+            normal += triangle_normal;
+        }
+    }
+    (normal.length_squared() > 1e-8).then(|| normal.normalized())
+}
+
+fn world_xz_uvs_for_triangle(triangle: [Vector3; 3]) -> [Vector2; 3] {
+    [
+        Vector2::new(triangle[0].x, triangle[0].z),
+        Vector2::new(triangle[1].x, triangle[1].z),
+        Vector2::new(triangle[2].x, triangle[2].z),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::triangle_is_too_small;
+    use super::{stable_surface_group_normal, triangle_is_too_small, world_xz_uvs_for_triangle};
+    use crate::simulation::network::surface::{RoadSurfaceVisualPolygon, RoadVec3};
     use godot::prelude::Vector3;
 
     #[test]
@@ -617,6 +682,58 @@ mod tests {
         assert!(
             !triangle_is_too_small(a, b, c),
             "retaining and wall faces are vertical and must survive render culling"
+        );
+    }
+
+    #[test]
+    fn renderer_uses_world_xz_uvs_for_compiled_top_surfaces() {
+        let triangle = [
+            Vector3::new(10.0, 1.0, -2.0),
+            Vector3::new(12.5, 1.4, -2.0),
+            Vector3::new(12.5, 1.8, 3.5),
+        ];
+        let uvs = world_xz_uvs_for_triangle(triangle);
+
+        assert_eq!(uvs[0].x, 10.0);
+        assert_eq!(uvs[0].y, -2.0);
+        assert_eq!(uvs[1].x, 12.5);
+        assert_eq!(uvs[1].y, -2.0);
+        assert_eq!(uvs[2].x, 12.5);
+        assert_eq!(uvs[2].y, 3.5);
+    }
+
+    #[test]
+    fn renderer_uses_group_normal_for_node_top_surface_slivers() {
+        let flat = RoadSurfaceVisualPolygon {
+            points_world: Vec::new(),
+            triangles_world: vec![
+                [
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(6.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, 6.0),
+                ],
+                [
+                    RoadVec3::new(6.0, 0.0, 0.0),
+                    RoadVec3::new(6.0, 0.0, 6.0),
+                    RoadVec3::new(0.0, 0.0, 6.0),
+                ],
+            ],
+        };
+        let skinny_mouth = RoadSurfaceVisualPolygon {
+            points_world: Vec::new(),
+            triangles_world: vec![[
+                RoadVec3::new(0.0, 0.0, 0.0),
+                RoadVec3::new(0.002, 2.0, 0.0),
+                RoadVec3::new(0.0, 0.0, 0.002),
+            ]],
+        };
+
+        let normal = stable_surface_group_normal(&[flat, skinny_mouth])
+            .expect("dominant node top surface should provide a stable render normal");
+
+        assert!(
+            normal.y > 0.99,
+            "stable group normal should be dominated by real top surface area, got {normal:?}"
         );
     }
 }
