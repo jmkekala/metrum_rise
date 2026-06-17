@@ -29,8 +29,11 @@ The roadbed rewrite is shipped for the current surface-road scope:
   triangulation, and validation
 - grounded `Standard` road-touched terrain patches are generated in Rust with Spade CDT over
   unioned road-owned footprint loops
-- ordinary grounded-road tie-ins use Rust-generated grade-limited guide samples around the final
-  road-owned footprint; they do not emit retaining-wall mesh as a visual cleanup path
+- ordinary grounded-road tie-ins use `RoadSurfaceSystem` generated grade-limited guide samples
+  around the final unioned road-owned footprint; only a single clean non-hole convex footprint may
+  constrain its guide rails, while holed, concave, or multi-loop footprint sets stay sample-only so
+  guide rails cannot cross the final roadbed
+- ordinary grounded-road tie-ins do not emit retaining-wall mesh as a visual cleanup path
 - Godot is a thin input/render bridge: it uploads cached payloads and must not decide road
   topology, heights, terrain holes, or material ownership
 
@@ -62,6 +65,7 @@ boundary, or final node polygon carrier.
 - compiled road top-surface meshes
 - visible-world road queries and picking support
 - terrain clip loops for grounded roads
+- terrain-CDT grading-envelope guide samples / constraints derived from final roadbed loops
 - road surface and terrain chunk coverage
 - road debug geometry and provenance output
 
@@ -193,8 +197,11 @@ Road-touched terrain patches obey this contract:
 - road footprint constraints are clipped and split at patch boundaries before Spade input
 - source-terrain samples are inserted only outside road-owned footprints
 - Rust inserts deterministic grade-limited tie-in guide samples outside grounded `Standard`
-  footprints before ordinary source terrain samples, so CDT has explicit near-road terrain
-  vertices instead of fanning large triangles from the road seam to the terrain grid
+  footprints before ordinary source terrain samples, using the final unioned roadbed loops rather
+  than per-piece or Godot-side repair geometry
+- constrained guide rails are allowed only for a single clean non-hole convex footprint; holed,
+  concave `Bend` / `JunctionN`, multi-loop, or non-road client footprint sets leave those rails
+  unconstrained, so guide constraints cannot cross through the road-owned footprint
 - accepted terrain faces stay outside the unioned road-owned footprint
 - rejected road-footprint faces are not emitted
 - emitted terrain seam vertices reuse road-owned outer-edge coordinates and heights
@@ -318,6 +325,7 @@ Maintained coverage must continue to prove:
 - preview / commit parity
 - visible-world query precedence
 - terrain CDT preservation of road seam constraints
+- terrain-CDT grading envelope behavior for convex and concave roadbed footprints
 - rejection of terrain faces inside road-owned footprints
 - authored and imported DEM terrain agreement
 - deterministic rebuilds and equivalent edit-order identity

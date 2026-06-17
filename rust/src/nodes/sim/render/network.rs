@@ -2,10 +2,9 @@
 //!
 //! Handles road mesh generation and road connection utility calculations.
 
-use crate::nodes::sim::core::{
-    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore, terrain_cdt_local_sample_margin_m,
-};
+use crate::nodes::sim::core::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
 use crate::simulation::network::render::NetworkMeshData;
+use crate::simulation::terrain::terrain_cdt_local_sample_margin_m;
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::time::Instant;

@@ -24,21 +24,57 @@ pub(in crate::simulation::network::surface::tests) fn terrain_cdt_input_for_boun
         ],
     );
     let mut source_samples = Vec::new();
+    let mut tie_in_guide_samples = Vec::new();
+    let mut tie_in_guide_constraints = Vec::new();
+    let mut sample_keys = BTreeMap::new();
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        terrain,
+        &road_loops,
+        sample_step_m,
+        &mut tie_in_guide_samples,
+        &mut tie_in_guide_constraints,
+        &mut sample_keys,
+    );
     let step = sample_step_m.max(1.0);
     let mut z = min_z;
     while z <= max_z + SAMPLE_EPSILON_M {
         let mut x = min_x;
         while x <= max_x + SAMPLE_EPSILON_M {
-            source_samples.push(TerrainCdtVertex::new(
-                f64::from(x),
-                terrain_height_m(terrain, x, z),
-                f64::from(z),
-            ));
+            push_test_terrain_cdt_source_sample(
+                terrain,
+                x,
+                z,
+                &mut source_samples,
+                &mut sample_keys,
+            );
             x += step;
         }
         z += step;
     }
     TerrainCdtInput::new(patch, road_loops, source_samples)
+        .with_tie_in_guide_samples(tie_in_guide_samples)
+        .with_tie_in_guide_constraints(tie_in_guide_constraints)
+}
+
+fn push_test_terrain_cdt_source_sample(
+    terrain: &TerrainSystem,
+    x: f32,
+    z: f32,
+    source_samples: &mut Vec<TerrainCdtVertex>,
+    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+) {
+    let key = (
+        (f64::from(x) * 1000.0).round() as i64,
+        (f64::from(z) * 1000.0).round() as i64,
+    );
+    if sample_keys.insert(key, ()).is_some() {
+        return;
+    }
+    source_samples.push(TerrainCdtVertex::new(
+        f64::from(x),
+        terrain_height_m(terrain, x, z),
+        f64::from(z),
+    ));
 }
 
 pub(in crate::simulation::network::surface::tests) fn terrain_height_m(

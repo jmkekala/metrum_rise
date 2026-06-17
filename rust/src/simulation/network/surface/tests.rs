@@ -28,7 +28,8 @@ use crate::simulation::network::types::{
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
     TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch, TerrainCdtRoadBoundarySource,
-    TerrainCdtRoadLoop, TerrainCdtTieInKind, TerrainCdtVertex, build_road_touched_terrain_patch,
+    TerrainCdtRoadLoop, TerrainCdtRoadLoopSourceEdge, TerrainCdtTieInKind, TerrainCdtVertex,
+    build_road_touched_terrain_patch,
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;

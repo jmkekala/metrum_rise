@@ -252,8 +252,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
   visible tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
   samples omitted to widen over-steep cut / fill tie-ins, and `ROAD-03` keeps ordinary grounded
-  `Standard` seams on the terrain path with explicit grade-limited guide samples around the final
-  road-owned footprint instead of retaining-wall teeth. Synthetic DEM validation still covers
+  `Standard` seams on the terrain path with `RoadSurfaceSystem` owned grade-limited guide samples
+  around the final unioned road-owned footprint instead of retaining-wall teeth. Convex single-loop
+  footprints may constrain their guide rails; concave or multi-loop junction footprints stay
+  sample-only so grading constraints cannot cross the roadbed. Synthetic DEM validation still covers
   structural retaining-wall classification while preserving exact road seam constraints.
   Production road-surface authored DEM coverage now also validates supportive spans, steep
   along-slope and extreme cross-slope spans, raised standard spans, raised terminals and bends near

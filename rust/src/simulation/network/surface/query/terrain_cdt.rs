@@ -12,16 +12,18 @@ use super::super::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
-use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass,
+    MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass,
     TerrainCdtNodeFootprintBoundaryDirectSource, TerrainCdtNodeFootprintBoundarySegmentSource,
     TerrainCdtNodeFootprintBoundaryVertexSource, TerrainCdtNodePieceKind, TerrainCdtRoadBandKind,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtRoadLoopSourceEdge,
-    TerrainCdtSpanRegionRole, TerrainCdtVertex,
+    TerrainCdtSpanRegionRole, TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
+    TerrainCdtVertex,
 };
+use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use std::collections::{BTreeMap, HashSet};
 
+mod grading;
 mod loops;
 mod mapping;
 mod patches;

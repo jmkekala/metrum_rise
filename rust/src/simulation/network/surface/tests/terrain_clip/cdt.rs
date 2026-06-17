@@ -358,10 +358,8 @@ fn terrain_clip_loops_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
         "expected arbitrary multiway node to produce terrain clip loops"
     );
 
-    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
-        TerrainCdtPatch::new(-96.0, -96.0, 96.0, 96.0, [0.0; 4]),
-        road_loops,
-        Vec::new(),
+    let mesh = build_road_touched_terrain_patch(terrain_cdt_input_for_bounds(
+        &terrain, road_loops, -96.0, -96.0, 96.0, 96.0, 8.0,
     ))
     .expect("unioned terrain clip footprint must be accepted by the terrain CDT");
 
@@ -369,6 +367,206 @@ fn terrain_clip_loops_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
         mesh.stats.invalid_constraint_edges, 0,
         "terrain CDT must not see crossing constraints from arbitrary-angle piece loops"
     );
+}
+
+#[test]
+fn terrain_cdt_grading_envelope_constrains_single_convex_footprint() {
+    let terrain = flat_terrain(65, 65);
+    let road_loop = TerrainCdtRoadLoop::new(
+        10,
+        0,
+        vec![
+            TerrainCdtVertex::new(-8.0, 0.0, -4.0),
+            TerrainCdtVertex::new(8.0, 0.0, -4.0),
+            TerrainCdtVertex::new(8.0, 0.0, 4.0),
+            TerrainCdtVertex::new(-8.0, 0.0, 4.0),
+        ],
+    );
+    let mut guide_samples = Vec::new();
+    let mut guide_constraints = Vec::new();
+    let mut sample_keys = BTreeMap::new();
+
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        &terrain,
+        &[road_loop],
+        4.0,
+        &mut guide_samples,
+        &mut guide_constraints,
+        &mut sample_keys,
+    );
+
+    assert!(
+        !guide_samples.is_empty(),
+        "single convex footprints should emit grade-limited terrain guide samples"
+    );
+    assert!(
+        !guide_constraints.is_empty(),
+        "single convex footprints should constrain guide rails between adjacent seam samples"
+    );
+}
+
+#[test]
+fn terrain_cdt_grading_envelope_leaves_concave_junction_rails_unconstrained() {
+    let terrain = flat_terrain(65, 65);
+    let road_loop = TerrainCdtRoadLoop::new(
+        11,
+        0,
+        vec![
+            TerrainCdtVertex::new(-8.0, 0.0, -8.0),
+            TerrainCdtVertex::new(8.0, 0.0, -8.0),
+            TerrainCdtVertex::new(8.0, 0.0, 0.0),
+            TerrainCdtVertex::new(2.0, 0.0, 0.0),
+            TerrainCdtVertex::new(2.0, 0.0, 8.0),
+            TerrainCdtVertex::new(-8.0, 0.0, 8.0),
+        ],
+    );
+    let mut guide_samples = Vec::new();
+    let mut guide_constraints = Vec::new();
+    let mut sample_keys = BTreeMap::new();
+
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        &terrain,
+        &[road_loop],
+        4.0,
+        &mut guide_samples,
+        &mut guide_constraints,
+        &mut sample_keys,
+    );
+
+    assert!(
+        !guide_samples.is_empty(),
+        "concave junction-style footprints still need grade-limited terrain guide samples"
+    );
+    assert!(
+        guide_constraints.is_empty(),
+        "concave junction-style footprints must not add guide rail constraints that can cross the final roadbed footprint"
+    );
+}
+
+#[test]
+fn terrain_cdt_grading_envelope_leaves_hole_footprint_sets_unconstrained() {
+    let terrain = flat_terrain(65, 65);
+    let outer_loop = TerrainCdtRoadLoop::new(
+        12,
+        0,
+        vec![
+            TerrainCdtVertex::new(-8.0, 0.0, -8.0),
+            TerrainCdtVertex::new(8.0, 0.0, -8.0),
+            TerrainCdtVertex::new(8.0, 0.0, 8.0),
+            TerrainCdtVertex::new(-8.0, 0.0, 8.0),
+        ],
+    );
+    let hole_loop = TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+        13,
+        12,
+        1,
+        true,
+        vec![
+            TerrainCdtVertex::new(-2.0, 0.0, -2.0),
+            TerrainCdtVertex::new(-2.0, 0.0, 2.0),
+            TerrainCdtVertex::new(2.0, 0.0, 2.0),
+            TerrainCdtVertex::new(2.0, 0.0, -2.0),
+        ],
+        Vec::new(),
+    );
+    let mut guide_samples = Vec::new();
+    let mut guide_constraints = Vec::new();
+    let mut sample_keys = BTreeMap::new();
+
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        &terrain,
+        &[outer_loop, hole_loop],
+        4.0,
+        &mut guide_samples,
+        &mut guide_constraints,
+        &mut sample_keys,
+    );
+
+    assert!(
+        !guide_samples.is_empty(),
+        "outer footprint still needs grade-limited guide samples"
+    );
+    assert!(
+        guide_constraints.is_empty(),
+        "footprint sets with holes must stay sample-only"
+    );
+}
+
+#[test]
+fn terrain_cdt_grading_envelope_ignores_building_site_loops() {
+    let terrain = flat_terrain(65, 65);
+    let road_loop = TerrainCdtRoadLoop::new(
+        14,
+        0,
+        vec![
+            TerrainCdtVertex::new(-8.0, 0.0, -4.0),
+            TerrainCdtVertex::new(8.0, 0.0, -4.0),
+            TerrainCdtVertex::new(8.0, 0.0, 4.0),
+            TerrainCdtVertex::new(-8.0, 0.0, 4.0),
+        ],
+    );
+    let site_loop = building_site_terrain_cdt_loop(
+        15,
+        vec![
+            TerrainCdtVertex::new(16.0, 0.0, -4.0),
+            TerrainCdtVertex::new(24.0, 0.0, -4.0),
+            TerrainCdtVertex::new(24.0, 0.0, 4.0),
+            TerrainCdtVertex::new(16.0, 0.0, 4.0),
+        ],
+    );
+    let mut road_only_samples = Vec::new();
+    let mut road_only_constraints = Vec::new();
+    let mut road_only_keys = BTreeMap::new();
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        &terrain,
+        &[road_loop.clone()],
+        4.0,
+        &mut road_only_samples,
+        &mut road_only_constraints,
+        &mut road_only_keys,
+    );
+
+    let mut mixed_samples = Vec::new();
+    let mut mixed_constraints = Vec::new();
+    let mut mixed_keys = BTreeMap::new();
+    RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
+        &terrain,
+        &[road_loop, site_loop],
+        4.0,
+        &mut mixed_samples,
+        &mut mixed_constraints,
+        &mut mixed_keys,
+    );
+
+    assert_eq!(
+        mixed_samples, road_only_samples,
+        "building-site loops must not contribute roadbed grading samples"
+    );
+    assert!(
+        mixed_constraints.is_empty(),
+        "mixed road/site footprint sets must not constrain roadbed guide rails"
+    );
+}
+
+fn building_site_terrain_cdt_loop(
+    stable_piece_id: u64,
+    vertices: Vec<TerrainCdtVertex>,
+) -> TerrainCdtRoadLoop {
+    let source_edges = vertices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+            start,
+            end: vertices[(index + 1) % vertices.len()],
+            source: TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                building_idx: stable_piece_id,
+                local_loop_index: 0,
+                local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
+            },
+        })
+        .collect();
+    TerrainCdtRoadLoop::new_with_source_edges(stable_piece_id, 0, vertices, source_edges)
 }
 
 #[test]

@@ -35,7 +35,9 @@ use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
 };
-use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
+use crate::simulation::terrain::{
+    TerrainPatchSnapshot, TerrainSystem, terrain_cdt_local_sample_margin_m,
+};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
     AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
@@ -70,26 +72,10 @@ pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
-/// Minimum terrain-CDT sample margin around road loops inside one render patch.
-const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
-/// Extra terrain-CDT sample margin expressed in road-locked render steps.
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
-/// Extra terrain-CDT sample margin expressed in authored terrain cells.
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
 /// First continuous runtime water pass tick interval in simulated seconds.
 const CONTINUOUS_WATER_TICK_DT: f32 = 0.2;
 /// First continuous runtime water pass tick interval in real-time seconds.
 const CONTINUOUS_WATER_TICK_INTERVAL_S: f64 = CONTINUOUS_WATER_TICK_DT as f64;
-
-/// Returns the deterministic seam margin used by local terrain-CDT windows.
-pub(crate) fn terrain_cdt_local_sample_margin_m(
-    terrain: &TerrainSystem,
-    render_step_m: f32,
-) -> f32 {
-    TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M
-        .max(render_step_m.max(f32::EPSILON) * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS)
-        .max(terrain.cell_size_m() * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS)
-}
 
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///

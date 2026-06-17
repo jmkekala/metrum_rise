@@ -22,6 +22,19 @@ use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 
 const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
+const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
+const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
+const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
+
+/// Returns the deterministic seam margin used by local terrain-CDT windows.
+pub(crate) fn terrain_cdt_local_sample_margin_m(
+    terrain: &TerrainSystem,
+    render_step_m: f32,
+) -> f32 {
+    TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M
+        .max(render_step_m.max(f32::EPSILON) * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS)
+        .max(terrain.cell_size_m() * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS)
+}
 
 /// One deterministic render-patch snapshot of visual terrain.
 #[derive(Clone, Debug, PartialEq)]
