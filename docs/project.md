@@ -67,10 +67,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   dust, can insert road-owned interior guide support before CDT, and validates visible
   pathological top-surface triangles with source-rich diagnostics. Road-edit rebuilds also regrade
   affected junction mouths through an authority-corridor-aware horizontal-distance profile solve
-  that keeps stable through corridors as the whole-`JunctionN` base grade, blends edited branches
-  into that plane with a small dynamic mouth pin, one solve/control sample, sparse transition
-  support vertices, and protected handoff sampling, while preserving terrain / earthwork footprint
-  provenance. See
+  that keeps the best stable through corridor as the whole-`JunctionN` base grade, prevents
+  secondary opposite branch pairs from rotating that plane, and blends edited branches into it with
+  a small dynamic mouth pin, one solve/control sample, sparse transition support vertices, and
+  protected handoff sampling, while preserving terrain / earthwork footprint provenance. See
   [`roads.md`](roads.md).
 - Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See

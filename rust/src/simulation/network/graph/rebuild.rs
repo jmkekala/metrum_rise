@@ -794,47 +794,21 @@ impl RegionGraph {
         }
         let corridors = Self::junction_profile_authority_corridors(&samples);
         let best_corridor = corridors.first()?;
-        let mut authority_indices = Vec::new();
-        for corridor in &corridors {
-            if !authority_indices.contains(&corridor.a) {
-                authority_indices.push(corridor.a);
-            }
-            if !authority_indices.contains(&corridor.b) {
-                authority_indices.push(corridor.b);
-            }
-        }
-        authority_indices.sort_unstable();
-        let authority_incidents = authority_indices
-            .iter()
-            .map(|&index| {
+        let authority_incidents = [best_corridor.a, best_corridor.b]
+            .into_iter()
+            .map(|index| {
                 (
                     samples[index].incident.edge_idx,
                     samples[index].incident.at_start,
                 )
             })
             .collect::<HashSet<_>>();
-        let authority_samples = authority_indices
-            .iter()
-            .map(|&index| samples[index])
-            .collect::<Vec<_>>();
-        let plane = if authority_samples.len() >= 3 {
-            self.solve_junction_profile_plane_from_samples(node_id, &authority_samples, limit_mode)
-                .or_else(|| {
-                    self.solve_junction_profile_corridor_plane(
-                        node_id,
-                        samples[best_corridor.a],
-                        samples[best_corridor.b],
-                        limit_mode,
-                    )
-                })?
-        } else {
-            self.solve_junction_profile_corridor_plane(
-                node_id,
-                samples[best_corridor.a],
-                samples[best_corridor.b],
-                limit_mode,
-            )?
-        };
+        let plane = self.solve_junction_profile_corridor_plane(
+            node_id,
+            samples[best_corridor.a],
+            samples[best_corridor.b],
+            limit_mode,
+        )?;
         Some(JunctionProfileSolve {
             plane,
             authority_incidents,
@@ -924,17 +898,7 @@ impl RegionGraph {
                 .then(a.a.cmp(&b.a))
                 .then(a.b.cmp(&b.b))
         });
-        let mut selected = Vec::new();
-        let mut used = HashSet::new();
-        for candidate in candidates {
-            if used.contains(&candidate.a) || used.contains(&candidate.b) {
-                continue;
-            }
-            used.insert(candidate.a);
-            used.insert(candidate.b);
-            selected.push(candidate);
-        }
-        selected
+        candidates
     }
 
     fn junction_profile_corridor_grade(
@@ -982,43 +946,6 @@ impl RegionGraph {
             grade * axis.x,
             grade * axis.y,
             &[(a.dx, a.dz), (b.dx, b.dz)],
-            limit_mode,
-        )
-    }
-
-    fn solve_junction_profile_plane_from_samples(
-        &self,
-        node_id: u32,
-        samples: &[JunctionProfileIncidentSample],
-        limit_mode: JunctionProfileLimitMode,
-    ) -> Option<JunctionEndpointProfilePlane> {
-        let origin = self.nodes.get(node_id as usize)?.pos;
-        let mut xx = 0.0;
-        let mut xz = 0.0;
-        let mut zz = 0.0;
-        let mut xy = 0.0;
-        let mut zy = 0.0;
-        let mut sample_offsets = Vec::with_capacity(samples.len());
-        for sample in samples {
-            xx += sample.dx * sample.dx;
-            xz += sample.dx * sample.dz;
-            zz += sample.dz * sample.dz;
-            xy += sample.dx * sample.dy;
-            zy += sample.dz * sample.dy;
-            sample_offsets.push((sample.dx, sample.dz));
-        }
-        let det = xx * zz - xz * xz;
-        if det.abs() <= JUNCTION_PROFILE_PLANE_DET_EPS {
-            return None;
-        }
-
-        let grade_x = (xy * zz - zy * xz) / det;
-        let grade_z = (xx * zy - xz * xy) / det;
-        JunctionEndpointProfilePlane::grade_limited(
-            origin,
-            grade_x,
-            grade_z,
-            &sample_offsets,
             limit_mode,
         )
     }
@@ -1735,90 +1662,86 @@ mod tests {
     }
 
     #[test]
-    fn junction_profile_preserves_multi_corridor_junctionn_base_grade() {
+    fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
         let mut graph = RegionGraph::new();
         let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
-        let west = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
-        let east = graph.add_node(Vector3::new(48.0, 0.0, 0.0), NodeType::Junction);
-        let south = graph.add_node(Vector3::new(0.0, 0.0, -48.0), NodeType::Junction);
-        let north = graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
-        let hill = graph.add_node(Vector3::new(34.0, 24.0, 34.0), NodeType::Junction);
+        let through_axis = Vector2::new(0.866_025_4, 0.5);
+        let branch_axis = Vector2::new(0.5, -0.866_025_4);
+        let through_grade = 0.07;
+        let branch_grade = 0.24;
+        let length_m = 48.0;
+
+        let west_pos = Vector3::new(
+            -through_axis.x * length_m,
+            -through_grade * length_m,
+            -through_axis.y * length_m,
+        );
+        let east_pos = Vector3::new(
+            through_axis.x * length_m,
+            through_grade * length_m,
+            through_axis.y * length_m,
+        );
+        let first_branch_pos = Vector3::new(
+            branch_axis.x * length_m,
+            branch_grade * length_m,
+            branch_axis.y * length_m,
+        );
+        let opposite_branch_pos = Vector3::new(
+            -branch_axis.x * length_m,
+            -branch_grade * length_m,
+            -branch_axis.y * length_m,
+        );
+
+        let west = graph.add_node(west_pos, NodeType::Junction);
+        let east = graph.add_node(east_pos, NodeType::Junction);
+        let first_branch = graph.add_node(first_branch_pos, NodeType::Junction);
+        let opposite_branch = graph.add_node(opposite_branch_pos, NodeType::Junction);
 
         for (start, end, points) in [
-            (
-                west,
-                center,
-                vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::ZERO],
-            ),
-            (
-                center,
-                east,
-                vec![Vector3::ZERO, Vector3::new(48.0, 0.0, 0.0)],
-            ),
-            (
-                south,
-                center,
-                vec![Vector3::new(0.0, 0.0, -48.0), Vector3::ZERO],
-            ),
-            (
-                center,
-                north,
-                vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 48.0)],
-            ),
-            (
-                center,
-                hill,
-                vec![Vector3::ZERO, Vector3::new(34.0, 24.0, 34.0)],
-            ),
+            (west, center, vec![west_pos, Vector3::ZERO]),
+            (center, east, vec![Vector3::ZERO, east_pos]),
+            (center, first_branch, vec![Vector3::ZERO, first_branch_pos]),
         ] {
             let mut edge = profile_test_edge(points);
             edge.start_node = start;
             edge.end_node = end;
             graph.add_edge(edge);
         }
+        graph.rebuild_adjacency_list();
 
-        let original_corridor_geometry = (0..4)
-            .map(|edge_idx| graph.edge(edge_idx).geometry.clone())
-            .collect::<Vec<_>>();
+        let before = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("primary through corridor should define the initial JunctionN plane");
+        let mut opposite_edge = profile_test_edge(vec![Vector3::ZERO, opposite_branch_pos]);
+        opposite_edge.start_node = center;
+        opposite_edge.end_node = opposite_branch;
+        graph.add_edge(opposite_edge);
         graph.rebuild_adjacency_list();
         let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
             &HashSet::from([center]),
-            &HashSet::from([4]),
+            &HashSet::from([3]),
         );
-
         assert_eq!(
             changed_edges,
-            HashSet::from([4]),
-            "only the added hill branch should adapt in a five-mouth JunctionN"
+            HashSet::from([3]),
+            "the new opposite branch should adapt to the existing primary corridor"
         );
-        for (edge_idx, original_geometry) in original_corridor_geometry.into_iter().enumerate() {
-            assert_eq!(
-                graph.edge(edge_idx).geometry,
-                original_geometry,
-                "stable authority corridor edge {edge_idx} should keep its source profile"
-            );
-        }
-
-        let plane = graph
+        let after = graph
             .junction_endpoint_profile_plane(center)
-            .expect("authority corridors should define the JunctionN base plane");
+            .expect("adding an opposite branch should keep a canonical JunctionN plane");
         assert!(
-            plane.grade() <= 1.0e-4,
-            "two flat authority corridors should keep the JunctionN base flat, got grade {:.6}",
-            plane.grade()
+            (after.grade_x - before.grade_x).abs() <= 1.0e-4
+                && (after.grade_z - before.grade_z).abs() <= 1.0e-4,
+            "secondary opposite branch corridor must not rotate the primary JunctionN plane: before=({:.6},{:.6}) after=({:.6},{:.6})",
+            before.grade_x,
+            before.grade_z,
+            after.grade_x,
+            after.grade_z
         );
-        let branch_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-            graph.edge(4),
-            true,
-            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
-        )
-        .expect("branch solve-distance support should exist");
         assert!(
-            (branch_solve_sample.y
-                - plane.height_at_xz(branch_solve_sample.x, branch_solve_sample.z))
-            .abs()
-                <= 0.05,
-            "branch solve sample should adapt to the multi-corridor authority plane"
+            (after.grade() - through_grade).abs() <= 1.0e-4,
+            "the primary through-road grade should stay authoritative, got {:.6}",
+            after.grade()
         );
     }
 }

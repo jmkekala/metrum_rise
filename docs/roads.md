@@ -159,11 +159,12 @@ missing source support.
 Road-edit rebuilds preserve that conservative solve for the edited edge set, then use the stronger
 profile path only when an affected `Bend` / `JunctionN` still solves to an over-limit platform.
 For any `JunctionN`, the endpoint profile solve first looks for deterministic opposite-mouth
-authority corridors. Existing stable corridor mouths score above edited branch mouths, and one or
-more non-overlapping corridors may own the node base plane. When such a corridor exists, the
-authority mouths keep their original edge profile and only non-authority branch mouths are blended
-into that plane. When no compatible authority corridor exists, the node falls back to the all-mouth
-least-squares plane. Any changed mouth is capped to the mouth-grade limit, uses a small
+authority corridors. Existing stable corridor mouths score above edited branch mouths, and the
+highest-scored corridor owns the node base plane. Secondary opposite branch pairs must not rotate
+that base plane when another road is added to the same `JunctionN`. When such a corridor exists,
+the authority mouths keep their original edge profile and only non-authority branch mouths are
+blended into that plane. When no compatible authority corridor exists, the node falls back to the
+all-mouth least-squares plane. Any changed mouth is capped to the mouth-grade limit, uses a small
 width-scaled hard mouth pin (`~1..2 m` for current standard roads), and blends back to source grade
 over a bounded transition. The 12 m profile sample is only a stable solve/control sample, not a hard
 platform extent. Support vertices are materialized at the solve sample and sparsely through the
@@ -189,8 +190,9 @@ The implemented contract:
   owner / height-field / grade authority
 - road-edit junction profile solving first applies the conservative edited-edge fit, then solves
   affected `Bend` / `JunctionN` mouths through deterministic authority-corridor selection; stable
-  opposite-mouth corridors keep the node base grade for the whole `JunctionN`, non-authority edited
-  branches adapt into that plane, and no-compatible-corridor cases fall back to the all-mouth solve;
+  opposite-mouth corridors are scored deterministically, the best corridor keeps the node base
+  grade for the whole `JunctionN`, non-authority edited branches adapt into that plane, and
+  no-compatible-corridor cases fall back to the all-mouth solve;
   this is the source grade solution, not a render-time repair, it must use horizontal profile
   distances, keep the hard mouth pin small, materialize the solve/control sample plus sparse outer
   vertical-curve support points, and update changed edge cost / length data before lane rebuild
