@@ -565,6 +565,11 @@ impl RegionGraph {
                         (!adaptable_edges.contains(&incident.edge_idx)).then_some(incident.edge_idx)
                     })
                     .collect::<HashSet<_>>();
+                if let Some(bend_solve) = self.solve_bend_profile_solve(node_id, incidents) {
+                    return self
+                        .bend_profile_requires_regrade(incidents, adaptable_edges, bend_solve.plane)
+                        .then_some(node_id);
+                }
                 let conservative = self.solve_junction_profile_solve(
                     node_id,
                     incidents,
@@ -618,7 +623,10 @@ impl RegionGraph {
                 .iter()
                 .map(|incident| incident.edge_idx)
                 .collect::<HashSet<_>>();
-            let solve = if stable_incidents.len() >= 2 {
+            let solve = if let Some(bend_solve) = self.solve_bend_profile_solve(node_id, incidents)
+            {
+                Some(bend_solve)
+            } else if stable_incidents.len() >= 2 {
                 self.solve_junction_profile_solve(
                     node_id,
                     &stable_incidents,
@@ -768,8 +776,8 @@ impl RegionGraph {
         let incidents_by_node =
             self.build_junction_profile_incidents(&valid_node_ids, Some(&affected_nodes));
         let incidents = incidents_by_node.get(&node_id)?;
-        (incidents.len() >= 2)
-            .then(|| {
+        self.solve_bend_profile_solve(node_id, incidents)
+            .or_else(|| {
                 self.solve_junction_profile_solve(
                     node_id,
                     incidents,
@@ -777,8 +785,80 @@ impl RegionGraph {
                     JunctionProfileLimitMode::ConservativeSourceFit,
                 )
             })
-            .flatten()
             .map(|solve| solve.plane)
+    }
+
+    fn solve_bend_profile_solve(
+        &self,
+        node_id: u32,
+        incidents: &[JunctionProfileIncident],
+    ) -> Option<JunctionProfileSolve> {
+        if !self.junction_profile_incidents_form_bend(incidents) {
+            return None;
+        }
+        Some(JunctionProfileSolve {
+            plane: JunctionEndpointProfilePlane {
+                origin: self.nodes.get(node_id as usize)?.pos,
+                grade_x: 0.0,
+                grade_z: 0.0,
+            },
+            authority_incidents: HashSet::new(),
+        })
+    }
+
+    fn bend_profile_requires_regrade(
+        &self,
+        incidents: &[JunctionProfileIncident],
+        adaptable_edges: &HashSet<usize>,
+        plane: JunctionEndpointProfilePlane,
+    ) -> bool {
+        incidents
+            .iter()
+            .filter(|incident| adaptable_edges.contains(&incident.edge_idx))
+            .any(|incident| {
+                let Some(edge) = self.edges.get(incident.edge_idx) else {
+                    return false;
+                };
+                let total_length_m = Self::edge_profile_length_m(edge);
+                if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+                    return false;
+                }
+                let hard_zone_m = Self::junction_profile_hard_zone_m(edge, total_length_m);
+                let blend_end_m = (hard_zone_m + JUNCTION_PROFILE_BLEND_ZONE_M).min(total_length_m);
+                if hard_zone_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
+                    return false;
+                }
+                let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m);
+                Self::endpoint_profile_support_delta_m(
+                    edge,
+                    incident.at_start,
+                    plane,
+                    solve_sample_m,
+                )
+                .is_some_and(|delta_m| delta_m > JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M)
+            })
+    }
+
+    fn junction_profile_incidents_form_bend(&self, incidents: &[JunctionProfileIncident]) -> bool {
+        let [a, b] = incidents else {
+            return false;
+        };
+        let Some(a_direction) = self
+            .edges
+            .get(a.edge_idx)
+            .and_then(|edge| Self::edge_endpoint_direction_xz(edge, a.at_start))
+        else {
+            return false;
+        };
+        let Some(b_direction) = self
+            .edges
+            .get(b.edge_idx)
+            .and_then(|edge| Self::edge_endpoint_direction_xz(edge, b.at_start))
+        else {
+            return false;
+        };
+
+        !Self::directions_are_pass_through(a_direction, b_direction)
     }
 
     fn solve_junction_profile_solve(
@@ -1590,6 +1670,98 @@ mod tests {
         assert!((sample.x - 15.0).abs() <= f32::EPSILON);
         assert!((sample.y - 0.0).abs() <= f32::EPSILON);
         assert!((sample.z - 0.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn bend_profile_plane_stays_horizontal_on_hillside_corner() {
+        let mut graph = RegionGraph::new();
+        let center_pos = Vector3::new(0.0, 10.0, 0.0);
+        let west_pos = Vector3::new(-48.0, 10.0, 0.0);
+        let north_pos = Vector3::new(0.0, 22.0, 48.0);
+        let center = graph.add_node(center_pos, NodeType::Junction);
+        let west = graph.add_node(west_pos, NodeType::Junction);
+        let north = graph.add_node(north_pos, NodeType::Junction);
+
+        let mut west_edge = profile_test_edge(vec![west_pos, center_pos]);
+        west_edge.start_node = west;
+        west_edge.end_node = center;
+        graph.add_edge(west_edge);
+
+        let mut north_edge = profile_test_edge(vec![center_pos, north_pos]);
+        north_edge.start_node = center;
+        north_edge.end_node = north;
+        graph.add_edge(north_edge);
+
+        let plane = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("non-pass-through two-road node should expose a Bend profile plane");
+
+        assert!(
+            plane.grade() <= 1.0e-6,
+            "Bend nodes must keep a horizontal local platform instead of inheriting the hillside grade: grade={:.6}",
+            plane.grade()
+        );
+        assert!(
+            (plane.height_at_xz(12.0, 12.0) - center_pos.y).abs() <= 1.0e-6,
+            "horizontal Bend platform should be anchored at the graph node height"
+        );
+    }
+
+    #[test]
+    fn bend_profile_adapts_new_corner_without_rewriting_stable_edge() {
+        let mut graph = RegionGraph::new();
+        let center_pos = Vector3::new(0.0, 10.0, 0.0);
+        let west_pos = Vector3::new(-48.0, 10.0, 0.0);
+        let north_pos = Vector3::new(0.0, 22.0, 48.0);
+        let center = graph.add_node(center_pos, NodeType::Junction);
+        let west = graph.add_node(west_pos, NodeType::Junction);
+        let north = graph.add_node(north_pos, NodeType::Junction);
+
+        let mut west_edge = profile_test_edge(vec![west_pos, center_pos]);
+        west_edge.start_node = west;
+        west_edge.end_node = center;
+        graph.add_edge(west_edge);
+
+        let mut north_edge = profile_test_edge(vec![center_pos, north_pos]);
+        north_edge.start_node = center;
+        north_edge.end_node = north;
+        graph.add_edge(north_edge);
+
+        let stable_before = graph.edge(0).geometry.clone();
+        let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
+            &HashSet::from([center]),
+            &HashSet::from([1]),
+        );
+
+        assert_eq!(
+            changed_edges,
+            HashSet::from([1]),
+            "only the newly authored bend leg should be adapted"
+        );
+        assert_eq!(
+            graph.edge(0).geometry,
+            stable_before,
+            "stable existing bend leg should not be rewritten"
+        );
+        assert!(
+            graph.edge(1).geometry.len() >= 8,
+            "adapted bend leg should receive vertical-curve support points"
+        );
+
+        let plane = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("adapted bend should keep exposing the horizontal platform plane");
+        let solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            graph.edge(1),
+            true,
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+        )
+        .expect("adapted bend leg should contain a solve-distance sample");
+        let delta_m = (solve_sample.y - plane.height_at_xz(solve_sample.x, solve_sample.z)).abs();
+        assert!(
+            delta_m <= 0.05,
+            "control geometry should bring the new bend leg to the horizontal platform at the solve sample: delta={delta_m:.6}"
+        );
     }
 
     #[test]

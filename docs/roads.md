@@ -164,9 +164,14 @@ when limiting stays close to the incident road samples; otherwise the original s
 plane is preserved. The same plane is consumed by both the span mouth section and node mouth
 ownership, so the roadbed mouth remains exact without allowing a safe local smoothing pass to hide
 missing source support.
+For a true two-mouth `Bend`, that endpoint plane is always a horizontal node-local platform
+anchored at the graph node height; any uphill or downhill change must happen in the adjacent edge
+profile fade, not by tilting the bend patch. `JunctionN` keeps the multi-mouth solve described
+below.
 
 Road-edit rebuilds preserve that conservative solve for the edited edge set, then use the stronger
-profile path only when an affected `Bend` / `JunctionN` still solves to an over-limit platform.
+profile path only when an affected `JunctionN` still solves to an over-limit platform, or when an
+adaptable `Bend` leg still deviates from its horizontal platform at the profile control sample.
 For any `JunctionN`, the endpoint profile solve first looks for deterministic opposite-mouth
 authority corridors. Existing stable corridor mouths score above edited branch mouths, and the
 highest-scored corridor owns the node base plane. Secondary opposite branch pairs must not rotate
@@ -203,11 +208,12 @@ The implemented contract:
   vertices before Spade CDT input; guides are inserted only inside the final road-owned region,
   require a verified road-owned grade plane from the region boundary, and carry canonical key /
   owner / height-field / grade authority
-- road-edit junction profile solving first applies the conservative edited-edge fit, then solves
-  affected `Bend` / `JunctionN` mouths through deterministic authority-corridor selection; stable
-  opposite-mouth corridors are scored deterministically, the best corridor keeps the node base
-  grade for the whole `JunctionN`, non-authority edited branches adapt into that plane, and
-  no-compatible-corridor cases fall back to the all-mouth solve;
+- road-edit junction profile solving first applies the conservative edited-edge fit; true
+  two-mouth `Bend` nodes use a horizontal node-local platform, while affected `JunctionN` mouths
+  solve through deterministic authority-corridor selection; stable opposite-mouth corridors are
+  scored deterministically, the best corridor keeps the node base grade for the whole `JunctionN`,
+  non-authority edited branches adapt into that plane, and no-compatible-corridor cases fall back
+  to the all-mouth solve;
   this is the source grade solution, not a render-time repair, it must use horizontal profile
   distances, keep the hard mouth pin small, materialize the solve/control sample plus sparse outer
   vertical-curve support points, and update changed edge cost / length data before lane rebuild
