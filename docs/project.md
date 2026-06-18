@@ -66,9 +66,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   carriageway triangulation now canonicalizes same-owner / same-height / same-provenance numeric
   dust, can insert road-owned interior guide support before CDT, and validates visible
   pathological top-surface triangles with source-rich diagnostics. Road-edit rebuilds also regrade
-  affected junction mouths through a bounded horizontal-distance profile solve with a small dynamic
-  mouth pin, one solve/control sample, sparse transition support vertices, and protected handoff
-  sampling, while preserving terrain / earthwork footprint provenance. See
+  affected junction mouths through an authority-corridor-aware horizontal-distance profile solve
+  that keeps stable through corridors as the whole-`JunctionN` base grade, blends edited branches
+  into that plane with a small dynamic mouth pin, one solve/control sample, sparse transition
+  support vertices, and protected handoff sampling, while preserving terrain / earthwork footprint
+  provenance. See
   [`roads.md`](roads.md).
 - Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See

@@ -20,6 +20,8 @@ const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
 const JUNCTION_PROFILE_SUPPORT_STEP_M: f32 = 4.0;
+const JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT: f32 = -0.86;
+const JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE: f32 = 2.0;
 
 #[derive(Clone, Copy)]
 struct ClipIncident {
@@ -41,6 +43,28 @@ struct ClipNodeStats {
 struct JunctionProfileIncident {
     edge_idx: usize,
     at_start: bool,
+}
+
+#[derive(Clone, Copy)]
+struct JunctionProfileIncidentSample {
+    incident: JunctionProfileIncident,
+    direction_xz: Vector2,
+    dx: f32,
+    dz: f32,
+    dy: f32,
+    stable: bool,
+}
+
+struct JunctionProfileCorridorCandidate {
+    a: usize,
+    b: usize,
+    score: f32,
+    grade: f32,
+}
+
+struct JunctionProfileSolve {
+    plane: JunctionEndpointProfilePlane,
+    authority_incidents: HashSet<(usize, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -463,11 +487,11 @@ impl RegionGraph {
         changed_edges
     }
 
-    /// Regrades every road edge incident to affected over-limit Bend/JunctionN nodes.
+    /// Regrades affected over-limit Bend/JunctionN mouths through source profile geometry.
     ///
     /// This is the stronger road-edit path: only nodes whose conservative profile still exceeds
-    /// the grade cap are selected, then all touching edge mouths receive real support vertices so
-    /// later section compiles sample that platform.
+    /// the grade cap are selected, then adaptable non-authority mouths receive real support
+    /// vertices so later section compiles sample the solved profile.
     pub(in crate::simulation::network) fn regrade_junction_endpoint_profiles_for_nodes(
         &mut self,
         affected_nodes: &HashSet<u32>,
@@ -523,21 +547,24 @@ impl RegionGraph {
                     return None;
                 }
 
-                let conservative = self.solve_junction_profile_plane(
+                let stable_edges = HashSet::new();
+                let conservative = self.solve_junction_profile_solve(
                     node_id,
                     incidents,
+                    &stable_edges,
                     JunctionProfileLimitMode::ConservativeSourceFit,
                 );
-                if conservative
-                    .is_some_and(|plane| plane.grade() > JUNCTION_PROFILE_MOUTH_MAX_GRADE + 1.0e-4)
-                    || conservative.is_none()
-                        && self
-                            .solve_junction_profile_plane(
-                                node_id,
-                                incidents,
-                                JunctionProfileLimitMode::RegradePlatform,
-                            )
-                            .is_some()
+                if conservative.as_ref().is_some_and(|solve| {
+                    solve.plane.grade() > JUNCTION_PROFILE_MOUTH_MAX_GRADE + 1.0e-4
+                }) || conservative.is_none()
+                    && self
+                        .solve_junction_profile_solve(
+                            node_id,
+                            incidents,
+                            &stable_edges,
+                            JunctionProfileLimitMode::RegradePlatform,
+                        )
+                        .is_some()
                 {
                     Some(node_id)
                 } else {
@@ -556,7 +583,7 @@ impl RegionGraph {
     ) -> HashSet<usize> {
         let incidents_by_node =
             self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
-        let mut edge_solves: Vec<(usize, bool, JunctionEndpointProfilePlane)> = Vec::new();
+        let mut edge_solves: Vec<(usize, bool, JunctionEndpointProfilePlane, bool)> = Vec::new();
 
         let mut node_ids: Vec<u32> = incidents_by_node.keys().copied().collect();
         node_ids.sort_unstable();
@@ -570,26 +597,53 @@ impl RegionGraph {
                 .copied()
                 .filter(|incident| !adaptable_edges.contains(&incident.edge_idx))
                 .collect::<Vec<_>>();
-            let plane = if stable_incidents.len() >= 2 {
-                self.solve_junction_profile_plane(node_id, &stable_incidents, limit_mode)
-                    .or_else(|| self.solve_junction_profile_plane(node_id, incidents, limit_mode))
+            let stable_edges = stable_incidents
+                .iter()
+                .map(|incident| incident.edge_idx)
+                .collect::<HashSet<_>>();
+            let solve = if stable_incidents.len() >= 2 {
+                self.solve_junction_profile_solve(
+                    node_id,
+                    &stable_incidents,
+                    &stable_edges,
+                    limit_mode,
+                )
+                .or_else(|| {
+                    self.solve_junction_profile_solve(node_id, incidents, &stable_edges, limit_mode)
+                })
             } else {
-                self.solve_junction_profile_plane(node_id, incidents, limit_mode)
+                self.solve_junction_profile_solve(node_id, incidents, &stable_edges, limit_mode)
             };
-            let Some(plane) = plane else {
+            let Some(solve) = solve else {
                 continue;
             };
+            let preserve_authority = solve.authority_incidents.len() >= 2
+                && solve.authority_incidents.len() < incidents.len();
             for incident in incidents {
                 if !adaptable_edges.contains(&incident.edge_idx) {
                     continue;
                 }
-                edge_solves.push((incident.edge_idx, incident.at_start, plane));
+                let is_authority = solve
+                    .authority_incidents
+                    .contains(&(incident.edge_idx, incident.at_start));
+                if preserve_authority && is_authority {
+                    continue;
+                }
+                let materialize_supports =
+                    matches!(limit_mode, JunctionProfileLimitMode::RegradePlatform)
+                        || (preserve_authority && !is_authority);
+                edge_solves.push((
+                    incident.edge_idx,
+                    incident.at_start,
+                    solve.plane,
+                    materialize_supports,
+                ));
             }
         }
 
         edge_solves.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut changed_edges = Vec::new();
-        for (edge_idx, at_start, plane) in edge_solves {
+        for (edge_idx, at_start, plane, materialize_supports) in edge_solves {
             if edge_idx >= self.edges.len() || self.edges[edge_idx].deleted {
                 continue;
             }
@@ -597,7 +651,7 @@ impl RegionGraph {
                 &mut self.edges[edge_idx],
                 at_start,
                 plane,
-                matches!(limit_mode, JunctionProfileLimitMode::RegradePlatform),
+                materialize_supports,
             );
             changed_edges.push(edge_idx);
         }
@@ -699,13 +753,274 @@ impl RegionGraph {
         let incidents = incidents_by_node.get(&node_id)?;
         (incidents.len() >= 2)
             .then(|| {
-                self.solve_junction_profile_plane(
+                self.solve_junction_profile_solve(
                     node_id,
                     incidents,
+                    &HashSet::new(),
                     JunctionProfileLimitMode::ConservativeSourceFit,
                 )
             })
             .flatten()
+            .map(|solve| solve.plane)
+    }
+
+    fn solve_junction_profile_solve(
+        &self,
+        node_id: u32,
+        incidents: &[JunctionProfileIncident],
+        stable_edges: &HashSet<usize>,
+        limit_mode: JunctionProfileLimitMode,
+    ) -> Option<JunctionProfileSolve> {
+        self.solve_junction_profile_authority_solve(node_id, incidents, stable_edges, limit_mode)
+            .or_else(|| {
+                self.solve_junction_profile_plane(node_id, incidents, limit_mode)
+                    .map(|plane| JunctionProfileSolve {
+                        plane,
+                        authority_incidents: HashSet::new(),
+                    })
+            })
+    }
+
+    fn solve_junction_profile_authority_solve(
+        &self,
+        node_id: u32,
+        incidents: &[JunctionProfileIncident],
+        stable_edges: &HashSet<usize>,
+        limit_mode: JunctionProfileLimitMode,
+    ) -> Option<JunctionProfileSolve> {
+        let samples = self.junction_profile_incident_samples(node_id, incidents, stable_edges);
+        if samples.len() < 2 {
+            return None;
+        }
+        let corridors = Self::junction_profile_authority_corridors(&samples);
+        let best_corridor = corridors.first()?;
+        let mut authority_indices = Vec::new();
+        for corridor in &corridors {
+            if !authority_indices.contains(&corridor.a) {
+                authority_indices.push(corridor.a);
+            }
+            if !authority_indices.contains(&corridor.b) {
+                authority_indices.push(corridor.b);
+            }
+        }
+        authority_indices.sort_unstable();
+        let authority_incidents = authority_indices
+            .iter()
+            .map(|&index| {
+                (
+                    samples[index].incident.edge_idx,
+                    samples[index].incident.at_start,
+                )
+            })
+            .collect::<HashSet<_>>();
+        let authority_samples = authority_indices
+            .iter()
+            .map(|&index| samples[index])
+            .collect::<Vec<_>>();
+        let plane = if authority_samples.len() >= 3 {
+            self.solve_junction_profile_plane_from_samples(node_id, &authority_samples, limit_mode)
+                .or_else(|| {
+                    self.solve_junction_profile_corridor_plane(
+                        node_id,
+                        samples[best_corridor.a],
+                        samples[best_corridor.b],
+                        limit_mode,
+                    )
+                })?
+        } else {
+            self.solve_junction_profile_corridor_plane(
+                node_id,
+                samples[best_corridor.a],
+                samples[best_corridor.b],
+                limit_mode,
+            )?
+        };
+        Some(JunctionProfileSolve {
+            plane,
+            authority_incidents,
+        })
+    }
+
+    fn junction_profile_incident_samples(
+        &self,
+        node_id: u32,
+        incidents: &[JunctionProfileIncident],
+        stable_edges: &HashSet<usize>,
+    ) -> Vec<JunctionProfileIncidentSample> {
+        let Some(origin) = self.nodes.get(node_id as usize).map(|node| node.pos) else {
+            return Vec::new();
+        };
+        let mut samples = Vec::with_capacity(incidents.len());
+        for incident in incidents {
+            let Some(edge) = self.edges.get(incident.edge_idx) else {
+                continue;
+            };
+            let Some(direction_xz) = Self::edge_endpoint_direction_xz(edge, incident.at_start)
+            else {
+                continue;
+            };
+            let total_length_m = Self::edge_profile_length_m(edge);
+            if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
+            if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            let Some(sample) = Self::sample_edge_geometry_from_endpoint(
+                edge,
+                incident.at_start,
+                sample_distance_m,
+            ) else {
+                continue;
+            };
+            let dx = sample.x - origin.x;
+            let dz = sample.z - origin.z;
+            if dx * dx + dz * dz <= JUNCTION_PROFILE_MIN_SAMPLE_M * JUNCTION_PROFILE_MIN_SAMPLE_M {
+                continue;
+            }
+            samples.push(JunctionProfileIncidentSample {
+                incident: *incident,
+                direction_xz,
+                dx,
+                dz,
+                dy: sample.y - origin.y,
+                stable: stable_edges.contains(&incident.edge_idx),
+            });
+        }
+        samples
+    }
+
+    fn junction_profile_authority_corridors(
+        samples: &[JunctionProfileIncidentSample],
+    ) -> Vec<JunctionProfileCorridorCandidate> {
+        let mut candidates = Vec::new();
+        for a in 0..samples.len() {
+            for b in a + 1..samples.len() {
+                let dot = samples[a]
+                    .direction_xz
+                    .dot(samples[b].direction_xz)
+                    .clamp(-1.0, 1.0);
+                if dot > JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT {
+                    continue;
+                }
+                let Some(grade) = Self::junction_profile_corridor_grade(samples[a], samples[b])
+                else {
+                    continue;
+                };
+                if grade > JUNCTION_PROFILE_REJECT_MAX_GRADE {
+                    continue;
+                }
+                let stable_count = usize::from(samples[a].stable) + usize::from(samples[b].stable);
+                let score = stable_count as f32 * 4.0 + (-dot)
+                    - grade * JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE;
+                candidates.push(JunctionProfileCorridorCandidate { a, b, score, grade });
+            }
+        }
+        candidates.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.grade.total_cmp(&b.grade))
+                .then(a.a.cmp(&b.a))
+                .then(a.b.cmp(&b.b))
+        });
+        let mut selected = Vec::new();
+        let mut used = HashSet::new();
+        for candidate in candidates {
+            if used.contains(&candidate.a) || used.contains(&candidate.b) {
+                continue;
+            }
+            used.insert(candidate.a);
+            used.insert(candidate.b);
+            selected.push(candidate);
+        }
+        selected
+    }
+
+    fn junction_profile_corridor_grade(
+        a: JunctionProfileIncidentSample,
+        b: JunctionProfileIncidentSample,
+    ) -> Option<f32> {
+        let axis = Vector2::new(a.dx, a.dz);
+        let axis_len = axis.length();
+        if axis_len <= f32::EPSILON {
+            return None;
+        }
+        let axis = axis / axis_len;
+        let at = a.dx * axis.x + a.dz * axis.y;
+        let bt = b.dx * axis.x + b.dz * axis.y;
+        let denom = at * at + bt * bt;
+        if denom <= f32::EPSILON {
+            return None;
+        }
+        Some(((at * a.dy + bt * b.dy) / denom).abs())
+    }
+
+    fn solve_junction_profile_corridor_plane(
+        &self,
+        node_id: u32,
+        a: JunctionProfileIncidentSample,
+        b: JunctionProfileIncidentSample,
+        limit_mode: JunctionProfileLimitMode,
+    ) -> Option<JunctionEndpointProfilePlane> {
+        let origin = self.nodes.get(node_id as usize)?.pos;
+        let axis = Vector2::new(a.dx, a.dz);
+        let axis_len = axis.length();
+        if axis_len <= f32::EPSILON {
+            return None;
+        }
+        let axis = axis / axis_len;
+        let at = a.dx * axis.x + a.dz * axis.y;
+        let bt = b.dx * axis.x + b.dz * axis.y;
+        let denom = at * at + bt * bt;
+        if denom <= f32::EPSILON {
+            return None;
+        }
+        let grade = (at * a.dy + bt * b.dy) / denom;
+        JunctionEndpointProfilePlane::grade_limited(
+            origin,
+            grade * axis.x,
+            grade * axis.y,
+            &[(a.dx, a.dz), (b.dx, b.dz)],
+            limit_mode,
+        )
+    }
+
+    fn solve_junction_profile_plane_from_samples(
+        &self,
+        node_id: u32,
+        samples: &[JunctionProfileIncidentSample],
+        limit_mode: JunctionProfileLimitMode,
+    ) -> Option<JunctionEndpointProfilePlane> {
+        let origin = self.nodes.get(node_id as usize)?.pos;
+        let mut xx = 0.0;
+        let mut xz = 0.0;
+        let mut zz = 0.0;
+        let mut xy = 0.0;
+        let mut zy = 0.0;
+        let mut sample_offsets = Vec::with_capacity(samples.len());
+        for sample in samples {
+            xx += sample.dx * sample.dx;
+            xz += sample.dx * sample.dz;
+            zz += sample.dz * sample.dz;
+            xy += sample.dx * sample.dy;
+            zy += sample.dz * sample.dy;
+            sample_offsets.push((sample.dx, sample.dz));
+        }
+        let det = xx * zz - xz * xz;
+        if det.abs() <= JUNCTION_PROFILE_PLANE_DET_EPS {
+            return None;
+        }
+
+        let grade_x = (xy * zz - zy * xz) / det;
+        let grade_z = (xx * zy - xz * xy) / det;
+        JunctionEndpointProfilePlane::grade_limited(
+            origin,
+            grade_x,
+            grade_z,
+            &sample_offsets,
+            limit_mode,
+        )
     }
 
     fn solve_junction_profile_plane(
@@ -1352,6 +1667,158 @@ mod tests {
         assert!(
             (transition_sample.y - transition_plane_y).abs() > 0.05,
             "post-hard-zone sample should have started easing away from the platform plane"
+        );
+    }
+
+    #[test]
+    fn junction_profile_preserves_authority_corridor_when_branch_connects_from_hill() {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let west = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(48.0, 0.0, 0.0), NodeType::Junction);
+        let north = graph.add_node(Vector3::new(0.0, 24.0, 48.0), NodeType::Junction);
+
+        let mut west_edge = profile_test_edge(vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::ZERO]);
+        west_edge.start_node = west;
+        west_edge.end_node = center;
+        graph.add_edge(west_edge);
+
+        let mut east_edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(48.0, 0.0, 0.0)]);
+        east_edge.start_node = center;
+        east_edge.end_node = east;
+        graph.add_edge(east_edge);
+
+        let mut north_edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(0.0, 24.0, 48.0)]);
+        north_edge.start_node = center;
+        north_edge.end_node = north;
+        graph.add_edge(north_edge);
+
+        graph.rebuild_adjacency_list();
+        let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
+            &HashSet::from([center]),
+            &HashSet::from([1, 2]),
+        );
+
+        assert_eq!(
+            changed_edges,
+            HashSet::from([2]),
+            "split through-road mouth should stay authoritative; only the branch adapts"
+        );
+        assert_eq!(
+            graph.edge(1).geometry,
+            vec![Vector3::ZERO, Vector3::new(48.0, 0.0, 0.0)],
+            "opposite split half of the existing corridor should not be regraded"
+        );
+        assert!(
+            graph.edge(2).geometry.len() >= 8,
+            "branch adaptation should materialize a smooth support transition"
+        );
+
+        let plane = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("authority corridor should define the JunctionN profile plane");
+        assert!(
+            plane.grade() <= 1.0e-4,
+            "flat through corridor should keep the junction plane flat, got grade {:.6}",
+            plane.grade()
+        );
+        let solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            graph.edge(2),
+            true,
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+        )
+        .expect("branch solve-distance support should exist");
+        assert!(
+            (solve_sample.y - plane.height_at_xz(solve_sample.x, solve_sample.z)).abs() <= 0.05,
+            "branch solve sample should adapt to the authority corridor plane"
+        );
+    }
+
+    #[test]
+    fn junction_profile_preserves_multi_corridor_junctionn_base_grade() {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let west = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(48.0, 0.0, 0.0), NodeType::Junction);
+        let south = graph.add_node(Vector3::new(0.0, 0.0, -48.0), NodeType::Junction);
+        let north = graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
+        let hill = graph.add_node(Vector3::new(34.0, 24.0, 34.0), NodeType::Junction);
+
+        for (start, end, points) in [
+            (
+                west,
+                center,
+                vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::ZERO],
+            ),
+            (
+                center,
+                east,
+                vec![Vector3::ZERO, Vector3::new(48.0, 0.0, 0.0)],
+            ),
+            (
+                south,
+                center,
+                vec![Vector3::new(0.0, 0.0, -48.0), Vector3::ZERO],
+            ),
+            (
+                center,
+                north,
+                vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 48.0)],
+            ),
+            (
+                center,
+                hill,
+                vec![Vector3::ZERO, Vector3::new(34.0, 24.0, 34.0)],
+            ),
+        ] {
+            let mut edge = profile_test_edge(points);
+            edge.start_node = start;
+            edge.end_node = end;
+            graph.add_edge(edge);
+        }
+
+        let original_corridor_geometry = (0..4)
+            .map(|edge_idx| graph.edge(edge_idx).geometry.clone())
+            .collect::<Vec<_>>();
+        graph.rebuild_adjacency_list();
+        let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
+            &HashSet::from([center]),
+            &HashSet::from([4]),
+        );
+
+        assert_eq!(
+            changed_edges,
+            HashSet::from([4]),
+            "only the added hill branch should adapt in a five-mouth JunctionN"
+        );
+        for (edge_idx, original_geometry) in original_corridor_geometry.into_iter().enumerate() {
+            assert_eq!(
+                graph.edge(edge_idx).geometry,
+                original_geometry,
+                "stable authority corridor edge {edge_idx} should keep its source profile"
+            );
+        }
+
+        let plane = graph
+            .junction_endpoint_profile_plane(center)
+            .expect("authority corridors should define the JunctionN base plane");
+        assert!(
+            plane.grade() <= 1.0e-4,
+            "two flat authority corridors should keep the JunctionN base flat, got grade {:.6}",
+            plane.grade()
+        );
+        let branch_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            graph.edge(4),
+            true,
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+        )
+        .expect("branch solve-distance support should exist");
+        assert!(
+            (branch_solve_sample.y
+                - plane.height_at_xz(branch_solve_sample.x, branch_solve_sample.z))
+            .abs()
+                <= 0.05,
+            "branch solve sample should adapt to the multi-corridor authority plane"
         );
     }
 }
