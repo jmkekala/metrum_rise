@@ -156,6 +156,9 @@ separation. Same-width conflicts cap that expansion to a small multiplier of the
 half-width so ordinary acute mouths do not become long flat platforms; mixed-width conflicts may
 expand farther when needed for canonical side-join ownership. That expansion is geometry ownership,
 not visual padding.
+Edge span sampling, visible-surface section queries, and grounded `Standard` road earthwork ranges
+must consume the same node-mouth ownership policy. Profile blending may use a shorter range than
+ownership only for the explicit sparse grounded `Standard` `Bend` hard-pin case described below.
 
 Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
 and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a

@@ -221,14 +221,19 @@ impl RoadSurfaceSystem {
             graph,
             graph.get_valid_node(edge.end_node),
         );
-        let Some((start_handoff, end_handoff)) = self.visual_surface_handoff_range_for_edge(
-            graph,
-            edge_idx,
-            edge,
-            total_length,
-            start_kind,
-            end_kind,
-        ) else {
+        let Some((start_handoff, end_handoff)) = self
+            .visual_edge_mouth_policy_for_edge(
+                graph,
+                edge_idx,
+                edge,
+                total_length,
+                start_kind,
+                end_kind,
+                false,
+                false,
+            )
+            .ownership_range
+        else {
             return None;
         };
 

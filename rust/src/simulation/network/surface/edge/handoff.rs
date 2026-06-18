@@ -11,6 +11,15 @@ const VISUAL_CONFLICT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VISUAL_CONFLICT_SIN_EPSILON: f32 = 1.0e-3;
 const VISUAL_CONFLICT_MAX_HALFWIDTH_FACTOR: f32 = 5.0;
 
+/// Shared visual-mouth decisions for one compiled edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::simulation::network::surface) struct EdgeMouthPolicy {
+    /// Span-owned section bounds after node-mouth material conflict has been reserved.
+    pub(in crate::simulation::network::surface) ownership_range: Option<(f32, f32)>,
+    /// Profile-blend bounds used by junction and bend grade smoothing.
+    pub(in crate::simulation::network::surface) profile_range: Option<(f32, f32)>,
+}
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
         Self::visual_profile_half_widths_for_edge(edge).0
@@ -30,7 +39,46 @@ impl RoadSurfaceSystem {
         Self::visual_node_handoff_limit_m(edge).clamp(0.0, total_length_m)
     }
 
-    pub(in crate::simulation::network::surface) fn visual_surface_handoff_range_for_edge(
+    /// Returns the shared visual mouth policy for one edge.
+    ///
+    /// The ownership range controls which longitudinal section range belongs to the edge span
+    /// instead of the node piece. The profile range controls grade blending near junction and bend
+    /// mouths, and may intentionally differ from ownership for sparse grounded bends.
+    pub(in crate::simulation::network::surface) fn visual_edge_mouth_policy_for_edge(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        edge: &Edge,
+        total_length_m: f32,
+        start_kind: Option<CompiledNodeKind>,
+        end_kind: Option<CompiledNodeKind>,
+        has_start_profile: bool,
+        has_end_profile: bool,
+    ) -> EdgeMouthPolicy {
+        let ownership_range = self.visual_surface_ownership_range_for_edge(
+            graph,
+            edge_idx,
+            edge,
+            total_length_m,
+            start_kind,
+            end_kind,
+        );
+        let profile_range = Self::visual_profile_blend_range_for_edge(
+            edge,
+            total_length_m,
+            ownership_range,
+            start_kind,
+            end_kind,
+            has_start_profile,
+            has_end_profile,
+        );
+        EdgeMouthPolicy {
+            ownership_range,
+            profile_range,
+        }
+    }
+
+    fn visual_surface_ownership_range_for_edge(
         &self,
         graph: &RegionGraph,
         edge_idx: usize,
@@ -70,6 +118,57 @@ impl RoadSurfaceSystem {
         let start_s = start_handoff.clamp(0.0, total_length_m);
         let end_s = (total_length_m - end_handoff).clamp(0.0, total_length_m);
         (end_s - start_s > SAMPLE_EPSILON_M).then_some((start_s, end_s))
+    }
+
+    fn visual_profile_blend_range_for_edge(
+        edge: &Edge,
+        total_length_m: f32,
+        ownership_range: Option<(f32, f32)>,
+        start_kind: Option<CompiledNodeKind>,
+        end_kind: Option<CompiledNodeKind>,
+        has_start_profile: bool,
+        has_end_profile: bool,
+    ) -> Option<(f32, f32)> {
+        if total_length_m <= SAMPLE_EPSILON_M || (!has_start_profile && !has_end_profile) {
+            return None;
+        }
+
+        let hard_zone_m = RegionGraph::junction_profile_hard_zone_m(edge, total_length_m);
+        let start_s_m = if !has_start_profile {
+            0.0
+        } else if start_kind == Some(CompiledNodeKind::Bend)
+            && Self::standard_bend_uses_short_profile_pin(edge)
+        {
+            hard_zone_m
+        } else if let Some((start_handoff_m, _)) = ownership_range {
+            start_handoff_m
+        } else {
+            hard_zone_m
+        };
+        let end_s_m = if !has_end_profile {
+            total_length_m
+        } else if end_kind == Some(CompiledNodeKind::Bend)
+            && Self::standard_bend_uses_short_profile_pin(edge)
+        {
+            (total_length_m - hard_zone_m).max(0.0)
+        } else if let Some((_, end_handoff_m)) = ownership_range {
+            end_handoff_m
+        } else {
+            (total_length_m - hard_zone_m).max(0.0)
+        };
+        (end_s_m - start_s_m > SAMPLE_EPSILON_M).then_some((start_s_m, end_s_m))
+    }
+
+    fn standard_bend_uses_short_profile_pin(edge: &Edge) -> bool {
+        if edge.class != EdgeClass::Standard {
+            return false;
+        }
+        let points = if edge.physical_geometry.is_empty() {
+            &edge.geometry
+        } else {
+            &edge.physical_geometry
+        };
+        points.len() <= 2
     }
 
     fn visual_node_handoff_distance_for_edge(
@@ -179,10 +278,7 @@ impl RoadSurfaceSystem {
         required_handoff.clamp(0.0, total_length_m)
     }
 
-    pub(in crate::simulation::network::surface) fn visual_start_handoff_m(
-        edge: &Edge,
-        total_length_m: f32,
-    ) -> f32 {
+    fn visual_start_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
         edge.start_clip
             .max(Self::visual_node_handoff_limit_m(edge))
             .clamp(0.0, total_length_m)
@@ -191,14 +287,6 @@ impl RoadSurfaceSystem {
     fn visual_end_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
         edge.end_clip
             .max(Self::visual_node_handoff_limit_m(edge))
-            .clamp(0.0, total_length_m)
-    }
-
-    pub(in crate::simulation::network::surface) fn visual_end_handoff_s_m(
-        edge: &Edge,
-        total_length_m: f32,
-    ) -> f32 {
-        (total_length_m - Self::visual_end_handoff_m(edge, total_length_m))
             .clamp(0.0, total_length_m)
     }
 }

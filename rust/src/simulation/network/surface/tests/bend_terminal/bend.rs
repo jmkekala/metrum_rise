@@ -101,16 +101,26 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
         &graph,
         graph.get_valid_node(edge.end_node),
     );
-    let (start_handoff_m, _) = surface
-        .visual_surface_handoff_range_for_edge(
-            &graph,
-            1,
-            edge,
-            total_length_m,
-            start_kind,
-            end_kind,
-        )
+    let mouth_policy = surface.visual_edge_mouth_policy_for_edge(
+        &graph,
+        1,
+        edge,
+        total_length_m,
+        start_kind,
+        end_kind,
+        true,
+        false,
+    );
+    let (start_handoff_m, _) = mouth_policy
+        .ownership_range
         .expect("bend edge should expose a visible ownership handoff");
+    let (start_profile_m, _) = mouth_policy
+        .profile_range
+        .expect("bend edge should expose an active profile range");
+    assert!(
+        (start_profile_m - hard_pin_m).abs() <= SAMPLE_EPSILON_M,
+        "sparse grounded Bend profile range should start at the shared hard pin: profile={start_profile_m:.3} hard_pin={hard_pin_m:.3}"
+    );
     assert!(
         start_handoff_m > hard_pin_m + 4.0,
         "test setup must keep ownership handoff farther than the profile hard pin: handoff={start_handoff_m:.3} hard_pin={hard_pin_m:.3}"

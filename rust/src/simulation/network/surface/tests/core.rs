@@ -275,18 +275,21 @@ fn junction_profile_transition_sections_use_dense_visual_cadence() {
         &graph,
         graph.get_valid_node(edge.end_node),
     );
-    let (start_handoff_m, end_handoff_m) = surface
-        .visual_surface_handoff_range_for_edge(
-            &graph,
-            edge_idx,
-            edge,
-            total_length_m,
-            start_kind,
-            end_kind,
-        )
-        .expect("profiled edge should expose a visible handoff range");
+    let mouth_policy = surface.visual_edge_mouth_policy_for_edge(
+        &graph,
+        edge_idx,
+        edge,
+        total_length_m,
+        start_kind,
+        end_kind,
+        true,
+        false,
+    );
+    let (start_profile_s_m, end_profile_s_m) = mouth_policy
+        .profile_range
+        .expect("profiled edge should expose a profile fade range");
     let fade_m = crate::simulation::network::graph::rebuild::JUNCTION_PROFILE_BLEND_ZONE_M
-        .min((end_handoff_m - start_handoff_m) * 0.5);
+        .min((end_profile_s_m - start_profile_s_m) * 0.5);
 
     let sections = surface
         .compiled_sections()
@@ -296,8 +299,8 @@ fn junction_profile_transition_sections_use_dense_visual_cadence() {
         .iter()
         .map(|section| section.s_m)
         .filter(|&s_m| {
-            s_m >= start_handoff_m - SAMPLE_EPSILON_M
-                && s_m <= start_handoff_m + fade_m + SAMPLE_EPSILON_M
+            s_m >= start_profile_s_m - SAMPLE_EPSILON_M
+                && s_m <= start_profile_s_m + fade_m + SAMPLE_EPSILON_M
         })
         .collect::<Vec<_>>();
     assert!(

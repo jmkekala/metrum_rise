@@ -259,7 +259,8 @@ impl RoadSurfaceSystem {
         let terrain_clip_boundary_loops =
             std::mem::take(&mut visible_regions.terrain_clip_boundary_loops);
 
-        let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
+        let earthwork_ranges =
+            self.earthwork_section_ranges_for_edge(graph, edge_idx, edge, sections, terrain);
         let mut clearance_regions =
             self.resolve_span_regions_for_ranges(sections, &earthwork_ranges, edge.class)?;
         Self::sort_span_owned_regions(&mut clearance_regions.regions);

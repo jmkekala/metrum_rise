@@ -73,7 +73,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   protected handoff sampling. Section compilation now applies the same small profile hard pin to
   sparse grounded `Standard` two-mouth `Bend` vertical-curve blending instead of treating the
   farther material ownership handoff as a flat platform extent, while preserving source-sampled
-  Bend, terrain, and earthwork footprint provenance. See
+  Bend, terrain, and earthwork footprint provenance. Edge span sampling, visible queries, and
+  grounded `Standard` earthwork section ranges now consume the same node-mouth ownership policy
+  rather than separate local clip helpers. See
   [`roads.md`](roads.md).
 - Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See

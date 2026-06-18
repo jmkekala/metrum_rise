@@ -66,16 +66,23 @@ fn dirty_node_recompile_refreshes_incident_span_sections_for_new_junction() {
         graph.get_valid_node(edge.end_node),
     );
     let (_, expected_handoff_s) = surface
-        .visual_surface_handoff_range_for_edge(
+        .visual_edge_mouth_policy_for_edge(
             &graph,
             left_edge,
             edge,
             total_length,
             start_kind,
             end_kind,
+            false,
+            false,
         )
+        .ownership_range
         .expect("left edge should have a visible span range after pairwise handoff");
-    let local_handoff_s = RoadSurfaceSystem::visual_end_handoff_s_m(edge, total_length);
+    let local_end_handoff_m = edge
+        .end_clip
+        .max(RoadSurfaceSystem::visual_node_handoff_limit_m(edge))
+        .clamp(0.0, total_length);
+    let local_handoff_s = (total_length - local_end_handoff_m).clamp(0.0, total_length);
     assert!(
         expected_handoff_s < local_handoff_s - SAMPLE_EPSILON_M,
         "pairwise node ownership must extend the visual handoff before the old local limit"

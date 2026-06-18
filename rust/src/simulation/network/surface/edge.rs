@@ -9,6 +9,7 @@ mod preview;
 mod profile;
 mod sections;
 
+use handoff::EdgeMouthPolicy;
 pub use preview::PreviewRoadSurfaceResult;
 use profile::EdgeProfilePlaneBlend;
 

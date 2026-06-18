@@ -40,11 +40,14 @@ impl RoadSurfaceSystem {
 
     pub(in crate::simulation::network::surface) fn earthwork_section_ranges_for_edge(
         &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
         edge: &Edge,
         sections: &[RoadSurfaceSection],
         terrain: &TerrainSystem,
     ) -> Vec<(usize, usize)> {
-        let Some((start_index, end_index)) = self.corridor_index_range_for_edge(edge, sections)
+        let Some((start_index, end_index)) =
+            self.corridor_index_range_for_edge(graph, edge_idx, edge, sections)
         else {
             return Vec::new();
         };
@@ -65,10 +68,12 @@ impl RoadSurfaceSystem {
 
     fn corridor_index_range_for_edge(
         &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
         edge: &Edge,
         sections: &[RoadSurfaceSection],
     ) -> Option<(usize, usize)> {
-        if sections.len() < 2 {
+        if sections.len() < 2 || edge_idx >= graph.edge_count() {
             return None;
         }
 
@@ -80,8 +85,26 @@ impl RoadSurfaceSystem {
         }
 
         let total_length = sections.last()?.s_m.max(0.0);
-        let start_handoff = Self::visual_start_handoff_m(edge, total_length);
-        let end_handoff = Self::visual_end_handoff_s_m(edge, total_length);
+        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.start_node),
+        );
+        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.end_node),
+        );
+        let (start_handoff, end_handoff) = self
+            .visual_edge_mouth_policy_for_edge(
+                graph,
+                edge_idx,
+                edge,
+                total_length,
+                start_kind,
+                end_kind,
+                false,
+                false,
+            )
+            .ownership_range?;
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
 
