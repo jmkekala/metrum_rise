@@ -8,10 +8,11 @@ use std::collections::{HashMap, HashSet};
 const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const CLIP_MIN_SIN: f32 = 0.0001;
 const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
-const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
+const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.1;
+const CLIP_ACUTE_MAX_HALFWIDTH_FACTOR: f32 = 5.0;
 const JUNCTION_PROFILE_HARD_ZONE_MIN_M: f32 = 1.0;
 const JUNCTION_PROFILE_HARD_ZONE_MAX_M: f32 = 2.0;
-const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 32.0;
+pub(crate) const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 32.0;
 const JUNCTION_PROFILE_SOLVE_SAMPLE_M: f32 = 12.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
 const JUNCTION_PROFILE_MOUTH_MAX_GRADE: f32 = 0.16;
@@ -19,7 +20,8 @@ const JUNCTION_PROFILE_LIMIT_MAX_SAMPLE_DELTA_M: f32 = 0.5;
 const JUNCTION_PROFILE_REJECT_MAX_GRADE: f32 = 0.5;
 const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
-const JUNCTION_PROFILE_SUPPORT_STEP_M: f32 = 4.0;
+const JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M: f32 = 0.05;
+const JUNCTION_PROFILE_SUPPORT_STEP_M: f32 = 2.0;
 const JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT: f32 = -0.86;
 const JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE: f32 = 2.0;
 
@@ -385,7 +387,7 @@ impl RegionGraph {
 
     /// Rebuilds intersection clips for only the edges incident to `affected_nodes`.
     ///
-    /// Equivalent to [`rebuild_intersection_clips`] but scoped to the nodes touched
+    /// Equivalent to [`Self::rebuild_intersection_clips`] but scoped to the nodes touched
     /// by a single road placement. Avoids the full O(E) resample pass and full
     /// R-tree / adjacency rebuild — only the O(K) incident edges are updated.
     ///
@@ -495,20 +497,23 @@ impl RegionGraph {
     pub(in crate::simulation::network) fn regrade_junction_endpoint_profiles_for_nodes(
         &mut self,
         affected_nodes: &HashSet<u32>,
+        adaptable_edges: &HashSet<usize>,
     ) -> HashSet<usize> {
-        if affected_nodes.is_empty() {
+        if affected_nodes.is_empty() || adaptable_edges.is_empty() {
             return HashSet::new();
         }
 
         let valid_node_ids: Vec<u32> = (0..self.nodes.len())
             .map(|i| self.get_valid_node(i as u32))
             .collect();
-        let regrade_nodes = self.junction_profile_regrade_nodes(&valid_node_ids, affected_nodes);
+        let regrade_nodes =
+            self.junction_profile_regrade_nodes(&valid_node_ids, affected_nodes, adaptable_edges);
         if regrade_nodes.is_empty() {
             return HashSet::new();
         }
 
         let mut reindex_ids = self.surface_edges_touching_nodes(&valid_node_ids, &regrade_nodes);
+        reindex_ids.retain(|edge_idx| adaptable_edges.contains(edge_idx));
         reindex_ids.sort_unstable();
         reindex_ids.dedup();
         if reindex_ids.is_empty() {
@@ -519,11 +524,11 @@ impl RegionGraph {
             self.remove_from_spatial_index(edge_idx);
         }
 
-        let adaptable_edges = reindex_ids.iter().copied().collect::<HashSet<_>>();
+        let effective_adaptable_edges = reindex_ids.iter().copied().collect::<HashSet<_>>();
         let changed_edges = self.solve_junction_endpoint_profiles(
             &valid_node_ids,
             &regrade_nodes,
-            &adaptable_edges,
+            &effective_adaptable_edges,
             JunctionProfileLimitMode::RegradePlatform,
         );
 
@@ -537,6 +542,7 @@ impl RegionGraph {
         &self,
         valid_node_ids: &[u32],
         affected_nodes: &HashSet<u32>,
+        adaptable_edges: &HashSet<usize>,
     ) -> HashSet<u32> {
         let incidents_by_node =
             self.build_junction_profile_incidents(valid_node_ids, Some(affected_nodes));
@@ -546,8 +552,19 @@ impl RegionGraph {
                 if incidents.len() < 2 {
                     return None;
                 }
+                if !incidents
+                    .iter()
+                    .any(|incident| adaptable_edges.contains(&incident.edge_idx))
+                {
+                    return None;
+                }
 
-                let stable_edges = HashSet::new();
+                let stable_edges = incidents
+                    .iter()
+                    .filter_map(|incident| {
+                        (!adaptable_edges.contains(&incident.edge_idx)).then_some(incident.edge_idx)
+                    })
+                    .collect::<HashSet<_>>();
                 let conservative = self.solve_junction_profile_solve(
                     node_id,
                     incidents,
@@ -1032,12 +1049,16 @@ impl RegionGraph {
         if hard_zone_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
             return;
         }
-        if materialize_supports {
+        let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m);
+        let should_materialize_supports = materialize_supports
+            || Self::endpoint_profile_support_delta_m(edge, at_start, plane, solve_sample_m)
+                .is_some_and(|delta_m| delta_m > JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M);
+        if should_materialize_supports {
             Self::materialize_edge_endpoint_profile_supports(edge, at_start, blend_end_m);
         }
 
-        let solve_sample_m =
-            materialize_supports.then_some(JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m));
+        let mut physical_geometry = edge.geometry.clone();
+        let solve_sample_m = should_materialize_supports.then_some(solve_sample_m);
         let distances = Self::edge_endpoint_distances(edge, at_start);
         for (point, distance_m) in edge.geometry.iter_mut().zip(distances.iter().copied()) {
             if distance_m > blend_end_m {
@@ -1059,7 +1080,32 @@ impl RegionGraph {
             };
             point.y = point.y * (1.0 - weight) + target_y * weight;
         }
-        edge.physical_geometry = edge.geometry.clone();
+        for (point, distance_m) in physical_geometry.iter_mut().zip(distances.iter().copied()) {
+            if distance_m > blend_end_m {
+                continue;
+            }
+            let target_y = plane.origin.y
+                + plane.grade_x * (point.x - plane.origin.x)
+                + plane.grade_z * (point.z - plane.origin.z);
+            let weight = if distance_m <= hard_zone_m || blend_end_m <= hard_zone_m {
+                1.0
+            } else {
+                let t = ((distance_m - hard_zone_m) / (blend_end_m - hard_zone_m)).clamp(0.0, 1.0);
+                1.0 - Self::smootherstep(t)
+            };
+            point.y = point.y * (1.0 - weight) + target_y * weight;
+        }
+        edge.physical_geometry = physical_geometry;
+    }
+
+    fn endpoint_profile_support_delta_m(
+        edge: &super::data::Edge,
+        at_start: bool,
+        plane: JunctionEndpointProfilePlane,
+        distance_m: f32,
+    ) -> Option<f32> {
+        let sample = Self::sample_edge_geometry_from_endpoint(edge, at_start, distance_m)?;
+        Some((sample.y - plane.height_at_xz(sample.x, sample.z)).abs())
     }
 
     fn materialize_edge_endpoint_profile_supports(
@@ -1078,7 +1124,11 @@ impl RegionGraph {
         Self::ensure_edge_endpoint_profile_support(edge, at_start, blend_end_m);
     }
 
-    fn junction_profile_hard_zone_m(edge: &super::data::Edge, total_length_m: f32) -> f32 {
+    /// Returns the short endpoint distance that stays exactly on the JunctionN profile plane.
+    pub(crate) fn junction_profile_hard_zone_m(
+        edge: &super::data::Edge,
+        total_length_m: f32,
+    ) -> f32 {
         (edge.width * 0.25)
             .max(JUNCTION_PROFILE_HARD_ZONE_MIN_M)
             .min(JUNCTION_PROFILE_HARD_ZONE_MAX_M)
@@ -1362,6 +1412,12 @@ impl RegionGraph {
         }
 
         let mut clip_m = stats.max_half_width_m * CLIP_WIDTH_PADDING_FACTOR;
+        let widths_differ = (stats.max_road_width_m - stats.min_road_width_m).abs() > 0.1;
+        let acute_clip_limit_m = if widths_differ {
+            edge_length_m
+        } else {
+            stats.max_half_width_m * CLIP_ACUTE_MAX_HALFWIDTH_FACTOR
+        };
         let Some(self_incident) = stats
             .incidents
             .iter()
@@ -1389,9 +1445,9 @@ impl RegionGraph {
                 (other.half_width_m + self_incident.half_width_m * dot.abs()) / cross
             };
             if required_m.is_finite() {
-                clip_m = clip_m.max(required_m);
+                clip_m = clip_m.max(required_m.min(acute_clip_limit_m));
             } else {
-                clip_m = edge_length_m;
+                clip_m = clip_m.max(acute_clip_limit_m);
             }
         }
 
@@ -1554,8 +1610,11 @@ mod tests {
         graph.add_edge(north_edge);
 
         graph.rebuild_adjacency_list();
-        let changed_edges =
-            graph.regrade_junction_endpoint_profiles_for_nodes(&HashSet::from([center]));
+        let adaptable_edges = HashSet::from([0, 1]);
+        let changed_edges = graph.regrade_junction_endpoint_profiles_for_nodes(
+            &HashSet::from([center]),
+            &adaptable_edges,
+        );
 
         assert_eq!(changed_edges.len(), 2);
         let plane = graph
@@ -1581,11 +1640,25 @@ mod tests {
         let solve_sample_delta_m = (solve_sample.y - expected_y).abs();
         assert!(
             solve_sample_delta_m <= 0.05,
-            "solve-distance support should sit on the capped profile plane: delta={solve_sample_delta_m:.6} sample={solve_sample:?} expected_y={expected_y:.6}"
+            "control geometry should keep the capped solve sample available for later profile solves: delta={solve_sample_delta_m:.6}"
+        );
+
+        let mut visible_edge = graph.edge(0).clone();
+        visible_edge.geometry = visible_edge.physical_geometry.clone();
+        let visible_solve_sample =
+            RegionGraph::sample_edge_geometry_from_endpoint(&visible_edge, true, solve_sample_m)
+                .expect("visible solve-distance support sample should exist");
+        let visible_expected_y = plane.height_at_xz(visible_solve_sample.x, visible_solve_sample.z);
+        let visible_solve_sample_delta_m = (visible_solve_sample.y - visible_expected_y).abs();
+        let original_source_y = solve_sample_m * 0.5;
+        let original_delta_m = (original_source_y - visible_expected_y).abs();
+        assert!(
+            visible_solve_sample_delta_m > 0.05 && visible_solve_sample_delta_m < original_delta_m,
+            "visible solve-distance support must be eased toward, not pinned to, the capped profile plane: delta={visible_solve_sample_delta_m:.6} original_delta={original_delta_m:.6} sample={visible_solve_sample:?} expected_y={visible_expected_y:.6}"
         );
 
         let transition_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-            graph.edge(0),
+            &visible_edge,
             true,
             solve_sample_m + JUNCTION_PROFILE_SUPPORT_STEP_M * 2.0,
         )
@@ -1594,6 +1667,53 @@ mod tests {
         assert!(
             (transition_sample.y - transition_plane_y).abs() > 0.05,
             "post-hard-zone sample should have started easing away from the platform plane"
+        );
+        let local_grade = (transition_sample.y - visible_solve_sample.y).abs()
+            / (JUNCTION_PROFILE_SUPPORT_STEP_M * 2.0);
+        assert!(
+            local_grade < 0.75,
+            "profile support transition should not create a near-vertical cliff: local_grade={local_grade:.3}"
+        );
+    }
+
+    #[test]
+    fn conservative_profile_materializes_supports_for_visible_vertical_curve() {
+        let mut edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(80.0, 20.0, 0.0)]);
+        let plane = JunctionEndpointProfilePlane {
+            origin: Vector3::ZERO,
+            grade_x: 0.0,
+            grade_z: 0.0,
+        };
+
+        RegionGraph::apply_junction_profile_plane_to_edge(&mut edge, true, plane, false);
+
+        assert!(
+            edge.geometry.len() >= 8,
+            "conservative profile adaptation should materialize support vertices when the visible mouth needs a vertical curve"
+        );
+        let control_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            &edge,
+            true,
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+        )
+        .expect("control solve sample should exist");
+        assert!(
+            control_solve_sample.y.abs() <= 0.05,
+            "control geometry keeps the solve sample on the profile plane"
+        );
+
+        let mut visible_edge = edge.clone();
+        visible_edge.geometry = visible_edge.physical_geometry.clone();
+        let visible_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
+            &visible_edge,
+            true,
+            JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+        )
+        .expect("visible solve sample should exist");
+        assert!(
+            visible_solve_sample.y > 0.05 && visible_solve_sample.y < 3.0,
+            "physical geometry should be eased toward the plane, not flattened or left raw: y={:.3}",
+            visible_solve_sample.y
         );
     }
 
@@ -1712,6 +1832,7 @@ mod tests {
         let before = graph
             .junction_endpoint_profile_plane(center)
             .expect("primary through corridor should define the initial JunctionN plane");
+        let stable_before = [0, 1, 2].map(|edge_idx| graph.edge(edge_idx).geometry.clone());
         let mut opposite_edge = profile_test_edge(vec![Vector3::ZERO, opposite_branch_pos]);
         opposite_edge.start_node = center;
         opposite_edge.end_node = opposite_branch;
@@ -1726,6 +1847,21 @@ mod tests {
             HashSet::from([3]),
             "the new opposite branch should adapt to the existing primary corridor"
         );
+        let regrade_changed_edges = graph.regrade_junction_endpoint_profiles_for_nodes(
+            &HashSet::from([center]),
+            &HashSet::from([3]),
+        );
+        assert!(
+            regrade_changed_edges.is_subset(&HashSet::from([3])),
+            "the stronger regrade pass must not make stable incident roads mutable again: changed={regrade_changed_edges:?}"
+        );
+        for (edge_idx, before_geometry) in stable_before.into_iter().enumerate() {
+            assert_eq!(
+                graph.edge(edge_idx).geometry,
+                before_geometry,
+                "adding and regrading a branch must not rewrite stable edge {edge_idx}"
+            );
+        }
         let after = graph
             .junction_endpoint_profile_plane(center)
             .expect("adding an opposite branch should keep a canonical JunctionN plane");

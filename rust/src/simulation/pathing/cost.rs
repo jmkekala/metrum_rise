@@ -19,7 +19,11 @@ impl CostCalculator {
         let mut total_distance = 0.0;
         let mut max_slope = 0.0_f32;
 
-        let points = &edge.geometry;
+        let points = if edge.physical_geometry.len() >= 2 {
+            &edge.physical_geometry
+        } else {
+            &edge.geometry
+        };
         if points.len() < 2 {
             return (0.0, 0.0);
         }

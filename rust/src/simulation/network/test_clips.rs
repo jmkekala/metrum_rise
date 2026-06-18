@@ -173,11 +173,68 @@ mod tests {
         g.rebuild_intersection_clips();
 
         assert!(
-            g.edges[2].end_clip > 12.0,
-            "acute branch clip stayed fixed-width: {}",
+            g.edges[2].end_clip > 5.5,
+            "acute branch clip did not expand beyond the orthogonal roadbed margin: {}",
             g.edges[2].end_clip
         );
-        assert!(g.edges[2].end_clip < 100.0);
+        assert!(
+            (g.edges[2].end_clip - 18.660254).abs() <= 1.0e-4,
+            "30 degree branch should use the angle-aware clip without hitting the cap, got {}",
+            g.edges[2].end_clip
+        );
+    }
+
+    #[test]
+    fn test_orthogonal_junction_clip_uses_small_roadbed_margin() {
+        let mut g = RegionGraph::new();
+        let center = g.add_node(Vector3::ZERO, NodeType::Junction);
+        let west = g.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let east = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let south = g.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
+        let north = g.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
+
+        g.add_edge(road_edge(
+            west,
+            center,
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            east,
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 0.0),
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            south,
+            center,
+            Vector3::new(0.0, 0.0, -100.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            north,
+            Vector3::ZERO,
+            Vector3::new(0.0, 0.0, 100.0),
+            7.0,
+        ));
+
+        g.rebuild_intersection_clips();
+
+        for (edge_idx, clip_m) in [
+            (0, g.edges[0].end_clip),
+            (1, g.edges[1].start_clip),
+            (2, g.edges[2].end_clip),
+            (3, g.edges[3].start_clip),
+        ] {
+            assert!(
+                (clip_m - 5.5).abs() <= 1.0e-4,
+                "standard orthogonal junction edge {edge_idx} should keep only a small roadbed margin, got {clip_m:.3}"
+            );
+        }
     }
 
     #[test]
@@ -262,10 +319,8 @@ mod tests {
 
         g.rebuild_intersection_clips();
 
-        assert!(g.edges[0].start_clip > 90.0);
-        assert!(g.edges[1].start_clip > 90.0);
-        assert!(g.edges[0].start_clip < 100.0);
-        assert!(g.edges[1].start_clip < 100.0);
+        assert!((g.edges[0].start_clip - 25.0).abs() <= 1.0e-4);
+        assert!((g.edges[1].start_clip - 25.0).abs() <= 1.0e-4);
     }
 
     #[test]

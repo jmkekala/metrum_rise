@@ -9,6 +9,7 @@ const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
 pub(in crate::simulation::network::surface::edge) const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
 const VISUAL_CONFLICT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const VISUAL_CONFLICT_SIN_EPSILON: f32 = 1.0e-3;
+const VISUAL_CONFLICT_MAX_HALFWIDTH_FACTOR: f32 = 5.0;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
@@ -147,10 +148,10 @@ impl RoadSurfaceSystem {
             let sin_theta = (current.direction_xz.x * other.direction_xz.y
                 - current.direction_xz.y * other.direction_xz.x)
                 .abs() as f32;
+            let other_roadbed_half_width_m = Self::visual_roadbed_half_width_m(other_edge);
             let pair_required = if sin_theta <= VISUAL_CONFLICT_SIN_EPSILON {
                 total_length_m
             } else {
-                let other_roadbed_half_width_m = Self::visual_roadbed_half_width_m(other_edge);
                 let other_carriageway_half_width_m =
                     Self::visual_carriageway_half_width_m(other_edge);
                 [
@@ -162,8 +163,16 @@ impl RoadSurfaceSystem {
                 .map(|width_m| width_m / sin_theta)
                 .fold(0.0, f32::max)
             };
+            let widths_differ = (roadbed_half_width_m - other_roadbed_half_width_m).abs() > 0.1;
+            let max_pair_handoff_m = if widths_differ {
+                total_length_m
+            } else {
+                (roadbed_half_width_m.max(other_roadbed_half_width_m)
+                    * VISUAL_CONFLICT_MAX_HALFWIDTH_FACTOR)
+                    .max(Self::visual_node_handoff_limit_m(edge))
+            };
             if pair_required.is_finite() {
-                required_handoff = required_handoff.max(pair_required);
+                required_handoff = required_handoff.max(pair_required.min(max_pair_handoff_m));
             }
         }
 

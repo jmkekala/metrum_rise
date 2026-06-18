@@ -222,6 +222,98 @@ fn standard_edge_sections_follow_solved_edge_profile_deterministically() {
 }
 
 #[test]
+fn junction_profile_transition_sections_use_dense_visual_cadence() {
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 0.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    let branch_specs = [
+        (Vector3::new(80.0, 16.0, 0.0), true),
+        (Vector3::new(-80.0, -16.0, 0.0), false),
+        (Vector3::new(0.0, 0.0, 80.0), true),
+    ];
+    let mut profiled_edge_idx = None;
+    for (endpoint_pos, starts_at_center) in branch_specs {
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        let (start, end, points) = if starts_at_center {
+            (center, endpoint, vec![center_pos, endpoint_pos])
+        } else {
+            (endpoint, center, vec![endpoint_pos, center_pos])
+        };
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        if starts_at_center && endpoint_pos.x > 0.0 {
+            profiled_edge_idx = Some(edge_idx);
+        }
+    }
+    graph.rebuild_adjacency_list();
+    let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
+    graph.rebuild_intersection_clips();
+
+    assert!(
+        graph.junction_endpoint_profile_plane(center).is_some(),
+        "test setup must create a JunctionN endpoint profile"
+    );
+
+    let terrain = flat_terrain(128, 128);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let edge_idx = profiled_edge_idx.expect("test setup should track the uphill branch");
+    let edge = graph.edge(edge_idx);
+    let total_length_m = edge.physical_length;
+    let start_kind = surface
+        .classify_surface_node_kind_from_graph_geometry(&graph, graph.get_valid_node(center));
+    let end_kind = surface.classify_surface_node_kind_from_graph_geometry(
+        &graph,
+        graph.get_valid_node(edge.end_node),
+    );
+    let (start_handoff_m, end_handoff_m) = surface
+        .visual_surface_handoff_range_for_edge(
+            &graph,
+            edge_idx,
+            edge,
+            total_length_m,
+            start_kind,
+            end_kind,
+        )
+        .expect("profiled edge should expose a visible handoff range");
+    let fade_m = crate::simulation::network::graph::rebuild::JUNCTION_PROFILE_BLEND_ZONE_M
+        .min((end_handoff_m - start_handoff_m) * 0.5);
+
+    let sections = surface
+        .compiled_sections()
+        .get(&edge_idx)
+        .expect("profiled edge should compile sections");
+    let transition_s = sections
+        .iter()
+        .map(|section| section.s_m)
+        .filter(|&s_m| {
+            s_m >= start_handoff_m - SAMPLE_EPSILON_M
+                && s_m <= start_handoff_m + fade_m + SAMPLE_EPSILON_M
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        transition_s.len() >= 8,
+        "JunctionN profile fade should have enough visible sections to avoid long planar facets: {transition_s:?}"
+    );
+    for pair in transition_s.windows(2) {
+        let step_m = pair[1] - pair[0];
+        assert!(
+            step_m <= 2.0 + SAMPLE_EPSILON_M,
+            "profile transition sections must stay dense enough for curved visual grade, got step {step_m:.3} in {transition_s:?}"
+        );
+    }
+}
+
+#[test]
 fn no_sidewalk_standard_edge_sections_keep_explicit_curb_shoulder_bands() {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);

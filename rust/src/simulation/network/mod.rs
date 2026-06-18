@@ -313,8 +313,8 @@ impl TransitNetwork {
             let profile_changed_edges =
                 graph.solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges);
             affected_edges.extend(profile_changed_edges);
-            let regrade_changed_edges =
-                graph.regrade_junction_endpoint_profiles_for_nodes(&affected_nodes);
+            let regrade_changed_edges = graph
+                .regrade_junction_endpoint_profiles_for_nodes(&affected_nodes, &affected_edges);
             affected_edges.extend(regrade_changed_edges);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
             self.lane_system

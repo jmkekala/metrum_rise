@@ -3,7 +3,9 @@
 use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use super::super::{CompiledNodeKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M};
 use super::EdgeProfilePlaneBlend;
-use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
+use crate::simulation::network::graph::rebuild::{
+    JUNCTION_PROFILE_BLEND_ZONE_M, JunctionEndpointProfilePlane,
+};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::EdgeClass;
 
@@ -11,7 +13,7 @@ use crate::simulation::network::types::EdgeClass;
 const STANDARD_SECTION_STEP_M: f32 = 8.0;
 const BRIDGE_SECTION_STEP_M: f32 = 12.0;
 const TUNNEL_SECTION_STEP_M: f32 = 10.0;
-const PROFILE_PLANE_FADE_M: f32 = 16.0;
+const PROFILE_TRANSITION_SECTION_STEP_M: f32 = 2.0;
 const PROTECTED_SECTION_SAMPLE_CLEARANCE_M: f32 = 0.125;
 
 impl RoadSurfaceSystem {
@@ -131,7 +133,7 @@ impl RoadSurfaceSystem {
     ) -> Option<EdgeProfilePlaneBlend> {
         let (start_handoff_s_m, end_handoff_s_m) = handoff_range;
         let span_m = (end_handoff_s_m - start_handoff_s_m).max(0.0);
-        let fade_m = PROFILE_PLANE_FADE_M.min(span_m * 0.5);
+        let fade_m = JUNCTION_PROFILE_BLEND_ZONE_M.min(span_m * 0.5);
 
         let start_blend = start_profile_plane.and_then(|plane| {
             let weight = if s_m <= start_handoff_s_m + SAMPLE_EPSILON_M {
@@ -233,6 +235,36 @@ impl RoadSurfaceSystem {
                 end_throat,
                 total_length,
             );
+            let profile_fade_m =
+                JUNCTION_PROFILE_BLEND_ZONE_M.min((end_throat - start_throat).max(0.0) * 0.5);
+            if profile_fade_m > SAMPLE_EPSILON_M {
+                if Self::node_kind_uses_endpoint_profile(start_kind)
+                    && graph
+                        .junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node))
+                        .is_some()
+                {
+                    Self::push_profile_transition_section_samples(
+                        &mut samples,
+                        &protected_samples,
+                        start_throat,
+                        start_throat + profile_fade_m,
+                        total_length,
+                    );
+                }
+                if Self::node_kind_uses_endpoint_profile(end_kind)
+                    && graph
+                        .junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node))
+                        .is_some()
+                {
+                    Self::push_profile_transition_section_samples(
+                        &mut samples,
+                        &protected_samples,
+                        end_throat - profile_fade_m,
+                        end_throat,
+                        total_length,
+                    );
+                }
+            }
         }
 
         for &distance in cumulative {
@@ -257,6 +289,35 @@ impl RoadSurfaceSystem {
         samples.sort_by(f32::total_cmp);
         samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
         samples
+    }
+
+    fn node_kind_uses_endpoint_profile(kind: Option<CompiledNodeKind>) -> bool {
+        matches!(
+            kind,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
+        )
+    }
+
+    fn push_profile_transition_section_samples(
+        samples: &mut Vec<f32>,
+        protected_samples: &[f32],
+        start_m: f32,
+        end_m: f32,
+        total_length_m: f32,
+    ) {
+        let start_m = start_m.clamp(0.0, total_length_m);
+        let end_m = end_m.clamp(0.0, total_length_m);
+        if end_m <= start_m + PROFILE_TRANSITION_SECTION_STEP_M {
+            return;
+        }
+
+        let mut sample_m = start_m + PROFILE_TRANSITION_SECTION_STEP_M;
+        while sample_m < end_m - SAMPLE_EPSILON_M {
+            if !Self::is_near_protected_section_sample(sample_m, protected_samples) {
+                samples.push(sample_m);
+            }
+            sample_m += PROFILE_TRANSITION_SECTION_STEP_M;
+        }
     }
 
     fn push_protected_section_sample(

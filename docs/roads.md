@@ -148,6 +148,15 @@ The final node output is a canonical arrangement:
 - missing, ambiguous, or conflicting owner / height support is a hard diagnostic, not a repair path
 - Spade CDT triangulates already-owned material regions; CDT does not decide ownership
 
+Node throat clips use the roadbed half-width plus a small numeric safety margin as their baseline
+distance from the graph node, so ordinary orthogonal junction mouths stay close to the junction
+centre without producing exact tangencies in node ownership. Acute-angle and near-parallel conflicts
+may still expand the clip distance deterministically from incident roadbed widths and angular
+separation. Same-width conflicts cap that expansion to a small multiplier of the incident roadbed
+half-width so ordinary acute mouths do not become long flat platforms; mixed-width conflicts may
+expand farther when needed for canonical side-join ownership. That expansion is geometry ownership,
+not visual padding.
+
 Incident `Bend` / `JunctionN` mouth rails use a shared graph endpoint profile plane before section,
 span, and node compilation. Profile distances are measured in horizontal XZ metres because the cap
 is a road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only
@@ -166,12 +175,18 @@ the authority mouths keep their original edge profile and only non-authority bra
 blended into that plane. When no compatible authority corridor exists, the node falls back to the
 all-mouth least-squares plane. Any changed mouth is capped to the mouth-grade limit, uses a small
 width-scaled hard mouth pin (`~1..2 m` for current standard roads), and blends back to source grade
-over a bounded transition. The 12 m profile sample is only a stable solve/control sample, not a hard
-platform extent. Support vertices are materialized at the solve sample and sparsely through the
-outer transition so later section sampling reads a gradual source-grade transition instead of one
-large planar ramp back to raw terrain. Section sampling must also suppress sub-decimetre
-protected-handoff slivers so a support point cannot create a visible near-vertical roadbed face
-immediately outside node ownership.
+over a bounded transition. The 12 m profile sample is only a stable solve/control sample, not a
+visible hard platform extent; it may anchor the source profile plane, but physical road geometry
+must receive the same vertical-curve blend as other post-mouth support points. Support vertices are
+materialized at the solve sample and sparsely through the outer transition so later section sampling
+reads a gradual source-grade transition instead of one large planar ramp back to raw terrain.
+Visible road-surface sections inside an active profile fade use a denser transition cadence than
+ordinary road spans, so the rendered asphalt approximates the vertical curve instead of exposing
+long planar facets.
+Incremental regrade receives the edit's adaptable edge set; adding one road must not make
+already-stable incident roads adaptable simply because they touch the same junction. Section
+sampling must also suppress sub-decimetre protected-handoff slivers so a support point cannot
+create a visible near-vertical roadbed face immediately outside node ownership.
 
 ### `ROAD-04` Node Top-Surface Quality
 
