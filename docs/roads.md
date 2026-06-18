@@ -157,17 +157,20 @@ half-width so ordinary acute mouths do not become long flat platforms; mixed-wid
 expand farther when needed for canonical side-join ownership. That expansion is geometry ownership,
 not visual padding.
 
-Incident `Bend` / `JunctionN` mouth rails use a shared graph endpoint profile plane before section,
-span, and node compilation. Profile distances are measured in horizontal XZ metres because the cap
-is a road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only
-when limiting stays close to the incident road samples; otherwise the original source-supported
-plane is preserved. The same plane is consumed by both the span mouth section and node mouth
-ownership, so the roadbed mouth remains exact without allowing a safe local smoothing pass to hide
-missing source support.
-For a true two-mouth `Bend`, that endpoint plane is always a horizontal node-local platform
-anchored at the graph node height; any uphill or downhill change must happen in the adjacent edge
-profile fade, not by tilting the bend patch. `JunctionN` keeps the multi-mouth solve described
-below.
+Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
+and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a
+road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only when
+limiting stays close to the incident road samples; otherwise the original source-supported plane is
+preserved.
+For a true two-mouth `Bend`, that endpoint plane is a horizontal node-local anchor at the graph node
+height. Sparse, two-control-point grounded `Standard` Bend edges force only the small width-scaled
+profile hard pin exactly onto that plane. If the ownership mouth has to sit farther away to prevent
+material overlap, the Bend mouth section samples the vertical-curve blend instead of extending the
+horizontal platform all the way to that far handoff. Uphill or downhill change therefore starts
+after the short hard pin and blends through the owned footprint / adjacent edge profile instead of
+tilting the whole bend as one plane. Dense source-sampled, elevated, or structural Bend edges keep
+exact mouth-height authority for their existing support-rich vertical-face contracts, and
+`JunctionN` keeps the multi-mouth solve and mouth-authority contract described below.
 
 Road-edit rebuilds preserve that conservative solve for the edited edge set, then use the stronger
 profile path only when an affected `JunctionN` still solves to an over-limit platform, or when an

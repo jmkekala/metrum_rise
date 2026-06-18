@@ -70,7 +70,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   that keeps the best stable through corridor as the whole-`JunctionN` base grade, prevents
   secondary opposite branch pairs from rotating that plane, and blends edited branches into it with
   a small dynamic mouth pin, one solve/control sample, sparse transition support vertices, and
-  protected handoff sampling, while preserving terrain / earthwork footprint provenance. See
+  protected handoff sampling. Section compilation now applies the same small profile hard pin to
+  sparse grounded `Standard` two-mouth `Bend` vertical-curve blending instead of treating the
+  farther material ownership handoff as a flat platform extent, while preserving source-sampled
+  Bend, terrain, and earthwork footprint provenance. See
   [`roads.md`](roads.md).
 - Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See

@@ -57,11 +57,12 @@ impl RoadSurfaceSystem {
             graph,
             graph.get_valid_node(edge.end_node),
         );
+        let total_length_m = *cumulative.last().unwrap_or(&0.0);
         let handoff_range = self.visual_surface_handoff_range_for_edge(
             graph,
             edge_idx,
             edge,
-            *cumulative.last().unwrap_or(&0.0),
+            total_length_m,
             start_kind,
             end_kind,
         );
@@ -77,6 +78,15 @@ impl RoadSurfaceSystem {
         )
         .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node)))
         .flatten();
+        let profile_range = Self::edge_profile_blend_range_for_edge(
+            edge,
+            total_length_m,
+            handoff_range,
+            start_kind,
+            end_kind,
+            start_profile_plane.is_some(),
+            end_profile_plane.is_some(),
+        );
         let sample_distances = self.build_section_sample_distances(
             graph,
             edge_idx,
@@ -90,10 +100,10 @@ impl RoadSurfaceSystem {
             .map(|s_m| {
                 let (center, tangent_xz) = self.sample_polyline(&points, &cumulative, s_m);
                 let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x).normalize();
-                let profile_blend = handoff_range.and_then(|handoff| {
+                let profile_blend = profile_range.and_then(|profile| {
                     Self::edge_profile_blend_for_section(
                         s_m,
-                        handoff,
+                        profile,
                         start_profile_plane,
                         end_profile_plane,
                     )
@@ -127,19 +137,19 @@ impl RoadSurfaceSystem {
 
     fn edge_profile_blend_for_section(
         s_m: f32,
-        handoff_range: (f32, f32),
+        profile_range: (f32, f32),
         start_profile_plane: Option<JunctionEndpointProfilePlane>,
         end_profile_plane: Option<JunctionEndpointProfilePlane>,
     ) -> Option<EdgeProfilePlaneBlend> {
-        let (start_handoff_s_m, end_handoff_s_m) = handoff_range;
-        let span_m = (end_handoff_s_m - start_handoff_s_m).max(0.0);
+        let (start_profile_s_m, end_profile_s_m) = profile_range;
+        let span_m = (end_profile_s_m - start_profile_s_m).max(0.0);
         let fade_m = JUNCTION_PROFILE_BLEND_ZONE_M.min(span_m * 0.5);
 
         let start_blend = start_profile_plane.and_then(|plane| {
-            let weight = if s_m <= start_handoff_s_m + SAMPLE_EPSILON_M {
+            let weight = if s_m <= start_profile_s_m + SAMPLE_EPSILON_M {
                 1.0
-            } else if fade_m > SAMPLE_EPSILON_M && s_m < start_handoff_s_m + fade_m {
-                let t = ((s_m - start_handoff_s_m) / fade_m).clamp(0.0, 1.0);
+            } else if fade_m > SAMPLE_EPSILON_M && s_m < start_profile_s_m + fade_m {
+                let t = ((s_m - start_profile_s_m) / fade_m).clamp(0.0, 1.0);
                 1.0 - Self::smootherstep(t)
             } else {
                 0.0
@@ -148,10 +158,10 @@ impl RoadSurfaceSystem {
         });
 
         let end_blend = end_profile_plane.and_then(|plane| {
-            let weight = if s_m >= end_handoff_s_m - SAMPLE_EPSILON_M {
+            let weight = if s_m >= end_profile_s_m - SAMPLE_EPSILON_M {
                 1.0
-            } else if fade_m > SAMPLE_EPSILON_M && s_m > end_handoff_s_m - fade_m {
-                let t = ((end_handoff_s_m - s_m) / fade_m).clamp(0.0, 1.0);
+            } else if fade_m > SAMPLE_EPSILON_M && s_m > end_profile_s_m - fade_m {
+                let t = ((end_profile_s_m - s_m) / fade_m).clamp(0.0, 1.0);
                 1.0 - Self::smootherstep(t)
             } else {
                 0.0
@@ -166,6 +176,57 @@ impl RoadSurfaceSystem {
             (None, Some(end)) => Some(end),
             (None, None) => None,
         }
+    }
+
+    fn edge_profile_blend_range_for_edge(
+        edge: &Edge,
+        total_length_m: f32,
+        handoff_range: Option<(f32, f32)>,
+        start_kind: Option<CompiledNodeKind>,
+        end_kind: Option<CompiledNodeKind>,
+        has_start_profile: bool,
+        has_end_profile: bool,
+    ) -> Option<(f32, f32)> {
+        if total_length_m <= SAMPLE_EPSILON_M || (!has_start_profile && !has_end_profile) {
+            return None;
+        }
+
+        let hard_zone_m = RegionGraph::junction_profile_hard_zone_m(edge, total_length_m);
+        let start_s_m = if !has_start_profile {
+            0.0
+        } else if start_kind == Some(CompiledNodeKind::Bend)
+            && Self::standard_bend_uses_short_profile_pin(edge)
+        {
+            hard_zone_m
+        } else if let Some((start_handoff_m, _)) = handoff_range {
+            start_handoff_m
+        } else {
+            hard_zone_m
+        };
+        let end_s_m = if !has_end_profile {
+            total_length_m
+        } else if end_kind == Some(CompiledNodeKind::Bend)
+            && Self::standard_bend_uses_short_profile_pin(edge)
+        {
+            (total_length_m - hard_zone_m).max(0.0)
+        } else if let Some((_, end_handoff_m)) = handoff_range {
+            end_handoff_m
+        } else {
+            (total_length_m - hard_zone_m).max(0.0)
+        };
+        (end_s_m - start_s_m > SAMPLE_EPSILON_M).then_some((start_s_m, end_s_m))
+    }
+
+    fn standard_bend_uses_short_profile_pin(edge: &Edge) -> bool {
+        if edge.class != EdgeClass::Standard {
+            return false;
+        }
+        let points = if edge.physical_geometry.is_empty() {
+            &edge.geometry
+        } else {
+            &edge.physical_geometry
+        };
+        points.len() <= 2
     }
 
     fn smootherstep(t: f32) -> f32 {
@@ -215,14 +276,15 @@ impl RoadSurfaceSystem {
             total_length - edge.end_clip,
             total_length,
         );
-        if let Some((start_throat, end_throat)) = self.visual_surface_handoff_range_for_edge(
+        let handoff_range = self.visual_surface_handoff_range_for_edge(
             graph,
             edge_idx,
             edge,
             total_length,
             start_kind,
             end_kind,
-        ) {
+        );
+        if let Some((start_throat, end_throat)) = handoff_range {
             Self::push_protected_section_sample(
                 &mut samples,
                 &mut protected_samples,
@@ -235,32 +297,55 @@ impl RoadSurfaceSystem {
                 end_throat,
                 total_length,
             );
-            let profile_fade_m =
-                JUNCTION_PROFILE_BLEND_ZONE_M.min((end_throat - start_throat).max(0.0) * 0.5);
+        }
+
+        let has_start_profile = Self::node_kind_uses_endpoint_profile(start_kind)
+            && graph
+                .junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node))
+                .is_some();
+        let has_end_profile = Self::node_kind_uses_endpoint_profile(end_kind)
+            && graph
+                .junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node))
+                .is_some();
+        if let Some((start_profile_s_m, end_profile_s_m)) = Self::edge_profile_blend_range_for_edge(
+            edge,
+            total_length,
+            handoff_range,
+            start_kind,
+            end_kind,
+            has_start_profile,
+            has_end_profile,
+        ) {
+            Self::push_protected_section_sample(
+                &mut samples,
+                &mut protected_samples,
+                start_profile_s_m,
+                total_length,
+            );
+            Self::push_protected_section_sample(
+                &mut samples,
+                &mut protected_samples,
+                end_profile_s_m,
+                total_length,
+            );
+            let profile_fade_m = JUNCTION_PROFILE_BLEND_ZONE_M
+                .min((end_profile_s_m - start_profile_s_m).max(0.0) * 0.5);
             if profile_fade_m > SAMPLE_EPSILON_M {
-                if Self::node_kind_uses_endpoint_profile(start_kind)
-                    && graph
-                        .junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node))
-                        .is_some()
-                {
+                if has_start_profile {
                     Self::push_profile_transition_section_samples(
                         &mut samples,
                         &protected_samples,
-                        start_throat,
-                        start_throat + profile_fade_m,
+                        start_profile_s_m,
+                        start_profile_s_m + profile_fade_m,
                         total_length,
                     );
                 }
-                if Self::node_kind_uses_endpoint_profile(end_kind)
-                    && graph
-                        .junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node))
-                        .is_some()
-                {
+                if has_end_profile {
                     Self::push_profile_transition_section_samples(
                         &mut samples,
                         &protected_samples,
-                        end_throat - profile_fade_m,
-                        end_throat,
+                        end_profile_s_m - profile_fade_m,
+                        end_profile_s_m,
                         total_length,
                     );
                 }

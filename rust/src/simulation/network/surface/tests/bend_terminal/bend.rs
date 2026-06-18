@@ -51,7 +51,7 @@ fn flat_logged_curve_bend_compiles_with_explicit_point_contact_curb_ownership() 
 }
 
 #[test]
-fn hillside_curve_bend_keeps_horizontal_node_asphalt() {
+fn hillside_curve_bend_blends_from_short_horizontal_pin() {
     let terrain = flat_terrain(128, 128);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(0.0, 10.0, 0.0);
@@ -88,8 +88,60 @@ fn hillside_curve_bend_keeps_horizontal_node_asphalt() {
     let piece = assert_compiled_bend_piece(&surface, &graph, bend);
     let asphalt_y_range_m = visual_polygon_y_range_m(&piece.road_surface_polygons);
     assert!(
-        asphalt_y_range_m <= 0.02,
-        "Bend asphalt should stay horizontally flat while adjacent roads blend into it: range={asphalt_y_range_m:.6}"
+        asphalt_y_range_m <= 0.75,
+        "Bend asphalt should curve gently through the owned bend footprint instead of forming a hard ramp: range={asphalt_y_range_m:.6}"
+    );
+
+    let edge = graph.edge(1);
+    let total_length_m = edge.physical_length;
+    let hard_pin_m = RegionGraph::junction_profile_hard_zone_m(edge, total_length_m);
+    let start_kind =
+        surface.classify_surface_node_kind_from_graph_geometry(&graph, graph.get_valid_node(bend));
+    let end_kind = surface.classify_surface_node_kind_from_graph_geometry(
+        &graph,
+        graph.get_valid_node(edge.end_node),
+    );
+    let (start_handoff_m, _) = surface
+        .visual_surface_handoff_range_for_edge(
+            &graph,
+            1,
+            edge,
+            total_length_m,
+            start_kind,
+            end_kind,
+        )
+        .expect("bend edge should expose a visible ownership handoff");
+    assert!(
+        start_handoff_m > hard_pin_m + 4.0,
+        "test setup must keep ownership handoff farther than the profile hard pin: handoff={start_handoff_m:.3} hard_pin={hard_pin_m:.3}"
+    );
+
+    let sections = surface
+        .compiled_sections()
+        .get(&1)
+        .expect("bend outbound edge should compile sections");
+    let endpoint_height_m = sections
+        .first()
+        .expect("outbound edge should have an endpoint section")
+        .center_height_m;
+    let hard_pin_section = sections
+        .iter()
+        .find(|section| (section.s_m - hard_pin_m).abs() <= SAMPLE_EPSILON_M)
+        .expect("profile hard pin should be an explicit section sample");
+    assert!(
+        (hard_pin_section.center_height_m - endpoint_height_m).abs() <= 0.01,
+        "Bend profile must keep only the short hard pin horizontal: endpoint={endpoint_height_m:.3} hard_pin={:.3}",
+        hard_pin_section.center_height_m
+    );
+
+    let handoff_section = sections
+        .iter()
+        .find(|section| (section.s_m - start_handoff_m).abs() <= SAMPLE_EPSILON_M)
+        .expect("ownership handoff should remain an explicit section sample");
+    assert!(
+        handoff_section.center_height_m > endpoint_height_m + 0.25,
+        "Bend mouth should already be easing toward the incident edge grade instead of staying pinned flat until ownership handoff: endpoint={endpoint_height_m:.3} handoff={:.3}",
+        handoff_section.center_height_m
     );
 }
 
