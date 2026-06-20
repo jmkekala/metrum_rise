@@ -86,6 +86,22 @@ pub(in crate::simulation::network::surface::node::rails::caps_and_joins) fn push
                     points,
                 )?;
             }
+            if side_join_band_has_material_boundary(side_join_band) {
+                for (start, end) in side_join_material_boundary_side_edges(side_join_band) {
+                    push_generated_band_constraint(
+                        constraints,
+                        NodeRailConstraintKind::SpanHandoff {
+                            kind: RoadSurfaceBandKind::Sidewalk,
+                        },
+                        mouth.order_index,
+                        side_join_band.source_band_index,
+                        owner,
+                        None,
+                        xz(start),
+                        xz(end),
+                    )?;
+                }
+            }
             Ok(())
         }
         _ => Ok(()),

@@ -76,6 +76,8 @@ pub(crate) enum NodeTriangulationError {
         node_id: u32,
         region_index: usize,
         constraint_count: usize,
+        first_constraint_index: Option<usize>,
+        first_constraint: Option<[usize; 2]>,
     },
     CdtBuildFailed {
         node_id: u32,
@@ -102,6 +104,7 @@ const NODE_TRIANGULATION_CARRIAGEWAY_GUIDE_SPACING_M: f64 = 12.0;
 const NODE_TRIANGULATION_GUIDE_MIN_HEIGHT_DELTA_M: f64 = 0.01;
 const NODE_TRIANGULATION_GUIDE_PLANE_MAX_RESIDUAL_M: f64 = 0.005;
 const NODE_TRIANGULATION_MAX_GUIDE_SEGMENTS_PER_EDGE: usize = 64;
+pub(super) const NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS: i64 = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeTriangulationPointKey {

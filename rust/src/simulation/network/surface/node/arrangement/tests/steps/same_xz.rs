@@ -1,6 +1,15 @@
 //! Same-XZ vertical-step arrangement tests.
 
 use super::*;
+use crate::simulation::network::surface::node::height::{
+    NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey,
+};
+use crate::simulation::network::surface::node::ownership::{
+    NodeCarrierProvenanceOrigin, NodeOwnedRegionArrangementKey,
+};
+use crate::simulation::network::surface::node::rails::{
+    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose,
+};
 
 #[test]
 fn arrangement_rejects_same_material_same_xz_height_conflict_without_explicit_step() {
@@ -170,6 +179,57 @@ fn arrangement_accepts_same_material_same_xz_height_split_with_explicit_vertical
         arrangement
             .explicit_vertical_step_segments()
             .contains(&expected)
+    );
+}
+
+#[test]
+fn arrangement_accepts_source_authorized_side_join_asphalt_sidewalk_height_split() {
+    let carriageway = owner(RoadSurfaceBandKind::Carriageway, 33);
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 35);
+    let carriageway_field = NodeBandHeightFieldId::new(5, 3, RoadSurfaceBandKind::Carriageway);
+    let sidewalk_field = NodeBandHeightFieldId::new(5, 5, RoadSurfaceBandKind::Sidewalk);
+    let shared_start = RoadVec2::new(1.0, 0.0);
+    let shared_end = RoadVec2::new(1.0, 1.0);
+    let heights = NodeHeightSolution {
+        node_id: 12,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner: carriageway,
+                height_field_id: carriageway_field,
+                shape: vec![vec![
+                    side_join_vertex(RoadVec2::new(0.0, 0.0), 0.0, carriageway, carriageway_field),
+                    side_join_vertex(shared_start, 0.0, carriageway, carriageway_field),
+                    side_join_intersection_vertex(shared_end, 0.0, carriageway, carriageway_field),
+                    side_join_vertex(RoadVec2::new(0.0, 1.0), 0.0, carriageway, carriageway_field),
+                ]],
+                area_m2: 1.0,
+                seam_constraints: Vec::new(),
+            },
+            NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                owner: sidewalk,
+                height_field_id: sidewalk_field,
+                shape: vec![vec![
+                    sidewalk_source_vertex(shared_start, 0.12, sidewalk, sidewalk_field),
+                    sidewalk_source_vertex(RoadVec2::new(2.0, 0.0), 0.12, sidewalk, sidewalk_field),
+                    sidewalk_source_vertex(RoadVec2::new(2.0, 1.0), 0.12, sidewalk, sidewalk_field),
+                    sidewalk_source_vertex(shared_end, 0.12, sidewalk, sidewalk_field),
+                ]],
+                area_m2: 1.0,
+                seam_constraints: Vec::new(),
+            },
+        ],
+    };
+
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("side-join asphalt/sidewalk source carriers should authorize split heights");
+
+    assert!(
+        arrangement.diagnostics().is_empty(),
+        "source-authorized side-join boundary should not emit seam diagnostics: {:?}",
+        arrangement.diagnostics()
     );
 }
 
@@ -410,4 +470,110 @@ fn arrangement_ignores_same_xz_height_split_without_final_boundary_contact() {
 
     NodeArrangement::from_height_solution(&heights)
         .expect("point-only coincidence is not a final owned boundary height conflict");
+}
+
+fn side_join_vertex(
+    point_xz: RoadVec2,
+    height_m: f64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeHeightedVertex {
+    sourced_vertex(
+        point_xz,
+        height_m,
+        owner,
+        height_field_id,
+        RoadSurfaceBandKind::Carriageway,
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        },
+        NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+            contour_index: 73,
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        },
+    )
+}
+
+fn side_join_intersection_vertex(
+    point_xz: RoadVec2,
+    height_m: f64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeHeightedVertex {
+    sourced_vertex(
+        point_xz,
+        height_m,
+        owner,
+        height_field_id,
+        RoadSurfaceBandKind::Carriageway,
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+        },
+        NodeCarrierProvenanceOrigin::SourceIntersection { peer_count: 1 },
+    )
+}
+
+fn sidewalk_source_vertex(
+    point_xz: RoadVec2,
+    height_m: f64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+) -> NodeHeightedVertex {
+    sourced_vertex(
+        point_xz,
+        height_m,
+        owner,
+        height_field_id,
+        RoadSurfaceBandKind::Sidewalk,
+        NodeGeneratedContourClaimPriority::MouthBand,
+        NodeHeightAuthoritySource::GeneratedContour {
+            purpose: NodeGeneratedContourPurpose::NonRoadBand,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+        },
+        NodeCarrierProvenanceOrigin::SourceIntersection { peer_count: 1 },
+    )
+}
+
+fn sourced_vertex(
+    point_xz: RoadVec2,
+    height_m: f64,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    source_kind: RoadSurfaceBandKind,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    height_authority: NodeHeightAuthoritySource,
+    origin: NodeCarrierProvenanceOrigin,
+) -> NodeHeightedVertex {
+    let source_provenance = NodeHeightCarrierProvenanceKey {
+        owner,
+        source_kind,
+        source_mouth_order_index: height_field_id.mouth_order_index(),
+        source_band_index: height_field_id.band_index(),
+        height_field_id,
+        claim_priority,
+        point: NodeOwnedRegionArrangementKey::from_point(point_xz),
+        origin,
+    };
+    NodeHeightedVertex {
+        point_xz,
+        height_m,
+        height_field_id,
+        height_authority: Some(height_authority),
+        source_provenance: Some(source_provenance),
+        grade_authority: Some(NodeGradeVertexAuthority::new_with_source_provenance(
+            point_xz,
+            height_m,
+            owner,
+            height_field_id,
+            NodeGradeCarrierDecision::SourceCarrier {
+                authority: Some(height_authority),
+            },
+            Some(source_provenance),
+        )),
+    }
 }

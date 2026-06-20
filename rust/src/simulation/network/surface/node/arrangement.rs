@@ -11,6 +11,7 @@ mod steps;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use build::source_authorities_form_side_join_asphalt_sidewalk_split;
 pub(crate) use model::{
     NodeArrangement, NodeArrangementAttachProfile, NodeArrangementBuildProfile,
     NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId, NodeArrangementError,

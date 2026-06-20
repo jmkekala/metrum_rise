@@ -1,6 +1,11 @@
 //! Boundary height authority tests.
 
+use super::super::super::{
+    ownership::{NodeCarrierProvenanceOrigin, NodeOwnedRegionArrangementKey},
+    rails::NodeGeneratedContourClaimPriority,
+};
 use super::*;
+use crate::simulation::network::surface::height::NodeHeightCarrierProvenanceKey;
 
 #[test]
 fn boundary_height_uses_exact_source_edge_without_adjacent_contour_support() {
@@ -205,6 +210,43 @@ fn final_footprint_height_accepts_same_owner_endpoint_dust_corner() {
 }
 
 #[test]
+fn final_footprint_height_accepts_contextual_single_endpoint_dust_corner() {
+    let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
+    let corner = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
+    let next = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.5, 0.12, 0.5));
+    let dust_corner = ArrangementBoundaryPointKey {
+        x_key: corner.x_key + 1,
+        z_key: corner.z_key + 1,
+        y_mm: corner.y_mm,
+    };
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        final_height_edges: vec![NodeFinalFootprintBoundaryHeightEdge {
+            start_point_key: start,
+            end_point_key: corner,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        }],
+        final_vertex_sources: BTreeMap::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates: BTreeMap::new(),
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_contour_key(dust_corner.xz_key(), start.xz_key(), next.xz_key())
+        .expect("one-sided endpoint dust corner should use its adjacent final edge");
+
+    assert_eq!(height_mm, Some(120));
+    assert_eq!(
+        sources.canonical_final_height_endpoint_dust_point(dust_corner),
+        Some(corner)
+    );
+}
+
+#[test]
 fn final_footprint_height_rejects_single_endpoint_dust_extension() {
     let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.12, 0.0));
     let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.12, 0.0));
@@ -281,6 +323,192 @@ fn boundary_height_rejects_unauthorized_final_material_height_conflict() {
         error,
         NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
     ));
+}
+
+#[test]
+fn final_footprint_height_accepts_rank_gap_corner_with_raised_bridge_plateau() {
+    let lower_corner = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
+    let raised_corner = ArrangementBoundaryPointKey {
+        y_mm: 120,
+        ..lower_corner
+    };
+    let lower_end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.0, 0.0));
+    let raised_end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(-1.0, 0.12, 0.0));
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_corner,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 10,
+                grade_authority_index: 20,
+            }),
+            owner_kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 2,
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_corner,
+        vec![
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 11,
+                        grade_authority_index: 21,
+                    },
+                ),
+                owner_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                owner_index: 10,
+            },
+            NodeFootprintBoundaryDirectVertex {
+                source: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 12,
+                        grade_authority_index: 22,
+                    },
+                ),
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 11,
+            },
+        ],
+    );
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        final_height_edges: vec![
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: lower_corner,
+                end_point_key: lower_end,
+                owner_kind: RoadSurfaceBandKind::Carriageway,
+                owner_index: 2,
+            },
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: raised_end,
+                end_point_key: raised_corner,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 11,
+            },
+        ],
+        final_vertex_sources: BTreeMap::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance: Vec::new(),
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let height_mm = sources
+        .boundary_height_mm_at_contour_key(
+            lower_corner.xz_key(),
+            lower_end.xz_key(),
+            raised_end.xz_key(),
+        )
+        .expect("raised bridge plateau should authorize collapsed final-footprint corner");
+
+    assert_eq!(height_mm, Some(120));
+}
+
+#[test]
+fn final_footprint_height_accepts_collapsed_rank_gap_side_join_corner() {
+    let lower_corner = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
+    let raised_corner = ArrangementBoundaryPointKey {
+        y_mm: 120,
+        ..lower_corner
+    };
+    let lower_start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(1.0, 0.0, 0.0));
+    let raised_end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(-1.0, 0.12, 0.0));
+    let mut direct_vertex_source_candidates = BTreeMap::new();
+    direct_vertex_source_candidates.insert(
+        lower_corner,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 49,
+                grade_authority_index: 256,
+            }),
+            owner_kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 9,
+        }],
+    );
+    direct_vertex_source_candidates.insert(
+        raised_corner,
+        vec![NodeFootprintBoundaryDirectVertex {
+            source: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                top_surface_source_index: 205,
+                grade_authority_index: 257,
+            }),
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index: 5,
+        }],
+    );
+    let mut grade_authority_source_provenance = vec![None; 258];
+    grade_authority_source_provenance[256] = Some(test_collapsed_rank_gap_provenance(
+        RoadSurfaceBandKind::Carriageway,
+        9,
+        NodeGeneratedContourClaimPriority::SideJoin,
+    ));
+    grade_authority_source_provenance[257] = Some(test_collapsed_rank_gap_provenance(
+        RoadSurfaceBandKind::Sidewalk,
+        5,
+        NodeGeneratedContourClaimPriority::MouthBand,
+    ));
+    let sources = NodeFootprintBoundaryExportSources {
+        source_edges: Vec::new(),
+        final_height_edges: vec![
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: lower_start,
+                end_point_key: lower_corner,
+                owner_kind: RoadSurfaceBandKind::Carriageway,
+                owner_index: 9,
+            },
+            NodeFinalFootprintBoundaryHeightEdge {
+                start_point_key: raised_corner,
+                end_point_key: raised_end,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+            },
+        ],
+        final_vertex_sources: BTreeMap::new(),
+        direct_vertex_sources: BTreeMap::new(),
+        direct_vertex_source_candidates,
+        direct_vertex_source_conflicts: BTreeMap::new(),
+        grade_authority_source_provenance,
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    let exact_error = sources
+        .boundary_height_mm_at_key(lower_corner.xz_key())
+        .expect_err("exact rank-gap material conflict still needs explicit step authority");
+    assert!(matches!(
+        exact_error,
+        NodeBoundaryExportError::ConflictingFootprintBoundaryHeight { .. }
+    ));
+
+    let height_mm = sources
+        .boundary_height_mm_at_contour_key(
+            lower_corner.xz_key(),
+            lower_start.xz_key(),
+            raised_end.xz_key(),
+        )
+        .expect("collapsed side-join corner should use the raised final boundary height");
+
+    assert_eq!(height_mm, Some(120));
+}
+
+fn test_collapsed_rank_gap_provenance(
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
+    claim_priority: NodeGeneratedContourClaimPriority,
+) -> NodeHeightCarrierProvenanceKey {
+    let owner = arrangement::NodeBandOwner::new(kind, owner_index);
+    let height_field_id = arrangement::NodeBandHeightFieldId::new(owner_index, owner_index, kind);
+    NodeHeightCarrierProvenanceKey {
+        owner,
+        source_kind: kind,
+        source_mouth_order_index: owner_index,
+        source_band_index: owner_index,
+        height_field_id,
+        claim_priority,
+        point: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(0.0, 0.0)),
+        origin: NodeCarrierProvenanceOrigin::SourceIntersection { peer_count: 1 },
+    }
 }
 
 #[test]

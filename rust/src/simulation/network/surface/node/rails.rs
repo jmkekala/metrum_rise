@@ -17,8 +17,9 @@ mod topology;
 
 pub(crate) use model::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
-    NodeGeneratedContourPurpose, NodeRailBuildProfile, NodeRailConstraint, NodeRailConstraintKind,
-    NodeRailContourSet, NodeRailGenerationError, NodeRailHeightCarrierPaths,
+    NodeGeneratedContourPurpose, NodeGeneratedCornerTrim, NodeRailBuildProfile, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailContourSet, NodeRailGenerationError,
+    NodeRailHeightCarrierPaths,
 };
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;

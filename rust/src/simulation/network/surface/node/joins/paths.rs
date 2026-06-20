@@ -34,7 +34,7 @@ pub(super) fn side_join_boundary_path_world(
     to_world: RoadVec3,
     path_mode: SideJoinPathMode,
     height_plane: Option<SideJoinHeightPlane>,
-) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
+) -> Result<Option<SideJoinBoundaryPath>, SideJoinGenerationError> {
     let from_xz = xz_from_road_vec3(from_world);
     let to_xz = xz_from_road_vec3(to_world);
     let join_point_xz = side_join_backend_meet_point_xz(
@@ -56,16 +56,64 @@ pub(super) fn side_join_boundary_path_world(
         };
         path_xz
     };
-    let path_world = path_xz
+    let rounded_world = side_join_path_points_to_world(
+        path_xz,
+        from_xz,
+        from_world.y,
+        to_xz,
+        to_world.y,
+        height_plane,
+    )?;
+    let Some(rounded_world) = rounded_world else {
+        return Ok(None);
+    };
+    let miter_xz = join_point_xz.map_or_else(
+        || vec![from_xz, to_xz],
+        |join_point_xz| vec![from_xz, join_point_xz, to_xz],
+    );
+    let miter_world = side_join_path_points_to_world(
+        miter_xz,
+        from_xz,
+        from_world.y,
+        to_xz,
+        to_world.y,
+        height_plane,
+    )?;
+    let Some(miter_world) = miter_world else {
+        return Ok(None);
+    };
+    Ok(Some(SideJoinBoundaryPath {
+        rounded_world,
+        miter_world,
+    }))
+}
+
+fn side_join_path_points_to_world(
+    points_xz: Vec<RoadVec2>,
+    from_xz: RoadVec2,
+    from_height_m: f64,
+    to_xz: RoadVec2,
+    to_height_m: f64,
+    height_plane: Option<SideJoinHeightPlane>,
+) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
+    let path_world = points_xz
         .into_iter()
         .map(|point_xz| {
             let height_m = height_plane.map_or_else(
-                || height_on_linear_height_path(point_xz, from_xz, from_world.y, to_xz, to_world.y),
+                || {
+                    height_on_linear_height_path(
+                        point_xz,
+                        from_xz,
+                        from_height_m,
+                        to_xz,
+                        to_height_m,
+                    )
+                },
                 |plane| {
                     if same_surface_xz_key(point_xz, from_xz) {
-                        from_world.y
+                        from_height_m
                     } else if same_surface_xz_key(point_xz, to_xz) {
-                        to_world.y
+                        to_height_m
                     } else {
                         plane.height_at_xz(point_xz)
                     }
@@ -103,10 +151,87 @@ fn side_join_backend_join_path_xz(
             {
                 return cleaned_open_road_points(points);
             }
-            return side_join_backend_cavalier_join_path_xz(start_xz, join_point_xz, end_xz);
         }
     }
+    if let Some(points) = side_join_backend_fillet_path_xz(start_xz, join_point_xz, end_xz) {
+        return cleaned_open_road_points(points);
+    }
+    if path_mode == SideJoinPathMode::JunctionNonRoad
+        && let Some(points) =
+            side_join_backend_cavalier_join_path_xz(start_xz, join_point_xz, end_xz)
+    {
+        return Some(points);
+    }
     cleaned_open_road_points([start_xz, join_point_xz, end_xz])
+}
+
+fn side_join_backend_fillet_path_xz(
+    start_xz: RoadVec2,
+    join_point_xz: RoadVec2,
+    end_xz: RoadVec2,
+) -> Option<Vec<RoadVec2>> {
+    let incoming = join_point_xz - start_xz;
+    let outgoing = end_xz - join_point_xz;
+    let incoming_length_m = incoming.length();
+    let outgoing_length_m = outgoing.length();
+    if incoming_length_m <= SIDE_JOIN_FILLET_MIN_TANGENT_M
+        || outgoing_length_m <= SIDE_JOIN_FILLET_MIN_TANGENT_M
+    {
+        return None;
+    }
+
+    let incoming_direction = incoming / incoming_length_m;
+    let outgoing_direction = outgoing / outgoing_length_m;
+    let tangent_length_m = (incoming_length_m.min(outgoing_length_m)
+        * SIDE_JOIN_FILLET_TANGENT_FRACTION)
+        .max(SIDE_JOIN_FILLET_MIN_TANGENT_M)
+        .min(incoming_length_m * 0.5)
+        .min(outgoing_length_m * 0.5);
+    if tangent_length_m <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M {
+        return None;
+    }
+
+    let fillet_start_xz = join_point_xz - incoming_direction * tangent_length_m;
+    let fillet_end_xz = join_point_xz + outgoing_direction * tangent_length_m;
+    let mut points = Vec::with_capacity((1 << SIDE_JOIN_ARC_SPLIT_DEPTH) + 4);
+    points.push(start_xz);
+    points.push(fillet_start_xz);
+    if let Some(arc_points) = side_join_backend_arc_path_xz(
+        fillet_start_xz,
+        incoming_direction,
+        fillet_end_xz,
+        outgoing_direction,
+    ) {
+        points.extend(arc_points.into_iter().skip(1));
+    } else {
+        append_side_join_quadratic_fillet_samples(
+            &mut points,
+            fillet_start_xz,
+            join_point_xz,
+            fillet_end_xz,
+            SIDE_JOIN_ARC_SPLIT_DEPTH,
+        );
+    }
+    points.push(end_xz);
+    Some(points)
+}
+
+fn append_side_join_quadratic_fillet_samples(
+    points: &mut Vec<RoadVec2>,
+    start_xz: RoadVec2,
+    control_xz: RoadVec2,
+    end_xz: RoadVec2,
+    split_depth: usize,
+) {
+    let sample_count = 1 << split_depth;
+    for index in 1..=sample_count {
+        let t = index as f64 / sample_count as f64;
+        let one_minus_t = 1.0 - t;
+        let point = start_xz * (one_minus_t * one_minus_t)
+            + control_xz * (2.0 * one_minus_t * t)
+            + end_xz * (t * t);
+        points.push(point);
+    }
 }
 
 fn side_join_backend_cavalier_join_path_xz(
@@ -347,39 +472,39 @@ fn clean_side_join_path_world(
     Ok((cleaned_world.len() >= 2).then_some(cleaned_world))
 }
 
-fn endpoint_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Option<RoadVec3> {
+fn mouth_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Option<RoadVec3> {
     mouth
         .boundary_rails
         .get(boundary_index)
-        .map(|rail| rail.endpoint_world)
+        .map(|rail| rail.mouth_world)
 }
 
-pub(super) fn endpoint_layer_inner_world(
+pub(super) fn mouth_layer_inner_world(
     mouth: &NodeInputMouth,
     layer: &SideJoinLayer,
 ) -> Option<RoadVec3> {
-    endpoint_layer_boundary_world(mouth, layer, layer.inner_boundary_index)
+    mouth_layer_boundary_world(mouth, layer, layer.inner_boundary_index)
 }
 
-pub(super) fn endpoint_layer_outer_world(
+pub(super) fn mouth_layer_outer_world(
     mouth: &NodeInputMouth,
     layer: &SideJoinLayer,
 ) -> Option<RoadVec3> {
-    endpoint_layer_boundary_world(mouth, layer, layer.outer_boundary_index)
+    mouth_layer_boundary_world(mouth, layer, layer.outer_boundary_index)
 }
 
-fn endpoint_layer_boundary_world(
+fn mouth_layer_boundary_world(
     mouth: &NodeInputMouth,
     layer: &SideJoinLayer,
     boundary_index: usize,
 ) -> Option<RoadVec3> {
     let interval = mouth.band_intervals.get(layer.band_index)?;
     if boundary_index == layer.band_index {
-        Some(interval.endpoint_start_world)
+        Some(interval.mouth_start_world)
     } else if boundary_index == layer.band_index + 1 {
-        Some(interval.endpoint_end_world)
+        Some(interval.mouth_end_world)
     } else {
-        endpoint_boundary_world(mouth, boundary_index)
+        mouth_boundary_world(mouth, boundary_index)
     }
 }
 
@@ -430,6 +555,87 @@ mod tests {
 
     fn normalized_test_direction(direction: RoadVec2) -> RoadVec2 {
         direction / direction.length()
+    }
+
+    #[test]
+    fn bend_side_join_rounds_asymmetric_miter() {
+        let start = RoadVec2::new(8.0, 0.0);
+        let join = RoadVec2::new(8.0, 2.0);
+        let end = RoadVec2::new(0.0, 8.0);
+
+        assert!(
+            side_join_backend_arc_path_xz(start, join - start, end, end - join).is_none(),
+            "test setup must exercise the bounded fillet fallback"
+        );
+        let path = side_join_backend_join_path_xz(start, join, end, SideJoinPathMode::BendArc)
+            .expect("bend fillet should emit a path");
+
+        assert_bounded_fillet_path(start, join, end, &path);
+    }
+
+    #[test]
+    fn junction_side_join_rounds_asymmetric_miter() {
+        let start = RoadVec2::new(8.0, 0.0);
+        let join = RoadVec2::new(8.0, 2.0);
+        let end = RoadVec2::new(0.0, 8.0);
+
+        assert!(
+            side_join_backend_arc_path_xz(start, join - start, end, end - join).is_none(),
+            "test setup must exercise the bounded fillet fallback"
+        );
+        let path =
+            side_join_backend_join_path_xz(start, join, end, SideJoinPathMode::JunctionNonRoad)
+                .expect("JunctionN fillet should emit a path");
+
+        assert_bounded_fillet_path(start, join, end, &path);
+    }
+
+    fn assert_bounded_fillet_path(
+        start: RoadVec2,
+        join: RoadVec2,
+        end: RoadVec2,
+        path: &[RoadVec2],
+    ) {
+        assert_eq!(
+            SurfaceXzKey::from_road_xz(path[0]),
+            SurfaceXzKey::from_road_xz(start)
+        );
+        assert_eq!(
+            SurfaceXzKey::from_road_xz(*path.last().expect("non-empty path")),
+            SurfaceXzKey::from_road_xz(end)
+        );
+        assert!(
+            path.len() > 4,
+            "fillet must add a rounded corner path, not a miter: {path:?}"
+        );
+        let incoming = join - start;
+        let outgoing = end - join;
+        let incoming_length_m = incoming.length();
+        let outgoing_length_m = outgoing.length();
+        let tangent_length_m =
+            expected_fillet_tangent_length_m(incoming_length_m, outgoing_length_m);
+        let expected_start = join - incoming / incoming_length_m * tangent_length_m;
+        let expected_end = join + outgoing / outgoing_length_m * tangent_length_m;
+        assert!(
+            path[1].distance(expected_start) <= 1.0e-6,
+            "fillet must start inside the bounded tangent window: {path:?}"
+        );
+        assert!(
+            path[path.len() - 2].distance(expected_end) <= 1.0e-6,
+            "fillet must end inside the bounded tangent window: {path:?}"
+        );
+        assert!(
+            path.iter()
+                .all(|point| point.distance(join) > SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M),
+            "rounded fillet path must not route through the sharp miter point: {path:?}"
+        );
+    }
+
+    fn expected_fillet_tangent_length_m(incoming_length_m: f64, outgoing_length_m: f64) -> f64 {
+        (incoming_length_m.min(outgoing_length_m) * SIDE_JOIN_FILLET_TANGENT_FRACTION)
+            .max(SIDE_JOIN_FILLET_MIN_TANGENT_M)
+            .min(incoming_length_m * 0.5)
+            .min(outgoing_length_m * 0.5)
     }
 
     #[test]

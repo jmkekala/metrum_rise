@@ -55,6 +55,7 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) node_id: u32,
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) contours: Vec<NodeGeneratedContour>,
+    pub(crate) corner_trims: Vec<NodeGeneratedCornerTrim>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
     pub(crate) height_carrier_paths_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>,
@@ -130,6 +131,11 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) backend_polyline: RoadPolyline,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct NodeGeneratedCornerTrim {
+    pub(crate) points_xz: Vec<RoadVec2>,
+}
+
 impl NodeGeneratedContour {
     pub(crate) fn contributes_to_footprint(&self) -> bool {
         if self.kind != NodeGeneratedContourKind::FullRoadbed {
@@ -153,6 +159,7 @@ impl NodeGeneratedContour {
         ) && matches!(
             self.purpose,
             NodeGeneratedContourPurpose::CarriagewayCorridor
+                | NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
                 | NodeGeneratedContourPurpose::BendSideJoin
                 | NodeGeneratedContourPurpose::JunctionSideJoin
         )

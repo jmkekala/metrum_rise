@@ -4,9 +4,7 @@ use super::super::input::NodeArrangementInput;
 use super::super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
 use super::super::ownership::NodeSourceCarrierRegistry;
 use super::super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
-use super::bands::{
-    push_band_contour, push_full_roadbed_contour, push_raw_carriageway_corridor_contour,
-};
+use super::bands::{push_band_contour, push_full_roadbed_contour};
 use super::caps_and_joins::{push_side_join_band_contours, push_terminal_cap_band_contours};
 use super::contacts::{
     append_generated_material_point_contact_constraints,
@@ -15,6 +13,7 @@ use super::contacts::{
     node_generated_contact_source_constraints,
     node_generated_contact_sources_from_contour_backed_contacts,
     retain_source_authorized_generated_contact_constraints,
+    synchronize_shared_height_contact_vertices,
     validate_generated_contact_constraint_endpoints_from_sources,
 };
 use super::contours::{push_boundary_constraint, push_span_handoff_constraint};
@@ -90,6 +89,7 @@ impl NodeRailContourSet {
         );
         profile.owners_ms = elapsed_profile_ms(owners_start);
         let mut contours = Vec::new();
+        let mut corner_trims = Vec::new();
         let mut constraints = Vec::new();
         let mut height_carrier_paths_by_source =
             BTreeMap::<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>::new();
@@ -107,12 +107,6 @@ impl NodeRailContourSet {
                 .map_or(&[] as &[NodeTerminalCapBand], Vec::as_slice);
             let base_start = profile_enabled.then(Instant::now);
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
-            push_raw_carriageway_corridor_contour(
-                input.piece_kind,
-                mouth,
-                &mut contours,
-                &mut constraints,
-            )?;
             profile.mouth_base_contours_ms += elapsed_profile_ms(base_start);
 
             let band_start = profile_enabled.then(Instant::now);
@@ -186,6 +180,7 @@ impl NodeRailContourSet {
                 mouth_owners,
                 &mouth_owners.side_join_band_owners,
                 &mut contours,
+                &mut corner_trims,
                 &mut constraints,
             )?;
             profile.side_join_contours_ms += elapsed_profile_ms(side_join_contours_start);
@@ -329,6 +324,7 @@ impl NodeRailContourSet {
             source_constraint_count,
         )?;
         profile.validate_endpoints_ms = elapsed_profile_ms(validate_endpoints_start);
+        synchronize_shared_height_contact_vertices(&mut contours, &constraints);
         let source_carriers_start = profile_enabled.then(Instant::now);
         let source_carriers = NodeSourceCarrierRegistry::from_rail_parts(
             &contours,
@@ -349,6 +345,7 @@ impl NodeRailContourSet {
                 node_id: input.node_id,
                 piece_kind: input.piece_kind,
                 contours,
+                corner_trims,
                 constraints,
                 height_carrier_paths_by_source,
                 height_carrier_points_by_source,

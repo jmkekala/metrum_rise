@@ -1,7 +1,9 @@
 //! Construction pipeline for node-height solutions.
 
 use super::evaluate::*;
-use super::grade::apply_junctionn_height_authority_normalization;
+use super::grade::{
+    apply_bend_height_authority_normalization, apply_junctionn_height_authority_normalization,
+};
 use super::model::*;
 use super::seams::*;
 use super::*;
@@ -42,8 +44,14 @@ impl NodeHeightSolution {
                 regions.push(region);
             }
         }
-        if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
-            apply_junctionn_height_authority_normalization(&mut regions)?;
+        match ownership.piece_kind {
+            RoadSurfaceVisualNodePieceKind::JunctionN => {
+                apply_junctionn_height_authority_normalization(&mut regions)?;
+            }
+            RoadSurfaceVisualNodePieceKind::Bend => {
+                apply_bend_height_authority_normalization(&mut regions)?;
+            }
+            RoadSurfaceVisualNodePieceKind::Terminal => {}
         }
         validate_explicit_material_seam_heights(&regions)?;
         validate_shared_source_height_agreement(&regions)?;

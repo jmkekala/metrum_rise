@@ -65,21 +65,27 @@ pub(super) fn triangulate_arrangement_region(
         .iter()
         .map(|vertex| Point2::new(vertex.point_world.x, vertex.point_world.z))
         .collect::<Vec<_>>();
+    let constraint_list = constraints.iter().copied().collect::<Vec<_>>();
     let mut invalid_constraints = 0usize;
-    let cdt = SurfaceCdt::try_bulk_load_cdt(
-        spade_vertices,
-        constraints.iter().copied().collect(),
-        |_| invalid_constraints += 1,
-    )
-    .map_err(|_| NodeTriangulationError::CdtBuildFailed {
-        node_id,
-        region_index,
-    })?;
+    let mut first_invalid_constraint = None;
+    let cdt =
+        SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraint_list.clone(), |constraint| {
+            invalid_constraints += 1;
+            first_invalid_constraint
+                .get_or_insert(normalized_vertex_edge(constraint[0], constraint[1]));
+        })
+        .map_err(|_| NodeTriangulationError::CdtBuildFailed {
+            node_id,
+            region_index,
+        })?;
     if invalid_constraints > 0 {
         return Err(NodeTriangulationError::InvalidConstraint {
             node_id,
             region_index,
             constraint_count: invalid_constraints,
+            first_constraint_index: first_invalid_constraint
+                .and_then(|constraint| constraint_list.iter().position(|edge| *edge == constraint)),
+            first_constraint: first_invalid_constraint,
         });
     }
 
@@ -104,6 +110,7 @@ pub(super) fn triangulate_arrangement_region(
                 height_field_id,
                 &mut vertices,
                 &mut vertex_lookup,
+                &mut constraints,
                 &mut triangles,
             )?;
         }
@@ -118,6 +125,7 @@ pub(super) fn triangulate_arrangement_region(
         height_field_id,
         &mut vertices,
         &mut vertex_lookup,
+        &mut constraints,
         &mut triangles,
     )?;
     triangles.sort_by(|a, b| triangle_sort_key(a, &vertices).cmp(&triangle_sort_key(b, &vertices)));
@@ -130,6 +138,13 @@ pub(super) fn triangulate_arrangement_region(
     }
 
     reject_triangle_coverage_mismatch(node_id, region_index, &owner_shape, &triangles, &vertices)?;
+    append_effective_exposed_boundary_constraints(
+        &mut constraints,
+        &triangles,
+        &vertices,
+        &owner_shape,
+    );
+    canonicalize_boundary_constraint_numeric_dust_vertices(&mut constraints, &vertices);
 
     Ok(NodeTriangulatedRegion {
         kind: owner.kind(),
@@ -140,6 +155,182 @@ pub(super) fn triangulate_arrangement_region(
         triangles,
         area_m2: region.area_m2(),
     })
+}
+
+fn append_effective_exposed_boundary_constraints(
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
+    triangles: &[NodeTriangulatedTriangle],
+    vertices: &[NodeTriangulatedVertex],
+    owner_shape: &NodeOverlayShape,
+) {
+    let mut triangle_edge_counts = BTreeMap::<[usize; 2], usize>::new();
+    for triangle in triangles {
+        for edge_index in 0..3 {
+            let edge = normalized_vertex_edge(
+                triangle.vertices[edge_index],
+                triangle.vertices[(edge_index + 1) % 3],
+            );
+            *triangle_edge_counts.entry(edge).or_default() += 1;
+        }
+    }
+    for (edge, count) in triangle_edge_counts {
+        if count != 1 || boundary_constraints.contains(&edge) {
+            continue;
+        }
+        let Some(start) = vertices.get(edge[0]) else {
+            continue;
+        };
+        let Some(end) = vertices.get(edge[1]) else {
+            continue;
+        };
+        if edge_lies_on_owner_shape_boundary(start.point_world, end.point_world, owner_shape) {
+            boundary_constraints.insert(edge);
+        }
+    }
+}
+
+fn canonicalize_boundary_constraint_numeric_dust_vertices(
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
+    vertices: &[NodeTriangulatedVertex],
+) {
+    if boundary_constraints.is_empty() {
+        return;
+    }
+    let canonical_indices = canonical_boundary_constraint_vertex_indices(vertices);
+    let canonical_constraints = boundary_constraints
+        .iter()
+        .filter_map(|edge| {
+            let start = *canonical_indices.get(edge[0])?;
+            let end = *canonical_indices.get(edge[1])?;
+            (start != end).then_some(normalized_vertex_edge(start, end))
+        })
+        .collect::<BTreeSet<_>>();
+    *boundary_constraints = canonical_constraints;
+}
+
+fn canonical_boundary_constraint_vertex_indices(vertices: &[NodeTriangulatedVertex]) -> Vec<usize> {
+    let mut canonical_by_index = Vec::with_capacity(vertices.len());
+    let mut canonical_by_key = BTreeMap::<NodeTriangulationPointKey, Vec<usize>>::new();
+    let dust_key_units = NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS;
+    let dust_key_units_sq = i128::from(dust_key_units) * i128::from(dust_key_units);
+
+    for (index, vertex) in vertices.iter().enumerate() {
+        let key = NodeTriangulationPointKey::from_world(vertex.point_world);
+        let range_start = NodeTriangulationPointKey {
+            x_mm: key.x_mm - dust_key_units,
+            z_mm: i64::MIN,
+        };
+        let range_end = NodeTriangulationPointKey {
+            x_mm: key.x_mm + dust_key_units,
+            z_mm: i64::MAX,
+        };
+        let canonical = canonical_by_key
+            .range(range_start..=range_end)
+            .flat_map(|(candidate_key, candidate_indices)| {
+                candidate_indices
+                    .iter()
+                    .copied()
+                    .map(|candidate_index| (*candidate_key, candidate_index))
+            })
+            .filter_map(|(candidate_key, candidate_index)| {
+                if key.distance_key_units_sq(candidate_key) > dust_key_units_sq {
+                    return None;
+                }
+                let candidate = vertices.get(candidate_index)?;
+                boundary_constraint_vertices_are_equivalent(vertex, candidate).then_some((
+                    key.distance_key_units_sq(candidate_key),
+                    candidate_key,
+                    candidate_index,
+                ))
+            })
+            .min()
+            .map(|(_, _, candidate_index)| candidate_index)
+            .unwrap_or(index);
+        canonical_by_index.push(canonical);
+        canonical_by_key.entry(key).or_default().push(canonical);
+    }
+
+    canonical_by_index
+}
+
+fn boundary_constraint_vertices_are_equivalent(
+    left: &NodeTriangulatedVertex,
+    right: &NodeTriangulatedVertex,
+) -> bool {
+    left.height_field_id == right.height_field_id
+        && quantize_m(left.point_world.y) == quantize_m(right.point_world.y)
+        && left.grade_authority.owner == right.grade_authority.owner
+        && left.grade_authority.height_field_id == right.grade_authority.height_field_id
+        && left.grade_authority.height_key == right.grade_authority.height_key
+}
+
+fn edge_lies_on_owner_shape_boundary(
+    start: RoadVec3,
+    end: RoadVec3,
+    owner_shape: &NodeOverlayShape,
+) -> bool {
+    let start = [start.x, start.z];
+    let end = [end.x, end.z];
+    owner_shape
+        .iter()
+        .any(|contour| edge_lies_on_contour_boundary(start, end, contour))
+}
+
+fn edge_lies_on_contour_boundary(
+    start: NodeOverlayPoint,
+    end: NodeOverlayPoint,
+    contour: &NodeOverlayContour,
+) -> bool {
+    if contour.len() < 2 {
+        return false;
+    }
+    let start_edges = contour_edges_touching_point(start, contour);
+    let end_edges = contour_edges_touching_point(end, contour);
+    start_edges.iter().copied().any(|start_edge| {
+        end_edges.iter().copied().any(|end_edge| {
+            contour_path_between_edges_lies_on_segment(start, end, start_edge, end_edge, contour)
+                || contour_path_between_edges_lies_on_segment(
+                    end, start, end_edge, start_edge, contour,
+                )
+        })
+    })
+}
+
+fn contour_edges_touching_point(
+    point: NodeOverlayPoint,
+    contour: &NodeOverlayContour,
+) -> Vec<usize> {
+    (0..contour.len())
+        .filter(|index| {
+            point_lies_on_segment(
+                point,
+                contour[*index],
+                contour[(*index + 1) % contour.len()],
+            )
+        })
+        .collect()
+}
+
+fn contour_path_between_edges_lies_on_segment(
+    start: NodeOverlayPoint,
+    end: NodeOverlayPoint,
+    start_edge: usize,
+    end_edge: usize,
+    contour: &NodeOverlayContour,
+) -> bool {
+    let mut cursor = (start_edge + 1) % contour.len();
+    loop {
+        if !point_lies_on_segment(contour[cursor], start, end) {
+            return false;
+        }
+        if cursor == end_edge {
+            return true;
+        }
+        cursor = (cursor + 1) % contour.len();
+        if cursor == (start_edge + 1) % contour.len() {
+            return false;
+        }
+    }
 }
 
 fn triangle_area_is_numeric_dust(
@@ -455,6 +646,7 @@ fn append_owner_clipped_triangles(
     height_field_id: NodeBandHeightFieldId,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
     triangles: &mut Vec<NodeTriangulatedTriangle>,
 ) -> Result<(), NodeTriangulationError> {
     let triangle_shape = vec![vec![positive_triangle_contour(triangle, vertices)]];
@@ -483,6 +675,7 @@ fn append_owner_clipped_triangles(
             height_field_id,
             vertices,
             vertex_lookup,
+            boundary_constraints,
             triangles,
         )?;
     }
@@ -499,6 +692,7 @@ fn append_missing_owner_coverage_triangles(
     height_field_id: NodeBandHeightFieldId,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
     triangles: &mut Vec<NodeTriangulatedTriangle>,
 ) -> Result<(), NodeTriangulationError> {
     let source_triangles = triangles.clone();
@@ -519,6 +713,7 @@ fn append_missing_owner_coverage_triangles(
             height_field_id,
             vertices,
             vertex_lookup,
+            boundary_constraints,
             triangles,
         )?;
     }
@@ -534,13 +729,14 @@ fn append_triangulated_clipped_shape(
     height_field_id: NodeBandHeightFieldId,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
     triangles: &mut Vec<NodeTriangulatedTriangle>,
 ) -> Result<(), NodeTriangulationError> {
     let mut local_to_global = Vec::<usize>::new();
     let mut local_by_global = BTreeMap::<usize, usize>::new();
     let mut constraints = BTreeSet::<[usize; 2]>::new();
 
-    for (contour_index, contour) in clipped_shape.iter().enumerate() {
+    for contour in clipped_shape {
         let mut contour_indices = Vec::new();
         for point in contour {
             let global_index = insert_clipped_triangle_vertex(
@@ -568,23 +764,25 @@ fn append_triangulated_clipped_shape(
             contour_indices.pop();
         }
         if contour_indices.len() < 3 {
-            if RoadSurfaceSystem::overlay_contour_area(contour).abs() > NODE_OVERLAY_MIN_AREA_M2 {
-                return Err(NodeTriangulationError::DegenerateRegionContour {
-                    node_id,
-                    region_index,
-                    contour_index,
-                    vertex_count: contour_indices.len(),
-                });
-            }
+            // Repair contours can collapse after snapping to already-heighted support vertices.
+            // The final coverage check below decides whether the skipped repair leaves a
+            // meaningful residual instead of failing here with a misleading CDT contour error.
             continue;
         }
         for index in 0..contour_indices.len() {
+            let global_edge = normalized_vertex_edge(
+                local_to_global[contour_indices[index]],
+                local_to_global[contour_indices[(index + 1) % contour_indices.len()]],
+            );
             let edge = normalized_vertex_edge(
                 contour_indices[index],
                 contour_indices[(index + 1) % contour_indices.len()],
             );
             if edge[0] != edge[1] {
                 constraints.insert(edge);
+            }
+            if global_edge[0] != global_edge[1] {
+                boundary_constraints.insert(global_edge);
             }
         }
     }
@@ -600,10 +798,14 @@ fn append_triangulated_clipped_shape(
             Point2::new(point.x, point.z)
         })
         .collect::<Vec<_>>();
+    let constraint_list = constraints.into_iter().collect::<Vec<_>>();
     let mut invalid_constraints = 0usize;
+    let mut first_invalid_constraint = None;
     let cdt =
-        SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraints.into_iter().collect(), |_| {
-            invalid_constraints += 1
+        SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraint_list.clone(), |constraint| {
+            invalid_constraints += 1;
+            first_invalid_constraint
+                .get_or_insert(normalized_vertex_edge(constraint[0], constraint[1]));
         })
         .map_err(|_| NodeTriangulationError::CdtBuildFailed {
             node_id,
@@ -614,6 +816,9 @@ fn append_triangulated_clipped_shape(
             node_id,
             region_index,
             constraint_count: invalid_constraints,
+            first_constraint_index: first_invalid_constraint
+                .and_then(|constraint| constraint_list.iter().position(|edge| *edge == constraint)),
+            first_constraint: first_invalid_constraint,
         });
     }
 
@@ -648,13 +853,14 @@ fn append_triangulated_missing_owner_shape(
     height_field_id: NodeBandHeightFieldId,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    boundary_constraints: &mut BTreeSet<[usize; 2]>,
     triangles: &mut Vec<NodeTriangulatedTriangle>,
 ) -> Result<(), NodeTriangulationError> {
     let mut local_to_global = Vec::<usize>::new();
     let mut local_by_global = BTreeMap::<usize, usize>::new();
     let mut constraints = BTreeSet::<[usize; 2]>::new();
 
-    for (contour_index, contour) in missing_shape.iter().enumerate() {
+    for contour in missing_shape {
         let mut contour_indices = Vec::new();
         for point in contour {
             let Some(global_index) = insert_missing_owner_vertex(
@@ -687,23 +893,25 @@ fn append_triangulated_missing_owner_shape(
             contour_indices.pop();
         }
         if contour_indices.len() < 3 {
-            if RoadSurfaceSystem::overlay_contour_area(contour).abs() > NODE_OVERLAY_MIN_AREA_M2 {
-                return Err(NodeTriangulationError::DegenerateRegionContour {
-                    node_id,
-                    region_index,
-                    contour_index,
-                    vertex_count: contour_indices.len(),
-                });
-            }
+            // Missing-coverage repair may not have enough height-supported vertices to form a
+            // local CDT. Skip it and let final owner-vs-triangle coverage validation report any
+            // remaining meaningful gap.
             continue;
         }
         for index in 0..contour_indices.len() {
+            let global_edge = normalized_vertex_edge(
+                local_to_global[contour_indices[index]],
+                local_to_global[contour_indices[(index + 1) % contour_indices.len()]],
+            );
             let edge = normalized_vertex_edge(
                 contour_indices[index],
                 contour_indices[(index + 1) % contour_indices.len()],
             );
             if edge[0] != edge[1] {
                 constraints.insert(edge);
+            }
+            if global_edge[0] != global_edge[1] {
+                boundary_constraints.insert(global_edge);
             }
         }
     }
@@ -719,10 +927,14 @@ fn append_triangulated_missing_owner_shape(
             Point2::new(point.x, point.z)
         })
         .collect::<Vec<_>>();
+    let constraint_list = constraints.into_iter().collect::<Vec<_>>();
     let mut invalid_constraints = 0usize;
+    let mut first_invalid_constraint = None;
     let cdt =
-        SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraints.into_iter().collect(), |_| {
-            invalid_constraints += 1
+        SurfaceCdt::try_bulk_load_cdt(spade_vertices, constraint_list.clone(), |constraint| {
+            invalid_constraints += 1;
+            first_invalid_constraint
+                .get_or_insert(normalized_vertex_edge(constraint[0], constraint[1]));
         })
         .map_err(|_| NodeTriangulationError::CdtBuildFailed {
             node_id,
@@ -733,6 +945,9 @@ fn append_triangulated_missing_owner_shape(
             node_id,
             region_index,
             constraint_count: invalid_constraints,
+            first_constraint_index: first_invalid_constraint
+                .and_then(|constraint| constraint_list.iter().position(|edge| *edge == constraint)),
+            first_constraint: first_invalid_constraint,
         });
     }
 

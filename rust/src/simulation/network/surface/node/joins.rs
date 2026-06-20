@@ -32,6 +32,8 @@ enum SideJoinPathMode {
 
 const SIDE_JOIN_ARC_RADIUS_EPS_M: f64 = 0.001;
 const SIDE_JOIN_ARC_SPLIT_DEPTH: usize = 3;
+const SIDE_JOIN_FILLET_MIN_TANGENT_M: f64 = 0.25;
+const SIDE_JOIN_FILLET_TANGENT_FRACTION: f64 = 0.25;
 const SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 const SIDE_JOIN_ENDPOINT_PLANE_HEIGHT_DUST_MM: i64 = 1;
 
@@ -58,12 +60,20 @@ struct SideJoinHeightPlane {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct SideJoinBoundaryPath {
+    rounded_world: Vec<RoadVec3>,
+    miter_world: Vec<RoadVec3>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeInputSideJoinBand {
     pub(crate) source_band_index: usize,
     pub(crate) band_kind: RoadSurfaceBandKind,
     pub(crate) boundary_mode: NodeInputSideJoinBandBoundaryMode,
     pub(crate) inner_path_world: Vec<RoadVec3>,
     pub(crate) outer_path_world: Vec<RoadVec3>,
+    pub(crate) outer_footprint_trim_world: Vec<RoadVec3>,
+    pub(crate) trims_outer_footprint: bool,
     pub(crate) contour_world: Vec<RoadVec3>,
 }
 
@@ -251,6 +261,80 @@ mod tests {
         .expect("test junction mouths should produce canonical input")
     }
 
+    fn junction_input_with_shared_endpoint_center() -> NodeArrangementInput {
+        let mouths = [
+            ordered_mouth(
+                profile_x(10.0, RoadVec2::X),
+                profile_x(0.0, RoadVec2::X),
+                0.0,
+                RoadVec2::X,
+                1,
+            ),
+            ordered_mouth(
+                profile_z(12.0, RoadVec2::Y),
+                profile_z(0.0, RoadVec2::Y),
+                std::f32::consts::FRAC_PI_2,
+                RoadVec2::Y,
+                2,
+            ),
+            ordered_mouth(
+                profile_x(-10.0, RoadVec2::NEG_X),
+                profile_x(0.0, RoadVec2::NEG_X),
+                std::f32::consts::PI,
+                RoadVec2::NEG_X,
+                3,
+            ),
+        ];
+        NodeArrangementInput::from_ordered_mouths(
+            42,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &mouths,
+        )
+        .expect("test junction mouths should produce canonical input")
+    }
+
+    fn bend_input() -> NodeArrangementInput {
+        let mouths = [
+            ordered_mouth(
+                profile_x(10.0, RoadVec2::X),
+                profile_x(0.0, RoadVec2::X),
+                0.0,
+                RoadVec2::X,
+                1,
+            ),
+            ordered_mouth(
+                profile_z(12.0, RoadVec2::Y),
+                profile_z(2.0, RoadVec2::Y),
+                std::f32::consts::FRAC_PI_2,
+                RoadVec2::Y,
+                2,
+            ),
+        ];
+        NodeArrangementInput::from_ordered_mouths(42, RoadSurfaceVisualNodePieceKind::Bend, &mouths)
+            .expect("test bend mouths should produce canonical input")
+    }
+
+    fn bend_input_with_shared_endpoint_center() -> NodeArrangementInput {
+        let mouths = [
+            ordered_mouth(
+                profile_x(10.0, RoadVec2::X),
+                profile_x(0.0, RoadVec2::X),
+                0.0,
+                RoadVec2::X,
+                1,
+            ),
+            ordered_mouth(
+                profile_z(12.0, RoadVec2::Y),
+                profile_z(0.0, RoadVec2::Y),
+                std::f32::consts::FRAC_PI_2,
+                RoadVec2::Y,
+                2,
+            ),
+        ];
+        NodeArrangementInput::from_ordered_mouths(42, RoadSurfaceVisualNodePieceKind::Bend, &mouths)
+            .expect("test bend mouths should produce canonical input")
+    }
+
     #[test]
     fn junction_side_join_bands_are_backend_cleaned_surface_carriers() {
         let bands_by_mouth = side_join_bands_by_mouth(&junction_input())
@@ -281,6 +365,93 @@ mod tests {
         );
         for band in bands {
             assert!(side_join_band_has_quantized_area(band));
+        }
+    }
+
+    #[test]
+    fn bend_side_join_bands_continue_after_degenerate_carriageway_slice() {
+        let bands_by_mouth = side_join_bands_by_mouth(&bend_input())
+            .expect("test bend side joins should not have height conflicts");
+
+        assert_rounded_non_road_gap(&bands_by_mouth[0]);
+        assert_rounded_non_road_gap(&bands_by_mouth[1]);
+    }
+
+    #[test]
+    fn junction_side_join_bands_continue_after_degenerate_carriageway_slice() {
+        let bands_by_mouth = side_join_bands_by_mouth(&junction_input())
+            .expect("test junction side joins should not have height conflicts");
+
+        let bands = bands_by_mouth.iter().flatten().collect::<Vec<_>>();
+        assert_rounded_non_road_gap_iter(bands.iter().copied());
+    }
+
+    #[test]
+    fn bend_side_join_bands_round_shared_endpoint_centerline() {
+        let input = bend_input_with_shared_endpoint_center();
+        let bands_by_mouth = side_join_bands_by_mouth(&input)
+            .expect("test bend side joins should not have height conflicts");
+        let graph_center = RoadVec3::new(0.0, 4.0, 0.0);
+
+        assert_no_visible_side_join_path_uses_point(&bands_by_mouth, graph_center);
+        assert_rounded_non_road_gap(&bands_by_mouth[0]);
+        assert_rounded_non_road_gap(&bands_by_mouth[1]);
+    }
+
+    #[test]
+    fn junction_side_join_bands_round_shared_endpoint_centerline() {
+        let input = junction_input_with_shared_endpoint_center();
+        let bands_by_mouth = side_join_bands_by_mouth(&input)
+            .expect("test junction side joins should not have height conflicts");
+        let graph_center = RoadVec3::new(0.0, 4.0, 0.0);
+        let bands = bands_by_mouth.iter().flatten().collect::<Vec<_>>();
+
+        assert_no_visible_side_join_path_uses_point(&bands_by_mouth, graph_center);
+        assert_rounded_non_road_gap_iter(bands.iter().copied());
+    }
+
+    fn assert_rounded_non_road_gap(bands: &[NodeInputSideJoinBand]) {
+        assert_rounded_non_road_gap_iter(bands.iter());
+    }
+
+    fn assert_rounded_non_road_gap_iter<'a>(
+        bands: impl IntoIterator<Item = &'a NodeInputSideJoinBand>,
+    ) {
+        let bands = bands.into_iter().collect::<Vec<_>>();
+        assert!(
+            bands.iter().any(|band| {
+                band.band_kind == RoadSurfaceBandKind::CurbOrShoulder
+                    && band.inner_path_world.len() > 3
+            }),
+            "adjacent gap must keep a rounded asphalt-to-curb boundary: {bands:?}"
+        );
+        assert!(
+            bands.iter().any(|band| {
+                band.band_kind == RoadSurfaceBandKind::Sidewalk && band.outer_path_world.len() > 3
+            }),
+            "adjacent gap must keep a rounded sidewalk-to-terrain boundary: {bands:?}"
+        );
+    }
+
+    fn assert_no_visible_side_join_path_uses_point(
+        bands_by_mouth: &[Vec<NodeInputSideJoinBand>],
+        forbidden: RoadVec3,
+    ) {
+        let forbidden_key = SurfaceXzKey::from_road_xz(xz_from_road_vec3(forbidden));
+        for band in bands_by_mouth.iter().flatten() {
+            if band.band_kind == RoadSurfaceBandKind::Carriageway {
+                continue;
+            }
+            assert!(
+                band.inner_path_world
+                    .iter()
+                    .chain(&band.outer_path_world)
+                    .all(
+                        |point| SurfaceXzKey::from_road_xz(xz_from_road_vec3(*point))
+                            != forbidden_key
+                    ),
+                "rounded Bend/JunctionN curb/sidewalk side joins must not route visible paths through the shared graph endpoint: {band:?}"
+            );
         }
     }
 }

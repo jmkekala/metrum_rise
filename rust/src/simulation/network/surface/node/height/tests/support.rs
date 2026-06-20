@@ -85,6 +85,7 @@ pub(super) fn manual_rail_contours(
         node_id,
         piece_kind,
         contours,
+        corner_trims: Vec::new(),
         constraints: Vec::new(),
         height_carrier_paths_by_source: BTreeMap::new(),
         height_carrier_points_by_source: BTreeMap::new(),

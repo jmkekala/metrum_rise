@@ -3,13 +3,17 @@
 mod geometry;
 mod materialization;
 mod noding;
+mod shared_height;
 mod source_authority;
 mod validation;
 
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
-use super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};
-use super::super::keys::SurfaceXzKey;
+use super::super::band_semantics::{
+    raised_step_band_rank, raised_step_kinds_can_contact,
+    raised_step_requires_exact_constraint_span,
+};
+use super::super::keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey};
 use super::super::segments::{
     raw_tuple_key_lies_on_segment as generated_point_key_lies_on_segment,
     raw_tuple_segment_parameter_key as generated_segment_parameter_key,
@@ -33,8 +37,8 @@ use super::topology::{
     shared_generated_contour_points,
 };
 use super::{
-    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,
-    NodeRailConstraintKind, NodeRailGenerationError,
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailGenerationError,
 };
 
 pub(super) use materialization::{
@@ -46,6 +50,7 @@ pub(super) use noding::{
     node_generated_contact_contours, node_generated_contact_source_constraints,
     node_generated_contact_sources_from_contour_backed_contacts,
 };
+pub(super) use shared_height::synchronize_shared_height_contact_vertices;
 pub(super) use source_authority::{
     generated_raised_step_boundary_role_for_owner, raised_step_band_kinds_can_contact,
 };

@@ -23,10 +23,10 @@ pub(crate) use constraints::{
     canonical_explicit_seam_owner_pair, material_height_constraints_for_vertex,
 };
 use constraints::{
-    explicit_height_split_constraints_for_vertex, push_unique_same_material_candidate,
-    reject_same_material_height_conflict, same_height_selected_candidate,
-    same_material_vertex_height_candidate_key, set_vertex_grade_height,
-    vertex_has_explicit_shared_material_seam,
+    explicit_height_split_constraints_for_vertex, point_lies_on_height_segment,
+    push_unique_same_material_candidate, reject_same_material_height_conflict,
+    same_height_selected_candidate, same_material_vertex_height_candidate_key,
+    set_vertex_grade_height, vertex_has_explicit_shared_material_seam,
 };
 use seams::{
     apply_junctionn_explicit_material_seam_height_normalization,
@@ -51,11 +51,27 @@ use types::{
 pub(crate) fn apply_junctionn_height_authority_normalization(
     regions: &mut [NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
+    apply_node_height_authority_normalization(regions, true)
+}
+
+pub(crate) fn apply_bend_height_authority_normalization(
+    regions: &mut [NodeHeightedRegion],
+) -> Result<(), NodeHeightFieldError> {
+    apply_node_height_authority_normalization(regions, true)
+}
+
+fn apply_node_height_authority_normalization(
+    regions: &mut [NodeHeightedRegion],
+    normalize_same_xz_shared_height_raised_steps: bool,
+) -> Result<(), NodeHeightFieldError> {
     apply_junctionn_same_owner_canonical_vertex_height_normalization(regions);
     apply_junctionn_same_material_shared_edge_height_normalization(regions)?;
     apply_junctionn_same_material_vertex_height_normalization(regions)?;
     apply_junctionn_same_material_seam_height_normalization(regions)?;
-    apply_junctionn_explicit_material_seam_height_normalization(regions);
+    apply_junctionn_explicit_material_seam_height_normalization(
+        regions,
+        normalize_same_xz_shared_height_raised_steps,
+    );
     Ok(())
 }
 

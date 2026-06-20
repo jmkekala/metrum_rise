@@ -54,6 +54,21 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"node_top_surface_provenance\": ");
         Self::append_node_top_surface_provenance_debug_literal(dump, piece);
         dump.push_str(",\n");
+        dump.push_str("      \"node_final_top_regions\": ");
+        Self::append_node_final_top_regions_debug_literal(dump, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"node_material_partition\": ");
+        Self::append_node_material_partition_debug_literal(dump, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"node_post_boolean_ownership\": ");
+        Self::append_node_post_boolean_ownership_debug_literal(dump, piece.boolean_debug.as_ref());
+        dump.push_str(",\n");
+        dump.push_str("      \"node_side_join_trim_provenance\": ");
+        Self::append_node_side_join_trim_provenance_debug_literal(
+            dump,
+            piece.boolean_debug.as_ref(),
+        );
+        dump.push_str(",\n");
         dump.push_str("      \"seam_constraints\": ");
         self.append_node_seam_constraints_debug_literal(dump, graph, node_id);
         dump.push_str(",\n");
@@ -266,6 +281,454 @@ impl RoadSurfaceSystem {
                 dump.push(',');
             }
             let _ = write!(dump, "{grade_authority_index}");
+        }
+        dump.push(']');
+    }
+
+    pub(super) fn append_node_final_top_regions_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        dump.push('[');
+        for (region_index, region) in piece.owned_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            let source = piece.node_top_surface_sources.get(region_index);
+            let _ = write!(
+                dump,
+                "{{\"region\":{},\"kind\":\"{:?}\",\"material\":\"{}\",\"owner_index\":{},\"polygon_vertex_count\":{},\"triangle_count\":{}",
+                region_index,
+                region.kind,
+                Self::debug_material_for_band_kind(region.kind),
+                region.owner_index,
+                region.polygon.points_world.len(),
+                region.polygon.triangles_world.len()
+            );
+            if let Some(source) = source {
+                let _ = write!(
+                    dump,
+                    ",\"height_field_id\":\"{:?}\",\"source_vertex_keys\":",
+                    source.height_field_id
+                );
+                Self::append_node_arrangement_key_list_debug_literal(dump, &source.vertex_keys);
+                dump.push_str(",\"source_vertex_height_mm\":");
+                Self::append_i64_list_literal(dump, &source.vertex_height_mm);
+                dump.push_str(",\"grade_authority_indices\":");
+                Self::append_node_top_surface_source_indices_debug_literal(dump, source);
+            } else {
+                dump.push_str(
+                    ",\"height_field_id\":null,\"source_vertex_keys\":[],\"source_vertex_height_mm\":[],\"grade_authority_indices\":[]",
+                );
+            }
+            dump.push_str(",\"polygon_world\":");
+            Self::append_vector3_precise_list_literal(dump, &region.polygon.points_world);
+            dump.push_str(",\"triangles_world\":");
+            Self::append_vector3_triangle_list_precise_literal(
+                dump,
+                &region.polygon.triangles_world,
+            );
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    pub(super) fn append_node_material_partition_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let road = Self::node_material_partition_shapes(&piece.road_surface_polygons);
+        let curb = Self::node_material_partition_shapes(&piece.curb_surface_polygons);
+        let sidewalk = Self::node_material_partition_shapes(&piece.sidewalk_surface_polygons);
+
+        dump.push('{');
+        dump.push_str("\"materials\":[");
+        Self::append_node_material_partition_entry_debug_literal(dump, "asphalt", &road);
+        dump.push_str(", ");
+        Self::append_node_material_partition_entry_debug_literal(dump, "curb", &curb);
+        dump.push_str(", ");
+        Self::append_node_material_partition_entry_debug_literal(dump, "sidewalk", &sidewalk);
+        dump.push_str("],\"pairwise_overlaps\":[");
+        Self::append_node_material_partition_overlap_debug_literal(
+            dump, "asphalt", &road, "curb", &curb,
+        );
+        dump.push_str(", ");
+        Self::append_node_material_partition_overlap_debug_literal(
+            dump, "asphalt", &road, "sidewalk", &sidewalk,
+        );
+        dump.push_str(", ");
+        Self::append_node_material_partition_overlap_debug_literal(
+            dump, "curb", &curb, "sidewalk", &sidewalk,
+        );
+        dump.push_str("]}");
+    }
+
+    fn append_node_material_partition_entry_debug_literal(
+        dump: &mut String,
+        material: &'static str,
+        partition: &DebugNodeMaterialPartition,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"material\":\"{}\",\"polygon_count\":{},\"triangle_count\":{},\"raw_area_m2\":{:.6},\"union_area_m2\":{:.6},\"shape_count\":{}}}",
+            material,
+            partition.polygon_count,
+            partition.triangle_count,
+            partition.raw_area_m2,
+            partition.union_area_m2,
+            partition.union_shapes.len()
+        );
+    }
+
+    fn append_node_material_partition_overlap_debug_literal(
+        dump: &mut String,
+        left_material: &'static str,
+        left: &DebugNodeMaterialPartition,
+        right_material: &'static str,
+        right: &DebugNodeMaterialPartition,
+    ) {
+        let overlap_shapes = Self::overlay_binary_shapes(
+            &left.union_shapes,
+            &right.union_shapes,
+            OverlayRule::Intersect,
+        )
+        .unwrap_or_default();
+        let _ = write!(
+            dump,
+            "{{\"left\":\"{}\",\"right\":\"{}\",\"area_m2\":{:.6},\"shape_count\":{}}}",
+            left_material,
+            right_material,
+            Self::debug_overlay_shapes_area_m2(&overlap_shapes),
+            overlap_shapes.len()
+        );
+    }
+
+    fn node_material_partition_shapes(
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> DebugNodeMaterialPartition {
+        let contours = Self::node_material_partition_contours(polygons);
+        let raw_area_m2 = contours
+            .iter()
+            .map(|contour| Self::overlay_contour_area(contour).abs() as f32)
+            .sum::<f32>();
+        let union_shapes = if contours.is_empty() {
+            Vec::new()
+        } else {
+            Self::overlay_union_contours(&contours).unwrap_or_default()
+        };
+        let union_area_m2 = Self::debug_overlay_shapes_area_m2(&union_shapes);
+        DebugNodeMaterialPartition {
+            polygon_count: polygons.len(),
+            triangle_count: polygons
+                .iter()
+                .map(|polygon| polygon.triangles_world.len())
+                .sum(),
+            raw_area_m2,
+            union_area_m2,
+            union_shapes,
+        }
+    }
+
+    fn node_material_partition_contours(
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<NodeOverlayContour> {
+        let mut contours = Vec::new();
+        for polygon in polygons {
+            if polygon.triangles_world.is_empty() {
+                let contour =
+                    Self::node_material_partition_contour_from_points(&polygon.points_world);
+                if contour.len() >= 3 {
+                    contours.push(contour);
+                }
+                continue;
+            }
+            for triangle in &polygon.triangles_world {
+                let contour = Self::node_material_partition_contour_from_points(triangle);
+                if contour.len() >= 3 {
+                    contours.push(contour);
+                }
+            }
+        }
+        contours
+    }
+
+    fn node_material_partition_contour_from_points(
+        points: &[backend::RoadVec3],
+    ) -> NodeOverlayContour {
+        points
+            .iter()
+            .map(|point| [point.x, point.z])
+            .collect::<Vec<_>>()
+    }
+
+    fn debug_overlay_shapes_area_m2(shapes: &NodeOverlayShapes) -> f32 {
+        shapes.iter().map(Self::overlay_shape_area_m2).sum()
+    }
+
+    pub(super) fn append_node_post_boolean_ownership_debug_literal(
+        dump: &mut String,
+        snapshot: Option<&NodeBooleanDebugSnapshot>,
+    ) {
+        let Some(snapshot) = snapshot else {
+            dump.push_str(
+                "{\"captured\":false,\"footprint_shape_count\":0,\"asphalt_shape_count\":0,\"non_road_shape_count\":0,\"owned_region_count\":0,\"owned_regions\":[]}",
+            );
+            return;
+        };
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"captured\":true,\"footprint_shape_count\":{},\"asphalt_shape_count\":{},\"non_road_shape_count\":{},\"owned_region_count\":{}",
+            snapshot.footprint_shapes.len(),
+            snapshot.asphalt_shapes.len(),
+            snapshot.non_road_shapes.len(),
+            snapshot.owned_regions.len()
+        );
+        dump.push_str(",\"footprint_shapes\":");
+        Self::append_overlay_shapes_debug_literal(dump, &snapshot.footprint_shapes);
+        dump.push_str(",\"asphalt_shapes\":");
+        Self::append_overlay_shapes_debug_literal(dump, &snapshot.asphalt_shapes);
+        dump.push_str(",\"non_road_shapes\":");
+        Self::append_overlay_shapes_debug_literal(dump, &snapshot.non_road_shapes);
+        dump.push_str(",\"owned_regions\":[");
+        for (region_index, region) in snapshot.owned_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_post_boolean_owned_region_debug_literal(dump, region_index, region);
+        }
+        dump.push_str("]}");
+    }
+
+    pub(super) fn append_node_side_join_trim_provenance_debug_literal(
+        dump: &mut String,
+        snapshot: Option<&NodeBooleanDebugSnapshot>,
+    ) {
+        let Some(snapshot) = snapshot else {
+            dump.push_str(
+                "{\"captured\":false,\"side_join_contour_count\":0,\"corner_trim_count\":0,\"corner_trims_apply_to_footprint\":false,\"side_join_contours\":[],\"corner_trims\":[]}",
+            );
+            return;
+        };
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"captured\":true,\"side_join_contour_count\":{},\"corner_trim_count\":{},\"corner_trims_apply_to_footprint\":{}",
+            snapshot.side_join_contours.len(),
+            snapshot.corner_trims.len(),
+            snapshot.corner_trims_apply_to_footprint
+        );
+        dump.push_str(",\"side_join_contours\":[");
+        for (contour_index, contour) in snapshot.side_join_contours.iter().enumerate() {
+            if contour_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_side_join_contour_debug_literal(dump, contour_index, contour);
+        }
+        dump.push_str("],\"corner_trims\":[");
+        for (trim_index, trim) in snapshot.corner_trims.iter().enumerate() {
+            if trim_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_corner_trim_debug_literal(
+                dump,
+                trim_index,
+                trim,
+                snapshot.corner_trims_apply_to_footprint,
+            );
+        }
+        dump.push_str("]}");
+    }
+
+    fn append_post_boolean_owned_region_debug_literal(
+        dump: &mut String,
+        region_index: usize,
+        region: &NodePostBooleanOwnedRegionDebug,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"region\":{},\"kind\":\"{:?}\",\"material\":\"{}\",\"owner\":",
+            region_index,
+            region.kind,
+            Self::debug_material_for_band_kind(region.kind)
+        );
+        Self::append_node_band_owner_literal(dump, region.owner);
+        let _ = write!(
+            dump,
+            ",\"claim_priority\":\"{:?}\",\"source_mouth_order_index\":{},\"source_band_index\":",
+            region.claim_priority, region.source_mouth_order_index
+        );
+        Self::append_optional_usize_literal(dump, region.source_band_index);
+        let _ = write!(
+            dump,
+            ",\"area_m2\":{:.6},\"contour_count\":{}",
+            region.area_m2,
+            region.shape.len()
+        );
+        dump.push_str(",\"shape\":");
+        Self::append_overlay_shape_debug_literal(dump, &region.shape);
+        dump.push('}');
+    }
+
+    fn append_side_join_contour_debug_literal(
+        dump: &mut String,
+        contour_index: usize,
+        contour: &NodeSideJoinContourDebug,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"contour\":{},\"kind\":\"{:?}\",\"purpose\":\"{:?}\",\"source_mouth_order_index\":{},\"source_band_index\":",
+            contour_index, contour.kind, contour.purpose, contour.source_mouth_order_index
+        );
+        Self::append_optional_usize_literal(dump, contour.source_band_index);
+        dump.push_str(",\"owner\":");
+        if let Some(owner) = contour.owner {
+            Self::append_node_band_owner_literal(dump, owner);
+        } else {
+            dump.push_str("null");
+        }
+        let _ = write!(
+            dump,
+            ",\"claim_priority\":\"{:?}\",\"contributes_to_footprint\":{},\"contributes_to_asphalt\":{},\"contributes_to_non_road_band\":{},\"point_count\":{},\"area_m2\":{:.6},\"bounds_xz\":",
+            contour.claim_priority,
+            contour.contributes_to_footprint,
+            contour.contributes_to_asphalt,
+            contour.contributes_to_non_road_band,
+            contour.points_xz.len(),
+            Self::road_vec2_contour_area_m2(&contour.points_xz).abs()
+        );
+        Self::append_road_vec2_bounds_debug_literal(dump, &contour.points_xz);
+        dump.push_str(",\"points_xz\":");
+        Self::append_vector2_precise_list_literal(dump, &contour.points_xz);
+        dump.push_str(",\"height_points_world\":");
+        if let Some(height_points_world) = contour.height_points_world.as_ref() {
+            Self::append_vector3_precise_list_literal(dump, height_points_world);
+        } else {
+            dump.push_str("null");
+        }
+        dump.push('}');
+    }
+
+    fn road_vec2_contour_area_m2(points: &[backend::RoadVec2]) -> f32 {
+        if points.len() < 3 {
+            return 0.0;
+        }
+        let contour = points
+            .iter()
+            .map(|point| [point.x, point.y])
+            .collect::<NodeOverlayContour>();
+        Self::overlay_contour_area(&contour) as f32
+    }
+
+    fn append_road_vec2_bounds_debug_literal(dump: &mut String, points: &[backend::RoadVec2]) {
+        let Some(first) = points.first().copied() else {
+            dump.push_str("null");
+            return;
+        };
+        let mut min_x = first.x;
+        let mut min_z = first.y;
+        let mut max_x = first.x;
+        let mut max_z = first.y;
+        for point in points.iter().copied().skip(1) {
+            min_x = min_x.min(point.x);
+            min_z = min_z.min(point.y);
+            max_x = max_x.max(point.x);
+            max_z = max_z.max(point.y);
+        }
+        let _ = write!(
+            dump,
+            "[{:.6}, {:.6}, {:.6}, {:.6}]",
+            min_x, min_z, max_x, max_z
+        );
+    }
+
+    fn append_corner_trim_debug_literal(
+        dump: &mut String,
+        trim_index: usize,
+        trim: &NodeCornerTrimDebug,
+        applied_to_footprint: bool,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"trim\":{},\"applied_to_footprint\":{},\"point_count\":{},\"points_xz\":",
+            trim_index,
+            applied_to_footprint,
+            trim.points_xz.len()
+        );
+        Self::append_vector2_precise_list_literal(dump, &trim.points_xz);
+        dump.push('}');
+    }
+
+    fn append_overlay_shapes_debug_literal(dump: &mut String, shapes: &NodeOverlayShapes) {
+        dump.push('[');
+        for (shape_index, shape) in shapes.iter().enumerate() {
+            if shape_index > 0 {
+                dump.push_str(", ");
+            }
+            dump.push('{');
+            let _ = write!(
+                dump,
+                "\"shape\":{},\"area_m2\":{:.6},\"contour_count\":{},\"contours\":",
+                shape_index,
+                Self::overlay_shape_area_m2(shape),
+                shape.len()
+            );
+            Self::append_overlay_shape_debug_literal(dump, shape);
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    fn append_overlay_shape_debug_literal(dump: &mut String, shape: &NodeOverlayShape) {
+        dump.push('[');
+        for (contour_index, contour) in shape.iter().enumerate() {
+            if contour_index > 0 {
+                dump.push_str(", ");
+            }
+            dump.push('{');
+            let _ = write!(
+                dump,
+                "\"contour\":{},\"area_m2\":{:.6},\"point_count\":{},\"points_xz\":",
+                contour_index,
+                Self::overlay_contour_area(contour),
+                contour.len()
+            );
+            Self::append_overlay_contour_debug_literal(dump, contour);
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
+    fn append_overlay_contour_debug_literal(dump: &mut String, contour: &NodeOverlayContour) {
+        dump.push('[');
+        for (point_index, point) in contour.iter().enumerate() {
+            if point_index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(dump, "[{:.6}, {:.6}]", point[0], point[1]);
+        }
+        dump.push(']');
+    }
+
+    fn append_node_arrangement_key_list_debug_literal(
+        dump: &mut String,
+        keys: &[NodeArrangementKey],
+    ) {
+        dump.push('[');
+        for (index, key) in keys.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(
+                dump,
+                "{{\"x_key\":{},\"z_key\":{},\"x_mm\":{},\"z_mm\":{}}}",
+                key.x_key(),
+                key.z_key(),
+                key.x_mm(),
+                key.z_mm()
+            );
         }
         dump.push(']');
     }

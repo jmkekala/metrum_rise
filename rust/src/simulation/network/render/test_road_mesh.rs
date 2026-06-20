@@ -1964,8 +1964,8 @@ mod tests {
         );
         let corner_c_road = visible_coverage_ratio(
             &mesh_data,
-            Vector2::new(10.0, 14.5),
-            Vector2::new(14.0, 18.5),
+            Vector2::new(10.0, 13.0),
+            Vector2::new(14.0, 16.0),
             0.25,
             VisibleSurface::Road,
         );
@@ -2030,26 +2030,26 @@ mod tests {
         for (label, min, max) in [
             (
                 "north_west",
-                Vector2::new(-6.0, -6.0),
-                Vector2::new(-3.5, -3.5),
+                Vector2::new(-8.0, -6.0),
+                Vector2::new(-6.5, -4.5),
             ),
             (
                 "north_east",
-                Vector2::new(3.5, -6.0),
-                Vector2::new(6.0, -3.5),
+                Vector2::new(6.5, -6.0),
+                Vector2::new(8.0, -4.5),
             ),
-            ("south_east", Vector2::new(3.5, 3.5), Vector2::new(6.0, 6.0)),
+            ("south_east", Vector2::new(6.5, 4.5), Vector2::new(8.0, 6.0)),
             (
                 "south_west",
-                Vector2::new(-6.0, 3.5),
-                Vector2::new(-3.5, 6.0),
+                Vector2::new(-8.0, 4.5),
+                Vector2::new(-6.5, 6.0),
             ),
         ] {
             let sidewalk =
                 visible_coverage_ratio(&mesh_data, min, max, 0.25, VisibleSurface::Sidewalk);
             let road = visible_coverage_ratio(&mesh_data, min, max, 0.25, VisibleSurface::Road);
             assert!(
-                sidewalk >= 0.35,
+                sidewalk >= 0.55,
                 "{label}_sidewalk={sidewalk:.3} {label}_road={road:.3}"
             );
             assert!(

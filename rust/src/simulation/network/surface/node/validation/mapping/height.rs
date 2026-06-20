@@ -364,6 +364,7 @@ impl NodeGeometryDiagnostic {
                 incoming_authority: *incoming_authority,
                 existing_height_mm: *existing_height_mm,
                 incoming_height_mm: *incoming_height_mm,
+                constraint_context: None,
             },
         };
         Self {

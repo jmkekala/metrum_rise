@@ -185,26 +185,6 @@ fn contour_purpose_gates_junction_footprint_and_asphalt_authority() {
         height_points_world: None,
         backend_polyline: road_points_to_polyline(outside_asphalt_points, true),
     });
-    let owner_carrier_only_points = vec![
-        RoadVec2::new(1.0, -3.5),
-        RoadVec2::new(3.0, -3.5),
-        RoadVec2::new(3.0, -2.5),
-        RoadVec2::new(1.0, -2.5),
-    ];
-    rails.contours.push(NodeGeneratedContour {
-        kind: NodeGeneratedContourKind::Band {
-            kind: RoadSurfaceBandKind::Carriageway,
-        },
-        purpose: NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
-        source_mouth_order_index: 98,
-        source_band_index: Some(98),
-        owner: Some(NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 98)),
-        claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
-        points_xz: owner_carrier_only_points.clone(),
-        height_points_world: None,
-        backend_polyline: road_points_to_polyline(owner_carrier_only_points, true),
-    });
-
     let ownership =
         NodeBooleanOwnership::from_rails(&rails).expect("extra gated contours remain valid");
     assert_eq!(ownership.footprint_shapes, baseline.footprint_shapes);

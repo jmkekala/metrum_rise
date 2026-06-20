@@ -266,3 +266,205 @@ fn generated_raised_step_owner_pair_uses_source_authority_union_for_split_domain
             && road_point_key(constraint.points_xz[1]) == end
     }));
 }
+
+#[test]
+fn shared_height_contact_syncs_generated_side_join_vertex_to_raised_owner_height() {
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour_with_purpose(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        NodeGeneratedContourPurpose::BendSideJoin,
+        0,
+        Some(4),
+        Some(curb_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(-1.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(-1.0, 1.0),
+        ],
+        Some(vec![
+            RoadVec3::new(-1.0, 10.0, 0.0),
+            RoadVec3::new(1.0, 10.0, 0.0),
+            RoadVec3::new(1.0, 10.001, 1.0),
+            RoadVec3::new(0.0, 10.001, 1.0),
+            RoadVec3::new(-1.0, 10.0, 1.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("curb side-join contour is valid");
+    push_generated_contour_with_purpose(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        NodeGeneratedContourPurpose::BendSideJoin,
+        0,
+        Some(5),
+        Some(sidewalk_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        vec![
+            RoadVec2::new(-1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(1.0, 2.0),
+            RoadVec2::new(-1.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(-1.0, 10.009, 1.0),
+            RoadVec3::new(0.0, 10.009, 1.0),
+            RoadVec3::new(1.0, 10.009, 1.0),
+            RoadVec3::new(1.0, 10.010, 2.0),
+            RoadVec3::new(-1.0, 10.010, 2.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("sidewalk side-join contour is valid");
+    constraints.push(NodeRailConstraint {
+        constraint_index: constraints.len(),
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(5),
+        source_boundary_index: Some(4),
+        owner: Some(curb_owner),
+        opposite_owner: Some(sidewalk_owner),
+        points_xz: vec![
+            RoadVec2::new(-1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(1.0, 1.0),
+        ],
+    });
+
+    let shared_key = road_point_key(RoadVec2::new(0.0, 1.0));
+    assert_ne!(
+        contour_height_mm_at(&contours[0], shared_key),
+        contour_height_mm_at(&contours[1], shared_key)
+    );
+
+    synchronize_shared_height_contact_vertices(&mut contours, &constraints);
+
+    assert_eq!(
+        contour_height_mm_at(&contours[0], shared_key),
+        contour_height_mm_at(&contours[1], shared_key)
+    );
+    assert_eq!(
+        contour_height_mm_at(&contours[0], shared_key),
+        SurfaceHeightMmKey::from_m_f64(10.009).as_i64()
+    );
+}
+
+#[test]
+fn shared_height_contact_sync_preserves_carriageway_curb_step_height() {
+    let asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 3);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let mut contours = Vec::new();
+    let mut constraints = Vec::new();
+
+    push_generated_contour_with_purpose(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::Carriageway,
+        },
+        NodeGeneratedContourPurpose::BendSideJoin,
+        0,
+        Some(3),
+        Some(asphalt_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::Carriageway,
+        },
+        vec![
+            RoadVec2::new(-1.0, 0.0),
+            RoadVec2::new(1.0, 0.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(-1.0, 1.0),
+        ],
+        Some(vec![
+            RoadVec3::new(-1.0, 2.0, 0.0),
+            RoadVec3::new(1.0, 2.0, 0.0),
+            RoadVec3::new(1.0, 2.0, 1.0),
+            RoadVec3::new(0.0, 2.0, 1.0),
+            RoadVec3::new(-1.0, 2.0, 1.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("asphalt side-join contour is valid");
+    push_generated_contour_with_purpose(
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        NodeGeneratedContourPurpose::BendSideJoin,
+        0,
+        Some(4),
+        Some(curb_owner),
+        NodeGeneratedContourClaimPriority::SideJoin,
+        NodeRailConstraintKind::BandContour {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        vec![
+            RoadVec2::new(-1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(1.0, 1.0),
+            RoadVec2::new(1.0, 2.0),
+            RoadVec2::new(-1.0, 2.0),
+        ],
+        Some(vec![
+            RoadVec3::new(-1.0, 2.15, 1.0),
+            RoadVec3::new(0.0, 2.15, 1.0),
+            RoadVec3::new(1.0, 2.15, 1.0),
+            RoadVec3::new(1.0, 2.15, 2.0),
+            RoadVec3::new(-1.0, 2.15, 2.0),
+        ]),
+        &mut contours,
+        &mut constraints,
+    )
+    .expect("curb side-join contour is valid");
+    constraints.push(NodeRailConstraint {
+        constraint_index: constraints.len(),
+        kind: NodeRailConstraintKind::RaisedStepContact,
+        source_mouth_order_index: 0,
+        source_band_index: Some(4),
+        source_boundary_index: Some(3),
+        owner: Some(asphalt_owner),
+        opposite_owner: Some(curb_owner),
+        points_xz: vec![
+            RoadVec2::new(-1.0, 1.0),
+            RoadVec2::new(0.0, 1.0),
+            RoadVec2::new(1.0, 1.0),
+        ],
+    });
+
+    let shared_key = road_point_key(RoadVec2::new(0.0, 1.0));
+    synchronize_shared_height_contact_vertices(&mut contours, &constraints);
+
+    assert_eq!(contour_height_mm_at(&contours[0], shared_key), 2000);
+    assert_eq!(contour_height_mm_at(&contours[1], shared_key), 2150);
+}
+
+fn contour_height_mm_at(contour: &NodeGeneratedContour, key: (i64, i64)) -> i64 {
+    let point_index = contour
+        .points_xz
+        .iter()
+        .position(|point| road_point_key(*point) == key)
+        .expect("contour should contain the key");
+    let height_point = &contour
+        .height_points_world
+        .as_ref()
+        .expect("contour should have height points")[point_index];
+    SurfaceHeightMmKey::from_m_f64(height_point.y).as_i64()
+}

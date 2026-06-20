@@ -226,6 +226,18 @@ impl SimCore {
         dict
     }
 
+    /// Returns a JSON debug dump of final road-surface triangles at one world-space probe point.
+    pub fn get_road_surface_probe_debug_internal(&mut self, world_pos: Vector3) -> GString {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        let dump = self
+            .transit_network
+            .road_surface
+            .build_road_surface_probe_debug_dump(&self.region_graph, &self.heightmap, world_pos);
+        GString::from(dump.as_str())
+    }
+
     /// Returns terrain render-patch keys that must keep full mesh resolution over compiled road ownership.
     pub fn get_road_locked_terrain_patches_internal(&self) -> PackedInt32Array {
         let margin_m =

@@ -260,7 +260,11 @@ fn explicit_height_split_constraint(constraint: &NodeRegionSeamConstraint) -> bo
     )
 }
 
-fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
+pub(super) fn point_lies_on_height_segment(
+    point: RoadVec2,
+    start: RoadVec2,
+    end: RoadVec2,
+) -> bool {
     key_lies_on_segment(
         SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point)),
         SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(start)),

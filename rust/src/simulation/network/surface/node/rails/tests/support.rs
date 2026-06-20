@@ -209,6 +209,36 @@ pub(super) fn side_join_input(piece_kind: RoadSurfaceVisualNodePieceKind) -> Nod
     NodeArrangementInput::from_ordered_mouths(42, piece_kind, &[first, second])
         .expect("test side-join mouths should produce canonical input")
 }
+pub(super) fn side_join_input_with_shared_endpoint_center(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> NodeArrangementInput {
+    let first = OrderedIncidentPieceMouth {
+        profile: terminal_profile(10.0),
+        endpoint_profile: terminal_profile(0.0),
+        boundary_paths_world: Vec::new(),
+        band_start_paths_world: Vec::new(),
+        band_end_paths_world: Vec::new(),
+        uses_explicit_band_domain_paths: false,
+        direction_angle_ccw: 0.0,
+        direction_xz: RoadVec2::X,
+        edge_idx: 7,
+        side: IncidentEdgeSide::Start,
+    };
+    let second = OrderedIncidentPieceMouth {
+        profile: terminal_profile_z(12.0),
+        endpoint_profile: terminal_profile_z(0.0),
+        boundary_paths_world: Vec::new(),
+        band_start_paths_world: Vec::new(),
+        band_end_paths_world: Vec::new(),
+        uses_explicit_band_domain_paths: false,
+        direction_angle_ccw: std::f32::consts::FRAC_PI_2,
+        direction_xz: RoadVec2::Y,
+        edge_idx: 8,
+        side: IncidentEdgeSide::Start,
+    };
+    NodeArrangementInput::from_ordered_mouths(42, piece_kind, &[first, second])
+        .expect("shared-center side-join mouths should produce canonical input")
+}
 pub(super) fn nonterminal_input_with_side_join_candidate() -> NodeArrangementInput {
     side_join_input(RoadSurfaceVisualNodePieceKind::JunctionN)
 }
@@ -222,6 +252,8 @@ pub(super) fn same_owner_side_join_band() -> NodeInputSideJoinBand {
         boundary_mode: NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap,
         inner_path_world: vec![RoadVec3::new(0.0, 4.4, 4.0), RoadVec3::new(2.0, 4.4, 4.0)],
         outer_path_world: vec![RoadVec3::new(0.9, 4.4, 6.0), RoadVec3::new(1.1, 4.4, 6.0)],
+        outer_footprint_trim_world: Vec::new(),
+        trims_outer_footprint: false,
         contour_world: vec![
             RoadVec3::new(0.0, 4.4, 4.0),
             RoadVec3::new(2.0, 4.4, 4.0),

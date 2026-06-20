@@ -1,6 +1,7 @@
 //! Cross-region CDT edge-height validation tests.
 
 use super::*;
+use crate::simulation::network::surface::node::height::NodeHeightCarrierProvenanceKey;
 
 #[test]
 fn validates_clean_triangulated_solution() {
@@ -184,6 +185,131 @@ fn accepts_cross_region_cdt_edge_height_conflict_on_canonical_asphalt_curb_step(
 }
 
 #[test]
+fn accepts_explicit_step_height_conflict_with_bounded_projection_dust() {
+    let carriageway_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+    let carriageway_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
+    let curb_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::CurbOrShoulder);
+    let step_segment = NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(RoadVec2::new(0.0, 0.0)),
+        NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+        carriageway_owner,
+        curb_owner,
+    )
+    .expect("non-degenerate test step segment");
+    let solution = NodeTriangulationSolution {
+        node_id: 101,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                carriageway_field,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.00002),
+                    RoadVec3::new(1.0, 0.0, 0.00002),
+                    RoadVec3::new(0.0, 0.0, -0.99998),
+                ],
+            ),
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.00002),
+                    RoadVec3::new(1.0, 0.12, 0.00002),
+                    RoadVec3::new(1.0, 0.12, 1.00002),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: vec![step_segment],
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution)
+        .expect("explicit asphalt-curb steps should tolerate bounded projection dust");
+}
+
+#[test]
+fn accepts_cross_region_cdt_edge_one_mm_dust_on_curb_sidewalk_shared_height_step() {
+    let curb_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let curb_field = NodeBandHeightFieldId::new(0, 4, RoadSurfaceBandKind::CurbOrShoulder);
+    let sidewalk_field = NodeBandHeightFieldId::new(0, 5, RoadSurfaceBandKind::Sidewalk);
+    let solution = NodeTriangulationSolution {
+        node_id: 105,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            manual_region_with_kind(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb_owner.owner_index(),
+                curb_field,
+                vec![
+                    RoadVec3::new(0.0, 151.270, 0.0),
+                    RoadVec3::new(1.0, 151.339, 0.0),
+                    RoadVec3::new(0.0, 151.270, -1.0),
+                ],
+            ),
+            manual_region_with_kind(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk_owner.owner_index(),
+                sidewalk_field,
+                vec![
+                    RoadVec3::new(0.0, 151.270, 0.0),
+                    RoadVec3::new(1.0, 151.340, 0.0),
+                    RoadVec3::new(1.0, 151.340, 1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution)
+        .expect("curb/sidewalk shared-height seams may carry one millimetre of edge dust");
+}
+
+#[test]
+fn accepts_cross_region_cdt_edge_height_conflict_on_source_authorized_side_join_asphalt_sidewalk_boundary()
+ {
+    let carriageway_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 33);
+    let sidewalk_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 35);
+    let carriageway_field = NodeBandHeightFieldId::new(5, 3, RoadSurfaceBandKind::Carriageway);
+    let sidewalk_field = NodeBandHeightFieldId::new(5, 5, RoadSurfaceBandKind::Sidewalk);
+    let solution = NodeTriangulationSolution {
+        node_id: 106,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            source_authorized_side_join_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway_owner,
+                carriageway_field,
+                0.0,
+                vec![
+                    RoadVec3::new(0.0, 0.0, 0.0),
+                    RoadVec3::new(1.0, 0.0, 0.0),
+                    RoadVec3::new(0.0, 0.0, -1.0),
+                ],
+            ),
+            source_authorized_side_join_region(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk_owner,
+                sidewalk_field,
+                0.12,
+                vec![
+                    RoadVec3::new(0.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 0.0),
+                    RoadVec3::new(1.0, 0.12, 1.0),
+                ],
+            ),
+        ],
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution).expect(
+        "source-authorized side-join asphalt/sidewalk boundary should allow the height delta",
+    );
+}
+
+#[test]
 fn accepts_explicit_step_across_same_height_asphalt_owner_handoff() {
     let mouth_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let joined_asphalt_owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
@@ -239,4 +365,79 @@ fn accepts_explicit_step_across_same_height_asphalt_owner_handoff() {
 
     NodeValidationReport::from_triangulation_solution(&solution)
         .expect("same-height asphalt owner handoff should carry the explicit curb step authority");
+}
+
+fn source_authorized_side_join_region(
+    kind: RoadSurfaceBandKind,
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
+    height_m: f64,
+    points: Vec<RoadVec3>,
+) -> NodeTriangulatedRegion {
+    NodeTriangulatedRegion {
+        kind,
+        owner,
+        height_field_id,
+        vertices: points
+            .into_iter()
+            .enumerate()
+            .map(|(index, point_world)| {
+                let point_xz = RoadVec2::new(point_world.x, point_world.z);
+                let origin = if kind == RoadSurfaceBandKind::Carriageway && index == 0 {
+                    NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+                        contour_index: 73,
+                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    }
+                } else {
+                    NodeCarrierProvenanceOrigin::SourceIntersection { peer_count: 1 }
+                };
+                let claim_priority = if kind == RoadSurfaceBandKind::Carriageway {
+                    NodeGeneratedContourClaimPriority::SideJoin
+                } else {
+                    NodeGeneratedContourClaimPriority::MouthBand
+                };
+                let authority = if kind == RoadSurfaceBandKind::Carriageway {
+                    NodeHeightAuthoritySource::GeneratedContour {
+                        purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    }
+                } else {
+                    NodeHeightAuthoritySource::GeneratedContour {
+                        purpose: NodeGeneratedContourPurpose::NonRoadBand,
+                        claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
+                    }
+                };
+                let source_provenance = NodeHeightCarrierProvenanceKey {
+                    owner,
+                    source_kind: kind,
+                    source_mouth_order_index: height_field_id.mouth_order_index(),
+                    source_band_index: height_field_id.band_index(),
+                    height_field_id,
+                    claim_priority,
+                    point: NodeOwnedRegionArrangementKey::from_point(point_xz),
+                    origin,
+                };
+                NodeTriangulatedVertex {
+                    point_world,
+                    height_field_id,
+                    grade_authority: NodeGradeVertexAuthority::new_with_source_provenance(
+                        point_xz,
+                        height_m,
+                        owner,
+                        height_field_id,
+                        NodeGradeCarrierDecision::SourceCarrier {
+                            authority: Some(authority),
+                        },
+                        Some(source_provenance),
+                    ),
+                }
+            })
+            .collect(),
+        boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
+        triangles: vec![NodeTriangulatedTriangle {
+            vertices: [0, 1, 2],
+        }],
+        area_m2: 0.5,
+    }
 }

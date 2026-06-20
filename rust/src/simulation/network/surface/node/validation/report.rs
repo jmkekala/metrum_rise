@@ -1,10 +1,19 @@
 //! Validation report types and debug serialization.
 
-use super::super::arrangement::{NodeBandHeightFieldId, NodeBandOwner};
+use super::super::arrangement::{
+    NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
+};
+use super::super::backend::RoadVec2;
 use super::super::height::NodeHeightAuthoritySource;
 use super::super::keys::SurfaceXzKey;
 use super::super::ownership::{
+    NodeBooleanOwnership, NodeCarrierProvenanceOrigin, NodeCarrierProvenanceRecord,
     NodeSourceCarrierSegmentId, NodeSourceSegmentAuthorizationCandidate,
+};
+use super::super::piece::NodeFootprintBoundaryVertexSource;
+use super::super::rails::{
+    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailConstraintKind,
+    NodeRailContourSet,
 };
 use super::super::triangulation::NodeTriangulationSolution;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
@@ -106,6 +115,7 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         incoming_authority: Option<NodeHeightAuthoritySource>,
         existing_height_mm: i64,
         incoming_height_mm: i64,
+        constraint_context: Option<NodeSharedHeightConflictContext>,
     },
     CrossRegionHeightConflict {
         edge_start_x_key: i64,
@@ -303,6 +313,20 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         height_field_id: NodeBandHeightFieldId,
         source_segment_id: NodeSourceCarrierSegmentId,
     },
+    FootprintBoundaryHeightConflict {
+        x_key: i64,
+        z_key: i64,
+        x_mm: i64,
+        z_mm: i64,
+        existing_y_mm: i64,
+        incoming_y_mm: i64,
+        existing_owner_kind: RoadSurfaceBandKind,
+        existing_owner_index: usize,
+        existing_source: NodeFootprintBoundaryVertexSource,
+        incoming_owner_kind: RoadSurfaceBandKind,
+        incoming_owner_index: usize,
+        incoming_source: NodeFootprintBoundaryVertexSource,
+    },
     BackendFailure {
         reason: &'static str,
     },
@@ -328,6 +352,47 @@ pub(crate) enum NodeInvalidConstraintReason {
 pub(crate) enum NodeSeamConstraintFailureReason {
     Missing,
     Ambiguous,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeSharedHeightConflictContext {
+    pub(crate) rail_constraint: Option<NodeRailConstraintDiagnostic>,
+    pub(crate) seam_constraints: Vec<NodeSeamConstraintDiagnostic>,
+    pub(crate) existing_vertex: NodeHeightConflictVertexDiagnostic,
+    pub(crate) incoming_vertex: NodeHeightConflictVertexDiagnostic,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeRailConstraintDiagnostic {
+    pub(crate) constraint_index: usize,
+    pub(crate) kind: NodeRailConstraintKind,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: Option<usize>,
+    pub(crate) source_boundary_index: Option<usize>,
+    pub(crate) owner: Option<NodeBandOwner>,
+    pub(crate) opposite_owner: Option<NodeBandOwner>,
+    pub(crate) points_xz: Vec<RoadVec2>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeSeamConstraintDiagnostic {
+    pub(crate) constraint_index: usize,
+    pub(crate) seam_source: NodeSeamSource,
+    pub(crate) owner: Option<NodeBandOwner>,
+    pub(crate) opposite_owner: Option<NodeBandOwner>,
+    pub(crate) constrains_shared_height: bool,
+    pub(crate) is_material_transition: bool,
+    pub(crate) start_xz: RoadVec2,
+    pub(crate) end_xz: RoadVec2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeHeightConflictVertexDiagnostic {
+    pub(crate) owner: NodeBandOwner,
+    pub(crate) height_field_id: Option<NodeBandHeightFieldId>,
+    pub(crate) height_mm: i64,
+    pub(crate) authority: Option<NodeHeightAuthoritySource>,
+    pub(crate) provenance_records: Vec<NodeCarrierProvenanceRecord>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -376,7 +441,125 @@ impl NodeCanonicalPointDiagnostic {
     }
 }
 
+fn rail_constraint_diagnostic(
+    rails: &NodeRailContourSet,
+    constraint_index: usize,
+) -> Option<NodeRailConstraintDiagnostic> {
+    let constraint = rails
+        .constraints
+        .iter()
+        .find(|constraint| constraint.constraint_index == constraint_index)?;
+    Some(NodeRailConstraintDiagnostic {
+        constraint_index: constraint.constraint_index,
+        kind: constraint.kind,
+        source_mouth_order_index: constraint.source_mouth_order_index,
+        source_band_index: constraint.source_band_index,
+        source_boundary_index: constraint.source_boundary_index,
+        owner: constraint.owner,
+        opposite_owner: constraint.opposite_owner,
+        points_xz: constraint.points_xz.clone(),
+    })
+}
+
+fn seam_constraint_diagnostics(
+    ownership: &NodeBooleanOwnership,
+    constraint_index: usize,
+    owner: NodeBandOwner,
+    incoming_owner: NodeBandOwner,
+) -> Vec<NodeSeamConstraintDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for region in &ownership.owned_regions {
+        for constraint in &region.seam_constraints {
+            if constraint.constraint_index != constraint_index {
+                continue;
+            }
+            if !seam_constraint_matches_conflict_owner_pair(constraint, owner, incoming_owner) {
+                continue;
+            }
+            diagnostics.push(NodeSeamConstraintDiagnostic {
+                constraint_index: constraint.constraint_index,
+                seam_source: constraint.seam_source,
+                owner: constraint.owner,
+                opposite_owner: constraint.opposite_owner,
+                constrains_shared_height: constraint.constrains_shared_height,
+                is_material_transition: constraint.is_material_transition,
+                start_xz: constraint.start_xz,
+                end_xz: constraint.end_xz,
+            });
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| {
+        (
+            diagnostic.constraint_index,
+            diagnostic.seam_source,
+            diagnostic.owner,
+            diagnostic.opposite_owner,
+            SurfaceXzKey::from_road_xz(diagnostic.start_xz),
+            SurfaceXzKey::from_road_xz(diagnostic.end_xz),
+        )
+    });
+    diagnostics.dedup();
+    diagnostics
+}
+
+fn seam_constraint_matches_conflict_owner_pair(
+    constraint: &NodeRegionSeamConstraint,
+    owner: NodeBandOwner,
+    incoming_owner: NodeBandOwner,
+) -> bool {
+    match (constraint.owner, constraint.opposite_owner) {
+        (Some(left), Some(right)) => {
+            (left == owner && right == incoming_owner) || (left == incoming_owner && right == owner)
+        }
+        _ => true,
+    }
+}
+
+fn height_conflict_vertex_diagnostic(
+    ownership: &NodeBooleanOwnership,
+    x_mm: i64,
+    z_mm: i64,
+    owner: NodeBandOwner,
+    height_field_id: Option<NodeBandHeightFieldId>,
+    height_mm: i64,
+    authority: Option<NodeHeightAuthoritySource>,
+) -> NodeHeightConflictVertexDiagnostic {
+    NodeHeightConflictVertexDiagnostic {
+        owner,
+        height_field_id,
+        height_mm,
+        authority,
+        provenance_records: ownership
+            .carrier_provenance
+            .records
+            .iter()
+            .copied()
+            .filter(|record| {
+                record.owner == owner
+                    && height_field_id.map_or(true, |height_field_id| {
+                        record.height_field_id == height_field_id
+                    })
+                    && record.point.x_mm() == x_mm
+                    && record.point.z_mm() == z_mm
+            })
+            .collect(),
+    }
+}
+
 impl NodeValidationReport {
+    pub(crate) fn with_height_failure_context(
+        mut self,
+        rails: &NodeRailContourSet,
+        ownership: &NodeBooleanOwnership,
+    ) -> Self {
+        for diagnostic in &mut self.diagnostics {
+            diagnostic
+                .kind
+                .attach_shared_height_conflict_context(rails, ownership);
+        }
+        self
+    }
+
     pub(crate) fn debug_dump(&self) -> String {
         let mut dump = String::new();
         let _ = write!(
@@ -483,6 +666,56 @@ impl NodeGeometryBackend {
 }
 
 impl NodeGeometryDiagnosticKind {
+    fn attach_shared_height_conflict_context(
+        &mut self,
+        rails: &NodeRailContourSet,
+        ownership: &NodeBooleanOwnership,
+    ) {
+        let Self::SharedSourceHeightConflict {
+            x_mm,
+            z_mm,
+            owner,
+            height_field_id,
+            incoming_owner,
+            incoming_height_field_id,
+            constraint_index,
+            existing_authority,
+            incoming_authority,
+            existing_height_mm,
+            incoming_height_mm,
+            constraint_context,
+            ..
+        } = self
+        else {
+            return;
+        };
+        *constraint_context = Some(NodeSharedHeightConflictContext {
+            rail_constraint: constraint_index
+                .and_then(|index| rail_constraint_diagnostic(rails, index)),
+            seam_constraints: constraint_index
+                .map(|index| seam_constraint_diagnostics(ownership, index, *owner, *incoming_owner))
+                .unwrap_or_default(),
+            existing_vertex: height_conflict_vertex_diagnostic(
+                ownership,
+                *x_mm,
+                *z_mm,
+                *owner,
+                *height_field_id,
+                *existing_height_mm,
+                *existing_authority,
+            ),
+            incoming_vertex: height_conflict_vertex_diagnostic(
+                ownership,
+                *x_mm,
+                *z_mm,
+                *incoming_owner,
+                *incoming_height_field_id,
+                *incoming_height_mm,
+                *incoming_authority,
+            ),
+        });
+    }
+
     fn detail_value(&self) -> Value {
         match self {
             Self::RejectedResidual {
@@ -564,6 +797,7 @@ impl NodeGeometryDiagnosticKind {
                 incoming_authority,
                 existing_height_mm,
                 incoming_height_mm,
+                constraint_context,
             } => json!({
                 "x_mm": x_mm,
                 "z_mm": z_mm,
@@ -578,6 +812,9 @@ impl NodeGeometryDiagnosticKind {
                 "incoming_authority": optional_authority_value(*incoming_authority),
                 "existing_height_mm": existing_height_mm,
                 "incoming_height_mm": incoming_height_mm,
+                "constraint_context": optional_shared_height_conflict_context_value(
+                    constraint_context.as_ref()
+                ),
             }),
             Self::CrossRegionHeightConflict {
                 edge_start_x_key,
@@ -963,6 +1200,37 @@ impl NodeGeometryDiagnosticKind {
                 "height_field_id": height_field_id_value(*height_field_id),
                 "source_segment_id": source_carrier_segment_id_value(source_segment_id),
             }),
+            Self::FootprintBoundaryHeightConflict {
+                x_key,
+                z_key,
+                x_mm,
+                z_mm,
+                existing_y_mm,
+                incoming_y_mm,
+                existing_owner_kind,
+                existing_owner_index,
+                existing_source,
+                incoming_owner_kind,
+                incoming_owner_index,
+                incoming_source,
+            } => json!({
+                "x_key": x_key,
+                "z_key": z_key,
+                "x_mm": x_mm,
+                "z_mm": z_mm,
+                "existing_y_mm": existing_y_mm,
+                "incoming_y_mm": incoming_y_mm,
+                "existing_owner": {
+                    "kind": band_kind_value(*existing_owner_kind),
+                    "owner_index": existing_owner_index,
+                },
+                "existing_source": footprint_boundary_vertex_source_value(*existing_source),
+                "incoming_owner": {
+                    "kind": band_kind_value(*incoming_owner_kind),
+                    "owner_index": incoming_owner_index,
+                },
+                "incoming_source": footprint_boundary_vertex_source_value(*incoming_source),
+            }),
             Self::BackendFailure { reason } => json!({
                 "reason": reason,
             }),
@@ -999,6 +1267,7 @@ impl NodeGeometryDiagnosticKind {
             }
             Self::MissingCarrierProvenance { .. } => "missing_carrier_provenance",
             Self::MissingCarrierProvenanceHeight { .. } => "missing_carrier_provenance_height",
+            Self::FootprintBoundaryHeightConflict { .. } => "footprint_boundary_height_conflict",
             Self::BackendFailure { .. } => "backend_failure",
         }
     }
@@ -1060,6 +1329,257 @@ fn authority_value(authority: NodeHeightAuthoritySource) -> Value {
 
 fn optional_authority_value(authority: Option<NodeHeightAuthoritySource>) -> Value {
     authority.map(authority_value).unwrap_or(Value::Null)
+}
+
+fn optional_shared_height_conflict_context_value(
+    context: Option<&NodeSharedHeightConflictContext>,
+) -> Value {
+    context
+        .map(shared_height_conflict_context_value)
+        .unwrap_or(Value::Null)
+}
+
+fn shared_height_conflict_context_value(context: &NodeSharedHeightConflictContext) -> Value {
+    json!({
+        "rail_constraint": context
+            .rail_constraint
+            .as_ref()
+            .map(rail_constraint_value)
+            .unwrap_or(Value::Null),
+        "seam_constraints": context
+            .seam_constraints
+            .iter()
+            .map(seam_constraint_value)
+            .collect::<Vec<_>>(),
+        "existing_vertex": height_conflict_vertex_value(&context.existing_vertex),
+        "incoming_vertex": height_conflict_vertex_value(&context.incoming_vertex),
+    })
+}
+
+fn rail_constraint_value(constraint: &NodeRailConstraintDiagnostic) -> Value {
+    json!({
+        "constraint_index": constraint.constraint_index,
+        "kind": rail_constraint_kind_value(constraint.kind),
+        "source_mouth_order_index": constraint.source_mouth_order_index,
+        "source_band_index": constraint.source_band_index,
+        "source_boundary_index": constraint.source_boundary_index,
+        "owner": optional_owner_value(constraint.owner),
+        "opposite_owner": optional_owner_value(constraint.opposite_owner),
+        "points": constraint
+            .points_xz
+            .iter()
+            .copied()
+            .map(road_xz_point_value)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn seam_constraint_value(constraint: &NodeSeamConstraintDiagnostic) -> Value {
+    json!({
+        "constraint_index": constraint.constraint_index,
+        "seam_source": seam_source_value(constraint.seam_source),
+        "owner": optional_owner_value(constraint.owner),
+        "opposite_owner": optional_owner_value(constraint.opposite_owner),
+        "constrains_shared_height": constraint.constrains_shared_height,
+        "is_material_transition": constraint.is_material_transition,
+        "start": road_xz_point_value(constraint.start_xz),
+        "end": road_xz_point_value(constraint.end_xz),
+    })
+}
+
+fn height_conflict_vertex_value(vertex: &NodeHeightConflictVertexDiagnostic) -> Value {
+    json!({
+        "owner": owner_value(vertex.owner),
+        "height_field_id": optional_height_field_id_value(vertex.height_field_id),
+        "height_mm": vertex.height_mm,
+        "authority": optional_authority_value(vertex.authority),
+        "provenance_records": vertex
+            .provenance_records
+            .iter()
+            .map(carrier_provenance_record_value)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn road_xz_point_value(point: RoadVec2) -> Value {
+    let key = SurfaceXzKey::from_road_xz(point);
+    json!({
+        "x_m": point.x,
+        "z_m": point.y,
+        "x_key": key.x_key(),
+        "z_key": key.z_key(),
+        "x_mm": key.x_mm(),
+        "z_mm": key.z_mm(),
+    })
+}
+
+fn footprint_boundary_vertex_source_value(source: NodeFootprintBoundaryVertexSource) -> Value {
+    match source {
+        NodeFootprintBoundaryVertexSource::Direct(direct) => json!({
+            "source_kind": "direct_top_vertex",
+            "top_surface_source_index": direct.top_surface_source_index,
+            "grade_authority_index": direct.grade_authority_index,
+        }),
+        NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm } => {
+            json!({
+                "source_kind": "canonical_boundary_point",
+                "x_key": x_key,
+                "z_key": z_key,
+                "y_mm": y_mm,
+            })
+        }
+        NodeFootprintBoundaryVertexSource::BoundaryInterpolation {
+            owning_segment_start,
+            owning_segment_end,
+            height_mm,
+        } => json!({
+            "source_kind": "boundary_interpolation",
+            "height_mm": height_mm,
+            "owning_segment_start": {
+                "top_surface_source_index": owning_segment_start.top_surface_source_index,
+                "grade_authority_index": owning_segment_start.grade_authority_index,
+            },
+            "owning_segment_end": {
+                "top_surface_source_index": owning_segment_end.top_surface_source_index,
+                "grade_authority_index": owning_segment_end.grade_authority_index,
+            },
+        }),
+    }
+}
+
+fn rail_constraint_kind_value(kind: NodeRailConstraintKind) -> Value {
+    match kind {
+        NodeRailConstraintKind::FullRoadbedContour => {
+            json!({"type": "FullRoadbedContour"})
+        }
+        NodeRailConstraintKind::BandContour { kind } => json!({
+            "type": "BandContour",
+            "band_kind": band_kind_value(kind),
+        }),
+        NodeRailConstraintKind::SpanHandoff { kind } => json!({
+            "type": "SpanHandoff",
+            "band_kind": band_kind_value(kind),
+        }),
+        NodeRailConstraintKind::FootprintSeam { adjacent_kind } => json!({
+            "type": "FootprintSeam",
+            "adjacent_kind": band_kind_value(adjacent_kind),
+        }),
+        NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => json!({
+            "type": "AsphaltBoundary",
+            "adjacent_kind": band_kind_value(adjacent_kind),
+        }),
+        NodeRailConstraintKind::RaisedStepContact => {
+            json!({"type": "RaisedStepContact"})
+        }
+        NodeRailConstraintKind::BandBoundary {
+            left_kind,
+            right_kind,
+        } => json!({
+            "type": "BandBoundary",
+            "left_kind": band_kind_value(left_kind),
+            "right_kind": band_kind_value(right_kind),
+        }),
+    }
+}
+
+fn seam_source_value(source: NodeSeamSource) -> Value {
+    match source {
+        NodeSeamSource::AsphaltBoundary { owner_index } => json!({
+            "type": "AsphaltBoundary",
+            "owner_index": owner_index,
+        }),
+        NodeSeamSource::RaisedStepContact { owner_index } => json!({
+            "type": "RaisedStepContact",
+            "owner_index": owner_index,
+        }),
+        NodeSeamSource::SidewalkOuter { owner_index } => json!({
+            "type": "SidewalkOuter",
+            "owner_index": owner_index,
+        }),
+        NodeSeamSource::FootprintBoundary { owner_index } => json!({
+            "type": "FootprintBoundary",
+            "owner_index": owner_index,
+        }),
+    }
+}
+
+fn carrier_provenance_record_value(record: &NodeCarrierProvenanceRecord) -> Value {
+    json!({
+        "owner": owner_value(record.owner),
+        "source": {
+            "kind": band_kind_value(record.source_kind),
+            "mouth_order_index": record.source_mouth_order_index,
+            "band_index": record.source_band_index,
+        },
+        "height_field_id": height_field_id_value(record.height_field_id),
+        "claim_priority": claim_priority_value(record.claim_priority),
+        "point": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+            record.point.raw_tuple(),
+        )),
+        "origin": carrier_provenance_origin_value(&record.origin),
+    })
+}
+
+fn carrier_provenance_origin_value(origin: &NodeCarrierProvenanceOrigin) -> Value {
+    match origin {
+        NodeCarrierProvenanceOrigin::SourceVertex => json!({
+            "type": "SourceVertex",
+        }),
+        NodeCarrierProvenanceOrigin::SourceSegment {
+            source_segment_id,
+            canonical_point,
+            segment_start,
+            segment_end,
+            distance_key_units_sq,
+            dust_budget_key_units,
+        } => json!({
+            "type": "SourceSegment",
+            "source_segment_id": source_carrier_segment_id_value(source_segment_id),
+            "canonical_point": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+                canonical_point.raw_tuple(),
+            )),
+            "segment_start": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+                segment_start.raw_tuple(),
+            )),
+            "segment_end": canonical_point_value(&NodeCanonicalPointDiagnostic::from_key(
+                segment_end.raw_tuple(),
+            )),
+            "distance_key_units_sq": distance_key_units_sq,
+            "dust_budget_key_units": dust_budget_key_units,
+        }),
+        NodeCarrierProvenanceOrigin::SourceIntersection { peer_count } => json!({
+            "type": "SourceIntersection",
+            "peer_count": peer_count,
+        }),
+        NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+            contour_index,
+            purpose,
+            claim_priority,
+        } => json!({
+            "type": "GeneratedCarrierVertex",
+            "contour_index": contour_index,
+            "purpose": generated_contour_purpose_value(*purpose),
+            "claim_priority": claim_priority_value(*claim_priority),
+        }),
+        NodeCarrierProvenanceOrigin::GeneratedCarrierSurface {
+            contour_index,
+            purpose,
+            claim_priority,
+        } => json!({
+            "type": "GeneratedCarrierSurface",
+            "contour_index": contour_index,
+            "purpose": generated_contour_purpose_value(*purpose),
+            "claim_priority": claim_priority_value(*claim_priority),
+        }),
+    }
+}
+
+fn generated_contour_purpose_value(purpose: NodeGeneratedContourPurpose) -> Value {
+    json!(format!("{:?}", purpose))
+}
+
+fn claim_priority_value(priority: NodeGeneratedContourClaimPriority) -> Value {
+    json!(format!("{:?}", priority))
 }
 
 fn canonical_point_value(point: &NodeCanonicalPointDiagnostic) -> Value {

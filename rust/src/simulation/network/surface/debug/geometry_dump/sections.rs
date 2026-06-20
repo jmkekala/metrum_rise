@@ -229,6 +229,45 @@ impl RoadSurfaceSystem {
         dump.push_str("]}");
     }
 
+    pub(in crate::simulation::network::surface::debug) fn append_span_final_top_regions_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) {
+        dump.push('[');
+        for (region_index, region) in piece.span_owned_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(
+                dump,
+                "{{\"region\":{},\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"material\":\"{}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"polygon_vertex_count\":{},\"triangle_count\":{}",
+                region_index,
+                region.edge_idx,
+                Self::span_region_role_debug_name(region.role),
+                region.owner.source_band_index,
+                region.owner.kind,
+                Self::debug_material_for_span_region_role(region.role),
+                region.start_section_index,
+                region.end_section_index,
+                region.start_s_m,
+                region.end_s_m,
+                region.polygon.points_world.len(),
+                region.polygon.triangles_world.len()
+            );
+            dump.push_str(",\"source_corners_world\":");
+            Self::append_vector3_precise_list_literal(dump, &region.source_corners_world);
+            dump.push_str(",\"polygon_world\":");
+            Self::append_vector3_precise_list_literal(dump, &region.polygon.points_world);
+            dump.push_str(",\"triangles_world\":");
+            Self::append_vector3_triangle_list_precise_literal(
+                dump,
+                &region.polygon.triangles_world,
+            );
+            dump.push('}');
+        }
+        dump.push(']');
+    }
+
     pub(in crate::simulation::network::surface::debug) fn append_span_band_owner_debug_literal(
         dump: &mut String,
         owner: RoadSurfaceSpanBandOwner,
@@ -275,6 +314,16 @@ impl RoadSurfaceSystem {
             RoadSurfaceSpanRegionRole::Asphalt => "asphalt",
             RoadSurfaceSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
             RoadSurfaceSpanRegionRole::NonRoad => "non_road",
+        }
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn debug_material_for_span_region_role(
+        role: RoadSurfaceSpanRegionRole,
+    ) -> &'static str {
+        match role {
+            RoadSurfaceSpanRegionRole::Asphalt => "asphalt",
+            RoadSurfaceSpanRegionRole::CurbOrShoulder => "curb_or_shoulder",
+            RoadSurfaceSpanRegionRole::NonRoad => "sidewalk",
         }
     }
 }

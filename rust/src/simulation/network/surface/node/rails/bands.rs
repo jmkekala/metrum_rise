@@ -50,60 +50,6 @@ pub(super) fn push_full_roadbed_contour(
     )
 }
 
-pub(super) fn push_raw_carriageway_corridor_contour(
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-    mouth: &NodeInputMouth,
-    contours: &mut Vec<NodeGeneratedContour>,
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
-        return Ok(());
-    }
-
-    let Some(first_carriageway_index) = mouth
-        .band_intervals
-        .iter()
-        .position(|interval| interval.band_kind == RoadSurfaceBandKind::Carriageway)
-    else {
-        return Ok(());
-    };
-    let Some(last_carriageway_index) = mouth
-        .band_intervals
-        .iter()
-        .rposition(|interval| interval.band_kind == RoadSurfaceBandKind::Carriageway)
-    else {
-        return Ok(());
-    };
-
-    let first = &mouth.band_intervals[first_carriageway_index];
-    let last = &mouth.band_intervals[last_carriageway_index];
-    let mut points_world = Vec::new();
-    push_world_path_point(&mut points_world, first.mouth_start_world);
-    push_world_path_point(&mut points_world, last.mouth_end_world);
-    append_world_path_points(&mut points_world, last.end_path_world.iter().skip(1));
-    append_world_path_points(&mut points_world, first.start_path_world.iter().rev());
-    remove_closing_world_path_duplicate(&mut points_world);
-    let points = points_world.iter().copied().map(xz).collect::<Vec<_>>();
-
-    push_generated_contour_with_purpose(
-        NodeGeneratedContourKind::Band {
-            kind: RoadSurfaceBandKind::Carriageway,
-        },
-        NodeGeneratedContourPurpose::CarriagewayCorridor,
-        mouth.order_index,
-        None,
-        None,
-        NodeGeneratedContourClaimPriority::Footprint,
-        NodeRailConstraintKind::BandContour {
-            kind: RoadSurfaceBandKind::Carriageway,
-        },
-        points,
-        None,
-        contours,
-        constraints,
-    )
-}
-
 pub(super) fn push_band_contour(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,

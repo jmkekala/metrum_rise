@@ -1,6 +1,10 @@
 //! Rail cap and side-join ownership tests.
 
 use super::*;
+use crate::simulation::network::surface::{
+    NodeOverlayContour, NodeOverlayShapes, RoadSurfaceSystem,
+};
+use i_overlay::core::overlay_rule::OverlayRule;
 
 #[test]
 fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
@@ -16,7 +20,11 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
         .iter()
         .filter(|contour| contour.purpose == NodeGeneratedContourPurpose::FullRoadbedCorridor)
         .collect::<Vec<_>>();
-    assert_eq!(raw_full_roadbed_corridors.len(), input.mouths.len());
+    assert_eq!(
+        raw_full_roadbed_corridors.len(),
+        input.mouths.len(),
+        "nonterminal roadbed arms still define footprint, but asphalt must use material ownership"
+    );
     let raw_carriageway_corridors = contours
         .contours
         .iter()
@@ -25,21 +33,10 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
                 && contour.source_band_index.is_none()
         })
         .collect::<Vec<_>>();
-    assert_eq!(raw_carriageway_corridors.len(), input.mouths.len());
-    for mouth in &input.mouths {
-        assert!(
-            raw_full_roadbed_corridors
-                .iter()
-                .any(|contour| contour.source_mouth_order_index == mouth.order_index),
-            "each non-terminal mouth must emit exactly one raw full-roadbed authority corridor"
-        );
-        assert!(
-            raw_carriageway_corridors
-                .iter()
-                .any(|contour| contour.source_mouth_order_index == mouth.order_index),
-            "each non-terminal mouth must emit exactly one raw carriageway authority corridor"
-        );
-    }
+    assert!(
+        raw_carriageway_corridors.is_empty(),
+        "nonterminal asphalt must not be reintroduced through straight raw corridors"
+    );
     let expected_carriageway_owner_carriers = input
         .mouths
         .iter()
@@ -53,7 +50,8 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
             .filter(|contour| {
                 contour.purpose == NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
                     && contour.claims_asphalt_owner_region()
-                    && !contour.contributes_to_asphalt()
+                    && contour.contributes_to_asphalt()
+                    && !contour.contributes_to_footprint()
             })
             .count(),
         expected_carriageway_owner_carriers
@@ -61,8 +59,8 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
 
     assert!(contours.contours.iter().any(|contour| {
         contour.kind == NodeGeneratedContourKind::FullRoadbed
+            && contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
             && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
-            && contour.source_mouth_order_index == 0
     }));
     assert!(contours.contours.iter().any(|contour| {
         contour.kind
@@ -72,6 +70,7 @@ fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
             && contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
             && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
             && contour.source_band_index == Some(5)
+            && !contour.contributes_to_footprint()
     }));
     assert!(!junction_side_join_contours.is_empty());
     assert!(
@@ -101,10 +100,14 @@ fn bend_curb_side_join_bands_contribute_canonical_footprint() {
     let contours =
         NodeRailContourSet::from_input(&bend_input_with_curb_side_join()).expect("valid contours");
 
+    assert_rounded_carriageway_side_join_contour(
+        &contours,
+        NodeGeneratedContourPurpose::BendSideJoin,
+    );
     assert!(contours.contours.iter().any(|contour| {
         contour.kind == NodeGeneratedContourKind::FullRoadbed
+            && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
             && contour.claim_priority == NodeGeneratedContourClaimPriority::Footprint
-            && contour.source_mouth_order_index == 0
     }));
     assert!(contours.contours.iter().any(|contour| {
         contour.kind
@@ -114,7 +117,273 @@ fn bend_curb_side_join_bands_contribute_canonical_footprint() {
             && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
             && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
             && contour.source_band_index == Some(4)
+            && !contour.contributes_to_footprint()
     }));
+}
+
+#[test]
+fn junction_side_join_bands_round_inner_carriageway_corners() {
+    let contours = NodeRailContourSet::from_input(&nonterminal_input_with_side_join_candidate())
+        .expect("valid contours");
+
+    assert_rounded_carriageway_side_join_contour(
+        &contours,
+        NodeGeneratedContourPurpose::JunctionSideJoin,
+    );
+}
+
+#[test]
+fn bend_side_join_contours_do_not_route_through_shared_endpoint_center() {
+    let contours = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::Bend,
+    ))
+    .expect("valid contours");
+
+    assert_side_join_contours_avoid_graph_center(
+        &contours,
+        NodeGeneratedContourPurpose::BendSideJoin,
+    );
+}
+
+#[test]
+fn junction_side_join_contours_do_not_route_through_shared_endpoint_center() {
+    let contours = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    ))
+    .expect("valid contours");
+
+    assert_side_join_contours_avoid_graph_center(
+        &contours,
+        NodeGeneratedContourPurpose::JunctionSideJoin,
+    );
+}
+
+#[test]
+fn bend_boolean_footprint_exposes_rounded_outer_corner_not_miter() {
+    let rails = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::Bend,
+    ))
+    .expect("valid Bend rails");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("Bend ownership should compile");
+
+    assert!(
+        overlay_shapes_boundary_contains_point(
+            &ownership.footprint_shapes,
+            RoadVec2::new(4.43934, 4.43934),
+        ),
+        "Bend final footprint must expose the rounded sidewalk-to-terrain corner: {:?}",
+        ownership.footprint_shapes
+    );
+    assert!(
+        !overlay_shapes_boundary_contains_point(
+            &ownership.footprint_shapes,
+            RoadVec2::new(4.0, 4.0)
+        ),
+        "Bend final footprint must trim the old outer miter point: {:?}",
+        ownership.footprint_shapes
+    );
+}
+
+#[test]
+fn bend_boolean_asphalt_does_not_claim_sidewalk_side_join() {
+    let rails = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::Bend,
+    ))
+    .expect("valid Bend rails");
+    let sidewalk_side_join_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+                && contour.contributes_to_non_road_band()
+                && matches!(
+                    contour.kind,
+                    NodeGeneratedContourKind::Band {
+                        kind: RoadSurfaceBandKind::Sidewalk,
+                    }
+                )
+        })
+        .map(overlay_contour_from_generated_contour)
+        .collect::<Vec<_>>();
+    assert!(
+        !sidewalk_side_join_contours.is_empty(),
+        "Bend fixture must emit sidewalk side-join ownership contours"
+    );
+    let sidewalk_side_join_shapes =
+        RoadSurfaceSystem::overlay_union_contours(&sidewalk_side_join_contours)
+            .expect("sidewalk side-join contours must union");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("Bend ownership should compile");
+    let overlap = RoadSurfaceSystem::overlay_binary_shapes(
+        &ownership.asphalt_shapes,
+        &sidewalk_side_join_shapes,
+        OverlayRule::Intersect,
+    )
+    .expect("asphalt / sidewalk side-join intersection should solve");
+    let overlap_area_m2: f32 = overlap
+        .iter()
+        .map(RoadSurfaceSystem::overlay_shape_area_m2)
+        .sum();
+
+    assert!(
+        overlap_area_m2 <= 0.001,
+        "Bend asphalt must not claim sidewalk side-join authority: overlap_area_m2={overlap_area_m2:.6}, asphalt={:?}, sidewalk_side_join={:?}",
+        ownership.asphalt_shapes,
+        sidewalk_side_join_shapes
+    );
+}
+
+#[test]
+fn bend_sidewalk_side_join_edges_emit_profile_handoff_constraints() {
+    let rails = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::Bend,
+    ))
+    .expect("valid Bend rails");
+    let sidewalk_side_join_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+                && matches!(
+                    contour.kind,
+                    NodeGeneratedContourKind::Band {
+                        kind: RoadSurfaceBandKind::Sidewalk,
+                    }
+                )
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !sidewalk_side_join_contours.is_empty(),
+        "Bend fixture must emit sidewalk side-join ownership contours"
+    );
+    for contour in sidewalk_side_join_contours {
+        let source_band_index = contour
+            .source_band_index
+            .expect("sidewalk side join contour must name its source band");
+        let owner = contour
+            .owner
+            .expect("sidewalk side join contour must name its owner");
+        let side_join_handoffs = rails
+            .constraints
+            .iter()
+            .filter(|constraint| {
+                constraint.kind
+                    == (NodeRailConstraintKind::SpanHandoff {
+                        kind: RoadSurfaceBandKind::Sidewalk,
+                    })
+                    && constraint.source_mouth_order_index == contour.source_mouth_order_index
+                    && constraint.source_band_index == Some(source_band_index)
+                    && constraint.owner == Some(owner)
+                    && constraint.opposite_owner.is_none()
+                    && constraint.points_xz.len() == 2
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            side_join_handoffs.len() >= 3,
+            "Bend sidewalk side join must expose both generated side edges in addition to the source profile handoff: contour={contour:?}, handoffs={side_join_handoffs:?}"
+        );
+    }
+}
+
+#[test]
+fn junction_boolean_asphalt_exposes_rounded_curb_corner_not_miter() {
+    let rails = NodeRailContourSet::from_input(&side_join_input_with_shared_endpoint_center(
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+    ))
+    .expect("valid JunctionN rails");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("JunctionN ownership should compile");
+
+    assert!(
+        overlay_shapes_boundary_contains_point(
+            &ownership.asphalt_shapes,
+            RoadVec2::new(1.65901, 1.65901),
+        ),
+        "JunctionN asphalt must expose the rounded asphalt-to-curb corner: {:?}",
+        ownership.asphalt_shapes
+    );
+    assert!(
+        !overlay_shapes_boundary_contains_point(&ownership.asphalt_shapes, RoadVec2::new(1.0, 1.0)),
+        "JunctionN asphalt must trim the old asphalt miter point: {:?}",
+        ownership.asphalt_shapes
+    );
+}
+
+fn overlay_contour_from_generated_contour(contour: &NodeGeneratedContour) -> NodeOverlayContour {
+    contour
+        .points_xz
+        .iter()
+        .map(|point| [point.x, point.y])
+        .collect()
+}
+
+fn assert_rounded_carriageway_side_join_contour(
+    contours: &NodeRailContourSet,
+    purpose: NodeGeneratedContourPurpose,
+) {
+    assert!(
+        contours.contours.iter().any(|contour| {
+            contour.kind
+                == (NodeGeneratedContourKind::Band {
+                    kind: RoadSurfaceBandKind::Carriageway,
+                })
+                && contour.purpose == purpose
+                && contour.contributes_to_asphalt()
+                && contour.claims_asphalt_owner_region()
+                && contour.points_xz.len() > 4
+        }),
+        "{purpose:?} must emit a rounded carriageway side-join contour for the visible inner asphalt corner"
+    );
+}
+
+fn assert_side_join_contours_avoid_graph_center(
+    contours: &NodeRailContourSet,
+    purpose: NodeGeneratedContourPurpose,
+) {
+    let center_key = road_point_key(RoadVec2::new(0.0, 0.0));
+    let side_join_contours = contours
+        .contours
+        .iter()
+        .filter(|contour| contour.purpose == purpose)
+        .collect::<Vec<_>>();
+    assert!(
+        !side_join_contours.is_empty(),
+        "{purpose:?} must emit side-join contours"
+    );
+    for contour in side_join_contours {
+        assert!(
+            !side_join_contour_is_visible_corner_band(contour)
+                || contour
+                    .points_xz
+                    .iter()
+                    .all(|point| road_point_key(*point) != center_key),
+            "{purpose:?} visible curb/sidewalk side-join contour must be rounded, not routed through the shared graph endpoint: {contour:?}"
+        );
+    }
+}
+
+fn side_join_contour_is_visible_corner_band(contour: &NodeGeneratedContour) -> bool {
+    matches!(
+        contour.kind,
+        NodeGeneratedContourKind::Band {
+            kind: RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk,
+        }
+    )
+}
+
+fn overlay_shapes_boundary_contains_point(shapes: &NodeOverlayShapes, point: RoadVec2) -> bool {
+    shapes
+        .iter()
+        .flat_map(|shape| shape.iter())
+        .flat_map(|contour| contour.iter())
+        .any(|candidate| {
+            let dx = candidate[0] - point.x;
+            let dz = candidate[1] - point.y;
+            (dx * dx + dz * dz).sqrt() <= 0.02
+        })
 }
 
 #[test]
@@ -123,6 +392,7 @@ fn nonterminal_same_owner_caps_emit_canonical_side_join_fill() {
     let side_join_bands = vec![same_owner_side_join_band()];
     let owners_by_mouth = owners_by_mouth(&input, &[], std::slice::from_ref(&side_join_bands));
     let mut contours = Vec::new();
+    let mut corner_trims = Vec::new();
     let mut constraints = Vec::new();
     push_side_join_band_contours(
         RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -131,6 +401,7 @@ fn nonterminal_same_owner_caps_emit_canonical_side_join_fill() {
         &owners_by_mouth[0],
         &owners_by_mouth[0].side_join_band_owners,
         &mut contours,
+        &mut corner_trims,
         &mut constraints,
     )
     .expect("valid side-join contours");

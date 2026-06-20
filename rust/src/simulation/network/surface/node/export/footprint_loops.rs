@@ -136,13 +136,15 @@ fn resolve_footprint_boundary_point_heights(
                 z_key: key.z_key(),
             });
         };
-        resolved.push(NodeFootprintBoundaryPoint::new(
-            ArrangementBoundaryPointKey {
-                x_key: key.x_key(),
-                z_key: key.z_key(),
-                y_mm: height_mm,
-            },
-        ));
+        let point_key = ArrangementBoundaryPointKey {
+            x_key: key.x_key(),
+            z_key: key.z_key(),
+            y_mm: height_mm,
+        };
+        let point_key = boundary_export_sources
+            .canonical_final_height_endpoint_dust_point(point_key)
+            .unwrap_or(point_key);
+        resolved.push(NodeFootprintBoundaryPoint::new(point_key));
     }
     Ok(canonicalize_footprint_boundary_point_loop(resolved))
 }

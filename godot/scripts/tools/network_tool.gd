@@ -27,16 +27,20 @@ var cursor_mesh: MeshInstance3D # Active hovered snap cursor
 var ghost_mesh: MeshInstance3D # Ghost guide lines (SimCity-style grid overlay, road tool only)
 var surface_debug_mesh: MeshInstance3D # Compiled roadbed debug overlay
 var _surface_debug_enabled: bool = false
+var _surface_probe_enabled: bool = false
 var _surface_debug_refresh_elapsed: float = 0.0
+var _surface_probe_refresh_elapsed: float = 0.0
 var _last_world_mouse_pos: Vector3 = Vector3.ZERO
 var _has_last_world_mouse_pos: bool = false
 var _node_visuals_dirty: bool = true
 var _node_visuals_visible: bool = false
 
 const SURFACE_DEBUG_REFRESH_SEC := 0.2
+const SURFACE_PROBE_REFRESH_SEC := 0.25
 
 func _ready():
 	_surface_debug_enabled = _is_surface_debug_enabled()
+	_surface_probe_enabled = _is_surface_probe_enabled()
 	_setup_visuals()
 
 func _setup_visuals():
@@ -137,6 +141,7 @@ func _process(delta):
 		_update_blueprint_visuals()
 		_update_node_visuals()
 		_update_surface_debug_overlay(delta)
+		_update_surface_probe_debug(delta)
 	else:
 		_has_last_world_mouse_pos = false
 		if cursor_mesh:
@@ -217,6 +222,13 @@ func _is_surface_debug_enabled() -> bool:
 	var filter_value := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
 	return filter_value.contains("road-surface") or filter_value.contains("surface-debug")
 
+func _is_surface_probe_enabled() -> bool:
+	var explicit_value := OS.get_environment("METRUM_DEBUG_ROAD_PROBE").strip_edges()
+	if not explicit_value.is_empty():
+		return explicit_value != "0"
+	var filter_value := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	return filter_value.contains("road-probe")
+
 func _update_surface_debug_overlay(delta: float) -> void:
 	if surface_debug_mesh == null:
 		return
@@ -238,6 +250,17 @@ func _update_surface_debug_overlay(delta: float) -> void:
 	surface_debug_mesh.mesh = immediate
 	surface_debug_mesh.visible = true
 	_surface_debug_refresh_elapsed = SURFACE_DEBUG_REFRESH_SEC
+
+func _update_surface_probe_debug(delta: float) -> void:
+	if not _surface_probe_enabled or not _has_last_world_mouse_pos:
+		return
+	_surface_probe_refresh_elapsed = max(_surface_probe_refresh_elapsed - delta, 0.0)
+	if _surface_probe_refresh_elapsed > 0.0:
+		return
+	var dump: String = simulation_node.get_road_surface_probe_debug(_last_world_mouse_pos)
+	if not dump.is_empty():
+		print("[DEBUG:road] " + dump)
+	_surface_probe_refresh_elapsed = SURFACE_PROBE_REFRESH_SEC
 
 func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, color: Color) -> void:
 	if points.size() < 2:

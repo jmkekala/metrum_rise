@@ -9,11 +9,15 @@ impl NodeGeometryDiagnostic {
         error: &NodeTriangulationError,
     ) -> Self {
         let (backend, kind) = match error {
-            NodeTriangulationError::InvalidConstraint { .. } => (
+            NodeTriangulationError::InvalidConstraint {
+                region_index,
+                first_constraint_index,
+                ..
+            } => (
                 NodeGeometryBackend::Spade,
                 NodeGeometryDiagnosticKind::InvalidConstraint {
-                    region_index: 0,
-                    constraint_index: None,
+                    region_index: *region_index,
+                    constraint_index: *first_constraint_index,
                     reason: NodeInvalidConstraintReason::CdtRejected,
                 },
             ),

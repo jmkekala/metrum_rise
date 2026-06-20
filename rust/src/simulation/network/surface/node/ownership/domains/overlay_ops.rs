@@ -50,7 +50,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn overlay_differen
     Ok(shapes)
 }
 
-pub(super) fn overlay_union_shape_sets(
+pub(in crate::simulation::network::surface::node::ownership) fn overlay_union_shape_sets(
     existing: &NodeOverlayShapes,
     added: &NodeOverlayShapes,
     stage: &'static str,

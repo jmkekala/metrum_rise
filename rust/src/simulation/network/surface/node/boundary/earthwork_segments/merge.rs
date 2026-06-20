@@ -51,6 +51,7 @@ pub(super) fn merged_node_earthwork_source_candidate(
             let matching_owner = a_owner_kind == b_owner_kind && a_owner_index == b_owner_index;
             let (owner_kind, owner_index, boundary_source, height_field_id) =
                 merged_node_earthwork_boundary_source(
+                    a_kind,
                     start_point_key,
                     end_point_key,
                     matching_owner,
@@ -81,6 +82,7 @@ pub(super) fn merged_node_earthwork_source_candidate(
 }
 
 fn merged_node_earthwork_boundary_source(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
     start_point_key: ArrangementBoundaryPointKey,
     end_point_key: ArrangementBoundaryPointKey,
     matching_owner: bool,
@@ -202,6 +204,53 @@ fn merged_node_earthwork_boundary_source(
                     } else {
                         None
                     },
+                ));
+            }
+            if matching_owner
+                && piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+                && a_height_field_id.is_none()
+                && b_height_field_id.is_none()
+            {
+                return Some((
+                    a_owner_kind,
+                    a_owner_index,
+                    Some(NodeFootprintBoundarySegmentSource {
+                        start: if start_identity_matches {
+                            a.start
+                        } else {
+                            canonical_boundary_point_source(start_point_key)
+                        },
+                        end: if end_identity_matches {
+                            a.end
+                        } else {
+                            canonical_boundary_point_source(end_point_key)
+                        },
+                    }),
+                    None,
+                ));
+            }
+            if matching_owner
+                && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+                && a_height_field_id.is_none()
+                && b_height_field_id.is_none()
+                && (start_identity_matches || end_identity_matches)
+            {
+                return Some((
+                    a_owner_kind,
+                    a_owner_index,
+                    Some(NodeFootprintBoundarySegmentSource {
+                        start: if start_identity_matches {
+                            a.start
+                        } else {
+                            canonical_boundary_point_source(start_point_key)
+                        },
+                        end: if end_identity_matches {
+                            a.end
+                        } else {
+                            canonical_boundary_point_source(end_point_key)
+                        },
+                    }),
+                    None,
                 ));
             }
             if a_owner_kind == b_owner_kind && a_owner_index == b_owner_index {
@@ -414,4 +463,90 @@ fn node_earthwork_boundary_vertex_sources_include_canonical_point_at(
             NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { x_key, z_key, y_mm }
         ) if x_key == point_key.x_key && z_key == point_key.z_key && y_mm == point_key.y_mm
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::RoadVec3;
+
+    fn direct_source(
+        top_surface_source_index: usize,
+        grade_authority_index: usize,
+    ) -> NodeFootprintBoundaryVertexSource {
+        NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+            top_surface_source_index,
+            grade_authority_index,
+        })
+    }
+
+    fn sidewalk_candidate(
+        start: NodeFootprintBoundaryVertexSource,
+        end: NodeFootprintBoundaryVertexSource,
+    ) -> NodeEarthworkBoundarySourceCandidate {
+        NodeEarthworkBoundarySourceCandidate {
+            face_source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: 3,
+                kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+                boundary_source: Some(NodeFootprintBoundarySegmentSource { start, end }),
+            },
+            height_field_id: None,
+        }
+    }
+
+    #[test]
+    fn junctionn_same_owner_one_matching_endpoint_uses_canonical_segment_source() {
+        let start_key =
+            ArrangementBoundaryPointKey::from_world(RoadVec3::new(-10.586514, 0.12, 17.657581));
+        let end_key =
+            ArrangementBoundaryPointKey::from_world(RoadVec3::new(-11.647174, 0.0, 16.596921));
+        let merged = merged_node_earthwork_source_candidate(
+            start_key,
+            end_key,
+            sidewalk_candidate(direct_source(116, 65), direct_source(0, 61)),
+            sidewalk_candidate(direct_source(116, 65), direct_source(69, 62)),
+        )
+        .expect("same-owner JunctionN boundary with one matching endpoint should canonicalize");
+
+        assert!(matches!(
+            merged.face_source,
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+                boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                    start: NodeFootprintBoundaryVertexSource::Direct(
+                        NodeFootprintBoundaryDirectSource {
+                            top_surface_source_index: 116,
+                            grade_authority_index: 65,
+                        },
+                    ),
+                    end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                        x_key,
+                        z_key,
+                        y_mm,
+                    },
+                }),
+                ..
+            } if x_key == end_key.x_key && z_key == end_key.z_key && y_mm == end_key.y_mm
+        ));
+        assert_eq!(merged.height_field_id, None);
+    }
+
+    #[test]
+    fn junctionn_same_owner_fully_distinct_endpoints_stay_ambiguous() {
+        let start_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
+        let end_key = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 0.0, 0.0));
+
+        assert!(
+            merged_node_earthwork_source_candidate(
+                start_key,
+                end_key,
+                sidewalk_candidate(direct_source(3, 30), direct_source(3, 31)),
+                sidewalk_candidate(direct_source(4, 40), direct_source(4, 41)),
+            )
+            .is_none()
+        );
+    }
 }

@@ -799,6 +799,7 @@ mod tests {
             node_grade_authorities: Vec::new(),
             node_top_surface_sources: vec![source],
             owned_regions: vec![region],
+            boolean_debug: None,
         }
     }
 

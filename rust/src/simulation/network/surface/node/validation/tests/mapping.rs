@@ -354,6 +354,7 @@ fn maps_shared_source_height_conflict_to_owner_pair_blocking_debug_record() {
             incoming_authority: Some(NodeHeightAuthoritySource::TerminalCap),
             existing_height_mm: 0,
             incoming_height_mm: 125,
+            constraint_context: None,
         } if mapped_owner == owner
             && mapped_opposite_owner == opposite_owner
             && id == height_field_id
@@ -364,6 +365,155 @@ fn maps_shared_source_height_conflict_to_owner_pair_blocking_debug_record() {
     assert!(dump.contains("\"kind\":\"shared_source_height_conflict\""));
     assert!(dump.contains("opposite_owner"));
     assert!(dump.contains("constraint_index"));
+}
+
+#[test]
+fn shared_source_height_conflict_dump_includes_constraint_context() {
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let curb_field = NodeBandHeightFieldId::new(0, 4, RoadSurfaceBandKind::CurbOrShoulder);
+    let sidewalk_field = NodeBandHeightFieldId::new(0, 5, RoadSurfaceBandKind::Sidewalk);
+    let seam = NodeRegionSeamConstraint {
+        constraint_index: 21,
+        seam_source: NodeSeamSource::RaisedStepContact { owner_index: 4 },
+        owner: Some(curb),
+        opposite_owner: Some(sidewalk),
+        constrains_shared_height: true,
+        is_material_transition: true,
+        start_xz: RoadVec2::new(0.0, 0.0),
+        end_xz: RoadVec2::new(1.0, 0.0),
+    };
+    let regions = vec![
+        NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner: curb,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            source_mouth_order_index: 0,
+            source_band_index: Some(4),
+            shape: Vec::new(),
+            area_m2: 0.0,
+            seam_constraints: vec![seam.clone()],
+        },
+        NodeBooleanOwnedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: sidewalk,
+            claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+            source_mouth_order_index: 0,
+            source_band_index: Some(5),
+            shape: Vec::new(),
+            area_m2: 0.0,
+            seam_constraints: vec![seam],
+        },
+    ];
+    let ownership = NodeBooleanOwnership {
+        node_id: 13,
+        piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+        footprint_shapes: Vec::new(),
+        asphalt_shapes: Vec::new(),
+        non_road_shapes: Vec::new(),
+        owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+            13,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            &regions,
+            &Vec::new(),
+            &Vec::new(),
+        ),
+        carrier_provenance: NodeCarrierProvenanceClosure {
+            records: vec![
+                NodeCarrierProvenanceRecord {
+                    owner: curb,
+                    source_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                    source_mouth_order_index: 0,
+                    source_band_index: 4,
+                    height_field_id: curb_field,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    point: NodeOwnedRegionArrangementKey::from_ownership_key((0, 0)),
+                    origin: NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+                        contour_index: 2,
+                        purpose: NodeGeneratedContourPurpose::BendSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    },
+                },
+                NodeCarrierProvenanceRecord {
+                    owner: sidewalk,
+                    source_kind: RoadSurfaceBandKind::Sidewalk,
+                    source_mouth_order_index: 0,
+                    source_band_index: 5,
+                    height_field_id: sidewalk_field,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    point: NodeOwnedRegionArrangementKey::from_ownership_key((0, 0)),
+                    origin: NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+                        contour_index: 3,
+                        purpose: NodeGeneratedContourPurpose::BendSideJoin,
+                        claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                    },
+                },
+            ],
+        },
+        owned_regions: regions,
+    };
+    let rails = NodeRailContourSet {
+        node_id: 13,
+        piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+        contours: Vec::new(),
+        corner_trims: Vec::new(),
+        constraints: vec![NodeRailConstraint {
+            constraint_index: 21,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(4),
+            source_boundary_index: None,
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(1.0, 0.0)],
+        }],
+        height_carrier_paths_by_source: std::collections::BTreeMap::new(),
+        height_carrier_points_by_source: std::collections::BTreeMap::new(),
+        source_carriers: NodeSourceCarrierRegistry::default(),
+    };
+    let report = NodeValidationReport::from_height_field_error(
+        13,
+        RoadSurfaceVisualNodePieceKind::Bend,
+        &NodeHeightFieldError::SharedSourceHeightConflict {
+            point_x_mm: 0,
+            point_z_mm: 0,
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: curb,
+            opposite_owner: Some(sidewalk),
+            height_field_id: Some(curb_field),
+            incoming_owner: sidewalk,
+            incoming_height_field_id: Some(sidewalk_field),
+            constraint_index: Some(21),
+            existing_authority: None,
+            incoming_authority: None,
+            existing_height_mm: 137_383,
+            incoming_height_mm: 137_365,
+        },
+    )
+    .with_height_failure_context(&rails, &ownership);
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report.debug_dump()).expect("debug dump must be valid JSON");
+    let context = &parsed["diagnostics"][0]["constraint_context"];
+    assert_eq!(context["rail_constraint"]["constraint_index"], 21);
+    assert_eq!(
+        context["rail_constraint"]["kind"]["type"],
+        "RaisedStepContact"
+    );
+    assert_eq!(context["rail_constraint"]["source_mouth_order_index"], 0);
+    assert_eq!(context["rail_constraint"]["source_band_index"], 4);
+    assert_eq!(
+        context["seam_constraints"][0]["seam_source"]["type"],
+        "RaisedStepContact"
+    );
+    assert_eq!(
+        context["existing_vertex"]["provenance_records"][0]["origin"]["purpose"],
+        "BendSideJoin"
+    );
+    assert_eq!(
+        context["incoming_vertex"]["provenance_records"][0]["origin"]["purpose"],
+        "BendSideJoin"
+    );
 }
 
 #[test]

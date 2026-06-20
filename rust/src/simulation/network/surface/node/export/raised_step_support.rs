@@ -13,6 +13,7 @@ use crate::simulation::network::surface::{
 use std::collections::{BTreeMap, BTreeSet};
 
 const TOP_SUPPORT_EDGE_TILE_KEYS: i64 = 8_000_000;
+const RAISED_STEP_FACE_HEIGHT_DUST_MM: i64 = 1;
 
 impl RoadSurfaceSystem {
     pub(super) fn retain_raised_step_faces_with_owned_top_support(
@@ -376,10 +377,10 @@ fn raised_step_boundary_points_from_top_support(
         support_edge_point_at_segment_parameter(raised_edge, segment_start, segment_end, start_t)?;
     let raised_end =
         support_edge_point_at_segment_parameter(raised_edge, segment_start, segment_end, end_t)?;
+    let raised_start = raised_step_face_height_dust_adjusted_point(lower_start, raised_start)?;
+    let raised_end = raised_step_face_height_dust_adjusted_point(lower_end, raised_end)?;
     if lower_start.xz_key() == lower_end.xz_key()
         || raised_start.xz_key() == raised_end.xz_key()
-        || raised_start.y_mm < lower_start.y_mm
-        || raised_end.y_mm < lower_end.y_mm
         || (raised_start.y_mm == lower_start.y_mm && raised_end.y_mm == lower_end.y_mm)
     {
         return None;
@@ -390,6 +391,20 @@ fn raised_step_boundary_points_from_top_support(
         raised_start,
         raised_end,
     })
+}
+
+fn raised_step_face_height_dust_adjusted_point(
+    lower: ArrangementBoundaryPointKey,
+    mut raised: ArrangementBoundaryPointKey,
+) -> Option<ArrangementBoundaryPointKey> {
+    if raised.y_mm >= lower.y_mm {
+        return Some(raised);
+    }
+    if lower.y_mm - raised.y_mm > RAISED_STEP_FACE_HEIGHT_DUST_MM {
+        return None;
+    }
+    raised.y_mm = lower.y_mm;
+    Some(raised)
 }
 
 fn raised_step_face_support_key_from_boundary_points(

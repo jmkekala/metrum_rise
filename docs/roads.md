@@ -134,7 +134,10 @@ add explicit ordered bands instead of special-case render offsets.
 - `JunctionN` is an `n >= 3` node piece
 - mouths are sorted deterministically
 - full-roadbed corridor candidates define the node footprint
-- carriageway corridor candidates define asphalt
+- carriageway owner carriers and side-join candidates define asphalt; non-terminal nodes must not
+  reintroduce raw source-band-none carriageway corridor fallback polygons, and those owner carriers
+  must follow the same rounded adjacent-mouth boundary policy as side-join contours instead of
+  preserving old miter endpoints
 - `node_non_road = node_footprint - node_asphalt` is an intermediate domain only
 - curb / shoulder and sidewalk are accepted only after explicit profile seam-rail evidence
 - sidewalks may shrink, split, or disappear when asphalt legally owns the conflict region
@@ -147,6 +150,25 @@ The final node output is a canonical arrangement:
 - height is evaluated only after ownership and seam vertices are known
 - missing, ambiguous, or conflicting owner / height support is a hard diagnostic, not a repair path
 - Spade CDT triangulates already-owned material regions; CDT does not decide ownership
+
+Adjacent-mouth corners in `Bend` and `JunctionN` pieces are canonical rounded geometry, not a
+renderer bevel, shader mask, or test-only helper. For every non-degenerate adjacent mouth gap, the
+side-join generator must round asphalt-to-curb / sidewalk material boundaries and outer
+roadbed-to-terrain footprint boundaries before the ownership boolean. The emitted visible side-join
+contours are adjacent-mouth boundaries: their endpoints come from the generated rail / band boundary
+points, not from the shared graph endpoint or node centre. A shared endpoint / centreline point may
+remain as internal owner or height support, but it must not be emitted as an exposed side-join
+material or footprint boundary for the rounded corner.
+
+Exact circular arcs are preferred when the incident rails support a shared radius; bounded
+deterministic fillets are used when exact arcs are unavailable. Fillet sampling is fixed and bounded
+per adjacent mouth, preserves the generated band owner / height carrier provenance through the normal
+contour path, and must be clamped by the available adjacent segments so it cannot erase sidewalks,
+cross another mouth, or create unsupported sliver polygons. If a split carriageway slice collapses
+against the centerline, that degenerate asphalt slice must not abort the whole corner or reintroduce a
+center-routed miter; its rounded outer path is carried forward so curb / shoulder and sidewalk bands
+still receive rounded ownership boundaries. Render polygons, visible-surface queries, terrain clip
+loops, and earthwork roots all consume this same rounded ownership output.
 
 Node throat clips use the roadbed half-width plus a small numeric safety margin as their baseline
 distance from the graph node, so ordinary orthogonal junction mouths stay close to the junction
@@ -341,6 +363,12 @@ the roadbed ownership contract itself.
 - contact candidate counts and emitted constraint counts
 - terrain CDT input/output counters
 - retained road seam constraint counters
+- final span / node top-region polygons and triangles with owner, material, and provenance keys
+- post-boolean node footprint / asphalt / non-road shapes, owned-region contours, side-join
+  contour provenance, and corner-trim application state when geometry-dump debug capture is active
+- opt-in `METRUM_DEBUG_ROAD_PROBE=1` hover probes that log every final road-surface triangle under
+  or near the probed XZ point, including material, owner, node/span source, region id, and triangle
+  coordinates
 - provider-specific terrain / water / zoning debug timings
 - structured node diagnostics with stage, backend, owner, source band, height field, canonical key,
   point / edge, residual, seam, and constraint metadata

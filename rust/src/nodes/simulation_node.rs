@@ -61,6 +61,7 @@
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
+//! | | `get_road_surface_probe_debug` | `network_tool.gd` |
 //! | | `get_road_tool_cursor_pos` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
@@ -4770,6 +4771,17 @@ impl SimulationNode {
         match self.try_lock_core() {
             Some(mut core) => core.get_road_surface_debug_data_internal().to_variant(),
             None => Variant::nil(),
+        }
+    }
+
+    /// Returns JSON describing final road-surface triangles under one world-space point.
+    ///
+    /// Uses `try_lock` because this is a debug/editor helper called from active tools.
+    #[func]
+    pub fn get_road_surface_probe_debug(&self, world_pos: Vector3) -> GString {
+        match self.try_lock_core() {
+            Some(mut core) => core.get_road_surface_probe_debug_internal(world_pos),
+            None => GString::new(),
         }
     }
 

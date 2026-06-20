@@ -27,6 +27,30 @@ impl NodeFinalOwnedFootprintBoundarySupport {
 }
 
 impl NodeFootprintBoundaryExportSources {
+    pub(in crate::simulation::network::surface) fn canonical_final_height_endpoint_dust_point(
+        &self,
+        point_key: ArrangementBoundaryPointKey,
+    ) -> Option<ArrangementBoundaryPointKey> {
+        let dust_budget_sq = i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS)
+            * i128::from(BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+        let mut candidates = self
+            .final_height_edges
+            .iter()
+            .flat_map(|edge| [edge.start_point_key, edge.end_point_key])
+            .filter(|endpoint| endpoint.y_mm == point_key.y_mm)
+            .filter(|endpoint| {
+                boundary_point_key_distance_squared(point_key, *endpoint) <= dust_budget_sq
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.dedup();
+        if candidates.len() == 1 {
+            Some(candidates[0])
+        } else {
+            None
+        }
+    }
+
     pub(in crate::simulation::network::surface) fn has_exact_final_owned_footprint_boundary_support_at_point(
         &self,
         point_key: ArrangementBoundaryPointKey,
@@ -158,6 +182,15 @@ impl NodeFootprintBoundaryExportSources {
             })
             .collect()
     }
+}
+
+fn boundary_point_key_distance_squared(
+    left: ArrangementBoundaryPointKey,
+    right: ArrangementBoundaryPointKey,
+) -> i128 {
+    let dx = i128::from(left.x_key - right.x_key);
+    let dz = i128::from(left.z_key - right.z_key);
+    dx * dx + dz * dz
 }
 
 fn node_footprint_boundary_vertex_source_is_exact(

@@ -40,8 +40,21 @@ pub(in crate::simulation::network::surface::tests) fn explicit_vertical_step_has
     };
     edges.iter().any(|lower_edge| {
         edges.iter().any(|raised_edge| {
-            lower_edge.avg_y_m < raised_edge.avg_y_m
+            top_edges_have_positive_height_delta(*lower_edge, *raised_edge)
                 && test_top_edges_form_raised_step(*lower_edge, *raised_edge)
+        })
+    })
+}
+
+fn top_edges_have_positive_height_delta(
+    lower_edge: TestTopBoundaryEdge,
+    raised_edge: TestTopBoundaryEdge,
+) -> bool {
+    let lower_points = [lower_edge.key.start, lower_edge.key.end];
+    let raised_points = [raised_edge.key.start, raised_edge.key.end];
+    lower_points.iter().any(|lower| {
+        raised_points.iter().any(|raised| {
+            lower.x_key == raised.x_key && lower.z_key == raised.z_key && lower.y_mm < raised.y_mm
         })
     })
 }

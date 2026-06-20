@@ -151,6 +151,41 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_triangle_precise_literal<
+        T,
+    >(
+        dump: &mut String,
+        triangle: [T; 3],
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
+        dump.push('[');
+        Self::append_vector3_precise_literal(dump, triangle[0]);
+        dump.push_str(", ");
+        Self::append_vector3_precise_literal(dump, triangle[1]);
+        dump.push_str(", ");
+        Self::append_vector3_precise_literal(dump, triangle[2]);
+        dump.push(']');
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn append_vector3_triangle_list_precise_literal<
+        T,
+    >(
+        dump: &mut String,
+        triangles: &[[T; 3]],
+    ) where
+        T: Copy + DebugVec3Literal,
+    {
+        dump.push('[');
+        for (index, triangle) in triangles.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_vector3_triangle_precise_literal(dump, *triangle);
+        }
+        dump.push(']');
+    }
+
     pub(in crate::simulation::network::surface::debug) fn append_usize_list_literal(
         dump: &mut String,
         values: &[usize],
@@ -163,6 +198,31 @@ impl RoadSurfaceSystem {
             let _ = write!(dump, "{value}");
         }
         dump.push(']');
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn append_i64_list_literal(
+        dump: &mut String,
+        values: &[i64],
+    ) {
+        dump.push('[');
+        for (index, value) in values.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(dump, "{value}");
+        }
+        dump.push(']');
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn append_optional_usize_literal(
+        dump: &mut String,
+        value: Option<usize>,
+    ) {
+        if let Some(value) = value {
+            let _ = write!(dump, "{value}");
+        } else {
+            dump.push_str("null");
+        }
     }
 
     pub(in crate::simulation::network::surface::debug) fn append_debug_render_edge_key_literal(
@@ -284,6 +344,31 @@ impl RoadSurfaceSystem {
         T: Copy + DebugVec2Literal,
     {
         let _ = write!(dump, "[{:.3}, {:.3}]", point.x(), point.y());
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn append_vector2_precise_literal<T>(
+        dump: &mut String,
+        point: T,
+    ) where
+        T: Copy + DebugVec2Literal,
+    {
+        let _ = write!(dump, "[{:.6}, {:.6}]", point.x(), point.y());
+    }
+
+    pub(in crate::simulation::network::surface::debug) fn append_vector2_precise_list_literal<T>(
+        dump: &mut String,
+        points: &[T],
+    ) where
+        T: Copy + DebugVec2Literal,
+    {
+        dump.push('[');
+        for (index, point) in points.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_vector2_precise_literal(dump, *point);
+        }
+        dump.push(']');
     }
 
     pub(in crate::simulation::network::surface::debug) fn append_optional_f32_literal(

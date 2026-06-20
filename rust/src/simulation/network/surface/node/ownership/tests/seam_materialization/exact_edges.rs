@@ -7,10 +7,14 @@ fn terminal_overlap_mode_uses_exact_canonical_constraints_without_grid_bounded_o
     let terminal_mode =
         ConstraintOverlapMode::for_piece_kind(RoadSurfaceVisualNodePieceKind::Terminal);
     let bend_mode = ConstraintOverlapMode::for_piece_kind(RoadSurfaceVisualNodePieceKind::Bend);
+    let junction_mode =
+        ConstraintOverlapMode::for_piece_kind(RoadSurfaceVisualNodePieceKind::JunctionN);
 
     assert_eq!(terminal_mode, ConstraintOverlapMode::ExactCanonical);
     assert_eq!(bend_mode, ConstraintOverlapMode::ExactCanonical);
+    assert_eq!(junction_mode, ConstraintOverlapMode::GridBounded);
     assert!(!terminal_mode.allows_grid_bounded_constraint_overlap());
+    assert!(junction_mode.allows_grid_bounded_constraint_overlap());
     assert_eq!(
         terminal_mode.cleans_overlay_numeric_spikes(),
         bend_mode.cleans_overlay_numeric_spikes()

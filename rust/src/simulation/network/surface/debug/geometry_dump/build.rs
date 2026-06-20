@@ -9,16 +9,19 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         edge_ids: &[usize],
     ) -> String {
-        let mut sorted_edge_ids = edge_ids.to_vec();
-        sorted_edge_ids.sort_unstable();
-        sorted_edge_ids.dedup();
+        let mut requested_edge_ids = edge_ids.to_vec();
+        requested_edge_ids.sort_unstable();
+        requested_edge_ids.dedup();
 
-        let debug_node_ids = self.debug_node_ids_for_edges(graph, &sorted_edge_ids);
+        let debug_node_ids = self.debug_node_ids_for_edges(graph, &requested_edge_ids);
+        let debug_edge_ids =
+            self.debug_edge_ids_for_edges_and_nodes(graph, &requested_edge_ids, &debug_node_ids);
 
         let mut dump = String::new();
         let _ = writeln!(dump, "ROAD_GEOMETRY_DUMP_BEGIN");
         let _ = writeln!(dump, "{{");
-        let _ = writeln!(dump, "  \"edge_ids\": {:?},", sorted_edge_ids);
+        let _ = writeln!(dump, "  \"requested_edge_ids\": {:?},", requested_edge_ids);
+        let _ = writeln!(dump, "  \"edge_ids\": {:?},", debug_edge_ids);
         let _ = writeln!(dump, "  \"node_compile_status\": [");
         let mut first_status = true;
         for &node_id in &debug_node_ids {
@@ -33,7 +36,7 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump, "  \"edges\": [");
 
         let mut first_edge = true;
-        for &edge_idx in &sorted_edge_ids {
+        for &edge_idx in &debug_edge_ids {
             if edge_idx >= graph.edge_count() {
                 continue;
             }
@@ -95,6 +98,29 @@ impl RoadSurfaceSystem {
         node_ids
     }
 
+    fn debug_edge_ids_for_edges_and_nodes(
+        &self,
+        graph: &RegionGraph,
+        requested_edge_ids: &[usize],
+        debug_node_ids: &[u32],
+    ) -> Vec<usize> {
+        let mut edge_ids = requested_edge_ids.to_vec();
+        for &node_id in debug_node_ids {
+            if node_id as usize >= graph.node_adjacency_count() {
+                continue;
+            }
+            for &edge_idx in graph.node_adjacency(node_id) {
+                if edge_idx < graph.edge_count() && !graph.edge(edge_idx).deleted {
+                    edge_ids.push(edge_idx);
+                }
+            }
+        }
+        edge_ids.retain(|&edge_idx| edge_idx < graph.edge_count() && !graph.edge(edge_idx).deleted);
+        edge_ids.sort_unstable();
+        edge_ids.dedup();
+        edge_ids
+    }
+
     pub(in crate::simulation::network::surface::debug) fn append_node_compile_status_debug_dump(
         &self,
         dump: &mut String,
@@ -109,6 +135,18 @@ impl RoadSurfaceSystem {
         let compiled = compiled_piece.is_some();
         let uses_visible_earthwork =
             compiled && self.node_piece_uses_visible_earthwork(graph, node_id, terrain);
+        let failure = (!compiled)
+            .then(|| {
+                self.visual_node_compile_input(graph, node_id)
+                    .and_then(|input| {
+                        self.canonical_node_compile_failure_debug_dump(
+                            node_id,
+                            input.kind,
+                            &input.mouths,
+                        )
+                    })
+            })
+            .flatten();
 
         let _ = writeln!(dump, "    {{");
         let _ = writeln!(dump, "      \"node_id\": {node_id},");
@@ -117,11 +155,20 @@ impl RoadSurfaceSystem {
         Self::append_usize_list_literal(dump, &self.debug_incident_edges_for_node(graph, node_id));
         dump.push_str(",\n");
         let _ = writeln!(dump, "      \"compiled\": {compiled},");
-        let _ = writeln!(
-            dump,
-            "      \"uses_visible_earthwork\": {}",
-            uses_visible_earthwork
-        );
+        if let Some(failure) = failure {
+            let _ = writeln!(
+                dump,
+                "      \"uses_visible_earthwork\": {},",
+                uses_visible_earthwork
+            );
+            let _ = writeln!(dump, "      \"failure\": {failure}");
+        } else {
+            let _ = writeln!(
+                dump,
+                "      \"uses_visible_earthwork\": {}",
+                uses_visible_earthwork
+            );
+        }
         let _ = write!(dump, "    }}");
     }
 
@@ -198,6 +245,9 @@ impl RoadSurfaceSystem {
             dump.push_str("      \"span_ownership\": ");
             Self::append_span_ownership_debug_literal(dump, piece);
             dump.push_str(",\n");
+            dump.push_str("      \"span_final_top_regions\": ");
+            Self::append_span_final_top_regions_debug_literal(dump, piece);
+            dump.push_str(",\n");
             dump.push_str("      \"span_earthwork_support\": ");
             Self::append_span_earthwork_support_debug_literal(dump, piece);
             dump.push_str(",\n");
@@ -215,6 +265,7 @@ impl RoadSurfaceSystem {
             dump.push('\n');
         } else {
             dump.push_str("      \"span_ownership\": {\"owned_region_count\":0,\"regions\":[]},\n");
+            dump.push_str("      \"span_final_top_regions\": [],\n");
             dump.push_str(
                 "      \"span_earthwork_support\": {\"support_region_count\":0,\"regions\":[]},\n",
             );

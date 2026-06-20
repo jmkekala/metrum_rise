@@ -2,7 +2,9 @@
 
 use super::super::arrangement::NodeSeamSource;
 use super::build::height_fields_by_source;
-use super::grade::apply_junctionn_height_authority_normalization;
+use super::grade::{
+    apply_bend_height_authority_normalization, apply_junctionn_height_authority_normalization,
+};
 use super::model::*;
 use super::seams::*;
 use super::triangles::height_triangles_from_contour;

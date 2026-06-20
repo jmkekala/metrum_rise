@@ -75,7 +75,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   farther material ownership handoff as a flat platform extent, while preserving source-sampled
   Bend, terrain, and earthwork footprint provenance. Edge span sampling, visible queries, and
   grounded `Standard` earthwork section ranges now consume the same node-mouth ownership policy
-  rather than separate local clip helpers. See
+  rather than separate local clip helpers. `Bend` / `JunctionN` adjacent-mouth side joins now emit
+  rounded mouth-to-mouth asphalt-to-curb and sidewalk-to-terrain ownership boundaries instead of
+  routing visible corners through the shared graph endpoint, even when a split carriageway slice
+  collapses against the centerline. Non-terminal carriageway owner carriers are part of the same
+  rounded ownership policy, so production asphalt cannot keep old miter endpoints while side-join
+  helper contours look rounded.
+  See
   [`roads.md`](roads.md).
 - Removed the zoning paint-surface runtime: zoning now lives under `simulation::zoning`, stores
   Rust-owned parcels only, and no longer exposes dense zoning patch/texture APIs. See
@@ -254,6 +260,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   subdivision now requires every final curb /
   shoulder and sidewalk owned region to carry explicit profile seam-rail evidence, and
   carrier-only leftovers are reported as deterministic boolean-ownership residual diagnostics.
+  Road geometry debug dumps now include final span / node top-region coordinates, post-boolean
+  node owned-region contours and side-join trim provenance when capture is enabled, plus an
+  opt-in road-surface probe for identifying the exact final triangle owner under a hovered XZ
+  point.
   Span output now also routes through resolved top-region records and generic owner-pair
   raised-step constraints before exporting the existing render, query, terrain-clip, earthwork, and
   chunk-coverage fields, so span rendering is no longer the authority layer for material ownership.

@@ -131,7 +131,7 @@ fn carrier_provenance_closure_reports_missing_source_rail_details() {
     let point = ownership_key_from_road_point(RoadVec2::new(-1.785, -5.4396));
     let region = region_for_source(owner, source, vec![[-1.785, -5.4396]]);
     let rails =
-        rails_with_source_height_keys(source, [(-10, 0), (-10, 1_000), (10, 0), (10, 1_000)]);
+        rails_with_source_height_keys(source, [(-10, 0), (-10, 1_000), (10, 0), (1_000, 10)]);
     let rail_points = empty_rail_points();
 
     let error = NodeCarrierProvenanceClosure::from_owned_regions(&[region], &rails, &rail_points)
@@ -163,12 +163,14 @@ fn carrier_provenance_closure_reports_ambiguous_independent_source_segments() {
         source,
         vec![
             overlay_point_from_key(point),
-            overlay_point_from_key((1_000_000, 1_000_000)),
-            overlay_point_from_key((2_000_000, 1_000_000)),
+            overlay_point_from_key((-10, 0)),
+            overlay_point_from_key((-10, 1_000)),
         ],
     );
-    let rails =
-        rails_with_source_height_keys(source, [(-10, 0), (-10, 1_000), (10, 0), (10, 1_000)]);
+    let rails = rails_with_source_height_keys(
+        source,
+        [(-10, 0), (-10, 1_000), (-1_000, -10), (1_000, -10)],
+    );
     let rail_points = rail_points_with_source_segments(
         owner,
         vec![
@@ -180,7 +182,7 @@ fn carrier_provenance_closure_reports_ambiguous_independent_source_segments() {
             NodeRailSourceSegmentAuthority::new(
                 owner,
                 source,
-                OwnedRegionEdgeKey::new((10, 0), (10, 1_000)),
+                OwnedRegionEdgeKey::new((-1_000, -10), (1_000, -10)),
             ),
         ],
     );
@@ -351,6 +353,110 @@ fn carrier_provenance_closure_records_connected_endpoint_dust_cluster() {
 }
 
 #[test]
+fn carrier_provenance_closure_records_nearest_parallel_projection_noise() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let source = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    let boolean_vertex = (10, 2);
+    let alternate_projection = (8, 0);
+    let expected_projection = (10, 0);
+    let region = region_for_source(
+        owner,
+        source,
+        vec![
+            overlay_point_from_key(boolean_vertex),
+            overlay_point_from_key(alternate_projection),
+            overlay_point_from_key(expected_projection),
+        ],
+    );
+    let rails = rails_with_source_height_keys(
+        source,
+        [(-1_000, 0), alternate_projection, (-900, 0), (11, 0)],
+    );
+    let rail_points = rail_points_with_source_segments(
+        owner,
+        vec![
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new((-1_000, 0), alternate_projection),
+            ),
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new((-900, 0), (11, 0)),
+            ),
+        ],
+    );
+
+    let closure = NodeCarrierProvenanceClosure::from_owned_regions(&[region], &rails, &rail_points)
+        .expect("nearest parallel source-carrier dust should resolve deterministically");
+
+    assert!(closure.records.iter().any(|record| {
+        record.point.raw_tuple() == boolean_vertex
+            && matches!(
+                record.origin,
+                NodeCarrierProvenanceOrigin::SourceSegment {
+                    canonical_point,
+                    distance_key_units_sq: 4,
+                    ..
+                } if canonical_point.raw_tuple() == expected_projection
+            )
+    }));
+}
+
+#[test]
+fn carrier_provenance_closure_tie_breaks_equal_parallel_projection_noise() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let source = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    let boolean_vertex = (10, 2);
+    let expected_projection = (8, 0);
+    let alternate_projection = (12, 0);
+    let region = region_for_source(
+        owner,
+        source,
+        vec![
+            overlay_point_from_key(boolean_vertex),
+            overlay_point_from_key(expected_projection),
+            overlay_point_from_key(alternate_projection),
+        ],
+    );
+    let rails = rails_with_source_height_keys(
+        source,
+        [(0, 0), expected_projection, alternate_projection, (20, 0)],
+    );
+    let rail_points = rail_points_with_source_segments(
+        owner,
+        vec![
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new((0, 0), expected_projection),
+            ),
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(alternate_projection, (20, 0)),
+            ),
+        ],
+    );
+
+    let closure = NodeCarrierProvenanceClosure::from_owned_regions(&[region], &rails, &rail_points)
+        .expect("equal-distance parallel source-carrier dust should resolve by stable key");
+
+    assert!(closure.records.iter().any(|record| {
+        record.point.raw_tuple() == boolean_vertex
+            && matches!(
+                record.origin,
+                NodeCarrierProvenanceOrigin::SourceSegment {
+                    canonical_point,
+                    distance_key_units_sq: 8,
+                    ..
+                } if canonical_point.raw_tuple() == expected_projection
+            )
+    }));
+}
+
+#[test]
 fn carrier_provenance_closure_records_exact_source_intersection_with_connected_secondary_cluster() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 17);
     let source = (RoadSurfaceBandKind::Sidewalk, 2, 5);
@@ -445,6 +551,7 @@ fn rails_with_source_height_keys(
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),
+        corner_trims: Vec::new(),
         constraints: Vec::new(),
         height_carrier_paths_by_source: BTreeMap::new(),
         height_carrier_points_by_source,
@@ -508,6 +615,7 @@ fn rails_with_source_surface(source: (RoadSurfaceBandKind, usize, usize)) -> Nod
         node_id: 42,
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),
+        corner_trims: Vec::new(),
         constraints: Vec::new(),
         height_carrier_paths_by_source,
         height_carrier_points_by_source,

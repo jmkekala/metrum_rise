@@ -3,6 +3,7 @@
 use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
 };
+use super::backend::road_vec2_to_overlay_point;
 use super::rails::{
     NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailConstraint,
     NodeRailConstraintKind, NodeRailContourSet,
@@ -26,8 +27,9 @@ pub(crate) use rail_authority::NodeSourceCarrierRegistry;
 use domains::{
     ResidualKind, asphalt_authority_domains, asphalt_owner_domains, overlay_contour_from_domain,
     overlay_contours_for_domains, overlay_difference, overlay_intersect, overlay_union,
-    owned_regions_from_domains, reject_residual, sort_boolean_owned_regions,
-    split_non_road_regions, validate_non_road_regions_have_explicit_profile_seam_rails,
+    overlay_union_shape_sets, owned_regions_from_domains, reject_residual,
+    sort_boolean_owned_regions, split_non_road_regions,
+    validate_non_road_regions_have_explicit_profile_seam_rails,
 };
 
 use rings::{canonicalize_owned_region_rings, clean_canonical_owned_region_shapes};
@@ -311,13 +313,59 @@ impl NodeBooleanOwnership {
         }
         let footprint_ms = elapsed_profile_ms(footprint_start);
 
+        let constraint_overlap_mode = ConstraintOverlapMode::for_piece_kind(rails.piece_kind);
         let material_domain_start = road_debug.then(Instant::now);
         let asphalt_authority_domains = asphalt_authority_domains(rails);
         let asphalt_contours = asphalt_authority_domains
             .iter()
             .map(|domain| overlay_contour_from_domain(domain))
             .collect::<Vec<_>>();
-        let asphalt_raw_shapes = overlay_union(&asphalt_contours, "asphalt_union")?;
+        let asphalt_untrimmed_shapes = overlay_union(&asphalt_contours, "asphalt_union")?;
+        let mut asphalt_raw_shapes = asphalt_raw_shapes_from_authority_domains(
+            rails,
+            &asphalt_authority_domains,
+            &asphalt_untrimmed_shapes,
+        )?;
+        let footprint_corner_trim_contours =
+            if rails.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
+                overlay_contours_for_corner_trims(rails)
+            } else {
+                Vec::new()
+            };
+        if !footprint_corner_trim_contours.is_empty() {
+            let footprint_corner_trim_shapes = overlay_union(
+                &footprint_corner_trim_contours,
+                "footprint_corner_trim_union",
+            )?;
+            let footprint_corner_trim_shapes = overlay_difference(
+                &footprint_corner_trim_shapes,
+                &asphalt_untrimmed_shapes,
+                "footprint_corner_trim_clip_asphalt",
+            )?;
+            footprint_shapes = overlay_difference(
+                &footprint_shapes,
+                &footprint_corner_trim_shapes,
+                "footprint_corner_trim_difference",
+            )?;
+            RoadSurfaceSystem::sort_overlay_shapes(&mut footprint_shapes);
+            if footprint_shapes.is_empty() {
+                return Err(NodeBooleanOwnershipError::EmptyFootprint {
+                    node_id: rails.node_id,
+                });
+            }
+        }
+        let asphalt_blocker_contours = asphalt_blocker_contours_for_material_priority(rails);
+        if !asphalt_blocker_contours.is_empty() {
+            let asphalt_blocker_shapes = overlay_union(
+                &asphalt_blocker_contours,
+                "asphalt_material_priority_blocker_union",
+            )?;
+            asphalt_raw_shapes = overlay_difference(
+                &asphalt_raw_shapes,
+                &asphalt_blocker_shapes,
+                "asphalt_material_priority_blocker_difference",
+            )?;
+        }
         let mut asphalt_shapes = overlay_intersect(
             &asphalt_raw_shapes,
             &footprint_shapes,
@@ -329,10 +377,8 @@ impl NodeBooleanOwnership {
             overlay_difference(&footprint_shapes, &asphalt_shapes, "non_road_difference")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut non_road_shapes);
         let material_domain_ms = elapsed_profile_ms(material_domain_start);
-
-        let constraint_overlap_mode = ConstraintOverlapMode::for_piece_kind(rails.piece_kind);
-        let mut owned_regions = Vec::new();
         let region_claim_start = road_debug.then(Instant::now);
+        let mut owned_regions = Vec::new();
         let asphalt_owner_domains = asphalt_owner_domains(rails);
         let asphalt_result = owned_regions_from_domains(
             &asphalt_shapes,
@@ -351,6 +397,7 @@ impl NodeBooleanOwnership {
             "non_road_residual",
         )?;
         reject_residual(non_road_residual, ResidualKind::NonRoad)?;
+        discard_unanchored_bend_asphalt_mouth_band_regions(rails, &mut owned_regions)?;
         let region_claim_ms = elapsed_profile_ms(region_claim_start);
 
         let canonical_cleanup_start = road_debug.then(Instant::now);
@@ -466,6 +513,12 @@ impl NodeBooleanOwnership {
             &rail_canonical_points,
         )?;
         let carrier_provenance_ms = elapsed_profile_ms(carrier_provenance_start);
+        asphalt_shapes = owned_region_shapes_matching(&owned_regions, |region| {
+            region.kind == RoadSurfaceBandKind::Carriageway
+        })?;
+        non_road_shapes = owned_region_shapes_matching(&owned_regions, |region| {
+            region.kind != RoadSurfaceBandKind::Carriageway
+        })?;
         if road_debug {
             let total_ms = elapsed_profile_ms(total_start);
             if total_ms >= 20.0 {
@@ -647,7 +700,7 @@ fn source_authorized_curb_owner_for_sidewalk_asphalt_sliver(
         .collect::<Vec<_>>();
     candidates.sort_unstable();
     candidates.dedup();
-    (candidates.len() == 1).then_some(candidates[0])
+    (candidates.len() == 1).then(|| candidates[0])
 }
 
 fn raised_step_curb_owner_for_sidewalk_constraint(
@@ -740,6 +793,223 @@ fn owned_region_point_keys(owned_regions: &[NodeBooleanOwnedRegion]) -> Vec<Node
     points.sort_unstable();
     points.dedup();
     points
+}
+
+fn overlay_contours_for_corner_trims(rails: &NodeRailContourSet) -> Vec<NodeOverlayContour> {
+    rails
+        .corner_trims
+        .iter()
+        .map(|trim| {
+            trim.points_xz
+                .iter()
+                .copied()
+                .map(road_vec2_to_overlay_point)
+                .collect()
+        })
+        .collect()
+}
+
+fn asphalt_raw_shapes_from_authority_domains(
+    rails: &NodeRailContourSet,
+    asphalt_authority_domains: &[&super::rails::NodeGeneratedContour],
+    asphalt_untrimmed_shapes: &NodeOverlayShapes,
+) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    if rails.piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+        return Ok(asphalt_untrimmed_shapes.clone());
+    }
+
+    let mut bend_side_join_contours = Vec::new();
+    let mut other_contours = Vec::new();
+    for domain in asphalt_authority_domains {
+        let contour = overlay_contour_from_domain(domain);
+        if domain.purpose == NodeGeneratedContourPurpose::BendSideJoin {
+            bend_side_join_contours.push(contour);
+        } else {
+            other_contours.push(contour);
+        }
+    }
+
+    if bend_side_join_contours.is_empty() {
+        return Ok(asphalt_untrimmed_shapes.clone());
+    }
+
+    let mut bend_side_join_shapes =
+        overlay_union(&bend_side_join_contours, "bend_asphalt_side_join_union")?;
+    let sidewalk_side_join_contours = bend_sidewalk_side_join_contours_for_asphalt_trim(rails);
+    if !sidewalk_side_join_contours.is_empty() {
+        let sidewalk_side_join_shapes = overlay_union(
+            &sidewalk_side_join_contours,
+            "bend_asphalt_side_join_sidewalk_trim_union",
+        )?;
+        bend_side_join_shapes = overlay_difference(
+            &bend_side_join_shapes,
+            &sidewalk_side_join_shapes,
+            "bend_asphalt_side_join_sidewalk_trim_difference",
+        )?;
+    }
+
+    let other_shapes = overlay_union(&other_contours, "bend_asphalt_non_side_join_union")?;
+    overlay_union_shape_sets(
+        &other_shapes,
+        &bend_side_join_shapes,
+        "bend_asphalt_side_join_reunion",
+    )
+}
+
+fn bend_sidewalk_side_join_contours_for_asphalt_trim(
+    rails: &NodeRailContourSet,
+) -> Vec<NodeOverlayContour> {
+    rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.contributes_to_non_road_band()
+                && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+                && matches!(
+                    contour.kind,
+                    super::rails::NodeGeneratedContourKind::Band {
+                        kind: RoadSurfaceBandKind::Sidewalk,
+                    }
+                )
+        })
+        .map(overlay_contour_from_domain)
+        .collect()
+}
+
+fn asphalt_blocker_contours_for_material_priority(
+    rails: &NodeRailContourSet,
+) -> Vec<NodeOverlayContour> {
+    match rails.piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => non_road_side_join_contours_for_asphalt_trim(rails),
+        RoadSurfaceVisualNodePieceKind::JunctionN => {
+            non_road_side_join_contours_for_asphalt_trim(rails)
+        }
+        RoadSurfaceVisualNodePieceKind::Terminal => Vec::new(),
+    }
+}
+
+fn discard_unanchored_bend_asphalt_mouth_band_regions(
+    rails: &NodeRailContourSet,
+    owned_regions: &mut Vec<NodeBooleanOwnedRegion>,
+) -> Result<bool, NodeBooleanOwnershipError> {
+    if rails.piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+        return Ok(false);
+    }
+
+    let anchor_shapes = bend_asphalt_side_join_anchor_shapes(rails)?;
+    if anchor_shapes.is_empty() {
+        return Ok(false);
+    }
+    let asphalt_component_shapes = owned_region_shapes_matching(owned_regions, |region| {
+        region.kind == RoadSurfaceBandKind::Carriageway
+    })?;
+    let mut unanchored_component_shapes = Vec::new();
+    for shape in asphalt_component_shapes {
+        if !overlay_shape_intersects_anchor(&shape, &anchor_shapes)? {
+            unanchored_component_shapes.push(shape);
+        }
+    }
+    if unanchored_component_shapes.is_empty() {
+        return Ok(false);
+    }
+    RoadSurfaceSystem::sort_overlay_shapes(&mut unanchored_component_shapes);
+
+    let before_count = owned_regions.len();
+    let mut retained_regions = Vec::with_capacity(owned_regions.len());
+    for region in owned_regions.drain(..) {
+        if region.kind != RoadSurfaceBandKind::Carriageway
+            || region.claim_priority != NodeGeneratedContourClaimPriority::MouthBand
+            || !overlay_shape_intersects_anchor(&region.shape, &unanchored_component_shapes)?
+        {
+            retained_regions.push(region);
+        }
+    }
+    let removed = retained_regions.len() != before_count;
+    *owned_regions = retained_regions;
+    Ok(removed)
+}
+
+fn bend_asphalt_side_join_anchor_shapes(
+    rails: &NodeRailContourSet,
+) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    let anchor_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.contributes_to_asphalt()
+                && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+        })
+        .map(overlay_contour_from_domain)
+        .collect::<Vec<_>>();
+    if anchor_contours.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut anchor_shapes = overlay_union(&anchor_contours, "bend_asphalt_anchor_union")?;
+    let sidewalk_side_join_contours = bend_sidewalk_side_join_contours_for_asphalt_trim(rails);
+    if !sidewalk_side_join_contours.is_empty() {
+        let sidewalk_side_join_shapes = overlay_union(
+            &sidewalk_side_join_contours,
+            "bend_asphalt_anchor_sidewalk_trim_union",
+        )?;
+        anchor_shapes = overlay_difference(
+            &anchor_shapes,
+            &sidewalk_side_join_shapes,
+            "bend_asphalt_anchor_sidewalk_trim_difference",
+        )?;
+    }
+    RoadSurfaceSystem::sort_overlay_shapes(&mut anchor_shapes);
+    Ok(anchor_shapes)
+}
+
+fn overlay_shape_intersects_anchor(
+    shape: &NodeOverlayShape,
+    anchor_shapes: &NodeOverlayShapes,
+) -> Result<bool, NodeBooleanOwnershipError> {
+    let shape_set = vec![shape.clone()];
+    let overlap = overlay_intersect(
+        &shape_set,
+        anchor_shapes,
+        "bend_asphalt_anchor_intersection",
+    )?;
+    let overlap_area_m2 = overlap
+        .iter()
+        .map(RoadSurfaceSystem::overlay_shape_area_m2)
+        .sum::<f32>();
+    Ok(overlap_area_m2 > RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&overlap))
+}
+
+fn owned_region_shapes_matching(
+    owned_regions: &[NodeBooleanOwnedRegion],
+    predicate: impl Fn(&NodeBooleanOwnedRegion) -> bool,
+) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    let contours = owned_regions
+        .iter()
+        .filter(|region| predicate(region))
+        .flat_map(|region| region.shape.iter().cloned())
+        .collect::<Vec<_>>();
+    if contours.is_empty() {
+        return Ok(Vec::new());
+    }
+    overlay_union(&contours, "owned_region_material_shape_union")
+}
+
+fn non_road_side_join_contours_for_asphalt_trim(
+    rails: &NodeRailContourSet,
+) -> Vec<NodeOverlayContour> {
+    rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.contributes_to_non_road_band()
+                && matches!(
+                    contour.purpose,
+                    NodeGeneratedContourPurpose::BendSideJoin
+                        | NodeGeneratedContourPurpose::JunctionSideJoin
+                )
+        })
+        .map(overlay_contour_from_domain)
+        .collect()
 }
 
 fn final_footprint_shapes_from_owned_regions(
@@ -1182,8 +1452,33 @@ fn canonical_footprint_point(
     if candidates.len() == 1 {
         Some(candidates[0])
     } else {
-        None
+        nearest_unique_canonical_footprint_point(point, candidates)
     }
+}
+
+fn nearest_unique_canonical_footprint_point(
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeOwnershipPointKey],
+) -> Option<NodeOwnershipPointKey> {
+    let mut best = None;
+    for candidate in candidates.iter().copied() {
+        let distance_sq = ownership_key_distance_sq(point, candidate);
+        match best {
+            None => best = Some((distance_sq, candidate)),
+            Some((best_distance_sq, _)) if distance_sq < best_distance_sq => {
+                best = Some((distance_sq, candidate));
+            }
+            Some((best_distance_sq, _)) if distance_sq == best_distance_sq => return None,
+            Some(_) => {}
+        }
+    }
+    best.map(|(_, candidate)| candidate)
+}
+
+fn ownership_key_distance_sq(left: NodeOwnershipPointKey, right: NodeOwnershipPointKey) -> i128 {
+    let dx = i128::from(left.0 - right.0);
+    let dz = i128::from(left.1 - right.1);
+    dx * dx + dz * dz
 }
 
 impl NodeOwnedRegionArrangement {

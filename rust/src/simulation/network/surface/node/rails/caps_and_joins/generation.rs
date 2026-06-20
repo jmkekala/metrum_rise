@@ -67,6 +67,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_
     mouth_owners: &MouthOwners,
     owners: &[NodeBandOwner],
     contours: &mut Vec<NodeGeneratedContour>,
+    corner_trims: &mut Vec<NodeGeneratedCornerTrim>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
     if piece_kind == RoadSurfaceVisualNodePieceKind::Terminal {
@@ -106,6 +107,9 @@ pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_
             constraints,
         )?;
     }
+    for side_join_band in side_join_bands {
+        push_side_join_outer_footprint_trim(mouth, side_join_band, corner_trims)?;
+    }
     for (side_join_band, owner) in side_join_bands.iter().zip(owners) {
         push_side_join_band_boundary_constraints(
             mouth,
@@ -116,5 +120,31 @@ pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_
         )?;
     }
 
+    Ok(())
+}
+
+fn push_side_join_outer_footprint_trim(
+    mouth: &NodeInputMouth,
+    side_join_band: &NodeInputSideJoinBand,
+    corner_trims: &mut Vec<NodeGeneratedCornerTrim>,
+) -> Result<(), NodeRailGenerationError> {
+    if !side_join_band.trims_outer_footprint || side_join_band.outer_footprint_trim_world.len() < 3
+    {
+        return Ok(());
+    }
+    let points = side_join_band
+        .outer_footprint_trim_world
+        .iter()
+        .copied()
+        .map(xz)
+        .collect::<Vec<_>>();
+    let trim = cleaned_closed_contour(
+        NodeGeneratedContourKind::FullRoadbed,
+        mouth.order_index,
+        None,
+        points,
+    )?;
+    let points_xz = polyline_to_road_points(&trim);
+    corner_trims.push(NodeGeneratedCornerTrim { points_xz });
     Ok(())
 }

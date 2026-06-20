@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::simulation::network::surface::keys::{SurfaceHeightMmKey, SurfaceXzKey};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::simulation::network::surface::tests) fn canonical_junction_pipeline_report(
     surface: &RoadSurfaceSystem,
@@ -128,8 +129,13 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
         match RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement) {
             Ok(triangulation) => triangulation,
             Err(error) => {
-                return NodeValidationReport::from_triangulation_error(node_id, piece_kind, &error)
-                    .debug_dump();
+                let report =
+                    NodeValidationReport::from_triangulation_error(node_id, piece_kind, &error)
+                        .debug_dump();
+                if let Some(extra) = triangulation_invalid_constraint_debug(&arrangement, &error) {
+                    return format!("{report} {extra}");
+                }
+                return report;
             }
         };
     match RoadSurfaceSystem::validate_node_triangulation_solution(&triangulation) {
@@ -154,7 +160,9 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
             {
                 return format!("{} {extra}", error.report.debug_dump());
             }
-            if let Some(extra) = triangulation_open_boundary_debug(&triangulation, &error.report) {
+            if let Some(extra) =
+                triangulation_open_boundary_debug(&triangulation, &error.report, &arrangement)
+            {
                 return format!("{} {extra}", error.report.debug_dump());
             }
             return error.report.debug_dump();
@@ -174,6 +182,99 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
         );
     }
     format!("canonical {piece_kind:?} pipeline reached boundary export")
+}
+
+fn triangulation_invalid_constraint_debug(
+    arrangement: &NodeArrangement,
+    error: &super::node::triangulation::NodeTriangulationError,
+) -> Option<String> {
+    let super::node::triangulation::NodeTriangulationError::InvalidConstraint {
+        region_index,
+        constraint_count,
+        first_constraint_index,
+        first_constraint,
+        ..
+    } = error
+    else {
+        return None;
+    };
+    let region = arrangement.regions().get(*region_index)?;
+    let mut local_by_vertex_key = BTreeMap::new();
+    let mut local_vertices = Vec::new();
+    let mut constraints = BTreeSet::new();
+    let mut push_loop = |contour: &[super::node::arrangement::NodeArrangementVertexId]| {
+        let indices = contour
+            .iter()
+            .filter_map(|vertex_id| {
+                let vertex = arrangement.vertices().get(vertex_id.index())?;
+                let key = (
+                    vertex.key().x_key(),
+                    vertex.key().z_key(),
+                    vertex.height_mm(),
+                );
+                let next_index = local_vertices.len();
+                let local_index = *local_by_vertex_key.entry(key).or_insert_with(|| {
+                    local_vertices.push(vertex_id.index());
+                    next_index
+                });
+                Some(local_index)
+            })
+            .collect::<Vec<_>>();
+        for index in 0..indices.len() {
+            let start = indices[index];
+            let end = indices[(index + 1) % indices.len()];
+            if start != end {
+                constraints.insert([start.min(end), start.max(end)]);
+            }
+        }
+    };
+    push_loop(region.outer_loop());
+    for hole in region.holes() {
+        push_loop(hole);
+    }
+    let constraints = constraints.into_iter().collect::<Vec<_>>();
+    let rejected_constraint = first_constraint_index.and_then(|index| constraints.get(index));
+    let rejected_vertices = rejected_constraint
+        .into_iter()
+        .flatten()
+        .filter_map(|local_index| {
+            let vertex = arrangement
+                .vertices()
+                .get(*local_vertices.get(*local_index)?)?;
+            Some((
+                *local_index,
+                vertex.key().x_key(),
+                vertex.key().z_key(),
+                vertex.key().x_mm(),
+                vertex.key().z_mm(),
+                vertex.height_mm(),
+                vertex.owners().to_vec(),
+                vertex.grade_authority(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let outer_loop = region
+        .outer_loop()
+        .iter()
+        .filter_map(|vertex_id| {
+            let vertex = arrangement.vertices().get(vertex_id.index())?;
+            Some((
+                vertex_id.index(),
+                vertex.key().x_key(),
+                vertex.key().z_key(),
+                vertex.key().x_mm(),
+                vertex.key().z_mm(),
+                vertex.height_mm(),
+                vertex.owners().to_vec(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    Some(format!(
+        "triangulation_invalid_constraint_debug region={region_index} owner={:?} height_field={:?} area_m2={} constraint_count={constraint_count} first_constraint_index={first_constraint_index:?} first_constraint={first_constraint:?} rejected_vertices={rejected_vertices:?} outer_loop={outer_loop:?}",
+        region.owner(),
+        region.height_field_id(),
+        region.area_m2(),
+    ))
 }
 
 fn owned_region_height_support_debug(

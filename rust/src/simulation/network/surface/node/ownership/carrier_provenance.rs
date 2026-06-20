@@ -342,6 +342,9 @@ fn source_segment_provenance_for_point(
     {
         return Ok(Some(source_segment_origin(candidate)));
     }
+    if let Some(candidate) = nearest_parallel_projection_noise_candidate(point, &candidates) {
+        return Ok(Some(source_segment_origin(candidate)));
+    }
     if let Some(origin) = generated_source_carrier_intersection_origin(
         owner,
         source,
@@ -935,6 +938,54 @@ fn connected_endpoint_cluster_candidate(
         .iter()
         .copied()
         .min_by_key(|candidate| (candidate.distance_key_units_sq, candidate.canonical_point))
+}
+
+fn nearest_parallel_projection_noise_candidate(
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+) -> Option<NodeSourceSegmentAuthorizationCandidate> {
+    if candidates.len() < 2
+        || !candidates
+            .iter()
+            .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+    {
+        return None;
+    }
+
+    for left_index in 0..candidates.len() {
+        for right in candidates.iter().skip(left_index + 1) {
+            if !source_segment_directions_are_nearly_parallel(&candidates[left_index], right) {
+                return None;
+            }
+        }
+    }
+
+    candidates.iter().copied().min_by_key(|candidate| {
+        (
+            candidate.distance_key_units_sq,
+            candidate.canonical_point,
+            candidate.source_segment_id,
+        )
+    })
+}
+
+fn source_segment_directions_are_nearly_parallel(
+    left: &NodeSourceSegmentAuthorizationCandidate,
+    right: &NodeSourceSegmentAuthorizationCandidate,
+) -> bool {
+    let left_dx = i128::from(left.segment_end.0 - left.segment_start.0);
+    let left_dz = i128::from(left.segment_end.1 - left.segment_start.1);
+    let right_dx = i128::from(right.segment_end.0 - right.segment_start.0);
+    let right_dz = i128::from(right.segment_end.1 - right.segment_start.1);
+    let left_len_sq = left_dx * left_dx + left_dz * left_dz;
+    let right_len_sq = right_dx * right_dx + right_dz * right_dz;
+    if left_len_sq == 0 || right_len_sq == 0 {
+        return false;
+    }
+    let cross = left_dx * right_dz - left_dz * right_dx;
+    let cross_ratio =
+        (cross.abs() as f64) / ((left_len_sq as f64).sqrt() * (right_len_sq as f64).sqrt());
+    cross_ratio <= 0.001
 }
 
 fn projection_cluster_has_connected_source_endpoint_path(

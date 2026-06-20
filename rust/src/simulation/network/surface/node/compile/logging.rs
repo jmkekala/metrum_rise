@@ -1,6 +1,8 @@
 //! Validation logging for canonical node compilation.
 
 use super::*;
+use crate::simulation::network::surface::keys::SurfaceXzKey;
+use crate::simulation::network::surface::node::validation::NodeGeometryDiagnosticKind;
 
 impl RoadSurfaceSystem {
     pub(super) fn log_node_input_extraction_error(
@@ -36,7 +38,15 @@ impl RoadSurfaceSystem {
         if !self.node_validation_logging_enabled {
             return;
         }
-        let report = match error {
+        let report = Self::node_boundary_export_report(arrangement, error);
+        self.log_node_validation_report(&report);
+    }
+
+    pub(in crate::simulation::network::surface) fn node_boundary_export_report(
+        arrangement: &NodeArrangement,
+        error: &NodeBoundaryExportError,
+    ) -> NodeValidationReport {
+        match error {
             NodeBoundaryExportError::MissingFootprintBoundaryHeight { x_key, z_key } => {
                 let _ = (*x_key, *z_key);
                 NodeValidationReport::from_boundary_export_error(
@@ -56,25 +66,24 @@ impl RoadSurfaceSystem {
                 incoming_owner_kind,
                 incoming_owner_index,
                 incoming_source,
-            } => {
-                let _ = (
-                    *x_key,
-                    *z_key,
-                    *existing_y_mm,
-                    *incoming_y_mm,
-                    *existing_owner_kind,
-                    *existing_owner_index,
-                    *existing_source,
-                    *incoming_owner_kind,
-                    *incoming_owner_index,
-                    *incoming_source,
-                );
-                NodeValidationReport::from_boundary_export_error(
-                    arrangement.node_id(),
-                    arrangement.piece_kind(),
-                    "conflicting_footprint_boundary_height",
-                )
-            }
+            } => NodeValidationReport::from_boundary_export_diagnostic(
+                arrangement.node_id(),
+                arrangement.piece_kind(),
+                NodeGeometryDiagnosticKind::FootprintBoundaryHeightConflict {
+                    x_key: *x_key,
+                    z_key: *z_key,
+                    x_mm: SurfaceXzKey::coordinate_key_to_mm(*x_key),
+                    z_mm: SurfaceXzKey::coordinate_key_to_mm(*z_key),
+                    existing_y_mm: *existing_y_mm,
+                    incoming_y_mm: *incoming_y_mm,
+                    existing_owner_kind: *existing_owner_kind,
+                    existing_owner_index: *existing_owner_index,
+                    existing_source: *existing_source,
+                    incoming_owner_kind: *incoming_owner_kind,
+                    incoming_owner_index: *incoming_owner_index,
+                    incoming_source: *incoming_source,
+                },
+            ),
             NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
                 x_key,
                 z_key,
@@ -194,7 +203,6 @@ impl RoadSurfaceSystem {
                     "missing_node_top_surface_grade_authority",
                 )
             }
-        };
-        self.log_node_validation_report(&report);
+        }
     }
 }

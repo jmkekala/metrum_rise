@@ -53,7 +53,7 @@ pub(super) use domain_sources::{
     asphalt_authority_domains, asphalt_owner_domains, overlay_contours_for_domains,
 };
 use domain_sources::{band_kind, non_road_band_order, non_road_domains_for_band_kind};
-use overlay_ops::overlay_union_shape_sets;
+pub(super) use overlay_ops::overlay_union_shape_sets;
 pub(super) use overlay_ops::{
     overlay_contour_from_domain, overlay_difference, overlay_intersect, overlay_union,
 };

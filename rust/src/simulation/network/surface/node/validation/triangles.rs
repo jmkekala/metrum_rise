@@ -10,6 +10,7 @@ use super::super::triangulation::{
 use super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, RoadSurfaceBandKind};
 use super::boundaries::{
     diagnostic_min_distance_to_boundary_mm,
+    edge_endpoints_lie_on_boundary_constraints_by_topology_dust,
     edge_lies_on_explicit_boundary_constraint_or_backend_epsilon,
 };
 use super::report::{
@@ -197,13 +198,23 @@ pub(super) fn validate_triangles(
         }
         let edge_key = edge_key_for_indices(region, edge);
         exposed_edges.push(edge_key);
-        if boundary_edges.contains(&edge)
+        let edge_is_explicit_boundary = boundary_edges.contains(&edge)
             || edge_lies_on_explicit_boundary_constraint_or_backend_epsilon(
                 region,
                 edge,
                 boundary_segments,
-            )
-        {
+            );
+        if edge_is_explicit_boundary {
+            continue;
+        }
+        if edge_endpoints_lie_on_boundary_constraints_by_topology_dust(
+            region,
+            edge,
+            boundary_segments,
+        ) {
+            continue;
+        }
+        if edge_touches_carriageway_interior_guide(region, edge) {
             continue;
         }
         let start_distance_mm = diagnostic_min_distance_to_boundary_mm(
@@ -264,6 +275,21 @@ pub(super) fn validate_triangles(
         );
     }
     exposed_edges
+}
+
+fn edge_touches_carriageway_interior_guide(
+    region: &NodeTriangulatedRegion,
+    edge: [usize; 2],
+) -> bool {
+    if region.kind != RoadSurfaceBandKind::Carriageway {
+        return false;
+    }
+    edge.into_iter().any(|index| {
+        region.vertices.get(index).is_some_and(|vertex| {
+            vertex.grade_authority.decision
+                == super::super::height::NodeGradeCarrierDecision::SameOwnerCanonicalVertex
+        })
+    })
 }
 
 #[derive(Clone, Copy)]

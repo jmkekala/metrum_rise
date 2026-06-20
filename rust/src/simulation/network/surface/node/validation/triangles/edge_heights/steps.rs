@@ -130,8 +130,8 @@ pub(super) fn edge_lies_on_explicit_vertical_step(
 ) -> bool {
     let start = NodeValidationPointKey::from_arrangement_key(segment.start());
     let end = NodeValidationPointKey::from_arrangement_key(segment.end());
-    point_lies_on_validation_segment(edge.start, start, end)
-        && point_lies_on_validation_segment(edge.end, start, end)
+    point_lies_on_validation_segment_or_dust(edge.start, start, end)
+        && point_lies_on_validation_segment_or_dust(edge.end, start, end)
 }
 
 pub(super) fn explicit_vertical_step_owners_match_regions(
@@ -151,4 +151,38 @@ fn point_lies_on_validation_segment(
     point
         .surface_key()
         .lies_exactly_on_segment(start.surface_key(), end.surface_key())
+}
+
+fn point_lies_on_validation_segment_or_dust(
+    point: NodeValidationPointKey,
+    start: NodeValidationPointKey,
+    end: NodeValidationPointKey,
+) -> bool {
+    if point_lies_on_validation_segment(point, start, end) {
+        return true;
+    }
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let denominator = dx * dx + dz * dz;
+    if denominator == 0 {
+        return false;
+    }
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
+    let numerator = px * dx + pz * dz;
+    let length_key_units = (denominator as f64).sqrt();
+    let dust_key_units = validation_explicit_step_dust_key_units() as f64;
+    let endpoint_padding = dust_key_units * length_key_units;
+    let numerator_f64 = numerator as f64;
+    if numerator_f64 < -endpoint_padding || numerator_f64 > denominator as f64 + endpoint_padding {
+        return false;
+    }
+    let cross = dx * pz - dz * px;
+    cross.unsigned_abs() as f64 <= dust_key_units * length_key_units
+}
+
+fn validation_explicit_step_dust_key_units() -> i64 {
+    (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE)
+        .round()
+        .max(1.0) as i64
 }

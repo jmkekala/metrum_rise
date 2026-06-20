@@ -1,9 +1,15 @@
 //! Node visual-piece DTOs and exported provenance contracts.
 
 use super::{
-    RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    arrangement, height::NodeGradeVertexAuthority,
+    NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceEarthworkBoundarySegment,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualPolygon, arrangement,
+    height::NodeGradeVertexAuthority,
+    ownership::NodeBooleanOwnership,
+    rails::{
+        NodeGeneratedContourClaimPriority, NodeGeneratedContourKind, NodeGeneratedContourPurpose,
+        NodeRailContourSet,
+    },
 };
 use crate::simulation::network::{
     surface::band_semantics::ordered_raised_step_kinds, types::EdgeClass,
@@ -120,10 +126,116 @@ pub struct RoadSurfaceVisualNodePiece {
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
+    pub(crate) boolean_debug: Option<NodeBooleanDebugSnapshot>,
     pub(crate) earthwork_owner_sources: Vec<NodeEarthworkOwnerSource>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeBooleanDebugSnapshot {
+    pub(crate) footprint_shapes: NodeOverlayShapes,
+    pub(crate) asphalt_shapes: NodeOverlayShapes,
+    pub(crate) non_road_shapes: NodeOverlayShapes,
+    pub(crate) owned_regions: Vec<NodePostBooleanOwnedRegionDebug>,
+    pub(crate) side_join_contours: Vec<NodeSideJoinContourDebug>,
+    pub(crate) corner_trims: Vec<NodeCornerTrimDebug>,
+    pub(crate) corner_trims_apply_to_footprint: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodePostBooleanOwnedRegionDebug {
+    pub(crate) kind: RoadSurfaceBandKind,
+    pub(crate) owner: arrangement::NodeBandOwner,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: Option<usize>,
+    pub(crate) area_m2: f32,
+    pub(crate) shape: NodeOverlayShape,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeSideJoinContourDebug {
+    pub(crate) kind: NodeGeneratedContourKind,
+    pub(crate) purpose: NodeGeneratedContourPurpose,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: Option<usize>,
+    pub(crate) owner: Option<arrangement::NodeBandOwner>,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
+    pub(crate) points_xz: Vec<super::backend::RoadVec2>,
+    pub(crate) height_points_world: Option<Vec<super::backend::RoadVec3>>,
+    pub(crate) contributes_to_footprint: bool,
+    pub(crate) contributes_to_asphalt: bool,
+    pub(crate) contributes_to_non_road_band: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeCornerTrimDebug {
+    pub(crate) points_xz: Vec<super::backend::RoadVec2>,
+}
+
+impl NodeBooleanDebugSnapshot {
+    pub(crate) fn from_rails_and_ownership(
+        rails: &NodeRailContourSet,
+        ownership: &NodeBooleanOwnership,
+        corner_trims_apply_to_footprint: bool,
+    ) -> Self {
+        let owned_regions = ownership
+            .owned_regions
+            .iter()
+            .map(|region| NodePostBooleanOwnedRegionDebug {
+                kind: region.kind,
+                owner: region.owner,
+                claim_priority: region.claim_priority,
+                source_mouth_order_index: region.source_mouth_order_index,
+                source_band_index: region.source_band_index,
+                area_m2: region.area_m2,
+                shape: region.shape.clone(),
+            })
+            .collect();
+        let side_join_contours = rails
+            .contours
+            .iter()
+            .filter(|contour| {
+                matches!(
+                    contour.purpose,
+                    NodeGeneratedContourPurpose::BendSideJoin
+                        | NodeGeneratedContourPurpose::JunctionSideJoin
+                )
+            })
+            .map(|contour| NodeSideJoinContourDebug {
+                kind: contour.kind,
+                purpose: contour.purpose,
+                source_mouth_order_index: contour.source_mouth_order_index,
+                source_band_index: contour.source_band_index,
+                owner: contour.owner,
+                claim_priority: contour.claim_priority,
+                points_xz: contour.points_xz.clone(),
+                height_points_world: contour.height_points_world.clone(),
+                contributes_to_footprint: contour.contributes_to_footprint(),
+                contributes_to_asphalt: contour.contributes_to_asphalt(),
+                contributes_to_non_road_band: contour.contributes_to_non_road_band(),
+            })
+            .collect();
+        let corner_trims = rails
+            .corner_trims
+            .iter()
+            .map(|trim| NodeCornerTrimDebug {
+                points_xz: trim.points_xz.clone(),
+            })
+            .collect();
+
+        Self {
+            footprint_shapes: ownership.footprint_shapes.clone(),
+            asphalt_shapes: ownership.asphalt_shapes.clone(),
+            non_road_shapes: ownership.non_road_shapes.clone(),
+            owned_regions,
+            side_join_contours,
+            corner_trims,
+            corner_trims_apply_to_footprint,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -198,4 +310,5 @@ pub(crate) struct NodeSurfaceRegionResult {
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
+    pub(crate) boolean_debug: Option<NodeBooleanDebugSnapshot>,
 }

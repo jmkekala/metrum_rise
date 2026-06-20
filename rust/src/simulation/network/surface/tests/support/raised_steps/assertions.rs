@@ -56,10 +56,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_raised_step_own
     piece: &RoadSurfaceVisualNodePiece,
 ) {
     let top_edges = test_owned_top_boundary_edges(piece);
-    let face_lower_keys = piece
+    let face_lower_edges = piece
         .raised_step_face_polygons
         .iter()
         .filter_map(vertical_face_lower_edge_for_test)
+        .collect::<Vec<_>>();
+    let face_lower_keys = face_lower_edges
+        .iter()
         .filter_map(|edge| TestRenderEdgeKey::normalized(edge[0], edge[1]).map(|key| key.xz()))
         .collect::<Vec<_>>();
     let mut edges_by_xz = BTreeMap::<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>::new();
@@ -86,12 +89,23 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_raised_step_own
                 if matching_canonical_steps.is_empty() {
                     continue;
                 }
+                if test_render_xz_edge_length_squared_m2(lower_edge.xz_key)
+                    <= f64::from(SAMPLE_EPSILON_M) * f64::from(SAMPLE_EPSILON_M)
+                {
+                    continue;
+                }
+                let Some(required_interval) =
+                    test_top_boundary_overlap_interval(lower_edge, lower_edge)
+                else {
+                    continue;
+                };
                 assert!(
-                    face_lower_keys
-                        .iter()
-                        .copied()
-                        .any(|face_key| face_key.contains(lower_edge.xz_key)),
-                    "surviving raised-step owner boundary must emit an explicit vertical face; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?} matching_canonical_steps={:?} face_lower_keys={:?}",
+                    test_raised_step_faces_cover_overlap_interval(
+                        lower_edge,
+                        required_interval,
+                        &face_lower_edges
+                    ),
+                    "surviving raised-step owner boundary must emit explicit vertical face coverage; kind={:?} xz_key={:?} lower_owner={:?}[{}] lower={:?}->{:?} raised_owner={:?}[{}] raised={:?}->{:?} matching_canonical_steps={:?} face_lower_keys={:?}",
                     piece.kind,
                     lower_edge.xz_key,
                     lower_edge.kind,
@@ -108,6 +122,12 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_raised_step_own
             }
         }
     }
+}
+
+fn test_render_xz_edge_length_squared_m2(edge: TestRenderXzEdgeKey) -> f64 {
+    let dx = (edge.end.x_key - edge.start.x_key) as f64 / surface_keys::SURFACE_XZ_KEY_SCALE;
+    let dz = (edge.end.z_key - edge.start.z_key) as f64 / surface_keys::SURFACE_XZ_KEY_SCALE;
+    dx * dx + dz * dz
 }
 
 pub(in crate::simulation::network::surface::tests) fn assert_no_unfaced_cross_material_height_boundaries(

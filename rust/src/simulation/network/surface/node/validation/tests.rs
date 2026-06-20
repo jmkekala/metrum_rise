@@ -9,6 +9,7 @@ use super::*;
 use crate::simulation::network::surface::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
     NodeBandHeightFieldId, NodeBandOwner, NodeExplicitVerticalStepSegment,
+    NodeRegionSeamConstraint, NodeSeamSource,
 };
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
 use crate::simulation::network::surface::height::{
@@ -19,12 +20,15 @@ use crate::simulation::network::surface::node::height::{
     NodeGradeCarrierDecision, NodeGradeVertexAuthority,
 };
 use crate::simulation::network::surface::ownership::{
-    NodeBooleanOwnership, NodeBooleanOwnershipError, NodeOwnedRegionArrangementDiagnostic,
-    NodeOwnedRegionArrangementKey, NodeSourceCarrierSegmentId,
+    NodeBooleanOwnedRegion, NodeBooleanOwnership, NodeBooleanOwnershipError,
+    NodeCarrierProvenanceClosure, NodeCarrierProvenanceOrigin, NodeCarrierProvenanceRecord,
+    NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
+    NodeOwnedRegionArrangementKey, NodeSourceCarrierRegistry, NodeSourceCarrierSegmentId,
     NodeSourceSegmentAuthorizationCandidate,
 };
 use crate::simulation::network::surface::rails::{
-    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailContourSet,
+    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailContourSet,
 };
 use crate::simulation::network::surface::triangulation::{
     NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulatedVertex,

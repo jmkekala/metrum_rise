@@ -2,8 +2,10 @@
 
 use super::super::backend::RoadVec3;
 use super::super::indices::normalized_vertex_edge;
+use super::super::keys::SURFACE_XZ_KEY_SCALE;
 use super::super::triangulation::{
-    NodeTriangulatedRegion, NodeTriangulatedVertex, NodeTriangulationSolution,
+    NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS, NodeTriangulatedRegion,
+    NodeTriangulatedVertex, NodeTriangulationSolution,
 };
 use super::report::{
     NodeGeometryBackend, NodeGeometryDiagnostic, NodeGeometryDiagnosticKind,
@@ -98,7 +100,7 @@ pub(super) fn validate_boundary_constraints(
     }
 
     for (point_key, degree) in boundary_degree {
-        if degree != 2 {
+        if degree < 2 {
             push_validation_diagnostic(
                 solution,
                 diagnostics,
@@ -181,9 +183,55 @@ pub(super) fn edge_lies_on_explicit_boundary_constraint_or_backend_epsilon(
     // This is a backend validation tolerance for Spade/Parry geometry checks only. It does not
     // change topology, pick a boundary owner, or supply heights.
     let edge_segment = parry_segment_for_edge(region, edge);
+    if edge_lies_on_boundary_constraint_by_topology_dust(edge_segment, boundary_segments) {
+        return true;
+    }
     [edge_segment.a, edge_segment.b]
         .into_iter()
         .all(|point| point_lies_on_boundary_constraint_by_backend_epsilon(point, boundary_segments))
+}
+
+pub(super) fn edge_endpoints_lie_on_boundary_constraints_by_topology_dust(
+    region: &NodeTriangulatedRegion,
+    edge: [usize; 2],
+    boundary_segments: &[BoundarySegment],
+) -> bool {
+    let edge_segment = parry_segment_for_edge(region, edge);
+    [edge_segment.a, edge_segment.b]
+        .into_iter()
+        .all(|point| point_lies_on_boundary_constraint_by_topology_dust(point, boundary_segments))
+}
+
+fn edge_lies_on_boundary_constraint_by_topology_dust(
+    edge: Segment,
+    boundary_segments: &[BoundarySegment],
+) -> bool {
+    let tolerance_m =
+        (NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS as f32) / SURFACE_XZ_KEY_SCALE as f32;
+    boundary_segments.iter().any(|boundary| {
+        boundary
+            .segment
+            .distance_to_point(&Pose::identity(), edge.a, false)
+            <= tolerance_m
+            && boundary
+                .segment
+                .distance_to_point(&Pose::identity(), edge.b, false)
+                <= tolerance_m
+    })
+}
+
+fn point_lies_on_boundary_constraint_by_topology_dust(
+    point: Vector,
+    boundary_segments: &[BoundarySegment],
+) -> bool {
+    let tolerance_m =
+        (NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS as f32) / SURFACE_XZ_KEY_SCALE as f32;
+    boundary_segments.iter().any(|boundary| {
+        boundary
+            .segment
+            .distance_to_point(&Pose::identity(), point, false)
+            <= tolerance_m
+    })
 }
 
 fn point_lies_on_boundary_constraint_by_backend_epsilon(

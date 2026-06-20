@@ -108,12 +108,24 @@ impl NodeValidationReport {
         piece_kind: RoadSurfaceVisualNodePieceKind,
         reason: &'static str,
     ) -> Self {
+        Self::from_boundary_export_diagnostic(
+            node_id,
+            piece_kind,
+            NodeGeometryDiagnosticKind::BackendFailure { reason },
+        )
+    }
+
+    pub(crate) fn from_boundary_export_diagnostic(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        kind: NodeGeometryDiagnosticKind,
+    ) -> Self {
         Self::single_diagnostic(NodeGeometryDiagnostic {
             node_id,
             piece_kind,
             stage: NodeGeometryStage::Validation,
             backend: NodeGeometryBackend::Parry2d,
-            kind: NodeGeometryDiagnosticKind::BackendFailure { reason },
+            kind,
         })
     }
 }

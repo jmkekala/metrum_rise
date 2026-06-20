@@ -327,7 +327,7 @@ fn junctionn_explicit_material_seam_does_not_prefer_generated_contour_height() {
     let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
     let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
     let seam = manual_owned_pair_seam_constraint(37, curb, sidewalk, true);
-    let mut mouth_band_vertex = manual_heighted_vertex(0.0, 0.0, 1.001);
+    let mut mouth_band_vertex = manual_heighted_vertex(0.0, 0.0, 1.002);
     mouth_band_vertex.height_authority = Some(NodeHeightAuthoritySource::GeneratedContour {
         purpose: NodeGeneratedContourPurpose::NonRoadBand,
         claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
@@ -359,7 +359,7 @@ fn junctionn_explicit_material_seam_does_not_prefer_generated_contour_height() {
 
     assert_eq!(
         SurfaceHeightMmKey::from_m_f64(regions[0].shape[0][0].height_m).as_i64(),
-        1001
+        1002
     );
     assert_eq!(
         SurfaceHeightMmKey::from_m_f64(regions[1].shape[0][0].height_m).as_i64(),

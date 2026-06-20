@@ -1,5 +1,9 @@
 //! Debug extraction helpers for compiled road-surface state.
 
+use super::node::{
+    NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodePostBooleanOwnedRegionDebug,
+    NodeSideJoinContourDebug,
+};
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundarySegmentSource,
     NodeFootprintBoundaryVertexSource, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
@@ -28,6 +32,7 @@ mod coverage;
 mod geometry_dump;
 mod line_data;
 mod node_dump;
+mod probe;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -67,6 +72,14 @@ struct DebugMouthTopAnchor {
     role: &'static str,
     material: &'static str,
     point: backend::RoadVec3,
+}
+
+struct DebugNodeMaterialPartition {
+    polygon_count: usize,
+    triangle_count: usize,
+    raw_area_m2: f32,
+    union_area_m2: f32,
+    union_shapes: NodeOverlayShapes,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

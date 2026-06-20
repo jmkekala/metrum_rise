@@ -60,6 +60,42 @@ fn reports_open_boundaries_with_stage_and_backend() {
 }
 
 #[test]
+fn accepts_exposed_triangle_edges_split_by_topology_dust_boundary_vertex() {
+    let kind = RoadSurfaceBandKind::Carriageway;
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, kind);
+    let region = manual_region_with_constraints_and_triangles(
+        kind,
+        0,
+        height_field_id,
+        vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(0.5, 0.0, 0.0002),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 1.0),
+        ],
+        vec![[0, 2], [2, 3], [0, 3]],
+        vec![
+            NodeTriangulatedTriangle {
+                vertices: [0, 1, 3],
+            },
+            NodeTriangulatedTriangle {
+                vertices: [1, 2, 3],
+            },
+        ],
+        0.5,
+    );
+    let solution = NodeTriangulationSolution {
+        node_id: 121,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![region],
+        explicit_vertical_step_segments: Vec::new(),
+    };
+
+    NodeValidationReport::from_triangulation_solution(&solution)
+        .expect("topology-dust split boundary vertex should validate against explicit boundary");
+}
+
+#[test]
 fn reports_duplicate_exposed_edge_even_for_tiny_canonical_sliver() {
     let start = RoadVec3::new(0.0, 0.0, 0.0);
     let end = RoadVec3::new(0.005, 0.0, 0.0);

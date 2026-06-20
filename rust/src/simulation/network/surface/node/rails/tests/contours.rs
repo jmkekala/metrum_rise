@@ -12,24 +12,20 @@ fn generates_backend_contours_and_constraints_from_solved_mouth_input() {
         contours.piece_kind,
         RoadSurfaceVisualNodePieceKind::JunctionN
     );
-    assert_eq!(contours.contours.len(), 6);
-    assert_eq!(contours.constraints.len(), 19);
+    assert_eq!(contours.contours.len(), 5);
+    assert_eq!(contours.constraints.len(), 18);
     assert_eq!(
         contours.contours[0].kind,
         NodeGeneratedContourKind::FullRoadbed
     );
     assert_eq!(contours.contours[0].points_xz.len(), 4);
-    assert!(contours.contours.iter().any(|contour| {
+    assert!(!contours.contours.iter().any(|contour| {
         contour.kind
             == NodeGeneratedContourKind::Band {
                 kind: RoadSurfaceBandKind::Carriageway,
             }
             && contour.purpose == NodeGeneratedContourPurpose::CarriagewayCorridor
-            && contour.source_mouth_order_index == 0
             && contour.source_band_index.is_none()
-            && contour.owner.is_none()
-            && contour.contributes_to_asphalt()
-            && !contour.claims_asphalt_owner_region()
     }));
     assert!(contours.contours.iter().any(|contour| contour.kind
         == NodeGeneratedContourKind::Band {
@@ -37,7 +33,7 @@ fn generates_backend_contours_and_constraints_from_solved_mouth_input() {
         }
         && contour.purpose == NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
         && contour.source_band_index == Some(2)
-        && !contour.contributes_to_asphalt()
+        && contour.contributes_to_asphalt()
         && contour.claims_asphalt_owner_region()));
     assert!(
         contours

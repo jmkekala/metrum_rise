@@ -1,12 +1,15 @@
 //! Construction pipeline for canonical node arrangements.
 
-use super::super::RoadSurfaceVisualNodePieceKind;
 use super::super::backend::RoadVec2;
 use super::super::band_semantics::raised_step_band_rank;
 use super::super::height::{
-    NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightSolution,
+    NodeGradeCarrierDecision, NodeGradeVertexAuthority, NodeHeightCarrierProvenanceKey,
+    NodeHeightSolution,
 };
 use super::super::keys::SurfaceHeightMmKey;
+use super::super::ownership::NodeCarrierProvenanceOrigin;
+use super::super::rails::{NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose};
+use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::edges::collect_pending_region_edge_support;
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
 use super::seams::{
@@ -278,6 +281,13 @@ impl NodeArrangement {
                         continue;
                     }
                     let crosses_band_kind = !owners_share_band_kind(&left.owners, &right.owners);
+                    if crosses_band_kind
+                        && vertices_form_source_authorized_side_join_asphalt_sidewalk_split(
+                            left, right,
+                        )
+                    {
+                        continue;
+                    }
                     if !crosses_band_kind
                         && vertices_have_distinct_source_carrier_provenance(left, right)
                     {
@@ -663,6 +673,86 @@ fn grade_authorities_have_distinct_source_carrier_provenance(
         (Some(left), Some(right)) => left != right,
         _ => false,
     }
+}
+
+fn vertices_form_source_authorized_side_join_asphalt_sidewalk_split(
+    left: &NodeArrangementVertex,
+    right: &NodeArrangementVertex,
+) -> bool {
+    source_authorities_form_side_join_asphalt_sidewalk_split(
+        left.grade_authority,
+        right.grade_authority,
+    )
+}
+
+pub(crate) fn source_authorities_form_side_join_asphalt_sidewalk_split(
+    left: NodeGradeVertexAuthority,
+    right: NodeGradeVertexAuthority,
+) -> bool {
+    let Some((carriageway, sidewalk)) = ordered_carriageway_sidewalk_authorities(left, right)
+    else {
+        return false;
+    };
+    source_authority_is_junction_side_join_carriageway(carriageway)
+        && source_authority_is_source_join_sidewalk(sidewalk)
+}
+
+fn ordered_carriageway_sidewalk_authorities(
+    left: NodeGradeVertexAuthority,
+    right: NodeGradeVertexAuthority,
+) -> Option<(NodeGradeVertexAuthority, NodeGradeVertexAuthority)> {
+    match (left.owner.kind(), right.owner.kind()) {
+        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::Sidewalk) => Some((left, right)),
+        (RoadSurfaceBandKind::Sidewalk, RoadSurfaceBandKind::Carriageway) => Some((right, left)),
+        _ => None,
+    }
+}
+
+fn source_authority_is_junction_side_join_carriageway(authority: NodeGradeVertexAuthority) -> bool {
+    let Some(provenance) = authority.source_provenance else {
+        return false;
+    };
+    provenance_matches_authority(provenance, authority)
+        && provenance.source_kind == RoadSurfaceBandKind::Carriageway
+        && provenance.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+        && match provenance.origin {
+            NodeCarrierProvenanceOrigin::SourceIntersection { peer_count } => peer_count > 0,
+            NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                ..
+            } => true,
+            _ => false,
+        }
+}
+
+fn source_authority_is_source_join_sidewalk(authority: NodeGradeVertexAuthority) -> bool {
+    let Some(provenance) = authority.source_provenance else {
+        return false;
+    };
+    provenance_matches_authority(provenance, authority)
+        && provenance.source_kind == RoadSurfaceBandKind::Sidewalk
+        && matches!(
+            provenance.claim_priority,
+            NodeGeneratedContourClaimPriority::MouthBand
+                | NodeGeneratedContourClaimPriority::SideJoin
+        )
+        && match provenance.origin {
+            NodeCarrierProvenanceOrigin::SourceIntersection { peer_count } => peer_count > 0,
+            NodeCarrierProvenanceOrigin::GeneratedCarrierVertex {
+                purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                ..
+            } => true,
+            _ => false,
+        }
+}
+
+fn provenance_matches_authority(
+    provenance: NodeHeightCarrierProvenanceKey,
+    authority: NodeGradeVertexAuthority,
+) -> bool {
+    provenance.owner == authority.owner && provenance.height_field_id == authority.height_field_id
 }
 
 fn merged_node_grade_authority(

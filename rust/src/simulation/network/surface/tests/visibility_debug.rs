@@ -355,6 +355,9 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"physical_geometry_world_precise\""));
     assert!(dump.contains("\"sections\""));
     assert!(dump.contains("\"span_ownership\""));
+    assert!(dump.contains("\"span_final_top_regions\""));
+    assert!(dump.contains("\"source_corners_world\""));
+    assert!(dump.contains("\"triangles_world\""));
     assert!(dump.contains("\"owned_region_count\""));
     assert!(dump.contains("\"source_band_index\""));
     assert!(dump.contains("\"start_section_index\""));
@@ -398,6 +401,9 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"node_grade_authority\""));
+    assert!(dump.contains("\"node_final_top_regions\""));
+    assert!(dump.contains("\"node_post_boolean_ownership\""));
+    assert!(dump.contains("\"node_side_join_trim_provenance\""));
     assert!(dump.contains("\"decision\":\"source_carrier\""));
     assert!(dump.contains("\"seam_constraints\""));
     assert!(dump.contains("\"material_footprint_coverage\""));
@@ -415,6 +421,98 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"missing_source_count\":0"));
     assert!(dump.contains("\"earthwork_face_top_match\""));
     assert!(dump.contains("ROAD_GEOMETRY_DUMP_END"));
+}
+
+#[test]
+fn debug_geometry_dump_expands_requested_edges_to_incident_spans() {
+    let mut terrain = flat_terrain(97, 97);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let north = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+    let first_edge = graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let requested_edge = graph.add_edge(test_edge(
+        bend,
+        north,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 24.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.rebuild_all_earthworks(&graph, &mut terrain);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[requested_edge]);
+
+    assert!(dump.contains("\"requested_edge_ids\": [1]"));
+    assert!(dump.contains("\"edge_ids\": [0, 1]"));
+    assert!(dump.contains("\"node_id\": 1"));
+    assert!(dump.contains("\"kind\": \"Bend\""));
+    assert!(dump.contains("\"incident_edges\": [0, 1]"));
+    assert!(dump.contains("\"edge_idx\": 0"));
+    assert!(dump.contains("\"edge_idx\": 1"));
+    assert_eq!(first_edge, 0);
+    assert_eq!(requested_edge, 1);
+}
+
+#[test]
+fn road_surface_probe_debug_reports_final_triangle_owner() {
+    let mut terrain = sloped_terrain(65, 65);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(-16.0, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(16.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![
+            Vector3::new(-16.0, -0.8, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(16.0, 0.8, 0.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.rebuild_all_earthworks(&graph, &mut terrain);
+    let dump =
+        surface.build_road_surface_probe_debug_dump(&graph, &terrain, Vector3::new(0.0, 0.0, 0.0));
+    let json_start = dump
+        .find('{')
+        .expect("road surface probe debug should contain a JSON object");
+    let json_end = dump
+        .rfind('}')
+        .expect("road surface probe debug should contain a JSON object");
+    let json: serde_json::Value = serde_json::from_str(&dump[json_start..=json_end])
+        .expect("road surface probe debug JSON should parse");
+
+    assert!(dump.contains("ROAD_SURFACE_PROBE_BEGIN"));
+    assert!(dump.contains("\"probe_world\""));
+    assert!(dump.contains("\"contributor_edges\""));
+    assert!(dump.contains("\"source_kind\":\"span_top\""));
+    assert!(dump.contains("\"material\":\"asphalt\""));
+    assert!(dump.contains("\"xz_relation\":\"contains\""));
+    assert!(dump.contains("\"triangle_world\""));
+    assert!(dump.contains("ROAD_SURFACE_PROBE_END"));
+    assert!(
+        json["matches"]
+            .as_array()
+            .expect("probe debug should expose matches")
+            .iter()
+            .any(|record| record["source_kind"] == "span_top" && record["material"] == "asphalt"),
+        "probe debug should identify at least one final asphalt span top triangle; dump={dump}"
+    );
 }
 
 #[test]

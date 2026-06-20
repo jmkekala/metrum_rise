@@ -1,7 +1,11 @@
 //! Canonical arrangement boundary-edge ownership and source matching.
 
+use super::super::RoadSurfaceBandKind;
 use super::super::keys::SurfaceXzSegmentKey;
-use super::build::{canonical_sources, merge_sorted_unique};
+use super::build::{
+    canonical_sources, merge_sorted_unique,
+    source_authorities_form_side_join_asphalt_sidewalk_split,
+};
 use super::regions::PendingArrangementRegion;
 use super::seams::{
     NodeRegionSeamConstraint, NodeSeamSource, seam_constraint_can_source_edge_owner_pair,
@@ -160,10 +164,21 @@ impl NodeArrangement {
             } else {
                 Vec::new()
             };
+            let has_source_authorized_side_join_boundary = source_constraints.is_empty()
+                && endpoint_pair_source_constraint_indices.is_empty()
+                && opposite_owner.is_some_and(|opposite_owner| {
+                    edge_has_source_authorized_side_join_asphalt_sidewalk_boundary(
+                        edge,
+                        &self.vertices,
+                        pending.owner,
+                        opposite_owner,
+                    )
+                });
             if let Some(opposite_owner) = opposite_owner {
                 if owners_require_explicit_boundary_seam(pending.owner, opposite_owner) {
                     if source_constraints.is_empty()
                         && endpoint_pair_source_constraint_indices.is_empty()
+                        && !has_source_authorized_side_join_boundary
                     {
                         self.diagnostics
                             .push(NodeArrangementDiagnostic::MissingSeamConstraint {
@@ -194,12 +209,17 @@ impl NodeArrangement {
                         }
                     })
                 })
+                .or_else(|| {
+                    has_source_authorized_side_join_boundary
+                        .then(|| NodeSeamSource::for_owner(pending.owner))
+                })
                 .unwrap_or_else(|| NodeSeamSource::for_owner(pending.owner));
             let constrains_shared_height = selected_source_constraint
                 .is_some_and(|constraint| constraint.constrains_shared_height);
             let is_material_transition = selected_source_constraint
                 .is_some_and(|constraint| constraint.is_material_transition)
-                || !endpoint_pair_source_constraint_indices.is_empty();
+                || !endpoint_pair_source_constraint_indices.is_empty()
+                || has_source_authorized_side_join_boundary;
             let source_constraint_indices = canonical_sources(
                 source_constraints
                     .iter()
@@ -271,6 +291,73 @@ fn source_constraints_for_edge<'a>(
     matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+fn edge_has_source_authorized_side_join_asphalt_sidewalk_boundary(
+    edge: PendingArrangementEdge,
+    vertices: &[NodeArrangementVertex],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    if !owners_form_carriageway_sidewalk_boundary(owner, opposite_owner) {
+        return false;
+    }
+    edge_endpoint_has_source_authorized_side_join_asphalt_sidewalk_split(
+        edge.key.start,
+        vertices,
+        owner,
+        opposite_owner,
+    ) && edge_endpoint_has_source_authorized_side_join_asphalt_sidewalk_split(
+        edge.key.end,
+        vertices,
+        owner,
+        opposite_owner,
+    )
+}
+
+fn edge_endpoint_has_source_authorized_side_join_asphalt_sidewalk_split(
+    key: NodeArrangementKey,
+    vertices: &[NodeArrangementVertex],
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    let Some(owner_authority) = vertex_grade_authority_for_owner_at_key(vertices, key, owner)
+    else {
+        return false;
+    };
+    let Some(opposite_authority) =
+        vertex_grade_authority_for_owner_at_key(vertices, key, opposite_owner)
+    else {
+        return false;
+    };
+    source_authorities_form_side_join_asphalt_sidewalk_split(owner_authority, opposite_authority)
+}
+
+fn vertex_grade_authority_for_owner_at_key(
+    vertices: &[NodeArrangementVertex],
+    key: NodeArrangementKey,
+    owner: NodeBandOwner,
+) -> Option<super::super::height::NodeGradeVertexAuthority> {
+    vertices
+        .iter()
+        .find(|vertex| vertex.key() == key && vertex.owners().contains(&owner))
+        .map(NodeArrangementVertex::grade_authority)
+}
+
+fn owners_form_carriageway_sidewalk_boundary(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (owner.kind(), opposite_owner.kind()),
+        (
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::Sidewalk
+        ) | (
+            RoadSurfaceBandKind::Sidewalk,
+            RoadSurfaceBandKind::Carriageway
+        )
+    )
 }
 
 fn endpoint_pair_constraint_indices_from_pending_region_seams(

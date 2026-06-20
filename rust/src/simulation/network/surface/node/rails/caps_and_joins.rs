@@ -17,8 +17,8 @@ use super::geometry::road_point_key;
 use super::owners::{MouthOwners, is_carriageway};
 use super::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
-    NodeGeneratedContourPurpose, NodeRailConstraint, NodeRailConstraintKind,
-    NodeRailGenerationError,
+    NodeGeneratedContourPurpose, NodeGeneratedCornerTrim, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailGenerationError,
 };
 use std::collections::BTreeMap;
 

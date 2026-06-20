@@ -329,6 +329,77 @@ fn triangulation_canonicalizes_same_authority_numeric_dust_vertices() {
 }
 
 #[test]
+fn triangulation_constraint_loop_removes_dust_backtracking_spur_after_vertex_canonicalization() {
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
+    let heights = NodeHeightSolution {
+        node_id: 98,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            height_field_id,
+            shape: vec![vec![
+                flat_vertex(0.0, 0.0),
+                flat_vertex(1.0, 0.0),
+                flat_vertex(1.0001, 0.001),
+                flat_vertex(1.0002, 0.0),
+                flat_vertex(0.0, 1.0),
+            ]],
+            area_m2: 0.5,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let solution = triangulation_from_height_solution(&heights)
+        .expect("post-canonicalization backtracking spur should be cleaned before CDT");
+    let region = &solution.regions[0];
+    let spike_index = region
+        .vertices
+        .iter()
+        .position(|vertex| (vertex.point_world.z - 0.001).abs() < 1.0e-9)
+        .expect("spike vertex should remain in the vertex pool for deterministic CDT loading");
+
+    assert!(
+        region
+            .boundary_constraints
+            .iter()
+            .all(|constraint| !constraint.contains(&spike_index)),
+        "canonical boundary constraints must not keep a zero-area dust backtracking spur"
+    );
+}
+
+#[test]
+fn triangulation_constraint_loop_preserves_meaningful_skinny_region() {
+    let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
+    let heights = NodeHeightSolution {
+        node_id: 99,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![NodeHeightedRegion {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            height_field_id,
+            shape: vec![vec![
+                flat_vertex(0.0, 0.0),
+                flat_vertex(10.0, 0.0),
+                flat_vertex(10.0, 0.00025),
+                flat_vertex(0.0, 0.00025),
+            ]],
+            area_m2: 0.0025,
+            seam_constraints: Vec::new(),
+        }],
+    };
+    let solution =
+        triangulation_from_height_solution(&heights).expect("meaningful skinny region should stay");
+    let region = &solution.regions[0];
+
+    assert_eq!(region.owner.kind(), RoadSurfaceBandKind::Sidewalk);
+    assert!(
+        region.vertices.len() >= 4,
+        "long skinny regions above area budget must not collapse as dust"
+    );
+    assert!(!region.triangles.is_empty());
+}
+
+#[test]
 fn triangulation_keeps_numeric_dust_vertices_with_conflicting_height_authority() {
     let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway);
     let mut dust = flat_vertex_with_kind(RoadSurfaceBandKind::Carriageway, 0.00005, 0.0);
@@ -449,6 +520,51 @@ fn rejects_degenerate_region_contours() {
             vertex_count: 2,
         })
     );
+}
+
+#[test]
+fn skips_numeric_dust_region_collapsed_by_constraint_loop_cleanup() {
+    let mut arrangement = NodeArrangement::new(93, RoadSurfaceVisualNodePieceKind::JunctionN);
+    let main_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let main_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
+    let main_vertices = vec![
+        arrangement_test_vertex(&mut arrangement, 0.0, 0.0, 1.0, main_owner, main_field),
+        arrangement_test_vertex(&mut arrangement, 1.0, 0.0, 1.0, main_owner, main_field),
+        arrangement_test_vertex(&mut arrangement, 1.0, 1.0, 1.0, main_owner, main_field),
+        arrangement_test_vertex(&mut arrangement, 0.0, 1.0, 1.0, main_owner, main_field),
+    ];
+    arrangement.push_region(
+        main_owner,
+        main_field,
+        main_vertices,
+        Vec::new(),
+        Vec::new(),
+        1.0,
+        Vec::new(),
+    );
+
+    let dust_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+    let dust_field = NodeBandHeightFieldId::new(0, 1, RoadSurfaceBandKind::Sidewalk);
+    let dust_vertices = vec![
+        arrangement_test_vertex(&mut arrangement, 2.0, 0.0, 1.0, dust_owner, dust_field),
+        arrangement_test_vertex(&mut arrangement, 2.000001, 0.0, 1.0, dust_owner, dust_field),
+        arrangement_test_vertex(&mut arrangement, 2.000002, 0.0, 1.0, dust_owner, dust_field),
+    ];
+    arrangement.push_region(
+        dust_owner,
+        dust_field,
+        dust_vertices,
+        Vec::new(),
+        Vec::new(),
+        0.0,
+        Vec::new(),
+    );
+
+    let solution = NodeTriangulationSolution::from_arrangement(&arrangement)
+        .expect("below-budget collapsed residual region should be discarded");
+
+    assert_eq!(solution.regions.len(), 1);
+    assert_eq!(solution.regions[0].owner, main_owner);
 }
 
 fn flat_region_with_hole() -> NodeHeightedRegion {

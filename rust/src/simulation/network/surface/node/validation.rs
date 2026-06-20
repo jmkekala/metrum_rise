@@ -14,9 +14,9 @@ use super::keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey};
 use super::triangulation::NodeTriangulatedRegion;
 use parry2d::shape::Segment;
 
-pub(crate) use report::NodeValidationReport;
 #[cfg(test)]
-pub(crate) use report::{NodeGeometryDiagnostic, NodeGeometryDiagnosticKind};
+pub(crate) use report::NodeGeometryDiagnostic;
+pub(crate) use report::{NodeGeometryDiagnosticKind, NodeValidationReport};
 
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
 

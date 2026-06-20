@@ -216,6 +216,7 @@ impl RoadSurfaceSystem {
                 node_grade_authorities,
                 node_top_surface_sources,
                 owned_regions,
+                boolean_debug: None,
             },
             profile,
         ))
@@ -255,6 +256,14 @@ fn reject_unauthorized_arrangement_height_splits(
                                 right.grade_authority(),
                             )
                         {
+                            continue;
+                        }
+                        if arrangement_vertices_form_source_authorized_side_join_split(
+                            left,
+                            *left_owner,
+                            right,
+                            *right_owner,
+                        ) {
                             continue;
                         }
                         let owner_pair = if left_owner <= right_owner {
@@ -345,6 +354,23 @@ fn reject_unauthorized_arrangement_height_splits(
         );
     }
     Ok(())
+}
+
+fn arrangement_vertices_form_source_authorized_side_join_split(
+    left: &arrangement::NodeArrangementVertex,
+    left_owner: arrangement::NodeBandOwner,
+    right: &arrangement::NodeArrangementVertex,
+    right_owner: arrangement::NodeBandOwner,
+) -> bool {
+    let left_authority = left.grade_authority();
+    let right_authority = right.grade_authority();
+    if left_authority.owner != left_owner || right_authority.owner != right_owner {
+        return false;
+    }
+    arrangement::source_authorities_form_side_join_asphalt_sidewalk_split(
+        left_authority,
+        right_authority,
+    )
 }
 
 fn arrangement_height_split_authorized(

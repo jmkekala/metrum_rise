@@ -3,8 +3,8 @@
 use super::super::arrangement::{
     NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous,
 };
-use super::super::rails::NodeRailConstraint;
-use super::super::{NodeOverlayShapes, RoadSurfaceVisualNodePieceKind};
+use super::super::rails::{NodeGeneratedContourClaimPriority, NodeRailConstraint};
+use super::super::{NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::seams::{
     junctionn_unmaterialized_raised_step_authority_indices_for_edge,
     materialized_endpoint_pair_constraint_indices_for_owned_edge,
@@ -98,6 +98,25 @@ impl NodeOwnedRegionArrangement {
                 } else {
                     Vec::new()
                 };
+                let side_join_asphalt_boundary_indices = if source_constraints.is_empty()
+                    && endpoint_pair_source_constraint_indices.is_empty()
+                {
+                    opposite_owner
+                        .map(|opposite_owner| {
+                            source_authorized_junction_side_join_asphalt_boundary_indices(
+                                piece_kind,
+                                edge_key.start,
+                                edge_key.end,
+                                regions,
+                                &refs,
+                                *edge_ref,
+                                opposite_owner,
+                            )
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 if let Some(opposite_owner) = opposite_owner {
                     if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
                         let source_constraint_indices =
@@ -130,6 +149,7 @@ impl NodeOwnedRegionArrangement {
                             );
                         } else if source_constraints.is_empty()
                             && endpoint_pair_source_constraint_indices.is_empty()
+                            && side_join_asphalt_boundary_indices.is_empty()
                         {
                             diagnostics.push(
                                 NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
@@ -163,12 +183,17 @@ impl NodeOwnedRegionArrangement {
                             }
                         })
                     })
+                    .or_else(|| {
+                        (!side_join_asphalt_boundary_indices.is_empty())
+                            .then(|| NodeSeamSource::for_owner(edge_ref.owner))
+                    })
                     .unwrap_or_else(|| NodeSeamSource::for_owner(edge_ref.owner));
                 let source_constraint_indices = canonical_source_indices(
                     source_constraints
                         .iter()
                         .map(|constraint| constraint.constraint_index)
-                        .chain(endpoint_pair_source_constraint_indices),
+                        .chain(endpoint_pair_source_constraint_indices)
+                        .chain(side_join_asphalt_boundary_indices),
                 );
                 edges.push(NodeOwnedRegionArrangementEdge {
                     region_index: edge_ref.region_index,
@@ -218,6 +243,90 @@ fn endpoint_pair_constraint_indices_from_region_seams(
         return Vec::new();
     }
     canonical_source_indices(start_indices.into_iter().chain(end_indices))
+}
+
+fn source_authorized_junction_side_join_asphalt_boundary_indices(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    start: (i64, i64),
+    end: (i64, i64),
+    regions: &[NodeBooleanOwnedRegion],
+    refs: &[OwnedRegionEdgeRef],
+    edge_ref: OwnedRegionEdgeRef,
+    opposite_owner: NodeBandOwner,
+) -> Vec<usize> {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN
+        || !owners_form_carriageway_sidewalk_boundary(edge_ref.owner, opposite_owner)
+    {
+        return Vec::new();
+    }
+
+    let Some(region) = regions.get(edge_ref.region_index) else {
+        return Vec::new();
+    };
+    let Some(opposite_region) = refs
+        .iter()
+        .filter(|candidate| candidate.region_index != edge_ref.region_index)
+        .filter(|candidate| candidate.owner == opposite_owner)
+        .filter_map(|candidate| regions.get(candidate.region_index))
+        .next()
+    else {
+        return Vec::new();
+    };
+    let (carriageway_region, sidewalk_region) =
+        if region.owner.kind() == RoadSurfaceBandKind::Carriageway {
+            (region, opposite_region)
+        } else {
+            (opposite_region, region)
+        };
+    if carriageway_region.claim_priority != NodeGeneratedContourClaimPriority::SideJoin
+        || sidewalk_region.owner.kind() != RoadSurfaceBandKind::Sidewalk
+        || !matches!(
+            sidewalk_region.claim_priority,
+            NodeGeneratedContourClaimPriority::MouthBand
+                | NodeGeneratedContourClaimPriority::SideJoin
+        )
+    {
+        return Vec::new();
+    }
+
+    let start_indices =
+        endpoint_source_indices_from_region_seams(start, &sidewalk_region.seam_constraints);
+    if start_indices.is_empty() {
+        return Vec::new();
+    }
+    let end_indices =
+        endpoint_source_indices_from_region_seams(end, &sidewalk_region.seam_constraints);
+    if end_indices.is_empty() {
+        return Vec::new();
+    }
+    canonical_source_indices(start_indices.into_iter().chain(end_indices))
+}
+
+fn owners_form_carriageway_sidewalk_boundary(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (owner.kind(), opposite_owner.kind()),
+        (
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::Sidewalk
+        ) | (
+            RoadSurfaceBandKind::Sidewalk,
+            RoadSurfaceBandKind::Carriageway
+        )
+    )
+}
+
+fn endpoint_source_indices_from_region_seams(
+    key: (i64, i64),
+    constraints: &[NodeRegionSeamConstraint],
+) -> Vec<usize> {
+    constraints
+        .iter()
+        .filter(|constraint| region_seam_has_exact_endpoint_key(constraint, key))
+        .map(|constraint| constraint.constraint_index)
+        .collect()
 }
 
 fn source_authorized_region_seam_endpoint_constraint_indices(

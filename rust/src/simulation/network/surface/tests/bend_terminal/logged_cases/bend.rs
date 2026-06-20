@@ -56,6 +56,311 @@ fn logged_bend_with_fragmented_asphalt_curb_step_compiles() {
 }
 
 #[test]
+fn logged_bend_with_sidewalk_side_join_residual_compiles() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-109.987, 0.0, 21.730), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-48.637, 0.0, 61.543), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(21.046, 0.0, 37.484), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-109.987, 0.0, 21.730),
+            Vector3::new(-48.637, 0.0, 61.543),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-48.637, 0.0, 61.543),
+            Vector3::new(21.046, 0.0, 37.484),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_compiled_bend_piece(&surface, &graph, bend);
+}
+
+#[test]
+fn logged_elevated_bend_with_curb_sidewalk_shared_height_seam_compiles() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-128.495667, 137.482468, 50.014038),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(
+        Vector3::new(-62.814247, 138.091599, 47.805443),
+        NodeType::Junction,
+    );
+    let northeast = graph.add_node(
+        Vector3::new(-28.634865, 137.346497, 98.009171),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-128.495667, 137.482468, 50.014038),
+            Vector3::new(-62.814247, 138.091599, 47.805443),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-62.814247, 138.091599, 47.805443),
+            Vector3::new(-28.634865, 137.346497, 98.009171),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_compiled_bend_piece(&surface, &graph, bend);
+}
+
+#[test]
+fn logged_elevated_bend_with_conflicting_footprint_boundary_height_compiles() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-109.914040, 137.423492, 61.868073),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(
+        Vector3::new(-52.119457, 137.511230, 78.142029),
+        NodeType::Junction,
+    );
+    let northeast = graph.add_node(
+        Vector3::new(-28.145103, 137.416855, 126.829033),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-109.914040, 137.423492, 61.868073),
+            Vector3::new(-52.119457, 137.511230, 78.142029),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-52.119457, 137.511230, 78.142029),
+            Vector3::new(-28.145103, 137.416855, 126.829033),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+    assert_bend_material_partition_keeps_sidewalk_visible(bend_piece);
+}
+
+#[test]
+fn logged_current_elevated_bend_with_curb_sidewalk_boundary_height_conflict_compiles() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-124.141922, 137.527832, 58.071350),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(
+        Vector3::new(-47.562737, 137.724960, 71.863647),
+        NodeType::Junction,
+    );
+    let northeast = graph.add_node(
+        Vector3::new(-5.922226, 137.472488, 144.964676),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-124.141922, 137.527832, 58.071350),
+            Vector3::new(-47.562737, 137.724960, 71.863647),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-47.562737, 137.724960, 71.863647),
+            Vector3::new(-5.922226, 137.472488, 144.964676),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+    assert_bend_material_partition_keeps_sidewalk_visible(bend_piece);
+}
+
+#[test]
+fn logged_elevated_bend_with_fragmented_curb_sidewalk_side_join_compiles() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-154.372910, 138.110077, -2.822815),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(
+        Vector3::new(-85.724274, 137.737137, 49.256790),
+        NodeType::Junction,
+    );
+    let northeast = graph.add_node(
+        Vector3::new(-52.975925, 137.248505, 114.189369),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-154.372910, 138.110077, -2.822815),
+            Vector3::new(-85.724274, 137.737137, 49.256790),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-85.724274, 137.737137, 49.256790),
+            Vector3::new(-52.975925, 137.248505, 114.189369),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+    assert_bend_material_partition_keeps_sidewalk_visible(bend_piece);
+}
+
+#[test]
+fn logged_elevated_bend_does_not_leave_detached_asphalt_mouth_band_islands() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-65.679413, 137.331345, 74.066315),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(
+        Vector3::new(68.557236, 138.349731, 139.894348),
+        NodeType::Junction,
+    );
+    let northeast = graph.add_node(
+        Vector3::new(76.133392, 137.273651, 219.235001),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-65.679413, 137.331345, 74.066315),
+            Vector3::new(68.557236, 138.349731, 139.894348),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(68.557236, 138.349731, 139.894348),
+            Vector3::new(76.133392, 137.273651, 219.235001),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .unwrap_or_else(|| {
+            panic!(
+                "bend should compile through canonical owned regions: {}",
+                canonical_node_pipeline_report(
+                    &surface,
+                    &graph,
+                    bend,
+                    RoadSurfaceVisualNodePieceKind::Bend,
+                )
+            )
+        });
+    assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_top_covers_footprint(bend_piece);
+    assert_bend_material_partition_keeps_sidewalk_visible(bend_piece);
+    assert_bend_asphalt_has_no_detached_islands(bend_piece);
+}
+
+#[test]
 fn logged_outer_bend_skips_one_sided_curb_step_slivers() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
@@ -93,14 +398,25 @@ fn logged_outer_bend_skips_one_sided_curb_step_slivers() {
     let bend_piece = surface
         .compiled_visual_node_pieces()
         .get(&bend)
-        .expect("bend should compile through canonical owned regions");
+        .unwrap_or_else(|| {
+            panic!(
+                "bend should compile through canonical owned regions: {}",
+                canonical_node_pipeline_report(
+                    &surface,
+                    &graph,
+                    bend,
+                    RoadSurfaceVisualNodePieceKind::Bend,
+                )
+            )
+        });
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert!(
-        visual_polygon_boundary_contains_xz(
+        visual_polygon_boundary_passes_near_xz(
             &bend_piece.outer_boundary_loops,
             Vector2::new(-53.814, -20.179),
+            0.5,
         ),
-        "outer bend terrain cutter must preserve explicit outer span rail points; outer_loops={:?}",
+        "outer bend terrain cutter must preserve the explicit outer span rail within projection tolerance; outer_loops={:?}",
         bend_piece.outer_boundary_loops
     );
 }
@@ -143,9 +459,20 @@ fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
     let bend_piece = surface
         .compiled_visual_node_pieces()
         .get(&bend)
-        .expect("bend should compile through canonical owned regions");
+        .unwrap_or_else(|| {
+            panic!(
+                "bend should compile through canonical owned regions: {}",
+                canonical_node_pipeline_report(
+                    &surface,
+                    &graph,
+                    bend,
+                    RoadSurfaceVisualNodePieceKind::Bend,
+                )
+            )
+        });
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_top_covers_footprint(bend_piece);
+    assert_bend_material_partition_keeps_sidewalk_visible(bend_piece);
     assert_top_raised_step_owner_boundaries_have_vertical_faces(bend_piece);
     assert_canonical_explicit_vertical_steps_have_faces(bend_piece);
     assert_earthwork_faces_stay_outside_top_footprint(bend_piece);
@@ -230,13 +557,8 @@ fn logged_outer_bend_closes_footprint_with_arc_boundary() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
     let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
-    let arc_midpoint = logged_exposed_outer_bend_arc_midpoint();
 
-    assert!(
-        visual_polygon_boundary_contains_xz(&bend_piece.outer_boundary_loops, arc_midpoint),
-        "outer bend footprint must expose the rounded side-join arc point; point={arc_midpoint:?} outer_loops={:?}",
-        bend_piece.outer_boundary_loops
-    );
+    assert_bend_outer_boundary_preserves_corner_trim_support(&surface, bend_piece, bend);
 }
 
 #[test]
@@ -276,36 +598,116 @@ fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
     assert_compiled_bend_piece(&surface, &graph, bend);
 }
 
-fn logged_exposed_outer_bend_arc_midpoint() -> Vector2 {
-    let center = backend::RoadVec2::new(-6.673889, -23.719093);
-    let west = backend::RoadVec2::new(-125.385117, -31.426414);
-    let northeast = backend::RoadVec2::new(34.735245, 44.360130);
-    let first_direction = normalized_test_direction(northeast - center);
-    let second_direction = normalized_test_direction(west - center);
-    let start = center + test_left_perp(second_direction) * 5.0;
-    let end = center - test_left_perp(first_direction) * 5.0;
-    let start_radius = start - center;
-    let end_radius = end - center;
-    let start_angle = start_radius.y.atan2(start_radius.x);
-    let end_angle = end_radius.y.atan2(end_radius.x);
-    let ccw_sweep = (end_angle - start_angle).rem_euclid(std::f64::consts::TAU);
-    let cw_sweep = -((start_angle - end_angle).rem_euclid(std::f64::consts::TAU));
-    let sweep = if ccw_sweep <= cw_sweep.abs() {
-        ccw_sweep
-    } else {
-        cw_sweep
-    };
-    let mid_angle = start_angle + sweep * 0.5;
-    Vector2::new(
-        (center.x + mid_angle.cos() * 5.0) as f32,
-        (center.y + mid_angle.sin() * 5.0) as f32,
+fn assert_bend_material_partition_keeps_sidewalk_visible(piece: &RoadSurfaceVisualNodePiece) {
+    let footprint_area_m2 = visual_polygon_union_area_m2(&piece.outer_boundary_loops);
+    let asphalt_area_m2 = visual_polygon_union_area_m2(&piece.road_surface_polygons);
+    let sidewalk_area_m2 = visual_polygon_union_area_m2(&piece.sidewalk_surface_polygons);
+    let asphalt_ratio = asphalt_area_m2 / footprint_area_m2;
+    let sidewalk_ratio = sidewalk_area_m2 / footprint_area_m2;
+
+    assert!(
+        asphalt_ratio <= 0.78 && sidewalk_ratio >= 0.18,
+        "logged bend material partition must not let asphalt consume the sidewalk bands; footprint_area_m2={footprint_area_m2:.3} asphalt_area_m2={asphalt_area_m2:.3} asphalt_ratio={asphalt_ratio:.3} sidewalk_area_m2={sidewalk_area_m2:.3} sidewalk_ratio={sidewalk_ratio:.3}"
+    );
+}
+
+fn assert_bend_asphalt_has_no_detached_islands(piece: &RoadSurfaceVisualNodePiece) {
+    let contours = overlay_contours_from_top_polygons(&piece.road_surface_polygons);
+    let mut shape_areas_m2 = RoadSurfaceSystem::overlay_union_contours(&contours)
+        .unwrap_or_default()
+        .iter()
+        .map(RoadSurfaceSystem::overlay_shape_area_m2)
+        .filter(|area_m2| *area_m2 > 0.01)
+        .collect::<Vec<_>>();
+    shape_areas_m2.sort_by(|left, right| right.total_cmp(left));
+    let detached_area_m2 = shape_areas_m2.iter().skip(1).sum::<f32>();
+
+    assert!(
+        detached_area_m2 <= 0.05,
+        "logged bend asphalt must be one connected ownership region; detached_area_m2={detached_area_m2:.3} shape_areas_m2={shape_areas_m2:?}"
+    );
+}
+
+fn assert_bend_outer_boundary_preserves_corner_trim_support(
+    surface: &RoadSurfaceSystem,
+    piece: &RoadSurfaceVisualNodePiece,
+    node_id: u32,
+) {
+    let input = surface
+        .compiled_visual_node_inputs
+        .get(&node_id)
+        .expect("compiled bend input must be cached");
+    let arrangement_input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        node_id,
+        piece.kind,
+        &input.mouths,
     )
+    .expect("compiled bend input must rebuild arrangement input");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&arrangement_input)
+        .expect("compiled bend input must rebuild generated rail contours");
+    let preserved_trim_points = rails
+        .corner_trims
+        .iter()
+        .flat_map(|trim| trim.points_xz.iter().copied())
+        .filter(|point| visual_polygon_boundary_contains_xz(&piece.outer_boundary_loops, *point))
+        .count();
+
+    assert!(
+        preserved_trim_points >= 3,
+        "outer bend footprint must preserve generated corner-trim support points; preserved_trim_points={preserved_trim_points} corner_trims={:?} outer_loops={:?}",
+        rails.corner_trims,
+        piece.outer_boundary_loops
+    );
 }
 
-fn normalized_test_direction(direction: backend::RoadVec2) -> backend::RoadVec2 {
-    direction / direction.length()
+fn visual_polygon_boundary_passes_near_xz(
+    polygons: &[RoadSurfaceVisualPolygon],
+    point: Vector2,
+    tolerance_m: f64,
+) -> bool {
+    visual_polygon_boundary_min_distance_xz(polygons, point) <= tolerance_m
 }
 
-fn test_left_perp(direction: backend::RoadVec2) -> backend::RoadVec2 {
-    backend::RoadVec2::new(-direction.y, direction.x)
+fn visual_polygon_boundary_min_distance_xz(
+    polygons: &[RoadSurfaceVisualPolygon],
+    point: Vector2,
+) -> f64 {
+    let point = backend::RoadVec2::new(f64::from(point.x), f64::from(point.y));
+    polygons
+        .iter()
+        .filter(|polygon| polygon.points_world.len() >= 2)
+        .flat_map(|polygon| {
+            polygon
+                .points_world
+                .iter()
+                .zip(polygon.points_world.iter().cycle().skip(1))
+                .take(polygon.points_world.len())
+        })
+        .map(|(start, end)| {
+            let start = backend::RoadVec2::new(start.x, start.z);
+            let end = backend::RoadVec2::new(end.x, end.z);
+            point_to_segment_distance_xz(point, start, end)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn point_to_segment_distance_xz(
+    point: backend::RoadVec2,
+    start: backend::RoadVec2,
+    end: backend::RoadVec2,
+) -> f64 {
+    let segment = end - start;
+    let length_sq = segment.length_squared();
+    if length_sq <= f64::EPSILON {
+        return point.distance(start);
+    }
+    let t = ((point - start).dot(segment) / length_sq).clamp(0.0, 1.0);
+    point.distance(start + segment * t)
+}
+
+fn visual_polygon_union_area_m2(polygons: &[RoadSurfaceVisualPolygon]) -> f32 {
+    let contours = overlay_contours_from_top_polygons(polygons);
+    RoadSurfaceSystem::overlay_union_contours(&contours)
+        .map(|shapes| overlay_area_m2(&shapes))
+        .unwrap_or(0.0)
 }

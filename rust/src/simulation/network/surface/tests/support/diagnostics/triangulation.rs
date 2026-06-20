@@ -1,6 +1,7 @@
 //! Triangulation diagnostic extraction helpers.
 
 use super::*;
+use crate::simulation::network::surface::arrangement::NodeBandHeightFieldId;
 use crate::simulation::network::surface::keys::SurfaceXzKey;
 
 pub(in crate::simulation::network::surface::tests) fn triangulation_height_conflict_debug(
@@ -67,6 +68,7 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_duplicate_ex
 pub(in crate::simulation::network::surface::tests) fn triangulation_open_boundary_debug(
     triangulation: &crate::simulation::network::surface::triangulation::NodeTriangulationSolution,
     report: &NodeValidationReport,
+    arrangement: &super::arrangement::NodeArrangement,
 ) -> Option<String> {
     let region_indices = report
         .diagnostics
@@ -124,6 +126,117 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_open_boundar
                     )
                 })
                 .collect::<Vec<_>>();
+            let open_edges = report
+                .diagnostics
+                .iter()
+                .filter_map(|diagnostic| {
+                    let NodeGeometryDiagnosticKind::OpenBoundary {
+                        region_index: diagnostic_region,
+                        start_x_key: Some(start_x_key),
+                        start_z_key: Some(start_z_key),
+                        end_x_key: Some(end_x_key),
+                        end_z_key: Some(end_z_key),
+                        ..
+                    } = diagnostic.kind
+                    else {
+                        return None;
+                    };
+                    if diagnostic_region != region_index {
+                        return None;
+                    }
+                    let start = (start_x_key, start_z_key);
+                    let end = (end_x_key, end_z_key);
+                    let vertices = region
+                        .vertices
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(vertex_index, vertex)| {
+                            let key = road_vec3_raw_xz(vertex.point_world);
+                            (key == start || key == end).then_some((
+                                vertex_index,
+                                key,
+                                raw_xz_to_mm(key),
+                                vertex.height_field_id,
+                                vertex.grade_authority,
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    let nearby_constraints = region
+                        .boundary_constraints
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(constraint_index, constraint)| {
+                            let constraint_start =
+                                road_vec3_raw_xz(region.vertices.get(constraint[0])?.point_world);
+                            let constraint_end =
+                                road_vec3_raw_xz(region.vertices.get(constraint[1])?.point_world);
+                            edge_bboxes_near(start, end, constraint_start, constraint_end, 2_000)
+                                .then_some((
+                                    constraint_index,
+                                    constraint_start,
+                                    constraint_end,
+                                    raw_xz_to_mm(constraint_start),
+                                    raw_xz_to_mm(constraint_end),
+                                ))
+                        })
+                        .take(12)
+                        .collect::<Vec<_>>();
+                    let adjacent_triangles = region
+                        .triangles
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(triangle_index, triangle)| {
+                            let triangle_edges = [
+                                [triangle.vertices[0], triangle.vertices[1]],
+                                [triangle.vertices[1], triangle.vertices[2]],
+                                [triangle.vertices[2], triangle.vertices[0]],
+                            ];
+                            let edge_matches = triangle_edges.iter().any(|edge| {
+                                let a = road_vec3_raw_xz(
+                                    region.vertices[*edge.first().unwrap()].point_world,
+                                );
+                                let b = road_vec3_raw_xz(
+                                    region.vertices[*edge.last().unwrap()].point_world,
+                                );
+                                (a == start && b == end) || (a == end && b == start)
+                            });
+                            edge_matches.then_some((
+                                triangle_index,
+                                triangle.vertices,
+                                triangle_area_m2_for_debug(region, triangle),
+                                triangle.vertices.map(|index| {
+                                    road_vec3_raw_xz(region.vertices[index].point_world)
+                                }),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    let arrangement_edges = arrangement
+                        .regions()
+                        .get(region_index)
+                        .map(|arrangement_region| {
+                            arrangement_region_edges_near_open_edge(
+                                arrangement,
+                                arrangement_region,
+                                start,
+                                end,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let global_triangle_edges =
+                        triangulation_regions_for_raw_triangle_edge(triangulation, start, end);
+                    Some((
+                        start,
+                        end,
+                        raw_xz_to_mm(start),
+                        raw_xz_to_mm(end),
+                        vertices,
+                        nearby_constraints,
+                        adjacent_triangles,
+                        arrangement_edges,
+                        global_triangle_edges,
+                    ))
+                })
+                .collect::<Vec<_>>();
             Some((
                 region_index,
                 region.owner,
@@ -132,10 +245,110 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_open_boundar
                 region.boundary_constraints.len(),
                 region.triangles.len(),
                 bad_points,
+                open_edges,
             ))
         })
         .collect::<Vec<_>>();
     Some(format!("open_boundary_debug={open_regions:?}"))
+}
+
+fn arrangement_region_edges_near_open_edge(
+    arrangement: &super::arrangement::NodeArrangement,
+    region: &super::arrangement::NodeOwnedRegion,
+    start: (i64, i64),
+    end: (i64, i64),
+) -> Vec<(usize, (i64, i64), (i64, i64), (i64, i64), (i64, i64))> {
+    std::iter::once(region.outer_loop())
+        .chain(region.holes().iter().map(Vec::as_slice))
+        .flat_map(|contour| {
+            (0..contour.len()).filter_map(move |index| {
+                let edge_start = arrangement.vertices().get(contour[index].index())?;
+                let edge_end = arrangement
+                    .vertices()
+                    .get(contour[(index + 1) % contour.len()].index())?;
+                let edge_start = (edge_start.key().x_key(), edge_start.key().z_key());
+                let edge_end = (edge_end.key().x_key(), edge_end.key().z_key());
+                edge_bboxes_near(start, end, edge_start, edge_end, 2_000).then_some((
+                    index,
+                    edge_start,
+                    edge_end,
+                    raw_xz_to_mm(edge_start),
+                    raw_xz_to_mm(edge_end),
+                ))
+            })
+        })
+        .take(16)
+        .collect()
+}
+
+fn triangulation_regions_for_raw_triangle_edge(
+    triangulation: &crate::simulation::network::surface::triangulation::NodeTriangulationSolution,
+    start: (i64, i64),
+    end: (i64, i64),
+) -> Vec<(usize, NodeBandOwner, NodeBandHeightFieldId, usize)> {
+    triangulation
+        .regions
+        .iter()
+        .enumerate()
+        .filter_map(|(region_index, region)| {
+            let mut count = 0usize;
+            for triangle in &region.triangles {
+                for edge in [
+                    [triangle.vertices[0], triangle.vertices[1]],
+                    [triangle.vertices[1], triangle.vertices[2]],
+                    [triangle.vertices[2], triangle.vertices[0]],
+                ] {
+                    let Some(a) = region.vertices.get(edge[0]) else {
+                        continue;
+                    };
+                    let Some(b) = region.vertices.get(edge[1]) else {
+                        continue;
+                    };
+                    let a = road_vec3_raw_xz(a.point_world);
+                    let b = road_vec3_raw_xz(b.point_world);
+                    if (a == start && b == end) || (a == end && b == start) {
+                        count += 1;
+                    }
+                }
+            }
+            (count > 0).then_some((region_index, region.owner, region.height_field_id, count))
+        })
+        .collect()
+}
+
+fn triangle_area_m2_for_debug(
+    region: &crate::simulation::network::surface::triangulation::NodeTriangulatedRegion,
+    triangle: &crate::simulation::network::surface::triangulation::NodeTriangulatedTriangle,
+) -> f64 {
+    let points = triangle
+        .vertices
+        .map(|index| region.vertices[index].point_world);
+    let ax = points[1].x - points[0].x;
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let bz = points[2].z - points[0].z;
+    ((ax * bz - az * bx) * 0.5).abs()
+}
+
+fn edge_bboxes_near(
+    first_start: (i64, i64),
+    first_end: (i64, i64),
+    second_start: (i64, i64),
+    second_end: (i64, i64),
+    tolerance_key_units: i64,
+) -> bool {
+    let first_min_x = first_start.0.min(first_end.0) - tolerance_key_units;
+    let first_max_x = first_start.0.max(first_end.0) + tolerance_key_units;
+    let first_min_z = first_start.1.min(first_end.1) - tolerance_key_units;
+    let first_max_z = first_start.1.max(first_end.1) + tolerance_key_units;
+    let second_min_x = second_start.0.min(second_end.0);
+    let second_max_x = second_start.0.max(second_end.0);
+    let second_min_z = second_start.1.min(second_end.1);
+    let second_max_z = second_start.1.max(second_end.1);
+    second_min_x <= first_max_x
+        && second_max_x >= first_min_x
+        && second_min_z <= first_max_z
+        && second_max_z >= first_min_z
 }
 
 pub(in crate::simulation::network::surface::tests) fn triangulation_regions_for_exposed_edge(

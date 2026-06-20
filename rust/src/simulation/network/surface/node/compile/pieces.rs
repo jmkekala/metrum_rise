@@ -96,6 +96,7 @@ impl RoadSurfaceSystem {
             node_regions.node_grade_authorities,
             node_regions.node_top_surface_sources,
             node_regions.owned_regions,
+            node_regions.boolean_debug,
             earthwork_owner_sources,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,

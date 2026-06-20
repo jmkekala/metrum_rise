@@ -9,7 +9,136 @@ fn elapsed_ms(start: Option<Instant>) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn detailed_road_geometry_debug_enabled() -> bool {
+    ["METRUM_DEBUG_ROAD_GEOMETRY_DUMP", "METRUM_DEBUG_ROAD_PROBE"]
+        .iter()
+        .any(|key| {
+            std::env::var(key)
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false)
+        })
+}
+
 impl RoadSurfaceSystem {
+    pub(in crate::simulation::network::surface) fn canonical_node_compile_failure_debug_dump(
+        &self,
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Option<String> {
+        let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
+            Ok(input) => input,
+            Err(error) => {
+                let error = serde_json::to_string(&format!("{error:?}"))
+                    .unwrap_or_else(|_| "\"input_extraction_failed\"".to_string());
+                return Some(format!(
+                    "{{\"failed_stage\":\"input_extraction\",\"error\":{error}}}"
+                ));
+            }
+        };
+        let (rails, _) = match Self::build_node_rail_contours_from_input_with_profile(&input, false)
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return Some(Self::node_compile_failure_debug_dump(
+                    "rail_generation",
+                    NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
+                ));
+            }
+        };
+        let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
+            Ok(ownership) => ownership,
+            Err(error) => {
+                return Some(Self::node_compile_failure_debug_dump(
+                    "boolean_ownership",
+                    NodeValidationReport::from_boolean_ownership_error(node_id, kind, &error),
+                ));
+            }
+        };
+        if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
+            &ownership.owned_region_arrangement,
+        ) {
+            return Some(Self::node_compile_failure_debug_dump(
+                "owned_region_arrangement",
+                report,
+            ));
+        }
+        let heights =
+            match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
+                Ok(heights) => heights,
+                Err(error) => {
+                    return Some(Self::node_compile_failure_debug_dump(
+                        "height_solution",
+                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                            .with_height_failure_context(&rails, &ownership),
+                    ));
+                }
+            };
+        let (mut arrangement, _) =
+            match NodeArrangement::from_height_solution_with_profile(&heights, false) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Some(Self::node_compile_failure_debug_dump(
+                        "arrangement",
+                        NodeValidationReport::from_arrangement_error(node_id, kind, &error),
+                    ));
+                }
+            };
+        if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
+            return Some(Self::node_compile_failure_debug_dump(
+                "arrangement_diagnostics",
+                report,
+            ));
+        }
+        let triangulation = match Self::build_node_triangulation_from_arrangement(&arrangement) {
+            Ok(triangulation) => triangulation,
+            Err(error) => {
+                return Some(Self::node_compile_failure_debug_dump(
+                    "triangulation",
+                    NodeValidationReport::from_triangulation_error(node_id, kind, &error),
+                ));
+            }
+        };
+        match Self::validate_node_triangulation_solution(&triangulation) {
+            Ok(_) => {}
+            Err(error) => {
+                if error.report.has_blocking_diagnostics() {
+                    return Some(Self::node_compile_failure_debug_dump(
+                        "triangulation_validation",
+                        error.report,
+                    ));
+                }
+            }
+        }
+        if let Err(error) = arrangement.attach_triangulation_with_profile(&triangulation, false) {
+            return Some(Self::node_compile_failure_debug_dump(
+                "attach_triangulation",
+                NodeValidationReport::from_arrangement_error(node_id, kind, &error),
+            ));
+        }
+        match Self::node_surface_regions_from_arrangement_with_profile(
+            &arrangement,
+            &ownership.footprint_shapes,
+            false,
+        ) {
+            Ok(_) => None,
+            Err(error) => Some(Self::node_compile_failure_debug_dump(
+                "boundary_export",
+                Self::node_boundary_export_report(&arrangement, &error),
+            )),
+        }
+    }
+
+    fn node_compile_failure_debug_dump(
+        failed_stage: &'static str,
+        report: NodeValidationReport,
+    ) -> String {
+        format!(
+            "{{\"failed_stage\":\"{failed_stage}\",\"validation_report\":{}}}",
+            report.debug_dump()
+        )
+    }
+
     pub(super) fn compile_canonical_node_surface_regions(
         &self,
         node_id: u32,
@@ -53,6 +182,14 @@ impl RoadSurfaceSystem {
             }
         };
         let ownership_ms = elapsed_ms(ownership_start);
+        let boolean_debug = detailed_road_geometry_debug_enabled().then(|| {
+            NodeBooleanDebugSnapshot::from_rails_and_ownership(
+                &rails,
+                &ownership,
+                !rails.corner_trims.is_empty()
+                    && rails.piece_kind == RoadSurfaceVisualNodePieceKind::Bend,
+            )
+        });
 
         let ownership_diag_start = road_debug.then(Instant::now);
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
@@ -68,9 +205,10 @@ impl RoadSurfaceSystem {
             match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
                 Ok(heights) => heights,
                 Err(error) => {
-                    self.log_node_validation_report(
-                        &NodeValidationReport::from_height_field_error(node_id, kind, &error),
-                    );
+                    let report =
+                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                            .with_height_failure_context(&rails, &ownership);
+                    self.log_node_validation_report(&report);
                     return None;
                 }
             };
@@ -139,7 +277,8 @@ impl RoadSurfaceSystem {
             &ownership.footprint_shapes,
             road_debug,
         ) {
-            Ok((regions, export_profile)) => {
+            Ok((mut regions, export_profile)) => {
+                regions.boolean_debug = boolean_debug;
                 let export_ms = elapsed_ms(export_start);
                 if road_debug {
                     let total_ms = elapsed_ms(total_start);
