@@ -1,8 +1,8 @@
 //! Debug extraction helpers for compiled road-surface state.
 
 use super::node::{
-    NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodePostBooleanOwnedRegionDebug,
-    NodeSideJoinContourDebug,
+    NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodeCornerTrimSideJoinIntersectionDebug,
+    NodePostBooleanOwnedRegionDebug, NodeSideJoinContourDebug, rails::NodeGeneratedContourKind,
 };
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundarySegmentSource,

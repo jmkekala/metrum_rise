@@ -479,6 +479,136 @@ fn logged_current_bend_keeps_curved_inner_asphalt_curb_steps() {
 }
 
 #[test]
+fn logged_current_bend_keeps_inner_sidewalk_side_join_inside_footprint() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-85.017464, 0.0, -22.491150),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(Vector3::new(-20.176170, 0.0, 12.873726), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(-14.238701, 0.0, 65.644653), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-85.017464, 0.0, -22.491150),
+            Vector3::new(-20.176170, 0.0, 12.873726),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-20.176170, 0.0, 12.873726),
+            Vector3::new(-14.238701, 0.0, 65.644653),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+
+    assert_bend_sidewalk_side_join_contours_survive_footprint(&surface, bend_piece, bend);
+    assert_bend_non_road_side_join_contours_survive_footprint(&surface, bend_piece, bend);
+}
+
+#[test]
+fn logged_current_bend_keeps_curved_curb_side_join_inside_footprint() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-95.642860, 0.0, -4.336258), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-23.908737, 0.0, 15.929688), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(9.426231, 0.0, 88.333519), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-95.642860, 0.0, -4.336258),
+            Vector3::new(-23.908737, 0.0, 15.929688),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-23.908737, 0.0, 15.929688),
+            Vector3::new(9.426231, 0.0, 88.333519),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+
+    assert_bend_non_road_side_join_contours_survive_footprint(&surface, bend_piece, bend);
+}
+
+#[test]
+fn logged_inner_bend_orients_fragmented_curb_step_faces_to_lower_asphalt() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-18.243053, 0.0, -35.618744),
+        NodeType::Junction,
+    );
+    let bend = graph.add_node(Vector3::new(36.906178, 0.0, -21.168159), NodeType::Junction);
+    let southeast = graph.add_node(Vector3::new(67.482918, 0.0, -51.944984), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-18.243053, 0.0, -35.618744),
+            Vector3::new(36.906178, 0.0, -21.168159),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        southeast,
+        vec![
+            Vector3::new(36.906178, 0.0, -21.168159),
+            Vector3::new(67.482918, 0.0, -51.944984),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let bend_piece = assert_compiled_bend_piece(&surface, &graph, bend);
+    assert_raised_step_faces_visible_from_lower_owner(bend_piece);
+}
+
+#[test]
 fn logged_inside_bend_compiles_with_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
@@ -628,6 +758,162 @@ fn assert_bend_asphalt_has_no_detached_islands(piece: &RoadSurfaceVisualNodePiec
     );
 }
 
+fn assert_bend_sidewalk_side_join_contours_survive_footprint(
+    surface: &RoadSurfaceSystem,
+    piece: &RoadSurfaceVisualNodePiece,
+    node_id: u32,
+) {
+    let input = surface
+        .compiled_visual_node_inputs
+        .get(&node_id)
+        .expect("compiled bend input must be cached");
+    let arrangement_input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        node_id,
+        piece.kind,
+        &input.mouths,
+    )
+    .expect("compiled bend input must rebuild arrangement input");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&arrangement_input)
+        .expect("compiled bend input must rebuild generated rail contours");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("compiled bend rails must rebuild boolean ownership");
+    let debug_snapshot =
+        node::NodeBooleanDebugSnapshot::from_rails_and_ownership(&rails, &ownership, true);
+    assert!(
+        debug_snapshot.corner_trims.iter().any(|trim| {
+            trim.source_band_kind == RoadSurfaceBandKind::Sidewalk
+                && trim.side_join_intersections.iter().any(|intersection| {
+                    intersection.owner == Some(trim.source_owner)
+                        && matches!(
+                            intersection.kind,
+                            rails::NodeGeneratedContourKind::Band {
+                                kind: RoadSurfaceBandKind::Sidewalk,
+                            }
+                        )
+                        && intersection.area_m2 > 1.0
+                })
+        }),
+        "Bend side-join trim debug must expose raw trim/sidewalk intersections with source provenance: {:?}",
+        debug_snapshot.corner_trims
+    );
+    let sidewalk_side_join_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.purpose == rails::NodeGeneratedContourPurpose::BendSideJoin
+                && contour.contributes_to_non_road_band()
+                && matches!(
+                    contour.kind,
+                    rails::NodeGeneratedContourKind::Band {
+                        kind: RoadSurfaceBandKind::Sidewalk,
+                    }
+                )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        sidewalk_side_join_contours.len() >= 2,
+        "logged bend must generate both sidewalk side-join bands: {:?}",
+        rails.contours
+    );
+
+    for contour in sidewalk_side_join_contours {
+        let raw_shapes =
+            RoadSurfaceSystem::overlay_union_contours(&[overlay_contour_from_generated_contour(
+                contour,
+            )])
+            .expect("generated sidewalk side-join contour must union");
+        let raw_area_m2 = overlay_area_m2(&raw_shapes);
+        let retained_shapes = RoadSurfaceSystem::overlay_binary_shapes(
+            &raw_shapes,
+            &ownership.footprint_shapes,
+            OverlayRule::Intersect,
+        )
+        .expect("sidewalk side-join / footprint intersection must solve");
+        let retained_area_m2 = overlay_area_m2(&retained_shapes);
+        let lost_area_m2 = raw_area_m2 - retained_area_m2;
+
+        assert!(
+            lost_area_m2 <= 0.05,
+            "Bend footprint trims must not delete the generated sidewalk side-join band; lost_area_m2={lost_area_m2:.3} raw_area_m2={raw_area_m2:.3} retained_area_m2={retained_area_m2:.3} contour={contour:?} corner_trims={:?} footprint={:?}",
+            rails.corner_trims,
+            ownership.footprint_shapes
+        );
+    }
+}
+
+fn assert_bend_non_road_side_join_contours_survive_footprint(
+    surface: &RoadSurfaceSystem,
+    piece: &RoadSurfaceVisualNodePiece,
+    node_id: u32,
+) {
+    let input = surface
+        .compiled_visual_node_inputs
+        .get(&node_id)
+        .expect("compiled bend input must be cached");
+    let arrangement_input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        node_id,
+        piece.kind,
+        &input.mouths,
+    )
+    .expect("compiled bend input must rebuild arrangement input");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&arrangement_input)
+        .expect("compiled bend input must rebuild generated rail contours");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("compiled bend rails must rebuild boolean ownership");
+    let side_join_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.purpose == rails::NodeGeneratedContourPurpose::BendSideJoin
+                && contour.contributes_to_non_road_band()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        side_join_contours.iter().any(|contour| matches!(
+            contour.kind,
+            rails::NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::CurbOrShoulder,
+            }
+        )),
+        "logged bend must generate curved curb side-join bands: {:?}",
+        rails.contours
+    );
+    assert!(
+        side_join_contours.iter().any(|contour| matches!(
+            contour.kind,
+            rails::NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            }
+        )),
+        "logged bend must generate curved sidewalk side-join bands: {:?}",
+        rails.contours
+    );
+
+    for contour in side_join_contours {
+        let raw_shapes =
+            RoadSurfaceSystem::overlay_union_contours(&[overlay_contour_from_generated_contour(
+                contour,
+            )])
+            .expect("generated non-road side-join contour must union");
+        let raw_area_m2 = overlay_area_m2(&raw_shapes);
+        let retained_shapes = RoadSurfaceSystem::overlay_binary_shapes(
+            &raw_shapes,
+            &ownership.footprint_shapes,
+            OverlayRule::Intersect,
+        )
+        .expect("non-road side-join / footprint intersection must solve");
+        let retained_area_m2 = overlay_area_m2(&retained_shapes);
+        let lost_area_m2 = raw_area_m2 - retained_area_m2;
+
+        assert!(
+            lost_area_m2 <= 0.05,
+            "Bend footprint trims must not delete generated non-road side-join bands; lost_area_m2={lost_area_m2:.3} raw_area_m2={raw_area_m2:.3} retained_area_m2={retained_area_m2:.3} contour={contour:?} corner_trims={:?} footprint={:?}",
+            rails.corner_trims,
+            ownership.footprint_shapes
+        );
+    }
+}
+
 fn assert_bend_outer_boundary_preserves_corner_trim_support(
     surface: &RoadSurfaceSystem,
     piece: &RoadSurfaceVisualNodePiece,
@@ -658,6 +944,16 @@ fn assert_bend_outer_boundary_preserves_corner_trim_support(
         rails.corner_trims,
         piece.outer_boundary_loops
     );
+}
+
+fn overlay_contour_from_generated_contour(
+    contour: &rails::NodeGeneratedContour,
+) -> NodeOverlayContour {
+    contour
+        .points_xz
+        .iter()
+        .map(|point| [point.x, point.y])
+        .collect()
 }
 
 fn visual_polygon_boundary_passes_near_xz(

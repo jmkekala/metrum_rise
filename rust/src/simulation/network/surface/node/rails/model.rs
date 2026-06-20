@@ -133,6 +133,10 @@ pub(crate) struct NodeGeneratedContour {
 
 #[derive(Clone, Debug)]
 pub(crate) struct NodeGeneratedCornerTrim {
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: usize,
+    pub(crate) source_band_kind: RoadSurfaceBandKind,
+    pub(crate) source_owner: NodeBandOwner,
     pub(crate) points_xz: Vec<RoadVec2>,
 }
 

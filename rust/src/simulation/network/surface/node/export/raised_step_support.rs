@@ -24,9 +24,14 @@ impl RoadSurfaceSystem {
         let top_edges = owned_top_boundary_edges(owned_regions);
         let required_spans =
             final_required_raised_step_spans(explicit_vertical_step_segments, &top_edges);
+        let region_centroids = raised_step_region_centroids(owned_regions);
         let owner_centroids = raised_step_owner_centroids(owned_regions);
-        complete_raised_step_faces_from_final_spans(raised_step_faces, &required_spans);
-        orient_raised_step_faces_from_lower_owner(raised_step_faces, &owner_centroids);
+        complete_raised_step_faces_from_final_spans(
+            raised_step_faces,
+            &required_spans,
+            &region_centroids,
+            &owner_centroids,
+        );
     }
 }
 
@@ -45,6 +50,7 @@ struct NodeTopSupportEdgeKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeTopSupportEdge {
     owner: NodeBandOwner,
+    region_index: usize,
     start: NodeTopSupportVertexKey,
     end: NodeTopSupportVertexKey,
 }
@@ -104,28 +110,39 @@ struct SurfaceKeyTile {
 fn owned_top_boundary_edges(owned_regions: &[NodeOwnedRegion]) -> Vec<NodeTopSupportEdge> {
     let mut edge_counts_by_owner = BTreeMap::<
         NodeBandOwner,
-        BTreeMap<NodeTopSupportEdgeKey, (usize, NodeTopSupportVertexKey, NodeTopSupportVertexKey)>,
+        BTreeMap<
+            NodeTopSupportEdgeKey,
+            (
+                usize,
+                NodeTopSupportVertexKey,
+                NodeTopSupportVertexKey,
+                usize,
+            ),
+        >,
     >::new();
-    for region in owned_regions {
+    for (region_index, region) in owned_regions.iter().enumerate() {
         let owner = NodeBandOwner::new(region.kind, region.owner_index);
         let edge_counts = edge_counts_by_owner.entry(owner).or_default();
         for (edge_key, edge_start, edge_end) in final_polygon_boundary_edges(&region.polygon) {
             edge_counts
                 .entry(edge_key)
                 .and_modify(|entry| entry.0 += 1)
-                .or_insert((1, edge_start, edge_end));
+                .or_insert((1, edge_start, edge_end, region_index));
         }
     }
 
     let mut top_edges = Vec::new();
     for (owner, edge_counts) in edge_counts_by_owner {
-        top_edges.extend(
-            edge_counts
-                .into_iter()
-                .filter_map(|(_key, (count, start, end))| {
-                    (count == 1).then_some(NodeTopSupportEdge { owner, start, end })
-                }),
-        );
+        top_edges.extend(edge_counts.into_iter().filter_map(
+            |(_key, (count, start, end, region_index))| {
+                (count == 1).then_some(NodeTopSupportEdge {
+                    owner,
+                    region_index,
+                    start,
+                    end,
+                })
+            },
+        ));
     }
     top_edges
 }
@@ -190,6 +207,8 @@ fn top_support_edge_from_world_points(
 fn complete_raised_step_faces_from_final_spans(
     raised_step_faces: &mut Vec<RoadSurfaceRaisedStepFace>,
     required_spans: &[FinalRequiredRaisedStepSpan],
+    region_centroids: &[Option<RoadVec3>],
+    owner_centroids: &BTreeMap<NodeBandOwner, RoadVec3>,
 ) {
     // Final owner-wide top boundaries are the rendered authority. Rebuild the face set from these
     // spans so stale arrangement-side quads cannot block corrected final support geometry.
@@ -200,7 +219,13 @@ fn complete_raised_step_faces_from_final_spans(
         if !emitted.insert(span.support_key) {
             continue;
         }
-        if let Some(face) = raised_step_face_from_span(span) {
+        if let Some(mut face) = raised_step_face_from_span(span) {
+            orient_raised_step_face_from_lower_owner(
+                &mut face,
+                span.lower_edge.region_index,
+                region_centroids,
+                owner_centroids,
+            );
             rebuilt.push(face);
         }
     }
@@ -423,6 +448,13 @@ fn raised_step_face_support_key_from_boundary_points(
     }
 }
 
+fn raised_step_region_centroids(owned_regions: &[NodeOwnedRegion]) -> Vec<Option<RoadVec3>> {
+    owned_regions
+        .iter()
+        .map(|region| owned_region_centroid_sum(region).map(|(sum, count)| sum / count as f64))
+        .collect()
+}
+
 fn raised_step_owner_centroids(
     owned_regions: &[NodeOwnedRegion],
 ) -> BTreeMap<NodeBandOwner, RoadVec3> {
@@ -430,21 +462,9 @@ fn raised_step_owner_centroids(
     for region in owned_regions {
         let owner = NodeBandOwner::new(region.kind, region.owner_index);
         let entry = sums.entry(owner).or_insert((RoadVec3::ZERO, 0));
-        if !region.polygon.points_world.is_empty() {
-            for point in &region.polygon.points_world {
-                entry.0 += RoadVec3::new(point.x, 0.0, point.z);
-                entry.1 += 1;
-            }
-        } else {
-            for point in region
-                .polygon
-                .triangles_world
-                .iter()
-                .flat_map(|triangle| triangle.iter())
-            {
-                entry.0 += RoadVec3::new(point.x, 0.0, point.z);
-                entry.1 += 1;
-            }
+        if let Some((sum, count)) = owned_region_centroid_sum(region) {
+            entry.0 += sum;
+            entry.1 += count;
         }
     }
     sums.into_iter()
@@ -452,45 +472,72 @@ fn raised_step_owner_centroids(
         .collect()
 }
 
-fn orient_raised_step_faces_from_lower_owner(
-    raised_step_faces: &mut [RoadSurfaceRaisedStepFace],
+fn owned_region_centroid_sum(region: &NodeOwnedRegion) -> Option<(RoadVec3, usize)> {
+    let mut sum = RoadVec3::ZERO;
+    let mut count = 0usize;
+    if !region.polygon.points_world.is_empty() {
+        for point in &region.polygon.points_world {
+            sum += RoadVec3::new(point.x, 0.0, point.z);
+            count += 1;
+        }
+    } else {
+        for point in region
+            .polygon
+            .triangles_world
+            .iter()
+            .flat_map(|triangle| triangle.iter())
+        {
+            sum += RoadVec3::new(point.x, 0.0, point.z);
+            count += 1;
+        }
+    }
+    (count > 0).then_some((sum, count))
+}
+
+fn orient_raised_step_face_from_lower_owner(
+    face: &mut RoadSurfaceRaisedStepFace,
+    lower_region_index: usize,
+    region_centroids: &[Option<RoadVec3>],
     owner_centroids: &BTreeMap<NodeBandOwner, RoadVec3>,
 ) {
-    for face in raised_step_faces {
-        let Some((lower_owner, _)) = face.source.lower_and_raised_owners() else {
-            continue;
-        };
-        let Some(lower_centroid) = owner_centroids.get(&lower_owner).copied() else {
-            continue;
-        };
-        let lower_start = boundary_point_to_world(face.lower_edge.0);
-        let lower_end = boundary_point_to_world(face.lower_edge.1);
-        let midpoint = RoadVec3::new(
-            (lower_start.x + lower_end.x) * 0.5,
-            0.0,
-            (lower_start.z + lower_end.z) * 0.5,
-        );
-        let owner_direction = RoadVec3::new(
-            lower_centroid.x - midpoint.x,
-            0.0,
-            lower_centroid.z - midpoint.z,
-        );
-        if owner_direction.length_squared() <= 1e-8 {
-            continue;
-        }
-        let Some(visible_direction) = vertical_face_visible_direction(&face.polygon.points_world)
-        else {
-            continue;
-        };
-        if visible_direction.dot(owner_direction.normalize()) > 0.0 {
-            continue;
-        }
-        let [a, b, c, d] = face.polygon.points_world.as_slice() else {
-            continue;
-        };
-        if let Some(flipped) = RoadSurfaceSystem::make_vertical_quad_polygon([*d, *c, *b, *a]) {
-            face.polygon = flipped;
-        }
+    let Some((lower_owner, _)) = face.source.lower_and_raised_owners() else {
+        return;
+    };
+    let Some(lower_centroid) = region_centroids
+        .get(lower_region_index)
+        .copied()
+        .flatten()
+        .or_else(|| owner_centroids.get(&lower_owner).copied())
+    else {
+        return;
+    };
+    let lower_start = boundary_point_to_world(face.lower_edge.0);
+    let lower_end = boundary_point_to_world(face.lower_edge.1);
+    let midpoint = RoadVec3::new(
+        (lower_start.x + lower_end.x) * 0.5,
+        0.0,
+        (lower_start.z + lower_end.z) * 0.5,
+    );
+    let owner_direction = RoadVec3::new(
+        lower_centroid.x - midpoint.x,
+        0.0,
+        lower_centroid.z - midpoint.z,
+    );
+    if owner_direction.length_squared() <= 1e-8 {
+        return;
+    }
+    let Some(visible_direction) = vertical_face_visible_direction(&face.polygon.points_world)
+    else {
+        return;
+    };
+    if visible_direction.dot(owner_direction.normalize()) > 0.0 {
+        return;
+    }
+    let [a, b, c, d] = face.polygon.points_world.as_slice() else {
+        return;
+    };
+    if let Some(flipped) = RoadSurfaceSystem::make_vertical_quad_polygon([*d, *c, *b, *a]) {
+        face.polygon = flipped;
     }
 }
 

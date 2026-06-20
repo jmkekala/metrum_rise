@@ -107,8 +107,8 @@ pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_
             constraints,
         )?;
     }
-    for side_join_band in side_join_bands {
-        push_side_join_outer_footprint_trim(mouth, side_join_band, corner_trims)?;
+    for (side_join_band, owner) in side_join_bands.iter().zip(owners) {
+        push_side_join_outer_footprint_trim(mouth, side_join_band, *owner, corner_trims)?;
     }
     for (side_join_band, owner) in side_join_bands.iter().zip(owners) {
         push_side_join_band_boundary_constraints(
@@ -126,6 +126,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_
 fn push_side_join_outer_footprint_trim(
     mouth: &NodeInputMouth,
     side_join_band: &NodeInputSideJoinBand,
+    owner: NodeBandOwner,
     corner_trims: &mut Vec<NodeGeneratedCornerTrim>,
 ) -> Result<(), NodeRailGenerationError> {
     if !side_join_band.trims_outer_footprint || side_join_band.outer_footprint_trim_world.len() < 3
@@ -145,6 +146,12 @@ fn push_side_join_outer_footprint_trim(
         points,
     )?;
     let points_xz = polyline_to_road_points(&trim);
-    corner_trims.push(NodeGeneratedCornerTrim { points_xz });
+    corner_trims.push(NodeGeneratedCornerTrim {
+        source_mouth_order_index: mouth.order_index,
+        source_band_index: side_join_band.source_band_index,
+        source_band_kind: side_join_band.band_kind,
+        source_owner: owner,
+        points_xz,
+    });
     Ok(())
 }

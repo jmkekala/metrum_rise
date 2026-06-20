@@ -326,17 +326,13 @@ impl NodeBooleanOwnership {
             &asphalt_authority_domains,
             &asphalt_untrimmed_shapes,
         )?;
-        let footprint_corner_trim_contours =
+        let footprint_corner_trim_shapes =
             if rails.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
-                overlay_contours_for_corner_trims(rails)
+                protected_bend_corner_trim_shapes(rails)?
             } else {
                 Vec::new()
             };
-        if !footprint_corner_trim_contours.is_empty() {
-            let footprint_corner_trim_shapes = overlay_union(
-                &footprint_corner_trim_contours,
-                "footprint_corner_trim_union",
-            )?;
+        if !footprint_corner_trim_shapes.is_empty() {
             let footprint_corner_trim_shapes = overlay_difference(
                 &footprint_corner_trim_shapes,
                 &asphalt_untrimmed_shapes,
@@ -795,17 +791,56 @@ fn owned_region_point_keys(owned_regions: &[NodeBooleanOwnedRegion]) -> Vec<Node
     points
 }
 
-fn overlay_contours_for_corner_trims(rails: &NodeRailContourSet) -> Vec<NodeOverlayContour> {
-    rails
-        .corner_trims
+fn protected_bend_corner_trim_shapes(
+    rails: &NodeRailContourSet,
+) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    let mut protected_trim_shapes = Vec::new();
+    for trim in &rails.corner_trims {
+        let trim_contour = overlay_contour_for_corner_trim(trim);
+        let mut trim_shapes = overlay_union(&[trim_contour], "footprint_corner_trim_single_union")?;
+        let protected_contours = bend_side_join_protection_contours_for_corner_trim(rails, trim);
+        if !protected_contours.is_empty() {
+            let protected_shapes = overlay_union(
+                &protected_contours,
+                "footprint_corner_trim_side_join_protection_union",
+            )?;
+            trim_shapes = overlay_difference(
+                &trim_shapes,
+                &protected_shapes,
+                "footprint_corner_trim_side_join_protection_difference",
+            )?;
+        }
+        protected_trim_shapes = overlay_union_shape_sets(
+            &protected_trim_shapes,
+            &trim_shapes,
+            "footprint_corner_trim_protected_union",
+        )?;
+    }
+    Ok(protected_trim_shapes)
+}
+
+fn overlay_contour_for_corner_trim(
+    trim: &super::rails::NodeGeneratedCornerTrim,
+) -> NodeOverlayContour {
+    trim.points_xz
         .iter()
-        .map(|trim| {
-            trim.points_xz
-                .iter()
-                .copied()
-                .map(road_vec2_to_overlay_point)
-                .collect()
+        .copied()
+        .map(road_vec2_to_overlay_point)
+        .collect()
+}
+
+fn bend_side_join_protection_contours_for_corner_trim(
+    rails: &NodeRailContourSet,
+    trim: &super::rails::NodeGeneratedCornerTrim,
+) -> Vec<NodeOverlayContour> {
+    rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
+                && contour.source_mouth_order_index == trim.source_mouth_order_index
         })
+        .map(overlay_contour_from_domain)
         .collect()
 }
 

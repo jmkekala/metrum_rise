@@ -56,10 +56,10 @@ mod vertical_faces;
 
 pub use piece::RoadSurfaceVisualNodePiece;
 pub(crate) use piece::{
-    NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodeEarthworkOwnerSource,
-    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
-    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodePostBooleanOwnedRegionDebug,
-    NodeSideJoinContourDebug, NodeSurfaceRegionResult, NodeTopSurfacePolygonSource,
-    NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
+    NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodeCornerTrimSideJoinIntersectionDebug,
+    NodeEarthworkOwnerSource, NodeFootprintBoundaryDirectSource,
+    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, NodeOwnedRegion,
+    NodePostBooleanOwnedRegionDebug, NodeSideJoinContourDebug, NodeSurfaceRegionResult,
+    NodeTopSurfacePolygonSource, NodeTopSurfaceVertexSource, RoadSurfaceVerticalFaceSource,
 };
 pub(in crate::simulation::network::surface::node) use vertical_faces::RoadSurfaceRaisedStepFace;

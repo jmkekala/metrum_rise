@@ -652,13 +652,67 @@ impl RoadSurfaceSystem {
     ) {
         let _ = write!(
             dump,
-            "{{\"trim\":{},\"applied_to_footprint\":{},\"point_count\":{},\"points_xz\":",
+            "{{\"trim\":{},\"applied_to_footprint\":{},\"source_mouth_order_index\":{},\"source_band_index\":{},\"source_band_kind\":\"{:?}\",\"source_owner\":",
             trim_index,
             applied_to_footprint,
+            trim.source_mouth_order_index,
+            trim.source_band_index,
+            trim.source_band_kind
+        );
+        Self::append_node_band_owner_literal(dump, trim.source_owner);
+        let _ = write!(
+            dump,
+            ",\"point_count\":{},\"points_xz\":",
             trim.points_xz.len()
         );
         Self::append_vector2_precise_list_literal(dump, &trim.points_xz);
+        dump.push_str(",\"side_join_intersections\":[");
+        for (intersection_index, intersection) in trim.side_join_intersections.iter().enumerate() {
+            if intersection_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_corner_trim_side_join_intersection_debug_literal(dump, intersection);
+        }
+        dump.push(']');
         dump.push('}');
+    }
+
+    fn append_corner_trim_side_join_intersection_debug_literal(
+        dump: &mut String,
+        intersection: &NodeCornerTrimSideJoinIntersectionDebug,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"contour\":{},\"kind\":\"{:?}\",\"material\":\"{}\",\"purpose\":\"{:?}\",\"source_mouth_order_index\":{},\"source_band_index\":",
+            intersection.contour_index,
+            intersection.kind,
+            Self::debug_material_for_generated_contour_kind(intersection.kind),
+            intersection.purpose,
+            intersection.source_mouth_order_index
+        );
+        Self::append_optional_usize_literal(dump, intersection.source_band_index);
+        dump.push_str(",\"owner\":");
+        if let Some(owner) = intersection.owner {
+            Self::append_node_band_owner_literal(dump, owner);
+        } else {
+            dump.push_str("null");
+        }
+        let _ = write!(
+            dump,
+            ",\"claim_priority\":\"{:?}\",\"contributes_to_footprint\":{},\"contributes_to_asphalt\":{},\"contributes_to_non_road_band\":{},\"area_m2\":{:.6}}}",
+            intersection.claim_priority,
+            intersection.contributes_to_footprint,
+            intersection.contributes_to_asphalt,
+            intersection.contributes_to_non_road_band,
+            intersection.area_m2
+        );
+    }
+
+    fn debug_material_for_generated_contour_kind(kind: NodeGeneratedContourKind) -> &'static str {
+        match kind {
+            NodeGeneratedContourKind::FullRoadbed => "footprint",
+            NodeGeneratedContourKind::Band { kind } => Self::debug_material_for_band_kind(kind),
+        }
     }
 
     fn append_overlay_shapes_debug_literal(dump: &mut String, shapes: &NodeOverlayShapes) {
