@@ -16,6 +16,9 @@ uniform float water_wave_color_strength = 0.025;
 uniform float water_wave_roughness_strength = 0.010;
 uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
+uniform int water_visual_debug_mode = 0;
+uniform vec2 water_debug_patch_key = vec2(0.0);
+uniform float water_debug_lod_step = 1.0;
 uniform vec2 watermap_texture_size = vec2(1.0, 1.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
@@ -139,34 +142,87 @@ float water_surface_breakup(vec2 world_xz) {
 	return n1 * 0.58 + n2 * 0.29 + n3 * 0.13;
 }
 
+float water_debug_patch_border(vec2 patch_uv) {
+	vec2 edge_distance = min(patch_uv, vec2(1.0) - patch_uv);
+	float nearest_edge = min(edge_distance.x, edge_distance.y);
+	return 1.0 - smoothstep(0.006, 0.018, nearest_edge);
+}
+
+vec3 water_debug_patch_color(vec2 key) {
+	return vec3(
+		0.25 + hash12(key + vec2(17.3, 3.9)) * 0.70,
+		0.25 + hash12(key + vec2(61.1, 29.4)) * 0.70,
+		0.25 + hash12(key + vec2(8.8, 83.7)) * 0.70
+	);
+}
+
+vec3 water_debug_lod_color(float lod_step) {
+	if (lod_step <= 1.5) {
+		return vec3(0.10, 0.85, 0.22);
+	}
+	if (lod_step <= 2.5) {
+		return vec3(0.05, 0.70, 1.00);
+	}
+	if (lod_step <= 4.5) {
+		return vec3(1.00, 0.78, 0.08);
+	}
+	return vec3(1.00, 0.12, 0.08);
+}
+
+vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
+	vec3 debug_color = vec3(0.0);
+	if (water_visual_debug_mode == 1 || water_visual_debug_mode == 8) {
+		debug_color = water_debug_patch_color(water_debug_patch_key);
+	} else if (water_visual_debug_mode == 2 || water_visual_debug_mode == 7) {
+		debug_color = water_debug_lod_color(water_debug_lod_step);
+	} else if (water_visual_debug_mode == 3) {
+		float terrain_height = sample_terrain_world_height(var_centered_uv);
+		debug_color = vec3(clamp(terrain_height / max(height_scale, 0.001), 0.0, 1.0));
+	} else if (water_visual_debug_mode == 5) {
+		debug_color = vec3(shore_mask, depth_m > 0.001 ? 0.45 : 0.0, 1.0 - shore_mask);
+	} else {
+		float depth_visibility = smoothstep(0.0, 6.0, depth_m);
+		debug_color = mix(vec3(0.02, 0.04, 0.08), vec3(0.02, 0.60, 1.00), depth_visibility);
+	}
+	float border = water_debug_patch_border(patch_uv);
+	return mix(debug_color, vec3(1.0), border);
+}
+
 void fragment() {
 	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
 	float depth_m = contour_depth_m;
 	float speed_sample = texture(velocity_map, var_centered_uv).r;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
-	if (shore_mask < 0.001 && contour_depth_m <= 0.001) {
-		discard;
-	}
-	
-	float depth_factor = smoothstep(0.0, 10.0, depth_m);
-	float wave = water_surface_breakup(var_world_pos.xz);
-	float wave_signed = wave * 2.0 - 1.0;
-	vec3 base_color = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
-	base_color *= 1.0 + wave_signed * water_wave_color_strength;
+	if (water_visual_debug_mode > 0) {
+		ALBEDO = water_visual_debug_color(UV, depth_m, shore_mask);
+		ALPHA = 0.92;
+		ROUGHNESS = 1.0;
+		SPECULAR = 0.0;
+	} else {
+		if (shore_mask < 0.001 && contour_depth_m <= 0.001) {
+			discard;
+		}
 
-	// Speed-based color mixing
-	float speed = clamp(speed_sample * 0.5, 0.0, 1.0);
-	vec3 final_color = mix(base_color, foam_color.rgb, speed * 0.35);
-	float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
-	float shore_foam = 1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), contour_depth_m);
-	final_color = mix(final_color, foam_color.rgb, shore_foam * 0.35 + speed * 0.10);
-	float fresnel = pow(
-		1.0 - clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0),
-		water_fresnel_power
-	);
-	final_color = mix(final_color, vec3(0.96, 0.98, 1.0), fresnel * water_fresnel_strength);
-	ALBEDO = final_color;
-	ALPHA = final_alpha;
-	ROUGHNESS = clamp(0.10 + speed * 0.08 + abs(wave_signed) * water_wave_roughness_strength, 0.06, 0.22);
-	SPECULAR = 0.62;
+		float depth_factor = smoothstep(0.0, 10.0, depth_m);
+		float wave = water_surface_breakup(var_world_pos.xz);
+		float wave_signed = wave * 2.0 - 1.0;
+		vec3 base_color = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
+		base_color *= 1.0 + wave_signed * water_wave_color_strength;
+
+		// Speed-based color mixing
+		float speed = clamp(speed_sample * 0.5, 0.0, 1.0);
+		vec3 final_color = mix(base_color, foam_color.rgb, speed * 0.35);
+		float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
+		float shore_foam = 1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), contour_depth_m);
+		final_color = mix(final_color, foam_color.rgb, shore_foam * 0.35 + speed * 0.10);
+		float fresnel = pow(
+			1.0 - clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0),
+			water_fresnel_power
+		);
+		final_color = mix(final_color, vec3(0.96, 0.98, 1.0), fresnel * water_fresnel_strength);
+		ALBEDO = final_color;
+		ALPHA = final_alpha;
+		ROUGHNESS = clamp(0.10 + speed * 0.08 + abs(wave_signed) * water_wave_roughness_strength, 0.06, 0.22);
+		SPECULAR = 0.62;
+	}
 }

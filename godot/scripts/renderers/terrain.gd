@@ -8,8 +8,8 @@
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
-const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass01_2K_BaseColor.png"
-const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass01_2K_Height.png"
+const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
+const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const HEIGHT_SCALE := 20.0
 const HILLSHADE_AZIMUTH_DEG := 315.0
 const HILLSHADE_ALTITUDE_DEG := 38.0
@@ -20,16 +20,22 @@ const HILLSHADE_SHADOW_TINT := Color(0.62, 0.71, 0.77)
 const HILLSHADE_LIGHT_TINT := Color(0.97, 0.99, 0.95)
 const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
 const TERRAIN_GRASS_TINT := Color(0.22, 0.42, 0.16)
-const TERRAIN_GRASS_TINT_STRENGTH := 0.12
+const TERRAIN_GRASS_TINT_STRENGTH := 0.0
+const TERRAIN_GRASS_ALBEDO_STRENGTH := 0.90
+const TERRAIN_GRASS_MACRO_SCALE := 0.018
+const TERRAIN_GRASS_MID_SCALE := 0.065
+const TERRAIN_GRASS_MACRO_STRENGTH := 0.58
+const TERRAIN_GRASS_MID_STRENGTH := 0.80
+const TERRAIN_GRASS_MICRO_STRENGTH := 0.50
 const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
 const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
 const TERRAIN_BAKED_NORMAL_BLEND := 0.75
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
-const TERRAIN_GRASS_DETAIL_SCALE := 0.38
-const TERRAIN_GRASS_DETAIL_STRENGTH := 0.09
-const TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH := 0.03
-const TERRAIN_GRASS_DETAIL_FADE_START := 0.035
-const TERRAIN_GRASS_DETAIL_FADE_END := 0.18
+const TERRAIN_GRASS_DETAIL_SCALE := 0.34
+const TERRAIN_GRASS_DETAIL_STRENGTH := 0.58
+const TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH := 0.24
+const TERRAIN_GRASS_DETAIL_FADE_START := 0.08
+const TERRAIN_GRASS_DETAIL_FADE_END := 0.90
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
@@ -123,6 +129,7 @@ var _resident_max_patch_z: int = -1
 var _terrain_debug_enabled: bool = false
 var _terrain_debug_verbose: bool = false
 var _terrain_force_full_world: bool = false
+var _terrain_force_lod1: bool = false
 var _road_debug_enabled: bool = false
 var _road_geometry_debug_enabled: bool = false
 var _terrain_mesh_lod_refresh_elapsed_s: float = 0.0
@@ -142,6 +149,8 @@ var _terrain_debug_dirty_batches: int = 0
 var _terrain_debug_dirty_patch_total: int = 0
 var _terrain_debug_last_cull_far_m: float = 0.0
 var _terrain_debug_last_desired_bounds: Dictionary = {}
+var _terrain_visual_debug_mode: int = 0
+var _terrain_grass_visual_debug_mode: int = 0
 
 func _ready() -> void:
 	rebuild_from_simulation_state()
@@ -157,8 +166,11 @@ func rebuild_from_simulation_state() -> void:
 	_terrain_debug_enabled = _terrain_debug_is_enabled()
 	_terrain_debug_verbose = _terrain_debug_is_verbose()
 	_terrain_force_full_world = _terrain_debug_force_full_world()
+	_terrain_force_lod1 = _terrain_debug_force_lod1()
 	_road_debug_enabled = _road_debug_is_enabled()
 	_road_geometry_debug_enabled = _road_geometry_debug_is_enabled()
+	_terrain_visual_debug_mode = _terrain_visual_debug_mode_from_env()
+	_terrain_grass_visual_debug_mode = _terrain_grass_visual_debug_mode_from_env()
 	_terrain_mesh_lod_refresh_elapsed_s = 0.0
 	_reset_terrain_debug_counters()
 	_clear_patches()
@@ -177,8 +189,26 @@ func rebuild_from_simulation_state() -> void:
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
 		_terrain_debug_log(
-			"renderer ready patch_grid=%dx%d patch_span=%.1fm chunk_span=%.1fm force_full_world=%s"
-			% [patch_cols, patch_rows, patch_span_m, float(patch_layout.get("chunk_span_m", 0.0)), str(_terrain_force_full_world)]
+			"renderer ready patch_grid=%dx%d patch_span=%.1fm chunk_span=%.1fm force_full_world=%s force_lod1=%s visual=%d"
+			% [
+				patch_cols,
+				patch_rows,
+				patch_span_m,
+				float(patch_layout.get("chunk_span_m", 0.0)),
+				str(_terrain_force_full_world),
+				str(_terrain_force_lod1),
+				_terrain_visual_debug_mode,
+			]
+		)
+	if _terrain_visual_debug_mode != 0:
+		print(
+			"[DEBUG:terrain] terrain_visual_debug_mode=%d source=%s"
+			% [_terrain_visual_debug_mode, OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL")]
+		)
+	if _terrain_grass_visual_debug_mode != 0:
+		print(
+			"[DEBUG:terrain] grass_visual_debug_mode=%d source=%s"
+			% [_terrain_grass_visual_debug_mode, OS.get_environment("METRUM_DEBUG_TERRAIN_GRASS")]
 		)
 
 func _process(delta: float) -> void:
@@ -483,6 +513,10 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
 	material.set_shader_parameter("world_size", terrain_world_size)
+	material.set_shader_parameter("terrain_visual_debug_mode", _terrain_visual_debug_mode)
+	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
+	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
+	material.set_shader_parameter("terrain_grass_visual_debug_mode", _terrain_grass_visual_debug_mode)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
@@ -497,6 +531,12 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("terrain_macro_variation_strength", TERRAIN_MACRO_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_grass_tint", TERRAIN_GRASS_TINT)
 	material.set_shader_parameter("terrain_grass_tint_strength", TERRAIN_GRASS_TINT_STRENGTH)
+	material.set_shader_parameter("terrain_grass_albedo_strength", TERRAIN_GRASS_ALBEDO_STRENGTH)
+	material.set_shader_parameter("terrain_grass_macro_scale", TERRAIN_GRASS_MACRO_SCALE)
+	material.set_shader_parameter("terrain_grass_mid_scale", TERRAIN_GRASS_MID_SCALE)
+	material.set_shader_parameter("terrain_grass_macro_strength", TERRAIN_GRASS_MACRO_STRENGTH)
+	material.set_shader_parameter("terrain_grass_mid_strength", TERRAIN_GRASS_MID_STRENGTH)
+	material.set_shader_parameter("terrain_grass_micro_strength", TERRAIN_GRASS_MICRO_STRENGTH)
 	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
 	material.set_shader_parameter("terrain_baked_normal_blend", TERRAIN_BAKED_NORMAL_BLEND)
@@ -1249,6 +1289,8 @@ func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> 
 	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
 
 func _mesh_lod_step_for_patch(key: Vector2i, center_x: float, center_z: float) -> int:
+	if _terrain_force_lod1:
+		return 1
 	if road_locked_patch_lookup.has(key):
 		return 1
 	var camera := get_viewport().get_camera_3d()
@@ -1299,6 +1341,8 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 		return
 	patch["lod_step"] = target_lod_step
 	patch["subdivision_factor"] = target_subdivision_factor
+	var material: ShaderMaterial = patch["material"]
+	material.set_shader_parameter("terrain_debug_lod_step", float(target_lod_step))
 	patch_node.mesh = _terrain_patch_mesh_from_data(
 		patch_data,
 		target_lod_step,
@@ -2288,7 +2332,13 @@ func _terrain_debug_is_enabled() -> bool:
 		return false
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain" or entry == "terrain-verbose" or entry == "terrain-full":
+		if (
+			entry == "terrain"
+			or entry == "terrain-verbose"
+			or entry == "terrain-full"
+			or entry == "terrain-lod1"
+			or entry == "terrain-full-lod1"
+		):
 			return true
 	return false
 
@@ -2310,9 +2360,72 @@ func _terrain_debug_force_full_world() -> bool:
 	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-full":
+		if entry == "terrain-full" or entry == "terrain-full-lod1":
 			return true
 	return false
+
+func _terrain_debug_force_lod1() -> bool:
+	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_FORCE_LOD1").strip_edges()
+	if explicit_value == "1":
+		return true
+	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	for entry_variant in filter.split(","):
+		var entry := String(entry_variant).strip_edges()
+		if entry == "terrain-lod1" or entry == "terrain-full-lod1":
+			return true
+	return false
+
+func _terrain_visual_debug_mode_from_env() -> int:
+	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL").strip_edges().to_lower()
+	if value.is_empty() or value == "0" or value == "off" or value == "false":
+		return 0
+	if value.is_valid_int():
+		return clampi(value.to_int(), 0, 8)
+	match value:
+		"patch", "patches":
+			return 1
+		"lod", "lods":
+			return 2
+		"height":
+			return 3
+		"relief":
+			return 4
+		"shore", "shoreline":
+			return 5
+		"water", "depth", "water-depth":
+			return 6
+		"water-lod":
+			return 7
+		"water-patch":
+			return 8
+		_:
+			return 0
+
+func _terrain_grass_visual_debug_mode_from_env() -> int:
+	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_GRASS").strip_edges().to_lower()
+	if value.is_empty() or value == "0" or value == "off" or value == "false":
+		return 0
+	if value.is_valid_int():
+		return clampi(value.to_int(), 0, 8)
+	match value:
+		"raw", "albedo":
+			return 1
+		"macro":
+			return 2
+		"mid":
+			return 3
+		"micro":
+			return 4
+		"fade", "fades", "visibility":
+			return 5
+		"material", "composite":
+			return 6
+		"height":
+			return 7
+		"mask", "grass-mask":
+			return 8
+		_:
+			return 0
 
 func _road_debug_is_enabled() -> bool:
 	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
@@ -2380,7 +2493,7 @@ func _record_terrain_debug_frame(
 		]
 
 	_terrain_debug_log(
-		"fps=%d cam=%s resident=%d/%d desired=%d desired_bounds=%s resident_bounds=%s cull_far=%.1f residency_changes=%d creates=%d removes=%d uploads=%d dirty_batches=%d dirty_patches=%d lods=%s avg_ms=%.3f max_ms=%.3f residency_ms=%.3f upload_ms=%.3f border_ms=%.3f water_sync_ms=%.3f force_full_world=%s"
+		"fps=%d cam=%s resident=%d/%d desired=%d desired_bounds=%s resident_bounds=%s cull_far=%.1f residency_changes=%d creates=%d removes=%d uploads=%d dirty_batches=%d dirty_patches=%d lods=%s avg_ms=%.3f max_ms=%.3f residency_ms=%.3f upload_ms=%.3f border_ms=%.3f water_sync_ms=%.3f force_full_world=%s force_lod1=%s visual=%d"
 		% [
 			Engine.get_frames_per_second(),
 			camera_label,
@@ -2404,6 +2517,8 @@ func _record_terrain_debug_frame(
 			average_border_ms,
 			average_water_sync_ms,
 			str(_terrain_force_full_world),
+			str(_terrain_force_lod1),
+			_terrain_visual_debug_mode,
 		]
 	)
 	_reset_terrain_debug_counters()

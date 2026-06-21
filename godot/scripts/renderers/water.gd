@@ -41,6 +41,8 @@ var water_border_material: ShaderMaterial
 var terrain_border_revision: int = -1
 var _terrain_debug_enabled: bool = false
 var _terrain_debug_verbose: bool = false
+var _terrain_force_lod1: bool = false
+var _water_visual_debug_mode: int = 0
 var _water_mesh_lod_refresh_elapsed_s: float = 0.0
 var _water_debug_elapsed_s: float = 0.0
 var _water_debug_frames: int = 0
@@ -63,6 +65,8 @@ func _ready() -> void:
 func rebuild_from_simulation_state() -> void:
 	_terrain_debug_enabled = _terrain_debug_is_enabled()
 	_terrain_debug_verbose = _terrain_debug_is_verbose()
+	_terrain_force_lod1 = _terrain_debug_force_lod1()
+	_water_visual_debug_mode = _terrain_visual_debug_mode_from_env()
 	_water_mesh_lod_refresh_elapsed_s = 0.0
 	_reset_water_debug_counters()
 	_clear_patches()
@@ -74,7 +78,10 @@ func rebuild_from_simulation_state() -> void:
 	_refresh_terrain_patch_bindings()
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
-		_water_debug_log("renderer ready")
+		_water_debug_log(
+			"renderer ready force_lod1=%s visual=%d"
+			% [str(_terrain_force_lod1), _water_visual_debug_mode]
+		)
 
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
@@ -272,6 +279,9 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("water_wave_roughness_strength", WATER_WAVE_ROUGHNESS_STRENGTH)
 	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
 	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
+	material.set_shader_parameter("water_visual_debug_mode", _water_visual_debug_mode)
+	material.set_shader_parameter("water_debug_patch_key", Vector2(key.x, key.y))
+	material.set_shader_parameter("water_debug_lod_step", float(initial_lod_step))
 	material.set_shader_parameter("watermap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
@@ -389,6 +399,16 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 		texture_elapsed_ms = float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 		_water_debug_patch_uploads += 1
 
+	var material: ShaderMaterial = patch["material"]
+	material.set_shader_parameter("watermap_texture_size", Vector2(texture_width, texture_height))
+	material.set_shader_parameter(
+		"inner_sample_offset_texels",
+		Vector2(float(patch_data["inner_offset_x"]), float(patch_data["inner_offset_z"]))
+	)
+	material.set_shader_parameter(
+		"inner_sample_size_texels",
+		Vector2(int(patch_data["sample_width"]), int(patch_data["sample_height"]))
+	)
 	var patch_node: MeshInstance3D = patch["node"]
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
@@ -1178,6 +1198,8 @@ func _mesh_subdivisions_for_sample_count(sample_count: int, lod_step: int) -> in
 	return max(0, lod_vertex_count - 2)
 
 func _mesh_lod_step_for_patch_center(center_x: float, center_z: float) -> int:
+	if _terrain_force_lod1:
+		return 1
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return 1
@@ -1218,6 +1240,8 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	if patch_data.is_empty():
 		return
 	patch["lod_step"] = target_lod_step
+	var material: ShaderMaterial = patch["material"]
+	material.set_shader_parameter("water_debug_lod_step", float(target_lod_step))
 	patch["last_patch_data"] = patch_data
 	patch["depth_nonzero_count"] = _patch_visible_depth_count(patch_data)
 	patch["road_clip_signature"] = _patch_road_clip_signature(patch_data)
@@ -1526,7 +1550,13 @@ func _terrain_debug_is_enabled() -> bool:
 		return false
 	for entry_variant in filter.split(","):
 		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain" or entry == "terrain-verbose" or entry == "terrain-full":
+		if (
+			entry == "terrain"
+			or entry == "terrain-verbose"
+			or entry == "terrain-full"
+			or entry == "terrain-lod1"
+			or entry == "terrain-full-lod1"
+		):
 			return true
 	return false
 
@@ -1540,6 +1570,43 @@ func _terrain_debug_is_verbose() -> bool:
 		if entry == "terrain-verbose":
 			return true
 	return false
+
+func _terrain_debug_force_lod1() -> bool:
+	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_FORCE_LOD1").strip_edges()
+	if explicit_value == "1":
+		return true
+	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	for entry_variant in filter.split(","):
+		var entry := String(entry_variant).strip_edges()
+		if entry == "terrain-lod1" or entry == "terrain-full-lod1":
+			return true
+	return false
+
+func _terrain_visual_debug_mode_from_env() -> int:
+	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL").strip_edges().to_lower()
+	if value.is_empty() or value == "0" or value == "off" or value == "false":
+		return 0
+	if value.is_valid_int():
+		return clampi(value.to_int(), 0, 8)
+	match value:
+		"patch", "patches":
+			return 1
+		"lod", "lods":
+			return 2
+		"height":
+			return 3
+		"relief":
+			return 4
+		"shore", "shoreline":
+			return 5
+		"water", "depth", "water-depth":
+			return 6
+		"water-lod":
+			return 7
+		"water-patch":
+			return 8
+		_:
+			return 0
 
 func _record_water_debug_frame(
 	delta: float,
@@ -1568,7 +1635,7 @@ func _record_water_debug_frame(
 	var lod_summary := _water_debug_lod_summary()
 
 	_water_debug_log(
-		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d residency_changes=%d lods=%s avg_ms=%.3f max_ms=%.3f patch_sync_ms=%.3f upload_ms=%.3f border_ms=%.3f rebind_ms=%.3f"
+		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d residency_changes=%d lods=%s avg_ms=%.3f max_ms=%.3f patch_sync_ms=%.3f upload_ms=%.3f border_ms=%.3f rebind_ms=%.3f force_lod1=%s visual=%d"
 		% [
 			resident_patch_lookup.size(),
 			_water_debug_patch_creates,
@@ -1584,6 +1651,8 @@ func _record_water_debug_frame(
 			average_upload_ms,
 			average_border_ms,
 			average_height_rebind_ms,
+			str(_terrain_force_lod1),
+			_water_visual_debug_mode,
 		]
 	)
 	_reset_water_debug_counters()

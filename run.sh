@@ -4,7 +4,7 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border, terrain
+#                        Common categories: isect, economy, demand, road, border, terrain, visuals
 #   --debug road         Road placement timings, committed-road geometry dumps,
 #                        terrain/water patch diagnostics, and road-surface overlay
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
@@ -15,6 +15,13 @@
 #   --debug terrain-full
 #                        Same as terrain plus forced full-world terrain/water residency to compare
 #                        steady-state full-map cost against camera-driven patch churn.
+#   --debug terrain-lod1
+#                        Terrain + water diagnostics with all resident patch meshes forced to LOD1.
+#   --debug terrain-full-lod1
+#                        Forced full-world terrain/water residency and all patch meshes forced to LOD1.
+#   --debug terrain-visual <mode>
+#                        Terrain/water material diagnostics. Modes:
+#                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -22,11 +29,21 @@
 #   --debug-world-editor Alias for --debug world-editor
 #                        Shows world-editor create/open/save/tool activity (stdout)
 #   --debug-sim          Hourly simulation summaries (stdout)
+#   --debug visuals      Terrain grass visual debug; defaults to material composite.
+#   --debug visual       Alias for --debug visuals.
+#   --debug visuals <mode>
+#                        Terrain grass visual debug mode. Modes:
+#                        raw, macro, mid, micro, fades, material, height, mask
+#   --visuals [mode]     Alias for --debug visuals [mode]
 
 RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
+VISUAL_DEBUG=0
+VISUAL_DEBUG_MODE="material"
+TERRAIN_VISUAL_DEBUG=0
+TERRAIN_VISUAL_DEBUG_MODE="patch"
 DEBUG_CATEGORY=""
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
@@ -35,6 +52,19 @@ while [ $i -le $# ]; do
     arg="${!i}"
     if [ "$arg" = "--release" ]; then
         RELEASE=1
+    elif [[ "$arg" == --visuals=* ]]; then
+        VISUAL_DEBUG=1
+        VISUAL_DEBUG_MODE="${arg#--visuals=}"
+    elif [ "$arg" = "--visuals" ]; then
+        VISUAL_DEBUG=1
+        next_index=$((i + 1))
+        if [ $next_index -le $# ]; then
+            next_arg="${!next_index}"
+            if [[ "$next_arg" != --* ]]; then
+                VISUAL_DEBUG_MODE="$next_arg"
+                i=$((i + 1))
+            fi
+        fi
     elif [ "$arg" = "--debug-sim" ]; then
         DEBUG_SIM=1
     elif [ "$arg" = "--debug-traffic" ]; then
@@ -49,6 +79,41 @@ while [ $i -le $# ]; do
             if [[ "$next_arg" != --* ]]; then
                 if [ "$next_arg" = "traffic" ]; then
                     DEBUG_TRAFFIC=1
+                elif [ "$next_arg" = "visuals" ] || [ "$next_arg" = "visual" ]; then
+                    VISUAL_DEBUG=1
+                    mode_index=$((i + 2))
+                    if [ $mode_index -le $# ]; then
+                        mode_arg="${!mode_index}"
+                        if [[ "$mode_arg" != --* ]]; then
+                            VISUAL_DEBUG_MODE="$mode_arg"
+                            i=$((i + 1))
+                        fi
+                    fi
+                elif [[ "$next_arg" == visuals=* ]] || [[ "$next_arg" == visual=* ]]; then
+                    VISUAL_DEBUG=1
+                    VISUAL_DEBUG_MODE="${next_arg#visuals=}"
+                    VISUAL_DEBUG_MODE="${VISUAL_DEBUG_MODE#visual=}"
+                elif [ "$next_arg" = "terrain-visual" ]; then
+                    DEBUG=1
+                    if [ -z "$DEBUG_CATEGORY" ]; then
+                        DEBUG_CATEGORY="terrain"
+                    fi
+                    TERRAIN_VISUAL_DEBUG=1
+                    mode_index=$((i + 2))
+                    if [ $mode_index -le $# ]; then
+                        mode_arg="${!mode_index}"
+                        if [[ "$mode_arg" != --* ]]; then
+                            TERRAIN_VISUAL_DEBUG_MODE="$mode_arg"
+                            i=$((i + 1))
+                        fi
+                    fi
+                elif [[ "$next_arg" == terrain-visual=* ]]; then
+                    DEBUG=1
+                    if [ -z "$DEBUG_CATEGORY" ]; then
+                        DEBUG_CATEGORY="terrain"
+                    fi
+                    TERRAIN_VISUAL_DEBUG=1
+                    TERRAIN_VISUAL_DEBUG_MODE="${next_arg#terrain-visual=}"
                 else
                     DEBUG=1
                     DEBUG_CATEGORY="$next_arg"
@@ -65,6 +130,57 @@ while [ $i -le $# ]; do
     fi
     i=$((i + 1))
 done
+
+case "$VISUAL_DEBUG_MODE" in
+    raw|albedo)
+        VISUAL_DEBUG_MODE="raw"
+        ;;
+    macro|mid|micro|fades|fade|visibility|material|composite|height|mask|grass-mask)
+        ;;
+    "")
+        VISUAL_DEBUG_MODE="material"
+        ;;
+    *)
+        echo "Error: unknown visual debug mode '$VISUAL_DEBUG_MODE'." >&2
+        echo "Valid modes: raw, macro, mid, micro, fades, material, height, mask" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$VISUAL_DEBUG_MODE" = "fade" ] || [ "$VISUAL_DEBUG_MODE" = "visibility" ]; then
+    VISUAL_DEBUG_MODE="fades"
+elif [ "$VISUAL_DEBUG_MODE" = "composite" ]; then
+    VISUAL_DEBUG_MODE="material"
+elif [ "$VISUAL_DEBUG_MODE" = "grass-mask" ]; then
+    VISUAL_DEBUG_MODE="mask"
+fi
+
+case "$TERRAIN_VISUAL_DEBUG_MODE" in
+    patch|patches)
+        TERRAIN_VISUAL_DEBUG_MODE="patch"
+        ;;
+    lod|lods)
+        TERRAIN_VISUAL_DEBUG_MODE="lod"
+        ;;
+    height|relief|shore)
+        ;;
+    shoreline)
+        TERRAIN_VISUAL_DEBUG_MODE="shore"
+        ;;
+    water|depth|water-depth)
+        TERRAIN_VISUAL_DEBUG_MODE="water-depth"
+        ;;
+    water-lod|water-patch)
+        ;;
+    "")
+        TERRAIN_VISUAL_DEBUG_MODE="patch"
+        ;;
+    *)
+        echo "Error: unknown terrain visual debug mode '$TERRAIN_VISUAL_DEBUG_MODE'." >&2
+        echo "Valid modes: patch, lod, height, relief, shore, water-depth, water-lod, water-patch" >&2
+        exit 2
+        ;;
+esac
 
 if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
     echo "Error: --debug road-geometry was removed. Use --debug road." >&2
@@ -101,6 +217,17 @@ if [ $DEBUG -eq 1 ]; then
             export METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1
             echo "  Terrain flight diagnostics enabled with forced full-world terrain/water residency."
             echo "  Use this to compare steady-state full-map cost against camera-driven patch churn."
+        elif [ "$DEBUG_CATEGORY" = "terrain-lod1" ]; then
+            export METRUM_DEBUG_TERRAIN=1
+            export METRUM_DEBUG_TERRAIN_FORCE_LOD1=1
+            echo "  Terrain flight diagnostics enabled with all resident terrain/water meshes forced to LOD1."
+            echo "  Use this to isolate mesh LOD stitching from material/texture issues."
+        elif [ "$DEBUG_CATEGORY" = "terrain-full-lod1" ]; then
+            export METRUM_DEBUG_TERRAIN=1
+            export METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1
+            export METRUM_DEBUG_TERRAIN_FORCE_LOD1=1
+            echo "  Terrain flight diagnostics enabled with full-world residency and forced LOD1 meshes."
+            echo "  Use this to reproduce seam artifacts without camera residency or LOD churn."
         fi
     else
         echo "Debug logging enabled (output goes to stdout)"
@@ -117,6 +244,33 @@ fi
 if [ $DEBUG_SIM -eq 1 ]; then
     export METRUM_DEBUG_SIM=1
     echo "Simulation console debug enabled (hourly summaries go to stdout)"
+fi
+if [ $VISUAL_DEBUG -eq 1 ]; then
+    export METRUM_DEBUG_TERRAIN_GRASS="$VISUAL_DEBUG_MODE"
+    echo "Terrain grass visual debug enabled: '$VISUAL_DEBUG_MODE'"
+    echo "  Modes:"
+    echo "    raw      Direct Grass002 albedo at terrain UV scale"
+    echo "    macro    Large stochastic grass layer"
+    echo "    mid      Mid-distance stochastic layer"
+    echo "    micro    Close-up grass layer"
+    echo "    fades    RGB = macro/mid/micro visibility"
+    echo "    material Grass material composite before hillshade/contours"
+    echo "    height   Grass002 height map"
+    echo "    mask     Where grass detail is allowed"
+fi
+if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
+    export METRUM_DEBUG_TERRAIN=1
+    export METRUM_DEBUG_TERRAIN_VISUAL="$TERRAIN_VISUAL_DEBUG_MODE"
+    echo "Terrain/water visual debug enabled: '$TERRAIN_VISUAL_DEBUG_MODE'"
+    echo "  Modes:"
+    echo "    patch       Terrain patch identity colors with patch borders"
+    echo "    lod         Terrain mesh LOD colors with patch borders"
+    echo "    height      Terrain height field"
+    echo "    relief      Local terrain relief"
+    echo "    shore       Terrain-side shore mask from water depth"
+    echo "    water-depth Water depth field on terrain and water"
+    echo "    water-lod   Water mesh LOD colors"
+    echo "    water-patch Water patch identity colors"
 fi
 
 echo "Building Rust library..."
