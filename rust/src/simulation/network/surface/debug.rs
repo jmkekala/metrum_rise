@@ -2,7 +2,8 @@
 
 use super::node::{
     NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodeCornerTrimSideJoinIntersectionDebug,
-    NodePostBooleanOwnedRegionDebug, NodeSideJoinContourDebug, rails::NodeGeneratedContourKind,
+    NodePostBooleanOwnedRegionDebug, NodeSideJoinContourDebug, NodeSideJoinGapDebug,
+    NodeSideJoinMaterialTrimDebug, rails::NodeGeneratedContourKind,
 };
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundarySegmentSource,

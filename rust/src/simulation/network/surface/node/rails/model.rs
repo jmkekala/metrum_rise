@@ -1,8 +1,11 @@
 //! Generated rail contour model and stage-local error types.
 
+use super::super::IncidentEdgeSide;
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{RoadPolyline, RoadVec2, RoadVec3};
-use super::super::joins::SideJoinGenerationError;
+use super::super::joins::{
+    NodeInputSideJoinGapRole, NodeInputSideJoinGapSummary, SideJoinGenerationError,
+};
 use super::super::ownership::{
     NodeBooleanOwnership, NodeSourceCarrierRegistry, NodeSourceCarrierSegmentId,
 };
@@ -56,6 +59,7 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) piece_kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) contours: Vec<NodeGeneratedContour>,
     pub(crate) corner_trims: Vec<NodeGeneratedCornerTrim>,
+    pub(crate) side_join_gaps: Vec<NodeGeneratedSideJoinGap>,
     pub(crate) constraints: Vec<NodeRailConstraint>,
     pub(crate) height_carrier_paths_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>,
@@ -138,6 +142,44 @@ pub(crate) struct NodeGeneratedCornerTrim {
     pub(crate) source_band_kind: RoadSurfaceBandKind,
     pub(crate) source_owner: NodeBandOwner,
     pub(crate) points_xz: Vec<RoadVec2>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeGeneratedSideJoinGap {
+    pub(crate) from_mouth_order_index: usize,
+    pub(crate) to_mouth_order_index: usize,
+    pub(crate) from_edge_idx: usize,
+    pub(crate) to_edge_idx: usize,
+    pub(crate) from_side: IncidentEdgeSide,
+    pub(crate) to_side: IncidentEdgeSide,
+    pub(crate) angle_rad: f64,
+    pub(crate) role: NodeInputSideJoinGapRole,
+    pub(crate) emitted_band_kinds: Vec<RoadSurfaceBandKind>,
+    pub(crate) suppressed_band_kinds: Vec<RoadSurfaceBandKind>,
+}
+
+impl NodeGeneratedSideJoinGap {
+    pub(crate) fn from_side_join_gap_summaries(
+        gap_summaries: &[NodeInputSideJoinGapSummary],
+    ) -> Vec<Self> {
+        gap_summaries.iter().map(Self::from_gap_summary).collect()
+    }
+
+    fn from_gap_summary(summary: &NodeInputSideJoinGapSummary) -> Self {
+        let gap = summary.gap;
+        Self {
+            from_mouth_order_index: gap.from_mouth_order_index,
+            to_mouth_order_index: gap.to_mouth_order_index,
+            from_edge_idx: gap.from_edge_idx,
+            to_edge_idx: gap.to_edge_idx,
+            from_side: gap.from_side,
+            to_side: gap.to_side,
+            angle_rad: gap.angle_rad,
+            role: gap.role,
+            emitted_band_kinds: summary.emitted_band_kinds.clone(),
+            suppressed_band_kinds: summary.suppressed_band_kinds.clone(),
+        }
+    }
 }
 
 impl NodeGeneratedContour {

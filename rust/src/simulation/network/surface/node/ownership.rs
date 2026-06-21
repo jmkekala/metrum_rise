@@ -326,21 +326,12 @@ impl NodeBooleanOwnership {
             &asphalt_authority_domains,
             &asphalt_untrimmed_shapes,
         )?;
-        let footprint_corner_trim_shapes =
-            if rails.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
-                protected_bend_corner_trim_shapes(rails)?
-            } else {
-                Vec::new()
-            };
-        if !footprint_corner_trim_shapes.is_empty() {
-            let footprint_corner_trim_shapes = overlay_difference(
-                &footprint_corner_trim_shapes,
-                &asphalt_untrimmed_shapes,
-                "footprint_corner_trim_clip_asphalt",
-            )?;
+        let footprint_corner_trim =
+            footprint_corner_trim_shapes_for_piece(rails, &asphalt_untrimmed_shapes)?;
+        if !footprint_corner_trim.shapes.is_empty() {
             footprint_shapes = overlay_difference(
                 &footprint_shapes,
-                &footprint_corner_trim_shapes,
+                &footprint_corner_trim.shapes,
                 "footprint_corner_trim_difference",
             )?;
             RoadSurfaceSystem::sort_overlay_shapes(&mut footprint_shapes);
@@ -819,6 +810,63 @@ fn protected_bend_corner_trim_shapes(
     Ok(protected_trim_shapes)
 }
 
+struct FootprintCornerTrimShapes {
+    shapes: NodeOverlayShapes,
+}
+
+fn footprint_corner_trim_shapes_for_piece(
+    rails: &NodeRailContourSet,
+    asphalt_untrimmed_shapes: &NodeOverlayShapes,
+) -> Result<FootprintCornerTrimShapes, NodeBooleanOwnershipError> {
+    let shapes = match rails.piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => {
+            let protected_shapes = protected_bend_corner_trim_shapes(rails)?;
+            if protected_shapes.is_empty() {
+                Vec::new()
+            } else {
+                overlay_difference(
+                    &protected_shapes,
+                    asphalt_untrimmed_shapes,
+                    "footprint_corner_trim_clip_asphalt",
+                )?
+            }
+        }
+        RoadSurfaceVisualNodePieceKind::JunctionN => junction_exterior_corner_trim_shapes(rails)?,
+        RoadSurfaceVisualNodePieceKind::Terminal => Vec::new(),
+    };
+    Ok(FootprintCornerTrimShapes { shapes })
+}
+
+fn junction_exterior_corner_trim_shapes(
+    rails: &NodeRailContourSet,
+) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    let mut trim_shapes = Vec::new();
+    for trim in rails
+        .corner_trims
+        .iter()
+        .filter(|trim| corner_trim_source_is_exterior_gap(rails, trim.source_mouth_order_index))
+    {
+        let trim_contour = overlay_contour_for_corner_trim(trim);
+        let single_shapes = overlay_union(&[trim_contour], "junction_exterior_corner_trim_union")?;
+        trim_shapes = overlay_union_shape_sets(
+            &trim_shapes,
+            &single_shapes,
+            "junction_exterior_corner_trim_shape_union",
+        )?;
+    }
+    Ok(trim_shapes)
+}
+
+fn corner_trim_source_is_exterior_gap(
+    rails: &NodeRailContourSet,
+    source_mouth_order_index: usize,
+) -> bool {
+    rails.side_join_gaps.iter().any(|gap| {
+        gap.from_mouth_order_index == source_mouth_order_index
+            && gap.role == super::joins::NodeInputSideJoinGapRole::Exterior
+    })
+}
+
 fn overlay_contour_for_corner_trim(
     trim: &super::rails::NodeGeneratedCornerTrim,
 ) -> NodeOverlayContour {
@@ -849,66 +897,59 @@ fn asphalt_raw_shapes_from_authority_domains(
     asphalt_authority_domains: &[&super::rails::NodeGeneratedContour],
     asphalt_untrimmed_shapes: &NodeOverlayShapes,
 ) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
-    if rails.piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+    let Some(side_join_purpose) = asphalt_side_join_purpose_for_trim(rails.piece_kind) else {
         return Ok(asphalt_untrimmed_shapes.clone());
-    }
+    };
 
-    let mut bend_side_join_contours = Vec::new();
+    let mut side_join_contours = Vec::new();
     let mut other_contours = Vec::new();
     for domain in asphalt_authority_domains {
         let contour = overlay_contour_from_domain(domain);
-        if domain.purpose == NodeGeneratedContourPurpose::BendSideJoin {
-            bend_side_join_contours.push(contour);
+        if domain.purpose == side_join_purpose {
+            side_join_contours.push(contour);
         } else {
             other_contours.push(contour);
         }
     }
 
-    if bend_side_join_contours.is_empty() {
+    if side_join_contours.is_empty() {
         return Ok(asphalt_untrimmed_shapes.clone());
     }
 
-    let mut bend_side_join_shapes =
-        overlay_union(&bend_side_join_contours, "bend_asphalt_side_join_union")?;
-    let sidewalk_side_join_contours = bend_sidewalk_side_join_contours_for_asphalt_trim(rails);
-    if !sidewalk_side_join_contours.is_empty() {
-        let sidewalk_side_join_shapes = overlay_union(
-            &sidewalk_side_join_contours,
-            "bend_asphalt_side_join_sidewalk_trim_union",
-        )?;
-        bend_side_join_shapes = overlay_difference(
-            &bend_side_join_shapes,
-            &sidewalk_side_join_shapes,
-            "bend_asphalt_side_join_sidewalk_trim_difference",
+    let mut side_join_shapes = overlay_union(&side_join_contours, "asphalt_side_join_union")?;
+    let blocker_contours = non_road_side_join_contours_for_asphalt_trim(rails);
+    if !blocker_contours.is_empty() {
+        let blocker_shapes =
+            overlay_union(&blocker_contours, "asphalt_side_join_non_road_trim_union")?;
+        side_join_shapes = overlay_difference(
+            &side_join_shapes,
+            &blocker_shapes,
+            "asphalt_side_join_non_road_trim_difference",
         )?;
     }
 
-    let other_shapes = overlay_union(&other_contours, "bend_asphalt_non_side_join_union")?;
+    let other_shapes = if other_contours.is_empty() {
+        Vec::new()
+    } else {
+        overlay_union(&other_contours, "asphalt_non_side_join_union")?
+    };
     overlay_union_shape_sets(
         &other_shapes,
-        &bend_side_join_shapes,
-        "bend_asphalt_side_join_reunion",
+        &side_join_shapes,
+        "asphalt_side_join_reunion",
     )
 }
 
-fn bend_sidewalk_side_join_contours_for_asphalt_trim(
-    rails: &NodeRailContourSet,
-) -> Vec<NodeOverlayContour> {
-    rails
-        .contours
-        .iter()
-        .filter(|contour| {
-            contour.contributes_to_non_road_band()
-                && contour.purpose == NodeGeneratedContourPurpose::BendSideJoin
-                && matches!(
-                    contour.kind,
-                    super::rails::NodeGeneratedContourKind::Band {
-                        kind: RoadSurfaceBandKind::Sidewalk,
-                    }
-                )
-        })
-        .map(overlay_contour_from_domain)
-        .collect()
+fn asphalt_side_join_purpose_for_trim(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> Option<NodeGeneratedContourPurpose> {
+    match piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => Some(NodeGeneratedContourPurpose::BendSideJoin),
+        RoadSurfaceVisualNodePieceKind::JunctionN => {
+            Some(NodeGeneratedContourPurpose::JunctionSideJoin)
+        }
+        RoadSurfaceVisualNodePieceKind::Terminal => None,
+    }
 }
 
 fn asphalt_blocker_contours_for_material_priority(
@@ -981,16 +1022,14 @@ fn bend_asphalt_side_join_anchor_shapes(
     }
 
     let mut anchor_shapes = overlay_union(&anchor_contours, "bend_asphalt_anchor_union")?;
-    let sidewalk_side_join_contours = bend_sidewalk_side_join_contours_for_asphalt_trim(rails);
-    if !sidewalk_side_join_contours.is_empty() {
-        let sidewalk_side_join_shapes = overlay_union(
-            &sidewalk_side_join_contours,
-            "bend_asphalt_anchor_sidewalk_trim_union",
-        )?;
+    let blocker_contours = non_road_side_join_contours_for_asphalt_trim(rails);
+    if !blocker_contours.is_empty() {
+        let blocker_shapes =
+            overlay_union(&blocker_contours, "bend_asphalt_anchor_non_road_trim_union")?;
         anchor_shapes = overlay_difference(
             &anchor_shapes,
-            &sidewalk_side_join_shapes,
-            "bend_asphalt_anchor_sidewalk_trim_difference",
+            &blocker_shapes,
+            "bend_asphalt_anchor_non_road_trim_difference",
         )?;
     }
     RoadSurfaceSystem::sort_overlay_shapes(&mut anchor_shapes);

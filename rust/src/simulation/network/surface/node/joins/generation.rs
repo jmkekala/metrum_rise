@@ -7,74 +7,184 @@ use super::paths::{
 };
 use super::*;
 
+const JUNCTION_EXTERIOR_GAP_EPS_RAD: f64 = 1.0e-6;
+
 pub(super) fn add_bend_side_join_bands(
     mouths: &[NodeInputMouth],
     bands_by_mouth: &mut [Vec<NodeInputSideJoinBand>],
+    gap_summaries: &mut Vec<NodeInputSideJoinGapSummary>,
 ) -> Result<(), SideJoinGenerationError> {
     if mouths.len() != 2 {
         return Ok(());
     }
 
-    append_adjacent_side_join_bands(mouths, bands_by_mouth, 0, 1, SideJoinPathMode::BendArc)?;
-    append_adjacent_side_join_bands(mouths, bands_by_mouth, 1, 0, SideJoinPathMode::BendArc)?;
+    append_adjacent_side_join_bands(
+        mouths,
+        bands_by_mouth,
+        gap_summaries,
+        side_join_gap(mouths, 0, 1, NodeInputSideJoinGapRole::Interior),
+        SideJoinPathMode::BendArc,
+    )?;
+    append_adjacent_side_join_bands(
+        mouths,
+        bands_by_mouth,
+        gap_summaries,
+        side_join_gap(mouths, 1, 0, NodeInputSideJoinGapRole::Interior),
+        SideJoinPathMode::BendArc,
+    )?;
     Ok(())
 }
 
 pub(super) fn add_junction_side_join_bands(
     mouths: &[NodeInputMouth],
     bands_by_mouth: &mut [Vec<NodeInputSideJoinBand>],
+    gap_summaries: &mut Vec<NodeInputSideJoinGapSummary>,
 ) -> Result<(), SideJoinGenerationError> {
     if mouths.len() < 2 {
         return Ok(());
     }
 
-    for from_index in 0..mouths.len() {
-        let to_index = if from_index + 1 == mouths.len() {
-            0
-        } else {
-            from_index + 1
-        };
+    for gap in junction_side_join_gaps(mouths) {
         append_adjacent_side_join_bands(
             mouths,
             bands_by_mouth,
-            from_index,
-            to_index,
+            gap_summaries,
+            gap,
             SideJoinPathMode::JunctionNonRoad,
         )?;
     }
     Ok(())
 }
 
+fn junction_side_join_gaps(mouths: &[NodeInputMouth]) -> Vec<NodeInputSideJoinGap> {
+    let mut largest_gap_index = None;
+    let mut largest_gap_angle_rad = 0.0;
+    for from_index in 0..mouths.len() {
+        let to_index = next_mouth_index(mouths, from_index);
+        let angle_rad = side_join_gap_angle_rad(&mouths[from_index], &mouths[to_index]);
+        if angle_rad > largest_gap_angle_rad {
+            largest_gap_index = Some(from_index);
+            largest_gap_angle_rad = angle_rad;
+        }
+    }
+
+    let exterior_gap_index =
+        largest_gap_index.filter(|_| largest_gap_angle_rad > PI + JUNCTION_EXTERIOR_GAP_EPS_RAD);
+    (0..mouths.len())
+        .map(|from_index| {
+            let role = if exterior_gap_index == Some(from_index) {
+                NodeInputSideJoinGapRole::Exterior
+            } else {
+                NodeInputSideJoinGapRole::Interior
+            };
+            side_join_gap(
+                mouths,
+                from_index,
+                next_mouth_index(mouths, from_index),
+                role,
+            )
+        })
+        .collect()
+}
+
+fn next_mouth_index(mouths: &[NodeInputMouth], from_index: usize) -> usize {
+    if from_index + 1 == mouths.len() {
+        0
+    } else {
+        from_index + 1
+    }
+}
+
+fn side_join_gap(
+    mouths: &[NodeInputMouth],
+    from_index: usize,
+    to_index: usize,
+    role: NodeInputSideJoinGapRole,
+) -> NodeInputSideJoinGap {
+    NodeInputSideJoinGap {
+        from_mouth_order_index: mouths[from_index].order_index,
+        to_mouth_order_index: mouths[to_index].order_index,
+        from_edge_idx: mouths[from_index].edge_idx,
+        to_edge_idx: mouths[to_index].edge_idx,
+        from_side: mouths[from_index].side,
+        to_side: mouths[to_index].side,
+        angle_rad: side_join_gap_angle_rad(&mouths[from_index], &mouths[to_index]),
+        role,
+    }
+}
+
+fn side_join_gap_angle_rad(from_mouth: &NodeInputMouth, to_mouth: &NodeInputMouth) -> f64 {
+    (f64::from(to_mouth.direction_angle_ccw) - f64::from(from_mouth.direction_angle_ccw))
+        .rem_euclid(TAU)
+}
+
 fn append_adjacent_side_join_bands(
     mouths: &[NodeInputMouth],
     bands_by_mouth: &mut [Vec<NodeInputSideJoinBand>],
-    from_index: usize,
-    to_index: usize,
+    gap_summaries: &mut Vec<NodeInputSideJoinGapSummary>,
+    gap: NodeInputSideJoinGap,
     path_mode: SideJoinPathMode,
 ) -> Result<(), SideJoinGenerationError> {
+    let Some(from_index) = mouths
+        .iter()
+        .position(|mouth| mouth.order_index == gap.from_mouth_order_index)
+    else {
+        return Ok(());
+    };
+    let Some(to_index) = mouths
+        .iter()
+        .position(|mouth| mouth.order_index == gap.to_mouth_order_index)
+    else {
+        return Ok(());
+    };
     let join_bands = adjacent_side_join_bands(
         mouths,
         from_index,
         SideJoinProfileSide::End,
         to_index,
         SideJoinProfileSide::Start,
+        gap,
         path_mode,
     )?;
-    if !join_bands.is_empty() {
-        bands_by_mouth[from_index].extend(join_bands);
+    if !join_bands.bands.is_empty() || !join_bands.suppressed_band_kinds.is_empty() {
+        gap_summaries.push(side_join_gap_summary(gap, &join_bands));
+        bands_by_mouth[from_index].extend(join_bands.bands);
         return Ok(());
     }
 
+    let reverse_gap = gap.reversed();
     let reverse_join_bands = adjacent_side_join_bands(
         mouths,
         to_index,
         SideJoinProfileSide::Start,
         from_index,
         SideJoinProfileSide::End,
+        reverse_gap,
         path_mode,
     )?;
-    bands_by_mouth[to_index].extend(reverse_join_bands);
+    if !reverse_join_bands.bands.is_empty() || !reverse_join_bands.suppressed_band_kinds.is_empty()
+    {
+        gap_summaries.push(side_join_gap_summary(reverse_gap, &reverse_join_bands));
+        bands_by_mouth[to_index].extend(reverse_join_bands.bands);
+    } else {
+        gap_summaries.push(side_join_gap_summary(gap, &reverse_join_bands));
+    }
     Ok(())
+}
+
+fn side_join_gap_summary(
+    gap: NodeInputSideJoinGap,
+    join_bands: &SideJoinBandBuild,
+) -> NodeInputSideJoinGapSummary {
+    let mut emitted_band_kinds = Vec::new();
+    for band in &join_bands.bands {
+        push_unique_band_kind(&mut emitted_band_kinds, band.band_kind);
+    }
+    NodeInputSideJoinGapSummary {
+        gap,
+        emitted_band_kinds,
+        suppressed_band_kinds: join_bands.suppressed_band_kinds.clone(),
+    }
 }
 
 fn adjacent_side_join_bands(
@@ -83,14 +193,15 @@ fn adjacent_side_join_bands(
     from_side: SideJoinProfileSide,
     to_index: usize,
     to_side: SideJoinProfileSide,
+    gap: NodeInputSideJoinGap,
     path_mode: SideJoinPathMode,
-) -> Result<Vec<NodeInputSideJoinBand>, SideJoinGenerationError> {
+) -> Result<SideJoinBandBuild, SideJoinGenerationError> {
     let from_mouth = &mouths[from_index];
     let to_mouth = &mouths[to_index];
     let from_layers = side_join_layers(from_mouth, from_side);
     let to_layers = side_join_layers(to_mouth, to_side);
     if from_layers.is_empty() || to_layers.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SideJoinBandBuild::default());
     }
 
     let mut join_bands = side_join_bands(
@@ -99,10 +210,17 @@ fn adjacent_side_join_bands(
         &from_layers,
         to_mouth,
         &to_layers,
+        gap,
         path_mode,
     )?;
-    canonicalize_side_join_bands(&mut join_bands);
+    canonicalize_side_join_bands(&mut join_bands.bands);
     Ok(join_bands)
+}
+
+#[derive(Default)]
+struct SideJoinBandBuild {
+    bands: Vec<NodeInputSideJoinBand>,
+    suppressed_band_kinds: Vec<RoadSurfaceBandKind>,
 }
 
 fn canonicalize_side_join_bands(join_bands: &mut Vec<NodeInputSideJoinBand>) {
@@ -165,9 +283,10 @@ fn side_join_bands(
     from_layers: &[SideJoinLayer],
     to_mouth: &NodeInputMouth,
     to_layers: &[SideJoinLayer],
+    gap: NodeInputSideJoinGap,
     path_mode: SideJoinPathMode,
-) -> Result<Vec<NodeInputSideJoinBand>, SideJoinGenerationError> {
-    let mut join_bands = Vec::new();
+) -> Result<SideJoinBandBuild, SideJoinGenerationError> {
+    let mut join_bands = SideJoinBandBuild::default();
     let mut inner_path_world = None;
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
         if from_layer.band_kind != to_layer.band_kind {
@@ -213,6 +332,14 @@ fn side_join_bands(
             continue;
         };
 
+        if gap.role == NodeInputSideJoinGapRole::Exterior
+            && exterior_gap_suppresses_band_kind(from_layer.band_kind)
+        {
+            push_unique_band_kind(&mut join_bands.suppressed_band_kinds, from_layer.band_kind);
+            inner_path_world = Some(band_outer_path_world);
+            continue;
+        }
+
         let boundary_mode = match from_layer.band_kind {
             RoadSurfaceBandKind::Carriageway
             | RoadSurfaceBandKind::CurbOrShoulder
@@ -220,9 +347,10 @@ fn side_join_bands(
             _ => NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap,
         };
         let Some(next_inner_path_world) = pushed_side_join_band(
-            &mut join_bands,
+            &mut join_bands.bands,
             from_layer.band_index,
             from_layer.band_kind,
+            gap,
             boundary_mode,
             band_inner_path_world,
             band_outer_path_world.clone(),
@@ -234,11 +362,21 @@ fn side_join_bands(
         };
         inner_path_world = Some(next_inner_path_world);
     }
-    if let Some(outermost_band) = join_bands.last_mut() {
+    if let Some(outermost_band) = join_bands.bands.last_mut() {
         outermost_band.trims_outer_footprint =
             !outermost_band.outer_footprint_trim_world.is_empty();
     }
     Ok(join_bands)
+}
+
+fn exterior_gap_suppresses_band_kind(band_kind: RoadSurfaceBandKind) -> bool {
+    matches!(band_kind, RoadSurfaceBandKind::Carriageway)
+}
+
+fn push_unique_band_kind(kinds: &mut Vec<RoadSurfaceBandKind>, band_kind: RoadSurfaceBandKind) {
+    if !kinds.contains(&band_kind) {
+        kinds.push(band_kind);
+    }
 }
 
 fn side_join_band_inner_path(
@@ -300,6 +438,7 @@ fn pushed_side_join_band(
     join_bands: &mut Vec<NodeInputSideJoinBand>,
     source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
+    gap: NodeInputSideJoinGap,
     boundary_mode: NodeInputSideJoinBandBoundaryMode,
     inner_path_world: Vec<RoadVec3>,
     outer_path_world: Vec<RoadVec3>,
@@ -316,6 +455,7 @@ fn pushed_side_join_band(
     let mut join_band = NodeInputSideJoinBand {
         source_band_index,
         band_kind,
+        gap,
         boundary_mode,
         inner_path_world,
         outer_path_world,

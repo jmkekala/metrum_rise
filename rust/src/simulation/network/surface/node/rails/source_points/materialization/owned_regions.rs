@@ -365,6 +365,7 @@ mod tests {
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             contours: Vec::new(),
             corner_trims: Vec::new(),
+            side_join_gaps: Vec::new(),
             constraints: vec![NodeRailConstraint {
                 constraint_index: 0,
                 kind: NodeRailConstraintKind::BandContour {

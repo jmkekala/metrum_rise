@@ -249,6 +249,16 @@ pub(super) fn same_owner_side_join_band() -> NodeInputSideJoinBand {
     NodeInputSideJoinBand {
         source_band_index: 3,
         band_kind: RoadSurfaceBandKind::Sidewalk,
+        gap: NodeInputSideJoinGap {
+            from_mouth_order_index: 0,
+            to_mouth_order_index: 1,
+            from_edge_idx: 7,
+            to_edge_idx: 8,
+            from_side: IncidentEdgeSide::Start,
+            to_side: IncidentEdgeSide::Start,
+            angle_rad: std::f64::consts::FRAC_PI_2,
+            role: NodeInputSideJoinGapRole::Interior,
+        },
         boundary_mode: NodeInputSideJoinBandBoundaryMode::SameOwnerOuterCap,
         inner_path_world: vec![RoadVec3::new(0.0, 4.4, 4.0), RoadVec3::new(2.0, 4.4, 4.0)],
         outer_path_world: vec![RoadVec3::new(0.9, 4.4, 6.0), RoadVec3::new(1.1, 4.4, 6.0)],

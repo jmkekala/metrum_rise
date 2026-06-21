@@ -11,7 +11,9 @@ use super::paths::{
     closed_world_contour_has_area, reheight_road_points_from_world_path,
     remove_repeated_road_vec3_xz_points,
 };
-use super::{NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use super::{
+    IncidentEdgeSide, NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
+};
 use cavalier_contours::core::math::{
     LineLineIntr, Vector2 as CavalierVec2, bulge_from_angle, line_line_intr,
 };
@@ -65,16 +67,63 @@ struct SideJoinBoundaryPath {
     miter_world: Vec<RoadVec3>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NodeInputSideJoinGapRole {
+    Interior,
+    Exterior,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NodeInputSideJoinGap {
+    pub(crate) from_mouth_order_index: usize,
+    pub(crate) to_mouth_order_index: usize,
+    pub(crate) from_edge_idx: usize,
+    pub(crate) to_edge_idx: usize,
+    pub(crate) from_side: IncidentEdgeSide,
+    pub(crate) to_side: IncidentEdgeSide,
+    pub(crate) angle_rad: f64,
+    pub(crate) role: NodeInputSideJoinGapRole,
+}
+
+impl NodeInputSideJoinGap {
+    fn reversed(self) -> Self {
+        Self {
+            from_mouth_order_index: self.to_mouth_order_index,
+            to_mouth_order_index: self.from_mouth_order_index,
+            from_edge_idx: self.to_edge_idx,
+            to_edge_idx: self.from_edge_idx,
+            from_side: self.to_side,
+            to_side: self.from_side,
+            angle_rad: (TAU - self.angle_rad).rem_euclid(TAU),
+            role: self.role,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeInputSideJoinBand {
     pub(crate) source_band_index: usize,
     pub(crate) band_kind: RoadSurfaceBandKind,
+    pub(crate) gap: NodeInputSideJoinGap,
     pub(crate) boundary_mode: NodeInputSideJoinBandBoundaryMode,
     pub(crate) inner_path_world: Vec<RoadVec3>,
     pub(crate) outer_path_world: Vec<RoadVec3>,
     pub(crate) outer_footprint_trim_world: Vec<RoadVec3>,
     pub(crate) trims_outer_footprint: bool,
     pub(crate) contour_world: Vec<RoadVec3>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeInputSideJoinGapSummary {
+    pub(crate) gap: NodeInputSideJoinGap,
+    pub(crate) emitted_band_kinds: Vec<RoadSurfaceBandKind>,
+    pub(crate) suppressed_band_kinds: Vec<RoadSurfaceBandKind>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeInputSideJoinPlan {
+    pub(crate) bands_by_mouth: Vec<Vec<NodeInputSideJoinBand>>,
+    pub(crate) gap_summaries: Vec<NodeInputSideJoinGapSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,20 +154,39 @@ impl SideJoinGenerationError {
     }
 }
 
-pub(crate) fn side_join_bands_by_mouth(
+#[cfg(test)]
+fn side_join_bands_by_mouth(
     input: &NodeArrangementInput,
 ) -> Result<Vec<Vec<NodeInputSideJoinBand>>, SideJoinGenerationError> {
+    side_join_plan(input).map(|plan| plan.bands_by_mouth)
+}
+
+pub(crate) fn side_join_plan(
+    input: &NodeArrangementInput,
+) -> Result<NodeInputSideJoinPlan, SideJoinGenerationError> {
     let mut bands_by_mouth = vec![Vec::new(); input.mouths.len()];
+    let mut gap_summaries = Vec::new();
     match input.piece_kind {
         RoadSurfaceVisualNodePieceKind::Bend => {
-            generation::add_bend_side_join_bands(&input.mouths, &mut bands_by_mouth)?;
+            generation::add_bend_side_join_bands(
+                &input.mouths,
+                &mut bands_by_mouth,
+                &mut gap_summaries,
+            )?;
         }
         RoadSurfaceVisualNodePieceKind::JunctionN => {
-            generation::add_junction_side_join_bands(&input.mouths, &mut bands_by_mouth)?;
+            generation::add_junction_side_join_bands(
+                &input.mouths,
+                &mut bands_by_mouth,
+                &mut gap_summaries,
+            )?;
         }
         RoadSurfaceVisualNodePieceKind::Terminal => {}
     }
-    Ok(bands_by_mouth)
+    Ok(NodeInputSideJoinPlan {
+        bands_by_mouth,
+        gap_summaries,
+    })
 }
 
 #[cfg(test)]

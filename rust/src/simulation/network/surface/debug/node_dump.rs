@@ -507,7 +507,7 @@ impl RoadSurfaceSystem {
     ) {
         let Some(snapshot) = snapshot else {
             dump.push_str(
-                "{\"captured\":false,\"side_join_contour_count\":0,\"corner_trim_count\":0,\"corner_trims_apply_to_footprint\":false,\"side_join_contours\":[],\"corner_trims\":[]}",
+                "{\"captured\":false,\"side_join_gap_count\":0,\"side_join_contour_count\":0,\"side_join_material_trim_count\":0,\"corner_trim_count\":0,\"corner_trims_apply_to_footprint\":false,\"side_join_gaps\":[],\"side_join_material_trims\":[],\"side_join_contours\":[],\"corner_trims\":[]}",
             );
             return;
         };
@@ -515,12 +515,28 @@ impl RoadSurfaceSystem {
         dump.push('{');
         let _ = write!(
             dump,
-            "\"captured\":true,\"side_join_contour_count\":{},\"corner_trim_count\":{},\"corner_trims_apply_to_footprint\":{}",
+            "\"captured\":true,\"side_join_gap_count\":{},\"side_join_contour_count\":{},\"side_join_material_trim_count\":{},\"corner_trim_count\":{},\"corner_trims_apply_to_footprint\":{}",
+            snapshot.side_join_gaps.len(),
             snapshot.side_join_contours.len(),
+            snapshot.side_join_material_trims.len(),
             snapshot.corner_trims.len(),
             snapshot.corner_trims_apply_to_footprint
         );
-        dump.push_str(",\"side_join_contours\":[");
+        dump.push_str(",\"side_join_gaps\":[");
+        for (gap_index, gap) in snapshot.side_join_gaps.iter().enumerate() {
+            if gap_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_side_join_gap_debug_literal(dump, gap_index, gap);
+        }
+        dump.push_str("],\"side_join_material_trims\":[");
+        for (trim_index, trim) in snapshot.side_join_material_trims.iter().enumerate() {
+            if trim_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_side_join_material_trim_debug_literal(dump, trim_index, trim);
+        }
+        dump.push_str("],\"side_join_contours\":[");
         for (contour_index, contour) in snapshot.side_join_contours.iter().enumerate() {
             if contour_index > 0 {
                 dump.push_str(", ");
@@ -540,6 +556,77 @@ impl RoadSurfaceSystem {
             );
         }
         dump.push_str("]}");
+    }
+
+    fn append_side_join_gap_debug_literal(
+        dump: &mut String,
+        gap_index: usize,
+        gap: &NodeSideJoinGapDebug,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"gap\":{},\"from_mouth_order_index\":{},\"to_mouth_order_index\":{},\"from_edge_idx\":{},\"to_edge_idx\":{},\"from_side\":\"{:?}\",\"to_side\":\"{:?}\",\"gap_angle_rad\":{:.9},\"gap_angle_deg\":{:.6},\"gap_role\":\"{:?}\",\"emitted_band_kinds\":",
+            gap_index,
+            gap.from_mouth_order_index,
+            gap.to_mouth_order_index,
+            gap.from_edge_idx,
+            gap.to_edge_idx,
+            gap.from_side,
+            gap.to_side,
+            gap.angle_rad,
+            gap.angle_rad.to_degrees(),
+            gap.role
+        );
+        Self::append_band_kind_list_debug_literal(dump, &gap.emitted_band_kinds);
+        dump.push_str(",\"suppressed_band_kinds\":");
+        Self::append_band_kind_list_debug_literal(dump, &gap.suppressed_band_kinds);
+        let _ = write!(
+            dump,
+            ",\"final_owned_area_m2\":{{\"asphalt\":{:.6},\"curb\":{:.6},\"sidewalk\":{:.6},\"non_road\":{:.6},\"total\":{:.6}}}}}",
+            gap.final_asphalt_area_m2,
+            gap.final_curb_area_m2,
+            gap.final_sidewalk_area_m2,
+            gap.final_non_road_area_m2,
+            gap.final_total_area_m2
+        );
+    }
+
+    fn append_side_join_material_trim_debug_literal(
+        dump: &mut String,
+        trim_index: usize,
+        trim: &NodeSideJoinMaterialTrimDebug,
+    ) {
+        let _ = write!(
+            dump,
+            "{{\"trim\":{},\"kind\":\"{:?}\",\"purpose\":\"{:?}\",\"source_mouth_order_index\":{},\"source_band_index\":",
+            trim_index, trim.kind, trim.purpose, trim.source_mouth_order_index
+        );
+        Self::append_optional_usize_literal(dump, trim.source_band_index);
+        dump.push_str(",\"gap_role\":");
+        if let Some(role) = trim.role {
+            let _ = write!(dump, "\"{:?}\"", role);
+        } else {
+            dump.push_str("null");
+        }
+        let _ = write!(
+            dump,
+            ",\"raw_area_m2\":{:.6},\"blocker_overlap_area_m2\":{:.6},\"trimmed_area_m2\":{:.6},\"final_owned_area_m2\":{:.6}}}",
+            trim.raw_area_m2,
+            trim.blocker_overlap_area_m2,
+            trim.trimmed_area_m2,
+            trim.final_owned_area_m2
+        );
+    }
+
+    fn append_band_kind_list_debug_literal(dump: &mut String, kinds: &[RoadSurfaceBandKind]) {
+        dump.push('[');
+        for (index, kind) in kinds.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(dump, "\"{:?}\"", kind);
+        }
+        dump.push(']');
     }
 
     fn append_post_boolean_owned_region_debug_literal(

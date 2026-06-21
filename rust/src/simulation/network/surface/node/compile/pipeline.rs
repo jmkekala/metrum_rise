@@ -19,6 +19,22 @@ fn detailed_road_geometry_debug_enabled() -> bool {
         })
 }
 
+fn node_corner_trims_apply_to_footprint(rails: &rails::NodeRailContourSet) -> bool {
+    if rails.corner_trims.is_empty() {
+        return false;
+    }
+    match rails.piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => true,
+        RoadSurfaceVisualNodePieceKind::JunctionN => rails.corner_trims.iter().any(|trim| {
+            rails.side_join_gaps.iter().any(|gap| {
+                gap.from_mouth_order_index == trim.source_mouth_order_index
+                    && gap.role == joins::NodeInputSideJoinGapRole::Exterior
+            })
+        }),
+        RoadSurfaceVisualNodePieceKind::Terminal => false,
+    }
+}
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn canonical_node_compile_failure_debug_dump(
         &self,
@@ -186,8 +202,7 @@ impl RoadSurfaceSystem {
             NodeBooleanDebugSnapshot::from_rails_and_ownership(
                 &rails,
                 &ownership,
-                !rails.corner_trims.is_empty()
-                    && rails.piece_kind == RoadSurfaceVisualNodePieceKind::Bend,
+                node_corner_trims_apply_to_footprint(&rails),
             )
         });
 

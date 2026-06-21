@@ -3,7 +3,9 @@
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{RoadVec2, RoadVec3, polyline_to_road_points, road_vec3_xz as xz};
 use super::super::input::NodeInputMouth;
-use super::super::joins::{NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode};
+use super::super::joins::{
+    NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, NodeInputSideJoinGapRole,
+};
 use super::super::terminal::{NodeTerminalCapBand, TerminalCapBandRole};
 use super::super::{
     NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,

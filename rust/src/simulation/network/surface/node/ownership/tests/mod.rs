@@ -190,6 +190,7 @@ fn test_rail_contour_set_from_constraints(
         piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
         contours: Vec::new(),
         corner_trims: Vec::new(),
+        side_join_gaps: Vec::new(),
         constraints: rail_constraints,
         height_carrier_paths_by_source: BTreeMap::new(),
         height_carrier_points_by_source: BTreeMap::new(),

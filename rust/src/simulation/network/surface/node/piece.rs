@@ -1,15 +1,17 @@
 //! Node visual-piece DTOs and exported provenance contracts.
 
 use super::{
-    NodeOverlayContour, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
+    IncidentEdgeSide, NodeOverlayContour, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
     RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     arrangement,
     height::NodeGradeVertexAuthority,
+    joins::NodeInputSideJoinGapRole,
     ownership::NodeBooleanOwnership,
     rails::{
-        NodeGeneratedContourClaimPriority, NodeGeneratedContourKind, NodeGeneratedContourPurpose,
-        NodeGeneratedCornerTrim, NodeRailContourSet,
+        NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+        NodeGeneratedContourPurpose, NodeGeneratedCornerTrim, NodeGeneratedSideJoinGap,
+        NodeRailContourSet,
     },
 };
 use crate::simulation::network::{
@@ -142,6 +144,8 @@ pub(crate) struct NodeBooleanDebugSnapshot {
     pub(crate) non_road_shapes: NodeOverlayShapes,
     pub(crate) owned_regions: Vec<NodePostBooleanOwnedRegionDebug>,
     pub(crate) side_join_contours: Vec<NodeSideJoinContourDebug>,
+    pub(crate) side_join_gaps: Vec<NodeSideJoinGapDebug>,
+    pub(crate) side_join_material_trims: Vec<NodeSideJoinMaterialTrimDebug>,
     pub(crate) corner_trims: Vec<NodeCornerTrimDebug>,
     pub(crate) corner_trims_apply_to_footprint: bool,
 }
@@ -170,6 +174,38 @@ pub(crate) struct NodeSideJoinContourDebug {
     pub(crate) contributes_to_footprint: bool,
     pub(crate) contributes_to_asphalt: bool,
     pub(crate) contributes_to_non_road_band: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeSideJoinGapDebug {
+    pub(crate) from_mouth_order_index: usize,
+    pub(crate) to_mouth_order_index: usize,
+    pub(crate) from_edge_idx: usize,
+    pub(crate) to_edge_idx: usize,
+    pub(crate) from_side: IncidentEdgeSide,
+    pub(crate) to_side: IncidentEdgeSide,
+    pub(crate) angle_rad: f64,
+    pub(crate) role: NodeInputSideJoinGapRole,
+    pub(crate) emitted_band_kinds: Vec<RoadSurfaceBandKind>,
+    pub(crate) suppressed_band_kinds: Vec<RoadSurfaceBandKind>,
+    pub(crate) final_asphalt_area_m2: f32,
+    pub(crate) final_curb_area_m2: f32,
+    pub(crate) final_sidewalk_area_m2: f32,
+    pub(crate) final_non_road_area_m2: f32,
+    pub(crate) final_total_area_m2: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeSideJoinMaterialTrimDebug {
+    pub(crate) kind: RoadSurfaceBandKind,
+    pub(crate) purpose: NodeGeneratedContourPurpose,
+    pub(crate) source_mouth_order_index: usize,
+    pub(crate) source_band_index: Option<usize>,
+    pub(crate) role: Option<NodeInputSideJoinGapRole>,
+    pub(crate) raw_area_m2: f32,
+    pub(crate) blocker_overlap_area_m2: f32,
+    pub(crate) trimmed_area_m2: f32,
+    pub(crate) final_owned_area_m2: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,7 +239,7 @@ impl NodeBooleanDebugSnapshot {
         ownership: &NodeBooleanOwnership,
         corner_trims_apply_to_footprint: bool,
     ) -> Self {
-        let owned_regions = ownership
+        let owned_regions: Vec<_> = ownership
             .owned_regions
             .iter()
             .map(|region| NodePostBooleanOwnedRegionDebug {
@@ -255,6 +291,12 @@ impl NodeBooleanDebugSnapshot {
                 ),
             })
             .collect();
+        let side_join_gaps = rails
+            .side_join_gaps
+            .iter()
+            .map(|gap| side_join_gap_debug(gap, &owned_regions))
+            .collect();
+        let side_join_material_trims = side_join_material_trim_debug_records(rails, &owned_regions);
 
         Self {
             footprint_shapes: ownership.footprint_shapes.clone(),
@@ -262,10 +304,181 @@ impl NodeBooleanDebugSnapshot {
             non_road_shapes: ownership.non_road_shapes.clone(),
             owned_regions,
             side_join_contours,
+            side_join_gaps,
+            side_join_material_trims,
             corner_trims,
             corner_trims_apply_to_footprint,
         }
     }
+}
+
+fn side_join_gap_debug(
+    gap: &NodeGeneratedSideJoinGap,
+    owned_regions: &[NodePostBooleanOwnedRegionDebug],
+) -> NodeSideJoinGapDebug {
+    let mut final_asphalt_area_m2 = 0.0;
+    let mut final_curb_area_m2 = 0.0;
+    let mut final_sidewalk_area_m2 = 0.0;
+    let mut final_non_road_area_m2 = 0.0;
+    for region in owned_regions.iter().filter(|region| {
+        region.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+            && region.source_mouth_order_index == gap.from_mouth_order_index
+    }) {
+        match region.kind {
+            RoadSurfaceBandKind::Carriageway => final_asphalt_area_m2 += region.area_m2,
+            RoadSurfaceBandKind::CurbOrShoulder => final_curb_area_m2 += region.area_m2,
+            RoadSurfaceBandKind::Sidewalk => final_sidewalk_area_m2 += region.area_m2,
+            _ => final_non_road_area_m2 += region.area_m2,
+        }
+    }
+    NodeSideJoinGapDebug {
+        from_mouth_order_index: gap.from_mouth_order_index,
+        to_mouth_order_index: gap.to_mouth_order_index,
+        from_edge_idx: gap.from_edge_idx,
+        to_edge_idx: gap.to_edge_idx,
+        from_side: gap.from_side,
+        to_side: gap.to_side,
+        angle_rad: gap.angle_rad,
+        role: gap.role,
+        emitted_band_kinds: gap.emitted_band_kinds.clone(),
+        suppressed_band_kinds: gap.suppressed_band_kinds.clone(),
+        final_asphalt_area_m2,
+        final_curb_area_m2,
+        final_sidewalk_area_m2,
+        final_non_road_area_m2,
+        final_total_area_m2: final_asphalt_area_m2
+            + final_curb_area_m2
+            + final_sidewalk_area_m2
+            + final_non_road_area_m2,
+    }
+}
+
+fn side_join_material_trim_debug_records(
+    rails: &NodeRailContourSet,
+    owned_regions: &[NodePostBooleanOwnedRegionDebug],
+) -> Vec<NodeSideJoinMaterialTrimDebug> {
+    let blocker_contours = rails
+        .contours
+        .iter()
+        .filter(|contour| {
+            contour.contributes_to_non_road_band()
+                && matches!(
+                    contour.purpose,
+                    NodeGeneratedContourPurpose::BendSideJoin
+                        | NodeGeneratedContourPurpose::JunctionSideJoin
+                )
+        })
+        .map(overlay_contour_from_generated_contour)
+        .collect::<Vec<_>>();
+    let blocker_shapes = if blocker_contours.is_empty() {
+        Vec::new()
+    } else {
+        RoadSurfaceSystem::overlay_union_contours(&blocker_contours).unwrap_or_default()
+    };
+
+    rails
+        .contours
+        .iter()
+        .filter_map(|contour| {
+            let NodeGeneratedContourKind::Band { kind } = contour.kind else {
+                return None;
+            };
+            if !matches!(
+                contour.purpose,
+                NodeGeneratedContourPurpose::BendSideJoin
+                    | NodeGeneratedContourPurpose::JunctionSideJoin
+            ) {
+                return None;
+            }
+
+            let contour_shape = RoadSurfaceSystem::overlay_union_contours(&[
+                overlay_contour_from_generated_contour(contour),
+            ])
+            .unwrap_or_default();
+            let raw_area_m2 = debug_overlay_shapes_area_m2(&contour_shape);
+            let (blocker_overlap_area_m2, trimmed_area_m2) =
+                if kind == RoadSurfaceBandKind::Carriageway && !blocker_shapes.is_empty() {
+                    let blocker_overlap = RoadSurfaceSystem::overlay_binary_shapes(
+                        &contour_shape,
+                        &blocker_shapes,
+                        OverlayRule::Intersect,
+                    )
+                    .unwrap_or_default();
+                    let trimmed = RoadSurfaceSystem::overlay_binary_shapes(
+                        &contour_shape,
+                        &blocker_shapes,
+                        OverlayRule::Difference,
+                    )
+                    .unwrap_or_default();
+                    (
+                        debug_overlay_shapes_area_m2(&blocker_overlap),
+                        debug_overlay_shapes_area_m2(&trimmed),
+                    )
+                } else {
+                    (0.0, raw_area_m2)
+                };
+            Some(NodeSideJoinMaterialTrimDebug {
+                kind,
+                purpose: contour.purpose,
+                source_mouth_order_index: contour.source_mouth_order_index,
+                source_band_index: contour.source_band_index,
+                role: side_join_gap_role_for_source(rails, contour.source_mouth_order_index),
+                raw_area_m2,
+                blocker_overlap_area_m2,
+                trimmed_area_m2,
+                final_owned_area_m2: final_side_join_owned_area_m2(
+                    owned_regions,
+                    kind,
+                    contour.source_mouth_order_index,
+                    contour.source_band_index,
+                ),
+            })
+        })
+        .collect()
+}
+
+fn side_join_gap_role_for_source(
+    rails: &NodeRailContourSet,
+    source_mouth_order_index: usize,
+) -> Option<NodeInputSideJoinGapRole> {
+    rails
+        .side_join_gaps
+        .iter()
+        .find(|gap| gap.from_mouth_order_index == source_mouth_order_index)
+        .map(|gap| gap.role)
+}
+
+fn final_side_join_owned_area_m2(
+    owned_regions: &[NodePostBooleanOwnedRegionDebug],
+    kind: RoadSurfaceBandKind,
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+) -> f32 {
+    owned_regions
+        .iter()
+        .filter(|region| {
+            region.kind == kind
+                && region.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+                && region.source_mouth_order_index == source_mouth_order_index
+                && region.source_band_index == source_band_index
+        })
+        .map(|region| region.area_m2)
+        .sum()
+}
+
+fn debug_overlay_shapes_area_m2(shapes: &NodeOverlayShapes) -> f32 {
+    shapes
+        .iter()
+        .map(RoadSurfaceSystem::overlay_shape_area_m2)
+        .sum()
+}
+
+fn overlay_contour_from_generated_contour(contour: &NodeGeneratedContour) -> NodeOverlayContour {
+    contour
+        .points_xz
+        .iter()
+        .map(|point| [point.x, point.y])
+        .collect()
 }
 
 fn corner_trim_side_join_intersections(

@@ -1,7 +1,7 @@
 //! Rail contour construction from validated node arrangement input.
 
 use super::super::input::NodeArrangementInput;
-use super::super::joins::{NodeInputSideJoinBand, side_join_bands_by_mouth};
+use super::super::joins::{NodeInputSideJoinBand, side_join_plan};
 use super::super::ownership::NodeSourceCarrierRegistry;
 use super::super::terminal::{NodeTerminalCapBand, terminal_cap_bands_by_mouth};
 use super::bands::{push_band_contour, push_full_roadbed_contour};
@@ -22,8 +22,8 @@ use super::source_points::{
     interval_height_carrier_paths, interval_height_carrier_points, push_band_height_carrier_points,
 };
 use super::{
-    NodeRailBuildProfile, NodeRailContourSet, NodeRailGenerationError, NodeRailHeightCarrierPaths,
-    RoadSurfaceBandKind, RoadSurfaceSystem,
+    NodeGeneratedSideJoinGap, NodeRailBuildProfile, NodeRailContourSet, NodeRailGenerationError,
+    NodeRailHeightCarrierPaths, RoadSurfaceBandKind, RoadSurfaceSystem,
 };
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -78,14 +78,16 @@ impl NodeRailContourSet {
             .map_err(|error| NodeRailGenerationError::TerminalCapGeneration { error })?;
         profile.terminal_caps_ms = elapsed_profile_ms(terminal_caps_start);
         let side_joins_start = profile_enabled.then(Instant::now);
-        let side_join_bands_by_mouth = side_join_bands_by_mouth(input)
+        let side_join_plan = side_join_plan(input)
             .map_err(|error| NodeRailGenerationError::SideJoinGeneration { error })?;
+        let side_join_gaps =
+            NodeGeneratedSideJoinGap::from_side_join_gap_summaries(&side_join_plan.gap_summaries);
         profile.side_joins_ms = elapsed_profile_ms(side_joins_start);
         let owners_start = profile_enabled.then(Instant::now);
         let owners_by_mouth = owners_by_mouth(
             input,
             &terminal_cap_bands_by_mouth,
-            &side_join_bands_by_mouth,
+            &side_join_plan.bands_by_mouth,
         );
         profile.owners_ms = elapsed_profile_ms(owners_start);
         let mut contours = Vec::new();
@@ -99,7 +101,8 @@ impl NodeRailContourSet {
         for (mouth_index, (mouth, mouth_owners)) in
             input.mouths.iter().zip(&owners_by_mouth).enumerate()
         {
-            let side_join_bands = side_join_bands_by_mouth
+            let side_join_bands = side_join_plan
+                .bands_by_mouth
                 .get(mouth_index)
                 .map_or(&[] as &[NodeInputSideJoinBand], Vec::as_slice);
             let terminal_cap_bands = terminal_cap_bands_by_mouth
@@ -346,6 +349,7 @@ impl NodeRailContourSet {
                 piece_kind: input.piece_kind,
                 contours,
                 corner_trims,
+                side_join_gaps,
                 constraints,
                 height_carrier_paths_by_source,
                 height_carrier_points_by_source,

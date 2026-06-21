@@ -457,6 +457,7 @@ fn shared_source_height_conflict_dump_includes_constraint_context() {
         piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
         contours: Vec::new(),
         corner_trims: Vec::new(),
+        side_join_gaps: Vec::new(),
         constraints: vec![NodeRailConstraint {
             constraint_index: 21,
             kind: NodeRailConstraintKind::RaisedStepContact,

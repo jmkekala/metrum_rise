@@ -222,6 +222,14 @@ pub(super) fn side_join_band_contributes_footprint(
     ) {
         return false;
     }
+    if side_join_band.gap.role == NodeInputSideJoinGapRole::Exterior {
+        return side_join_band.band_kind != RoadSurfaceBandKind::Carriageway
+            && matches!(
+                side_join_band.boundary_mode,
+                NodeInputSideJoinBandBoundaryMode::MaterialBand
+                    | NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap
+            );
+    }
     match side_join_band.boundary_mode {
         NodeInputSideJoinBandBoundaryMode::MaterialBand
         | NodeInputSideJoinBandBoundaryMode::MaterialBandWithSameOwnerOuterCap => true,

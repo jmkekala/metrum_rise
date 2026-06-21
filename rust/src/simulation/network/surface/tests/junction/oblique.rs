@@ -249,7 +249,7 @@ fn logged_current_flat_three_way_oblique_junction_compiles_side_join_ownership()
 }
 
 #[test]
-fn logged_bend_upgraded_to_junctionn_keeps_outer_arc_terrain_clipped() {
+fn logged_bend_upgraded_to_junctionn_preserves_exterior_non_road_arc() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
         Vector3::new(-90.958466, 0.0, -17.827614),
@@ -305,7 +305,7 @@ fn logged_bend_upgraded_to_junctionn_keeps_outer_arc_terrain_clipped() {
 
     assert!(
         point_inside_visual_polygons(&piece.outer_boundary_loops, expected_outer_bend_fill),
-        "upgraded JunctionN footprint must still own the old bend outer arc fill point; point={expected_outer_bend_fill:?} outer_loops={:?}",
+        "upgraded JunctionN must preserve the reflex exterior non-road arc; point={expected_outer_bend_fill:?} outer_loops={:?}",
         piece.outer_boundary_loops
     );
 
@@ -315,12 +315,12 @@ fn logged_bend_upgraded_to_junctionn_keeps_outer_arc_terrain_clipped() {
     let point_xz = expected_outer_bend_fill.to_road_xz();
     assert!(
         terrain_cdt_road_loops_contain_point(&terrain_clip_loops, point_xz),
-        "upgraded JunctionN terrain cutter must exclude terrain from the old bend outer arc fill point; point={expected_outer_bend_fill:?}"
+        "upgraded JunctionN terrain cutter must keep clipping the reflex exterior non-road arc; point={expected_outer_bend_fill:?}"
     );
 }
 
 #[test]
-fn logged_current_bend_upgraded_to_junctionn_keeps_outer_arc_asphalt_and_terrain_clipped() {
+fn logged_current_bend_upgraded_to_junctionn_preserves_exterior_non_road_without_asphalt() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
         Vector3::new(-87.623878, 0.0, -15.375183),
@@ -375,12 +375,12 @@ fn logged_current_bend_upgraded_to_junctionn_keeps_outer_arc_asphalt_and_terrain
     let expected_outer_bend_fill = logged_current_bend_upgrade_outer_asphalt_fill_point();
 
     assert!(
-        point_inside_visual_polygons(&piece.road_surface_polygons, expected_outer_bend_fill),
-        "upgraded JunctionN must fill the old bend outer arc with asphalt; point={expected_outer_bend_fill:?}"
+        !point_inside_visual_polygons(&piece.road_surface_polygons, expected_outer_bend_fill),
+        "upgraded JunctionN must not fill the reflex exterior lobe with asphalt; point={expected_outer_bend_fill:?}"
     );
     assert!(
         point_inside_visual_polygons(&piece.outer_boundary_loops, expected_outer_bend_fill),
-        "upgraded JunctionN footprint must own the current old bend outer arc fill point; point={expected_outer_bend_fill:?}"
+        "upgraded JunctionN footprint must preserve the reflex exterior non-road fill point; point={expected_outer_bend_fill:?}"
     );
 
     let (terrain_clip_loops, _) = surface
@@ -391,7 +391,231 @@ fn logged_current_bend_upgraded_to_junctionn_keeps_outer_arc_asphalt_and_terrain
             &terrain_clip_loops,
             expected_outer_bend_fill.to_road_xz()
         ),
-        "upgraded JunctionN terrain cutter must exclude terrain from the current old bend outer arc fill point; point={expected_outer_bend_fill:?}"
+        "upgraded JunctionN terrain cutter must preserve the reflex exterior non-road lobe; point={expected_outer_bend_fill:?}"
+    );
+}
+
+#[test]
+fn logged_bent_t_junction_preserves_exterior_non_road_without_asphalt() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-76.432709, 0.0, 3.041950), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(2.923641, 0.0, -1.916813), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(56.311253, 0.0, 51.254074), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(-29.772259, 0.0, 78.427689), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-76.432709, 0.0, 3.041950),
+            Vector3::new(2.923641, 0.0, -1.916813),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        northeast,
+        vec![
+            Vector3::new(2.923641, 0.0, -1.916813),
+            Vector3::new(56.311253, 0.0, 51.254074),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        branch,
+        center,
+        vec![
+            Vector3::new(-29.772259, 0.0, 78.427689),
+            Vector3::new(2.923641, 0.0, -1.916813),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_compiled_junction_piece(&surface, &graph, center);
+    let compile_input = surface
+        .visual_node_compile_input(&graph, center)
+        .expect("logged bent T should expose JunctionN compile input");
+    let arrangement_input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        center,
+        compile_input.kind,
+        &compile_input.mouths,
+    )
+    .expect("logged bent T should produce arrangement input");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&arrangement_input)
+        .expect("logged bent T should produce rail contours");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("logged bent T should solve ownership");
+    let debug = node::NodeBooleanDebugSnapshot::from_rails_and_ownership(&rails, &ownership, false);
+    let exterior_gaps = debug
+        .side_join_gaps
+        .iter()
+        .filter(|gap| gap.role == node::joins::NodeInputSideJoinGapRole::Exterior)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        exterior_gaps.len(),
+        1,
+        "logged bent T should classify exactly one reflex exterior gap: {:?}",
+        debug.side_join_gaps
+    );
+    let exterior_gap = exterior_gaps[0];
+    assert!(
+        exterior_gap
+            .suppressed_band_kinds
+            .contains(&RoadSurfaceBandKind::Carriageway),
+        "exterior gap must record suppressed asphalt side-join emission: {exterior_gap:?}"
+    );
+    assert!(
+        !exterior_gap
+            .emitted_band_kinds
+            .contains(&RoadSurfaceBandKind::Carriageway),
+        "exterior gap must not emit asphalt side-join bands: {exterior_gap:?}"
+    );
+    assert!(
+        !exterior_gap
+            .suppressed_band_kinds
+            .contains(&RoadSurfaceBandKind::CurbOrShoulder)
+            && !exterior_gap
+                .suppressed_band_kinds
+                .contains(&RoadSurfaceBandKind::Sidewalk),
+        "exterior gap must not suppress non-road side-join bands: {exterior_gap:?}"
+    );
+    assert!(
+        exterior_gap
+            .emitted_band_kinds
+            .contains(&RoadSurfaceBandKind::CurbOrShoulder)
+            && exterior_gap
+                .emitted_band_kinds
+                .contains(&RoadSurfaceBandKind::Sidewalk),
+        "exterior gap must emit curb/sidewalk continuation bands: {exterior_gap:?}"
+    );
+    assert!(
+        exterior_gap.final_asphalt_area_m2 <= 0.001,
+        "exterior gap must not finally own asphalt side-join area: {exterior_gap:?}"
+    );
+    assert!(
+        exterior_gap.final_curb_area_m2 > 0.001 && exterior_gap.final_sidewalk_area_m2 > 0.001,
+        "exterior gap must finally own non-road continuation area: {exterior_gap:?}"
+    );
+    assert!(
+        !debug.owned_regions.iter().any(|region| {
+            region.claim_priority == rails::NodeGeneratedContourClaimPriority::SideJoin
+                && region.source_mouth_order_index == exterior_gap.from_mouth_order_index
+                && region.kind == RoadSurfaceBandKind::Carriageway
+        }),
+        "no exterior/reflex JunctionN gap may produce final Carriageway side-join ownership: {:?}",
+        debug.owned_regions
+    );
+    assert!(
+        debug.side_join_material_trims.iter().any(|trim| {
+            trim.kind == RoadSurfaceBandKind::Carriageway
+                && trim.role == Some(node::joins::NodeInputSideJoinGapRole::Interior)
+                && trim.raw_area_m2 > 0.001
+                && trim.trimmed_area_m2 <= trim.raw_area_m2 + 0.001
+        }),
+        "JunctionN side-join asphalt debug must expose raw/trimmed asphalt area: {:?}",
+        debug.side_join_material_trims
+    );
+    assert!(
+        debug.side_join_material_trims.iter().any(|trim| {
+            trim.kind == RoadSurfaceBandKind::Sidewalk
+                && trim.role == Some(node::joins::NodeInputSideJoinGapRole::Exterior)
+                && trim.final_owned_area_m2 > 0.001
+        }),
+        "JunctionN side-join debug must expose preserved exterior sidewalk area: {:?}",
+        debug.side_join_material_trims
+    );
+}
+
+#[test]
+fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-85.998276, 0.0, 15.480217), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(17.261505, 0.0, 36.514523), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(64.834915, 0.0, 117.753670), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(-28.215271, 0.0, 82.433357), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-85.998276, 0.0, 15.480217),
+            Vector3::new(17.261505, 0.0, 36.514523),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        northeast,
+        vec![
+            Vector3::new(17.261505, 0.0, 36.514523),
+            Vector3::new(64.834915, 0.0, 117.753670),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        branch,
+        center,
+        vec![
+            Vector3::new(-28.215271, 0.0, 82.433357),
+            Vector3::new(17.261505, 0.0, 36.514523),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    let bad_islands = [
+        Vector2::new(20.482485, 35.878922),
+        Vector2::new(16.822950, 33.260852),
+    ];
+    for point in bad_islands {
+        assert!(
+            !point_inside_visual_polygons(&piece.road_surface_polygons, point),
+            "exterior trim must remove logged asphalt island from road surface; point={point:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&piece.outer_boundary_loops, point),
+            "exterior trim must remove logged asphalt island from node footprint; point={point:?}"
+        );
+    }
+
+    let curved_sidewalk = Vector2::new(20.873661, 37.576516);
+    assert!(
+        point_inside_visual_polygons(&piece.sidewalk_surface_polygons, curved_sidewalk),
+        "exterior trim must preserve the curved sidewalk band; point={curved_sidewalk:?}"
+    );
+    assert!(
+        point_inside_visual_polygons(&piece.outer_boundary_loops, curved_sidewalk),
+        "exterior trim must preserve footprint over the curved sidewalk band; point={curved_sidewalk:?}"
+    );
+    assert!(
+        !point_inside_visual_polygons(&piece.road_surface_polygons, curved_sidewalk),
+        "curved sidewalk sample must not become asphalt; point={curved_sidewalk:?}"
     );
 }
 

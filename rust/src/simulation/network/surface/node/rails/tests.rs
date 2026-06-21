@@ -3,7 +3,10 @@
 use super::super::arrangement::NodeBandOwner;
 use super::super::backend::{RoadVec2, RoadVec3};
 use super::super::input::NodeArrangementInput;
-use super::super::joins::{NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode};
+use super::super::joins::{
+    NodeInputSideJoinBand, NodeInputSideJoinBandBoundaryMode, NodeInputSideJoinGap,
+    NodeInputSideJoinGapRole,
+};
 use super::super::keys::SurfaceHeightMmKey;
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::caps_and_joins::push_side_join_band_contours;
