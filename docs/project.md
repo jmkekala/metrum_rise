@@ -52,6 +52,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Terrain/water presentation now has a documented runtime contract: terrain and building-site
+  grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
+  detail fade, water uses the tuned depth/Fresnel/foam/normal material path, and scene lighting /
+  shadow policy is centralized through the Godot rendering bridge. The `run.sh` debug launch flags
+  and terrain/water/building visual modes are now listed in [`reference.md`](reference.md), while
+  the rendering invariants live in [`terrain.md`](terrain.md).
 - Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
   and capped car movement through junction connector lanes at `6 m/s`. See
   [`reference.md`](reference.md).

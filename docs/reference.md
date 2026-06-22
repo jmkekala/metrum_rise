@@ -103,6 +103,85 @@ Benchmark-history rule:
 
 Godot is a rendering, input, and editor bridge. Authoritative simulation state and gameplay decisions live in Rust. This file intentionally does not maintain an exhaustive script-to-`SimulationNode` inventory; that API changes too quickly for a hand-written reference. Use `rust/src/nodes/simulation_node.rs` and `rg "simulation_node\.|sim\." godot/scripts` when auditing current bridge calls.
 
+## Debug Launch Reference
+
+`run.sh` is the canonical launch wrapper for local debug sessions. These flags set environment
+variables before building Rust, deploying `libmetrum_rise.so`, and launching Godot.
+
+### Primary Debug Flags
+
+| Flag | Main environment | Output / effect |
+|------|------------------|-----------------|
+| `--debug` | `METRUM_DEBUG=1` | General debug logging to stdout. |
+| `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `road`, `border`, `terrain`, `buildings`, `visuals`, and `world-editor`. |
+| `--debug road` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1`, `METRUM_DEBUG_SURFACE=1` | Road placement timings, geometry dump, terrain/water patch diagnostics, and road-surface overlay. |
+| `--debug terrain` | `METRUM_DEBUG_TERRAIN=1` | Terrain and water patch residency/perf summaries. |
+| `--debug terrain-verbose` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VERBOSE=1` | Terrain summaries plus residency-change logs. |
+| `--debug terrain-full` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1` | Force full-world terrain/water residency for cost comparison. |
+| `--debug terrain-lod1` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_LOD1=1` | Force all resident terrain/water patch meshes to LOD1. |
+| `--debug terrain-full-lod1` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1`, `METRUM_DEBUG_TERRAIN_FORCE_LOD1=1` | Force full-world residency and LOD1 meshes for seam/material debugging. |
+| `--debug buildings` | `METRUM_DEBUG_BUILDINGS=1` | Building-site mesh, material, height, and site metadata logs only. |
+| `--debug building-sites-visual [mode]` | `METRUM_DEBUG_BUILDING_SITES_VISUAL=<mode>` | Building-site visual overlay. Current mode: `material`. |
+| `--debug traffic` / `--debug-traffic` | `METRUM_DEBUG_TRAFFIC=1` | Traffic/routing and road-network connectivity logging to stderr plus visual lane/connector debug labels. |
+| `--debug-world-editor` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=world-editor` | WorldEditor create/open/save/tool activity. |
+| `--debug-sim` | `METRUM_DEBUG_SIM=1` | Hourly simulation summaries to stdout. |
+| `--debug visuals [mode]` / `--debug visual [mode]` / `--visuals [mode]` | `METRUM_DEBUG_TERRAIN_GRASS=<mode>` | Terrain grass material diagnostic view. Defaults to `material`. |
+| `--debug terrain-visual <mode>` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VISUAL=<mode>` | Terrain/water/lighting material diagnostic view. Defaults to `patch`. |
+
+Removed debug aliases:
+
+- `--debug road-geometry` is intentionally rejected; use `--debug road`
+
+### Terrain Grass Visual Modes
+
+These modes are selected with `--debug visuals <mode>` or `--visuals <mode>`.
+
+| Mode | Aliases | Meaning |
+|------|---------|---------|
+| `raw` | `albedo` | Direct Grass002 albedo at terrain UV scale. |
+| `macro` | | Large stochastic grass layer. |
+| `mid` | | Mid-distance stochastic grass layer. |
+| `micro` | | Close-up grass layer. |
+| `fades` | `fade`, `visibility` | RGB visibility of macro / mid / micro grass layers. |
+| `material` | `composite` | Grass material composite before hillshade and contour effects. |
+| `height` | | Grass002 height map. |
+| `mask` | `grass-mask` | Where grass detail is allowed. |
+| `luminance` | `luma`, `brightness` | World-space bands for base, macro, mid, micro, and final brightness. |
+| `footprint` | `footprints` | RGB = texture footprint, micro visibility, grass mask. |
+
+`luminance` band colors:
+
+- red = base brightness
+- yellow = macro brightness
+- green = mid brightness
+- blue = micro brightness
+- white = final brightness
+
+### Terrain / Water Visual Modes
+
+These modes are selected with `--debug terrain-visual <mode>`.
+
+| Mode | Aliases | Meaning |
+|------|---------|---------|
+| `patch` | `patches` | Terrain patch identity colors with patch borders. |
+| `lod` | `lods` | Terrain mesh LOD colors with patch borders. |
+| `height` | | Terrain height field. |
+| `relief` | | Local terrain relief. |
+| `shore` | `shoreline` | Terrain-side shore mask from visible water depth. |
+| `water-depth` | `water`, `depth` | Water depth field on terrain and water. |
+| `water-lod` | | Water mesh LOD colors. |
+| `water-patch` | | Water patch identity colors. |
+| `water-material` | `water-mat`, `material-water` | Water material bands: depth tint, alpha, Fresnel, foam, and normal strength. |
+| `lighting` | `light`, `sun` | Sun-facing strength, shadow/cascade bands, and water specular mask. |
+
+### Building-Site Visual Modes
+
+These modes are selected with `--debug building-sites-visual <mode>`.
+
+| Mode | Aliases | Meaning |
+|------|---------|---------|
+| `material` | `materials`, `source`, `sources` | Tints site ground, asphalt, and concrete by material source. |
+
 ## Data Format Reference
 
 | Buffer / return value | Type | Layout / meaning |

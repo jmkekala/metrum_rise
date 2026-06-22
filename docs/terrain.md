@@ -386,6 +386,41 @@ Current deterministic rules:
 
 This is a rendering boundary, not an excuse for simulation systems to depend on dense storage.
 
+### 14. Terrain, Site Ground, Water, And Lighting Materials Are Runtime Presentation
+
+Terrain, water, and building-site ground materials are Godot-side presentation contracts over
+Rust-owned terrain, water, engineered-ground, and building state. They must not become gameplay
+state or hidden repair paths for missing geometry.
+
+Current deterministic rules:
+
+- terrain grass uses world-space UVs and the Grass002 texture stack
+- terrain grass combines macro, mid, and micro layers through stochastic anti-tiling and screen
+  footprint fade
+- macro / mid / micro grass fading must preserve average luminance; the fade may reduce detail
+  contrast but must not accidentally brighten distant terrain or darken close terrain
+- any later atmospheric or horizon brightening must be an explicit render effect with its own
+  parameters, not an emergent side effect of mip/detail fade
+- building-site ground uses the same grass texture stack and world-space material semantics as
+  terrain while remaining a separate flat support pad mesh
+- authored building asphalt and concrete site surfaces remain separate materials from grass/site
+  ground
+- water rendering consumes the visible baseline-plus-dynamic water field and applies depth tint,
+  shoreline foam, Fresnel/sky response, and procedural wave normals as presentation only
+- scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
+  buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
+- shadow policy must be applied through the shared helper rather than per-renderer ad hoc flags
+- terrain and site ground receive real shadows; final buildings and cars cast shadows; construction
+  pads, debug overlays, and temporary authoring helpers should not cast shadows unless a specific
+  debug mode asks for that
+
+Rendering non-repair rule:
+
+- shader masks, material order, transparency, lighting, water, terrain color, or debug overlays must
+  not be used to hide missing road, terrain, water, building, or raised-step topology
+- when a visual hole, dark chunk, or wrong overlap appears, the owning mesh/provenance/patch state
+  must expose enough debug data to locate the source instead of adding a color workaround
+
 ## Implemented Compatibility Gaps We Should Not Extend
 
 The following are live behaviors, but they are not the intended long-term ownership model.
@@ -1171,6 +1206,7 @@ The following are explicitly not implemented yet and should not be assumed by ot
 - optional richer river-path / channel authoring beyond the current water tool set
 - chunk-streamed terrain renderer
 - chunk-window water simulation
+- explicit atmospheric / horizon brightening independent from terrain material detail fade
 - authoritative terrain undo across source plus derived state
 - direct-metre terrain height storage without `HEIGHT_SCALE`
 
@@ -1211,6 +1247,11 @@ What is implemented now:
   fresnel / procedural breakup treatment, including contour-style shoreline rendering on the
   existing `10 m` grid from the live visible water field plus render-only cliff breakline / cliff
   band treatment from the live terrain field
+- terrain grass and building-site grass now use the same Grass002 material stack with world-space
+  UVs, stochastic anti-tiling, and luminance-preserving detail fade so camera distance changes
+  reduce detail contrast rather than changing base brightness
+- centralized scene lighting now provides a deterministic sun / sky / shadow baseline, with shared
+  shadow policy for terrain, site ground, buildings, cars, roads, water, and editor/debug helpers
 - terrain coloring now uses surface classification first and absolute height second, so flat blank
   worlds and imported DEM worlds share the same inland-first palette model instead of depending
   mainly on one absolute-height ramp
