@@ -2612,7 +2612,7 @@ func _terrain_grass_visual_debug_mode_from_env() -> int:
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 8)
+		return clampi(value.to_int(), 0, 10)
 	match value:
 		"raw", "albedo":
 			return 1
@@ -2630,6 +2630,10 @@ func _terrain_grass_visual_debug_mode_from_env() -> int:
 			return 7
 		"mask", "grass-mask":
 			return 8
+		"luminance", "luma", "brightness":
+			return 9
+		"footprint", "footprints":
+			return 10
 		_:
 			return 0
 

@@ -167,9 +167,29 @@ vec3 grass_meadow_variation(vec2 world_xz) {
 	return clamp(meadow, vec3(0.035), vec3(0.52, 0.70, 0.42));
 }
 
+float color_luminance(vec3 color) {
+	return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+vec3 match_luminance(vec3 color, float target_luma) {
+	float current_luma = max(color_luminance(color), 0.001);
+	float scale = clamp(max(target_luma, 0.001) / current_luma, 0.45, 2.20);
+	return clamp(color * scale, vec3(0.020), vec3(0.82));
+}
+
+float grass_texture_footprint(vec2 micro_uv, vec2 micro_cross_uv) {
+	return max(length(fwidth(micro_uv)), length(fwidth(micro_cross_uv)));
+}
+
+float grass_micro_visibility_from_footprint(float footprint) {
+	float fade_start = max(terrain_grass_detail_fade_start, 0.0);
+	float fade_end = max(terrain_grass_detail_fade_end, fade_start + 0.001);
+	return 1.0 - smoothstep(fade_start, fade_end, footprint);
+}
+
 vec3 grass_material_layer(vec3 base_color, vec3 grass_color, vec2 world_xz, float contrast, float green_anchor) {
-	vec3 luma_weights = vec3(0.299, 0.587, 0.114);
-	float grass_luma = max(dot(grass_color, luma_weights), 0.001);
+	float target_luma = color_luminance(base_color);
+	float grass_luma = max(color_luminance(grass_color), 0.001);
 	float detail = clamp((grass_luma - 0.28) * contrast, -0.32, 0.30);
 	vec3 grass_contrast = clamp(
 		(grass_color - vec3(grass_luma)) * 3.00 + vec3(grass_luma),
@@ -180,20 +200,23 @@ vec3 grass_material_layer(vec3 base_color, vec3 grass_color, vec2 world_xz, floa
 	vec3 anchored_color = mix(base_color, meadow_color, clamp(green_anchor, 0.0, 1.0));
 	float texture_weight = clamp(0.50 + contrast * 0.20, 0.58, 0.82);
 	vec3 textured_color = mix(anchored_color, grass_contrast, texture_weight);
-	return clamp(textured_color * (1.0 + detail), vec3(0.030), vec3(0.54, 0.72, 0.44));
+	return match_luminance(textured_color * (1.0 + detail), target_luma);
 }
 
-float grass_detail_brightness(vec3 grass_color, float height_detail, vec2 world_xz) {
-	float albedo_luma = dot(grass_color, vec3(0.299, 0.587, 0.114));
-	float albedo_detail = clamp((albedo_luma - 0.27) * 4.25, -0.45, 0.45);
-	float height_relief = clamp((height_detail - 0.34) * 2.20, -0.55, 0.65);
+float grass_detail_brightness(vec3 micro_grass, vec3 mid_grass, float height_detail, vec2 world_xz) {
+	float albedo_detail = clamp(
+		(color_luminance(micro_grass) - color_luminance(mid_grass)) * 3.25,
+		-0.34,
+		0.34
+	);
+	float height_relief = clamp((height_detail - 0.50) * 1.10, -0.32, 0.32);
 	float fiber = noise2d(world_xz * 0.92 + vec2(5.0, 97.0)) - 0.5;
 	float tuft = warped_noise(world_xz, 0.22, vec2(191.0, 41.0)) - 0.5;
 	float brightness = 1.0;
 	brightness += albedo_detail * terrain_grass_detail_strength;
 	brightness += height_relief * terrain_grass_height_detail_strength;
 	brightness += fiber * 0.08 + tuft * 0.10;
-	return clamp(brightness, 0.70, 1.34);
+	return clamp(brightness, 0.78, 1.24);
 }
 
 vec3 apply_grass_detail(vec3 color, vec3 pos, float grass_mask) {
@@ -206,10 +229,8 @@ vec3 apply_grass_detail(vec3 color, vec3 pos, float grass_mask) {
 	vec3 mid_grass = sample_grass_albedo_stochastic(pos.xz * terrain_grass_mid_scale, 29.0);
 	vec3 micro_grass = sample_grass_albedo_cross(pos.xz, terrain_grass_detail_scale);
 	float height_detail = sample_grass_height_cross(pos.xz, terrain_grass_detail_scale);
-	float footprint = max(length(fwidth(micro_uv)), length(fwidth(micro_cross_uv)));
-	float fade_start = max(terrain_grass_detail_fade_start, 0.0);
-	float fade_end = max(terrain_grass_detail_fade_end, fade_start + 0.001);
-	float micro_visibility = 1.0 - smoothstep(fade_start, fade_end, footprint);
+	float footprint = grass_texture_footprint(micro_uv, micro_cross_uv);
+	float micro_visibility = grass_micro_visibility_from_footprint(footprint);
 	float master_strength = grass_mask * clamp(terrain_grass_albedo_strength, 0.0, 1.0);
 	color = mix(
 		color,
@@ -226,10 +247,10 @@ vec3 apply_grass_detail(vec3 color, vec3 pos, float grass_mask) {
 		grass_material_layer(color, micro_grass, pos.xz, 1.35, 0.42),
 		master_strength * clamp(terrain_grass_micro_strength, 0.0, 1.0) * micro_visibility
 	);
-	float detail_mask = grass_mask * clamp(0.16 + micro_visibility * 0.84, 0.0, 1.0);
+	float detail_mask = grass_mask * micro_visibility;
 	return color * mix(
 		1.0,
-		grass_detail_brightness(micro_grass, height_detail, pos.xz),
+		grass_detail_brightness(micro_grass, mid_grass, height_detail, pos.xz),
 		detail_mask
 	);
 }

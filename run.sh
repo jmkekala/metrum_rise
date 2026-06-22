@@ -37,7 +37,8 @@
 #   --debug visual       Alias for --debug visuals.
 #   --debug visuals <mode>
 #                        Terrain grass visual debug mode. Modes:
-#                        raw, macro, mid, micro, fades, material, height, mask
+#                        raw, macro, mid, micro, fades, material, height, mask,
+#                        luminance, footprint
 #   --visuals [mode]     Alias for --debug visuals [mode]
 
 RELEASE=0
@@ -156,14 +157,14 @@ case "$VISUAL_DEBUG_MODE" in
     raw|albedo)
         VISUAL_DEBUG_MODE="raw"
         ;;
-    macro|mid|micro|fades|fade|visibility|material|composite|height|mask|grass-mask)
+    macro|mid|micro|fades|fade|visibility|material|composite|height|mask|grass-mask|luminance|luma|brightness|footprint|footprints)
         ;;
     "")
         VISUAL_DEBUG_MODE="material"
         ;;
     *)
         echo "Error: unknown visual debug mode '$VISUAL_DEBUG_MODE'." >&2
-        echo "Valid modes: raw, macro, mid, micro, fades, material, height, mask" >&2
+        echo "Valid modes: raw, macro, mid, micro, fades, material, height, mask, luminance, footprint" >&2
         exit 2
         ;;
 esac
@@ -174,6 +175,10 @@ elif [ "$VISUAL_DEBUG_MODE" = "composite" ]; then
     VISUAL_DEBUG_MODE="material"
 elif [ "$VISUAL_DEBUG_MODE" = "grass-mask" ]; then
     VISUAL_DEBUG_MODE="mask"
+elif [ "$VISUAL_DEBUG_MODE" = "luma" ] || [ "$VISUAL_DEBUG_MODE" = "brightness" ]; then
+    VISUAL_DEBUG_MODE="luminance"
+elif [ "$VISUAL_DEBUG_MODE" = "footprints" ]; then
+    VISUAL_DEBUG_MODE="footprint"
 fi
 
 case "$TERRAIN_VISUAL_DEBUG_MODE" in
@@ -310,6 +315,8 @@ if [ $VISUAL_DEBUG -eq 1 ]; then
     echo "    material Grass material composite before hillshade/contours"
     echo "    height   Grass002 height map"
     echo "    mask     Where grass detail is allowed"
+    echo "    luminance Base/macro/mid/micro/final brightness bands"
+    echo "    footprint RGB = footprint, micro visibility, grass mask"
 fi
 if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
     export METRUM_DEBUG_TERRAIN=1
