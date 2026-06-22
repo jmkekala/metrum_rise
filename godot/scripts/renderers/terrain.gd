@@ -9,16 +9,17 @@
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const HEIGHT_SCALE := 20.0
 const HILLSHADE_AZIMUTH_DEG := 315.0
 const HILLSHADE_ALTITUDE_DEG := 38.0
-const HILLSHADE_STRENGTH := 0.70
-const HILLSHADE_AMBIENT := 0.20
-const HILLSHADE_CONTRAST := 1.55
-const HILLSHADE_SHADOW_TINT := Color(0.62, 0.71, 0.77)
-const HILLSHADE_LIGHT_TINT := Color(0.97, 0.99, 0.95)
+const HILLSHADE_STRENGTH := 0.22
+const HILLSHADE_AMBIENT := 0.62
+const HILLSHADE_CONTRAST := 1.10
+const HILLSHADE_SHADOW_TINT := Color(0.82, 0.88, 0.90)
+const HILLSHADE_LIGHT_TINT := Color(1.00, 0.99, 0.94)
 const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
 const TERRAIN_GRASS_TINT := Color(0.22, 0.42, 0.16)
 const TERRAIN_GRASS_TINT_STRENGTH := 0.0
@@ -30,7 +31,7 @@ const TERRAIN_GRASS_MID_STRENGTH := 0.80
 const TERRAIN_GRASS_MICRO_STRENGTH := 0.50
 const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
 const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
-const TERRAIN_BAKED_NORMAL_BLEND := 0.75
+const TERRAIN_BAKED_NORMAL_BLEND := 0.0
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
 const TERRAIN_GRASS_DETAIL_SCALE := 0.34
 const TERRAIN_GRASS_DETAIL_STRENGTH := 0.58
@@ -518,9 +519,19 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
 	material.set_shader_parameter("terrain_grass_visual_debug_mode", _terrain_grass_visual_debug_mode)
+	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())
+	material.set_shader_parameter("scene_sun_color", SceneLightingConfig.sun_color())
+	material.set_shader_parameter("scene_sky_color", SceneLightingConfig.sky_color())
+	material.set_shader_parameter("scene_ambient_strength", SceneLightingConfig.ambient_strength())
+	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
+	material.set_shader_parameter(
+		"scene_shadow_split_distances_m",
+		SceneLightingConfig.shadow_split_distances()
+	)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
+	material.set_shader_parameter("patch_world_size_m", Vector2(world_size_x, world_size_z))
 	material.set_shader_parameter("terrain_cell_m", terrain_cell_m)
 	material.set_shader_parameter("hillshade_azimuth_deg", HILLSHADE_AZIMUTH_DEG)
 	material.set_shader_parameter("hillshade_altitude_deg", HILLSHADE_ALTITUDE_DEG)
@@ -672,6 +683,10 @@ func _upload_patch(key: Vector2i) -> void:
 		"inner_sample_size_texels",
 		Vector2(int(patch_data["sample_width"]), int(patch_data["sample_height"]))
 	)
+	material.set_shader_parameter("patch_world_size_m", Vector2(
+		float(patch_data["world_size_x"]),
+		float(patch_data["world_size_z"])
+	))
 	var height_is_baked: bool = _patch_has_baked_terrain_mesh(patch_data)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
 	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
@@ -906,6 +921,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
 		var retaining_wall_baked_vertex_count: int = _road_geometry_retaining_wall_baked_vertex_count(patch_data)
+		var baked_mesh_stats: String = _road_geometry_baked_mesh_stats_label(patch_data)
 		var cdt_status: String = str(patch_data.get("terrain_cdt_status", "none"))
 		var cdt_error: String = str(patch_data.get("terrain_cdt_error", "none"))
 		var cdt_stage: String = str(patch_data.get("terrain_cdt_diagnostic_stage", "none"))
@@ -950,7 +966,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d baked_mesh=%s cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -983,6 +999,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				baked_vertex_count,
 				retaining_wall_baked_vertex_count,
+				baked_mesh_stats,
 				cdt_status,
 				cdt_error,
 				cdt_stage,
@@ -2379,6 +2396,78 @@ func _road_geometry_retaining_wall_baked_vertex_count(patch_data: Dictionary) ->
 	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
 	return vertices.size()
 
+func _road_geometry_baked_mesh_stats_label(patch_data: Dictionary) -> String:
+	if not _patch_has_baked_terrain_mesh(patch_data):
+		return "none"
+	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
+	var min_vertex: Vector3 = vertices[0]
+	var max_vertex: Vector3 = vertices[0]
+	for vertex_variant in vertices:
+		var vertex: Vector3 = vertex_variant
+		min_vertex.x = minf(min_vertex.x, vertex.x)
+		min_vertex.y = minf(min_vertex.y, vertex.y)
+		min_vertex.z = minf(min_vertex.z, vertex.z)
+		max_vertex.x = maxf(max_vertex.x, vertex.x)
+		max_vertex.y = maxf(max_vertex.y, vertex.y)
+		max_vertex.z = maxf(max_vertex.z, vertex.z)
+
+	var uv_label := "none"
+	var uvs: PackedVector2Array = (
+		patch_data.get("terrain_mesh_uvs", PackedVector2Array()) as PackedVector2Array
+	)
+	if uvs.size() == vertices.size():
+		var min_uv: Vector2 = uvs[0]
+		var max_uv: Vector2 = uvs[0]
+		for uv_variant in uvs:
+			var uv: Vector2 = uv_variant
+			min_uv.x = minf(min_uv.x, uv.x)
+			min_uv.y = minf(min_uv.y, uv.y)
+			max_uv.x = maxf(max_uv.x, uv.x)
+			max_uv.y = maxf(max_uv.y, uv.y)
+		uv_label = "[(%.3f,%.3f)..(%.3f,%.3f)]" % [
+			min_uv.x,
+			min_uv.y,
+			max_uv.x,
+			max_uv.y,
+		]
+
+	var normal_label := "none"
+	var normals: PackedVector3Array = (
+		patch_data.get("terrain_mesh_normals", PackedVector3Array()) as PackedVector3Array
+	)
+	if normals.size() == vertices.size():
+		var min_normal_y: float = normals[0].y
+		var max_normal_y: float = normals[0].y
+		var min_normal_length := normals[0].length()
+		var max_normal_length := min_normal_length
+		var normal_y_sum := 0.0
+		for normal_variant in normals:
+			var normal: Vector3 = normal_variant
+			var normal_length := normal.length()
+			min_normal_y = minf(min_normal_y, normal.y)
+			max_normal_y = maxf(max_normal_y, normal.y)
+			min_normal_length = minf(min_normal_length, normal_length)
+			max_normal_length = maxf(max_normal_length, normal_length)
+			normal_y_sum += normal.y
+		normal_label = "y=[%.3f..%.3f],avg_y=%.3f,len=[%.3f..%.3f]" % [
+			min_normal_y,
+			max_normal_y,
+			normal_y_sum / float(maxi(1, normals.size())),
+			min_normal_length,
+			max_normal_length,
+		]
+
+	return "{local_bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],uv=%s,normal=%s}" % [
+		min_vertex.x,
+		min_vertex.y,
+		min_vertex.z,
+		max_vertex.x,
+		max_vertex.y,
+		max_vertex.z,
+		uv_label,
+		normal_label,
+	]
+
 func _road_geometry_polygon_area(points: PackedVector2Array) -> float:
 	if points.size() < 3:
 		return 0.0
@@ -2476,7 +2565,7 @@ func _terrain_visual_debug_mode_from_env() -> int:
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 9)
+		return clampi(value.to_int(), 0, 10)
 	match value:
 		"patch", "patches":
 			return 1
@@ -2496,6 +2585,8 @@ func _terrain_visual_debug_mode_from_env() -> int:
 			return 8
 		"water-material", "water-mat", "material-water":
 			return 9
+		"lighting", "light", "sun":
+			return 10
 		_:
 			return 0
 

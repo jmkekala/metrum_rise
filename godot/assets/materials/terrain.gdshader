@@ -14,17 +14,24 @@ uniform int terrain_visual_debug_mode = 0;
 uniform vec2 terrain_debug_patch_key = vec2(0.0);
 uniform float terrain_debug_lod_step = 1.0;
 uniform int terrain_grass_visual_debug_mode = 0;
+uniform vec3 scene_sun_direction = vec3(-0.46, 0.74, -0.49);
+uniform vec3 scene_sun_color : source_color = vec3(1.00, 0.92, 0.80);
+uniform vec3 scene_sky_color : source_color = vec3(0.58, 0.73, 0.86);
+uniform float scene_ambient_strength = 0.44;
+uniform float scene_shadow_max_distance_m = 1800.0;
+uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
+uniform vec2 patch_world_size_m = vec2(256.0, 256.0);
 uniform float terrain_cell_m = 10.0;
 uniform float hillshade_azimuth_deg = 315.0;
 uniform float hillshade_altitude_deg = 42.0;
-uniform float hillshade_strength = 0.42;
-uniform float hillshade_ambient = 0.36;
-uniform float hillshade_contrast = 1.15;
-uniform vec3 hillshade_shadow_tint : source_color = vec3(0.62, 0.71, 0.77);
-uniform vec3 hillshade_light_tint : source_color = vec3(0.97, 0.99, 0.95);
+uniform float hillshade_strength = 0.22;
+uniform float hillshade_ambient = 0.62;
+uniform float hillshade_contrast = 1.10;
+uniform vec3 hillshade_shadow_tint : source_color = vec3(0.82, 0.88, 0.90);
+uniform vec3 hillshade_light_tint : source_color = vec3(1.00, 0.99, 0.94);
 uniform float terrain_macro_variation_strength = 0.10;
 uniform vec3 terrain_grass_tint : source_color = vec3(0.22, 0.42, 0.16);
 uniform float terrain_grass_tint_strength = 0.0;
@@ -36,7 +43,7 @@ uniform float terrain_grass_mid_strength = 0.80;
 uniform float terrain_grass_micro_strength = 0.50;
 uniform float terrain_natural_variation_strength = 0.18;
 uniform float terrain_meadow_mottle_strength = 0.08;
-uniform float terrain_baked_normal_blend = 0.75;
+uniform float terrain_baked_normal_blend = 0.0;
 uniform float terrain_baked_readability_strength = 0.12;
 uniform float terrain_grass_detail_scale = 0.34;
 uniform float terrain_grass_detail_strength = 0.58;
@@ -79,6 +86,7 @@ varying float h;
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
 varying vec3 var_mesh_normal;
+varying float var_view_distance_m;
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -480,7 +488,8 @@ vec3 terrain_visual_debug_color(
 	float local_relief,
 	float slope,
 	float shore_mask,
-	float grass_detail_mask
+	float grass_detail_mask,
+	vec3 normal
 ) {
 	vec3 debug_color = vec3(0.0);
 	float water_depth_m = texture(watermap, var_centered_uv).r;
@@ -504,6 +513,34 @@ vec3 terrain_visual_debug_color(
 		float depth_visibility = smoothstep(0.0, 6.0, water_depth_m);
 		debug_color = mix(vec3(0.03, 0.07, 0.08), vec3(0.02, 0.55, 1.00), depth_visibility);
 		debug_color = mix(debug_color, vec3(0.05, 0.40, 0.18), grass_detail_mask * 0.25);
+	} else if (terrain_visual_debug_mode == 10) {
+		vec3 sun_dir = normalize(scene_sun_direction);
+		float sun_facing = clamp(dot(normalize(normal), sun_dir), 0.0, 1.0);
+		float camera_distance_m = var_view_distance_m;
+		float split0 = scene_shadow_split_distances_m.x;
+		float split1 = scene_shadow_split_distances_m.y;
+		float split2 = scene_shadow_split_distances_m.z;
+		float cascade_index = 3.0;
+		if (camera_distance_m < split0) {
+			cascade_index = 0.0;
+		} else if (camera_distance_m < split1) {
+			cascade_index = 1.0;
+		} else if (camera_distance_m < split2) {
+			cascade_index = 2.0;
+		}
+		vec3 cascade_color = vec3(0.20, 0.82, 0.28);
+		if (cascade_index < 0.5) {
+			cascade_color = vec3(0.20, 0.82, 0.28);
+		} else if (cascade_index < 1.5) {
+			cascade_color = vec3(0.12, 0.58, 1.00);
+		} else if (cascade_index < 2.5) {
+			cascade_color = vec3(1.00, 0.78, 0.16);
+		} else {
+			cascade_color = vec3(1.00, 0.20, 0.14);
+		}
+		vec3 facing_color = mix(vec3(0.04, 0.05, 0.08), scene_sun_color, sun_facing);
+		debug_color = mix(facing_color, cascade_color, 0.38);
+		debug_color *= mix(0.68, 1.12, clamp(scene_ambient_strength, 0.0, 1.0));
 	} else {
 		debug_color = vec3(slope);
 	}
@@ -512,13 +549,17 @@ vec3 terrain_visual_debug_color(
 }
 
 float hillshade_mask(vec3 normal) {
-	float azimuth = radians(hillshade_azimuth_deg);
-	float altitude = radians(hillshade_altitude_deg);
-	vec3 light_dir = normalize(vec3(
-		sin(azimuth) * cos(altitude),
-		sin(altitude),
-		-cos(azimuth) * cos(altitude)
-	));
+	vec3 light_dir = scene_sun_direction;
+	if (length(light_dir) <= 0.001) {
+		float azimuth = radians(hillshade_azimuth_deg);
+		float altitude = radians(hillshade_altitude_deg);
+		light_dir = vec3(
+			sin(azimuth) * cos(altitude),
+			sin(altitude),
+			-cos(azimuth) * cos(altitude)
+		);
+	}
+	light_dir = normalize(light_dir);
 
 	float diffuse = clamp(dot(normal, light_dir), 0.0, 1.0);
 	float shaped = pow(diffuse, hillshade_contrast);
@@ -596,7 +637,15 @@ vec3 cliff_masks(vec2 uv) {
 
 void vertex() {
 	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
-	vec2 centered_uv = (inner_sample_offset_texels + UV * (safe_inner_size - 1.0) + 0.5)
+	vec2 patch_uv = clamp(
+		vec2(
+			VERTEX.x / max(patch_world_size_m.x, 0.001) + 0.5,
+			VERTEX.z / max(patch_world_size_m.y, 0.001) + 0.5
+		),
+		vec2(0.0),
+		vec2(1.0)
+	);
+	vec2 centered_uv = (inner_sample_offset_texels + patch_uv * (safe_inner_size - 1.0) + 0.5)
 		/ max(heightmap_texture_size, vec2(1.0));
 	var_centered_uv = centered_uv;
 	h = texture(heightmap, centered_uv).r;
@@ -605,8 +654,11 @@ void vertex() {
 	} else {
 		VERTEX.y += h * height_scale;
 	}
+	vec3 terrain_normal = sample_world_normal(centered_uv);
+	NORMAL = terrain_normal;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	var_mesh_normal = normalize(NORMAL);
+	var_mesh_normal = terrain_normal;
+	var_view_distance_m = length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz);
 }
 
 void fragment() {
@@ -643,15 +695,22 @@ void fragment() {
 	float grass_detail_mask = (1.0 - rock_mask) * (1.0 - cliff_face * 0.80);
 	grass_detail_mask *= 1.0 - shore_mask * shore_flatness * terrain_shore_blend_strength;
 	if (terrain_visual_debug_mode > 0) {
-		ALBEDO = terrain_visual_debug_color(
+		vec3 debug_color = terrain_visual_debug_color(
 			UV,
 			h,
 			world_elevation,
 			local_relief,
 			slope,
 			shore_mask,
-			clamp(grass_detail_mask, 0.0, 1.0)
+			clamp(grass_detail_mask, 0.0, 1.0),
+			normal
 		);
+		if (terrain_visual_debug_mode == 10) {
+			ALBEDO = debug_color;
+		} else {
+			ALBEDO = vec3(0.0);
+			EMISSION = debug_color;
+		}
 		ROUGHNESS = 1.0;
 		SPECULAR = 0.0;
 	} else if (terrain_grass_visual_debug_mode > 0) {

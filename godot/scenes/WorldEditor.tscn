@@ -5,6 +5,7 @@
 [ext_resource type="Script" path="res://scripts/renderers/water.gd" id="3_water"]
 [ext_resource type="Script" path="res://scripts/editors/world_editor_camera_input.gd" id="4_camera_input"]
 [ext_resource type="Environment" path="res://default_environment.tres" id="5_env"]
+[ext_resource type="Script" path="res://scripts/core/scene_lighting.gd" id="6_lighting"]
 
 [node name="WorldEditor" type="Node3D"]
 script = ExtResource("1_world_editor")
@@ -17,6 +18,9 @@ transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75
 shadow_enabled = true
 shadow_bias = 0.12
 shadow_normal_bias = 3.5
+
+[node name="SceneLighting" type="Node" parent="."]
+script = ExtResource("6_lighting")
 
 [node name="SimulationNode" type="SimulationNode" parent="."]
 

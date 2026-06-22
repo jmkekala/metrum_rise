@@ -22,7 +22,7 @@
 #   --debug terrain-visual <mode>
 #                        Terrain/water material diagnostics. Modes:
 #                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch,
-#                        water-material
+#                        water-material, lighting
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -176,12 +176,15 @@ case "$TERRAIN_VISUAL_DEBUG_MODE" in
             TERRAIN_VISUAL_DEBUG_MODE="water-material"
         fi
         ;;
+    lighting|light|sun)
+        TERRAIN_VISUAL_DEBUG_MODE="lighting"
+        ;;
     "")
         TERRAIN_VISUAL_DEBUG_MODE="patch"
         ;;
     *)
         echo "Error: unknown terrain visual debug mode '$TERRAIN_VISUAL_DEBUG_MODE'." >&2
-        echo "Valid modes: patch, lod, height, relief, shore, water-depth, water-lod, water-patch, water-material" >&2
+        echo "Valid modes: patch, lod, height, relief, shore, water-depth, water-lod, water-patch, water-material, lighting" >&2
         exit 2
         ;;
 esac
@@ -276,6 +279,7 @@ if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
     echo "    water-lod   Water mesh LOD colors"
     echo "    water-patch Water patch identity colors"
     echo "    water-material Water material bands: tint, alpha, Fresnel, foam, normals"
+    echo "    lighting    Sun-facing strength, cascade bands, and water specular mask"
 fi
 
 echo "Building Rust library..."

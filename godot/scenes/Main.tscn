@@ -14,6 +14,7 @@
 [ext_resource type="Script" path="res://scripts/ui/main_ui.gd" id="10_ui"]
 [ext_resource type="Script" path="res://scripts/renderers/network_renderer.gd" id="11_netrender"]
 [ext_resource type="Environment" path="res://default_environment.tres" id="13_env"]
+[ext_resource type="Script" path="res://scripts/core/scene_lighting.gd" id="14_lighting"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -26,6 +27,9 @@ transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75
 shadow_enabled = true
 shadow_bias = 0.12
 shadow_normal_bias = 3.5
+
+[node name="SceneLighting" type="Node" parent="."]
+script = ExtResource("14_lighting")
 
 [node name="SimulationNode" type="SimulationNode" parent="."]
 

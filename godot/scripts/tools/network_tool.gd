@@ -47,10 +47,12 @@ func _setup_visuals():
 	# Final mesh container (ONLY RoadTool owns the final mesh)
 	if name == "RoadTool":
 		mesh_instance = MeshInstance3D.new()
+		mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mesh_instance)
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
+	blueprint_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(blueprint_mesh)
 	
 	blueprint_mat = StandardMaterial3D.new()
@@ -66,6 +68,7 @@ func _setup_visuals():
 	
 	# Node Snapping Highlights
 	node_multimesh = MultiMeshInstance3D.new()
+	node_multimesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = SphereMesh.new()
@@ -87,6 +90,7 @@ func _setup_visuals():
 	
 	# Active hover cursor
 	cursor_mesh = MeshInstance3D.new()
+	cursor_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	cursor_mesh.mesh = SphereMesh.new()
 	cursor_mesh.mesh.radius = 1.5
 	cursor_mesh.mesh.height = 0.3

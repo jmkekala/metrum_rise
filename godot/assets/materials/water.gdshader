@@ -22,6 +22,12 @@ uniform float water_refraction_mix = 0.13;
 uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
 uniform int water_visual_debug_mode = 0;
+uniform vec3 scene_sun_direction = vec3(-0.46, 0.74, -0.49);
+uniform vec3 scene_sun_color : source_color = vec3(1.00, 0.92, 0.80);
+uniform vec3 scene_sky_color : source_color = vec3(0.58, 0.73, 0.86);
+uniform float scene_ambient_strength = 0.44;
+uniform float scene_shadow_max_distance_m = 1800.0;
+uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform vec2 water_debug_patch_key = vec2(0.0);
 uniform float water_debug_lod_step = 1.0;
 uniform vec2 watermap_texture_size = vec2(1.0, 1.0);
@@ -30,6 +36,9 @@ uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
 
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
+varying vec3 var_sun_direction_view;
+varying vec3 var_view_direction;
+varying float var_view_distance_m;
 
 vec2 centered_uv(vec2 uv) {
 	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
@@ -116,6 +125,10 @@ void vertex() {
 	// already world-space metres. Only the terrain sample should use height_scale.
 	VERTEX.y += terrain_height * height_scale + water_depth + 0.05;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	var_sun_direction_view = normalize((MODELVIEW_MATRIX * vec4(normalize(scene_sun_direction), 0.0)).xyz);
+	vec3 view_position = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	var_view_direction = normalize(-view_position);
+	var_view_distance_m = length(view_position);
 }
 
 float hash12(vec2 p) {
@@ -165,6 +178,23 @@ vec3 perturb_water_normal(vec3 base_normal, vec2 wave_slope, float strength) {
 	vec3 tangent = normalize(cross(axis, base_normal));
 	vec3 bitangent = normalize(cross(base_normal, tangent));
 	return normalize(base_normal + (tangent * wave_slope.x + bitangent * wave_slope.y) * strength);
+}
+
+vec3 water_world_normal(vec2 wave_slope) {
+	return normalize(vec3(
+		-wave_slope.x * water_wave_normal_strength * 2.6,
+		1.0,
+		-wave_slope.y * water_wave_normal_strength * 2.6
+	));
+}
+
+float water_sun_specular(vec3 view_normal) {
+	vec3 sun_dir = normalize(var_sun_direction_view);
+	vec3 normal = normalize(view_normal);
+	vec3 view_dir = normalize(var_view_direction);
+	vec3 reflected_sun = reflect(-sun_dir, normal);
+	float highlight = pow(clamp(dot(reflected_sun, view_dir), 0.0, 1.0), 72.0);
+	return clamp(highlight * 1.55, 0.0, 1.0);
 }
 
 float water_debug_patch_border(vec2 patch_uv) {
@@ -219,6 +249,41 @@ vec3 water_material_debug_color(
 	return mix(color, vec3(1.0), separator * 0.65);
 }
 
+vec3 water_lighting_debug_color(
+	vec2 patch_uv,
+	vec3 world_normal,
+	float fresnel_value,
+	float specular_value,
+	float normal_value
+) {
+	float column = floor(clamp(patch_uv.x, 0.0, 0.999) * 5.0);
+	vec3 sun_dir = normalize(scene_sun_direction);
+	float sun_facing = clamp(dot(world_normal, sun_dir), 0.0, 1.0);
+	float camera_distance_m = var_view_distance_m;
+	vec3 cascade_color = vec3(1.00, 0.20, 0.14);
+	if (camera_distance_m < scene_shadow_split_distances_m.x) {
+		cascade_color = vec3(0.20, 0.82, 0.28);
+	} else if (camera_distance_m < scene_shadow_split_distances_m.y) {
+		cascade_color = vec3(0.12, 0.58, 1.00);
+	} else if (camera_distance_m < scene_shadow_split_distances_m.z) {
+		cascade_color = vec3(1.00, 0.78, 0.16);
+	}
+	vec3 color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color, sun_facing);
+	if (column < 1.0) {
+		color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color, sun_facing);
+	} else if (column < 2.0) {
+		color = mix(vec3(0.02, 0.03, 0.05), vec3(1.0, 0.94, 0.72), specular_value);
+	} else if (column < 3.0) {
+		color = mix(vec3(0.03, 0.07, 0.12), scene_sky_color, fresnel_value);
+	} else if (column < 4.0) {
+		color = cascade_color;
+	} else {
+		color = vec3(normal_value, normal_value * 0.65, 1.0 - normal_value * 0.55);
+	}
+	float separator = step(fract(patch_uv.x * 5.0), 0.018);
+	return mix(color, vec3(1.0), separator * 0.65);
+}
+
 vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 	vec3 debug_color = vec3(0.0);
 	if (water_visual_debug_mode == 1 || water_visual_debug_mode == 8) {
@@ -247,6 +312,7 @@ void fragment() {
 	float wave = water_surface_breakup(var_world_pos.xz);
 	float wave_signed = wave * 2.0 - 1.0;
 	vec2 wave_slope = water_wave_slope(var_world_pos.xz);
+	vec3 world_normal = water_world_normal(wave_slope);
 	float normal_debug_strength = clamp(length(wave_slope) * water_wave_normal_strength * 18.0, 0.0, 1.0);
 	float speed = clamp(speed_sample * 0.5, 0.0, 1.0);
 	vec3 depth_tint = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
@@ -259,10 +325,12 @@ void fragment() {
 
 	NORMAL = perturb_water_normal(normalize(NORMAL), wave_slope, water_wave_normal_strength);
 	float fresnel = pow(
-		1.0 - clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0),
+		1.0 - clamp(dot(normalize(NORMAL), normalize(var_view_direction)), 0.0, 1.0),
 		water_fresnel_power
 	);
 	float fresnel_mix = clamp(fresnel * water_fresnel_strength, 0.0, 1.0);
+	float sun_specular = water_sun_specular(NORMAL) * shore_mask * (0.40 + depth_factor * 0.60);
+	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color, 0.65);
 
 	if (water_visual_debug_mode > 0) {
 		if (water_visual_debug_mode == 9) {
@@ -272,6 +340,14 @@ void fragment() {
 				final_alpha,
 				fresnel_mix,
 				foam_amount,
+				normal_debug_strength
+			);
+		} else if (water_visual_debug_mode == 10) {
+			ALBEDO = water_lighting_debug_color(
+				UV,
+				world_normal,
+				fresnel_mix,
+				sun_specular,
 				normal_debug_strength
 			);
 		} else {
@@ -294,12 +370,13 @@ void fragment() {
 			refracted_scene,
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
-		final_color = mix(final_color, sky_reflection_color.rgb, fresnel_mix);
+		final_color = mix(final_color, sky_reflection, fresnel_mix);
+		final_color += scene_sun_color * sun_specular * 0.45;
 		float topdown_ripple = smoothstep(0.48, 0.86, wave)
 			* normal_debug_strength
 			* (1.0 - fresnel_mix * 0.35)
 			* 0.07;
-		final_color = mix(final_color, sky_reflection_color.rgb, topdown_ripple);
+		final_color = mix(final_color, sky_reflection, topdown_ripple);
 		ALBEDO = final_color;
 		ALPHA = final_alpha;
 		ROUGHNESS = clamp(0.08 + speed * 0.06 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);

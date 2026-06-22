@@ -6,6 +6,7 @@
 extends Node3D
 
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -289,6 +290,15 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("water_wave_normal_strength", WATER_WAVE_NORMAL_STRENGTH)
 	material.set_shader_parameter("water_refraction_strength", WATER_REFRACTION_STRENGTH)
 	material.set_shader_parameter("water_refraction_mix", WATER_REFRACTION_MIX)
+	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())
+	material.set_shader_parameter("scene_sun_color", SceneLightingConfig.sun_color())
+	material.set_shader_parameter("scene_sky_color", SceneLightingConfig.sky_color())
+	material.set_shader_parameter("scene_ambient_strength", SceneLightingConfig.ambient_strength())
+	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
+	material.set_shader_parameter(
+		"scene_shadow_split_distances_m",
+		SceneLightingConfig.shadow_split_distances()
+	)
 	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
 	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
 	material.set_shader_parameter("water_visual_debug_mode", _water_visual_debug_mode)
@@ -1900,7 +1910,7 @@ func _terrain_visual_debug_mode_from_env() -> int:
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 9)
+		return clampi(value.to_int(), 0, 10)
 	match value:
 		"patch", "patches":
 			return 1
@@ -1920,6 +1930,8 @@ func _terrain_visual_debug_mode_from_env() -> int:
 			return 8
 		"water-material", "water-mat", "material-water":
 			return 9
+		"lighting", "light", "sun":
+			return 10
 		_:
 			return 0
 
