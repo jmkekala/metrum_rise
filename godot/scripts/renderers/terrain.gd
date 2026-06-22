@@ -486,7 +486,11 @@ func _create_patch(key: Vector2i) -> void:
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
 	patch_node.name = "TerrainPatch_%d_%d" % [key.x, key.y]
-	patch_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		patch_node,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"terrain"
+	)
 	patch_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
 	patch_node.mesh = patch_mesh
 	patch_node.visible = false
@@ -497,7 +501,11 @@ func _create_patch(key: Vector2i) -> void:
 	)
 	var retaining_wall_node: MeshInstance3D = MeshInstance3D.new()
 	retaining_wall_node.name = "RetainingWalls"
-	retaining_wall_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		retaining_wall_node,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"terrain"
+	)
 	retaining_wall_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
 	retaining_wall_node.mesh = _retaining_wall_patch_mesh(patch_data)
 	retaining_wall_node.visible = _patch_has_retaining_wall_mesh(patch_data)
@@ -528,6 +536,7 @@ func _create_patch(key: Vector2i) -> void:
 		"scene_shadow_split_distances_m",
 		SceneLightingConfig.shadow_split_distances()
 	)
+	SceneLightingConfig.apply_ground_shadow_parameters(material)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
@@ -1570,13 +1579,21 @@ func _ensure_border_visuals() -> void:
 	if border_skirt_instance == null:
 		border_skirt_instance = MeshInstance3D.new()
 		border_skirt_instance.name = "TerrainBorderSkirt"
-		border_skirt_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			border_skirt_instance,
+			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			"terrain"
+		)
 		border_skirt_instance.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
 		add_child(border_skirt_instance)
 	if border_bottom_cap_instance == null:
 		border_bottom_cap_instance = MeshInstance3D.new()
 		border_bottom_cap_instance.name = "TerrainBorderBottomCap"
-		border_bottom_cap_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			border_bottom_cap_instance,
+			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			"terrain"
+		)
 		border_bottom_cap_instance.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
 		add_child(border_bottom_cap_instance)
 	if border_skirt_material == null:

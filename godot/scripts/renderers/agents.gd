@@ -7,6 +7,8 @@
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
 extends Node3D
 
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+
 @onready var simulation_node = $"../SimulationNode"
 
 # Key: pedestrian_type (int), Value: MultiMeshInstance3D
@@ -95,6 +97,11 @@ func _ready():
 		mm.instance_count   = 0
 		mm.mesh             = mesh
 		mmi.multimesh       = mm
+		SceneLightingConfig.apply_shadow_policy(
+			mmi,
+			SceneLightingConfig.SHADOW_TINY_DYNAMIC,
+			"walkers"
+		)
 
 		var mat := ShaderMaterial.new()
 		mat.shader = walk_shader
@@ -149,6 +156,11 @@ func _ready():
 	debug_mat.albedo_color.a = 0.7
 	debug_mesh_instance.material_override = debug_mat
 	debug_mesh_instance.mesh = debug_mesh
+	SceneLightingConfig.apply_shadow_policy(
+		debug_mesh_instance,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"walkers"
+	)
 	add_child(debug_mesh_instance)
 
 	_traffic_debug_visual = _env_flag_enabled("METRUM_DEBUG_TRAFFIC")
@@ -413,6 +425,11 @@ func _add_car_multimesh(v_type: int, variant_id: int, mesh: Mesh) -> void:
 	mm.instance_count = 0
 	mm.mesh = mesh
 	mmi.multimesh = mm
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_DYNAMIC_CASTER,
+		"cars"
+	)
 	add_child(mmi)
 
 	var key = (v_type * 10) + variant_id

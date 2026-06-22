@@ -136,6 +136,7 @@ static func _apply_site_ground_grass_parameters(material: ShaderMaterial) -> voi
 	material.set_shader_parameter("terrain_grass_height_detail_strength", 0.24)
 	material.set_shader_parameter("terrain_grass_detail_fade_start", 0.08)
 	material.set_shader_parameter("terrain_grass_detail_fade_end", 0.90)
+	SceneLightingConfig.apply_ground_shadow_parameters(material)
 
 static func _load_shader(path: String) -> Shader:
 	if _shader_cache.has(path):

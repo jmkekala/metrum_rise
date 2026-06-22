@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled, unshaded;
+render_mode cull_disabled, ambient_light_disabled;
 
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
@@ -20,6 +20,9 @@ uniform vec3 scene_sky_color : source_color = vec3(0.58, 0.73, 0.86);
 uniform float scene_ambient_strength = 0.44;
 uniform float scene_shadow_max_distance_m = 1800.0;
 uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
+uniform float ground_shadow_ambient = 0.64;
+uniform float ground_shadow_sun_strength = 0.36;
+uniform float ground_shadow_min_visibility = 0.10;
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
@@ -714,7 +717,8 @@ void fragment() {
 		ROUGHNESS = 1.0;
 		SPECULAR = 0.0;
 	} else if (terrain_grass_visual_debug_mode > 0) {
-		ALBEDO = terrain_grass_debug_color(
+		ALBEDO = vec3(0.0);
+		EMISSION = terrain_grass_debug_color(
 			color,
 			var_world_pos,
 			clamp(grass_detail_mask, 0.0, 1.0)
@@ -784,7 +788,29 @@ void fragment() {
 		color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
 		color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
 		ALBEDO = color;
+		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0);
 		ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 		SPECULAR = 0.08;
+	}
+}
+
+void light() {
+	if (terrain_visual_debug_mode == 0 || terrain_visual_debug_mode == 10) {
+		float sun_strength = ground_shadow_sun_strength;
+		if (terrain_visual_debug_mode == 10) {
+			sun_strength = 1.0;
+		}
+		float shadow_visibility = mix(
+			clamp(ground_shadow_min_visibility, 0.0, 1.0),
+			1.0,
+			clamp(ATTENUATION, 0.0, 1.0)
+		);
+		float facing = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
+		float soft_facing = mix(0.82, 1.0, facing);
+		DIFFUSE_LIGHT += ALBEDO
+			* LIGHT_COLOR
+			* sun_strength
+			* shadow_visibility
+			* soft_facing;
 	}
 }

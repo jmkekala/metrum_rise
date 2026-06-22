@@ -10,6 +10,7 @@ extends Node3D
 class_name NetworkTool
 
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -47,12 +48,20 @@ func _setup_visuals():
 	# Final mesh container (ONLY RoadTool owns the final mesh)
 	if name == "RoadTool":
 		mesh_instance = MeshInstance3D.new()
-		mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			mesh_instance,
+			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			"roads"
+		)
 		add_child(mesh_instance)
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
-	blueprint_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		blueprint_mesh,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"roads"
+	)
 	add_child(blueprint_mesh)
 	
 	blueprint_mat = StandardMaterial3D.new()
@@ -68,7 +77,11 @@ func _setup_visuals():
 	
 	# Node Snapping Highlights
 	node_multimesh = MultiMeshInstance3D.new()
-	node_multimesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		node_multimesh,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"roads"
+	)
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = SphereMesh.new()
@@ -90,7 +103,11 @@ func _setup_visuals():
 	
 	# Active hover cursor
 	cursor_mesh = MeshInstance3D.new()
-	cursor_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		cursor_mesh,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"roads"
+	)
 	cursor_mesh.mesh = SphereMesh.new()
 	cursor_mesh.mesh.radius = 1.5
 	cursor_mesh.mesh.height = 0.3
@@ -107,7 +124,11 @@ func _setup_visuals():
 	# Ghost guide lines (RoadTool only — other tools leave this null)
 	if name == "RoadTool":
 		ghost_mesh = MeshInstance3D.new()
-		ghost_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			ghost_mesh,
+			SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+			"roads"
+		)
 		ghost_mesh.visible = false
 		var gm := StandardMaterial3D.new()
 		gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -121,7 +142,11 @@ func _setup_visuals():
 
 	if _surface_debug_enabled:
 		surface_debug_mesh = MeshInstance3D.new()
-		surface_debug_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			surface_debug_mesh,
+			SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+			"roads"
+		)
 		var sm := StandardMaterial3D.new()
 		sm.vertex_color_use_as_albedo = true
 		sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED

@@ -261,7 +261,11 @@ func _create_patch(key: Vector2i) -> void:
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
-	patch_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		patch_node,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"water"
+	)
 	patch_node.extra_cull_margin = WATER_PATCH_EXTRA_CULL_MARGIN_M
 	patch_node.mesh = patch_mesh
 	patch_node.visible = false
@@ -1626,7 +1630,11 @@ func _ensure_water_border_visual() -> void:
 	if water_border_instance == null:
 		water_border_instance = MeshInstance3D.new()
 		water_border_instance.name = "WaterBorderCurtain"
-		water_border_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		SceneLightingConfig.apply_shadow_policy(
+			water_border_instance,
+			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			"water"
+		)
 		water_border_instance.extra_cull_margin = WATER_PATCH_EXTRA_CULL_MARGIN_M
 		add_child(water_border_instance)
 	if water_border_material == null:

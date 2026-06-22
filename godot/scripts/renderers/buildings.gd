@@ -25,6 +25,7 @@ extends Node3D
 const CFG_PATH := "user://active_packs.cfg"
 const PART_KEY_SEP := "|part:"
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
@@ -154,6 +155,11 @@ func _setup_multimesh_for_asset_part(asset_id: String, part_index: int) -> void:
 
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_STATIC_CASTER,
+		"buildings"
+	)
 	add_child(mmi)
 	multimeshes[key] = mmi
 	part_assets[key] = asset_id
@@ -179,6 +185,11 @@ func _setup_deserted_multimesh_for_asset_part(asset_id: String, part_index: int,
 	mmi.material_override = mat
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_STATIC_CASTER,
+		"buildings"
+	)
 	add_child(mmi)
 	deserted_multimeshes[key] = mmi
 
@@ -299,7 +310,11 @@ func _setup_foundation(zone_id: int) -> void:
 	mesh.material = mat
 	mm.mesh = mesh
 	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"buildings"
+	)
 	mmi.visible = show_foundations
 	add_child(mmi)
 	foundation_multimeshes[zone_id] = mmi
@@ -318,7 +333,11 @@ func _setup_construction_site(zone_id: int) -> void:
 	mesh.material = mat
 	mm.mesh = mesh
 	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"buildings"
+	)
 	add_child(mmi)
 	construction_site_multimeshes[zone_id] = mmi
 
@@ -335,7 +354,11 @@ func _setup_construction_foundation(zone_id: int) -> void:
 	mesh.material = mat
 	mm.mesh = mesh
 	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"buildings"
+	)
 	add_child(mmi)
 	construction_foundation_multimeshes[zone_id] = mmi
 
@@ -352,18 +375,30 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 	mesh.material = mat
 	mm.mesh = mesh
 	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		mmi,
+		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		"buildings"
+	)
 	add_child(mmi)
 	construction_scaffold_multimeshes[zone_id] = mmi
 
 func _setup_building_site_surfaces() -> void:
 	building_site_ground_instance = MeshInstance3D.new()
-	building_site_ground_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		building_site_ground_instance,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"yards"
+	)
 	building_site_ground_instance.material_override = _building_site_ground_material()
 	add_child(building_site_ground_instance)
 
 	building_site_surface_instance = MeshInstance3D.new()
-	building_site_surface_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	SceneLightingConfig.apply_shadow_policy(
+		building_site_surface_instance,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"yards"
+	)
 	add_child(building_site_surface_instance)
 
 func _process(_delta: float) -> void:
