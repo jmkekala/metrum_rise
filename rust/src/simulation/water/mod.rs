@@ -6,6 +6,7 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+use crate::simulation::terrain::TerrainPatchSnapshot;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -576,6 +577,70 @@ impl WaterSystem {
         })
     }
 
+    /// Returns visible-water samples in the exact texture space of a terrain render patch.
+    pub(crate) fn terrain_aligned_patch_snapshot(
+        &self,
+        terrain_patch: &TerrainPatchSnapshot,
+    ) -> WaterPatchSnapshot {
+        let sample_width = terrain_patch.sample_width;
+        let sample_height = terrain_patch.sample_height;
+        let texture_width = terrain_patch.texture_width;
+        let texture_height = terrain_patch.texture_height;
+        let mut depth_data = vec![0.0_f32; texture_width * texture_height];
+        let mut velocity_data = vec![0.0_f32; texture_width * texture_height];
+        let mut depth_nonzero_count = 0;
+        let mut velocity_nonzero_count = 0;
+        let sample_step_x =
+            terrain_patch.world_size_x / sample_width.saturating_sub(1).max(1) as f32;
+        let sample_step_z =
+            terrain_patch.world_size_z / sample_height.saturating_sub(1).max(1) as f32;
+
+        for local_z in 0..texture_height {
+            let sample_local_z =
+                bordered_local_sample_index(local_z, terrain_patch.inner_offset_z, sample_height);
+            let world_z = terrain_patch.world_origin_z + sample_local_z as f32 * sample_step_z;
+            for local_x in 0..texture_width {
+                let sample_local_x = bordered_local_sample_index(
+                    local_x,
+                    terrain_patch.inner_offset_x,
+                    sample_width,
+                );
+                let world_x = terrain_patch.world_origin_x + sample_local_x as f32 * sample_step_x;
+                let (sample_x, sample_z) = self.world_to_grid_cell_clamped(world_x, world_z);
+                let flat_idx = local_z * texture_width + local_x;
+                let depth = self.visible_depth_at(sample_x, sample_z);
+                let velocity = self.dynamic.velocity.get(sample_x, sample_z);
+                if depth > WATER_DEBUG_VISIBLE_EPSILON {
+                    depth_nonzero_count += 1;
+                }
+                if velocity.abs() > WATER_DEBUG_VISIBLE_EPSILON {
+                    velocity_nonzero_count += 1;
+                }
+                depth_data[flat_idx] = depth;
+                velocity_data[flat_idx] = velocity;
+            }
+        }
+
+        WaterPatchSnapshot {
+            patch_x: terrain_patch.patch_x,
+            patch_z: terrain_patch.patch_z,
+            sample_width,
+            sample_height,
+            texture_width,
+            texture_height,
+            inner_offset_x: terrain_patch.inner_offset_x,
+            inner_offset_z: terrain_patch.inner_offset_z,
+            world_origin_x: terrain_patch.world_origin_x,
+            world_origin_z: terrain_patch.world_origin_z,
+            world_size_x: terrain_patch.world_size_x,
+            world_size_z: terrain_patch.world_size_z,
+            depth_data,
+            velocity_data,
+            depth_nonzero_count,
+            velocity_nonzero_count,
+        }
+    }
+
     /// Returns debug-only baseline/dynamic/combined water stats for one visible render patch.
     pub(crate) fn visible_patch_layer_stats(
         &self,
@@ -788,6 +853,20 @@ fn border_clamped_index(
     }
 }
 
+fn bordered_local_sample_index(
+    bordered_index: usize,
+    inner_offset: usize,
+    sample_count: usize,
+) -> usize {
+    if sample_count == 0 || bordered_index < inner_offset {
+        0
+    } else if bordered_index >= inner_offset + sample_count {
+        sample_count - 1
+    } else {
+        bordered_index - inner_offset
+    }
+}
+
 fn accumulate_patch_sample(
     value: f32,
     nonzero_count: &mut usize,
@@ -804,6 +883,7 @@ fn accumulate_patch_sample(
 #[cfg(test)]
 mod tests {
     use super::WaterSystem;
+    use crate::simulation::terrain::TerrainPatchSnapshot;
     use std::collections::HashSet;
 
     #[test]
@@ -868,6 +948,47 @@ mod tests {
         assert_eq!(stats.source_count_total, 1);
         assert!((stats.source_rate_sum - 1.25).abs() < 0.0001);
         assert!((stats.source_rate_abs_sum - 1.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn terrain_aligned_patch_snapshot_uses_terrain_texture_space() {
+        let mut water = WaterSystem::with_chunking(5, 5, 10.0, 4);
+        let mut baseline = vec![0.0; 25];
+        baseline[1 + 1 * 5] = 2.0;
+        baseline[2 + 2 * 5] = 4.0;
+        water
+            .replace_baseline_depth_from_dense(&baseline)
+            .expect("baseline depth dimensions should match");
+        let terrain_patch = TerrainPatchSnapshot {
+            patch_x: 7,
+            patch_z: 8,
+            sample_width: 3,
+            sample_height: 3,
+            texture_width: 7,
+            texture_height: 7,
+            inner_offset_x: 2,
+            inner_offset_z: 2,
+            world_origin_x: -10.0,
+            world_origin_z: -10.0,
+            world_size_x: 20.0,
+            world_size_z: 20.0,
+            height_data: vec![0.0; 49],
+        };
+
+        let patch = water.terrain_aligned_patch_snapshot(&terrain_patch);
+
+        assert_eq!(patch.patch_x, terrain_patch.patch_x);
+        assert_eq!(patch.patch_z, terrain_patch.patch_z);
+        assert_eq!(patch.sample_width, terrain_patch.sample_width);
+        assert_eq!(patch.sample_height, terrain_patch.sample_height);
+        assert_eq!(patch.texture_width, terrain_patch.texture_width);
+        assert_eq!(patch.texture_height, terrain_patch.texture_height);
+        assert_eq!(patch.inner_offset_x, terrain_patch.inner_offset_x);
+        assert_eq!(patch.inner_offset_z, terrain_patch.inner_offset_z);
+        assert_eq!(patch.depth_data[0], 2.0);
+        assert_eq!(patch.depth_data[2 + 2 * patch.texture_width], 2.0);
+        assert_eq!(patch.depth_data[3 + 3 * patch.texture_width], 4.0);
+        assert_eq!(patch.depth_nonzero_count, 10);
     }
 
     #[test]

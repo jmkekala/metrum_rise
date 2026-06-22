@@ -2,9 +2,10 @@
 ##
 ## Rust methods called: get_terrain_patch_layout(), get_terrain_patch(), get_dirty_terrain_patches(),
 ##   get_refined_terrain_patch(), get_refined_terrain_patch_debug(),
-##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
-##   is_terrain_dirty(), clear_terrain_dirty(), sculpt_terrain(), intersect_terrain(),
-##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
+##   get_terrain_water_patch(), get_terrain_border_loop(), get_heightmap_size(),
+##   get_terrain_world_size(), is_terrain_dirty(), clear_terrain_dirty(), sculpt_terrain(),
+##   intersect_terrain(), get_pollution_image_data(), get_noise_image_data(),
+##   get_desirability_image_data()
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
@@ -594,7 +595,15 @@ func _create_patch(key: Vector2i) -> void:
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
+		"water_image": null,
 		"water_texture": empty_water_texture,
+		"water_texture_width": 2,
+		"water_texture_height": 2,
+		"water_depth_nonzero_count": 0,
+		"water_world_origin_x": world_origin_x,
+		"water_world_origin_z": world_origin_z,
+		"water_world_size_x": world_size_x,
+		"water_world_size_z": world_size_z,
 		"sample_width": sample_width,
 		"sample_height": sample_height,
 		"texture_width": texture_width,
@@ -887,6 +896,13 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var height_stats: Dictionary = _road_geometry_float_stats(
 			patch_data["height_data"] as PackedFloat32Array
 		)
+		var water_texture_width := int(patch.get("water_texture_width", 0))
+		var water_texture_height := int(patch.get("water_texture_height", 0))
+		var water_depth_nonzero_count := int(patch.get("water_depth_nonzero_count", 0))
+		var water_world_origin_x := float(patch.get("water_world_origin_x", 0.0))
+		var water_world_origin_z := float(patch.get("water_world_origin_z", 0.0))
+		var water_world_size_x := float(patch.get("water_world_size_x", 0.0))
+		var water_world_size_z := float(patch.get("water_world_size_z", 0.0))
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
 		var retaining_wall_baked_vertex_count: int = _road_geometry_retaining_wall_baked_vertex_count(patch_data)
@@ -934,7 +950,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
@@ -949,6 +965,13 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(patch_data["world_origin_z"]),
 				float(patch_data["world_size_x"]),
 				float(patch_data["world_size_z"]),
+				water_texture_width,
+				water_texture_height,
+				water_depth_nonzero_count,
+				water_world_origin_x,
+				water_world_origin_z,
+				water_world_size_x,
+				water_world_size_z,
 				float(height_stats.get("min", 0.0)),
 				float(height_stats.get("max", 0.0)),
 				int(clip_stats.get("group_count", 0)),
@@ -1414,23 +1437,96 @@ func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
 	fallback_image.fill(fallback_color)
 	return ImageTexture.create_from_image(fallback_image)
 
+func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
+	if patch.get("water_texture", null) != empty_water_texture:
+		material.set_shader_parameter("watermap", empty_water_texture)
+	patch["water_image"] = null
+	patch["water_texture"] = empty_water_texture
+	patch["water_texture_width"] = 2
+	patch["water_texture_height"] = 2
+	patch["water_depth_nonzero_count"] = 0
+
 func _sync_water_patch_textures() -> void:
-	var water_node: Node = get_node_or_null("../Water")
-	if water_node == null or not water_node.has_method("get_patch_water_texture"):
+	if simulation_node == null or not simulation_node.has_method("get_terrain_water_patch"):
 		return
+	var sync_start_us := Time.get_ticks_usec()
+	var patch_count := 0
+	var updated_count := 0
+	var missing_count := 0
+	var depth_nonzero_total := 0
 	for key_variant in resident_patch_lookup.keys():
 		var key: Vector2i = key_variant
 		var patch: Dictionary = patches.get(key, {})
 		if patch.is_empty():
 			continue
+		patch_count += 1
 		var material: ShaderMaterial = patch["material"]
-		var next_texture: Texture2D = water_node.get_patch_water_texture(key)
-		if next_texture == null:
-			next_texture = empty_water_texture
-		if patch["water_texture"] == next_texture:
+		var water_data: Dictionary = simulation_node.get_terrain_water_patch(key.x, key.y)
+		if water_data.is_empty():
+			missing_count += 1
+			_bind_empty_water_texture(patch, material)
 			continue
-		patch["water_texture"] = next_texture
-		material.set_shader_parameter("watermap", next_texture)
+
+		var texture_width := int(water_data.get("texture_width", 0))
+		var texture_height := int(water_data.get("texture_height", 0))
+		var depth_data: PackedFloat32Array = (
+			water_data.get("depth_data", PackedFloat32Array()) as PackedFloat32Array
+		)
+		if texture_width <= 0 or texture_height <= 0 or depth_data.size() != texture_width * texture_height:
+			missing_count += 1
+			_bind_empty_water_texture(patch, material)
+			continue
+
+		var water_image: Image = patch.get("water_image", null) as Image
+		var water_texture: ImageTexture = patch.get("water_texture", null) as ImageTexture
+		var old_texture_width := int(patch.get("water_texture_width", 0))
+		var old_texture_height := int(patch.get("water_texture_height", 0))
+		var texture_shape_changed := (
+			water_image == null
+			or water_texture == null
+			or water_texture == empty_water_texture
+			or old_texture_width != texture_width
+			or old_texture_height != texture_height
+		)
+		if texture_shape_changed:
+			water_image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
+		water_image.set_data(
+			texture_width,
+			texture_height,
+			false,
+			Image.FORMAT_RF,
+			depth_data.to_byte_array()
+		)
+		if texture_shape_changed:
+			water_texture = ImageTexture.create_from_image(water_image)
+			material.set_shader_parameter("watermap", water_texture)
+		else:
+			water_texture.update(water_image)
+
+		var depth_nonzero_count := int(water_data.get("depth_nonzero_count", 0))
+		depth_nonzero_total += depth_nonzero_count
+		patch["water_image"] = water_image
+		patch["water_texture"] = water_texture
+		patch["water_texture_width"] = texture_width
+		patch["water_texture_height"] = texture_height
+		patch["water_depth_nonzero_count"] = depth_nonzero_count
+		patch["water_world_origin_x"] = float(water_data.get("world_origin_x", 0.0))
+		patch["water_world_origin_z"] = float(water_data.get("world_origin_z", 0.0))
+		patch["water_world_size_x"] = float(water_data.get("world_size_x", 0.0))
+		patch["water_world_size_z"] = float(water_data.get("world_size_z", 0.0))
+		updated_count += 1
+
+	if _terrain_debug_enabled and (_terrain_debug_verbose or _terrain_visual_debug_mode >= 6):
+		_terrain_debug_log(
+			"watermap_sync source=terrain_aligned patches=%d updated=%d missing=%d depth_nonzero=%d elapsed_ms=%.3f"
+			% [
+				patch_count,
+				updated_count,
+				missing_count,
+				depth_nonzero_total,
+				float(Time.get_ticks_usec() - sync_start_us) / 1000.0,
+			]
+		)
 
 func _sculpt_at_mouse(delta: float) -> void:
 	var mouse_pos := get_viewport().get_mouse_position()

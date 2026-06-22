@@ -39,6 +39,7 @@
 //! | | `get_terrain_patch_layout` | `terrain.gd`, `water.gd` |
 //! | | `get_dirty_terrain_patches` | `terrain.gd` |
 //! | | `get_terrain_patch` | `terrain.gd` |
+//! | | `get_terrain_water_patch` | `terrain.gd` |
 //! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
@@ -3283,6 +3284,23 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         Self::terrain_patch_dict(&patch)
+    }
+
+    /// Returns visible water samples aligned to one visual-terrain render patch.
+    #[func]
+    pub fn get_terrain_water_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarDictionary::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarDictionary::new();
+        };
+        let core = self.lock_core();
+        let Some(terrain_patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
+            return VarDictionary::new();
+        };
+        let water_patch = core.watermap.terrain_aligned_patch_snapshot(&terrain_patch);
+        Self::water_patch_dict(&water_patch)
     }
 
     /// Returns one visible-terrain render patch resampled at a finer render step.

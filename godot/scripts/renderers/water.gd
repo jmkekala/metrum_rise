@@ -17,6 +17,7 @@ const WATER_WAVE_COLOR_STRENGTH := 0.025
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.010
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
 const WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS := 1.0
+const WATER_MIN_VISIBLE_DEPTH_M := 0.001
 const WATER_BORDER_MIN_DEPTH_M := 0.02
 const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
@@ -248,8 +249,9 @@ func _create_patch(key: Vector2i) -> void:
 	var patch_center_z := world_origin_z + world_size_z * 0.5
 	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
 	var patch_mesh: Mesh = ArrayMesh.new()
+	var mesh_stats: Dictionary = _empty_water_mesh_stats(initial_lod_step)
 	if _patch_visible_depth_count(patch_data) > 0:
-		patch_mesh = _water_patch_mesh_from_data(patch_data, initial_lod_step)
+		patch_mesh = _water_patch_mesh_from_data(patch_data, initial_lod_step, mesh_stats)
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
@@ -307,6 +309,7 @@ func _create_patch(key: Vector2i) -> void:
 		"world_origin_z": world_origin_z,
 		"lod_step": initial_lod_step,
 		"depth_nonzero_count": _patch_visible_depth_count(patch_data),
+		"mesh_stats": mesh_stats,
 		"road_clip_signature": _patch_road_clip_signature(patch_data),
 		"last_patch_data": patch_data,
 	}
@@ -415,13 +418,16 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 	var lod_step := int(patch.get("lod_step", 1))
 	var should_refresh_mesh := not road_clip_only or signature_changed or depth_visibility_changed
 	var mesh_elapsed_ms := 0.0
+	var mesh_stats: Dictionary = patch.get("mesh_stats", _empty_water_mesh_stats(lod_step))
 	if should_refresh_mesh:
 		var mesh_start_us := Time.get_ticks_usec()
+		mesh_stats = _empty_water_mesh_stats(lod_step)
 		if depth_nonzero_count > 0:
-			patch_node.mesh = _water_patch_mesh_from_data(patch_data, lod_step)
+			patch_node.mesh = _water_patch_mesh_from_data(patch_data, lod_step, mesh_stats)
 		else:
 			patch_node.mesh = ArrayMesh.new()
 		mesh_elapsed_ms = float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
+		patch["mesh_stats"] = mesh_stats
 	patch["sample_width"] = int(patch_data["sample_width"])
 	patch["sample_height"] = int(patch_data["sample_height"])
 	patch["texture_width"] = texture_width
@@ -441,7 +447,7 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if total_elapsed_ms >= 2.0:
 			_water_debug_log(
-				"water_upload key=(%d,%d) road_clip_only=%s depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
+				"water_upload key=(%d,%d) road_clip_only=%s depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s mesh_cells=%d full=%d partial=%d conservative=%d dry=%d road_clipped=%d mesh_tris=%d texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
@@ -450,6 +456,13 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 					int(patch_data.get("road_clip_loop_count", 0)),
 					int(patch_data.get("road_clip_point_count", 0)),
 					str(signature_changed),
+					int(mesh_stats.get("cells_total", 0)),
+					int(mesh_stats.get("full_cells", 0)),
+					int(mesh_stats.get("partial_cells", 0)),
+					int(mesh_stats.get("conservative_cells", 0)),
+					int(mesh_stats.get("dry_cells", 0)),
+					int(mesh_stats.get("road_clipped_cells", 0)),
+					int(mesh_stats.get("emitted_triangles", 0)),
 					texture_elapsed_ms,
 					mesh_elapsed_ms,
 					fetch_elapsed_ms,
@@ -566,8 +579,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var road_clip_status: String = str(patch_data.get("road_clip_status", "ok"))
 		var road_clip_error: String = str(patch_data.get("road_clip_error", "none"))
 		var road_clip_source_count: int = int(patch_data.get("road_clip_source_count", 0))
+		var mesh_stats: Dictionary = patch.get(
+			"mesh_stats",
+			_empty_water_mesh_stats(int(patch.get("lod_step", 1)))
+		)
 		lines.append(
-			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f)"
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
 			% [
 				key.x,
 				key.y,
@@ -616,6 +633,14 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				_road_geometry_bounds_label(clip_stats),
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
+				int(mesh_stats.get("lod_step", patch.get("lod_step", 1))),
+				int(mesh_stats.get("cells_total", 0)),
+				int(mesh_stats.get("full_cells", 0)),
+				int(mesh_stats.get("partial_cells", 0)),
+				int(mesh_stats.get("conservative_cells", 0)),
+				int(mesh_stats.get("dry_cells", 0)),
+				int(mesh_stats.get("road_clipped_cells", 0)),
+				int(mesh_stats.get("emitted_triangles", 0)),
 			]
 		)
 		if baseline_nonzero_count > 0 and simulation_node.has_method("get_water_patch_authored_fill_debug"):
@@ -695,10 +720,14 @@ func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
 		expected_points += count
 	return expected_points == points.size()
 
-func _water_patch_mesh_from_data(patch_data: Dictionary, lod_step: int) -> Mesh:
+func _water_patch_mesh_from_data(
+	patch_data: Dictionary,
+	lod_step: int,
+	mesh_stats: Dictionary
+) -> Mesh:
 	if _patch_has_road_clip_failure(patch_data):
 		return ArrayMesh.new()
-	return _clipped_water_patch_mesh(patch_data, lod_step)
+	return _clipped_water_patch_mesh(patch_data, lod_step, mesh_stats)
 
 func _patch_has_road_clip_failure(patch_data: Dictionary) -> bool:
 	return str(patch_data.get("road_clip_status", "ok")) == "failed"
@@ -813,7 +842,11 @@ func _road_clip_group_bins(
 				bin.append(clip_group)
 	return bins
 
-func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMesh:
+func _clipped_water_patch_mesh(
+	patch_data: Dictionary,
+	lod_step: int,
+	mesh_stats: Dictionary
+) -> ArrayMesh:
 	var sample_width := int(patch_data["sample_width"])
 	var sample_height := int(patch_data["sample_height"])
 	var world_size_x := float(patch_data["world_size_x"])
@@ -844,6 +877,12 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 	var surface_tool := SurfaceTool.new()
 	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var emitted_vertices: int = 0
+	var total_cells: int = 0
+	var full_cells: int = 0
+	var partial_cells: int = 0
+	var conservative_cells: int = 0
+	var dry_cells: int = 0
+	var road_clipped_cells: int = 0
 
 	for z_index in range(z_interval_count):
 		var z0 := float(z_index) / float(z_interval_count)
@@ -851,11 +890,39 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 		var world_z0 := world_origin_z + z0 * world_size_z
 		var world_z1 := world_origin_z + z1 * world_size_z
 		for x_index in range(x_interval_count):
+			total_cells += 1
 			var x0 := float(x_index) / float(x_interval_count)
 			var x1 := float(x_index + 1) / float(x_interval_count)
 			var world_x0 := world_origin_x + x0 * world_size_x
 			var world_x1 := world_origin_x + x1 * world_size_x
-			if not _water_cell_has_visible_depth(
+			var cell := PackedVector2Array([
+				Vector2(world_x0, world_z0),
+				Vector2(world_x1, world_z0),
+				Vector2(world_x1, world_z1),
+				Vector2(world_x0, world_z1),
+			])
+			var corner_depths := _water_cell_corner_depths(
+				depth_data,
+				sample_width,
+				sample_height,
+				texture_width,
+				texture_height,
+				inner_offset_x,
+				inner_offset_z,
+				x_index,
+				z_index,
+				x_interval_count,
+				z_interval_count
+			)
+			var wet_corner_count := _water_wet_corner_count(corner_depths)
+			var wet_polygons: Array = []
+			if wet_corner_count == 4:
+				full_cells += 1
+				wet_polygons.append(cell)
+			elif wet_corner_count > 0:
+				partial_cells += 1
+				wet_polygons = _wet_water_cell_polygons(cell, corner_depths, wet_corner_count)
+			elif _water_cell_has_visible_depth(
 				depth_data,
 				sample_width,
 				sample_height,
@@ -868,30 +935,262 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 				x_interval_count,
 				z_interval_count
 			):
+				# Coarser water LOD cells can contain wet interior samples with dry corners.
+				# Preserve that water conservatively instead of dropping narrow channels.
+				conservative_cells += 1
+				wet_polygons.append(cell)
+			else:
+				dry_cells += 1
 				continue
-			var cell := PackedVector2Array([
-				Vector2(world_x0, world_z0),
-				Vector2(world_x1, world_z0),
-				Vector2(world_x1, world_z1),
-				Vector2(world_x0, world_z1),
-			])
+			if wet_polygons.is_empty():
+				dry_cells += 1
+				continue
 			var bin_index: int = z_index * x_interval_count + x_index
 			var cell_clip_groups: Array = clip_bins.get(bin_index, [])
-			emitted_vertices += _emit_clipped_water_cell(
-				surface_tool,
-				cell,
-				cell_clip_groups,
-				center_x,
-				center_z,
-				world_origin_x,
-				world_origin_z,
-				world_size_x,
-				world_size_z
-			)
+			for wet_polygon_variant in wet_polygons:
+				var wet_polygon: PackedVector2Array = wet_polygon_variant
+				if wet_polygon.size() < 3:
+					continue
+				var cell_vertices := _emit_clipped_water_cell(
+					surface_tool,
+					wet_polygon,
+					cell_clip_groups,
+					center_x,
+					center_z,
+					world_origin_x,
+					world_origin_z,
+					world_size_x,
+					world_size_z
+				)
+				if cell_vertices == 0 and not cell_clip_groups.is_empty():
+					road_clipped_cells += 1
+				emitted_vertices += cell_vertices
 
+	mesh_stats["lod_step"] = lod_step
+	mesh_stats["cells_total"] = total_cells
+	mesh_stats["full_cells"] = full_cells
+	mesh_stats["partial_cells"] = partial_cells
+	mesh_stats["conservative_cells"] = conservative_cells
+	mesh_stats["dry_cells"] = dry_cells
+	mesh_stats["road_clipped_cells"] = road_clipped_cells
+	mesh_stats["emitted_vertices"] = emitted_vertices
+	mesh_stats["emitted_triangles"] = emitted_vertices / 3
 	if emitted_vertices == 0:
 		return ArrayMesh.new()
 	return surface_tool.commit()
+
+func _empty_water_mesh_stats(lod_step: int) -> Dictionary:
+	return {
+		"lod_step": lod_step,
+		"cells_total": 0,
+		"full_cells": 0,
+		"partial_cells": 0,
+		"conservative_cells": 0,
+		"dry_cells": 0,
+		"road_clipped_cells": 0,
+		"emitted_vertices": 0,
+		"emitted_triangles": 0,
+	}
+
+func _water_cell_corner_depths(
+	depth_data: PackedFloat32Array,
+	sample_width: int,
+	sample_height: int,
+	texture_width: int,
+	texture_height: int,
+	inner_offset_x: int,
+	inner_offset_z: int,
+	x_index: int,
+	z_index: int,
+	x_interval_count: int,
+	z_interval_count: int
+) -> PackedFloat32Array:
+	return PackedFloat32Array([
+		_water_depth_at_mesh_corner(
+			depth_data,
+			sample_width,
+			sample_height,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			x_index,
+			z_index,
+			x_interval_count,
+			z_interval_count
+		),
+		_water_depth_at_mesh_corner(
+			depth_data,
+			sample_width,
+			sample_height,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			x_index + 1,
+			z_index,
+			x_interval_count,
+			z_interval_count
+		),
+		_water_depth_at_mesh_corner(
+			depth_data,
+			sample_width,
+			sample_height,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			x_index + 1,
+			z_index + 1,
+			x_interval_count,
+			z_interval_count
+		),
+		_water_depth_at_mesh_corner(
+			depth_data,
+			sample_width,
+			sample_height,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			x_index,
+			z_index + 1,
+			x_interval_count,
+			z_interval_count
+		),
+	])
+
+func _water_depth_at_mesh_corner(
+	depth_data: PackedFloat32Array,
+	sample_width: int,
+	sample_height: int,
+	texture_width: int,
+	texture_height: int,
+	inner_offset_x: int,
+	inner_offset_z: int,
+	mesh_x_index: int,
+	mesh_z_index: int,
+	x_interval_count: int,
+	z_interval_count: int
+) -> float:
+	if (
+		depth_data.is_empty()
+		or sample_width <= 0
+		or sample_height <= 0
+		or texture_width <= 0
+		or texture_height <= 0
+	):
+		return 0.0
+	var max_sample_x: int = max(0, sample_width - 1)
+	var max_sample_z: int = max(0, sample_height - 1)
+	var sample_x := clampi(
+		int(round(float(mesh_x_index) / float(maxi(1, x_interval_count)) * float(max_sample_x))),
+		0,
+		max_sample_x
+	)
+	var sample_z := clampi(
+		int(round(float(mesh_z_index) / float(maxi(1, z_interval_count)) * float(max_sample_z))),
+		0,
+		max_sample_z
+	)
+	var texture_x := clampi(inner_offset_x + sample_x, 0, texture_width - 1)
+	var texture_z := clampi(inner_offset_z + sample_z, 0, texture_height - 1)
+	var sample_index := texture_z * texture_width + texture_x
+	if sample_index < 0 or sample_index >= depth_data.size():
+		return 0.0
+	return depth_data[sample_index]
+
+func _water_wet_corner_count(corner_depths: PackedFloat32Array) -> int:
+	var count := 0
+	for depth_m in corner_depths:
+		if depth_m > WATER_MIN_VISIBLE_DEPTH_M:
+			count += 1
+	return count
+
+func _wet_water_cell_polygons(
+	cell: PackedVector2Array,
+	corner_depths: PackedFloat32Array,
+	wet_corner_count: int
+) -> Array:
+	var polygons: Array = []
+	if cell.size() != 4 or corner_depths.size() != 4:
+		return polygons
+	if wet_corner_count == 2 and _water_has_opposite_wet_corners(corner_depths):
+		for index in range(4):
+			if corner_depths[index] <= WATER_MIN_VISIBLE_DEPTH_M:
+				continue
+			var previous_index := (index + 3) % 4
+			var next_index := (index + 1) % 4
+			var polygon := PackedVector2Array([
+				cell[index],
+				_water_depth_edge_crossing(cell, corner_depths, index, next_index),
+				_water_depth_edge_crossing(cell, corner_depths, previous_index, index),
+			])
+			polygon = _dedupe_adjacent_polygon_points(polygon)
+			if polygon.size() >= 3:
+				polygons.append(polygon)
+		return polygons
+	var polygon := _wet_water_cell_polygon(cell, corner_depths)
+	if polygon.size() >= 3:
+		polygons.append(polygon)
+	return polygons
+
+func _water_has_opposite_wet_corners(corner_depths: PackedFloat32Array) -> bool:
+	return (
+		(
+			corner_depths[0] > WATER_MIN_VISIBLE_DEPTH_M
+			and corner_depths[2] > WATER_MIN_VISIBLE_DEPTH_M
+		)
+		or (
+			corner_depths[1] > WATER_MIN_VISIBLE_DEPTH_M
+			and corner_depths[3] > WATER_MIN_VISIBLE_DEPTH_M
+		)
+	)
+
+func _wet_water_cell_polygon(
+	cell: PackedVector2Array,
+	corner_depths: PackedFloat32Array
+) -> PackedVector2Array:
+	var polygon := PackedVector2Array()
+	if cell.size() != 4 or corner_depths.size() != 4:
+		return polygon
+	for index in range(4):
+		var next_index := (index + 1) % 4
+		var depth_a := corner_depths[index]
+		var depth_b := corner_depths[next_index]
+		var a_is_wet := depth_a > WATER_MIN_VISIBLE_DEPTH_M
+		var b_is_wet := depth_b > WATER_MIN_VISIBLE_DEPTH_M
+		if a_is_wet:
+			polygon.append(cell[index])
+		if a_is_wet != b_is_wet:
+			polygon.append(_water_depth_edge_crossing(cell, corner_depths, index, next_index))
+	return _dedupe_adjacent_polygon_points(polygon)
+
+func _water_depth_edge_crossing(
+	cell: PackedVector2Array,
+	corner_depths: PackedFloat32Array,
+	from_index: int,
+	to_index: int
+) -> Vector2:
+	var depth_a := corner_depths[from_index]
+	var depth_b := corner_depths[to_index]
+	var denom := depth_b - depth_a
+	var t := 0.5
+	if absf(denom) > 0.000001:
+		t = clampf((WATER_MIN_VISIBLE_DEPTH_M - depth_a) / denom, 0.0, 1.0)
+	return cell[from_index].lerp(cell[to_index], t)
+
+func _dedupe_adjacent_polygon_points(polygon: PackedVector2Array) -> PackedVector2Array:
+	const MIN_POINT_DISTANCE_SQ := 0.000001
+	if polygon.size() <= 1:
+		return polygon
+	var deduped := PackedVector2Array()
+	for point in polygon:
+		if deduped.is_empty() or deduped[deduped.size() - 1].distance_squared_to(point) > MIN_POINT_DISTANCE_SQ:
+			deduped.append(point)
+	if deduped.size() > 1 and deduped[0].distance_squared_to(deduped[deduped.size() - 1]) <= MIN_POINT_DISTANCE_SQ:
+		deduped.remove_at(deduped.size() - 1)
+	return deduped
 
 func _water_cell_has_visible_depth(
 	depth_data: PackedFloat32Array,
@@ -906,7 +1205,6 @@ func _water_cell_has_visible_depth(
 	x_interval_count: int,
 	z_interval_count: int
 ) -> bool:
-	const MIN_VISIBLE_DEPTH_M := 0.001
 	if (
 		depth_data.is_empty()
 		or sample_width <= 0
@@ -943,7 +1241,7 @@ func _water_cell_has_visible_depth(
 		for sample_x in range(start_sample_x, end_sample_x + 1):
 			var texture_x: int = clampi(inner_offset_x + sample_x, 0, texture_width - 1)
 			var sample_index: int = row_offset + texture_x
-			if sample_index >= 0 and sample_index < depth_data.size() and depth_data[sample_index] > MIN_VISIBLE_DEPTH_M:
+			if sample_index >= 0 and sample_index < depth_data.size() and depth_data[sample_index] > WATER_MIN_VISIBLE_DEPTH_M:
 				return true
 	return false
 
@@ -959,7 +1257,7 @@ func _emit_clipped_water_cell(
 	world_size_z: float
 ) -> int:
 	if clip_groups.is_empty():
-		return _emit_unclipped_water_cell(
+		return _emit_unclipped_water_polygon(
 			surface_tool,
 			cell,
 			center_x,
@@ -975,7 +1273,7 @@ func _emit_clipped_water_cell(
 		if _cell_touches_road_clip_group(cell, cell_bounds, clip_group):
 			return 0
 
-	return _emit_unclipped_water_cell(
+	return _emit_unclipped_water_polygon(
 		surface_tool,
 		cell,
 		center_x,
@@ -1012,13 +1310,14 @@ func _cell_touches_road_clip_group(
 	return false
 
 func _cell_road_clip_samples(cell: PackedVector2Array) -> Array:
-	return [
-		cell[0],
-		cell[1],
-		cell[2],
-		cell[3],
-		(cell[0] + cell[2]) * 0.5,
-	]
+	var samples: Array = []
+	var centroid := Vector2.ZERO
+	for point in cell:
+		samples.append(point)
+		centroid += point
+	if cell.size() > 0:
+		samples.append(centroid / float(cell.size()))
+	return samples
 
 func _cell_fully_inside_any_road_clip_hole(
 	cell: PackedVector2Array,
@@ -1052,9 +1351,9 @@ func _point_in_road_clip_group(point: Vector2, clip_group: Dictionary) -> bool:
 			return false
 	return true
 
-func _emit_unclipped_water_cell(
+func _emit_unclipped_water_polygon(
 	surface_tool: SurfaceTool,
-	cell: PackedVector2Array,
+	polygon: PackedVector2Array,
 	center_x: float,
 	center_z: float,
 	world_origin_x: float,
@@ -1062,13 +1361,15 @@ func _emit_unclipped_water_cell(
 	world_size_x: float,
 	world_size_z: float
 ) -> int:
-	_add_clipped_water_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_water_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_water_vertex(surface_tool, cell[1], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_water_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_water_vertex(surface_tool, cell[3], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_water_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	return 6
+	if polygon.size() < 3:
+		return 0
+	var emitted_vertices := 0
+	for index in range(1, polygon.size() - 1):
+		_add_clipped_water_vertex(surface_tool, polygon[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+		_add_clipped_water_vertex(surface_tool, polygon[index + 1], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+		_add_clipped_water_vertex(surface_tool, polygon[index], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+		emitted_vertices += 3
+	return emitted_vertices
 
 func _add_clipped_water_vertex(
 	surface_tool: SurfaceTool,
@@ -1245,10 +1546,12 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	patch["last_patch_data"] = patch_data
 	patch["depth_nonzero_count"] = _patch_visible_depth_count(patch_data)
 	patch["road_clip_signature"] = _patch_road_clip_signature(patch_data)
+	var mesh_stats := _empty_water_mesh_stats(target_lod_step)
 	if _patch_visible_depth_count(patch_data) > 0:
-		patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step)
+		patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step, mesh_stats)
 	else:
 		patch_node.mesh = ArrayMesh.new()
+	patch["mesh_stats"] = mesh_stats
 
 func _ensure_fallback_height_texture() -> void:
 	if fallback_height_texture != null:
