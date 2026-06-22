@@ -48,8 +48,8 @@ uniform float terrain_rock_slope_end = 0.34;
 uniform float terrain_relief_sample_radius_texels = 3.0;
 uniform float terrain_relief_start_m = 2.0;
 uniform float terrain_relief_end_m = 16.0;
-uniform float terrain_shore_blend_strength = 0.52;
-uniform float terrain_shore_lookup_radius_texels = 2.0;
+uniform float terrain_shore_blend_strength = 0.15;
+uniform float terrain_shore_lookup_radius_texels = 0.55;
 uniform float cliff_slope_start = 0.26;
 uniform float cliff_slope_end = 0.44;
 uniform float cliff_relief_start_m = 4.0;
@@ -495,7 +495,12 @@ vec3 terrain_visual_debug_color(
 		debug_color = vec3(smoothstep(0.0, 20.0, local_relief));
 	} else if (terrain_visual_debug_mode == 5) {
 		debug_color = vec3(shore_mask, water_depth_m > 0.001 ? 0.45 : 0.0, 1.0 - shore_mask);
-	} else if (terrain_visual_debug_mode == 6 || terrain_visual_debug_mode == 7 || terrain_visual_debug_mode == 8) {
+	} else if (
+		terrain_visual_debug_mode == 6
+		|| terrain_visual_debug_mode == 7
+		|| terrain_visual_debug_mode == 8
+		|| terrain_visual_debug_mode == 9
+	) {
 		float depth_visibility = smoothstep(0.0, 6.0, water_depth_m);
 		debug_color = mix(vec3(0.03, 0.07, 0.08), vec3(0.02, 0.55, 1.00), depth_visibility);
 		debug_color = mix(debug_color, vec3(0.05, 0.40, 0.18), grass_detail_mask * 0.25);
@@ -624,7 +629,7 @@ void fragment() {
 	color = mix(color, rock_color, rock_mask);
 	float shore_mask = shoreline_mask(var_centered_uv);
 	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
-	vec3 shore_color = mix(vec3(0.34, 0.33, 0.24), vec3(0.18, 0.28, 0.16), ruggedness);
+	vec3 shore_color = mix(vec3(0.28, 0.39, 0.23), vec3(0.18, 0.32, 0.18), ruggedness);
 	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
 	color = apply_natural_land_variation(
 		color,

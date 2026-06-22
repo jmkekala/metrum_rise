@@ -21,7 +21,8 @@
 #                        Forced full-world terrain/water residency and all patch meshes forced to LOD1.
 #   --debug terrain-visual <mode>
 #                        Terrain/water material diagnostics. Modes:
-#                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch
+#                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch,
+#                        water-material
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -170,14 +171,17 @@ case "$TERRAIN_VISUAL_DEBUG_MODE" in
     water|depth|water-depth)
         TERRAIN_VISUAL_DEBUG_MODE="water-depth"
         ;;
-    water-lod|water-patch)
+    water-lod|water-patch|water-material|water-mat|material-water)
+        if [ "$TERRAIN_VISUAL_DEBUG_MODE" = "water-mat" ] || [ "$TERRAIN_VISUAL_DEBUG_MODE" = "material-water" ]; then
+            TERRAIN_VISUAL_DEBUG_MODE="water-material"
+        fi
         ;;
     "")
         TERRAIN_VISUAL_DEBUG_MODE="patch"
         ;;
     *)
         echo "Error: unknown terrain visual debug mode '$TERRAIN_VISUAL_DEBUG_MODE'." >&2
-        echo "Valid modes: patch, lod, height, relief, shore, water-depth, water-lod, water-patch" >&2
+        echo "Valid modes: patch, lod, height, relief, shore, water-depth, water-lod, water-patch, water-material" >&2
         exit 2
         ;;
 esac
@@ -271,6 +275,7 @@ if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
     echo "    water-depth Water depth field on terrain and water"
     echo "    water-lod   Water mesh LOD colors"
     echo "    water-patch Water patch identity colors"
+    echo "    water-material Water material bands: tint, alpha, Fresnel, foam, normals"
 fi
 
 echo "Building Rust library..."

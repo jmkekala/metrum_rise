@@ -42,8 +42,8 @@ const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
 const TERRAIN_RELIEF_START_M := 2.0
 const TERRAIN_RELIEF_END_M := 16.0
-const TERRAIN_SHORE_BLEND_STRENGTH := 0.28
-const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 1.0
+const TERRAIN_SHORE_BLEND_STRENGTH := 0.15
+const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 0.55
 const CLIFF_SLOPE_START := 0.26
 const CLIFF_SLOPE_END := 0.44
 const CLIFF_RELIEF_START_M := 4.0
@@ -2476,7 +2476,7 @@ func _terrain_visual_debug_mode_from_env() -> int:
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 8)
+		return clampi(value.to_int(), 0, 9)
 	match value:
 		"patch", "patches":
 			return 1
@@ -2494,6 +2494,8 @@ func _terrain_visual_debug_mode_from_env() -> int:
 			return 7
 		"water-patch":
 			return 8
+		"water-material", "water-mat", "material-water":
+			return 9
 		_:
 			return 0
 

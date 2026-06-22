@@ -7,14 +7,19 @@ extends Node3D
 
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const HEIGHT_SCALE := 20.0
-const SHORE_SOFTNESS_M := 0.5
-const SHORE_FOAM_BAND_M := 0.5
-const SHALLOW_WATER_COLOR := Color(0.20, 0.37, 0.40, 0.58)
-const DEEP_WATER_COLOR := Color(0.05, 0.16, 0.29, 0.86)
-const WATER_FRESNEL_STRENGTH := 0.24
-const WATER_FRESNEL_POWER := 4.0
-const WATER_WAVE_COLOR_STRENGTH := 0.025
-const WATER_WAVE_ROUGHNESS_STRENGTH := 0.010
+const SHORE_SOFTNESS_M := 0.26
+const SHORE_FOAM_BAND_M := 0.18
+const SHALLOW_WATER_COLOR := Color(0.31, 0.58, 0.64, 0.46)
+const DEEP_WATER_COLOR := Color(0.03, 0.16, 0.31, 0.84)
+const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
+const SKY_REFLECTION_COLOR := Color(0.62, 0.82, 0.95, 1.0)
+const WATER_FRESNEL_STRENGTH := 0.42
+const WATER_FRESNEL_POWER := 3.2
+const WATER_WAVE_COLOR_STRENGTH := 0.052
+const WATER_WAVE_ROUGHNESS_STRENGTH := 0.024
+const WATER_WAVE_NORMAL_STRENGTH := 0.42
+const WATER_REFRACTION_STRENGTH := 0.010
+const WATER_REFRACTION_MIX := 0.13
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
 const WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS := 1.0
 const WATER_MIN_VISIBLE_DEPTH_M := 0.001
@@ -275,10 +280,15 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
 	material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)
 	material.set_shader_parameter("deep_water_color", DEEP_WATER_COLOR)
+	material.set_shader_parameter("foam_color", FOAM_COLOR)
+	material.set_shader_parameter("sky_reflection_color", SKY_REFLECTION_COLOR)
 	material.set_shader_parameter("water_fresnel_strength", WATER_FRESNEL_STRENGTH)
 	material.set_shader_parameter("water_fresnel_power", WATER_FRESNEL_POWER)
 	material.set_shader_parameter("water_wave_color_strength", WATER_WAVE_COLOR_STRENGTH)
 	material.set_shader_parameter("water_wave_roughness_strength", WATER_WAVE_ROUGHNESS_STRENGTH)
+	material.set_shader_parameter("water_wave_normal_strength", WATER_WAVE_NORMAL_STRENGTH)
+	material.set_shader_parameter("water_refraction_strength", WATER_REFRACTION_STRENGTH)
+	material.set_shader_parameter("water_refraction_mix", WATER_REFRACTION_MIX)
 	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
 	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
 	material.set_shader_parameter("water_visual_debug_mode", _water_visual_debug_mode)
@@ -1890,7 +1900,7 @@ func _terrain_visual_debug_mode_from_env() -> int:
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 8)
+		return clampi(value.to_int(), 0, 9)
 	match value:
 		"patch", "patches":
 			return 1
@@ -1908,6 +1918,8 @@ func _terrain_visual_debug_mode_from_env() -> int:
 			return 7
 		"water-patch":
 			return 8
+		"water-material", "water-mat", "material-water":
+			return 9
 		_:
 			return 0
 
