@@ -3,6 +3,7 @@
 //! Handles building instance transform generation and plot/construction-site visuals.
 
 use crate::assets::{AnchorType, AssetEntry, MeshPart, SiteSurfaceMaterial};
+use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::zoning::ZoneType;
@@ -132,6 +133,10 @@ impl SimCore {
             "concrete_vertices",
             PackedVector3Array::from_iter(concrete_vertices),
         );
+        if building_site_debug_enabled() {
+            dict.set("debug_enabled", true);
+            dict.set("debug_sites", self.building_site_debug_sites());
+        }
         dict
     }
 
@@ -330,6 +335,157 @@ impl SimCore {
         let seconds_per_minute = self.time.seconds_per_minute().max(f64::EPSILON);
         let minute_fraction = (self.time.time_elapsed / seconds_per_minute).clamp(0.0, 1.0);
         (f64::from(self.time.minute_of_day % 60) + minute_fraction) as f32 / 60.0
+    }
+
+    fn building_site_debug_sites(&self) -> VarArray {
+        let mut sites = VarArray::new();
+        for (site_idx, site) in self.allocator.building_sites.iter().enumerate() {
+            let building = self.allocator.buildings.get(site_idx);
+            let center = polygon_centroid(&site.footprint_world);
+            let (min_x, min_z, max_x, max_z) = vector2_bounds(&site.footprint_world);
+            let mut dict = VarDictionary::new();
+            dict.set("site_index", i64::try_from(site_idx).unwrap_or(i64::MAX));
+            dict.set(
+                "asset_id",
+                building
+                    .map(|b| b.asset_id.as_str())
+                    .unwrap_or("<missing-building>"),
+            );
+            dict.set(
+                "zone_type",
+                building
+                    .map(|b| format!("{:?}", b.zone_type))
+                    .unwrap_or_else(|| "<missing-building>".to_string()),
+            );
+            dict.set("center", center);
+            dict.set(
+                "facing_dir",
+                building.map(|b| b.facing_dir).unwrap_or(Vector2::ZERO),
+            );
+            dict.set(
+                "width_cells",
+                i64::from(building.map(|b| b.width_cells).unwrap_or_default()),
+            );
+            dict.set(
+                "depth_cells",
+                i64::from(building.map(|b| b.depth_cells).unwrap_or_default()),
+            );
+            dict.set(
+                "lot_width_m",
+                building
+                    .map(|b| b.width_cells as f32 * self.config.zone_cell_m)
+                    .unwrap_or(0.0),
+            );
+            dict.set(
+                "lot_depth_m",
+                building
+                    .map(|b| b.depth_cells as f32 * self.config.zone_cell_m)
+                    .unwrap_or(0.0),
+            );
+            dict.set("support_height_m", site.support_height_m);
+            dict.set(
+                "footprint_area_m2",
+                polygon_signed_area(&site.footprint_world).abs(),
+            );
+            dict.set("bounds_min", Vector2::new(min_x, min_z));
+            dict.set("bounds_max", Vector2::new(max_x, max_z));
+            dict.set(
+                "footprint",
+                PackedVector2Array::from_iter(site.footprint_world.iter().copied()),
+            );
+            dict.set(
+                "samples",
+                self.building_site_debug_samples(site.support_height_m, &site.footprint_world),
+            );
+
+            let mut surfaces = VarArray::new();
+            for (surface_idx, surface) in site.surfaces.iter().enumerate() {
+                let (surface_min_x, surface_min_z, surface_max_x, surface_max_z) =
+                    vector2_bounds(&surface.vertices_world);
+                let mut surface_dict = VarDictionary::new();
+                surface_dict.set(
+                    "surface_index",
+                    i64::try_from(surface_idx).unwrap_or(i64::MAX),
+                );
+                surface_dict.set("name", surface.name.as_str());
+                surface_dict.set("material", site_surface_material_label(surface.material));
+                surface_dict.set("height_m", surface.height_m);
+                surface_dict.set(
+                    "area_m2",
+                    polygon_signed_area(&surface.vertices_world).abs(),
+                );
+                surface_dict.set("bounds_min", Vector2::new(surface_min_x, surface_min_z));
+                surface_dict.set("bounds_max", Vector2::new(surface_max_x, surface_max_z));
+                surface_dict.set(
+                    "vertices",
+                    PackedVector2Array::from_iter(surface.vertices_world.iter().copied()),
+                );
+                surfaces.push(&surface_dict.to_variant());
+            }
+            dict.set("surfaces", surfaces);
+            sites.push(&dict.to_variant());
+        }
+        sites
+    }
+
+    fn building_site_debug_samples(
+        &self,
+        support_height_m: f32,
+        footprint: &[Vector2],
+    ) -> VarArray {
+        let mut samples = VarArray::new();
+        let center = polygon_centroid(footprint);
+        push_site_debug_sample(&mut samples, "center", center, support_height_m, self);
+        for (idx, point) in footprint.iter().copied().enumerate() {
+            let label = format!("corner{}", idx);
+            push_site_debug_sample(&mut samples, &label, point, support_height_m, self);
+        }
+        samples
+    }
+}
+
+fn building_site_debug_enabled() -> bool {
+    let explicit_value = std::env::var("METRUM_DEBUG_BUILDINGS").unwrap_or_default();
+    if explicit_value == "1" {
+        return true;
+    }
+    let debug_value = std::env::var("METRUM_DEBUG").unwrap_or_default();
+    if debug_value.is_empty() || debug_value == "0" {
+        return false;
+    }
+    std::env::var("METRUM_DEBUG_FILTER")
+        .unwrap_or_default()
+        .split(',')
+        .any(|entry| {
+            let entry = entry.trim();
+            entry == "buildings" || entry == "building-sites"
+        })
+}
+
+fn push_site_debug_sample(
+    samples: &mut VarArray,
+    label: &str,
+    point: Vector2,
+    support_height_m: f32,
+    core: &SimCore,
+) {
+    let source_height_m = core.heightmap.sample_height_world(point.x, point.y) * HEIGHT_SCALE;
+    let visual_height_m =
+        core.heightmap.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE;
+    let mut dict = VarDictionary::new();
+    dict.set("label", label);
+    dict.set("point", point);
+    dict.set("terrain_source_height_m", source_height_m);
+    dict.set("terrain_visual_height_m", visual_height_m);
+    dict.set("support_delta_source_m", support_height_m - source_height_m);
+    dict.set("support_delta_visual_m", support_height_m - visual_height_m);
+    samples.push(&dict.to_variant());
+}
+
+fn site_surface_material_label(material: SiteSurfaceMaterial) -> &'static str {
+    match material {
+        SiteSurfaceMaterial::Asphalt => "asphalt",
+        SiteSurfaceMaterial::Concrete => "concrete",
     }
 }
 
@@ -604,6 +760,34 @@ fn polygon_signed_area(vertices: &[Vector2]) -> f32 {
         area += a.x * b.y - b.x * a.y;
     }
     area * 0.5
+}
+
+fn polygon_centroid(vertices: &[Vector2]) -> Vector2 {
+    if vertices.is_empty() {
+        return Vector2::ZERO;
+    }
+    let mut sum = Vector2::ZERO;
+    for vertex in vertices {
+        sum += *vertex;
+    }
+    sum / vertices.len() as f32
+}
+
+fn vector2_bounds(vertices: &[Vector2]) -> (f32, f32, f32, f32) {
+    let Some(first) = vertices.first().copied() else {
+        return (0.0, 0.0, 0.0, 0.0);
+    };
+    let mut min_x = first.x;
+    let mut min_z = first.y;
+    let mut max_x = first.x;
+    let mut max_z = first.y;
+    for vertex in &vertices[1..] {
+        min_x = min_x.min(vertex.x);
+        min_z = min_z.min(vertex.y);
+        max_x = max_x.max(vertex.x);
+        max_z = max_z.max(vertex.y);
+    }
+    (min_x, min_z, max_x, max_z)
 }
 
 fn site_orientation(a: Vector2, b: Vector2, c: Vector2) -> f32 {

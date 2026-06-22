@@ -4,7 +4,7 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border, terrain, visuals
+#                        Common categories: isect, economy, demand, road, border, terrain, buildings, visuals
 #   --debug road         Road placement timings, committed-road geometry dumps,
 #                        terrain/water patch diagnostics, and road-surface overlay
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
@@ -23,6 +23,9 @@
 #                        Terrain/water material diagnostics. Modes:
 #                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch,
 #                        water-material, lighting
+#   --debug buildings    Building-site mesh/material diagnostics (log only).
+#   --debug building-sites-visual [mode]
+#                        Building-site material-source overlay. Modes: material
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -41,6 +44,9 @@ RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
+DEBUG_BUILDINGS=0
+BUILDING_SITE_VISUAL_DEBUG=0
+BUILDING_SITE_VISUAL_DEBUG_MODE="material"
 VISUAL_DEBUG=0
 VISUAL_DEBUG_MODE="material"
 TERRAIN_VISUAL_DEBUG=0
@@ -80,6 +86,20 @@ while [ $i -le $# ]; do
             if [[ "$next_arg" != --* ]]; then
                 if [ "$next_arg" = "traffic" ]; then
                     DEBUG_TRAFFIC=1
+                elif [ "$next_arg" = "buildings" ] || [ "$next_arg" = "building-sites" ]; then
+                    DEBUG=1
+                    DEBUG_BUILDINGS=1
+                    DEBUG_CATEGORY="buildings"
+                elif [ "$next_arg" = "building-sites-visual" ] || [ "$next_arg" = "building-visual" ] || [ "$next_arg" = "buildings-visual" ]; then
+                    BUILDING_SITE_VISUAL_DEBUG=1
+                    mode_index=$((i + 2))
+                    if [ $mode_index -le $# ]; then
+                        mode_arg="${!mode_index}"
+                        if [[ "$mode_arg" != --* ]]; then
+                            BUILDING_SITE_VISUAL_DEBUG_MODE="$mode_arg"
+                            i=$((i + 1))
+                        fi
+                    fi
                 elif [ "$next_arg" = "visuals" ] || [ "$next_arg" = "visual" ]; then
                     VISUAL_DEBUG=1
                     mode_index=$((i + 2))
@@ -189,6 +209,20 @@ case "$TERRAIN_VISUAL_DEBUG_MODE" in
         ;;
 esac
 
+case "$BUILDING_SITE_VISUAL_DEBUG_MODE" in
+    material|materials|source|sources)
+        BUILDING_SITE_VISUAL_DEBUG_MODE="material"
+        ;;
+    "")
+        BUILDING_SITE_VISUAL_DEBUG_MODE="material"
+        ;;
+    *)
+        echo "Error: unknown building-site visual debug mode '$BUILDING_SITE_VISUAL_DEBUG_MODE'." >&2
+        echo "Valid modes: material" >&2
+        exit 2
+        ;;
+esac
+
 if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
     echo "Error: --debug road-geometry was removed. Use --debug road." >&2
     exit 2
@@ -235,6 +269,10 @@ if [ $DEBUG -eq 1 ]; then
             export METRUM_DEBUG_TERRAIN_FORCE_LOD1=1
             echo "  Terrain flight diagnostics enabled with full-world residency and forced LOD1 meshes."
             echo "  Use this to reproduce seam artifacts without camera residency or LOD churn."
+        elif [ "$DEBUG_CATEGORY" = "buildings" ]; then
+            DEBUG_BUILDINGS=1
+            echo "  Building-site diagnostics enabled: [DEBUG:buildings] mesh, material, height, and site metadata."
+            echo "  Visual overlay is separate: add --debug building-sites-visual material when needed."
         fi
     else
         echo "Debug logging enabled (output goes to stdout)"
@@ -251,6 +289,14 @@ fi
 if [ $DEBUG_SIM -eq 1 ]; then
     export METRUM_DEBUG_SIM=1
     echo "Simulation console debug enabled (hourly summaries go to stdout)"
+fi
+if [ $DEBUG_BUILDINGS -eq 1 ]; then
+    export METRUM_DEBUG_BUILDINGS=1
+fi
+if [ $BUILDING_SITE_VISUAL_DEBUG -eq 1 ]; then
+    export METRUM_DEBUG_BUILDING_SITES_VISUAL="$BUILDING_SITE_VISUAL_DEBUG_MODE"
+    echo "Building-site visual debug enabled: material source overlay"
+    echo "  Ground yards, asphalt surfaces, and concrete surfaces are tinted separately."
 fi
 if [ $VISUAL_DEBUG -eq 1 ]; then
     export METRUM_DEBUG_TERRAIN_GRASS="$VISUAL_DEBUG_MODE"
