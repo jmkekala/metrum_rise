@@ -376,7 +376,7 @@ void fragment() {
 		final_color = mix(final_color, sky_reflection, topdown_ripple);
 		ALBEDO = final_color;
 		ALPHA = final_alpha;
-		ROUGHNESS = clamp(0.08 + speed * 0.06 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
+		ROUGHNESS = clamp(0.08 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
 		SPECULAR = 0.72;
 	}
 }
