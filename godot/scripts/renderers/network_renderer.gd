@@ -9,6 +9,8 @@
 ## Rust methods called: is_network_dirty(), get_dirty_terrain_patches(), clear_terrain_dirty()
 extends Node
 
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain = $"../Terrain"
 @onready var water = $"../Water"
@@ -26,10 +28,18 @@ func _ready() -> void:
 	_road_geometry_debug_enabled = _is_road_geometry_debug_enabled()
 
 func _process(_delta: float) -> void:
+	var perf_enabled := PerfDebug.is_enabled()
+	var total_start_us := Time.get_ticks_usec() if perf_enabled else 0
 	if not simulation_node.is_network_dirty():
+		if perf_enabled:
+			PerfDebug.record(
+				"network",
+				float(Time.get_ticks_usec() - total_start_us) / 1000.0
+			)
 		return
 
-	var total_start_us := Time.get_ticks_usec()
+	if total_start_us == 0:
+		total_start_us = Time.get_ticks_usec()
 
 	# 1. Consume the dirty terrain patches prepared by the sim thread. NetworkRenderer must
 	# never trigger road-surface compilation from Godot's main thread.
@@ -67,8 +77,19 @@ func _process(_delta: float) -> void:
 	# 6. Clear the flag now that the refresh is done — same pattern as clear_terrain_dirty().
 	simulation_node.clear_network_dirty()
 
+	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
+	if perf_enabled:
+		PerfDebug.record(
+			"network",
+			total_ms,
+			{
+				"terrain_visuals": terrain_visuals_ms,
+				"water_visuals": water_visuals_ms,
+				"road_mesh": road_mesh_ms,
+				"border_checks": border_checks_ms,
+			}
+		)
 	if _road_debug_enabled:
-		var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		print(
 			"[DEBUG:road] refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
 			% [

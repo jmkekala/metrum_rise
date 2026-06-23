@@ -4,7 +4,7 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border, terrain, buildings, visuals
+#                        Common categories: isect, economy, demand, road, border, terrain, buildings, visuals, perf
 #   --debug road         Road placement timings, committed-road geometry dumps,
 #                        terrain/water patch diagnostics, and road-surface overlay
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
@@ -23,6 +23,8 @@
 #                        Terrain/water material diagnostics. Modes:
 #                        patch, lod, height, relief, shore, water-depth, water-lod, water-patch,
 #                        water-material, lighting
+#   --debug perf         Frame CPU diagnostics by renderer. Emits [DEBUG:perf]
+#                        summaries every 0.5 s.
 #   --debug buildings    Building-site mesh/material diagnostics (log only).
 #   --debug building-sites-visual [mode]
 #                        Building-site material-source overlay. Modes: material
@@ -274,6 +276,10 @@ if [ $DEBUG -eq 1 ]; then
             export METRUM_DEBUG_TERRAIN_FORCE_LOD1=1
             echo "  Terrain flight diagnostics enabled with full-world residency and forced LOD1 meshes."
             echo "  Use this to reproduce seam artifacts without camera residency or LOD churn."
+        elif [ "$DEBUG_CATEGORY" = "perf" ]; then
+            export METRUM_DEBUG_PERF=1
+            echo "  Frame CPU perf diagnostics enabled: [DEBUG:perf] summaries every 0.5 s"
+            echo "  Reports total renderer CPU per completed frame plus per-renderer averages/maxes."
         elif [ "$DEBUG_CATEGORY" = "buildings" ]; then
             DEBUG_BUILDINGS=1
             echo "  Building-site diagnostics enabled: [DEBUG:buildings] mesh, material, height, and site metadata."

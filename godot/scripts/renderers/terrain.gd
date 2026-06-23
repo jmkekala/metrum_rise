@@ -10,6 +10,7 @@ extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const HEIGHT_SCALE := 20.0
@@ -215,6 +216,7 @@ func rebuild_from_simulation_state() -> void:
 
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
+	var perf_enabled := PerfDebug.is_enabled()
 	var residency_start_us := frame_start_us
 	var sim_core_busy: bool = simulation_node.is_sim_core_busy()
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
@@ -225,6 +227,8 @@ func _process(delta: float) -> void:
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
+	var lod_elapsed_ms := 0.0
+	var prewarm_elapsed_ms := 0.0
 	if not sim_core_busy and not network_refresh_pending and simulation_node.is_terrain_dirty():
 		_refresh_road_locked_patch_lookup()
 		var dirty_start_us := Time.get_ticks_usec()
@@ -253,7 +257,12 @@ func _process(delta: float) -> void:
 		_apply_overlay_mode()
 		cached_overlay_mode = overlay_mode
 
-	_refresh_patch_mesh_lods(delta)
+	if perf_enabled:
+		var lod_start_us := Time.get_ticks_usec()
+		_refresh_patch_mesh_lods(delta)
+		lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
+	else:
+		_refresh_patch_mesh_lods(delta)
 
 	var input_manager = get_node_or_null("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
@@ -272,7 +281,26 @@ func _process(delta: float) -> void:
 		)
 
 	if not sim_core_busy and not network_refresh_pending and not simulation_node.is_terrain_dirty():
-		_prewarm_patch_cache()
+		if perf_enabled:
+			var prewarm_start_us := Time.get_ticks_usec()
+			_prewarm_patch_cache()
+			prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
+		else:
+			_prewarm_patch_cache()
+
+	if perf_enabled:
+		PerfDebug.record(
+			"terrain",
+			float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
+			{
+				"residency": residency_elapsed_ms,
+				"upload": upload_elapsed_ms,
+				"border": border_elapsed_ms,
+				"water_sync": water_sync_elapsed_ms,
+				"lod": lod_elapsed_ms,
+				"prewarm": prewarm_elapsed_ms,
+			}
+		)
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []

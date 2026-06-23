@@ -26,6 +26,7 @@ const CFG_PATH := "user://active_packs.cfg"
 const PART_KEY_SEP := "|part:"
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
@@ -402,8 +403,31 @@ func _setup_building_site_surfaces() -> void:
 	add_child(building_site_surface_instance)
 
 func _process(_delta: float) -> void:
-	if Engine.get_frames_drawn() % 30 == 0:
+	var rebuild_due := Engine.get_frames_drawn() % 30 == 0
+	if not PerfDebug.is_enabled():
+		if rebuild_due:
+			_rebuild_multimeshes()
+			if zoning_overlay: zoning_overlay.mark_occupied_dirty()
+			for key in multimeshes.keys():
+				_update_buildings_for_asset_part(key)
+			for key in deserted_multimeshes.keys():
+				_update_deserted_multimesh(key)
+			for zone_id in ZONE_IDS:
+				_update_foundation(zone_id)
+				_update_construction_site(zone_id)
+				_update_construction_foundation(zone_id)
+				_update_construction_scaffold(zone_id)
+			_update_building_sites()
+		return
+
+	var frame_start_us := Time.get_ticks_usec()
+	var rebuild_elapsed_ms := 0.0
+	var update_elapsed_ms := 0.0
+	if rebuild_due:
+		var rebuild_start_us := Time.get_ticks_usec()
 		_rebuild_multimeshes()
+		rebuild_elapsed_ms = float(Time.get_ticks_usec() - rebuild_start_us) / 1000.0
+		var update_start_us := Time.get_ticks_usec()
 		if zoning_overlay: zoning_overlay.mark_occupied_dirty()
 		for key in multimeshes.keys():
 			_update_buildings_for_asset_part(key)
@@ -415,6 +439,15 @@ func _process(_delta: float) -> void:
 			_update_construction_foundation(zone_id)
 			_update_construction_scaffold(zone_id)
 		_update_building_sites()
+		update_elapsed_ms = float(Time.get_ticks_usec() - update_start_us) / 1000.0
+	PerfDebug.record(
+		"buildings",
+		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
+		{
+			"rebuild": rebuild_elapsed_ms,
+			"update": update_elapsed_ms,
+		}
+	)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:

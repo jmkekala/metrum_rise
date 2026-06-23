@@ -8,6 +8,7 @@
 extends Node3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -170,9 +171,27 @@ func _ready():
 
 
 func _process(delta):
+	if not PerfDebug.is_enabled():
+		_update_camera_aabb()
+		# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+		update_swarm(delta)
+		return
+	var frame_start_us := Time.get_ticks_usec()
+	var aabb_start_us := frame_start_us
 	_update_camera_aabb()
+	var aabb_elapsed_ms := float(Time.get_ticks_usec() - aabb_start_us) / 1000.0
 	# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+	var swarm_start_us := Time.get_ticks_usec()
 	update_swarm(delta)
+	var swarm_elapsed_ms := float(Time.get_ticks_usec() - swarm_start_us) / 1000.0
+	PerfDebug.record(
+		"agents",
+		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
+		{
+			"camera_aabb": aabb_elapsed_ms,
+			"swarm": swarm_elapsed_ms,
+		}
+	)
 
 func _update_camera_aabb():
 	var camera = get_viewport().get_camera_3d()

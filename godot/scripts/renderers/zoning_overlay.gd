@@ -4,6 +4,8 @@
 ##   get_edge_geometry_3d()
 extends MeshInstance3D
 
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+
 @onready var simulation_node = $"../SimulationNode"
 
 var _tool_active: float = 0.0
@@ -29,16 +31,47 @@ func _ready():
 	visible = false
 
 func _process(delta):
+	if not PerfDebug.is_enabled():
+		if abs(_tool_active - _tool_active_target) > 0.001:
+			_tool_active = move_toward(_tool_active, _tool_active_target, FADE_SPEED * delta)
+		visible = _tool_active > 0.001 or _tool_active_target > 0.0
+
+		if _zone_dirty:
+			_rebuild_parcel_overlay()
+			_zone_dirty = false
+		if _no_build_dirty:
+			_rebuild_no_build_overlay()
+			_no_build_dirty = false
+		return
+
+	var frame_start_us := Time.get_ticks_usec()
+	var fade_start_us := frame_start_us
 	if abs(_tool_active - _tool_active_target) > 0.001:
 		_tool_active = move_toward(_tool_active, _tool_active_target, FADE_SPEED * delta)
 	visible = _tool_active > 0.001 or _tool_active_target > 0.0
+	var fade_elapsed_ms := float(Time.get_ticks_usec() - fade_start_us) / 1000.0
 
+	var parcel_elapsed_ms := 0.0
 	if _zone_dirty:
+		var parcel_start_us := Time.get_ticks_usec()
 		_rebuild_parcel_overlay()
+		parcel_elapsed_ms = float(Time.get_ticks_usec() - parcel_start_us) / 1000.0
 		_zone_dirty = false
+	var no_build_elapsed_ms := 0.0
 	if _no_build_dirty:
+		var no_build_start_us := Time.get_ticks_usec()
 		_rebuild_no_build_overlay()
+		no_build_elapsed_ms = float(Time.get_ticks_usec() - no_build_start_us) / 1000.0
 		_no_build_dirty = false
+	PerfDebug.record(
+		"zoning",
+		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
+		{
+			"fade": fade_elapsed_ms,
+			"parcel": parcel_elapsed_ms,
+			"no_build": no_build_elapsed_ms,
+		}
+	)
 
 func mark_zone_dirty():
 	_zone_dirty = true

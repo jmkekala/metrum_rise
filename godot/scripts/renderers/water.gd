@@ -7,6 +7,7 @@ extends Node3D
 
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -92,12 +93,17 @@ func rebuild_from_simulation_state() -> void:
 
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
+	var perf_enabled := PerfDebug.is_enabled()
 	var patch_sync_start_us := frame_start_us
 	var residency_changed := _sync_patch_residency()
 	var patch_sync_elapsed_ms := float(Time.get_ticks_usec() - patch_sync_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
+	var terrain_binding_elapsed_ms := 0.0
+	var lod_elapsed_ms := 0.0
+	var input_elapsed_ms := 0.0
+	var prewarm_elapsed_ms := 0.0
 	if residency_changed:
 		var height_rebind_start_us := Time.get_ticks_usec()
 		_sync_patch_height_textures()
@@ -115,11 +121,26 @@ func _process(delta: float) -> void:
 		border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
 
 	if residency_changed:
-		_refresh_terrain_patch_bindings()
+		if perf_enabled:
+			var terrain_binding_start_us := Time.get_ticks_usec()
+			_refresh_terrain_patch_bindings()
+			terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
+		else:
+			_refresh_terrain_patch_bindings()
 
-	_refresh_patch_mesh_lods(delta)
+	if perf_enabled:
+		var lod_start_us := Time.get_ticks_usec()
+		_refresh_patch_mesh_lods(delta)
+		lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
+	else:
+		_refresh_patch_mesh_lods(delta)
 
-	handle_water_input(delta)
+	if perf_enabled:
+		var input_start_us := Time.get_ticks_usec()
+		handle_water_input(delta)
+		input_elapsed_ms = float(Time.get_ticks_usec() - input_start_us) / 1000.0
+	else:
+		handle_water_input(delta)
 	if _terrain_debug_enabled:
 		var frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 		_record_water_debug_frame(
@@ -131,7 +152,28 @@ func _process(delta: float) -> void:
 			height_rebind_elapsed_ms
 		)
 	if not simulation_node.is_water_dirty():
-		_prewarm_patch_cache()
+		if perf_enabled:
+			var prewarm_start_us := Time.get_ticks_usec()
+			_prewarm_patch_cache()
+			prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
+		else:
+			_prewarm_patch_cache()
+
+	if perf_enabled:
+		PerfDebug.record(
+			"water",
+			float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
+			{
+				"residency": patch_sync_elapsed_ms,
+				"upload": upload_elapsed_ms,
+				"border": border_elapsed_ms,
+				"height_rebind": height_rebind_elapsed_ms,
+				"terrain_binding": terrain_binding_elapsed_ms,
+				"lod": lod_elapsed_ms,
+				"input": input_elapsed_ms,
+				"prewarm": prewarm_elapsed_ms,
+			}
+		)
 
 func update_water_visuals() -> void:
 	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_water_patches())

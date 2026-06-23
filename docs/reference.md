@@ -113,13 +113,14 @@ variables before building Rust, deploying `libmetrum_rise.so`, and launching God
 | Flag | Main environment | Output / effect |
 |------|------------------|-----------------|
 | `--debug` | `METRUM_DEBUG=1` | General debug logging to stdout. |
-| `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `road`, `border`, `terrain`, `buildings`, `visuals`, and `world-editor`. |
+| `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `road`, `border`, `terrain`, `buildings`, `visuals`, `perf`, and `world-editor`. |
 | `--debug road` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1`, `METRUM_DEBUG_SURFACE=1` | Road placement timings, geometry dump, terrain/water patch diagnostics, and road-surface overlay. |
 | `--debug terrain` | `METRUM_DEBUG_TERRAIN=1` | Terrain and water patch residency/perf summaries. |
 | `--debug terrain-verbose` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VERBOSE=1` | Terrain summaries plus residency-change logs. |
 | `--debug terrain-full` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1` | Force full-world terrain/water residency for cost comparison. |
 | `--debug terrain-lod1` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_LOD1=1` | Force all resident terrain/water patch meshes to LOD1. |
 | `--debug terrain-full-lod1` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1`, `METRUM_DEBUG_TERRAIN_FORCE_LOD1=1` | Force full-world residency and LOD1 meshes for seam/material debugging. |
+| `--debug perf` | `METRUM_DEBUG_PERF=1` | Frame CPU summaries by renderer every 0.5 s. Reports total renderer CPU per completed frame plus per-renderer/detail averages and maxes. |
 | `--debug buildings` | `METRUM_DEBUG_BUILDINGS=1` | Building-site mesh, material, height, and site metadata logs only. |
 | `--debug building-sites-visual [mode]` | `METRUM_DEBUG_BUILDING_SITES_VISUAL=<mode>` | Building-site visual overlay. Current mode: `material`. |
 | `--debug traffic` / `--debug-traffic` | `METRUM_DEBUG_TRAFFIC=1` | Traffic/routing and road-network connectivity logging to stderr plus visual lane/connector debug labels. |
