@@ -350,6 +350,9 @@ Current deterministic rules:
   mesh instead of relying on shader discard, and road-touched water patches suppress every water
   cell touched by the road footprint after a network edit instead of emitting partial transparent
   clip fragments
+- water patch mesh topology is generated and cached in Rust by patch, LOD, road-clip signature,
+  and depth signature; Godot applies completed mesh buffers under a bounded per-frame budget rather
+  than rebuilding patch topology directly in GDScript during LOD refreshes
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit

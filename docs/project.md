@@ -344,6 +344,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   without paying full near-field vertex density for every visible patch. The temporary seam /
   emissive terrain-debug visual modes used during patch-hardening were removed from the steady
   runtime after the seam-width bug was fixed. See [`terrain.md`](terrain.md).
+- Water patch mesh topology now builds on the Rust side through cached patch variants keyed by
+  patch, LOD, road-clip signature, and depth signature; batch generation uses Rayon while Godot
+  only uploads completed `ArrayMesh` buffers under a per-frame apply budget. See
+  [`terrain.md`](terrain.md).
 - The first roads-first engineered-ground prototype did useful architectural work but is no longer
   treated as the final path: later terrain edits can keep committed roads fixed, chunk-local
   rebuilds and visible-surface precedence remain required, and terrain / road ownership stays

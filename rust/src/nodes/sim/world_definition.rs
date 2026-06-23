@@ -352,6 +352,7 @@ impl SimCore {
         {
             self.watermap = water;
             self.authored_water_patch_fill_debug_cache.clear();
+            self.water_patch_mesh_cache.clear();
             self.water_dirty = true;
             return Ok(());
         }
@@ -449,6 +450,7 @@ impl SimCore {
 
         self.watermap = water;
         self.authored_water_patch_fill_debug_cache = fill_debug_cache;
+        self.water_patch_mesh_cache.clear();
         self.water_dirty = true;
         Ok(())
     }
@@ -517,6 +519,7 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
+        self.water_patch_mesh_cache.clear();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
@@ -1012,6 +1015,7 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
+            water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),

@@ -59,6 +59,8 @@ impl SimCore {
                 self.watermap
                     .replace_baseline_depth_from_dense(&w_data.baseline_depth)
                     .expect("undo baseline water snapshot must match the live water dimensions");
+                self.water_patch_mesh_cache.clear();
+                self.water_dirty = true;
             }
             if let Some(tr_graph) = state.trans_graph {
                 self.region_graph = tr_graph;

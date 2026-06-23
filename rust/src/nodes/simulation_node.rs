@@ -49,6 +49,8 @@
 //! | | `clear_water_dirty` | `water.gd` |
 //! | | `get_dirty_water_patches` | `water.gd` |
 //! | | `get_water_patch` | `water.gd` |
+//! | | `get_water_patch_meshes` | `water.gd` |
+//! | | `clear_water_patch_mesh_cache` | `water.gd` |
 //! | | `get_water_patch_debug` | `water.gd` |
 //! | | `get_water_patch_authored_fill_debug` | `water.gd` |
 //! | | `get_water_border_depths` | `water.gd` |
@@ -94,6 +96,10 @@ use crate::nodes::sim::core::{
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
+};
+use crate::nodes::sim::render::water::{
+    CachedWaterPatchMesh, WaterPatchMeshBuildInput, WaterPatchMeshCacheKey,
+    water_patch_depth_signature,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -2878,6 +2884,67 @@ impl SimulationNode {
         dict
     }
 
+    fn water_patch_mesh_dict(mesh: &CachedWaterPatchMesh) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("patch_x", i64::try_from(mesh.key.patch_x).unwrap_or(0));
+        dict.set("patch_z", i64::try_from(mesh.key.patch_z).unwrap_or(0));
+        dict.set("lod_step", i64::try_from(mesh.key.lod_step).unwrap_or(1));
+        dict.set("road_clip_signature", mesh.key.road_clip_signature);
+        dict.set(
+            "depth_signature",
+            i64::from_ne_bytes(mesh.key.depth_signature.to_ne_bytes()),
+        );
+        dict.set(
+            "vertices",
+            PackedVector3Array::from_iter(mesh.vertices.iter().copied()),
+        );
+        dict.set(
+            "normals",
+            PackedVector3Array::from_iter(mesh.normals.iter().copied()),
+        );
+        dict.set(
+            "uvs",
+            PackedVector2Array::from_iter(mesh.uvs.iter().copied()),
+        );
+        dict.set(
+            "indices",
+            PackedInt32Array::from_iter(mesh.indices.iter().copied()),
+        );
+        dict.set(
+            "mesh_cells",
+            i64::try_from(mesh.stats.cells_total).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_full_cells",
+            i64::try_from(mesh.stats.full_cells).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_partial_cells",
+            i64::try_from(mesh.stats.partial_cells).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_conservative_cells",
+            i64::try_from(mesh.stats.conservative_cells).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_dry_cells",
+            i64::try_from(mesh.stats.dry_cells).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_road_clipped_cells",
+            i64::try_from(mesh.stats.road_clipped_cells).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_emitted_vertices",
+            i64::try_from(mesh.stats.emitted_vertices).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "mesh_emitted_triangles",
+            i64::try_from(mesh.stats.emitted_triangles).unwrap_or(i64::MAX),
+        );
+        dict
+    }
+
     fn water_patch_layer_debug_dict(
         stats: &crate::simulation::water::WaterPatchLayerStats,
     ) -> VarDictionary {
@@ -3149,8 +3216,18 @@ impl SimulationNode {
     /// Clears the water dirty flag.
     #[func]
     pub fn clear_water_dirty(&mut self) {
-        self.lock_core().water_dirty = false;
-        self.lock_core().watermap.clear_dirty_render_patches();
+        {
+            let mut core = self.lock_core();
+            let dirty_patches = core
+                .watermap
+                .dirty_render_patches()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            core.clear_water_patch_mesh_cache_entries(&dirty_patches);
+            core.water_dirty = false;
+            core.watermap.clear_dirty_render_patches();
+        }
         self.snapshot.write().unwrap().water_dirty = false;
     }
 
@@ -3372,6 +3449,104 @@ impl SimulationNode {
             patch.world_origin_z + patch.world_size_z,
         );
         dict
+    }
+
+    /// Clears cached water mesh variants for flat `(patch_x, patch_z)` patch keys.
+    #[func]
+    pub fn clear_water_patch_mesh_cache(&mut self, flat_patch_keys: PackedInt32Array) {
+        let values = flat_patch_keys.as_slice();
+        let mut patch_keys = Vec::new();
+        for chunk in values.chunks_exact(2) {
+            let Ok(patch_x) = usize::try_from(chunk[0]) else {
+                continue;
+            };
+            let Ok(patch_z) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            patch_keys.push((patch_x, patch_z));
+        }
+        if !patch_keys.is_empty() {
+            self.lock_core()
+                .clear_water_patch_mesh_cache_entries(&patch_keys);
+        }
+    }
+
+    /// Builds and returns cached water patch meshes for flat `(patch_x, patch_z, lod_step)` requests.
+    #[func]
+    pub fn get_water_patch_meshes(&mut self, flat_requests: PackedInt32Array) -> VarArray {
+        let request_values = flat_requests.as_slice();
+        if request_values.len() < 3 {
+            return VarArray::new();
+        }
+
+        let mut requests = Vec::new();
+        for chunk in request_values.chunks_exact(3) {
+            let Ok(patch_x) = usize::try_from(chunk[0]) else {
+                continue;
+            };
+            let Ok(patch_z) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            let lod_step = usize::try_from(chunk[2]).unwrap_or(1).max(1);
+            requests.push((patch_x, patch_z, lod_step));
+        }
+        if requests.is_empty() {
+            return VarArray::new();
+        }
+
+        let (requested_keys, build_inputs) = {
+            let core = self.lock_core();
+            let mut requested_keys = Vec::new();
+            let mut requested_key_lookup = HashSet::new();
+            let mut build_inputs = Vec::new();
+            for (patch_x, patch_z, lod_step) in requests {
+                let Some(patch) = core.watermap.visible_patch_snapshot(patch_x, patch_z) else {
+                    continue;
+                };
+                let road_clip_query = Self::road_clip_loop_query_for_bounds(
+                    &core,
+                    patch.world_origin_x,
+                    patch.world_origin_z,
+                    patch.world_origin_x + patch.world_size_x,
+                    patch.world_origin_z + patch.world_size_z,
+                );
+                let key = WaterPatchMeshCacheKey {
+                    patch_x,
+                    patch_z,
+                    lod_step,
+                    road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
+                    depth_signature: water_patch_depth_signature(&patch),
+                };
+                if !requested_key_lookup.insert(key) {
+                    continue;
+                }
+                requested_keys.push(key);
+                if !core.water_patch_mesh_cache.contains_key(&key) {
+                    build_inputs.push(WaterPatchMeshBuildInput {
+                        key,
+                        patch,
+                        road_clip_loops: road_clip_query.cdt_road_loops,
+                        clip_failed: road_clip_query.clip_error_label.is_some(),
+                    });
+                }
+            }
+            (requested_keys, build_inputs)
+        };
+
+        if !build_inputs.is_empty() {
+            let entries = SimCore::build_water_patch_mesh_cache_entries(build_inputs);
+            self.lock_core()
+                .insert_water_patch_mesh_cache_entries(entries);
+        }
+
+        let core = self.lock_core();
+        let mut meshes = VarArray::new();
+        for key in requested_keys {
+            if let Some(mesh) = core.water_patch_mesh_cache.get(&key) {
+                meshes.push(&Self::water_patch_mesh_dict(mesh).to_variant());
+            }
+        }
+        meshes
     }
 
     /// Returns road-clip metadata for a cached water patch without exporting water textures.
@@ -5718,6 +5893,7 @@ impl INode3D for SimulationNode {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
+            water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
@@ -6636,6 +6812,7 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: std::collections::HashMap::new(),
+            water_patch_mesh_cache: std::collections::HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
