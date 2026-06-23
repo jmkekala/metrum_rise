@@ -39,9 +39,7 @@ use crate::simulation::terrain::{
     TerrainPatchSnapshot, TerrainSystem, terrain_cdt_local_sample_margin_m,
 };
 use crate::simulation::water::WaterSystem;
-use crate::simulation::world_definition::{
-    AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
-};
+use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
@@ -72,11 +70,6 @@ pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
-/// First continuous runtime water pass tick interval in simulated seconds.
-const CONTINUOUS_WATER_TICK_DT: f32 = 0.2;
-/// First continuous runtime water pass tick interval in real-time seconds.
-const CONTINUOUS_WATER_TICK_INTERVAL_S: f64 = CONTINUOUS_WATER_TICK_DT as f64;
-
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
 /// The balance may go negative: deficits are an explicit fiscal state rather than
@@ -292,14 +285,6 @@ impl WorldLakeFillPreview {
 pub(crate) struct WaterRuntimeSnapshot {
     /// Flat authored or loaded baseline water depth above terrain.
     pub baseline_depth: Vec<f32>,
-    /// Transient dynamic water depth above the support surface.
-    pub dynamic_depth: Vec<f32>,
-    /// Dynamic water velocity magnitude.
-    pub velocity: Vec<f32>,
-    /// Dynamic directional flux values.
-    pub flux: Vec<[f32; 4]>,
-    /// Dynamic water boundary points.
-    pub sources: Vec<(usize, usize, f32)>,
 }
 
 /// A snapshot of simulation state for undo history.
@@ -447,8 +432,6 @@ pub struct SimCore {
     pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
-    /// Authored-world inflow / outflow points when editing or playing from a `WorldDefinition`.
-    pub(crate) world_water_boundary_points: Vec<AuthoredWaterBoundaryPoint>,
     /// Authored-world lake fill records when editing or playing from a `WorldDefinition`.
     pub(crate) world_lake_fills: Vec<AuthoredLakeFill>,
     /// Authored-world edge-connected open-water fills when editing or playing from a `WorldDefinition`.
@@ -462,8 +445,6 @@ pub struct SimCore {
     pub(crate) terrain_stroke_active: bool,
     /// True once the active terrain brush stroke has applied at least one terrain mutation.
     pub(crate) terrain_stroke_has_changes: bool,
-    /// Allows continuous water to advance in real time while the operational clock is paused.
-    pub(crate) water_runtime_realtime_when_paused: bool,
     /// Set by terrain mutations; cleared by the Godot render layer.
     pub terrain_dirty: bool,
     /// Set by water mutations; cleared by the Godot render layer.
@@ -721,15 +702,6 @@ pub(crate) fn compile_road_preview_from_context(
 }
 
 impl SimCore {
-    fn tick_continuous_water_runtime_internal(&mut self, dt: f32) {
-        if !self.watermap.has_sources() {
-            return;
-        }
-        let terrain_world = self.heightmap.clone_source_dense_world_heights();
-        self.watermap.tick(&terrain_world, dt);
-        self.water_dirty = true;
-    }
-
     fn print_sim_console_summary(&self, day_index: u32, minute_of_day: u16) {
         let mut at_home = 0usize;
         let mut at_work = 0usize;
@@ -1743,7 +1715,6 @@ pub(crate) fn run_sim_thread(
 ) {
     const TARGET_DT: f64 = 1.0 / 60.0;
     let target = Duration::from_micros(16_667); // ~60 Hz
-    let mut continuous_water_accumulator_s = 0.0_f64;
 
     loop {
         let frame_start = Instant::now();
@@ -1980,23 +1951,6 @@ pub(crate) fn run_sim_thread(
                             core.print_daily_building_economy_for_day(step_day_index);
                         }
                     }
-                }
-            }
-
-            let continuous_water_time_scale = if speed > 0.0 {
-                f64::from(speed)
-            } else if core.water_runtime_realtime_when_paused {
-                1.0
-            } else {
-                0.0
-            };
-            if continuous_water_time_scale > 0.0 {
-                continuous_water_accumulator_s += TARGET_DT * continuous_water_time_scale;
-                while continuous_water_accumulator_s + f64::EPSILON
-                    >= CONTINUOUS_WATER_TICK_INTERVAL_S
-                {
-                    core.tick_continuous_water_runtime_internal(CONTINUOUS_WATER_TICK_DT);
-                    continuous_water_accumulator_s -= CONTINUOUS_WATER_TICK_INTERVAL_S;
                 }
             }
 

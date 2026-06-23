@@ -3,7 +3,6 @@ render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
-uniform sampler2D velocity_map : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
 uniform float height_scale = 10.0;
 uniform vec4 shallow_water_color : source_color = vec4(0.31, 0.58, 0.64, 0.46);
@@ -306,7 +305,6 @@ vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 void fragment() {
 	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
 	float depth_m = contour_depth_m;
-	float speed_sample = texture(velocity_map, var_centered_uv).r;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
 	float depth_factor = smoothstep(0.12, 6.5, depth_m);
 	float wave = water_surface_breakup(var_world_pos.xz);
@@ -314,12 +312,11 @@ void fragment() {
 	vec2 wave_slope = water_wave_slope(var_world_pos.xz);
 	vec3 world_normal = water_world_normal(wave_slope);
 	float normal_debug_strength = clamp(length(wave_slope) * water_wave_normal_strength * 18.0, 0.0, 1.0);
-	float speed = clamp(speed_sample * 0.5, 0.0, 1.0);
 	vec3 depth_tint = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
 	depth_tint *= 1.0 + wave_signed * water_wave_color_strength;
 	float shore_foam = (1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), contour_depth_m))
 		* shore_mask;
-	float foam_amount = clamp(shore_foam * 0.16 + speed * 0.10, 0.0, 0.34);
+	float foam_amount = clamp(shore_foam * 0.16, 0.0, 0.34);
 	float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
 	final_alpha = clamp(final_alpha, 0.0, 0.92);
 

@@ -2,7 +2,7 @@
 ##
 ## Rust methods called: get_water_patch(), get_water_patch_debug(),
 ##   get_water_patch_authored_fill_debug(), get_dirty_water_patches(), get_water_border_depths(),
-##   add_water_source(), is_water_dirty(), clear_water_dirty()
+##   is_water_dirty(), clear_water_dirty()
 extends Node3D
 
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
@@ -30,6 +30,8 @@ const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
 const WATER_PATCH_MUTATION_BUDGET_PER_FRAME := 256
 const WATER_PATCH_PREWARM_BUDGET_PER_FRAME := 12
+const WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME := 128
+const WATER_TERRAIN_BINDING_BUDGET_PER_FRAME := 128
 const WATER_PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
 const WATER_PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const WATER_PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
@@ -43,6 +45,10 @@ const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
+var height_texture_rebind_queue: Array[Vector2i] = []
+var height_texture_rebind_lookup: Dictionary = {}
+var terrain_patch_binding_queue: Array[Vector2i] = []
+var terrain_patch_binding_lookup: Dictionary = {}
 var fallback_height_texture: ImageTexture
 var water_border_instance: MeshInstance3D
 var water_border_material: ShaderMaterial
@@ -80,10 +86,10 @@ func rebuild_from_simulation_state() -> void:
 	_clear_patches()
 	_ensure_fallback_height_texture()
 	_ensure_water_border_visual()
-	_sync_patch_residency(true)
-	_sync_patch_height_textures()
+	_sync_patch_residency()
+	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	_rebuild_water_border()
-	_refresh_terrain_patch_bindings()
+	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
 		_water_debug_log(
@@ -95,19 +101,17 @@ func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
 	var patch_sync_start_us := frame_start_us
-	var residency_changed := _sync_patch_residency()
+	_sync_patch_residency()
 	var patch_sync_elapsed_ms := float(Time.get_ticks_usec() - patch_sync_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var terrain_binding_elapsed_ms := 0.0
 	var lod_elapsed_ms := 0.0
-	var input_elapsed_ms := 0.0
 	var prewarm_elapsed_ms := 0.0
-	if residency_changed:
-		var height_rebind_start_us := Time.get_ticks_usec()
-		_sync_patch_height_textures()
-		height_rebind_elapsed_ms = float(Time.get_ticks_usec() - height_rebind_start_us) / 1000.0
+	var height_rebind_start_us := Time.get_ticks_usec()
+	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
+	height_rebind_elapsed_ms = float(Time.get_ticks_usec() - height_rebind_start_us) / 1000.0
 
 	var border_changed := _current_terrain_border_revision() != terrain_border_revision
 	if simulation_node.is_water_dirty():
@@ -120,13 +124,9 @@ func _process(delta: float) -> void:
 		_rebuild_water_border()
 		border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
 
-	if residency_changed:
-		if perf_enabled:
-			var terrain_binding_start_us := Time.get_ticks_usec()
-			_refresh_terrain_patch_bindings()
-			terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
-		else:
-			_refresh_terrain_patch_bindings()
+	var terrain_binding_start_us := Time.get_ticks_usec()
+	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
+	terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
 
 	if perf_enabled:
 		var lod_start_us := Time.get_ticks_usec()
@@ -135,12 +135,6 @@ func _process(delta: float) -> void:
 	else:
 		_refresh_patch_mesh_lods(delta)
 
-	if perf_enabled:
-		var input_start_us := Time.get_ticks_usec()
-		handle_water_input(delta)
-		input_elapsed_ms = float(Time.get_ticks_usec() - input_start_us) / 1000.0
-	else:
-		handle_water_input(delta)
 	if _terrain_debug_enabled:
 		var frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 		_record_water_debug_frame(
@@ -170,7 +164,6 @@ func _process(delta: float) -> void:
 				"height_rebind": height_rebind_elapsed_ms,
 				"terrain_binding": terrain_binding_elapsed_ms,
 				"lod": lod_elapsed_ms,
-				"input": input_elapsed_ms,
 				"prewarm": prewarm_elapsed_ms,
 			}
 		)
@@ -184,6 +177,7 @@ func update_water_visuals() -> void:
 		for key in dirty_keys:
 			if patches.has(key):
 				_upload_patch(key)
+				_queue_terrain_patch_binding(key)
 	_rebuild_water_border()
 
 func get_resident_patch_keys() -> Array[Vector2i]:
@@ -283,16 +277,6 @@ func _create_patch(key: Vector2i) -> void:
 	)
 	var depth_texture: ImageTexture = ImageTexture.create_from_image(depth_image)
 
-	var velocity_image: Image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
-	velocity_image.set_data(
-		texture_width,
-		texture_height,
-		false,
-		Image.FORMAT_RF,
-		(patch_data["velocity_data"] as PackedFloat32Array).to_byte_array()
-	)
-	var velocity_texture: ImageTexture = ImageTexture.create_from_image(velocity_image)
-
 	var patch_center_x := world_origin_x + world_size_x * 0.5
 	var patch_center_z := world_origin_z + world_size_z * 0.5
 	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
@@ -319,9 +303,9 @@ func _create_patch(key: Vector2i) -> void:
 
 	var material: ShaderMaterial = ShaderMaterial.new()
 	material.shader = WATER_SHADER
-	material.set_shader_parameter("heightmap", _terrain_height_texture(key))
+	var height_texture := _terrain_height_texture(key)
+	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("watermap", depth_texture)
-	material.set_shader_parameter("velocity_map", velocity_texture)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("shore_softness_m", SHORE_SOFTNESS_M)
 	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
@@ -362,9 +346,7 @@ func _create_patch(key: Vector2i) -> void:
 		"material": material,
 		"depth_image": depth_image,
 		"depth_texture": depth_texture,
-		"velocity_image": velocity_image,
-		"velocity_texture": velocity_texture,
-		"height_texture": material.get_shader_parameter("heightmap"),
+		"height_texture": height_texture,
 		"sample_width": sample_width,
 		"sample_height": sample_height,
 		"texture_width": texture_width,
@@ -454,17 +436,6 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 			(patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
 		)
 		depth_texture.update(depth_image)
-
-		var velocity_image: Image = patch["velocity_image"]
-		var velocity_texture: ImageTexture = patch["velocity_texture"]
-		velocity_image.set_data(
-			texture_width,
-			texture_height,
-			false,
-			Image.FORMAT_RF,
-			(patch_data["velocity_data"] as PackedFloat32Array).to_byte_array()
-		)
-		velocity_texture.update(velocity_image)
 		texture_elapsed_ms = float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 		_water_debug_patch_uploads += 1
 
@@ -548,6 +519,8 @@ func _activate_patch(key: Vector2i) -> void:
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = true
 	resident_patch_lookup[key] = true
+	_queue_height_texture_rebind(key)
+	_queue_terrain_patch_binding(key)
 
 func _deactivate_patch(key: Vector2i) -> void:
 	if not resident_patch_lookup.has(key):
@@ -559,6 +532,7 @@ func _deactivate_patch(key: Vector2i) -> void:
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = false
 	resident_patch_lookup.erase(key)
+	_queue_terrain_patch_binding(key)
 
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
@@ -568,6 +542,7 @@ func _remove_patch(key: Vector2i) -> void:
 	patch_node.queue_free()
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
+	_queue_terrain_patch_binding(key)
 	_water_debug_patch_removes += 1
 
 func _clear_patches() -> void:
@@ -578,6 +553,10 @@ func _clear_patches() -> void:
 	patches.clear()
 	resident_patch_lookup.clear()
 	patch_prewarm_queue.clear()
+	height_texture_rebind_queue.clear()
+	height_texture_rebind_lookup.clear()
+	terrain_patch_binding_queue.clear()
+	terrain_patch_binding_lookup.clear()
 
 func _rebuild_patch_prewarm_queue() -> void:
 	patch_prewarm_queue.clear()
@@ -598,7 +577,7 @@ func _prewarm_patch_cache() -> void:
 		return
 	var remaining_budget := WATER_PATCH_PREWARM_BUDGET_PER_FRAME
 	while remaining_budget > 0 and not patch_prewarm_queue.is_empty():
-		var key: Vector2i = patch_prewarm_queue.pop_front()
+		var key: Vector2i = patch_prewarm_queue.pop_back()
 		if patches.has(key):
 			continue
 		_create_patch(key)
@@ -650,7 +629,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 			_empty_water_mesh_stats(int(patch.get("lod_step", 1)))
 		)
 		lines.append(
-			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f visible_nonzero=%d/%d visible_max=%.3f visible_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
 			% [
 				key.x,
 				key.y,
@@ -673,22 +652,10 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				layer_sample_count,
 				float(layer_stats.get("baseline_max", -1.0)),
 				float(layer_stats.get("baseline_sum", -1.0)),
-				int(layer_stats.get("dynamic_nonzero", -1)),
+				int(layer_stats.get("visible_nonzero", -1)),
 				layer_sample_count,
-				float(layer_stats.get("dynamic_max", -1.0)),
-				float(layer_stats.get("dynamic_sum", -1.0)),
-				int(layer_stats.get("combined_nonzero", -1)),
-				layer_sample_count,
-				float(layer_stats.get("combined_max", -1.0)),
-				float(layer_stats.get("combined_sum", -1.0)),
-				int(layer_stats.get("velocity_nonzero", -1)),
-				layer_sample_count,
-				float(layer_stats.get("velocity_max", -1.0)),
-				float(layer_stats.get("velocity_sum", -1.0)),
-				int(layer_stats.get("source_count_in_patch", -1)),
-				int(layer_stats.get("source_count_total", -1)),
-				float(layer_stats.get("source_rate_sum", -1.0)),
-				float(layer_stats.get("source_rate_abs_sum", -1.0)),
+				float(layer_stats.get("visible_max", -1.0)),
+				float(layer_stats.get("visible_sum", -1.0)),
 				road_clip_status,
 				road_clip_error,
 				road_clip_source_count,
@@ -1633,40 +1600,53 @@ func _terrain_height_texture(key: Vector2i) -> Texture2D:
 			return texture
 	return fallback_height_texture
 
-func _sync_patch_height_textures() -> void:
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		var patch: Dictionary = patches.get(key, {})
-		if patch.is_empty():
-			continue
-		var material: ShaderMaterial = patch["material"]
-		var next_texture := _terrain_height_texture(key)
-		if patch["height_texture"] == next_texture:
-			continue
-		patch["height_texture"] = next_texture
-		material.set_shader_parameter("heightmap", next_texture)
-		_water_debug_height_rebinds += 1
+func _queue_height_texture_rebind(key: Vector2i) -> void:
+	if height_texture_rebind_lookup.has(key):
+		return
+	height_texture_rebind_lookup[key] = true
+	height_texture_rebind_queue.append(key)
 
-func _refresh_terrain_patch_bindings() -> void:
-	if terrain_node != null and terrain_node.has_method("refresh_water_patch_bindings"):
+func _process_height_texture_rebinds(budget: int) -> void:
+	var remaining_budget := budget
+	while remaining_budget > 0 and not height_texture_rebind_queue.is_empty():
+		var key: Vector2i = height_texture_rebind_queue.pop_back()
+		height_texture_rebind_lookup.erase(key)
+		_bind_patch_height_texture(key)
+		remaining_budget -= 1
+
+func _bind_patch_height_texture(key: Vector2i) -> void:
+	var patch: Dictionary = patches.get(key, {})
+	if patch.is_empty():
+		return
+	var material: ShaderMaterial = patch["material"]
+	var next_texture := _terrain_height_texture(key)
+	if patch["height_texture"] == next_texture:
+		return
+	patch["height_texture"] = next_texture
+	material.set_shader_parameter("heightmap", next_texture)
+	_water_debug_height_rebinds += 1
+
+func _queue_terrain_patch_binding(key: Vector2i) -> void:
+	if terrain_patch_binding_lookup.has(key):
+		return
+	terrain_patch_binding_lookup[key] = true
+	terrain_patch_binding_queue.append(key)
+
+func _process_terrain_patch_binding_queue(budget: int) -> void:
+	var remaining_budget := budget
+	while remaining_budget > 0 and not terrain_patch_binding_queue.is_empty():
+		var key: Vector2i = terrain_patch_binding_queue.pop_back()
+		terrain_patch_binding_lookup.erase(key)
+		_refresh_terrain_patch_binding(key)
+		remaining_budget -= 1
+
+func _refresh_terrain_patch_binding(key: Vector2i) -> void:
+	if terrain_node == null:
+		return
+	if terrain_node.has_method("refresh_water_patch_binding"):
+		terrain_node.refresh_water_patch_binding(key)
+	elif terrain_node.has_method("refresh_water_patch_bindings"):
 		terrain_node.refresh_water_patch_bindings()
-
-func handle_water_input(delta: float) -> void:
-	var input_manager = get_node_or_null("../InputManager")
-	if input_manager and input_manager.current_tool == input_manager.Tool.WATER:
-		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
-			var mouse_pos = get_viewport().get_mouse_position()
-			var camera = get_viewport().get_camera_3d()
-			if camera == null:
-				return
-
-			var ray_origin = camera.project_ray_origin(mouse_pos)
-			var ray_dir = camera.project_ray_normal(mouse_pos)
-
-			var plane := Plane(Vector3.UP, 0.0)
-			var intersection = plane.intersects_ray(ray_origin, ray_dir)
-			if intersection != null:
-				simulation_node.add_water_source(Vector2(intersection.x, intersection.z), 0.5 * delta)
 
 func _ensure_water_border_visual() -> void:
 	if water_border_instance == null:

@@ -21,9 +21,8 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
-    AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryKind, AuthoredWaterBoundaryPoint,
-    LoadedWorldDefinition, WorldDefinitionView, load_world_definition_from_sqlite,
-    save_world_definition_to_sqlite,
+    AuthoredLakeFill, AuthoredOpenWaterFill, LoadedWorldDefinition, WorldDefinitionView,
+    load_world_definition_from_sqlite, save_world_definition_to_sqlite,
 };
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
@@ -100,64 +99,11 @@ impl SimCore {
                 name,
                 config: &self.config,
                 terrain: &self.heightmap,
-                water_boundary_points: &self.world_water_boundary_points,
                 lake_fills: &self.world_lake_fills,
                 open_water_fills: &self.world_open_water_fills,
             },
         )
         .map_err(|err| err.to_string())
-    }
-
-    /// Adds or strengthens one authored world-water source at the clicked terrain cell.
-    pub(crate) fn add_world_water_source_internal(
-        &mut self,
-        pos: Vector2,
-        rate_m_per_tick: f32,
-    ) -> Result<(), String> {
-        self.place_world_water_boundary_internal(
-            AuthoredWaterBoundaryKind::Source,
-            pos,
-            rate_m_per_tick,
-        )
-    }
-
-    /// Adds or strengthens one authored world-water sink at the clicked terrain cell.
-    pub(crate) fn add_world_water_sink_internal(
-        &mut self,
-        pos: Vector2,
-        rate_m_per_tick: f32,
-    ) -> Result<(), String> {
-        self.place_world_water_boundary_internal(
-            AuthoredWaterBoundaryKind::Sink,
-            pos,
-            rate_m_per_tick,
-        )
-    }
-
-    /// Removes the nearest authored world-water source within the given radius.
-    pub(crate) fn remove_world_water_source_near_internal(
-        &mut self,
-        pos: Vector2,
-        radius_m: f32,
-    ) -> bool {
-        self.remove_world_water_boundary_near_internal(
-            AuthoredWaterBoundaryKind::Source,
-            pos,
-            radius_m,
-        )
-    }
-
-    /// Removes the nearest authored world-water sink within the given radius.
-    pub(crate) fn remove_world_water_sink_near_internal(
-        &mut self,
-        pos: Vector2,
-        radius_m: f32,
-    ) -> bool {
-        self.remove_world_water_boundary_near_internal(
-            AuthoredWaterBoundaryKind::Sink,
-            pos,
-            radius_m,
-        )
     }
 
     /// Starts one transient authored lake-fill preview at the clicked terrain cell.
@@ -400,8 +346,7 @@ impl SimCore {
     pub(crate) fn rebuild_authored_water_preview_internal(&mut self) -> Result<(), String> {
         let mut water = WaterSystem::from_world_config(&self.config);
         self.refresh_world_water_fill_preview_state_internal();
-        if self.world_water_boundary_points.is_empty()
-            && self.world_lake_fills.is_empty()
+        if self.world_lake_fills.is_empty()
             && self.world_open_water_fills.is_empty()
             && self.world_lake_fill_preview.is_none()
         {
@@ -501,18 +446,6 @@ impl SimCore {
         water
             .replace_baseline_depth_from_dense(&baseline_depth)
             .map_err(|err| format!("failed to apply authored baseline water: {err}"))?;
-        water.clear_dynamic_state();
-
-        let mut runtime_sources = Vec::with_capacity(self.world_water_boundary_points.len());
-        for point in &self.world_water_boundary_points {
-            let (grid_x, grid_z) = water.world_to_grid_cell_clamped(point.world_x, point.world_z);
-            let signed_rate = match point.kind {
-                AuthoredWaterBoundaryKind::Source => point.rate_m_per_tick,
-                AuthoredWaterBoundaryKind::Sink => -point.rate_m_per_tick,
-            };
-            runtime_sources.push((grid_x, grid_z, signed_rate));
-        }
-        water.replace_sources(runtime_sources);
 
         self.watermap = water;
         self.authored_water_patch_fill_debug_cache = fill_debug_cache;
@@ -534,12 +467,10 @@ impl SimCore {
             name: _name,
             config,
             terrain,
-            water_boundary_points,
             lake_fills,
             open_water_fills,
         } = loaded;
         self.reset_to_blank_world_runtime(config, terrain);
-        self.world_water_boundary_points = water_boundary_points;
         self.world_lake_fills = lake_fills;
         self.world_open_water_fills = open_water_fills;
         self.world_lake_fill_preview = None;
@@ -582,7 +513,6 @@ impl SimCore {
         self.treasury = CityTreasury::new(startup_treasury_balance());
         self.debug_household_admissions_since_daily = 0;
         self.undo_stack.clear();
-        self.world_water_boundary_points.clear();
         self.world_lake_fills.clear();
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
@@ -599,84 +529,9 @@ impl SimCore {
         self.camera_aabb = (0.0, 0.0, 0.0, 0.0);
     }
 
-    fn place_world_water_boundary_internal(
-        &mut self,
-        kind: AuthoredWaterBoundaryKind,
-        pos: Vector2,
-        rate_m_per_tick: f32,
-    ) -> Result<(), String> {
-        validate_positive_f32(rate_m_per_tick, "rate_m_per_tick")?;
-        let (world_x, world_z) = self.snap_world_position_to_terrain_cell(pos);
-        if let Some(existing_idx) =
-            self.world_water_boundary_index_at_position(kind, world_x, world_z)
-        {
-            self.world_water_boundary_points[existing_idx].rate_m_per_tick += rate_m_per_tick;
-        } else {
-            self.world_water_boundary_points
-                .push(AuthoredWaterBoundaryPoint {
-                    kind,
-                    world_x,
-                    world_z,
-                    rate_m_per_tick,
-                });
-        }
-
-        debug_log!(
-            "world-editor",
-            "add_water_boundary kind={} world_x={:.1} world_z={:.1} rate={:.2}",
-            match kind {
-                AuthoredWaterBoundaryKind::Source => "source",
-                AuthoredWaterBoundaryKind::Sink => "sink",
-            },
-            world_x,
-            world_z,
-            rate_m_per_tick
-        );
-        self.rebuild_authored_water_preview_internal()
-    }
-
-    fn remove_world_water_boundary_near_internal(
-        &mut self,
-        kind: AuthoredWaterBoundaryKind,
-        pos: Vector2,
-        radius_m: f32,
-    ) -> bool {
-        if !radius_m.is_finite() || radius_m <= 0.0 {
-            return false;
-        }
-        let Some(idx) =
-            nearest_water_boundary_index(&self.world_water_boundary_points, kind, pos, radius_m)
-        else {
-            return false;
-        };
-        let removed = self.world_water_boundary_points.remove(idx);
-        debug_log!(
-            "world-editor",
-            "remove_water_boundary kind={} world_x={:.1} world_z={:.1}",
-            match removed.kind {
-                AuthoredWaterBoundaryKind::Source => "source",
-                AuthoredWaterBoundaryKind::Sink => "sink",
-            },
-            removed.world_x,
-            removed.world_z
-        );
-        self.rebuild_authored_water_preview_internal().is_ok()
-    }
-
     fn snap_world_position_to_terrain_cell(&self, pos: Vector2) -> (f32, f32) {
         let (grid_x, grid_z) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
         self.heightmap.grid_to_world_coords(grid_x, grid_z)
-    }
-
-    fn world_water_boundary_index_at_position(
-        &self,
-        kind: AuthoredWaterBoundaryKind,
-        world_x: f32,
-        world_z: f32,
-    ) -> Option<usize> {
-        self.world_water_boundary_points.iter().position(|point| {
-            point.kind == kind && point.world_x == world_x && point.world_z == world_z
-        })
     }
 
     fn world_lake_fill_index_at_position(&self, world_x: f32, world_z: f32) -> Option<usize> {
@@ -692,8 +547,7 @@ impl SimCore {
     }
 
     pub(crate) fn has_authored_water_internal(&self) -> bool {
-        !self.world_water_boundary_points.is_empty()
-            || !self.world_lake_fills.is_empty()
+        !self.world_lake_fills.is_empty()
             || !self.world_open_water_fills.is_empty()
             || self.world_lake_fill_preview.is_some()
     }
@@ -1055,31 +909,6 @@ fn enqueue_lake_fill_neighbor(
     queue.push_back((x, z));
 }
 
-fn nearest_water_boundary_index(
-    points: &[AuthoredWaterBoundaryPoint],
-    kind: AuthoredWaterBoundaryKind,
-    pos: Vector2,
-    radius_m: f32,
-) -> Option<usize> {
-    let radius_sq = radius_m * radius_m;
-    let mut best: Option<(usize, f32)> = None;
-    for (idx, point) in points.iter().enumerate() {
-        if point.kind != kind {
-            continue;
-        }
-        let dx = point.world_x - pos.x;
-        let dz = point.world_z - pos.y;
-        let dist_sq = dx * dx + dz * dz;
-        if dist_sq > radius_sq {
-            continue;
-        }
-        if best.is_none_or(|(_, best_dist_sq)| dist_sq < best_dist_sq) {
-            best = Some((idx, dist_sq));
-        }
-    }
-    best.map(|(idx, _)| idx)
-}
-
 fn nearest_lake_fill_index(
     lakes: &[AuthoredLakeFill],
     pos: Vector2,
@@ -1168,14 +997,12 @@ mod tests {
             treasury: CityTreasury::new(0.0),
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
-            world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
-            water_runtime_realtime_when_paused: true,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,
@@ -1288,7 +1115,7 @@ mod tests {
         assert!(core.world_lake_fills.is_empty());
         assert!(
             core.watermap
-                .clone_depth_dense()
+                .clone_baseline_depth_dense()
                 .iter()
                 .any(|depth| *depth > 0.0)
         );
@@ -1333,7 +1160,7 @@ mod tests {
         assert!(core.world_lake_fills.is_empty());
         assert!(
             core.watermap
-                .clone_depth_dense()
+                .clone_baseline_depth_dense()
                 .iter()
                 .all(|depth| *depth == 0.0)
         );

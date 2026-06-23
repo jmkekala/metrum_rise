@@ -11,7 +11,6 @@ const DEFAULT_HEIGHT_KM := 20.0
 const DEFAULT_TERRAIN_CELL_M := 10.0
 const DEFAULT_TERRAIN_CHUNK_M := 512.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
-const DEFAULT_WATER_RATE := 0.5
 const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
 const DEFAULT_SCULPT_DIAMETER_M := 30.0
 const DEFAULT_SCULPT_STRENGTH_PER_SEC := 2.0
@@ -25,15 +24,10 @@ const SURFACE_NUDGE_FAST_STEP_M := 5.0
 const WORLDS_DIR := "user://worlds"
 const WATER_REMOVE_RADIUS_M := 40.0
 const WATER_MARKER_GROUND_OFFSET_M := 0.8
-const WATER_MARKER_STEM_HEIGHT_M := 14.0
-const WATER_MARKER_STEM_RADIUS_M := 0.38
-const WATER_MARKER_TIP_RADIUS_M := 1.85
 const WATER_FILL_STEM_RADIUS_M := 0.24
 const WATER_FILL_DISC_RADIUS_M := 5.0
 const WATER_FILL_DISC_THICKNESS_M := 0.42
 const WATER_FILL_MIN_STEM_M := 2.0
-const WATER_SOURCE_MARKER_COLOR := Color(0.31, 0.86, 1.0, 0.95)
-const WATER_SINK_MARKER_COLOR := Color(1.0, 0.56, 0.36, 0.95)
 const WATER_LAKE_MARKER_COLOR := Color(0.34, 0.80, 0.92, 0.88)
 const WATER_OPEN_WATER_MARKER_COLOR := Color(0.18, 0.48, 0.92, 0.88)
 const WATER_PREVIEW_MARKER_COLOR := Color(0.92, 0.97, 1.0, 0.92)
@@ -75,8 +69,6 @@ enum Tool {
 	LEVEL,
 	SMOOTH,
 	SLOPE,
-	WATER_SOURCE,
-	WATER_SINK,
 	WATER_LAKE_FILL,
 	WATER_OPEN_WATER,
 }
@@ -102,11 +94,8 @@ var _brush_diameter_spin: SpinBox
 var _brush_strength_spin: SpinBox
 var _water_group_btn: Button
 var _water_tool_panel: PanelContainer
-var _water_source_btn: Button
-var _water_sink_btn: Button
 var _water_lake_fill_btn: Button
 var _water_open_water_btn: Button
-var _water_rate_spin: SpinBox
 var _lake_offset_spin: SpinBox
 var _preview_confirm_btn: Button
 var _preview_cancel_btn: Button
@@ -212,12 +201,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_5:
 				_set_active_tool(Tool.SLOPE)
 			KEY_6:
-				_set_active_tool(Tool.WATER_SOURCE)
-			KEY_7:
-				_set_active_tool(Tool.WATER_SINK)
-			KEY_8:
 				_set_active_tool(Tool.WATER_LAKE_FILL)
-			KEY_9:
+			KEY_7:
 				_set_active_tool(Tool.WATER_OPEN_WATER)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
@@ -423,12 +408,6 @@ func _build_ui() -> void:
 	water_row.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
 	water_margin.add_child(water_row)
 
-	_water_source_btn = _make_tool_button("Source", Tool.WATER_SOURCE)
-	water_row.add_child(_water_source_btn)
-
-	_water_sink_btn = _make_tool_button("Sink", Tool.WATER_SINK)
-	water_row.add_child(_water_sink_btn)
-
 	_water_lake_fill_btn = _make_tool_button("Lake Fill", Tool.WATER_LAKE_FILL)
 	water_row.add_child(_water_lake_fill_btn)
 
@@ -437,14 +416,6 @@ func _build_ui() -> void:
 
 	var water_separator := VSeparator.new()
 	water_row.add_child(water_separator)
-
-	var rate_label := Label.new()
-	rate_label.text = "Rate"
-	rate_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	water_row.add_child(rate_label)
-
-	_water_rate_spin = _make_hud_spin_box(0.1, 20.0, 0.1, DEFAULT_WATER_RATE)
-	water_row.add_child(_water_rate_spin)
 
 	var surface_label := Label.new()
 	surface_label.text = "Surface +m"
@@ -548,7 +519,7 @@ func _toggle_water_group() -> void:
 	if _is_water_tool(_active_tool):
 		_set_active_tool(Tool.NONE)
 	else:
-		_set_active_tool(Tool.WATER_SOURCE)
+		_set_active_tool(Tool.WATER_LAKE_FILL)
 
 func _set_active_tool(tool: Tool) -> void:
 	var previous_tool := _active_tool
@@ -576,10 +547,6 @@ func _set_active_tool(tool: Tool) -> void:
 				_set_status("Slope start captured. Click second point to define the slope.")
 			else:
 				_set_status("Slope tool active. Click first point, then second point, then brush the slope.")
-		Tool.WATER_SOURCE:
-			_set_status("Water source tool active. Shift+Click removes nearest source.")
-		Tool.WATER_SINK:
-			_set_status("Water sink tool active. Shift+Click removes nearest sink.")
 		Tool.WATER_LAKE_FILL:
 			if _lake_preview_active:
 				_set_status(
@@ -629,10 +596,6 @@ func _update_tool_buttons() -> void:
 				_terrain_tool_title.text = "Terrain Brush"
 	if _water_group_btn:
 		_water_group_btn.button_pressed = _is_water_tool(_active_tool)
-	if _water_source_btn:
-		_water_source_btn.button_pressed = _active_tool == Tool.WATER_SOURCE
-	if _water_sink_btn:
-		_water_sink_btn.button_pressed = _active_tool == Tool.WATER_SINK
 	if _water_lake_fill_btn:
 		_water_lake_fill_btn.button_pressed = _active_tool == Tool.WATER_LAKE_FILL
 	if _water_open_water_btn:
@@ -726,30 +689,6 @@ func _apply_water_tool(remove_mode: bool) -> void:
 
 	var world_pos := Vector2(intersection.x, intersection.z)
 	match _active_tool:
-		Tool.WATER_SOURCE:
-			if remove_mode:
-				if sim.remove_world_water_source_near(world_pos, WATER_REMOVE_RADIUS_M):
-					_refresh_water_markers()
-					_set_status("Removed nearest water source.")
-				else:
-					_set_status("No water source found nearby.", true)
-			elif sim.add_world_water_source(world_pos, float(_water_rate_spin.value)):
-				_refresh_water_markers()
-				_set_status("Added water source.")
-			else:
-				_set_status("Add water source failed.", true)
-		Tool.WATER_SINK:
-			if remove_mode:
-				if sim.remove_world_water_sink_near(world_pos, WATER_REMOVE_RADIUS_M):
-					_refresh_water_markers()
-					_set_status("Removed nearest water sink.")
-				else:
-					_set_status("No water sink found nearby.", true)
-			elif sim.add_world_water_sink(world_pos, float(_water_rate_spin.value)):
-				_refresh_water_markers()
-				_set_status("Added water sink.")
-			else:
-				_set_status("Add water sink failed.", true)
 		Tool.WATER_LAKE_FILL:
 			if remove_mode:
 				if _lake_preview_active:
@@ -798,9 +737,7 @@ func _is_sculpt_tool(tool: Tool) -> bool:
 
 func _is_water_tool(tool: Tool) -> bool:
 	return (
-		tool == Tool.WATER_SOURCE
-		or tool == Tool.WATER_SINK
-		or tool == Tool.WATER_LAKE_FILL
+		tool == Tool.WATER_LAKE_FILL
 		or tool == Tool.WATER_OPEN_WATER
 	)
 
@@ -1077,22 +1014,6 @@ func _add_committed_water_marker(marker: Dictionary) -> void:
 	var world_z := float(marker.get("world_z", 0.0))
 	var terrain_height_m := float(marker.get("terrain_height_m", 0.0))
 	match kind:
-		"source":
-			_add_water_boundary_marker(
-				world_x,
-				terrain_height_m,
-				world_z,
-				WATER_SOURCE_MARKER_COLOR,
-				false
-			)
-		"sink":
-			_add_water_boundary_marker(
-				world_x,
-				terrain_height_m,
-				world_z,
-				WATER_SINK_MARKER_COLOR,
-				true
-			)
 		"lake_fill":
 			_add_water_fill_marker(
 				world_x,
@@ -1122,40 +1043,6 @@ func _add_preview_water_marker() -> void:
 		color,
 		true
 	)
-
-func _add_water_boundary_marker(
-	world_x: float,
-	terrain_height_m: float,
-	world_z: float,
-	color: Color,
-	point_down: bool
-) -> void:
-	var base_y := terrain_height_m + WATER_MARKER_GROUND_OFFSET_M
-	var root := Node3D.new()
-	root.position = Vector3(world_x, base_y, world_z)
-	_water_marker_root.add_child(root)
-
-	var stem := MeshInstance3D.new()
-	stem.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var stem_mesh := CylinderMesh.new()
-	stem_mesh.top_radius = WATER_MARKER_STEM_RADIUS_M
-	stem_mesh.bottom_radius = WATER_MARKER_STEM_RADIUS_M
-	stem_mesh.height = WATER_MARKER_STEM_HEIGHT_M
-	stem.mesh = stem_mesh
-	stem.position = Vector3(0.0, WATER_MARKER_STEM_HEIGHT_M * 0.5, 0.0)
-	stem.material_override = _make_water_marker_material(color.darkened(0.18), 0.98, 2.8)
-	root.add_child(stem)
-
-	var tip := MeshInstance3D.new()
-	tip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var tip_mesh := CylinderMesh.new()
-	tip_mesh.top_radius = 0.0 if point_down else WATER_MARKER_TIP_RADIUS_M
-	tip_mesh.bottom_radius = WATER_MARKER_TIP_RADIUS_M if point_down else 0.0
-	tip_mesh.height = WATER_MARKER_TIP_RADIUS_M * 1.9
-	tip.mesh = tip_mesh
-	tip.position = Vector3(0.0, WATER_MARKER_STEM_HEIGHT_M + WATER_MARKER_TIP_RADIUS_M * 0.7, 0.0)
-	tip.material_override = _make_water_marker_material(color, 1.0, 4.2)
-	root.add_child(tip)
 
 func _add_water_fill_marker(
 	world_x: float,

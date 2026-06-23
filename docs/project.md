@@ -8,7 +8,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 - **Scale target**: at least 1,000,000 total population across simulation tiers in one large world.
 - **Simulation model**: full-FSM simulation stays inside the active area of interest; distant world regions are expected to degrade to coarser flow-field or aggregate simulation.
-- **Current focus**: keep the playable small-to-medium city slice correct, deterministic, and scalable while the docs/planning cleanup continues and the new baseline-water / dynamic-water split is hardened.
+- **Current focus**: keep the playable small-to-medium city slice correct, deterministic, and scalable while the docs/planning cleanup continues and baseline water/render performance is hardened.
 
 ## Shipped Foundations
 
@@ -26,7 +26,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
-- `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
+- `WATER-01`: harden baseline-water rendering and remove remaining dense compatibility boundaries.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
@@ -320,9 +320,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Replaced the legacy `MapConfig` type with chunk-aware `WorldConfig`, added terrain chunk metadata to saves, added explicit `terrain_cell_m`, restored canonical metre-based world coordinates for terrain / water / zoning tooling, removed the old `10 km` versus `20 km` gameplay startup split, and moved terrain plus water runtime storage onto sparse chunk-backed buffers with dense materialization only at save/render boundaries.
 - Added blank-world `WorldDefinition` persistence as a separate authored-world asset path, with deterministic SQLite metadata plus sparse-authored terrain chunk storage and runtime methods to create, save, and load blank worlds independently from city saves. See [`terrain.md`](terrain.md).
 - Added the first `WorldEditor` launch mode and scene, with a reduced File/Help top menu, bottom terrain and water authoring toolbars, shared brush controls, on-map brush previews, a two-anchor slope brush workflow, and direct blank-world `WorldDefinition` create/open/save flows on the shared paused runtime. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
-- Extended `WorldEditor` with the first authored-water slice: bottom-toolbar `Water` subtools for `Source`, `Sink`, `Lake Fill`, and `Open Water`, `WorldDefinition` persistence for authored water boundary points, inland lake fills, and edge-connected open-water fills, and editor-only 3D markers for committed water features plus active surface-fill previews. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
-- Replaced the legacy shared-depth water ownership model with a baseline-water / dynamic-water split: authored `Lake Fill` / `Open Water` now rebuild into flat baseline still water, `Source` / `Sink` now drive a separate dynamic runtime overlay, and the old dense water-save layout was intentionally broken rather than migrated. The first continuous dynamic-water runtime still advances at a fixed low-rate `5 Hz` pass, gameplay follows simulation speed, and WorldEditor can advance water in real time while its authored clock remains paused. See [`terrain.md`](terrain.md).
-- The current `Source` / `Sink` / `Lake Fill` / `Open Water` workflow is now treated as the shipped water-authoring baseline; richer river-path or hydrology ownership is optional future work rather than a required next milestone. See [`terrain.md`](terrain.md).
+- Extended `WorldEditor` with authored baseline water: bottom-toolbar `Water` subtools for `Lake Fill` and `Open Water`, `WorldDefinition` persistence for inland lake fills and edge-connected open-water fills, and editor-only 3D markers for committed water features plus active surface-fill previews. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
+- Removed the legacy dynamic water prototype: `Source` / `Sink`, dynamic depth, velocity, flux, source lists, and the low-rate runtime solver path are gone. `Lake Fill` / `Open Water` now rebuild flat baseline still water only, with shader-side waves kept as presentation. See [`terrain.md`](terrain.md).
+- The current `Lake Fill` / `Open Water` workflow is now treated as the shipped water-authoring baseline; richer river-path or hydrology ownership is optional future work rather than a required next milestone. See [`terrain.md`](terrain.md).
 - Reworked `WorldEditor` surface fills into a two-phase preview workflow: click once to seed a transient basin or open-water preview, adjust `Surface +m`, then use the dedicated `OK` / `Cancel` flow to confirm or dismiss it. Unconfirmed preview state is runtime-only and never serialized into `WorldDefinition`, and terrain sculpting now rebakes authored water so previewed/committed water reacts to basin changes. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
 - Terrain rendering now adds procedural hillshade directly from the live heightmap in both gameplay and WorldEditor, so imported DEM worlds and hand-sculpted worlds get better relief readability without any separate hillshade asset pipeline. See [`terrain.md`](terrain.md).
 - Terrain and water rendering now use the first render-only realism pass: slope-aware terrain coloring, shoreline-aware terrain tinting, macro terrain breakup, depth-aware water color, fresnel-style water highlights, and mild procedural surface variation, all without introducing authored material data or external texture requirements. See [`terrain.md`](terrain.md).

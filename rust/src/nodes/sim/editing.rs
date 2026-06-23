@@ -273,20 +273,6 @@ impl SimCore {
         self.terrain_dirty = true;
     }
 
-    /// Adds water to the simulation at a given grid position.
-    pub fn add_water_internal(&mut self, pos: Vector2, amount: f32) {
-        self.push_undo_state(false, true, false, false);
-        let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
-        self.watermap.add_water(grid_x, grid_y, amount);
-    }
-
-    /// Adds a water source to the simulation.
-    pub fn add_water_source_internal(&mut self, pos: Vector2, rate_add: f32) {
-        let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
-        self.watermap.update_source(grid_x, grid_y, rate_add);
-        self.water_dirty = true;
-    }
-
     /// Sets the classification of an edge.
     /// Sets or clears the no-building-spawn flag on an edge.
     pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
@@ -887,14 +873,12 @@ mod tests {
             treasury: CityTreasury::new(0.0),
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
-            world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
-            water_runtime_realtime_when_paused: false,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,

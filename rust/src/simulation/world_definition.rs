@@ -11,7 +11,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
 
-const WORLD_DEFINITION_FORMAT_VERSION: i64 = 3;
+const WORLD_DEFINITION_FORMAT_VERSION: i64 = 4;
 
 const WORLD_DEFINITION_SCHEMA: &str = r#"
 CREATE TABLE world_definition_meta(
@@ -33,12 +33,6 @@ CREATE TABLE world_terrain_chunks(
     source_height_blob_f32_le BLOB NOT NULL,
     PRIMARY KEY(chunk_x, chunk_z)
 );
-CREATE TABLE world_water_boundary_points(
-    kind INTEGER NOT NULL,
-    world_x REAL NOT NULL,
-    world_z REAL NOT NULL,
-    rate_m_per_tick REAL NOT NULL
-);
 CREATE TABLE world_lake_fills(
     world_x REAL NOT NULL,
     world_z REAL NOT NULL,
@@ -50,45 +44,6 @@ CREATE TABLE world_open_water_fills(
     surface_elevation_m REAL NOT NULL
 );
 "#;
-
-/// Authored point-boundary water feature kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AuthoredWaterBoundaryKind {
-    Source,
-    Sink,
-}
-
-impl AuthoredWaterBoundaryKind {
-    fn to_db(self) -> i64 {
-        match self {
-            Self::Source => 0,
-            Self::Sink => 1,
-        }
-    }
-
-    fn from_db(value: i64) -> WorldDefinitionResult<Self> {
-        match value {
-            0 => Ok(Self::Source),
-            1 => Ok(Self::Sink),
-            _ => Err(WorldDefinitionError::custom(format!(
-                "unknown authored water boundary kind {value}"
-            ))),
-        }
-    }
-}
-
-/// One authored inflow or outflow point persisted in a reusable world definition.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AuthoredWaterBoundaryPoint {
-    /// Whether the record is an inflow or an outflow.
-    pub kind: AuthoredWaterBoundaryKind,
-    /// World-space X position in metres.
-    pub world_x: f32,
-    /// World-space Z position in metres.
-    pub world_z: f32,
-    /// Positive authored rate; sinks are represented by `kind`, not a negative sign.
-    pub rate_m_per_tick: f32,
-}
 
 /// One authored lake fill record persisted in a reusable world definition.
 #[derive(Clone, Debug, PartialEq)]
@@ -120,8 +75,6 @@ pub(crate) struct WorldDefinitionView<'a> {
     pub config: &'a WorldConfig,
     /// Authoritative terrain source data for the authored world.
     pub terrain: &'a TerrainSystem,
-    /// Authored inflow / outflow points for the world.
-    pub water_boundary_points: &'a [AuthoredWaterBoundaryPoint],
     /// Authored lake fills for the world.
     pub lake_fills: &'a [AuthoredLakeFill],
     /// Authored edge-connected open-water fills for the world.
@@ -136,8 +89,6 @@ pub(crate) struct LoadedWorldDefinition {
     pub config: WorldConfig,
     /// Source terrain loaded into sparse runtime storage.
     pub terrain: TerrainSystem,
-    /// Authored inflow / outflow points loaded from the world definition.
-    pub water_boundary_points: Vec<AuthoredWaterBoundaryPoint>,
     /// Authored lake fills loaded from the world definition.
     pub lake_fills: Vec<AuthoredLakeFill>,
     /// Authored edge-connected open-water fills loaded from the world definition.
@@ -184,12 +135,7 @@ pub(crate) fn save_world_definition_to_sqlite(
     validate_world_name(view.name)?;
     validate_world_config(view.config)?;
     validate_terrain_dimensions(view.config, view.terrain)?;
-    validate_authored_water(
-        view.config,
-        view.water_boundary_points,
-        view.lake_fills,
-        view.open_water_fills,
-    )?;
+    validate_authored_water(view.config, view.lake_fills, view.open_water_fills)?;
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -262,19 +208,6 @@ pub(crate) fn save_world_definition_to_sqlite(
         }
     }
     drop(stmt);
-
-    let mut boundary_stmt = tx.prepare(
-        "INSERT INTO world_water_boundary_points(kind, world_x, world_z, rate_m_per_tick) VALUES (?1, ?2, ?3, ?4)",
-    )?;
-    for point in view.water_boundary_points {
-        boundary_stmt.execute(params![
-            point.kind.to_db(),
-            point.world_x,
-            point.world_z,
-            point.rate_m_per_tick,
-        ])?;
-    }
-    drop(boundary_stmt);
 
     let mut lake_stmt = tx.prepare(
         "INSERT INTO world_lake_fills(world_x, world_z, surface_elevation_m) VALUES (?1, ?2, ?3)",
@@ -398,23 +331,9 @@ pub(crate) fn load_world_definition_from_sqlite(
     }
     terrain.reset_visuals_from_source();
 
-    let mut water_boundary_points = Vec::new();
     let mut lake_fills = Vec::new();
     let mut open_water_fills = Vec::new();
     if format_version >= 2 {
-        let mut boundary_stmt = conn.prepare(
-            "SELECT kind, world_x, world_z, rate_m_per_tick FROM world_water_boundary_points ORDER BY rowid",
-        )?;
-        let mut boundary_rows = boundary_stmt.query([])?;
-        while let Some(row) = boundary_rows.next()? {
-            water_boundary_points.push(AuthoredWaterBoundaryPoint {
-                kind: AuthoredWaterBoundaryKind::from_db(row.get(0)?)?,
-                world_x: row.get(1)?,
-                world_z: row.get(2)?,
-                rate_m_per_tick: row.get(3)?,
-            });
-        }
-
         let mut lake_stmt = conn.prepare(
             "SELECT world_x, world_z, surface_elevation_m FROM world_lake_fills ORDER BY rowid",
         )?;
@@ -440,18 +359,12 @@ pub(crate) fn load_world_definition_from_sqlite(
             });
         }
     }
-    validate_authored_water(
-        &config,
-        &water_boundary_points,
-        &lake_fills,
-        &open_water_fills,
-    )?;
+    validate_authored_water(&config, &lake_fills, &open_water_fills)?;
 
     Ok(LoadedWorldDefinition {
         name,
         config,
         terrain,
-        water_boundary_points,
         lake_fills,
         open_water_fills,
     })
@@ -507,22 +420,9 @@ fn validate_terrain_dimensions(
 
 fn validate_authored_water(
     config: &WorldConfig,
-    water_boundary_points: &[AuthoredWaterBoundaryPoint],
     lake_fills: &[AuthoredLakeFill],
     open_water_fills: &[AuthoredOpenWaterFill],
 ) -> WorldDefinitionResult<()> {
-    for point in water_boundary_points {
-        validate_world_position(
-            config,
-            point.world_x,
-            point.world_z,
-            "authored water boundary",
-        )?;
-        validate_positive_f32(
-            point.rate_m_per_tick,
-            "authored water boundary rate_m_per_tick",
-        )?;
-    }
     for lake in lake_fills {
         validate_world_position(config, lake.world_x, lake.world_z, "authored lake fill")?;
         if !lake.surface_elevation_m.is_finite() {
@@ -638,12 +538,6 @@ mod tests {
                 name: "Blank Test World",
                 config: &config,
                 terrain: &terrain,
-                water_boundary_points: &[AuthoredWaterBoundaryPoint {
-                    kind: AuthoredWaterBoundaryKind::Source,
-                    world_x: 10.0,
-                    world_z: -5.0,
-                    rate_m_per_tick: 0.75,
-                }],
                 lake_fills: &[AuthoredLakeFill {
                     world_x: 0.0,
                     world_z: 0.0,
@@ -666,15 +560,6 @@ mod tests {
         assert_eq!(
             loaded.terrain.clone_source_dense(),
             terrain.clone_source_dense()
-        );
-        assert_eq!(
-            loaded.water_boundary_points,
-            vec![AuthoredWaterBoundaryPoint {
-                kind: AuthoredWaterBoundaryKind::Source,
-                world_x: 10.0,
-                world_z: -5.0,
-                rate_m_per_tick: 0.75,
-            }]
         );
         assert_eq!(
             loaded.lake_fills,
@@ -711,7 +596,6 @@ mod tests {
                 name: "Sparse Save",
                 config: &config,
                 terrain: &terrain,
-                water_boundary_points: &[],
                 lake_fills: &[],
                 open_water_fills: &[],
             },
@@ -767,7 +651,6 @@ CREATE TABLE world_terrain_chunks(
             load_world_definition_from_sqlite(&path).expect("v1 world definition should load");
 
         assert_eq!(loaded.name, "Legacy World");
-        assert!(loaded.water_boundary_points.is_empty());
         assert!(loaded.lake_fills.is_empty());
         assert!(loaded.open_water_fills.is_empty());
         std::fs::remove_file(path).ok();

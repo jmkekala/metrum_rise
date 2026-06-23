@@ -258,58 +258,30 @@ Authoritative rule:
 - engineered-ground earthworks change the visual terrain only
 - source terrain remains the authored ground surface
 
-### 9. Water Uses Sparse Depth / Velocity / Flux Storage
+### 9. Water Uses Sparse Baseline-Depth Storage
 
-The live `WaterSystem` stores these sparse chunk-backed layers:
+The live `WaterSystem` stores one sparse chunk-backed layer:
 
-- `depth`
-- `velocity`
-- `flux`
-
-Water sources remain an explicit list of:
-
-- `(grid_x, grid_y, rate_m_per_tick)`
+- `baseline depth`
 
 Current deterministic rules:
 
 - untouched water cells are implicitly dry
-- `add_water` mutates water depth at one cell
-- `update_source` accumulates source rate at one cell
-- water save/load persists dense snapshots of depth, velocity, flux, plus the source list
+- `Lake Fill` and `Open Water` rebuild baseline depth from authored still-water records
+- water save/load persists one dense row-major baseline-depth snapshot at the serialization boundary
+- no source/sink, velocity, or flux state exists in the shipped runtime
 
-### 10. Live Water Runtime Is Split Into Baseline Water And Dynamic Water
+### 10. Live Water Runtime Is Baseline Still Water Only
 
-The live repository now distinguishes still-water ownership from flowing runtime water.
+The live repository intentionally keeps only deterministic authored still water.
 
 Current repository state:
 
 - `Lake Fill` and `Open Water` rebuild into a baseline-water layer
-- `Source` and `Sink` drive the dynamic water layer only
 - baseline water stores flat still-water depth above terrain
-- dynamic water stores additional depth above the local support surface plus:
-  - velocity
-  - flux
-- support surface is:
-  - terrain world height on dry land
-  - baseline water surface elevation where baseline water exists
-- rendering consumes a derived visible total depth from baseline plus dynamic water, not the old
-  raw dynamic solver field by itself
-
-Current first continuous-runtime rules:
-
-- source/sink-driven dynamic water advances as a fixed-step runtime pass, not only during authored
-  preview rebuilds
-- the first shipped continuous runtime cadence is `5 Hz` (`dt = 0.2 s`) with internal dynamic
-  substeps for stability
-- gameplay dynamic water follows simulation speed and advances only while the gameplay clock is
-  unpaused
-- world-editor dynamic water may advance in real time while the authored operational clock remains
-  paused
-- each continuous runtime water step must set `water_dirty` so Godot refreshes the rendered water
-  surface
-
-This is the first correct ownership split, but the dynamic runtime is still compatibility-dense
-inside its tick and is not yet the final large-world water runtime.
+- procedural waves are shader-only visual motion and do not imply runtime velocity
+- future rivers or flowing water must be a new design, not a continuation of the removed dense
+  source/sink solver
 
 ### 11. Save / Load Remains Dense At The Serialization Boundary
 
@@ -318,7 +290,7 @@ Sparse runtime storage does not change the save format boundary yet.
 Current deterministic rules:
 
 - terrain source data is serialized as one dense row-major `f32` blob
-- water depth, velocity, and flux are serialized as dense row-major blobs
+- water baseline depth is serialized as one dense row-major `f32` blob
 - sparse chunk topology is not currently saved as chunk records
 - loading reconstructs sparse storage from those dense blobs
 
@@ -405,7 +377,7 @@ Current deterministic rules:
   terrain while remaining a separate flat support pad mesh
 - authored building asphalt and concrete site surfaces remain separate materials from grass/site
   ground
-- water rendering consumes the visible baseline-plus-dynamic water field and applies depth tint,
+- water rendering consumes the visible baseline water field and applies depth tint,
   shoreline foam, Fresnel/sky response, and procedural wave normals as presentation only
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
@@ -432,44 +404,28 @@ These are compatibility-only.
 Current gap:
 
 - terrain renderer upload still materializes one full dense visual-terrain buffer every refresh
-- water tick materializes full dense water buffers
-- render upload materializes full dense buffers every refresh
+- some terrain/water bridge boundaries still materialize dense local patch payloads before handing
+  data to Godot
 
 Required direction:
 
 - these paths should later localize to chunk windows or active areas instead of whole-map buffers
 - denser authored terrain must not be adopted by extending this whole-map upload path
 
-### 2. Dynamic Water Runtime Is Still Dense Inside The Compatibility Boundary
+### 2. Dense Water Snapshots Are Still Used At Save Boundaries
 
 Current gap:
 
-- dynamic water still materializes dense depth, velocity, and flux scratch buffers inside each
-  tick
-- renderer upload still materializes dense combined water depth and dense dynamic velocity every
-  refresh
-
-Required direction:
-
-- dynamic water should localize to active chunk windows or other bounded regions instead of
-  whole-world dense buffers
-- render upload should later stop refreshing full-water textures for every dynamic change
-
-### 3. Dense Water Snapshots Are Still Treated As Authoritative Runtime Persistence
-
-Current gap:
-
-- city saves still persist dense water depth, velocity, and flux snapshots
-- authored-world rebuild still depends on runtime-compatible water snapshots rather than a clean
-  authored baseline plus dynamic overlay model
+- city saves still persist dense baseline-depth snapshots instead of sparse chunk records
 
 Required direction:
 
 - this refactor may intentionally break existing saves and authored worlds
 - no migration is required for the current dense water snapshot layout
-- dense runtime water blobs should be removed from the long-term authoritative ownership model
+- dense runtime water blobs should stay a serialization boundary detail, not the internal ownership
+  model
 
-### 4. Undo Is Not Yet Fully Authoritative For Terrain Ownership
+### 3. Undo Is Not Yet Fully Authoritative For Terrain Ownership
 
 Current repository state:
 
@@ -503,8 +459,8 @@ Current state:
   - `create_blank_world`
   - `save_world_definition`
   - `load_world_definition`
-- `WorldDefinition` now stores authored water records and rebuilds into baseline-water plus dynamic
-  boundary-point state
+- `WorldDefinition` now stores authored baseline-water records and rebuilds deterministic still
+  water from them
 - `WorldDefinition` still has no richer hydrology ownership beyond the first authored-water slice,
   no preview image, and no richer metadata
 
@@ -513,7 +469,7 @@ Remaining direction:
 - the current authored-water slice is the shipped water-authoring baseline and does not require a
   separate richer hydrology system to be considered valid
 - richer metadata and optional later water-authoring extensions may still happen, but only if the
-  current `Source` / `Sink` / `Lake Fill` / `Open Water` workflow later proves insufficient
+  current `Lake Fill` / `Open Water` workflow later proves insufficient
 
 ## Implemented Editor / Rendering Slices
 
@@ -550,8 +506,6 @@ Current deterministic rules:
   - `Smooth`
   - `Slope`
 - world editor water authoring is live through:
-  - `Source`
-  - `Sink`
   - `Lake Fill`
   - `Open Water`
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
@@ -587,69 +541,34 @@ Current compatibility gap:
   edited source terrain; the intended long-term contract is to keep placed roads and future
   foundations fixed and reform terrain / earthworks around them instead
 
-### 3. Baseline Water And Dynamic Water Split Is Now The Required Stable Model
+### 3. Baseline Water Is The Required Stable Model
 
-This ownership split is now live and becomes the stable contract other systems should target.
+The dynamic source/sink solver has been removed. The shipped water contract is deterministic
+authored still water only.
 
 Authoritative rule:
 
-- still water and flowing water must no longer be represented as one shared runtime field
-
-Required runtime split:
-
-- `BaselineWaterSystem` owns hydrostatic authored water bodies
-- `DynamicWaterSystem` owns transient flowing water on top of terrain or baseline water
+- still water is represented by one baseline-depth layer derived from authored records and terrain
 
 Deterministic baseline-water rules:
 
 - baseline water is authored-world state, not emergent solver output
-- `Lake Fill` and `Open Water` belong to baseline water only
+- `Lake Fill` and `Open Water` are the only shipped water-authoring tools
 - each connected baseline water body owns one flat `surface_elevation_m`
 - baseline water depth is always derived as:
   - `max(surface_elevation_m - terrain_world_y, 0.0)`
 - baseline water does not own velocity or flux buffers
-- baseline water is rebuilt from authored records and current terrain; it is not advanced by the
-  dynamic shallow-water solver
+- baseline water is rebuilt from authored records and current terrain
 - terrain edits that affect a baseline water body must recompute that baseline body immediately
-
-Deterministic dynamic-water rules:
-
-- dynamic water is runtime-only transient simulation state
-- `Water Source` and `Water Sink` are dynamic-water boundary conditions, not baseline water bodies
-- dynamic water may flow across dry terrain or on top of baseline water
-- dynamic water owns:
-  - transient additional depth above its local support surface
-  - velocity / flux state needed by the dynamic solver
-- the dynamic solver must not be responsible for making lakes or seas appear flat
-- the first dynamic runtime may still be compatibility-dense internally, but only for the dynamic
-  layer, not for authored still-water bodies
-
-Deterministic support-surface rules:
-
-- every water cell has one local support surface used by the dynamic solver
-- for dry terrain, support surface is the terrain world height
-- for baseline-water cells, support surface is the baseline water surface elevation
-- dynamic water depth is measured above that support surface, not directly from bare terrain where
-  baseline water already exists
 
 Deterministic rendering rules:
 
-- renderer must stop treating one raw runtime depth grid as the authoritative visible water surface
-- renderer must consume:
-  - baseline surface height
-  - dynamic additional depth above the support surface
+- renderer consumes baseline depth directly
 - visible still water must render as flat at the authored baseline surface elevation
-- visible flowing or transient water may vary above that baseline, but it must not deform the whole
-  lake or sea surface into solver stripes or cell ridges
+- shader-side waves are cosmetic only and must not require runtime velocity or flux data
 
 Deterministic authored-water rules:
 
-- `Water Source` is an authored dynamic boundary point with:
-  - one world-space position
-  - one authored inflow rate
-- `Water Sink` is an authored dynamic boundary point with:
-  - one world-space position
-  - one authored outflow rate
 - `Lake Fill` is an authored baseline-water record with:
   - one world-space seed position
   - one target water surface elevation
@@ -664,8 +583,6 @@ Deterministic world-load rules:
 
 - loading a `WorldDefinition` must rebuild baseline water from authored `Lake Fill` and
   `Open Water` records
-- loading a `WorldDefinition` must also restore authored `Source` and `Sink` points as dynamic
-  boundary conditions
 - loading a world must not require running the dynamic shallow-water solver to reconstruct still
   lakes, coasts, or seas
 
@@ -689,17 +606,12 @@ Deterministic persistence rules:
 
 Legacy features removed:
 
+- `Source` and `Sink` authoring tools
+- dynamic depth, velocity, flux, source lists, and the low-rate runtime water tick
 - rebuilding `Lake Fill` or `Open Water` through the old shared runtime solver field
 - using the dynamic shallow-water solver to keep authored lakes or seas visually flat
 - treating one shared runtime depth field as the source of truth for both authored still water and
   dynamic flowing water
-
-Legacy features still to remove:
-
-- treating dense runtime water `depth`, `velocity`, and `flux` snapshots as the long-term water
-  persistence model
-- extending the current whole-world `5 Hz` continuous runtime pass as if it were the final water
-  architecture
 
 Deterministic non-goals of this refactor:
 
@@ -768,9 +680,7 @@ Deterministic water-render rules:
 - visible water no longer depends on one whole-world depth texture refresh for every change
 - water rendering consumes chunk-local bounded window snapshots aligned to the same fixed terrain
   render patch grid
-- `WATER-01` may still keep dynamic water simulation compatibility-dense internally while that work
-  remains in progress, but once this render split lands the water renderer must not require
-  whole-map texture refreshes just to display local changes
+- water patches render from baseline depth only; procedural waves remain shader-side
 
 Deterministic Godot-bridge rules:
 
@@ -779,9 +689,8 @@ Deterministic Godot-bridge rules:
   `get_water_velocity_data()` were removed from the steady-state terrain / water render bridge
 - any future dense helper kept for compatibility, debug tooling, or offline export must stay
   outside the steady-state gameplay and WorldEditor render path
-- `road` water diagnostics must report authored baseline depth, dynamic source/sink
-  depth, and composed visible depth separately so dark water-patch regressions identify the owning
-  water layer instead of only the final rendered sum
+- `road` water diagnostics must report authored baseline depth and final visible depth separately
+  so dark water-patch regressions identify the owning layer instead of only the final rendered sum
 - when a road-touched water patch contains authored baseline water, `road` diagnostics
   must also list the committed `Lake Fill` / `Open Water` records or active preview that actually
   contributed non-zero samples inside that patch
@@ -977,8 +886,6 @@ The remaining slices below are still intended next steps.
 
 The current authored-water model is sufficient as the shipped baseline:
 
-- `Source`
-- `Sink`
 - `Lake Fill`
 - `Open Water`
 
@@ -992,8 +899,8 @@ If richer water authoring is ever added later, the rules should remain:
 - imported hydrography may be used as an editor reference, but not as implicit gameplay water state
 - imported DEMs and imported hydrography remain separate inputs; one does not silently create the
   other
-- the current `Source` / `Sink` / `Lake Fill` / `Open Water` workflow remains valid even if no
-  richer river-path tooling is ever added
+- the current `Lake Fill` / `Open Water` workflow remains valid even if no richer river-path
+  tooling is ever added
 
 ### 8. Use A Hybrid Water Model For Very Large Worlds
 
@@ -1001,9 +908,10 @@ The intended large-world water model is hybrid.
 
 Deterministic rules:
 
-- the current authored-water baseline defines still water and boundary conditions for the whole
+- the current authored-water baseline defines still water bodies for the whole
   world
-- local active areas may run dynamic water simulation
+- local active areas may run dynamic water simulation later only if a new bounded flow design is
+  added
 - the engine must not require a full-world dense shallow-water solve for every map size
 
 ### 9. Keep The First Terrain / Water Realism Pass Render-Only
@@ -1027,7 +935,6 @@ Deterministic rules:
   - low-frequency procedural color breakup
 - water realism may derive from:
   - water depth
-  - water velocity
   - shoreline proximity
   - view-angle / fresnel-like response
   - small procedural surface breakup
@@ -1039,7 +946,7 @@ Deterministic rules:
   - source terrain
   - visual terrain ownership rules
   - authored water records
-  - runtime water depth / velocity / flux state
+  - runtime baseline water depth state
   - save schema
 
 Deterministic v1 realism scope:
@@ -1094,7 +1001,7 @@ Deterministic shoreline contour rendering slice:
   authored map by default
 - shoreline contour extraction must remain render-only and must never become authored world state
 - the extraction input must be the same composed visible water depth used by the water renderer:
-  baseline-water plus dynamic-water composition after terrain alignment
+  baseline water after terrain alignment
 - shoreline extraction must use a waterline threshold at the visible shoreline boundary, not a
   post-hoc artistic painted mask
 - the extraction algorithm may be marching squares or an equivalent contour/isoband method, but
@@ -1230,15 +1137,14 @@ What is implemented now:
 - runtime world-space XZ is canonical metres again
 - terrain and water are sparse chunk-backed at rest
 - terrain keeps authoritative source plus derived visual buffers
-- water keeps sparse depth, velocity, and flux at rest
+- water keeps sparse baseline depth at rest
 - blank-world `WorldDefinition` exists as a separate authored-world asset
 - authored world load resets runtime state to a fresh blank city baseline
 - offline DEM import can now generate a normal `WorldDefinition` from real GeoTIFF elevation tiles
-- first authored-water tools are live in WorldEditor through `Source`, `Sink`, `Lake Fill`, and
-  `Open Water`
-- `WorldDefinition` now persists authored water boundary points, inland lake fills, and
-  edge-connected open-water fills
-- live water now splits authored baseline still water from dynamic flowing water
+- first authored-water tools are live in WorldEditor through `Lake Fill` and `Open Water`
+- `WorldDefinition` now persists inland lake fills and edge-connected open-water fills
+- live water now keeps authored baseline still water only; the dynamic flowing-water prototype was
+  removed
 - save/load and renderer boundaries still use dense materialization
 - terrain rendering now derives hillshade procedurally from the live heightmap in both gameplay
   and WorldEditor; it is not stored as separate world data

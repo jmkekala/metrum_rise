@@ -140,7 +140,7 @@ The toolbar is the primary tool-selection surface. It is always visible during g
 |---------|-----------|
 | Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac) + draw-mode options (Straight / Spline) |
 | Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
-| Terrain | Terrain sub-menu (Raise/Lower, Add Water Source) |
+| Terrain | Terrain sub-menu (Raise/Lower, Lake Fill, Open Water) |
 | Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
 | Mods    | Opens the Pack Manager window |
 
@@ -181,8 +181,6 @@ WorldEditor toolbar rules:
   - after both anchors are present, normal terrain brushing applies the captured grade
 - `Water` lives on the same toolbar surface as terrain sculpting
 - the current water tool set is:
-  - `Source`
-  - `Sink`
   - `Lake Fill`
   - `Open Water`
 - these water tools are world-editor authoring tools, not gameplay HUD tools
@@ -197,15 +195,13 @@ WorldEditor water toolbar behavior:
 
 - selecting `Water` opens an upward-expanding tool row above the bottom toolbar shell, the same
   visual language used by gameplay submenus
-- `Source` places authored dynamic inflow points
-- `Sink` places authored dynamic outflow points
 - `Lake Fill` authors one baseline inland-water body seed plus one target flat surface level
 - `Open Water` authors one baseline edge-connected water body seed plus one target flat surface
   level
 - water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
   switch between carving terrain and placing water features without changing editor shells
-- committed `Source`, `Sink`, `Lake Fill`, and `Open Water` records, plus any active surface-fill
-  preview, must show visible 3D markers in WorldEditor so authored water locations are readable
+- committed `Lake Fill` and `Open Water` records, plus any active surface-fill preview, must show
+  visible 3D markers in WorldEditor so authored water locations are readable
 - these authored-water markers are WorldEditor-only overlays and must not appear in gameplay
 - `Lake Fill` and `Open Water` are two-phase actions:
   - first click starts a transient preview
@@ -230,10 +226,8 @@ Current WorldEditor shortcuts:
 | 3 | Select `Level` |
 | 4 | Select `Smooth` |
 | 5 | Select `Slope` |
-| 6 | Select `Water Source` |
-| 7 | Select `Water Sink` |
-| 8 | Select `Lake Fill` |
-| 9 | Select `Open Water` |
+| 6 | Select `Lake Fill` |
+| 7 | Select `Open Water` |
 | Left Mouse | Sculpt terrain with the active tool; `Level` captures the clicked height for the stroke; `Slope` uses the first two clicks to capture anchors before brushing; surface-fill tools use first click for preview |
 | Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
 | Middle Mouse | Orbit camera |

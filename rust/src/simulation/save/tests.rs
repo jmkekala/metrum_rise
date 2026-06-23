@@ -122,22 +122,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     water
         .replace_baseline_depth_from_dense(&baseline_depth)
         .expect("baseline water depth dimensions should match");
-    let mut dynamic_depth = water.clone_dynamic_depth_dense();
-    dynamic_depth[0] = 0.5;
-    water
-        .replace_dynamic_depth_from_dense(&dynamic_depth)
-        .expect("dynamic water depth dimensions should match");
-    let mut velocity = water.clone_velocity_dense();
-    velocity[0] = 0.75;
-    water
-        .replace_velocity_from_dense(&velocity)
-        .expect("water velocity dimensions should match");
-    let mut flux = water.clone_flux_dense();
-    flux[0] = [1.0, 2.0, 3.0, 4.0];
-    water
-        .replace_flux_from_dense(&flux)
-        .expect("water flux dimensions should match");
-    water.replace_sources(vec![(1, 2, 0.5)]);
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
@@ -454,11 +438,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.water.clone_baseline_depth_dense(),
         water.clone_baseline_depth_dense()
     );
-    assert_eq!(
-        loaded.water.clone_dynamic_depth_dense(),
-        water.clone_dynamic_depth_dense()
-    );
-    assert_eq!(loaded.water.clone_depth_dense(), water.clone_depth_dense());
     assert_eq!(loaded.demand.residential, demand.residential);
     assert_eq!(loaded.demand.commercial, demand.commercial);
     assert_eq!(loaded.demand.industrial, demand.industrial);

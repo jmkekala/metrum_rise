@@ -45,9 +45,7 @@
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
 //! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
 //! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd` |
-//! | **Water** | `add_water` | `water_tool.gd` |
-//! | | `add_water_source` | `water_tool.gd` |
-//! | | `is_water_dirty` | `water.gd` |
+//! | **Water** | `is_water_dirty` | `water.gd` |
 //! | | `clear_water_dirty` | `water.gd` |
 //! | | `get_dirty_water_patches` | `water.gd` |
 //! | | `get_water_patch` | `water.gd` |
@@ -424,7 +422,6 @@ impl SimulationNode {
         world_z: f32,
         terrain_height_m: f32,
         surface_elevation_m: Option<f32>,
-        rate_m_per_tick: Option<f32>,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set("kind", GString::from(kind));
@@ -433,9 +430,6 @@ impl SimulationNode {
         dict.set("terrain_height_m", f64::from(terrain_height_m));
         if let Some(surface_elevation_m) = surface_elevation_m {
             dict.set("surface_elevation_m", f64::from(surface_elevation_m));
-        }
-        if let Some(rate_m_per_tick) = rate_m_per_tick {
-            dict.set("rate_m_per_tick", f64::from(rate_m_per_tick));
         }
         dict
     }
@@ -2878,16 +2872,8 @@ impl SimulationNode {
             i64::try_from(patch.depth_nonzero_count).unwrap_or(0),
         );
         dict.set(
-            "velocity_nonzero_count",
-            i64::try_from(patch.velocity_nonzero_count).unwrap_or(0),
-        );
-        dict.set(
             "depth_data",
             PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
-        );
-        dict.set(
-            "velocity_data",
-            PackedFloat32Array::from_iter(patch.velocity_data.iter().copied()),
         );
         dict
     }
@@ -2907,33 +2893,11 @@ impl SimulationNode {
         dict.set("baseline_max", f64::from(stats.baseline_max));
         dict.set("baseline_sum", f64::from(stats.baseline_sum));
         dict.set(
-            "dynamic_nonzero",
-            i64::try_from(stats.dynamic_nonzero).unwrap_or(0),
+            "visible_nonzero",
+            i64::try_from(stats.visible_nonzero).unwrap_or(0),
         );
-        dict.set("dynamic_max", f64::from(stats.dynamic_max));
-        dict.set("dynamic_sum", f64::from(stats.dynamic_sum));
-        dict.set(
-            "combined_nonzero",
-            i64::try_from(stats.combined_nonzero).unwrap_or(0),
-        );
-        dict.set("combined_max", f64::from(stats.combined_max));
-        dict.set("combined_sum", f64::from(stats.combined_sum));
-        dict.set(
-            "velocity_nonzero",
-            i64::try_from(stats.velocity_nonzero).unwrap_or(0),
-        );
-        dict.set("velocity_max", f64::from(stats.velocity_max));
-        dict.set("velocity_sum", f64::from(stats.velocity_sum));
-        dict.set(
-            "source_count_in_patch",
-            i64::try_from(stats.source_count_in_patch).unwrap_or(0),
-        );
-        dict.set("source_rate_sum", f64::from(stats.source_rate_sum));
-        dict.set("source_rate_abs_sum", f64::from(stats.source_rate_abs_sum));
-        dict.set(
-            "source_count_total",
-            i64::try_from(stats.source_count_total).unwrap_or(0),
-        );
+        dict.set("visible_max", f64::from(stats.visible_max));
+        dict.set("visible_sum", f64::from(stats.visible_sum));
         dict
     }
 
@@ -3150,18 +3114,6 @@ impl SimulationNode {
             strength,
         );
         self.snapshot.write().unwrap().terrain_dirty = true;
-    }
-
-    /// Adds a volume of water at a specific grid position.
-    #[func]
-    pub fn add_water(&mut self, pos: Vector2, amount: f32) {
-        self.lock_core().add_water_internal(pos, amount);
-    }
-
-    /// Adds a continuous water source at a specific grid position.
-    #[func]
-    pub fn add_water_source(&mut self, pos: Vector2, rate_add: f32) {
-        self.lock_core().add_water_source_internal(pos, rate_add);
     }
 
     /// Returns whether the terrain mesh needs rebuilding.
@@ -5292,70 +5244,6 @@ impl SimulationNode {
         }
     }
 
-    /// Adds or strengthens one authored world-water source at the clicked terrain cell.
-    #[func]
-    pub fn add_world_water_source(&mut self, pos: Vector2, rate_m_per_tick: f32) -> bool {
-        let result = {
-            let mut core = self.lock_core();
-            core.add_world_water_source_internal(pos, rate_m_per_tick)
-        };
-        match result {
-            Ok(()) => {
-                self.refresh_snapshot_from_core();
-                true
-            }
-            Err(err) => {
-                godot_error!("Add world water source failed: {}", err);
-                false
-            }
-        }
-    }
-
-    /// Adds or strengthens one authored world-water sink at the clicked terrain cell.
-    #[func]
-    pub fn add_world_water_sink(&mut self, pos: Vector2, rate_m_per_tick: f32) -> bool {
-        let result = {
-            let mut core = self.lock_core();
-            core.add_world_water_sink_internal(pos, rate_m_per_tick)
-        };
-        match result {
-            Ok(()) => {
-                self.refresh_snapshot_from_core();
-                true
-            }
-            Err(err) => {
-                godot_error!("Add world water sink failed: {}", err);
-                false
-            }
-        }
-    }
-
-    /// Removes the nearest authored world-water source within the given radius.
-    #[func]
-    pub fn remove_world_water_source_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
-        let removed = {
-            let mut core = self.lock_core();
-            core.remove_world_water_source_near_internal(pos, radius_m)
-        };
-        if removed {
-            self.refresh_snapshot_from_core();
-        }
-        removed
-    }
-
-    /// Removes the nearest authored world-water sink within the given radius.
-    #[func]
-    pub fn remove_world_water_sink_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
-        let removed = {
-            let mut core = self.lock_core();
-            core.remove_world_water_sink_near_internal(pos, radius_m)
-        };
-        if removed {
-            self.refresh_snapshot_from_core();
-        }
-        removed
-    }
-
     /// Starts one transient authored lake-fill preview at the clicked terrain cell.
     #[func]
     pub fn begin_world_lake_fill_preview(
@@ -5481,28 +5369,6 @@ impl SimulationNode {
         let core = self.lock_core();
         let mut markers = VarArray::new();
 
-        for point in &core.world_water_boundary_points {
-            let terrain_height_m = core
-                .heightmap
-                .sample_height_world(point.world_x, point.world_z)
-                * config::HEIGHT_SCALE;
-            let kind = match point.kind {
-                crate::simulation::world_definition::AuthoredWaterBoundaryKind::Source => "source",
-                crate::simulation::world_definition::AuthoredWaterBoundaryKind::Sink => "sink",
-            };
-            markers.push(
-                &Self::world_water_authoring_marker_dict(
-                    kind,
-                    point.world_x,
-                    point.world_z,
-                    terrain_height_m,
-                    None,
-                    Some(point.rate_m_per_tick),
-                )
-                .to_variant(),
-            );
-        }
-
         for lake in &core.world_lake_fills {
             let terrain_height_m = core
                 .heightmap
@@ -5515,7 +5381,6 @@ impl SimulationNode {
                     lake.world_z,
                     terrain_height_m,
                     Some(lake.surface_elevation_m),
-                    None,
                 )
                 .to_variant(),
             );
@@ -5533,7 +5398,6 @@ impl SimulationNode {
                     open_water.world_z,
                     terrain_height_m,
                     Some(open_water.surface_elevation_m),
-                    None,
                 )
                 .to_variant(),
             );
@@ -5839,14 +5703,12 @@ impl INode3D for SimulationNode {
             ),
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
-            world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
-            water_runtime_realtime_when_paused: world_editor_mode,
             terrain_dirty: true,
             water_dirty: true,
             network_dirty: false,
@@ -6759,14 +6621,12 @@ mod tests {
             treasury: CityTreasury::new(0.0),
             debug_household_admissions_since_daily: 0,
             undo_stack: std::collections::VecDeque::new(),
-            world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: std::collections::HashMap::new(),
             terrain_stroke_active: false,
             terrain_stroke_has_changes: false,
-            water_runtime_realtime_when_paused: false,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,

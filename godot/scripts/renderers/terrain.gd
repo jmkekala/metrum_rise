@@ -88,6 +88,7 @@ const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
 const PATCH_RESIDENCY_HYSTERESIS_PATCHES := 2
 const PATCH_RESIDENCY_MUTATION_BUDGET_PER_FRAME := 256
 const PATCH_PREWARM_BUDGET_PER_FRAME := 16
+const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
 const PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
 const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
@@ -115,6 +116,8 @@ var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
+var water_texture_sync_queue: Array[Vector2i] = []
+var water_texture_sync_lookup: Dictionary = {}
 var road_locked_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var border_loop_positions: PackedVector3Array = PackedVector3Array()
@@ -187,7 +190,8 @@ func rebuild_from_simulation_state() -> void:
 	_update_overlay_texture()
 	_apply_overlay_mode()
 	_rebuild_border_skirt()
-	_sync_water_patch_textures()
+	_queue_all_water_patch_texture_syncs()
+	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 	cached_overlay_mode = overlay_mode
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
@@ -220,9 +224,8 @@ func _process(delta: float) -> void:
 	var residency_start_us := frame_start_us
 	var sim_core_busy: bool = simulation_node.is_sim_core_busy()
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
-	var residency_changed := false
 	if not sim_core_busy:
-		residency_changed = _sync_patch_residency()
+		_sync_patch_residency()
 	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
@@ -239,18 +242,16 @@ func _process(delta: float) -> void:
 			if patches.has(key):
 				_upload_patch(key)
 				_refresh_one_patch_mesh_lod(key)
+				_queue_water_patch_texture_sync(key)
 		upload_elapsed_ms = float(Time.get_ticks_usec() - dirty_start_us) / 1000.0
 		var border_start_us := Time.get_ticks_usec()
 		_rebuild_border_skirt()
 		border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
-		var water_sync_start_us := Time.get_ticks_usec()
-		_sync_water_patch_textures()
-		water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 		simulation_node.clear_terrain_dirty()
-	elif residency_changed:
-		var water_sync_start_us := Time.get_ticks_usec()
-		_sync_water_patch_textures()
-		water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
+
+	var water_sync_start_us := Time.get_ticks_usec()
+	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
+	water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 
 	if overlay_mode != cached_overlay_mode:
 		_update_overlay_texture()
@@ -321,7 +322,10 @@ func get_border_revision() -> int:
 	return border_revision
 
 func refresh_water_patch_bindings() -> void:
-	_sync_water_patch_textures()
+	_queue_all_water_patch_texture_syncs()
+
+func refresh_water_patch_binding(key: Vector2i) -> void:
+	_queue_water_patch_texture_sync(key)
 
 func update_terrain_visuals() -> void:
 	_refresh_road_locked_patch_lookup()
@@ -329,13 +333,15 @@ func update_terrain_visuals() -> void:
 	if dirty_keys.is_empty():
 		for key in get_resident_patch_keys():
 			_upload_patch(key)
+			_queue_water_patch_texture_sync(key)
 	else:
 		for key in dirty_keys:
 			if patches.has(key):
 				_upload_patch(key)
+				_queue_water_patch_texture_sync(key)
 	if dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys):
 		_rebuild_border_skirt()
-	_sync_water_patch_textures()
+	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 
 func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 	if patch_cols <= 0 or patch_rows <= 0:
@@ -818,6 +824,7 @@ func _activate_patch(key: Vector2i) -> void:
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = true
 	resident_patch_lookup[key] = true
+	_queue_water_patch_texture_sync(key)
 
 func _deactivate_patch(key: Vector2i) -> void:
 	if not resident_patch_lookup.has(key):
@@ -890,6 +897,8 @@ func _clear_patches() -> void:
 	patches.clear()
 	resident_patch_lookup.clear()
 	patch_prewarm_queue.clear()
+	water_texture_sync_queue.clear()
+	water_texture_sync_lookup.clear()
 	_resident_patch_bounds_valid = false
 
 func _rebuild_patch_prewarm_queue() -> void:
@@ -1501,86 +1510,110 @@ func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> v
 	patch["water_depth_nonzero_count"] = 0
 
 func _sync_water_patch_textures() -> void:
+	_queue_all_water_patch_texture_syncs()
+	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
+
+func _queue_all_water_patch_texture_syncs() -> void:
+	for key_variant in resident_patch_lookup.keys():
+		var key: Vector2i = key_variant
+		_queue_water_patch_texture_sync(key)
+
+func _queue_water_patch_texture_sync(key: Vector2i) -> void:
+	if water_texture_sync_lookup.has(key):
+		return
+	water_texture_sync_lookup[key] = true
+	water_texture_sync_queue.append(key)
+
+func _process_water_patch_texture_sync_queue(budget: int) -> void:
 	if simulation_node == null or not simulation_node.has_method("get_terrain_water_patch"):
 		return
 	var sync_start_us := Time.get_ticks_usec()
-	var patch_count := 0
+	var processed_count := 0
 	var updated_count := 0
 	var missing_count := 0
 	var depth_nonzero_total := 0
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		var patch: Dictionary = patches.get(key, {})
-		if patch.is_empty():
-			continue
-		patch_count += 1
-		var material: ShaderMaterial = patch["material"]
-		var water_data: Dictionary = simulation_node.get_terrain_water_patch(key.x, key.y)
-		if water_data.is_empty():
-			missing_count += 1
-			_bind_empty_water_texture(patch, material)
-			continue
-
-		var texture_width := int(water_data.get("texture_width", 0))
-		var texture_height := int(water_data.get("texture_height", 0))
-		var depth_data: PackedFloat32Array = (
-			water_data.get("depth_data", PackedFloat32Array()) as PackedFloat32Array
-		)
-		if texture_width <= 0 or texture_height <= 0 or depth_data.size() != texture_width * texture_height:
-			missing_count += 1
-			_bind_empty_water_texture(patch, material)
-			continue
-
-		var water_image: Image = patch.get("water_image", null) as Image
-		var water_texture: ImageTexture = patch.get("water_texture", null) as ImageTexture
-		var old_texture_width := int(patch.get("water_texture_width", 0))
-		var old_texture_height := int(patch.get("water_texture_height", 0))
-		var texture_shape_changed := (
-			water_image == null
-			or water_texture == null
-			or water_texture == empty_water_texture
-			or old_texture_width != texture_width
-			or old_texture_height != texture_height
-		)
-		if texture_shape_changed:
-			water_image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
-		water_image.set_data(
-			texture_width,
-			texture_height,
-			false,
-			Image.FORMAT_RF,
-			depth_data.to_byte_array()
-		)
-		if texture_shape_changed:
-			water_texture = ImageTexture.create_from_image(water_image)
-			material.set_shader_parameter("watermap", water_texture)
+	var remaining_budget := budget
+	while remaining_budget > 0 and not water_texture_sync_queue.is_empty():
+		var key: Vector2i = water_texture_sync_queue.pop_back()
+		water_texture_sync_lookup.erase(key)
+		var depth_nonzero_count := _sync_one_water_patch_texture(key)
+		processed_count += 1
+		if depth_nonzero_count >= 0:
+			updated_count += 1
+			depth_nonzero_total += depth_nonzero_count
 		else:
-			water_texture.update(water_image)
+			missing_count += 1
+		remaining_budget -= 1
 
-		var depth_nonzero_count := int(water_data.get("depth_nonzero_count", 0))
-		depth_nonzero_total += depth_nonzero_count
-		patch["water_image"] = water_image
-		patch["water_texture"] = water_texture
-		patch["water_texture_width"] = texture_width
-		patch["water_texture_height"] = texture_height
-		patch["water_depth_nonzero_count"] = depth_nonzero_count
-		patch["water_world_origin_x"] = float(water_data.get("world_origin_x", 0.0))
-		patch["water_world_origin_z"] = float(water_data.get("world_origin_z", 0.0))
-		patch["water_world_size_x"] = float(water_data.get("world_size_x", 0.0))
-		patch["water_world_size_z"] = float(water_data.get("world_size_z", 0.0))
-		updated_count += 1
-
-	if _terrain_debug_enabled and (_terrain_debug_verbose or _terrain_visual_debug_mode >= 6):
+	if processed_count > 0 and _terrain_debug_enabled and (_terrain_debug_verbose or _terrain_visual_debug_mode >= 6):
 		_terrain_debug_log(
-			"watermap_sync source=terrain_aligned patches=%d updated=%d missing=%d depth_nonzero=%d elapsed_ms=%.3f"
+			"watermap_sync source=terrain_aligned processed=%d updated=%d missing=%d queued=%d depth_nonzero=%d elapsed_ms=%.3f"
 			% [
-				patch_count,
+				processed_count,
 				updated_count,
 				missing_count,
+				water_texture_sync_queue.size(),
 				depth_nonzero_total,
 				float(Time.get_ticks_usec() - sync_start_us) / 1000.0,
 			]
 		)
+
+func _sync_one_water_patch_texture(key: Vector2i) -> int:
+	var patch: Dictionary = patches.get(key, {})
+	if patch.is_empty():
+		return -1
+	var material: ShaderMaterial = patch["material"]
+	var water_data: Dictionary = simulation_node.get_terrain_water_patch(key.x, key.y)
+	if water_data.is_empty():
+		_bind_empty_water_texture(patch, material)
+		return -1
+
+	var texture_width := int(water_data.get("texture_width", 0))
+	var texture_height := int(water_data.get("texture_height", 0))
+	var depth_data: PackedFloat32Array = (
+		water_data.get("depth_data", PackedFloat32Array()) as PackedFloat32Array
+	)
+	if texture_width <= 0 or texture_height <= 0 or depth_data.size() != texture_width * texture_height:
+		_bind_empty_water_texture(patch, material)
+		return -1
+
+	var water_image: Image = patch.get("water_image", null) as Image
+	var water_texture: ImageTexture = patch.get("water_texture", null) as ImageTexture
+	var old_texture_width := int(patch.get("water_texture_width", 0))
+	var old_texture_height := int(patch.get("water_texture_height", 0))
+	var texture_shape_changed := (
+		water_image == null
+		or water_texture == null
+		or water_texture == empty_water_texture
+		or old_texture_width != texture_width
+		or old_texture_height != texture_height
+	)
+	if texture_shape_changed:
+		water_image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
+	water_image.set_data(
+		texture_width,
+		texture_height,
+		false,
+		Image.FORMAT_RF,
+		depth_data.to_byte_array()
+	)
+	if texture_shape_changed:
+		water_texture = ImageTexture.create_from_image(water_image)
+		material.set_shader_parameter("watermap", water_texture)
+	else:
+		water_texture.update(water_image)
+
+	var depth_nonzero_count := int(water_data.get("depth_nonzero_count", 0))
+	patch["water_image"] = water_image
+	patch["water_texture"] = water_texture
+	patch["water_texture_width"] = texture_width
+	patch["water_texture_height"] = texture_height
+	patch["water_depth_nonzero_count"] = depth_nonzero_count
+	patch["water_world_origin_x"] = float(water_data.get("world_origin_x", 0.0))
+	patch["water_world_origin_z"] = float(water_data.get("world_origin_z", 0.0))
+	patch["water_world_size_x"] = float(water_data.get("world_size_x", 0.0))
+	patch["water_world_size_z"] = float(water_data.get("world_size_z", 0.0))
+	return depth_nonzero_count
 
 func _sculpt_at_mouse(delta: float) -> void:
 	var mouse_pos := get_viewport().get_mouse_position()

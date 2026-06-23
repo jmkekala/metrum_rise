@@ -26,10 +26,6 @@ impl SimCore {
             water: if inc_water {
                 Some(WaterRuntimeSnapshot {
                     baseline_depth: self.watermap.clone_baseline_depth_dense(),
-                    dynamic_depth: self.watermap.clone_dynamic_depth_dense(),
-                    velocity: self.watermap.clone_velocity_dense(),
-                    flux: self.watermap.clone_flux_dense(),
-                    sources: self.watermap.clone_sources(),
                 })
             } else {
                 None
@@ -63,16 +59,6 @@ impl SimCore {
                 self.watermap
                     .replace_baseline_depth_from_dense(&w_data.baseline_depth)
                     .expect("undo baseline water snapshot must match the live water dimensions");
-                self.watermap
-                    .replace_dynamic_depth_from_dense(&w_data.dynamic_depth)
-                    .expect("undo dynamic water snapshot must match the live water dimensions");
-                self.watermap
-                    .replace_velocity_from_dense(&w_data.velocity)
-                    .expect("undo water velocity snapshot must match the live water dimensions");
-                self.watermap
-                    .replace_flux_from_dense(&w_data.flux)
-                    .expect("undo water flux snapshot must match the live water dimensions");
-                self.watermap.replace_sources(w_data.sources);
             }
             if let Some(tr_graph) = state.trans_graph {
                 self.region_graph = tr_graph;

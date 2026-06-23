@@ -22,7 +22,7 @@ var cul_de_sac_tool: Node3D
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const SAVES_DIR := "user://saves"
@@ -112,7 +112,6 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
-			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 

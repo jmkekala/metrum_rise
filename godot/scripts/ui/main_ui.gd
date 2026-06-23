@@ -266,12 +266,6 @@ func _build_ui():
 	terrain_sub_menu.add_child(sculpt_btn)
 	sculpt_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.SCULPT))
 	
-	var water_btn = Button.new()
-	water_btn.text = "Add Water Source"
-	water_btn.focus_mode = Control.FOCUS_NONE
-	terrain_sub_menu.add_child(water_btn)
-	water_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.WATER))
-	
 	var terrain_sub_margin = MarginContainer.new()
 	terrain_sub_margin.add_theme_constant_override("margin_bottom", 5)
 	terrain_sub_margin.add_child(terrain_sub_panel)

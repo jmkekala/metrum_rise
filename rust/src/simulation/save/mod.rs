@@ -466,30 +466,6 @@ pub(super) fn unpack_f32_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<f32>> 
     }
     Ok(v)
 }
-pub(super) fn pack_flux_slice(v: &[[f32; 4]]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(v.len() * 16);
-    for q in v {
-        for &x in q {
-            b.extend_from_slice(&x.to_le_bytes());
-        }
-    }
-    b
-}
-pub(super) fn unpack_flux_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<[f32; 4]>> {
-    if b.len() != len * 16 {
-        return Err(SaveLoadError::custom("flux blob mismatch"));
-    }
-    let mut v = Vec::with_capacity(len);
-    for c in b.chunks_exact(16) {
-        v.push([
-            f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
-            f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
-            f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
-            f32::from_le_bytes([c[12], c[13], c[14], c[15]]),
-        ]);
-    }
-    Ok(v)
-}
 pub(super) fn optional_building_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<i64> {
     if v == usize::MAX {
         Ok(NONE_REF)

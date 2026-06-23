@@ -188,8 +188,7 @@ These modes are selected with `--debug building-sites-visual <mode>`.
 | Buffer / return value | Type | Layout / meaning |
 |-----------------------|------|------------------|
 | Heightmap | `PackedFloat32Array` | Flat row-major `width × height` `f32` raw terrain sample values in current runtime storage units; multiply by `HEIGHT_SCALE` to convert to rendered world metres. |
-| Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap; visible combined water depth field in world metres. |
-| Water velocity | `PackedFloat32Array` | Same row-major layout; scalar dynamic-water speed per cell. |
+| Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap; visible baseline still-water depth in world metres. |
 | Pedestrian transforms | `VarDictionary` | Keys = `pedestrian_type`; values = `PackedFloat32Array` with `12` floats per instance: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]`. |
 | Car transforms | `VarDictionary` | Keys = `(vehicle_type * 10 + color_variant)`; values = `PackedFloat32Array` with the same `12`-float `Transform3D` layout. |
 | Building transforms | `PackedFloat32Array` | Returned per asset ID by `get_building_transforms_for_asset(asset_id)`, same `12`-float transform layout. |
@@ -202,6 +201,5 @@ These modes are selected with `--debug building-sites-visual <mode>`.
 | No-build mask texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
 | `WorldDefinition` meta | SQLite row | One row storing world name plus `WorldConfig` values for a reusable blank-world asset. |
 | `WorldDefinition` terrain chunk payload | SQLite BLOB | Dense row-major `f32` source-terrain samples for one persisted authored chunk. |
-| `WorldDefinition` water boundary point | SQLite row | One authored `Source` or `Sink` with snapped world-space X/Z, a `kind` field, and a positive authored rate; sink vs source comes from `kind`, not the sign. |
 | `WorldDefinition` lake fill | SQLite row | One authored lake seed position plus one target surface elevation in rendered world metres. |
 | `WorldDefinition` open-water fill | SQLite row | One authored edge-connected open-water seed position plus one target surface elevation in rendered world metres. |
