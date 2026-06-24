@@ -39,7 +39,6 @@
 //! | | `get_terrain_patch_layout` | `terrain.gd`, `water.gd` |
 //! | | `get_dirty_terrain_patches` | `terrain.gd` |
 //! | | `get_terrain_patch` | `terrain.gd` |
-//! | | `get_terrain_water_patch` | `terrain.gd` |
 //! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
@@ -49,7 +48,9 @@
 //! | | `clear_water_dirty` | `water.gd` |
 //! | | `get_dirty_water_patches` | `water.gd` |
 //! | | `get_water_patch` | `water.gd` |
-//! | | `get_water_patch_meshes` | `water.gd` |
+//! | | `request_water_patch_meshes` | `water.gd` |
+//! | | `poll_ready_water_patch_meshes` | `water.gd` |
+//! | | `poll_water_patch_meshes` | `water.gd` |
 //! | | `clear_water_patch_mesh_cache` | `water.gd` |
 //! | | `get_water_patch_debug` | `water.gd` |
 //! | | `get_water_patch_authored_fill_debug` | `water.gd` |
@@ -250,6 +251,8 @@ pub struct SimulationNode {
     pub(crate) road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
     /// Immutable road-tool query state used by cursor picking without locking SimCore.
     pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
+    /// Water mesh jobs currently being prepared outside the Godot frame.
+    pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
     pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
@@ -271,6 +274,47 @@ pub struct SimulationNode {
     /// Accumulated Godot render time (unused by sim, kept for potential UI use).
     pub(crate) time_passed: f64,
     base: Base<Node3D>,
+}
+
+/// Async water mesh preparation state shared with Rayon jobs.
+pub(crate) struct WaterPatchMeshAsyncState {
+    /// Cache keys that are already being built by Rayon workers.
+    pub(crate) in_flight: HashSet<WaterPatchMeshCacheKey>,
+    /// Latest mesh variants requested by Godot but not yet emitted back.
+    pub(crate) requested: HashSet<WaterPatchMeshCacheKey>,
+    /// Ready mesh variants that Godot can poll without resubmitting request keys.
+    pub(crate) ready: Vec<WaterPatchMeshCacheKey>,
+    /// Deduplication set for `ready`.
+    pub(crate) ready_lookup: HashSet<WaterPatchMeshCacheKey>,
+    /// Completed meshes waiting to be inserted into the render cache.
+    pub(crate) completed: Vec<CachedWaterPatchMesh>,
+}
+
+impl WaterPatchMeshAsyncState {
+    fn new() -> Self {
+        Self {
+            in_flight: HashSet::new(),
+            requested: HashSet::new(),
+            ready: Vec::new(),
+            ready_lookup: HashSet::new(),
+            completed: Vec::new(),
+        }
+    }
+
+    fn forget_requested_patch(&mut self, patch_x: usize, patch_z: usize) {
+        self.requested
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.ready_lookup
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.ready
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+    }
+
+    fn queue_ready(&mut self, key: WaterPatchMeshCacheKey) {
+        if self.ready_lookup.insert(key) {
+            self.ready.push(key);
+        }
+    }
 }
 
 struct RoadClipLoopQuery {
@@ -316,6 +360,97 @@ impl SimulationNode {
                 Some(e.into_inner())
             }
         }
+    }
+
+    fn lock_water_patch_mesh_jobs(&self) -> std::sync::MutexGuard<'_, WaterPatchMeshAsyncState> {
+        match self.water_patch_mesh_jobs.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                godot_error!("[sim] water mesh job mutex poisoned — recovering");
+                e.into_inner()
+            }
+        }
+    }
+
+    fn drain_completed_water_patch_mesh_jobs(&self) -> Vec<CachedWaterPatchMesh> {
+        let mut jobs = self.lock_water_patch_mesh_jobs();
+        std::mem::take(&mut jobs.completed)
+    }
+
+    fn water_patch_mesh_requests_from_flat(
+        flat_requests: &PackedInt32Array,
+    ) -> Vec<(usize, usize, usize)> {
+        let request_values = flat_requests.as_slice();
+        if request_values.len() < 3 {
+            return Vec::new();
+        }
+        let mut requests = Vec::new();
+        for chunk in request_values.chunks_exact(3) {
+            let Ok(patch_x) = usize::try_from(chunk[0]) else {
+                continue;
+            };
+            let Ok(patch_z) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            let lod_step = usize::try_from(chunk[2]).unwrap_or(1).max(1);
+            requests.push((patch_x, patch_z, lod_step));
+        }
+        requests
+    }
+
+    fn water_patch_mesh_build_input_for_request(
+        core: &SimCore,
+        patch_x: usize,
+        patch_z: usize,
+        lod_step: usize,
+    ) -> Option<(WaterPatchMeshCacheKey, WaterPatchMeshBuildInput)> {
+        let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
+        let road_clip_query = Self::road_clip_loop_query_for_bounds(
+            core,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        let key = WaterPatchMeshCacheKey {
+            patch_x,
+            patch_z,
+            lod_step,
+            road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
+            depth_signature: water_patch_depth_signature(&patch),
+        };
+        Some((
+            key,
+            WaterPatchMeshBuildInput {
+                key,
+                patch,
+                road_clip_loops: road_clip_query.cdt_road_loops,
+                clip_failed: road_clip_query.clip_error_label.is_some(),
+            },
+        ))
+    }
+
+    fn water_patch_mesh_key_for_request(
+        core: &SimCore,
+        patch_x: usize,
+        patch_z: usize,
+        lod_step: usize,
+    ) -> Option<WaterPatchMeshCacheKey> {
+        let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
+        let road_clip_query = Self::road_clip_loop_query_for_bounds(
+            core,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        Some(WaterPatchMeshCacheKey {
+            patch_x,
+            patch_z,
+            lod_step,
+            road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
+            depth_signature: water_patch_depth_signature(&patch),
+        })
     }
 
     fn road_tool_is_near_border(pos: Vector3, half_w: f32, half_h: f32, threshold: f32) -> bool {
@@ -2878,6 +3013,10 @@ impl SimulationNode {
             i64::try_from(patch.depth_nonzero_count).unwrap_or(0),
         );
         dict.set(
+            "depth_signature",
+            i64::from_ne_bytes(water_patch_depth_signature(patch).to_ne_bytes()),
+        );
+        dict.set(
             "depth_data",
             PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
         );
@@ -3315,23 +3454,6 @@ impl SimulationNode {
         Self::terrain_patch_dict(&patch)
     }
 
-    /// Returns visible water samples aligned to one visual-terrain render patch.
-    #[func]
-    pub fn get_terrain_water_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
-        let Ok(patch_x) = usize::try_from(patch_x) else {
-            return VarDictionary::new();
-        };
-        let Ok(patch_z) = usize::try_from(patch_z) else {
-            return VarDictionary::new();
-        };
-        let core = self.lock_core();
-        let Some(terrain_patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
-            return VarDictionary::new();
-        };
-        let water_patch = core.watermap.terrain_aligned_patch_snapshot(&terrain_patch);
-        Self::water_patch_dict(&water_patch)
-    }
-
     /// Returns one visible-terrain render patch resampled at a finer render step.
     #[func]
     pub fn get_refined_terrain_patch(
@@ -3468,82 +3590,253 @@ impl SimulationNode {
         if !patch_keys.is_empty() {
             self.lock_core()
                 .clear_water_patch_mesh_cache_entries(&patch_keys);
+            let patch_key_lookup = patch_keys.into_iter().collect::<HashSet<_>>();
+            let mut jobs = self.lock_water_patch_mesh_jobs();
+            jobs.in_flight
+                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
+            jobs.requested
+                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
+            jobs.ready_lookup
+                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
+            jobs.ready
+                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
+            jobs.completed.retain(|entry| {
+                !patch_key_lookup.contains(&(entry.key.patch_x, entry.key.patch_z))
+            });
         }
     }
 
-    /// Builds and returns cached water patch meshes for flat `(patch_x, patch_z, lod_step)` requests.
+    /// Requests async water patch mesh preparation for flat `(patch_x, patch_z, lod_step)` tuples.
     #[func]
-    pub fn get_water_patch_meshes(&mut self, flat_requests: PackedInt32Array) -> VarArray {
-        let request_values = flat_requests.as_slice();
-        if request_values.len() < 3 {
-            return VarArray::new();
+    pub fn request_water_patch_meshes(&mut self, flat_requests: PackedInt32Array) -> VarDictionary {
+        let requests = Self::water_patch_mesh_requests_from_flat(&flat_requests);
+        let raw_count = requests.len();
+        let mut stats = VarDictionary::new();
+        stats.set("raw_count", i64::try_from(raw_count).unwrap_or(i64::MAX));
+        stats.set("accepted_count", 0_i64);
+        stats.set("invalid_count", 0_i64);
+        stats.set("duplicate_count", 0_i64);
+        stats.set("cache_hit_count", 0_i64);
+        stats.set("in_flight_count", 0_i64);
+        stats.set("build_queued_count", 0_i64);
+        if requests.is_empty() {
+            return stats;
+        }
+        let mut accepted_count = 0_usize;
+        let mut invalid_count = 0_usize;
+        let mut duplicate_count = 0_usize;
+        let mut cache_hit_count = 0_usize;
+        let mut in_flight_count = 0_usize;
+        let mut build_queued_count = 0_usize;
+        let mut build_inputs = Vec::new();
+        {
+            let core = self.lock_core();
+            let mut jobs = self.lock_water_patch_mesh_jobs();
+            let mut requested_key_lookup = HashSet::new();
+            for (patch_x, patch_z, lod_step) in requests {
+                let Some((key, build_input)) = Self::water_patch_mesh_build_input_for_request(
+                    &core, patch_x, patch_z, lod_step,
+                ) else {
+                    invalid_count += 1;
+                    continue;
+                };
+                if !requested_key_lookup.insert(key) {
+                    duplicate_count += 1;
+                    continue;
+                }
+                jobs.forget_requested_patch(patch_x, patch_z);
+                jobs.requested.insert(key);
+                accepted_count += 1;
+                if core.water_patch_mesh_cache.contains_key(&key) {
+                    jobs.queue_ready(key);
+                    cache_hit_count += 1;
+                    continue;
+                }
+                if jobs.in_flight.contains(&key) {
+                    in_flight_count += 1;
+                    continue;
+                }
+                jobs.in_flight.insert(key);
+                build_inputs.push(build_input);
+                build_queued_count += 1;
+            }
         }
 
-        let mut requests = Vec::new();
-        for chunk in request_values.chunks_exact(3) {
-            let Ok(patch_x) = usize::try_from(chunk[0]) else {
-                continue;
-            };
-            let Ok(patch_z) = usize::try_from(chunk[1]) else {
-                continue;
-            };
-            let lod_step = usize::try_from(chunk[2]).unwrap_or(1).max(1);
-            requests.push((patch_x, patch_z, lod_step));
+        if !build_inputs.is_empty() {
+            let jobs = Arc::clone(&self.water_patch_mesh_jobs);
+            rayon::spawn(move || {
+                let entries = SimCore::build_water_patch_mesh_cache_entries(build_inputs);
+                let mut job_state = match jobs.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                for entry in entries {
+                    job_state.in_flight.remove(&entry.key);
+                    job_state.completed.push(entry);
+                }
+            });
         }
+        stats.set(
+            "accepted_count",
+            i64::try_from(accepted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "invalid_count",
+            i64::try_from(invalid_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "duplicate_count",
+            i64::try_from(duplicate_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "cache_hit_count",
+            i64::try_from(cache_hit_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "in_flight_count",
+            i64::try_from(in_flight_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "build_queued_count",
+            i64::try_from(build_queued_count).unwrap_or(i64::MAX),
+        );
+        stats
+    }
+
+    /// Returns ready cached water patch meshes without requiring Godot to resubmit pending keys.
+    #[func]
+    pub fn poll_ready_water_patch_meshes(&mut self, max_meshes: i32) -> VarDictionary {
+        let completed_entries = self.drain_completed_water_patch_mesh_jobs();
+        let completed_count = completed_entries.len();
+        let completed_keys = completed_entries
+            .iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>();
+        let max_meshes = usize::try_from(max_meshes).unwrap_or(0);
+        let mut meshes = VarArray::new();
+        let mut stats = VarDictionary::new();
+        stats.set("meshes", meshes.to_variant());
+        stats.set(
+            "completed_count",
+            i64::try_from(completed_count).unwrap_or(i64::MAX),
+        );
+        stats.set("ready_before_count", 0_i64);
+        stats.set("emitted_count", 0_i64);
+        stats.set("stale_ready_count", 0_i64);
+        stats.set("missing_ready_count", 0_i64);
+        stats.set("requested_before_count", 0_i64);
+        stats.set("requested_after_count", 0_i64);
+        if max_meshes == 0 {
+            if !completed_entries.is_empty() {
+                self.lock_core()
+                    .insert_water_patch_mesh_cache_entries(completed_entries);
+            }
+            return stats;
+        }
+
+        let core = &mut *self.lock_core();
+        if !completed_entries.is_empty() {
+            core.insert_water_patch_mesh_cache_entries(completed_entries);
+        }
+
+        let mut jobs = self.lock_water_patch_mesh_jobs();
+        for key in completed_keys {
+            if jobs.requested.contains(&key) {
+                jobs.queue_ready(key);
+            }
+        }
+
+        let ready_before_count = jobs.ready.len();
+        let requested_before_count = jobs.requested.len();
+        let mut emitted_count = 0_usize;
+        let mut stale_ready_count = 0_usize;
+        let mut missing_ready_count = 0_usize;
+        while emitted_count < max_meshes {
+            let Some(key) = jobs.ready.pop() else {
+                break;
+            };
+            jobs.ready_lookup.remove(&key);
+            if !jobs.requested.contains(&key) {
+                stale_ready_count += 1;
+                continue;
+            }
+            let Some(mesh) = core.water_patch_mesh_cache.get(&key) else {
+                jobs.requested.remove(&key);
+                missing_ready_count += 1;
+                continue;
+            };
+            jobs.requested.remove(&key);
+            meshes.push(&Self::water_patch_mesh_dict(mesh).to_variant());
+            emitted_count += 1;
+        }
+        stats.set("meshes", meshes.to_variant());
+        stats.set(
+            "ready_before_count",
+            i64::try_from(ready_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "emitted_count",
+            i64::try_from(emitted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "stale_ready_count",
+            i64::try_from(stale_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "missing_ready_count",
+            i64::try_from(missing_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_before_count",
+            i64::try_from(requested_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_after_count",
+            i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+        );
+        stats
+    }
+
+    /// Returns ready cached water patch meshes for flat `(patch_x, patch_z, lod_step)` requests.
+    #[func]
+    pub fn poll_water_patch_meshes(
+        &mut self,
+        flat_requests: PackedInt32Array,
+        max_meshes: i32,
+    ) -> VarArray {
+        let completed_entries = self.drain_completed_water_patch_mesh_jobs();
+        if !completed_entries.is_empty() {
+            self.lock_core()
+                .insert_water_patch_mesh_cache_entries(completed_entries);
+        }
+        let max_meshes = usize::try_from(max_meshes).unwrap_or(0);
+        if max_meshes == 0 {
+            return VarArray::new();
+        }
+        let requests = Self::water_patch_mesh_requests_from_flat(&flat_requests);
         if requests.is_empty() {
             return VarArray::new();
         }
 
-        let (requested_keys, build_inputs) = {
-            let core = self.lock_core();
-            let mut requested_keys = Vec::new();
-            let mut requested_key_lookup = HashSet::new();
-            let mut build_inputs = Vec::new();
-            for (patch_x, patch_z, lod_step) in requests {
-                let Some(patch) = core.watermap.visible_patch_snapshot(patch_x, patch_z) else {
-                    continue;
-                };
-                let road_clip_query = Self::road_clip_loop_query_for_bounds(
-                    &core,
-                    patch.world_origin_x,
-                    patch.world_origin_z,
-                    patch.world_origin_x + patch.world_size_x,
-                    patch.world_origin_z + patch.world_size_z,
-                );
-                let key = WaterPatchMeshCacheKey {
-                    patch_x,
-                    patch_z,
-                    lod_step,
-                    road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
-                    depth_signature: water_patch_depth_signature(&patch),
-                };
-                if !requested_key_lookup.insert(key) {
-                    continue;
-                }
-                requested_keys.push(key);
-                if !core.water_patch_mesh_cache.contains_key(&key) {
-                    build_inputs.push(WaterPatchMeshBuildInput {
-                        key,
-                        patch,
-                        road_clip_loops: road_clip_query.cdt_road_loops,
-                        clip_failed: road_clip_query.clip_error_label.is_some(),
-                    });
-                }
-            }
-            (requested_keys, build_inputs)
-        };
-
-        if !build_inputs.is_empty() {
-            let entries = SimCore::build_water_patch_mesh_cache_entries(build_inputs);
-            self.lock_core()
-                .insert_water_patch_mesh_cache_entries(entries);
-        }
-
         let core = self.lock_core();
         let mut meshes = VarArray::new();
-        for key in requested_keys {
+        let mut emitted_count = 0_usize;
+        let mut requested_key_lookup = HashSet::new();
+        for (patch_x, patch_z, lod_step) in requests {
+            if emitted_count >= max_meshes {
+                break;
+            }
+            let Some(key) =
+                Self::water_patch_mesh_key_for_request(&core, patch_x, patch_z, lod_step)
+            else {
+                continue;
+            };
+            if !requested_key_lookup.insert(key) {
+                continue;
+            }
             if let Some(mesh) = core.water_patch_mesh_cache.get(&key) {
                 meshes.push(&Self::water_patch_mesh_dict(mesh).to_variant());
+                emitted_count += 1;
             }
         }
         meshes
@@ -5904,6 +6197,7 @@ impl INode3D for SimulationNode {
         let road_tool_query_snapshot =
             Arc::new(RwLock::new(RoadToolQuerySnapshot::from_core(&core)));
         let road_preview_result = Arc::new(RwLock::new(None));
+        let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let (road_preview_tx, road_preview_rx) = std::sync::mpsc::channel();
         let _road_preview_thread = {
             let context = Arc::clone(&road_preview_context);
@@ -5933,6 +6227,7 @@ impl INode3D for SimulationNode {
             road_preview_context,
             road_preview_result,
             road_tool_query_snapshot,
+            water_patch_mesh_jobs,
             road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,

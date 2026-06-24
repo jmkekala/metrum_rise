@@ -191,6 +191,12 @@ pub(crate) fn water_patch_depth_signature(patch: &WaterPatchSnapshot) -> u64 {
     mix_signature(&mut hash, patch.sample_height as u64);
     mix_signature(&mut hash, patch.texture_width as u64);
     mix_signature(&mut hash, patch.texture_height as u64);
+    mix_signature(&mut hash, patch.inner_offset_x as u64);
+    mix_signature(&mut hash, patch.inner_offset_z as u64);
+    mix_signature(&mut hash, u64::from(patch.world_origin_x.to_bits()));
+    mix_signature(&mut hash, u64::from(patch.world_origin_z.to_bits()));
+    mix_signature(&mut hash, u64::from(patch.world_size_x.to_bits()));
+    mix_signature(&mut hash, u64::from(patch.world_size_z.to_bits()));
     mix_signature(&mut hash, patch.depth_nonzero_count as u64);
     for depth in &patch.depth_data {
         mix_signature(&mut hash, u64::from(depth.to_bits()));
@@ -261,6 +267,11 @@ impl WaterMeshBuilder {
         let lod_step = self.key.lod_step.max(1);
         let x_interval_count = mesh_interval_count(self.patch.sample_width, lod_step);
         let z_interval_count = mesh_interval_count(self.patch.sample_height, lod_step);
+        if self.clip_groups.is_empty()
+            && self.can_emit_indexed_full_grid(x_interval_count, z_interval_count)
+        {
+            return self.build_indexed_full_grid(x_interval_count, z_interval_count);
+        }
         let clip_bins = road_clip_group_bins(
             &self.clip_groups,
             self.patch.world_origin_x,
@@ -353,6 +364,79 @@ impl WaterMeshBuilder {
             normals: std::mem::take(&mut self.normals),
             uvs: std::mem::take(&mut self.uvs),
             indices: Vec::new(),
+            stats: self.stats,
+        }
+    }
+
+    fn can_emit_indexed_full_grid(&self, x_interval_count: usize, z_interval_count: usize) -> bool {
+        if x_interval_count == 0 || z_interval_count == 0 {
+            return false;
+        }
+        for z_index in 0..=z_interval_count {
+            for x_index in 0..=x_interval_count {
+                if self.water_depth_at_mesh_corner(
+                    x_index,
+                    z_index,
+                    x_interval_count,
+                    z_interval_count,
+                ) <= WATER_MIN_VISIBLE_DEPTH_M
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn build_indexed_full_grid(
+        &mut self,
+        x_interval_count: usize,
+        z_interval_count: usize,
+    ) -> CachedWaterPatchMesh {
+        let vertex_cols = x_interval_count + 1;
+        let vertex_rows = z_interval_count + 1;
+        let vertex_count = vertex_cols.saturating_mul(vertex_rows);
+        self.vertices.reserve(vertex_count);
+        self.normals.reserve(vertex_count);
+        self.uvs.reserve(vertex_count);
+        let center_x = self.patch.world_origin_x + self.patch.world_size_x * 0.5;
+        let center_z = self.patch.world_origin_z + self.patch.world_size_z * 0.5;
+        for z_index in 0..vertex_rows {
+            let z = z_index as f32 / z_interval_count as f32;
+            let world_z = self.patch.world_origin_z + z * self.patch.world_size_z;
+            for x_index in 0..vertex_cols {
+                let x = x_index as f32 / x_interval_count as f32;
+                let world_x = self.patch.world_origin_x + x * self.patch.world_size_x;
+                self.add_water_vertex(Vector2::new(world_x, world_z), center_x, center_z);
+            }
+        }
+
+        let mut indices = Vec::with_capacity(x_interval_count * z_interval_count * 6);
+        for z_index in 0..z_interval_count {
+            for x_index in 0..x_interval_count {
+                let top_left = z_index * vertex_cols + x_index;
+                let top_right = top_left + 1;
+                let bottom_left = top_left + vertex_cols;
+                let bottom_right = bottom_left + 1;
+                indices.push(top_left as i32);
+                indices.push(bottom_right as i32);
+                indices.push(top_right as i32);
+                indices.push(top_left as i32);
+                indices.push(bottom_left as i32);
+                indices.push(bottom_right as i32);
+            }
+        }
+
+        self.stats.cells_total = x_interval_count * z_interval_count;
+        self.stats.full_cells = self.stats.cells_total;
+        self.stats.emitted_vertices = self.vertices.len();
+        self.stats.emitted_triangles = indices.len() / 3;
+        CachedWaterPatchMesh {
+            key: self.key,
+            vertices: std::mem::take(&mut self.vertices),
+            normals: std::mem::take(&mut self.normals),
+            uvs: std::mem::take(&mut self.uvs),
+            indices,
             stats: self.stats,
         }
     }
@@ -922,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn wet_patch_mesh_emits_expanded_triangles() {
+    fn wet_patch_mesh_emits_indexed_full_grid() {
         let patch = test_patch(vec![1.0; 25], 25);
         let key = test_key(water_patch_depth_signature(&patch));
         let [mesh] =
@@ -936,12 +1020,13 @@ mod tests {
             .expect("one water patch mesh should be built");
 
         assert_eq!(mesh.key, key);
-        assert_eq!(mesh.vertices.len(), 24);
+        assert_eq!(mesh.vertices.len(), 9);
         assert_eq!(mesh.normals.len(), mesh.vertices.len());
         assert_eq!(mesh.uvs.len(), mesh.vertices.len());
-        assert!(mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len(), 24);
         assert_eq!(mesh.stats.cells_total, 4);
         assert_eq!(mesh.stats.full_cells, 4);
+        assert_eq!(mesh.stats.emitted_vertices, 9);
         assert_eq!(mesh.stats.emitted_triangles, 8);
     }
 

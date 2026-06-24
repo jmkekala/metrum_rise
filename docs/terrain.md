@@ -341,6 +341,11 @@ Current deterministic rules:
   `get_terrain_patch()`, and `get_terrain_border_loop()`
 - `water.gd` consumes `get_dirty_water_patches()`, `get_water_patch()`, and
   `get_water_border_depths()`
+- terrain material shoreline/depth sampling reuses the Water renderer's resident patch depth
+  texture binding; it must not request a second terrain-aligned water snapshot or duplicate
+  `ImageTexture` upload from GDScript
+- the terrain shader keeps separate terrain-height and water-depth UV layouts because terrain and
+  water patch textures may use different border widths
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
@@ -350,9 +355,17 @@ Current deterministic rules:
   mesh instead of relying on shader discard, and road-touched water patches suppress every water
   cell touched by the road footprint after a network edit instead of emitting partial transparent
   clip fragments
-- water patch mesh topology is generated and cached in Rust by patch, LOD, road-clip signature,
-  and depth signature; Godot applies completed mesh buffers under a bounded per-frame budget rather
-  than rebuilding patch topology directly in GDScript during LOD refreshes
+- water patch mesh topology is generated through async Rust/Rayon cache jobs by patch, LOD,
+  road-clip signature, and depth signature; Godot submits requests in small time-capped batches,
+  Rust owns the ready queue, and Godot polls completed mesh buffers without rebuilding pending-key
+  request lists every frame
+- the water mesh queue exports request/cache/job/ready/stale perf counters and compacts stale queued
+  patch keys before submission when the queue grows beyond the deduped request set
+- water mesh uploads apply under a measured per-frame time budget with pending-job backpressure,
+  and Godot rejects stale ready meshes whose road/depth signatures no longer match the current
+  resident patch before `ArrayMesh` upload
+- fully wet unclipped water patches use indexed grid mesh buffers instead of expanded per-cell
+  triangles so large still-water interiors upload less duplicate vertex data
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit
@@ -684,6 +697,8 @@ Deterministic water-render rules:
 - water rendering consumes chunk-local bounded window snapshots aligned to the same fixed terrain
   render patch grid
 - water patches render from baseline depth only; procedural waves remain shader-side
+- resident water patch depth textures are the shared renderer-owned depth source for terrain
+  shoreline tint/debug sampling
 
 Deterministic Godot-bridge rules:
 
@@ -1149,6 +1164,31 @@ What is implemented now:
 - live water now keeps authored baseline still water only; the dynamic flowing-water prototype was
   removed
 - save/load and renderer boundaries still use dense materialization
+- terrain shoreline/debug water sampling now binds the Water renderer's resident patch depth
+  texture directly instead of materializing a second terrain-aligned water texture
+- water mesh refresh now uses async Rust/Rayon preparation plus a Rust-owned ready queue,
+  Godot-side ready polling, pending-job backpressure, stale road/depth signature rejection, and a
+  measured apply budget, with indexed buffers for fully wet unclipped patches and Godot-side stale
+  queue compaction guided by request/cache/job perf counters; ready polling is adaptive and fills a
+  bounded camera-sorted apply queue, ready/apply drainage receives a conservative headroom boost
+  only while backlog is high, and ready mesh uploads now run before poll/submit stages so cache-hit
+  request work does not stack after expensive `ArrayMesh` uploads in the same frame
+- gameplay world-load refresh now clears terrain/water/network render-dirty flags after rebuilding
+  those visuals, avoiding a duplicate first-frame resident patch upload
+- terrain and water patch residency plus speculative cache prewarm now use elapsed-time budgets
+  with camera-prioritized patch order; water follows terrain's resident-set revision for the
+  steady-state no-change path, and terrain/water mesh-LOD refreshes plus terrain-to-water texture
+  sync drain through time-budgeted queues instead of sweeping every resident patch in one frame
+- terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
+  LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
+  perf captures
+- terrain/water LOD refreshes are movement-gated and cap checked/changed patches per frame so
+  periodic LOD validation does not rescan or rebuild the whole resident set in one frame; new
+  movement-triggered resident sweeps replace stale pending sweep entries and expose replaced-count
+  counters so queue buildup is measurable, and resident sweeps only enqueue patches whose target
+  LOD/subdivision differs from current state while reporting skipped-count counters; baked/CDT
+  terrain patches skip no-op LOD mesh rebuilds, and speculative terrain/water prewarm now covers
+  only a bounded halo around the resident/activation region
 - terrain rendering now derives hillshade procedurally from the live heightmap in both gameplay
   and WorldEditor; it is not stored as separate world data
 - terrain and water rendering now use a first render-only realism pass with slope-aware terrain

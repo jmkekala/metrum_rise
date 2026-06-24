@@ -26,6 +26,9 @@ uniform float ground_shadow_min_visibility = 0.10;
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
+uniform vec2 watermap_texture_size = vec2(2.0, 2.0);
+uniform vec2 watermap_inner_sample_offset_texels = vec2(0.0, 0.0);
+uniform vec2 watermap_inner_sample_size_texels = vec2(2.0, 2.0);
 uniform vec2 patch_world_size_m = vec2(256.0, 256.0);
 uniform float terrain_cell_m = 10.0;
 uniform float hillshade_azimuth_deg = 315.0;
@@ -87,9 +90,16 @@ uniform float contour_flat_relief_end_m = 1.25;
 
 varying float h;
 varying vec2 var_centered_uv;
+varying vec2 var_water_uv;
 varying vec3 var_world_pos;
 varying vec3 var_mesh_normal;
 varying float var_view_distance_m;
+
+vec2 watermap_centered_uv(vec2 patch_uv) {
+	vec2 safe_inner_size = max(watermap_inner_sample_size_texels, vec2(1.0));
+	return (watermap_inner_sample_offset_texels + patch_uv * (safe_inner_size - 1.0) + 0.5)
+		/ max(watermap_texture_size, vec2(1.0));
+}
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -507,7 +517,7 @@ float sample_local_relief(vec2 uv) {
 }
 
 float shoreline_mask(vec2 uv) {
-	vec2 texel = terrain_shore_lookup_radius_texels / max(heightmap_texture_size, vec2(1.0));
+	vec2 texel = terrain_shore_lookup_radius_texels / max(watermap_texture_size, vec2(1.0));
 	float center = texture(watermap, uv).r;
 	float ring = 0.0;
 	ring += texture(watermap, uv + vec2(texel.x, 0.0)).r;
@@ -560,7 +570,7 @@ vec3 terrain_visual_debug_color(
 	vec3 normal
 ) {
 	vec3 debug_color = vec3(0.0);
-	float water_depth_m = texture(watermap, var_centered_uv).r;
+	float water_depth_m = texture(watermap, var_water_uv).r;
 	if (terrain_visual_debug_mode == 1) {
 		debug_color = terrain_debug_patch_color(terrain_debug_patch_key);
 	} else if (terrain_visual_debug_mode == 2) {
@@ -716,6 +726,7 @@ void vertex() {
 	vec2 centered_uv = (inner_sample_offset_texels + patch_uv * (safe_inner_size - 1.0) + 0.5)
 		/ max(heightmap_texture_size, vec2(1.0));
 	var_centered_uv = centered_uv;
+	var_water_uv = watermap_centered_uv(patch_uv);
 	h = texture(heightmap, centered_uv).r;
 	if (height_is_baked) {
 		h = VERTEX.y / max(height_scale, 0.001);
@@ -747,7 +758,7 @@ void fragment() {
 	rock_mask = max(rock_mask, cliff_face * 0.92);
 	vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
 	color = mix(color, rock_color, rock_mask);
-	float shore_mask = shoreline_mask(var_centered_uv);
+	float shore_mask = shoreline_mask(var_water_uv);
 	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
 	vec3 shore_color = mix(vec3(0.28, 0.39, 0.23), vec3(0.18, 0.32, 0.18), ruggedness);
 	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);

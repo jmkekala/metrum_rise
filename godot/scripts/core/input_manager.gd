@@ -283,6 +283,10 @@ func _refresh_after_world_load():
 	if zoning_overlay: zoning_overlay.full_refresh()
 	if agents_node:
 		agents_node.update_swarm()
+	if simulation_node:
+		simulation_node.clear_terrain_dirty()
+		simulation_node.clear_water_dirty()
+		simulation_node.clear_network_dirty()
 
 func _handle_save_game():
 	_ensure_saves_dir()

@@ -2,9 +2,9 @@
 ##
 ## Rust methods called: get_terrain_patch_layout(), get_terrain_patch(), get_dirty_terrain_patches(),
 ##   get_refined_terrain_patch(), get_refined_terrain_patch_debug(),
-##   get_terrain_water_patch(), get_terrain_border_loop(), get_heightmap_size(),
-##   get_terrain_world_size(), is_terrain_dirty(), clear_terrain_dirty(), sculpt_terrain(),
-##   intersect_terrain(), get_pollution_image_data(), get_noise_image_data(),
+##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
+##   is_terrain_dirty(), clear_terrain_dirty(), sculpt_terrain(), intersect_terrain(),
+##   get_pollution_image_data(), get_noise_image_data(),
 ##   get_desirability_image_data()
 extends Node3D
 
@@ -86,10 +86,20 @@ const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
 const PATCH_RESIDENCY_HYSTERESIS_PATCHES := 2
-const PATCH_RESIDENCY_MUTATION_BUDGET_PER_FRAME := 256
-const PATCH_PREWARM_BUDGET_PER_FRAME := 16
+const PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME := 256
+const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 1.5
+const PATCH_PREWARM_MAX_PER_FRAME := 4
+const PATCH_PREWARM_BUDGET_MS := 0.75
+const PATCH_PREWARM_HALO_PATCHES := 1
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
+const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
+const PATCH_LOD_START_HEADROOM_MS := 1.25
+const PATCH_PREWARM_START_HEADROOM_MS := 1.75
 const PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
+const PATCH_MESH_LOD_REFRESH_BUDGET_MS := 1.0
+const PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M := 96.0
+const PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME := 32
+const PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME := 1
 const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
@@ -99,6 +109,7 @@ const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 
 @onready var simulation_node = $"../SimulationNode"
+@onready var water_node = $"../Water"
 
 var overlay_mode: int = 0
 var terrain_world_size: Vector2 = Vector2.ZERO
@@ -116,6 +127,8 @@ var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
+var patch_lod_refresh_queue: Array[Vector2i] = []
+var patch_lod_refresh_lookup: Dictionary = {}
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var road_locked_patch_lookup: Dictionary = {}
@@ -139,6 +152,24 @@ var _terrain_force_lod1: bool = false
 var _road_debug_enabled: bool = false
 var _road_geometry_debug_enabled: bool = false
 var _terrain_mesh_lod_refresh_elapsed_s: float = 0.0
+var _terrain_lod_refresh_camera_valid: bool = false
+var _terrain_lod_refresh_last_camera_position: Vector3 = Vector3.ZERO
+var _terrain_lod_last_processed_count: int = 0
+var _terrain_lod_last_changed_count: int = 0
+var _terrain_lod_last_queued_count: int = 0
+var _terrain_lod_last_queue_count: int = 0
+var _terrain_lod_last_replaced_count: int = 0
+var _terrain_lod_last_skipped_count: int = 0
+var _terrain_lod_last_deferred_count: int = 0
+var _terrain_prewarm_last_deferred_count: int = 0
+var _terrain_residency_pending_mutations: bool = false
+var _terrain_residency_target_bounds_valid: bool = false
+var _terrain_residency_target_bounds: Dictionary = {}
+var _terrain_resident_patch_revision: int = 0
+var _terrain_residency_last_add_count: int = 0
+var _terrain_residency_last_remove_count: int = 0
+var _terrain_residency_last_add_pending_count: int = 0
+var _terrain_residency_last_remove_pending_count: int = 0
 var _terrain_debug_elapsed_s: float = 0.0
 var _terrain_debug_frames: int = 0
 var _terrain_debug_frame_ms_total: float = 0.0
@@ -178,6 +209,10 @@ func rebuild_from_simulation_state() -> void:
 	_terrain_visual_debug_mode = _terrain_visual_debug_mode_from_env()
 	_terrain_grass_visual_debug_mode = _terrain_grass_visual_debug_mode_from_env()
 	_terrain_mesh_lod_refresh_elapsed_s = 0.0
+	_terrain_lod_refresh_camera_valid = false
+	_record_lod_perf_counters(0, 0, 0, 0)
+	_terrain_lod_last_deferred_count = 0
+	_terrain_prewarm_last_deferred_count = 0
 	_reset_terrain_debug_counters()
 	_clear_patches()
 	_resident_patch_bounds_valid = false
@@ -224,14 +259,18 @@ func _process(delta: float) -> void:
 	var residency_start_us := frame_start_us
 	var sim_core_busy: bool = simulation_node.is_sim_core_busy()
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
+	var residency_changed := false
 	if not sim_core_busy:
-		_sync_patch_residency()
+		residency_changed = _sync_patch_residency()
 	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
+	var water_sync_perf_stats := {}
 	var lod_elapsed_ms := 0.0
 	var prewarm_elapsed_ms := 0.0
+	_terrain_lod_last_deferred_count = 0
+	_terrain_prewarm_last_deferred_count = 0
 	if not sim_core_busy and not network_refresh_pending and simulation_node.is_terrain_dirty():
 		_refresh_road_locked_patch_lookup()
 		var dirty_start_us := Time.get_ticks_usec()
@@ -250,7 +289,10 @@ func _process(delta: float) -> void:
 		simulation_node.clear_terrain_dirty()
 
 	var water_sync_start_us := Time.get_ticks_usec()
-	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
+	water_sync_perf_stats = _process_water_patch_texture_sync_queue(
+		PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME,
+		perf_enabled
+	)
 	water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 
 	if overlay_mode != cached_overlay_mode:
@@ -258,12 +300,15 @@ func _process(delta: float) -> void:
 		_apply_overlay_mode()
 		cached_overlay_mode = overlay_mode
 
-	if perf_enabled:
-		var lod_start_us := Time.get_ticks_usec()
-		_refresh_patch_mesh_lods(delta)
-		lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
+	if _terrain_frame_headroom_available(frame_start_us, PATCH_LOD_START_HEADROOM_MS):
+		if perf_enabled:
+			var lod_start_us := Time.get_ticks_usec()
+			_refresh_patch_mesh_lods(delta)
+			lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
+		else:
+			_refresh_patch_mesh_lods(delta)
 	else:
-		_refresh_patch_mesh_lods(delta)
+		_defer_patch_mesh_lods(delta)
 
 	var input_manager = get_node_or_null("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
@@ -281,26 +326,54 @@ func _process(delta: float) -> void:
 			water_sync_elapsed_ms
 		)
 
-	if not sim_core_busy and not network_refresh_pending and not simulation_node.is_terrain_dirty():
-		if perf_enabled:
-			var prewarm_start_us := Time.get_ticks_usec()
-			_prewarm_patch_cache()
-			prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
+	if (
+		not sim_core_busy
+		and not network_refresh_pending
+		and not simulation_node.is_terrain_dirty()
+		and not residency_changed
+		and not _terrain_residency_pending_mutations
+	):
+		if (
+			patch_lod_refresh_queue.is_empty()
+			and _terrain_frame_headroom_available(frame_start_us, PATCH_PREWARM_START_HEADROOM_MS)
+		):
+			if perf_enabled:
+				var prewarm_start_us := Time.get_ticks_usec()
+				_prewarm_patch_cache()
+				prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
+			else:
+				_prewarm_patch_cache()
 		else:
-			_prewarm_patch_cache()
+			_terrain_prewarm_last_deferred_count = 1 if not patch_prewarm_queue.is_empty() else 0
 
 	if perf_enabled:
+		var perf_details := {
+			"residency": residency_elapsed_ms,
+			"residency_add_count": float(_terrain_residency_last_add_count),
+			"residency_remove_count": float(_terrain_residency_last_remove_count),
+			"residency_add_pending_count": float(_terrain_residency_last_add_pending_count),
+			"residency_remove_pending_count": float(_terrain_residency_last_remove_pending_count),
+			"upload": upload_elapsed_ms,
+			"border": border_elapsed_ms,
+			"water_sync": water_sync_elapsed_ms,
+			"lod": lod_elapsed_ms,
+			"lod_processed_count": float(_terrain_lod_last_processed_count),
+			"lod_changed_count": float(_terrain_lod_last_changed_count),
+			"lod_queued_count": float(_terrain_lod_last_queued_count),
+			"lod_queue_count": float(_terrain_lod_last_queue_count),
+			"lod_replaced_count": float(_terrain_lod_last_replaced_count),
+			"lod_skipped_count": float(_terrain_lod_last_skipped_count),
+			"lod_deferred_count": float(_terrain_lod_last_deferred_count),
+			"prewarm": prewarm_elapsed_ms,
+			"prewarm_deferred_count": float(_terrain_prewarm_last_deferred_count),
+		}
+		for key_variant in water_sync_perf_stats.keys():
+			var perf_key := str(key_variant)
+			perf_details[perf_key] = water_sync_perf_stats[key_variant]
 		PerfDebug.record(
 			"terrain",
 			float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
-			{
-				"residency": residency_elapsed_ms,
-				"upload": upload_elapsed_ms,
-				"border": border_elapsed_ms,
-				"water_sync": water_sync_elapsed_ms,
-				"lod": lod_elapsed_ms,
-				"prewarm": prewarm_elapsed_ms,
-			}
+			perf_details
 		)
 
 func get_resident_patch_keys() -> Array[Vector2i]:
@@ -309,6 +382,9 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 		var key: Vector2i = key_variant
 		keys.append(key)
 	return keys
+
+func get_resident_patch_revision() -> int:
+	return _terrain_resident_patch_revision
 
 func get_patch_height_texture(key: Vector2i) -> Texture2D:
 	if not patches.has(key):
@@ -345,6 +421,7 @@ func update_terrain_visuals() -> void:
 
 func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 	if patch_cols <= 0 or patch_rows <= 0:
+		_record_residency_perf_counters(0, 0, 0, 0)
 		return false
 
 	var desired_bounds: Dictionary = _desired_patch_bounds()
@@ -353,6 +430,15 @@ func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 		desired_bounds,
 		PATCH_RESIDENCY_HYSTERESIS_PATCHES
 	)
+	if (
+		not force_full_sync
+		and not _terrain_residency_pending_mutations
+		and _terrain_residency_target_bounds_valid
+		and _patch_bounds_equal(resident_target_bounds, _terrain_residency_target_bounds)
+	):
+		_record_residency_perf_counters(0, 0, 0, 0)
+		return false
+
 	var keys_to_add: Array[Vector2i] = []
 	for patch_z in range(
 		int(resident_target_bounds["min_z"]),
@@ -373,45 +459,93 @@ func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 			keys_to_remove.append(key)
 
 	if keys_to_add.is_empty() and keys_to_remove.is_empty():
+		_terrain_residency_pending_mutations = false
+		_terrain_residency_target_bounds = resident_target_bounds.duplicate()
+		_terrain_residency_target_bounds_valid = true
 		_refresh_resident_patch_bounds()
+		_record_residency_perf_counters(0, 0, 0, 0)
 		return false
 
-	var changed := false
-	var remaining_budget := PATCH_RESIDENCY_MUTATION_BUDGET_PER_FRAME
-	if force_full_sync:
-		remaining_budget = keys_to_add.size() + keys_to_remove.size()
-	var initial_budget := remaining_budget
-	for key in keys_to_add:
-		if remaining_budget <= 0:
-			break
-		_activate_patch(key)
-		remaining_budget -= 1
-		changed = true
+	_sort_patch_keys_by_camera_priority(keys_to_add)
+	_sort_patch_keys_by_camera_priority(keys_to_remove)
+	keys_to_remove.reverse()
 
+	var changed := false
+	var mutation_limit := PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME
+	if force_full_sync:
+		mutation_limit = keys_to_add.size() + keys_to_remove.size()
+	var budget_start_us: int = Time.get_ticks_usec()
+	var processed_mutations := 0
+	var processed_adds := 0
+	var processed_removes := 0
 	for key in keys_to_remove:
-		if remaining_budget <= 0:
+		if processed_mutations >= mutation_limit:
+			break
+		if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
 			break
 		_deactivate_patch(key)
-		remaining_budget -= 1
+		processed_mutations += 1
+		processed_removes += 1
 		changed = true
 
+	for key in keys_to_add:
+		if processed_mutations >= mutation_limit:
+			break
+		if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
+			break
+		_activate_patch(key)
+		processed_mutations += 1
+		processed_adds += 1
+		changed = true
+
+	_terrain_residency_pending_mutations = (
+		processed_adds < keys_to_add.size()
+		or processed_removes < keys_to_remove.size()
+	)
+	_record_residency_perf_counters(
+		processed_adds,
+		processed_removes,
+		max(0, keys_to_add.size() - processed_adds),
+		max(0, keys_to_remove.size() - processed_removes)
+	)
 	_refresh_resident_patch_bounds()
+	_terrain_residency_target_bounds = resident_target_bounds.duplicate()
+	_terrain_residency_target_bounds_valid = true
 	if changed:
+		_terrain_resident_patch_revision += 1
 		_terrain_debug_residency_changes += 1
+		_rebuild_patch_prewarm_queue()
 		if _terrain_debug_verbose:
-			var executed_adds: int = min(keys_to_add.size(), initial_budget)
-			var executed_removes: int = min(keys_to_remove.size(), max(0, initial_budget - executed_adds))
 			_terrain_debug_log(
 				"residency changed desired=%s resident=%s resident_count=%d add_pending=%d remove_pending=%d"
 				% [
 					_terrain_debug_bounds_label(desired_bounds),
 					_terrain_debug_current_resident_bounds_label(),
 					resident_patch_lookup.size(),
-					max(0, keys_to_add.size() - executed_adds),
-					max(0, keys_to_remove.size() - executed_removes),
+					max(0, keys_to_add.size() - processed_adds),
+					max(0, keys_to_remove.size() - processed_removes),
 				]
 			)
 	return changed
+
+func _record_residency_perf_counters(
+	add_count: int,
+	remove_count: int,
+	add_pending_count: int,
+	remove_pending_count: int
+) -> void:
+	_terrain_residency_last_add_count = add_count
+	_terrain_residency_last_remove_count = remove_count
+	_terrain_residency_last_add_pending_count = add_pending_count
+	_terrain_residency_last_remove_pending_count = remove_pending_count
+
+func _patch_bounds_equal(a: Dictionary, b: Dictionary) -> bool:
+	return (
+		int(a.get("min_x", 0)) == int(b.get("min_x", 0))
+		and int(a.get("max_x", -1)) == int(b.get("max_x", -1))
+		and int(a.get("min_z", 0)) == int(b.get("min_z", 0))
+		and int(a.get("max_z", -1)) == int(b.get("max_z", -1))
+	)
 
 func _desired_patch_bounds() -> Dictionary:
 	if patch_cols <= 0 or patch_rows <= 0:
@@ -574,6 +708,9 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
+	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
+	material.set_shader_parameter("watermap_inner_sample_offset_texels", Vector2.ZERO)
+	material.set_shader_parameter("watermap_inner_sample_size_texels", Vector2(2, 2))
 	material.set_shader_parameter("patch_world_size_m", Vector2(world_size_x, world_size_z))
 	material.set_shader_parameter("terrain_cell_m", terrain_cell_m)
 	material.set_shader_parameter("hillshade_azimuth_deg", HILLSHADE_AZIMUTH_DEG)
@@ -649,10 +786,13 @@ func _create_patch(key: Vector2i) -> void:
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
-		"water_image": null,
 		"water_texture": empty_water_texture,
 		"water_texture_width": 2,
 		"water_texture_height": 2,
+		"water_inner_offset_x": 0,
+		"water_inner_offset_z": 0,
+		"water_sample_width": 2,
+		"water_sample_height": 2,
 		"water_depth_nonzero_count": 0,
 		"water_world_origin_x": world_origin_x,
 		"water_world_origin_z": world_origin_z,
@@ -840,11 +980,16 @@ func _deactivate_patch(key: Vector2i) -> void:
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
+	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.queue_free()
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
+	patch_lod_refresh_lookup.erase(key)
+	if was_resident:
+		_terrain_residency_target_bounds_valid = false
+		_terrain_resident_patch_revision += 1
 	_terrain_debug_patch_removes += 1
 
 func _patch_key_in_bounds(key: Vector2i, bounds: Dictionary) -> bool:
@@ -897,33 +1042,110 @@ func _clear_patches() -> void:
 	patches.clear()
 	resident_patch_lookup.clear()
 	patch_prewarm_queue.clear()
+	patch_lod_refresh_queue.clear()
+	patch_lod_refresh_lookup.clear()
+	_terrain_lod_refresh_camera_valid = false
+	_record_lod_perf_counters(0, 0, 0, 0)
+	_terrain_lod_last_deferred_count = 0
+	_terrain_prewarm_last_deferred_count = 0
 	water_texture_sync_queue.clear()
 	water_texture_sync_lookup.clear()
 	_resident_patch_bounds_valid = false
+	_terrain_residency_pending_mutations = false
+	_terrain_residency_target_bounds_valid = false
+	_terrain_residency_target_bounds.clear()
+	_terrain_resident_patch_revision += 1
 
 func _rebuild_patch_prewarm_queue() -> void:
 	patch_prewarm_queue.clear()
-	for patch_z in range(patch_rows):
-		for patch_x in range(patch_cols):
+	if patch_cols <= 0 or patch_rows <= 0:
+		return
+	var prewarm_bounds: Dictionary = _prewarm_patch_bounds()
+	if int(prewarm_bounds["max_x"]) < int(prewarm_bounds["min_x"]):
+		return
+	if int(prewarm_bounds["max_z"]) < int(prewarm_bounds["min_z"]):
+		return
+	for patch_z in range(int(prewarm_bounds["min_z"]), int(prewarm_bounds["max_z"]) + 1):
+		for patch_x in range(int(prewarm_bounds["min_x"]), int(prewarm_bounds["max_x"]) + 1):
 			var key := Vector2i(patch_x, patch_z)
 			if patches.has(key):
 				continue
 			patch_prewarm_queue.append(key)
+	_sort_patch_keys_by_camera_priority(patch_prewarm_queue)
+
+func _prewarm_patch_bounds() -> Dictionary:
+	if patch_cols <= 0 or patch_rows <= 0:
+		return {"min_x": 0, "max_x": -1, "min_z": 0, "max_z": -1}
+	if _terrain_residency_target_bounds_valid:
+		return _expanded_patch_bounds(_terrain_residency_target_bounds, PATCH_PREWARM_HALO_PATCHES)
+	if _resident_patch_bounds_valid:
+		return _expanded_patch_bounds(
+			{
+				"min_x": _resident_min_patch_x,
+				"max_x": _resident_max_patch_x,
+				"min_z": _resident_min_patch_z,
+				"max_z": _resident_max_patch_z,
+			},
+			PATCH_PREWARM_HALO_PATCHES
+		)
+	return _expanded_patch_bounds(
+		_desired_patch_bounds(),
+		PATCH_RESIDENCY_HYSTERESIS_PATCHES + PATCH_PREWARM_HALO_PATCHES
+	)
 
 func _prewarm_patch_cache() -> void:
 	if patch_prewarm_queue.is_empty():
 		return
-	var remaining_budget := PATCH_PREWARM_BUDGET_PER_FRAME
-	while remaining_budget > 0 and not patch_prewarm_queue.is_empty():
+	var budget_start_us: int = Time.get_ticks_usec()
+	var attempted_patches := 0
+	var created_patches := 0
+	while attempted_patches < PATCH_PREWARM_MAX_PER_FRAME and not patch_prewarm_queue.is_empty():
+		if _time_budget_exhausted(budget_start_us, PATCH_PREWARM_BUDGET_MS, created_patches):
+			break
 		var key: Vector2i = patch_prewarm_queue.pop_front()
+		attempted_patches += 1
 		if patches.has(key):
 			continue
 		_create_patch(key)
+		created_patches += 1
 		var patch: Dictionary = patches.get(key, {})
 		if not patch.is_empty():
 			var patch_node: MeshInstance3D = patch["node"]
 			patch_node.visible = false
-		remaining_budget -= 1
+
+func _time_budget_exhausted(start_us: int, budget_ms: float, completed_count: int) -> bool:
+	if completed_count <= 0:
+		return false
+	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= budget_ms
+
+func _terrain_frame_headroom_available(frame_start_us: int, start_budget_ms: float) -> bool:
+	return float(Time.get_ticks_usec() - frame_start_us) / 1000.0 < start_budget_ms
+
+func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
+	if keys.size() <= 1:
+		return
+	var origin: Vector2i = _current_camera_patch_key()
+	keys.sort_custom(func(a: Vector2i, b: Vector2i):
+		var distance_a: int = absi(a.x - origin.x) + absi(a.y - origin.y)
+		var distance_b: int = absi(b.x - origin.x) + absi(b.y - origin.y)
+		if distance_a == distance_b:
+			if a.y == b.y:
+				return a.x < b.x
+			return a.y < b.y
+		return distance_a < distance_b
+	)
+
+func _current_camera_patch_key() -> Vector2i:
+	if patch_cols <= 0 or patch_rows <= 0 or patch_span_m <= 0.0:
+		return Vector2i.ZERO
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return Vector2i(int(patch_cols / 2), int(patch_rows / 2))
+	var half_world := terrain_world_size * 0.5
+	return Vector2i(
+		clampi(int(floor((camera.global_position.x + half_world.x) / patch_span_m)), 0, patch_cols - 1),
+		clampi(int(floor((camera.global_position.z + half_world.y) / patch_span_m)), 0, patch_rows - 1)
+	)
 
 func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -1375,14 +1597,25 @@ func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> 
 	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
 
 func _mesh_lod_step_for_patch(key: Vector2i, center_x: float, center_z: float) -> int:
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return _mesh_lod_step_for_patch_with_camera(key, center_x, center_z, Vector3.ZERO, false)
+	return _mesh_lod_step_for_patch_with_camera(key, center_x, center_z, camera.global_position, true)
+
+func _mesh_lod_step_for_patch_with_camera(
+	key: Vector2i,
+	center_x: float,
+	center_z: float,
+	camera_position: Vector3,
+	camera_valid: bool
+) -> int:
 	if _terrain_force_lod1:
 		return 1
 	if road_locked_patch_lookup.has(key):
 		return 1
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
+	if not camera_valid:
 		return 1
-	var distance_m := camera.global_position.distance_to(Vector3(center_x, 0.0, center_z))
+	var distance_m := camera_position.distance_to(Vector3(center_x, 0.0, center_z))
 	return _mesh_lod_step_for_distance(distance_m)
 
 func _mesh_lod_step_for_distance(distance_m: float) -> int:
@@ -1395,21 +1628,138 @@ func _mesh_lod_step_for_distance(distance_m: float) -> int:
 	return 8
 
 func _refresh_patch_mesh_lods(delta: float) -> void:
+	_terrain_lod_last_deferred_count = 0
 	if resident_patch_lookup.is_empty():
 		_terrain_mesh_lod_refresh_elapsed_s = 0.0
+		patch_lod_refresh_queue.clear()
+		patch_lod_refresh_lookup.clear()
+		_record_lod_perf_counters(0, 0, 0, 0)
 		return
+	var queued_count := 0
+	var replaced_count: int = 0
+	_terrain_lod_last_skipped_count = 0
 	_terrain_mesh_lod_refresh_elapsed_s += delta
-	if _terrain_mesh_lod_refresh_elapsed_s < PATCH_MESH_LOD_REFRESH_INTERVAL_S:
-		return
-	_terrain_mesh_lod_refresh_elapsed_s = 0.0
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		_refresh_one_patch_mesh_lod(key)
+	if (
+		_terrain_mesh_lod_refresh_elapsed_s >= PATCH_MESH_LOD_REFRESH_INTERVAL_S
+		and _lod_refresh_camera_moved(PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M)
+	):
+		_terrain_mesh_lod_refresh_elapsed_s = 0.0
+		replaced_count = patch_lod_refresh_queue.size()
+		queued_count = _replace_resident_patch_lod_refreshes()
+	_process_patch_lod_refresh_queue(
+		PATCH_MESH_LOD_REFRESH_BUDGET_MS,
+		PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME,
+		PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME
+	)
+	_terrain_lod_last_queued_count = queued_count
+	_terrain_lod_last_queue_count = patch_lod_refresh_queue.size()
+	_terrain_lod_last_replaced_count = replaced_count
 
-func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
+func _defer_patch_mesh_lods(delta: float) -> void:
+	_terrain_mesh_lod_refresh_elapsed_s += delta
+	_terrain_lod_last_deferred_count = 1
+	_record_lod_perf_counters(
+		0,
+		0,
+		0,
+		patch_lod_refresh_queue.size(),
+		0,
+		0
+	)
+
+func _lod_refresh_camera_moved(min_distance_m: float) -> bool:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return true
+	var position: Vector3 = camera.global_position
+	if not _terrain_lod_refresh_camera_valid:
+		_terrain_lod_refresh_camera_valid = true
+		_terrain_lod_refresh_last_camera_position = position
+		return true
+	if position.distance_squared_to(_terrain_lod_refresh_last_camera_position) < min_distance_m * min_distance_m:
+		return false
+	_terrain_lod_refresh_last_camera_position = position
+	return true
+
+func _replace_resident_patch_lod_refreshes() -> int:
+	var keys: Array[Vector2i] = get_resident_patch_keys()
+	var candidates: Array[Vector2i] = []
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	var camera_position: Vector3 = Vector3.ZERO
+	var camera_valid: bool = camera != null
+	if camera_valid:
+		camera_position = camera.global_position
+	for key in keys:
+		if _terrain_patch_lod_refresh_needed(key, camera_position, camera_valid):
+			candidates.append(key)
+		else:
+			_terrain_lod_last_skipped_count += 1
+	_sort_patch_keys_by_camera_priority(candidates)
+	patch_lod_refresh_lookup.clear()
+	for key in candidates:
+		patch_lod_refresh_lookup[key] = true
+	patch_lod_refresh_queue = candidates
+	return candidates.size()
+
+func _terrain_patch_lod_refresh_needed(
+	key: Vector2i,
+	camera_position: Vector3,
+	camera_valid: bool
+) -> bool:
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
+		return false
+	if bool(patch.get("height_is_baked", false)):
+		return false
+	var patch_node: MeshInstance3D = patch["node"]
+	var target_lod_step: int = _mesh_lod_step_for_patch_with_camera(
+		key,
+		patch_node.position.x,
+		patch_node.position.z,
+		camera_position,
+		camera_valid
+	)
+	var target_subdivision_factor: int = _mesh_subdivision_factor_for_patch(
+		key,
+		float(patch.get("sample_step_m", terrain_cell_m))
+	)
+	return (
+		int(patch.get("lod_step", 1)) != target_lod_step
+		or int(patch.get("subdivision_factor", 1)) != target_subdivision_factor
+	)
+
+func _process_patch_lod_refresh_queue(
+	refresh_budget_ms: float,
+	max_checks_per_frame: int,
+	max_changes_per_frame: int
+) -> void:
+	_terrain_lod_last_processed_count = 0
+	_terrain_lod_last_changed_count = 0
+	if patch_lod_refresh_queue.is_empty():
 		return
+	var refresh_start_us: int = Time.get_ticks_usec()
+	var processed_count := 0
+	var changed_count := 0
+	while not patch_lod_refresh_queue.is_empty():
+		if processed_count >= max_checks_per_frame or changed_count >= max_changes_per_frame:
+			break
+		if _time_budget_exhausted(refresh_start_us, refresh_budget_ms, processed_count):
+			break
+		var key: Vector2i = patch_lod_refresh_queue.pop_front()
+		patch_lod_refresh_lookup.erase(key)
+		if resident_patch_lookup.has(key):
+			if _refresh_one_patch_mesh_lod(key):
+				changed_count += 1
+		processed_count += 1
+	_terrain_lod_last_processed_count = processed_count
+	_terrain_lod_last_changed_count = changed_count
+
+func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
+	var patch: Dictionary = patches.get(key, {})
+	if patch.is_empty():
+		return false
+	if bool(patch.get("height_is_baked", false)):
+		return false
 	var patch_node: MeshInstance3D = patch["node"]
 	var target_lod_step := _mesh_lod_step_for_patch(key, patch_node.position.x, patch_node.position.z)
 	var target_subdivision_factor := _mesh_subdivision_factor_for_patch(
@@ -1419,12 +1769,12 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	var current_lod_step := int(patch.get("lod_step", 1))
 	var current_subdivision_factor := int(patch.get("subdivision_factor", 1))
 	if current_lod_step == target_lod_step and current_subdivision_factor == target_subdivision_factor:
-		return
+		return false
 	var patch_data: Dictionary = patch.get("last_patch_data", {})
 	if patch_data.is_empty():
 		patch_data = _terrain_patch_data_for_key(key, false)
 	if patch_data.is_empty():
-		return
+		return false
 	patch["lod_step"] = target_lod_step
 	patch["subdivision_factor"] = target_subdivision_factor
 	var material: ShaderMaterial = patch["material"]
@@ -1434,6 +1784,22 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 		target_lod_step,
 		target_subdivision_factor
 	)
+	return true
+
+func _record_lod_perf_counters(
+	processed_count: int,
+	changed_count: int,
+	queued_count: int,
+	queue_count: int,
+	replaced_count: int = 0,
+	skipped_count: int = 0
+) -> void:
+	_terrain_lod_last_processed_count = processed_count
+	_terrain_lod_last_changed_count = changed_count
+	_terrain_lod_last_queued_count = queued_count
+	_terrain_lod_last_queue_count = queue_count
+	_terrain_lod_last_replaced_count = replaced_count
+	_terrain_lod_last_skipped_count = skipped_count
 
 func _refresh_road_locked_patch_lookup() -> void:
 	road_locked_patch_lookup.clear()
@@ -1503,10 +1869,16 @@ func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
 	if patch.get("water_texture", null) != empty_water_texture:
 		material.set_shader_parameter("watermap", empty_water_texture)
-	patch["water_image"] = null
+	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
+	material.set_shader_parameter("watermap_inner_sample_offset_texels", Vector2.ZERO)
+	material.set_shader_parameter("watermap_inner_sample_size_texels", Vector2(2, 2))
 	patch["water_texture"] = empty_water_texture
 	patch["water_texture_width"] = 2
 	patch["water_texture_height"] = 2
+	patch["water_inner_offset_x"] = 0
+	patch["water_inner_offset_z"] = 0
+	patch["water_sample_width"] = 2
+	patch["water_sample_height"] = 2
 	patch["water_depth_nonzero_count"] = 0
 
 func _sync_water_patch_textures() -> void:
@@ -1514,8 +1886,9 @@ func _sync_water_patch_textures() -> void:
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 
 func _queue_all_water_patch_texture_syncs() -> void:
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
+	var keys: Array[Vector2i] = get_resident_patch_keys()
+	_sort_patch_keys_by_camera_priority(keys)
+	for key in keys:
 		_queue_water_patch_texture_sync(key)
 
 func _queue_water_patch_texture_sync(key: Vector2i) -> void:
@@ -1524,9 +1897,11 @@ func _queue_water_patch_texture_sync(key: Vector2i) -> void:
 	water_texture_sync_lookup[key] = true
 	water_texture_sync_queue.append(key)
 
-func _process_water_patch_texture_sync_queue(budget: int) -> void:
-	if simulation_node == null or not simulation_node.has_method("get_terrain_water_patch"):
-		return
+func _process_water_patch_texture_sync_queue(
+	budget: int,
+	collect_perf_stats: bool = false
+) -> Dictionary:
+	var perf_stats := _new_water_sync_perf_stats() if collect_perf_stats else {}
 	var sync_start_us := Time.get_ticks_usec()
 	var processed_count := 0
 	var updated_count := 0
@@ -1534,9 +1909,11 @@ func _process_water_patch_texture_sync_queue(budget: int) -> void:
 	var depth_nonzero_total := 0
 	var remaining_budget := budget
 	while remaining_budget > 0 and not water_texture_sync_queue.is_empty():
-		var key: Vector2i = water_texture_sync_queue.pop_back()
+		if _time_budget_exhausted(sync_start_us, PATCH_WATER_TEXTURE_SYNC_BUDGET_MS, processed_count):
+			break
+		var key: Vector2i = water_texture_sync_queue.pop_front()
 		water_texture_sync_lookup.erase(key)
-		var depth_nonzero_count := _sync_one_water_patch_texture(key)
+		var depth_nonzero_count := _sync_one_water_patch_texture(key, perf_stats)
 		processed_count += 1
 		if depth_nonzero_count >= 0:
 			updated_count += 1
@@ -1547,7 +1924,7 @@ func _process_water_patch_texture_sync_queue(budget: int) -> void:
 
 	if processed_count > 0 and _terrain_debug_enabled and (_terrain_debug_verbose or _terrain_visual_debug_mode >= 6):
 		_terrain_debug_log(
-			"watermap_sync source=terrain_aligned processed=%d updated=%d missing=%d queued=%d depth_nonzero=%d elapsed_ms=%.3f"
+			"watermap_sync source=water_renderer_texture processed=%d updated=%d missing=%d queued=%d depth_nonzero=%d elapsed_ms=%.3f"
 			% [
 				processed_count,
 				updated_count,
@@ -1557,63 +1934,181 @@ func _process_water_patch_texture_sync_queue(budget: int) -> void:
 				float(Time.get_ticks_usec() - sync_start_us) / 1000.0,
 			]
 		)
+	if collect_perf_stats:
+		perf_stats["water_sync_processed_count"] = float(processed_count)
+		perf_stats["water_sync_updated_count"] = float(updated_count)
+		perf_stats["water_sync_missing_count"] = float(missing_count)
+		perf_stats["water_sync_queued_count"] = float(water_texture_sync_queue.size())
+	return perf_stats
 
-func _sync_one_water_patch_texture(key: Vector2i) -> int:
+func _new_water_sync_perf_stats() -> Dictionary:
+	return {
+		"water_sync_fetch": 0.0,
+		"water_sync_bytes": 0.0,
+		"water_sync_image": 0.0,
+		"water_sync_texture": 0.0,
+		"water_sync_bind": 0.0,
+		"water_sync_metadata": 0.0,
+		"water_sync_processed_count": 0.0,
+		"water_sync_updated_count": 0.0,
+		"water_sync_missing_count": 0.0,
+		"water_sync_queued_count": 0.0,
+	}
+
+func _sync_one_water_patch_texture(key: Vector2i, perf_stats: Dictionary = {}) -> int:
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
 		return -1
 	var material: ShaderMaterial = patch["material"]
-	var water_data: Dictionary = simulation_node.get_terrain_water_patch(key.x, key.y)
-	if water_data.is_empty():
-		_bind_empty_water_texture(patch, material)
+	var collect_perf_stats := perf_stats.has("water_sync_fetch")
+	if water_node == null or not water_node.has_method("get_water_patch_texture_binding"):
+		if collect_perf_stats:
+			var bind_missing_node_start_us := Time.get_ticks_usec()
+			_bind_empty_water_texture(patch, material)
+			perf_stats["water_sync_bind"] = (
+				float(perf_stats["water_sync_bind"])
+				+ float(Time.get_ticks_usec() - bind_missing_node_start_us) / 1000.0
+			)
+		else:
+			_bind_empty_water_texture(patch, material)
 		return -1
 
-	var texture_width := int(water_data.get("texture_width", 0))
-	var texture_height := int(water_data.get("texture_height", 0))
-	var depth_data: PackedFloat32Array = (
-		water_data.get("depth_data", PackedFloat32Array()) as PackedFloat32Array
-	)
-	if texture_width <= 0 or texture_height <= 0 or depth_data.size() != texture_width * texture_height:
-		_bind_empty_water_texture(patch, material)
-		return -1
-
-	var water_image: Image = patch.get("water_image", null) as Image
-	var water_texture: ImageTexture = patch.get("water_texture", null) as ImageTexture
-	var old_texture_width := int(patch.get("water_texture_width", 0))
-	var old_texture_height := int(patch.get("water_texture_height", 0))
-	var texture_shape_changed := (
-		water_image == null
-		or water_texture == null
-		or water_texture == empty_water_texture
-		or old_texture_width != texture_width
-		or old_texture_height != texture_height
-	)
-	if texture_shape_changed:
-		water_image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
-	water_image.set_data(
-		texture_width,
-		texture_height,
-		false,
-		Image.FORMAT_RF,
-		depth_data.to_byte_array()
-	)
-	if texture_shape_changed:
-		water_texture = ImageTexture.create_from_image(water_image)
-		material.set_shader_parameter("watermap", water_texture)
+	var water_binding: Dictionary
+	if collect_perf_stats:
+		var fetch_start_us := Time.get_ticks_usec()
+		water_binding = water_node.get_water_patch_texture_binding(key)
+		perf_stats["water_sync_fetch"] = (
+			float(perf_stats["water_sync_fetch"])
+			+ float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
+		)
 	else:
-		water_texture.update(water_image)
+		water_binding = water_node.get_water_patch_texture_binding(key)
+	if water_binding.is_empty():
+		if collect_perf_stats:
+			var bind_empty_start_us := Time.get_ticks_usec()
+			_bind_empty_water_texture(patch, material)
+			perf_stats["water_sync_bind"] = (
+				float(perf_stats["water_sync_bind"])
+				+ float(Time.get_ticks_usec() - bind_empty_start_us) / 1000.0
+			)
+		else:
+			_bind_empty_water_texture(patch, material)
+		return -1
 
-	var depth_nonzero_count := int(water_data.get("depth_nonzero_count", 0))
-	patch["water_image"] = water_image
+	var water_texture: Texture2D = water_binding.get("texture", null) as Texture2D
+	var texture_width := int(water_binding.get("texture_width", 0))
+	var texture_height := int(water_binding.get("texture_height", 0))
+	var inner_offset_x := int(water_binding.get("inner_offset_x", 0))
+	var inner_offset_z := int(water_binding.get("inner_offset_z", 0))
+	var sample_width := int(water_binding.get("sample_width", 0))
+	var sample_height := int(water_binding.get("sample_height", 0))
+	if (
+		water_texture == null
+		or texture_width <= 0
+		or texture_height <= 0
+		or sample_width <= 0
+		or sample_height <= 0
+	):
+		if collect_perf_stats:
+			var bind_invalid_start_us := Time.get_ticks_usec()
+			_bind_empty_water_texture(patch, material)
+			perf_stats["water_sync_bind"] = (
+				float(perf_stats["water_sync_bind"])
+				+ float(Time.get_ticks_usec() - bind_invalid_start_us) / 1000.0
+			)
+		else:
+			_bind_empty_water_texture(patch, material)
+		return -1
+
+	if collect_perf_stats:
+		var bind_start_us := Time.get_ticks_usec()
+		_bind_water_texture_from_binding(
+			patch,
+			material,
+			water_texture,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			sample_width,
+			sample_height
+		)
+		perf_stats["water_sync_bind"] = (
+			float(perf_stats["water_sync_bind"])
+			+ float(Time.get_ticks_usec() - bind_start_us) / 1000.0
+		)
+	else:
+		_bind_water_texture_from_binding(
+			patch,
+			material,
+			water_texture,
+			texture_width,
+			texture_height,
+			inner_offset_x,
+			inner_offset_z,
+			sample_width,
+			sample_height
+		)
+
+	var depth_nonzero_count := int(water_binding.get("depth_nonzero_count", 0))
+	if collect_perf_stats:
+		var metadata_start_us := Time.get_ticks_usec()
+		patch["water_depth_nonzero_count"] = depth_nonzero_count
+		patch["water_world_origin_x"] = float(water_binding.get("world_origin_x", 0.0))
+		patch["water_world_origin_z"] = float(water_binding.get("world_origin_z", 0.0))
+		patch["water_world_size_x"] = float(water_binding.get("world_size_x", 0.0))
+		patch["water_world_size_z"] = float(water_binding.get("world_size_z", 0.0))
+		perf_stats["water_sync_metadata"] = (
+			float(perf_stats["water_sync_metadata"])
+			+ float(Time.get_ticks_usec() - metadata_start_us) / 1000.0
+		)
+	else:
+		patch["water_depth_nonzero_count"] = depth_nonzero_count
+		patch["water_world_origin_x"] = float(water_binding.get("world_origin_x", 0.0))
+		patch["water_world_origin_z"] = float(water_binding.get("world_origin_z", 0.0))
+		patch["water_world_size_x"] = float(water_binding.get("world_size_x", 0.0))
+		patch["water_world_size_z"] = float(water_binding.get("world_size_z", 0.0))
+	return depth_nonzero_count
+
+func _bind_water_texture_from_binding(
+	patch: Dictionary,
+	material: ShaderMaterial,
+	water_texture: Texture2D,
+	texture_width: int,
+	texture_height: int,
+	inner_offset_x: int,
+	inner_offset_z: int,
+	sample_width: int,
+	sample_height: int
+) -> void:
+	var texture_changed: bool = patch.get("water_texture", null) != water_texture
+	var texture_layout_changed: bool = (
+		int(patch.get("water_texture_width", 0)) != texture_width
+		or int(patch.get("water_texture_height", 0)) != texture_height
+		or int(patch.get("water_inner_offset_x", 0)) != inner_offset_x
+		or int(patch.get("water_inner_offset_z", 0)) != inner_offset_z
+		or int(patch.get("water_sample_width", 0)) != sample_width
+		or int(patch.get("water_sample_height", 0)) != sample_height
+	)
+	if texture_changed:
+		material.set_shader_parameter("watermap", water_texture)
+	if texture_layout_changed:
+		material.set_shader_parameter("watermap_texture_size", Vector2(texture_width, texture_height))
+		material.set_shader_parameter(
+			"watermap_inner_sample_offset_texels",
+			Vector2(inner_offset_x, inner_offset_z)
+		)
+		material.set_shader_parameter(
+			"watermap_inner_sample_size_texels",
+			Vector2(sample_width, sample_height)
+		)
 	patch["water_texture"] = water_texture
 	patch["water_texture_width"] = texture_width
 	patch["water_texture_height"] = texture_height
-	patch["water_depth_nonzero_count"] = depth_nonzero_count
-	patch["water_world_origin_x"] = float(water_data.get("world_origin_x", 0.0))
-	patch["water_world_origin_z"] = float(water_data.get("world_origin_z", 0.0))
-	patch["water_world_size_x"] = float(water_data.get("world_size_x", 0.0))
-	patch["water_world_size_z"] = float(water_data.get("world_size_z", 0.0))
-	return depth_nonzero_count
+	patch["water_inner_offset_x"] = inner_offset_x
+	patch["water_inner_offset_z"] = inner_offset_z
+	patch["water_sample_width"] = sample_width
+	patch["water_sample_height"] = sample_height
 
 func _sculpt_at_mouse(delta: float) -> void:
 	var mouse_pos := get_viewport().get_mouse_position()

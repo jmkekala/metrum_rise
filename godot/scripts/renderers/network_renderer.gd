@@ -49,9 +49,11 @@ func _process(_delta: float) -> void:
 
 	# 2. Redraw the terrain mesh eagerly and clear the flag so terrain.gd._process skips it
 	#    this frame rather than running a redundant second pass.
-	var terrain_visuals_start_us := Time.get_ticks_usec()
-	terrain.update_terrain_visuals()
-	var terrain_visuals_ms := float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
+	var terrain_visuals_ms := 0.0
+	if dirty_patch_pairs > 0:
+		var terrain_visuals_start_us := Time.get_ticks_usec()
+		terrain.update_terrain_visuals()
+		terrain_visuals_ms = float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
 	simulation_node.clear_terrain_dirty()
 
 	var water_visuals_start_us := Time.get_ticks_usec()

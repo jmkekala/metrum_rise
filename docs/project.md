@@ -52,6 +52,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Terrain/water streaming now smooths remaining activation spikes by keeping speculative prewarm
+  local to the resident halo, deferring LOD/prewarm work when earlier render stages have already
+  consumed the frame, skipping no-op baked/CDT terrain LOD mesh rebuilds, and applying ready water
+  meshes before poll/submit work. See [`terrain.md`](terrain.md).
 - Terrain/water presentation now has a documented runtime contract: terrain and building-site
   grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
   detail fade, water uses the tuned depth/Fresnel/foam/normal material path, and scene lighting /
@@ -344,10 +348,31 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   without paying full near-field vertex density for every visible patch. The temporary seam /
   emissive terrain-debug visual modes used during patch-hardening were removed from the steady
   runtime after the seam-width bug was fixed. See [`terrain.md`](terrain.md).
-- Water patch mesh topology now builds on the Rust side through cached patch variants keyed by
-  patch, LOD, road-clip signature, and depth signature; batch generation uses Rayon while Godot
-  only uploads completed `ArrayMesh` buffers under a per-frame apply budget. See
+- Water patch mesh topology now builds through async Rust/Rayon cache jobs keyed by patch, LOD,
+  road-clip signature, and depth signature; Godot submits mesh requests in small time-capped
+  batches, Rust owns the ready queue, and Godot polls completed buffers without resubmitting pending
+  keys every frame. Uploads apply under a measured per-frame time budget with pending-job
+  backpressure, stale road/depth signatures are rejected before `ArrayMesh` upload, stale queued
+  water-mesh requests are compacted before submission, request/cache/job perf counters expose queue
+  health, ready polling plus apply drains use a conservative headroom boost while backlog is high,
+  and fully wet unclipped patches use indexed grid buffers instead of expanded per-cell triangles. See
   [`terrain.md`](terrain.md).
+- Terrain shoreline/debug water sampling now reuses the Water renderer's resident patch depth
+  texture binding instead of requesting a second terrain-aligned water snapshot and uploading a
+  duplicate `ImageTexture` from GDScript. See [`terrain.md`](terrain.md).
+- Gameplay world-load refresh now consumes the terrain, water, and network render-dirty flags after
+  rebuilding the visible scene, so the first live frame no longer repeats resident terrain/water
+  uploads that were already performed by the load coordinator. See [`terrain.md`](terrain.md).
+- Terrain and water patch residency plus speculative cache prewarm now run under elapsed-time
+  budgets with camera-prioritized patch order, and steady-state water residency follows the terrain
+  resident-set revision instead of rebuilding desired patch lookups every frame. Terrain and water
+  mesh-LOD refreshes and terrain-to-water texture sync are queued and drained under small per-frame
+  time budgets; LOD refreshes are movement-gated and cap checked/changed patches per frame,
+  movement-triggered LOD sweeps replace stale pending sweep entries instead of appending another
+  full resident pass, only enqueue patches whose target LOD/subdivision differs from current
+  state, activation removes far patches before adding new ones, and water mesh submit/poll/apply
+  queues process camera-near work first so startup and camera motion favor visible activation
+  before far cache warming or far-field LOD churn. See [`terrain.md`](terrain.md).
 - The first roads-first engineered-ground prototype did useful architectural work but is no longer
   treated as the final path: later terrain edits can keep committed roads fixed, chunk-local
   rebuilds and visible-surface precedence remain required, and terrain / road ownership stays
